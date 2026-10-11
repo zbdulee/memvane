@@ -69,6 +69,14 @@ with tempfile.TemporaryDirectory(prefix='qmd-source-card-', dir='/tmp') as folde
 
     source_text = '# Lantern rule\nThe copper lantern burns for two measured hours.\n'
     source_ticket = host_edit(source_relative, source_text, 'raw-write')
+    # A read-only SessionStart with no unspent wiki-card ticket must not take
+    # the history writer lock merely to report an empty registration queue.
+    with patch.object(provenance, '_story_scope',
+                      return_value=(shared, project, story)), patch(
+            'context_learning.shared._db',
+            side_effect=AssertionError('writer path reached')):
+        assert provenance.reconcile_pending(shared, project) == {
+            'registered': [], 'deferred': [], 'eligible': 0, 'skipped': 0}
     rejected(lambda: provenance.capture_host_edits(project, {
         'changes': [], 'edit_session_id': 'actual-host-session',
         'edit_turn_id': 'actual-turn', 'edit_tool_use_id': 'forged-tool'}),

@@ -10,8 +10,10 @@ caller can invoke hooks with invented host IDs, so they are not host signatures.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -341,6 +343,31 @@ def reconcile_pending(root, project, *, card_filter=None):
     root, project, story = _story_scope(root, project)
     if card_filter is not None:
         _collection_path(card_filter, wiki=True)
+    # A SessionStart hook often has read access to the owner ledger but no
+    # permission to create its history writer lock. Do not take that lock to
+    # discover that there is no registration work. A positive result still
+    # enters the normal locked writer path below; a concurrent new ticket is
+    # picked up by the next post-index/session wake.
+    from .history_activation import selected_database
+    from .shared import DATABASE_NAME
+    selected = selected_database(Path(root) / DATABASE_NAME)
+    if selected.is_file() and not selected.is_symlink():
+        info = selected.stat()
+        if info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o077:
+            raise ValueError('unsafe_shared_database')
+        with closing(sqlite3.connect(selected.as_uri() + '?mode=ro', uri=True,
+                                     timeout=.02)) as observer:
+            observer.execute('PRAGMA query_only=ON')
+            query = ('SELECT 1 FROM edit_tickets WHERE request_id IS NULL '
+                     "AND relative_path LIKE '.auto-context/wiki/%' "
+                     'AND expires_at>?')
+            args = [time.time()]
+            if card_filter is not None:
+                query += ' AND relative_path=?'
+                args.append(card_filter)
+            if observer.execute(query + ' LIMIT 1', args).fetchone() is None:
+                return {'registered': [], 'deferred': [], 'eligible': 0,
+                        'skipped': 0}
     from .shared import _db
     with _db(root) as db:
         query = ('SELECT relative_path,after_sha256,event_json FROM edit_tickets '
