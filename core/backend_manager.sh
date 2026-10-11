@@ -13,7 +13,7 @@ set -u
 [ -n "${GEMINI_SANDBOX:-}" ] && exit 0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
-PORT="${QMD_DAEMON_PORT:-8483}"
+PORT="${QMD_DAEMON_PORT:-8484}"
 STATE_DIR="${QMD_BACKEND_STATE_DIR:-${TMPDIR:-/tmp}/qmd-auto-context-backend}"
 PID_FILE="${QMD_DAEMON_PID:-$STATE_DIR/daemon.pid}"
 MANAGER_LOG="${QMD_BACKEND_LOG:-$HOME/.cache/qmd/backend-manager.log}"
@@ -57,6 +57,10 @@ PY
 
 health() {
   local timeout
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 1
+    pid_is_daemon "$(read_pid)" || return 1
+  fi
   timeout="$(qmd_health_timeout)"
   # localhost(not 127.0.0.1): qmd 데몬은 IPv6 ::1에만 바인딩된다. 127.0.0.1(IPv4)로
   # 찌르면 refused → false-dead 판정 → 데몬 재시작 crash loop. curl localhost는
@@ -138,6 +142,16 @@ pid_is_daemon() {
     *" --port $PORT "*|*" --port=$PORT "*) ;;
     *) return 1 ;;
   esac
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    local spec entry
+    spec="$(python3 "$ROOT/core/qmd_route.py" daemon-spec 2>/dev/null)" || return 1
+    entry="${spec%%$'\x1f'*}"
+    [ -n "$entry" ] || return 1
+    case " $cmd " in
+      *" $entry mcp --http "*) ;;
+      *) return 1 ;;
+    esac
+  fi
   return 0
 }
 
@@ -198,6 +212,9 @@ daemon_pid() {
     printf '%s' "$pid"
     return 0
   fi
+  # In the shared-store runtime a port occupant without our PID proof is
+  # foreign. Never adopt or signal the user's separately installed QMD.
+  [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ] && return 0
   pid="$(discover_daemon_pid)"
   if [ -n "$pid" ]; then
     echo "$pid" >"$PID_FILE" 2>/dev/null || true
@@ -207,7 +224,42 @@ daemon_pid() {
   return 0
 }
 
+# Occupancy alone never proves ownership. It does prove that replacing the
+# current PID file with a newly spawned process would destroy the only managed
+# PID evidence while that process cannot bind this port. This check is only a
+# veto; it never adopts or signals the listener.
+port_occupied() {
+  if command -v lsof >/dev/null 2>&1 &&
+     [ -n "$(lsof -nP -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null)" ]; then
+    return 0
+  fi
+  python3 - "$PORT" <<'PY'
+import socket
+import sys
+
+try:
+    port = int(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+if not 1 <= port <= 65535:
+    raise SystemExit(1)
+for family, address in ((socket.AF_INET6, ('::1', port)),
+                        (socket.AF_INET, ('127.0.0.1', port))):
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex(address) == 0:
+                raise SystemExit(0)
+    except OSError:
+        pass
+raise SystemExit(1)
+PY
+}
+
 start_daemon() {
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 0
+  fi
   check_qmd >/dev/null 2>&1 || return 0
   if health; then
     # 살아 있는데 추적이 끊긴 경우에만 발견 비용(lsof/pgrep)을 낸다. 입양이 성공하면
@@ -235,6 +287,11 @@ start_daemon() {
   if [ -n "$pid" ]; then
     rmdir "$START_LOCK" 2>/dev/null || true
     return 0
+  fi
+  if port_occupied; then
+    log "daemon start skipped: port occupied without managed PID proof port=$PORT"
+    rmdir "$START_LOCK" 2>/dev/null || true
+    return 1
   fi
   rm -f "$PID_FILE" 2>/dev/null || true
   QMD_DAEMON_PORT="$PORT" nohup bash "$DAEMON_SCRIPT" >>"$DAEMON_LOG" 2>&1 &
@@ -336,6 +393,9 @@ reload_locked() {
       log "daemon SIGTERM failed pid=$pid — skip shutdown wait"
       return 1
     fi
+  elif port_occupied; then
+    log "daemon reload skipped: port occupied without managed PID proof port=$PORT"
+    return 1
   elif [ -n "$file_pid" ]; then
     log "ignore stale/non-qmd daemon pid=$file_pid"
     clear_pid_file_if "$file_pid"
@@ -510,7 +570,13 @@ daemon_identity() {
   # Identity is an inspection command: discover a managed process without
   # adopting it into PID_FILE or changing backend state.
   pid="$(read_pid)"
-  pid_is_daemon "$pid" || pid="$(discover_daemon_pid)"
+  if ! pid_is_daemon "$pid"; then
+    if [ "${QMD_SETUP_GUARD_FIXTURE:-}" = 1 ]; then
+      pid="$(discover_daemon_pid)"
+    else
+      pid=""
+    fi
+  fi
   if [ -z "$pid" ]; then
     health && return 2  # A healthy service without a managed PID is not "absent".
     return 1
@@ -523,6 +589,7 @@ daemon_identity() {
 case "${1:-}" in
   identity) daemon_identity ;;
   health) health || true ;;
+  health-strict) health ;;
   check-qmd) shift; check_qmd "${1:-}" ;;
   start) start_daemon ;;
   ensure) shift; ensure "${1:-}" ;;

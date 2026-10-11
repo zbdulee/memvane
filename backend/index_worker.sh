@@ -60,7 +60,11 @@ reload_daemon() {
 
 # PATH 보정 (비대화형 hook 환경; update.sh/backend_manager.sh와 동일)
 normalize_qmd_path
-QMD="${QMD_FAKE_QMD:-$(resolve_qmd_bin 2>/dev/null || printf '%s' qmd)}"
+if [ -n "${QMD_FAKE_QMD:-}" ] && [ "${QMD_SETUP_GUARD_FIXTURE:-}" = 1 ]; then
+  QMD="$QMD_FAKE_QMD"
+else
+  QMD="$(resolve_qmd_bin 2>/dev/null)" || exit 1
+fi
 unset BUN_INSTALL; export PATH
 
 # single-flight
@@ -78,6 +82,57 @@ python3 "$_QMD_ROOT/core/dirty_queue_claim.py" claim "$QUEUE" "$SNAP"
 claim_rc=$?
 if [ "$claim_rc" -eq 3 ]; then rm -f "$SNAP"; exit 0; fi
 if [ "$claim_rc" -ne 0 ]; then rm -f "$SNAP"; exit 1; fi
+
+# Hold the same writer lock as update.sh through a possible prior daemon
+# handoff, queue repair, and all subsequent QMD writes. A reload outside this
+# lock could restart the daemon while SessionStart is updating its index.
+if ! mkdir "$WRITER_LOCK" 2>/dev/null; then
+  if reclaim_dead_lock "$WRITER_LOCK" && mkdir "$WRITER_LOCK" 2>/dev/null; then
+    :
+  else
+    log "writer lock busy — claim retained"
+    rm -f "$SNAP"
+    exit 75
+  fi
+fi
+echo "$$" > "$WRITER_LOCK/pid" 2>/dev/null || true
+trap 'rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
+
+# Older workers may have left a successful global embed awaiting daemon
+# handoff. Complete that obligation before changing the claimed prefix; an
+# ownerless row cannot safely be processed again under the shared index.
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  python3 "$_QMD_ROOT/core/dirty_queue_claim.py" needs-reload "$QUEUE" >/dev/null 2>&1
+  pending_reload_rc=$?
+  if [ "$pending_reload_rc" -eq 0 ]; then
+    reload_daemon || { log "legacy reload failed — claim retained"; rm -f "$SNAP"; exit 1; }
+    python3 "$_QMD_ROOT/core/dirty_queue_claim.py" reload-done "$QUEUE" >/dev/null 2>&1
+    reload_done_rc=$?
+    [ "$reload_done_rc" -eq 3 ] || {
+      log "legacy reload receipt failed — claim retained"; rm -f "$SNAP"; exit 1;
+    }
+  elif [ "$pending_reload_rc" -ne 3 ]; then
+    log "legacy reload state invalid — claim retained"; rm -f "$SNAP"; exit 1
+  fi
+fi
+
+# Old two-column entries cannot prove collection ownership in the selected
+# shared store. Preserve their exact bytes in a private quarantine, then
+# reclaim the remaining owner-bound entries. A done claim makes the archive
+# and queue replacement crash-resumable; no historical entry is discarded.
+legacy_pass=0
+while [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; do
+  python3 "$_QMD_ROOT/core/dirty_queue_claim.py" quarantine-ownerless "$QUEUE" >/dev/null 2>&1
+  legacy_rc=$?
+  [ "$legacy_rc" -eq 3 ] && break
+  if [ "$legacy_rc" -ne 0 ]; then log "legacy dirty queue quarantine failed — claim retained"; rm -f "$SNAP"; exit 1; fi
+  legacy_pass=$((legacy_pass + 1))
+  if [ "$legacy_pass" -gt 8 ]; then log "legacy dirty queue quarantine limit — claim retained"; rm -f "$SNAP"; exit 1; fi
+  python3 "$_QMD_ROOT/core/dirty_queue_claim.py" claim "$QUEUE" "$SNAP"
+  claim_rc=$?
+  if [ "$claim_rc" -eq 3 ]; then rm -f "$SNAP"; exit 0; fi
+  if [ "$claim_rc" -ne 0 ]; then rm -f "$SNAP"; exit 1; fi
+done
 
 # A previous run may have embedded successfully but failed daemon handoff.
 # Retain this fact across process restarts and incremental 0/0 retries.
@@ -97,18 +152,6 @@ while IFS= read -r line; do
 done < <(sort -u "$SNAP")
 rm -f "$SNAP"
 [ "${#ENTRIES[@]}" -eq 0 ] && { ack_claim; exit $?; }
-
-# writer lock (update.sh와 공유) — busy면 claim과 원본 큐를 유지
-if ! mkdir "$WRITER_LOCK" 2>/dev/null; then
-  if reclaim_dead_lock "$WRITER_LOCK" && mkdir "$WRITER_LOCK" 2>/dev/null; then
-    :
-  else
-  log "writer lock busy — claim retained"
-  exit 75
-  fi
-fi
-echo "$$" > "$WRITER_LOCK/pid" 2>/dev/null || true
-trap 'rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
 
 # Resolve every dirty collection before any QMD write. Mixed project queues
 # must never be handed to a single global-index update.
@@ -131,10 +174,41 @@ for e in "${ENTRIES[@]}"; do
     log "selected project index missing — claim retained"
     exit 1
   fi
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    [ -n "$owner" ] && python3 "$_QMD_ROOT/core/qmd_route.py" register-config "$owner" >/dev/null 2>&1 || {
+      log "collection owner registration failed — claim retained"
+      exit 1
+    }
+    name="${e%%$'\t'*}"
+    python3 "$_QMD_ROOT/core/qmd_route.py" verify-collection "$owner" "$name" "$path" >/dev/null 2>&1 || {
+      log "collection owner mismatch — claim retained"
+      exit 1
+    }
+  fi
   ROUTES+=("$route")
   [ -n "$route" ] && has_project_index=1
 done
+if ! python3 "$_QMD_ROOT/core/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1; then
+  log "registered shared collection withdrew or changed — claim retained"
+  exit 1
+fi
 if [ "$has_project_index" = 1 ]; then
+  # Selected project stores write their own QMD index, but still share this
+  # embed process with SessionStart maintenance. Take the same embed lock so
+  # a post-reconcile kick cannot race the detached update/embed child.
+  if [ -d "$EMBED_LOCK" ]; then
+    epid="$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)"
+    { [ -z "$epid" ] || ! kill -0 "$epid" 2>/dev/null; } && {
+      rm -f "$EMBED_LOCK/pid" 2>/dev/null
+      rmdir "$EMBED_LOCK" 2>/dev/null || true
+    }
+  fi
+  if ! mkdir "$EMBED_LOCK" 2>/dev/null; then
+    log "embed lock busy — selected claim retained"
+    exit 75
+  fi
+  echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
+  trap 'rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
   # The existing writer lock is held throughout. Each subshell receives only
   # its own project index environment; no project DB can absorb another queue.
   touched_global=0
@@ -157,7 +231,10 @@ if [ "$has_project_index" = 1 ]; then
       add_out="$("$QMD" collection add "$path" --name "$name" 2>&1)" || {
         printf '%s\n' "$add_out" | grep -qi 'already exists' || exit 1
       }
-      "$QMD" update >>"$LOG" 2>&1 && "$QMD" embed >>"$LOG" 2>&1
+      python3 "$_QMD_ROOT/core/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1 && \
+        "$QMD" update >>"$LOG" 2>&1 && \
+        python3 "$_QMD_ROOT/core/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1 && \
+        "$QMD" embed >>"$LOG" 2>&1
     ); then
       log "project-routed update failed — claim retained: $name"
       failed=1
@@ -168,7 +245,28 @@ if [ "$has_project_index" = 1 ]; then
     reload_daemon || exit 1
     mark_reload_done || exit 1
   fi
-  ack_claim; exit $?
+  ack_claim || exit $?
+  # Same-event PostToolUse workers may have arrived before QMD settled the
+  # edited file. Only an ACKed owner route can wake the exact synthetic pilot;
+  # the helper independently verifies current scope, approval and pending edit.
+  WAKE_OWNERS=()
+  for e in "${ENTRIES[@]}"; do
+    remainder="${e#*$'\t'}"
+    [[ "$remainder" == *$'\t'* ]] || continue
+    owner="${remainder#*$'\t'}"
+    [ -n "$owner" ] || continue
+    already_woken=0
+    if [ "${#WAKE_OWNERS[@]}" -gt 0 ]; then
+      for prior in "${WAKE_OWNERS[@]}"; do
+        [ "$prior" = "$owner" ] && already_woken=1
+      done
+    fi
+    [ "$already_woken" = 1 ] && continue
+    WAKE_OWNERS+=("$owner")
+    python3 "$_QMD_ROOT/core/context_learning_shared.py" wake-after-index "$owner" >/dev/null 2>>"$LOG" || \
+      log "synthetic post-index wake failed"
+  done
+  exit 0
 fi
 
 # Mark before QMD can alter the index. A crash before handoff conservatively

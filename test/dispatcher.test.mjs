@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, openSync, closeSync } from 'node:fs';
@@ -6,12 +6,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
 
+// Legacy .agents fixtures deliberately exercise dispatch, not upgrade setup.
+// Keep their logs and HOME-dependent gate fixture inside disposable test roots.
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'qmd-dispatch-fixture-'));
+after(() => removeTemp(fixtureRoot));
+const fixtureEnv = {
+  QMD_SETUP_GUARD_FIXTURE: '1',
+  QMD_CACHE_DIR: join(fixtureRoot, 'cache'),
+  QMD_RECALL_LOG: '',
+};
+
 // hooks/run-hook <action> <engine> 를 fixture 모드로 실행하고 stdout 반환
 function dispatch(args, payload, env = {}) {
   return execFileSync('bash', ['hooks/run-hook', ...args], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response.json', ...env },
+    env: { ...process.env, ...fixtureEnv, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response.json', ...env },
   }).trim();
 }
 
@@ -26,7 +36,7 @@ function dispatchGuard(args, payload, env = {}) {
     return execFileSync('bash', ['hooks/run-hook', ...args], {
       stdio: [inputFd, 'pipe', 'pipe'],
       encoding: 'utf8',
-      env: { ...process.env, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response.json', ...env },
+      env: { ...process.env, ...fixtureEnv, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response.json', ...env },
     }).trim();
   } finally {
     closeSync(inputFd);
@@ -74,7 +84,7 @@ test('BUG-D: QMD_RECALL_LOG 미지정 시 기본 로그는 /tmp가 아닌 캐시
   mkdirSync(join(dir, '.agents'), { recursive: true });
   writeFileSync(join(dir, '.agents', 'qmd-recall.json'), JSON.stringify({ collections: ['sample'] }));
   const cacheDir = join(dir, 'cache');
-  const env = { ...process.env, QMD_CACHE_DIR: cacheDir };
+  const env = { ...process.env, ...fixtureEnv, QMD_CACHE_DIR: cacheDir };
   delete env.QMD_RECALL_LOG;
   try {
     execFileSync('bash', ['hooks/run-hook', 'recall', 'claude'], {
@@ -209,7 +219,8 @@ test('run-hook gate claude → preflight_gate.py 위임 (tool 비-gated 시 무�
 
 test('run-hook gate claude → pending 프로젝트에서 gated tool 차단', () => {
   // pending 프로젝트(collections=[] and in safe path)에서 Edit 도구 차단
-  const dir = mkdtempSync(join(process.env.HOME, 'qmd-test-gate-'));
+  const home = mkdtempSync(join(process.cwd(), 'qmd-test-gate-home-'));
+  const dir = mkdtempSync(join(home, 'project-'));
   mkdirSync(join(dir, '.agents'), { recursive: true });
   // 빈 collections = pending (resolve_paths가 'risky' 아닌 'pending' reason 반환)
   writeFileSync(join(dir, '.agents', 'qmd-recall.json'), JSON.stringify({ collections: [] }));
@@ -217,11 +228,12 @@ test('run-hook gate claude → pending 프로젝트에서 gated tool 차단', ()
     const payload = { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {}, cwd: dir };
     const out = execFileSync('bash', ['hooks/run-hook', 'gate', 'claude'], {
       input: JSON.stringify(payload), encoding: 'utf8',
+      env: { ...process.env, ...fixtureEnv, HOME: home },
     }).trim();
     assert.ok(out, 'pending 프로젝트는 gate 응답을 출력해야 함');
     const resp = JSON.parse(out);
     assert.equal(resp.hookSpecificOutput.permissionDecision, 'deny');
-  } finally { removeTemp(dir); }
+  } finally { removeTemp(home); }
 });
 
 test('run-hook gate --sandbox → 무출력', () => {

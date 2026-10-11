@@ -314,9 +314,9 @@ def gather_similar_pages(
     if not semantic_cfg.get("enabled", True):
         return None
     collection, _ = wc.find_wiki_collection(config)
-    if not collection:
+    if not collection or not wc.shared_collection_owned(root, config, collection):
         return None
-    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8483")
+    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8484")
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
     results = wc.query_wiki_similar(daemon_url, collection, content, top_k, timeout)
     if not results:
@@ -581,6 +581,9 @@ def resolve_extractor_argv(
 
 def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> tuple[dict | None, str | None, int | None]:
     try:
+        import topical_story_scope
+        child_env = (topical_story_scope.provider_env(root)
+                     if topical_story_scope.exact_story(root) else None)
         proc = subprocess.run(
             argv,
             input=json.dumps(payload, ensure_ascii=False),
@@ -589,6 +592,7 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
             timeout=timeout,
             shell=False,
             cwd=str(root),
+            env=child_env,
         )
     except FileNotFoundError:
         # Binary genuinely absent → 127 sentinel lets the worker try `default`.

@@ -126,6 +126,7 @@ else:
     fake_qmd.chmod(0o700)
     isolated_home = base / 'isolated-home'; isolated_home.mkdir(mode=0o700)
     env = {'HOME': str(isolated_home), 'QMD_BIN': str(fake_qmd),
+           'QMD_SETUP_GUARD_FIXTURE': '1',
            'QMD_SYNTHETIC_CALLS': str(calls), 'INDEX_PATH': str(original),
            'QMD_CONFIG_DIR': str(root / 'old-config'),
            'XDG_CACHE_HOME': str(root / 'old-cache')}

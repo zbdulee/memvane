@@ -83,7 +83,7 @@ class Checks(unittest.TestCase):
      body=b'x'*262145 if limit==30 and mode=='oversize' else json.dumps(dict(results=hits[:8] if limit==8 else hits)).encode()
      return Response(body)
     output=io.StringIO()
-    with patch.dict(os.environ,dict(QMD_ENGINE='codex',QMD_QUERY_FIXTURE='',QMD_QUERY_FIXTURE_RAW='',QMD_RECALL_LOG='',QMD_SANDBOX=''),clear=False),patch.object(recall,'daemon_alive',return_value=True),patch.object(recall,'narrow_general_lex',return_value=dict(mode='not_needed',absent=0,absent_in_cut=0,identifier_present=False)),patch.object(recall.urllib.request,'urlopen',side_effect=urlopen),patch.object(sys,'stdin',io.StringIO(json.dumps(dict(prompt='Review synthetic HTTP OAuth evidence',cwd=str(project))))),contextlib.redirect_stdout(output):
+    with patch.dict(os.environ,dict(QMD_ENGINE='codex',QMD_QUERY_FIXTURE='',QMD_QUERY_FIXTURE_RAW='',QMD_RECALL_LOG='',QMD_SANDBOX='',QMD_SETUP_GUARD_FIXTURE='1',INDEX_PATH=str(root/'unused-index.sqlite')),clear=False),patch.object(recall,'daemon_alive',return_value=True),patch.object(recall,'narrow_general_lex',return_value=dict(mode='not_needed',absent=0,absent_in_cut=0,identifier_present=False)),patch.object(recall.urllib.request,'urlopen',side_effect=urlopen),patch.object(sys,'stdin',io.StringIO(json.dumps(dict(prompt='Review synthetic HTTP OAuth evidence',cwd=str(project))))),contextlib.redirect_stdout(output):
      recall.main()
     return output.getvalue()
    baseline=run(8);self.assertEqual(calls,[8]);calls.clear();reads.clear();timeouts.clear()
@@ -106,7 +106,7 @@ class Checks(unittest.TestCase):
     def run(k=None,enabled=True,failed=False):
      cfg['contextLearning']=dict(capture=enabled,stateRoot=str(state),candidateTopK=k)
      (project/'.auto-context'/'settings.json').write_text(json.dumps(cfg))
-     env=dict(os.environ,QMD_ENGINE=host,QMD_QUERY_FIXTURE=str(fixture),QMD_RECALL_LOG='',QMD_QUERY_FIXTURE_RAW=str(raw_fixture) if raw_fixture else '',PYTHONDONTWRITEBYTECODE='1')
+     env=dict(os.environ,QMD_ENGINE=host,QMD_QUERY_FIXTURE=str(fixture),QMD_RECALL_LOG='',QMD_QUERY_FIXTURE_RAW=str(raw_fixture) if raw_fixture else '',QMD_SETUP_GUARD_FIXTURE='1',INDEX_PATH=str(base/'unused-index.sqlite'),PYTHONDONTWRITEBYTECODE='1')
      command=[sys.executable,'core/recall.py'] if not failed else [sys.executable,'-c',"import sys;sys.path.insert(0,'core');from unittest.mock import patch;import recall;patch('context_learning.pool.expand',side_effect=RuntimeError('synthetic failure')).start();recall.main()"]
      return subprocess.check_output(command,input=json.dumps(dict(cwd=str(project),prompt='Review synthetic OAuth approval evidence')).encode(),env=env,timeout=3)
     baseline=run(enabled=False);self.assertEqual(run(),baseline);self.assertEqual(run(15),baseline)

@@ -18,7 +18,7 @@ QMD_BIN="$(resolve_qmd_bin 2>/dev/null)" || {
   echo "[qmd-daemon] FATAL: QMD runtime selection failed" >&2
   exit 1
 }
-PORT="${QMD_DAEMON_PORT:-8483}"
+PORT="${QMD_DAEMON_PORT:-8484}"
 FNM_ROOT="$HOME/.local/share/fnm/node-versions"
 
 # qmd 의 bin/qmd 런처는 dist/cli/qmd.js 를 child 로 spawn 한다(2단 프로세스).
@@ -29,6 +29,11 @@ QMD_SPEC="$(QMD_BIN="$QMD_BIN" python3 "$ROOT/core/qmd_route.py" daemon-spec)" |
   exit 1
 }
 IFS=$'\x1f' read -r QMD_ENTRY PINNED_NODE QMD_PACKAGE_BIN <<< "$QMD_SPEC"
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  QMD_SHARED_ENV="$(python3 "$ROOT/core/qmd_route.py" resolve-shared-env)" || exit 1
+  IFS=$'\t' read -r INDEX_PATH QMD_CONFIG_DIR XDG_CACHE_HOME <<< "$QMD_SHARED_ENV"
+  export INDEX_PATH QMD_CONFIG_DIR XDG_CACHE_HOME HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+fi
 
 # qmd bin/qmd 런처는 MCP 모드에서 native quiet/Metal env 를 세팅한다(dist/cli/qmd.js 직접 실행 시 누락됨).
 # 이 누락은 단순 로그 노이즈가 아니라 실제 vec 쿼리 성능 저하(GGML_METAL_NO_RESIDENCY 미설정 등)를 유발하므로

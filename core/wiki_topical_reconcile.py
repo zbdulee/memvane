@@ -447,6 +447,23 @@ def safe_projection(root, source_roots, cards, *, trusted_card_ids=(), skip_path
     return result["state"]["projection"]
 
 
+def same_generation_projection(root, generation_id, card_id, observed, fresh):
+    """Accept only a matching SessionStart view of this published generation."""
+    pending = pending_projection(fresh)
+    wiki = root / '.auto-context/wiki/topical-v2'
+    published = list(wiki.glob('*/' + card_id + '.md'))
+    expected = wiki / generation_id / (card_id + '.md')
+    return observed in (fresh, pending) and published == [expected]
+
+
+def pending_projection(row):
+    pending = json.loads(canonical(row))
+    pending['state'] = 'excluded_pending_refresh'
+    for claim in pending['claims']:
+        claim['state'] = 'pending_refresh'
+    return pending
+
+
 def finish_mock_batch(root, source_roots, batch_id, *, success=True, skip_paths=()):
     """Synthetic worker completion; never publishes a card or clears stale gate."""
     root = sandbox(root)
@@ -520,7 +537,11 @@ def supersede_changed_batch(root, source_roots, batch_id, *, skip_paths=()):
 
 
 def finish_backend_batch(root, source_roots, batch_id, generation_id, new_cards,
-                         *, old_card_id=None, settled_paths=None, skip_paths=()):
+                         *, old_card_id=None, old_card_ids=None,
+                         settled_paths=None, skip_paths=(),
+                         replacement_lineage=None, old_cards=None,
+                         primary_old_id=None, surviving_paths=None,
+                         old_generation_ids=None):
     """Settle a batch only after backend attestations and isolated QMD sync.
 
     The caller must have published each replacement and retired stale pages.
@@ -554,19 +575,80 @@ def finish_backend_batch(root, source_roots, batch_id, generation_id, new_cards,
         if any(row['state'] != 'eligible_existing_attestation'
                for row in fresh.values()):
             raise ValueError('replacement_source_stale')
-        old_id = old_card_id or (next(iter(previous['projection']))
-                                 if len(previous['projection']) == 1 else None)
-        if old_id not in previous['projection']:
+        old_ids = (list(old_card_ids) if old_card_ids is not None else
+                   [old_card_id or (next(iter(previous['projection']))
+                                    if len(previous['projection']) == 1 else None)])
+        if not old_ids or len(old_ids) != len(set(old_ids)):
             raise ValueError('unscoped_backend_batch')
-        if any(card_id != old_id for card_id in validated):
+        if replacement_lineage is not None:
+            import wiki_topical_replacement as replacement
+            if (not isinstance(old_cards, list) or
+                    not isinstance(primary_old_id, str) or
+                    not isinstance(surviving_paths, list)):
+                raise ValueError('replacement_lineage_missing')
+            try:
+                baseline = _cards(old_cards, roots)
+                actual_lineage = replacement.derive(root, old_cards,
+                    new_cards, _projection(baseline, current, set(baseline)),
+                    surviving_paths,
+                    batch['snapshot'], primary_old_id)
+            except (topical.TopicalError, OSError, KeyError, TypeError) as exc:
+                raise ValueError('replacement_lineage_changed') from exc
+            if (actual_lineage != replacement_lineage or old_ids !=
+                    [link['oldCardId'] for link in actual_lineage['links']]):
+                raise ValueError('replacement_lineage_changed')
+            if (not isinstance(old_generation_ids, dict) or
+                    set(old_generation_ids) != set(old_ids)):
+                raise ValueError('replacement_retirement_missing')
+            wiki = root / '.auto-context/wiki/topical-v2'
+            for card_id in old_ids:
+                old_generation = old_generation_ids[card_id]
+                if (not isinstance(old_generation, str) or
+                        not experiment.GENERATION_ID.fullmatch(old_generation)):
+                    raise ValueError('replacement_retirement_missing')
+                archive = root / 'topical-retired' / old_generation / (card_id + '.md')
+                old_page = wiki / old_generation / (card_id + '.md')
+                if archive.is_symlink() or not archive.is_file() or old_page.exists():
+                    raise ValueError('replacement_retirement_missing')
+                observed = previous['projection'].get(card_id)
+                if observed is None:
+                    if list(wiki.glob('*/' + card_id + '.md')):
+                        raise ValueError('replacement_card_id_conflict')
+                    continue
+                old_stale = _projection({card_id: baseline[card_id]}, current,
+                                        set())[card_id]
+                if (old_stale['state'] == 'excluded_stale' and
+                        observed in (old_stale, pending_projection(old_stale))):
+                    if card_id not in validated and list(wiki.glob('*/' + card_id + '.md')):
+                        raise ValueError('replacement_card_id_conflict')
+                    continue
+                if (card_id not in validated or
+                        not same_generation_projection(root, generation_id,
+                            card_id, observed, fresh[card_id])):
+                    raise ValueError('replacement_card_id_conflict')
+        elif validated and not set(old_ids) <= set(validated):
             raise ValueError('replacement_card_id_mismatch')
+        elif any(card_id not in previous['projection'] or
+                 previous['projection'][card_id]['state'] != 'excluded_stale'
+                 for card_id in old_ids):
+            raise ValueError('unscoped_backend_batch')
+        overlap = set(validated) & (set(previous['projection']) - set(old_ids))
+        if overlap:
+            # SessionStart may read the newly published pages while this
+            # refresh still owns the source batch. With a pending queue it
+            # can downgrade an otherwise identical new row to pending. Only
+            # that exact projection from this generation may be adopted.
+            for card_id in overlap:
+                if not same_generation_projection(root, generation_id, card_id,
+                        previous['projection'][card_id], fresh[card_id]):
+                    raise ValueError('replacement_card_id_conflict')
         paths = set(settled_paths if settled_paths is not None else batch['sources'])
         if not paths <= set(batch['snapshot']) | set(previous['settledSources']):
             raise ValueError('invalid_settled_paths')
         # A shared changed source remains queued until every dependent stale
         # card has been refreshed. Do not erase another card's projection.
         remaining = {key: value for key, value in previous['projection'].items()
-                     if key != old_id}
+                     if key not in old_ids and key not in overlap}
         referenced_elsewhere = {source['path'] for row in remaining.values()
             if row['state'] != 'eligible_existing_attestation'
             for claim in row['claims'] for source in claim['sourceStates']}
@@ -619,11 +701,21 @@ def finish_created_batch(root, source_roots, batch_id, generation_id, cards, sou
         current = _scan(root, roots, skip_paths)
         if current != batch['snapshot'] or source_path not in current:
             raise ValueError('source_changed_during_backend')
-        if set(validated) & set(previous['projection']):
-            raise ValueError('created_card_id_conflict')
         fresh = _projection(validated, current, set(validated))
         if any(row['state'] != 'eligible_existing_attestation' for row in fresh.values()):
             raise ValueError('created_source_stale')
+        overlap = set(validated) & set(previous['projection'])
+        if overlap:
+            # A SessionStart reconciliation may observe these published pages
+            # before this in-flight create settles. Accept only the identical
+            # projection from this generation; any other ID reuse stays fatal.
+            wiki = root / '.auto-context/wiki/topical-v2'
+            for card_id in overlap:
+                published = list(wiki.glob('*/' + card_id + '.md'))
+                expected = wiki / generation_id / (card_id + '.md')
+                if (previous['projection'][card_id] != fresh[card_id]
+                        or published != [expected]):
+                    raise ValueError('created_card_id_conflict')
         settled = dict(previous['settledSources'])
         settled[source_path] = current[source_path]
         state = json.loads(canonical(previous))

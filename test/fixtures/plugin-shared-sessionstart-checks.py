@@ -1,0 +1,166 @@
+"""Host hook/queue handoff on one isolated shared index, without QMD/model calls."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+from unittest import mock
+
+sys.path.insert(0, str(Path.cwd() / 'core'))
+import config
+import qmd_route
+import resolve_paths
+import sync
+import compile_paths
+import update_hook_queue
+
+with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp:
+    home = Path(temp).resolve()
+    base = home / 'novel'
+    base.mkdir()
+    (base / '.auto-context').mkdir()
+    (base / '.auto-context/settings.json').write_text(json.dumps(
+        {'indexing': False, 'ownedScopes': ['story-a', 'story-b']}))
+    stories = [base / 'story-a', base / 'story-b']
+    for i, story in enumerate(stories):
+        (story / 'wiki').mkdir(parents=True)
+        (story / 'wiki/card.md').write_text(f'Own synthetic card {i}.\n')
+        (story / '.auto-context').mkdir()
+        (story / '.auto-context/settings.json').write_text(json.dumps({
+            'indexing': True, 'collections': [f'story-{i}-wiki'],
+            'collectionPaths': {f'story-{i}-wiki': 'wiki'},
+            'collectionRoles': {f'story-{i}-wiki': 'wiki'}}))
+    prepared = subprocess.run([sys.executable,
+        'test/fixtures/prepare-shared-qmd-store.py', str(home)],
+        cwd=Path.cwd(), capture_output=True, text=True, check=False)
+    assert prepared.returncode == 0, prepared.stderr
+    environment = {**os.environ, 'HOME': str(home), 'QMD_SETUP_GUARD_FIXTURE': '',
+                   'QMD_RECALL_LOG': '',
+                   'QMD_DAEMON_PORT': '0',
+                   'QMD_UPDATE_HOOK_QUEUE_DIR': str(home / 'queue')}
+    calls = home / 'update-calls.txt'
+    updater = home / 'fake-update.sh'
+    updater.write_text('#!/bin/sh\n[ "$1" = "--resolve-only" ] && exit 0\npwd >> "' + str(calls) + '"\n')
+    updater.chmod(0o700)
+    manager = home / 'fake-manager.sh'
+    manager.write_text('#!/bin/sh\nexit 0\n')
+    manager.chmod(0o700)
+    environment['QMD_CORE_UPDATE_SCRIPT'] = str(updater)
+    environment['QMD_BACKEND_MANAGER'] = str(manager)
+    selected = [qmd_route.project_paths(story, environ=environment, isolated=True)
+                for story in stories]
+    assert selected[0]['INDEX_PATH'] == selected[1]['INDEX_PATH']
+    index = Path(selected[0]['INDEX_PATH'])
+    with sqlite3.connect(index) as db:
+        db.execute('INSERT INTO documents VALUES (?,?,?,1)',
+                   ('foreign-story', 'private.md', 'a' * 64))
+    before = hashlib.sha256(index.read_bytes()).hexdigest()
+    for i, engine in enumerate(('codex', 'claude')):
+        story = stories[i]
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(home)
+        try:
+            assert config.find_project_config(story)['projectOwner'] == str(base)
+        finally:
+            if original_home is None:
+                os.environ.pop('HOME', None)
+            else:
+                os.environ['HOME'] = original_home
+        run = subprocess.run(['bash', str(Path(__file__).resolve().parents[2] / 'hooks/run-hook'),
+                              'update-queued', engine],
+            cwd=story, env=environment, input=json.dumps({
+                'cwd': str(story), 'hook_event_name': 'SessionStart'}),
+            capture_output=True, text=True, timeout=5, check=False)
+        assert run.returncode == 0, run.stderr
+        key = hashlib.sha256(str(story).encode()).hexdigest()[:32]
+        status = home / 'queue' / (key + '.status.json')
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and not status.is_file():
+            time.sleep(.025)
+        assert status.is_file(), (engine, run.stdout, run.stderr)
+        assert json.loads(status.read_text())['status'] == 'completed'
+    assert calls.read_text().splitlines() == [str(story) for story in stories], calls.read_text()
+    with sqlite3.connect(index) as db:
+        assert db.execute('SELECT collection,path,hash FROM documents').fetchall() == [
+            ('foreign-story', 'private.md', 'a' * 64)]
+    assert hashlib.sha256(index.read_bytes()).hexdigest() == before
+    status_key = 'f' * 32
+    old_run, new_run = '1' * 32, '2' * 32
+    status_path = home / 'queue' / (status_key + '.status.json')
+    def phase(run_id, value):
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[2]
+                                  / 'core/update_hook_queue.py'), 'readiness',
+                                  status_key, value, run_id], env=environment,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(status_path.read_text())
+    assert phase(old_run, 'indexing')['searchReady'] is False
+    assert phase(old_run, 'lexical_ready')['lexicalReady'] is True
+    complete = phase(old_run, 'completed')
+    assert complete['vectorReady'] is True and complete['searchReady'] is False
+    assert phase(new_run, 'indexing')['searchReady'] is False
+    assert phase(old_run, 'completed')['runId'] == new_run
+    assert phase(new_run, 'embed_failed')['searchReady'] is False
+    with mock.patch.dict(os.environ, {**environment, 'QMD_DAEMON_PORT': '8484'}), mock.patch.object(
+            update_hook_queue.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as health:
+        update_hook_queue.readiness(status_key, 'completed', new_run)
+        assert health.call_args.args[0][-1] == 'health-strict'
+    assert json.loads(status_path.read_text())['searchReady'] is True
+    # A pull-like new source enters the wiki queue only with an explicit
+    # SessionStart grant; the independent snapshot prevents duplicate calls.
+    source_dir = stories[0] / 'manuscript'
+    source_dir.mkdir()
+    source = source_dir / 'synthetic.md'
+    source.write_text('Synthetic scene only.\n')
+    settings = stories[0] / '.auto-context/settings.json'
+    allowed = json.loads(settings.read_text())
+    allowed['collections'].append('story-0-source')
+    allowed['collectionPaths']['story-0-source'] = 'manuscript'
+    allowed['collectionRoles']['story-0-source'] = 'source'
+    allowed['compile'] = {'mode': 'auto-wiki', 'triggers': ['session_start_source']}
+    settings.write_text(json.dumps(allowed))
+    before_queue = stories[0] / compile_paths.rel(compile_paths.SOURCE_QUEUE)
+    old_env = os.environ.copy()
+    original_risky = resolve_paths.is_risky_path
+    try:
+        os.environ.update(environment)
+        resolve_paths.is_risky_path = lambda _path: False
+        assert sync.run(str(stories[0]), session_start=True, json_output=True) == 0
+        rows = [json.loads(line) for line in before_queue.read_text().splitlines()]
+        assert len(rows) == 1 and rows[0]['trigger'] == 'session_start_source'
+        assert sync.run(str(stories[0]), session_start=True) == 0
+        assert len(before_queue.read_text().splitlines()) == 1
+        old_stat = source.stat()
+        source.write_text('Synthetic scene Xnly.\n')
+        os.utime(source, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+        assert source.stat().st_size == old_stat.st_size
+        assert sync.run(str(stories[0]), session_start=True) == 0
+        assert len(before_queue.read_text().splitlines()) == 2
+        allowed['compile']['triggers'] = ['post_tool_source']
+        settings.write_text(json.dumps(allowed))
+        source.write_text('New synthetic revision.\n')
+        assert sync.run(str(stories[0]), session_start=True) == 0
+        assert len(before_queue.read_text().splitlines()) == 2
+    finally:
+        resolve_paths.is_risky_path = original_risky
+        os.environ.clear(); os.environ.update(old_env)
+    # The actual update script exits zero for hook safety when its managed
+    # binary is absent. The queue must retain the job and report failure.
+    retry_key = hashlib.sha256(str(stories[0]).encode()).hexdigest()[:32]
+    retry_job = home / 'queue' / (retry_key + '.job.json')
+    retry_job.write_text(json.dumps({'schema': 'qmd-update-hook-job-v1',
+                                     'cwd': str(stories[0])}))
+    retry_job.chmod(0o600)
+    product_env = {**environment}
+    product_env.pop('QMD_CORE_UPDATE_SCRIPT')
+    with mock.patch.dict(os.environ, product_env, clear=True):
+        update_hook_queue.worker(retry_key)
+    failed = json.loads((home / 'queue' / (retry_key + '.status.json')).read_text())
+    assert failed['status'] == 'failed' and failed['searchReady'] is False
+    assert retry_job.is_file()
+    print('shared-sessionstart-ok')

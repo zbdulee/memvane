@@ -12,13 +12,23 @@ import random
 import stat
 import sys
 import tempfile
+import time
 
 ADAPTER_VERSION = 'qmd-laya-selection-v1'
+EXPERIMENT_ADAPTER_VERSION = 'qmd-laya-selection-v2'
+EXPERIMENT_INPUT_VIEW = 'full-candidate-1024-v1'
+EXPERIMENT_INPUT_TOKENS = 1024
+EDIT_INPUT_VIEW = 'tool-edit-8192-choice-v1'
+EDIT_INPUT_TOKENS = 8192
+LEGACY_INPUT_VIEW = 'checkpoint-config-v1'
 POLICY = 'binary-needed-p-ge-0.5-top3-v1'
 MAX_INPUT_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 QUESTION = {'t': 'noul', 'ins': 'Is this wiki card needed to answer the user request?',
             'crit': {'false': 'not needed', 'true': 'needed'}}
+EDIT_QUESTION = {'t': 'choice',
+                 'ins': 'Is this wiki card needed to answer the user request?',
+                 'crit': {'A': 'not needed', 'B': 'needed'}}
 MODEL_FILES = ('model.safetensors', 'rl_agent_config.json', 'encoder/config.json',
                'tokenizer/tokenizer.json', 'tokenizer/tokenizer_config.json')
 
@@ -78,7 +88,14 @@ def _device(torch):
     return torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 
 
-def _load(model_dir, *, head_artifact=None):
+def _request_view(request):
+    view = request.get('model_input_view', LEGACY_INPUT_VIEW)
+    if view not in (LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
+        raise ValueError('invalid_model_input_view')
+    return view
+
+
+def _load(model_dir, *, head_artifact=None, input_view=LEGACY_INPUT_VIEW):
     import torch
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
@@ -94,6 +111,25 @@ def _load(model_dir, *, head_artifact=None):
     tok = AutoTokenizer.from_pretrained(str(root/'tokenizer'), local_files_only=True)
     with no_init_weights():
         model = build_model(cfg, encoder_dir=str(root/'encoder'), pretrained=False)
+    if input_view in (EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
+        # Keep the older English 1024-view experiment bound to its original
+        # shape. Real edit training requires the official multilingual head;
+        # accepting the English base here would mislabel a model migration.
+        required = (EXPERIMENT_INPUT_TOKENS if input_view == EXPERIMENT_INPUT_VIEW
+                    else EDIT_INPUT_TOKENS)
+        original_shape = (cfg['max_len'], cfg.get('head_max_len'))
+        valid_shapes = ({(512, 192)} if input_view == EXPERIMENT_INPUT_VIEW else
+                        {(1024, 256)})
+        if (original_shape not in valid_shapes
+                or (input_view == EDIT_INPUT_VIEW and
+                    cfg.get('encoder') != 'jhu-clsp/mmBERT-base')
+                or getattr(model.encoder.config, 'max_position_embeddings', 0)
+                < required or tok.model_max_length < required):
+            raise ValueError('model_input_view_unsupported')
+        cfg = {**cfg, 'max_len': required,
+               'model_input_view': input_view}
+    elif input_view != LEGACY_INPUT_VIEW:
+        raise ValueError('invalid_model_input_view')
     model.load_state_dict(load_file(str(root/'model.safetensors')), strict=True)
     if head_artifact is not None:
         head = load_file(str(head_artifact))
@@ -119,14 +155,16 @@ def _pair(prompt, candidate, tok, cfg):
     state = 'User request:\n'+prompt+'\nWiki card body:\n'+body
     mask = tok.mask_token
     if mask in state: raise ValueError('mask_token_in_source')
-    for option in render_options(QUESTION):
+    question = (EDIT_QUESTION if cfg.get('model_input_view') == EDIT_INPUT_VIEW
+                else QUESTION)
+    for option in render_options(question):
         if len(tok(' '+option, add_special_tokens=False)['input_ids']) > 48:
             raise ValueError('option_token_truncation')
     state_ids = tok(state, add_special_tokens=False)['input_ids']
-    ids, markers = build_sequence(tok, state, QUESTION,
+    ids, markers = build_sequence(tok, state, question,
         max_len=cfg['max_len'], head_max_len=cfg.get('head_max_len', 192),
         state_ids=state_ids)
-    instruction_ids=tok('noul question: '+QUESTION['ins'],
+    instruction_ids=tok(question['t']+' question: '+question['ins'],
         add_special_tokens=False)['input_ids']
     if (ids[1:1+len(instruction_ids)]!=instruction_ids or
         len(markers) != 2 or any(ids[position]!=tok.mask_token_id for position in markers) or
@@ -136,18 +174,20 @@ def _pair(prompt, candidate, tok, cfg):
         raise ValueError('model_token_budget_exceeded')
     if tok.model_max_length < len(ids):
         raise ValueError('tokenizer_model_limit_exceeded')
-    return {'ids':ids, 'markers':markers, 'qtype':QTYPES['noul']}
+    return {'ids':ids, 'markers':markers, 'qtype':QTYPES[question['t']]}
 
 
-def _pairs(cases, tok, cfg, *, with_gold):
+def _pairs(cases, tok, cfg, *, with_gold, cancelled=None):
     if not isinstance(cases, list) or not cases or len(cases) > 2000:
         raise ValueError('invalid_case_count')
     result = []
     for case in cases:
+        if cancelled is not None and cancelled():
+            raise ValueError('prediction_cancelled')
         if not isinstance(case, dict) or not isinstance(case.get('candidates'), list):
             raise ValueError('invalid_case')
         candidates = case['candidates']
-        if not 1 <= len(candidates) <= 15 or len({c.get('id') for c in candidates}) != len(candidates):
+        if not 1 <= len(candidates) <= 30 or len({c.get('id') for c in candidates}) != len(candidates):
             raise ValueError('invalid_candidate_pool')
         if with_gold:
             selected = case.get('selected_ids')
@@ -156,6 +196,8 @@ def _pairs(cases, tok, cfg, *, with_gold):
         elif 'selected_ids' in case:
             raise ValueError('heldout_gold_exposed')
         for candidate in candidates:
+            if cancelled is not None and cancelled():
+                raise ValueError('prediction_cancelled')
             item = _pair(case.get('prompt'), candidate, tok, cfg)
             item.update(request_id=case['request_id'], candidate_id=candidate['id'])
             if with_gold: item['gold_label'] = int(candidate['id'] in selected)
@@ -178,17 +220,22 @@ def select_ids(scores):
     return [candidate_id for _, (candidate_id, p) in ranked if p >= .5][:3]
 
 
-def _save_head(path, model, base_sha):
+def _save_head(path, model, base_sha, input_view):
     from safetensors.torch import save_file
     tensors = {k:v.detach().cpu().contiguous() for k,v in model.state_dict().items()
                if not k.startswith('encoder.')}
-    save_file(tensors, str(path), metadata={'adapter_version':ADAPTER_VERSION,
+    metadata = {'adapter_version':ADAPTER_VERSION,
         'selection_policy':POLICY, 'base_model_sha256':base_sha,
-        'kind':'head_only'})
+        'kind':'head_only'}
+    if input_view in (EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
+        metadata.update(adapter_version=EXPERIMENT_ADAPTER_VERSION,
+                        model_input_view=EXPERIMENT_INPUT_VIEW)
+        metadata['model_input_view'] = input_view
+    save_file(tensors, str(path), metadata=metadata)
     os.chmod(path, 0o600)
 
 
-def _head_path(artifact, base_sha):
+def _head_path(artifact, base_sha, input_view):
     from safetensors import safe_open
     path = Path(artifact)
     if not path.is_file() or path.is_symlink(): raise ValueError('missing_artifact')
@@ -202,8 +249,12 @@ def _head_path(artifact, base_sha):
         return None
     with safe_open(str(path), framework='pt', device='cpu') as source:
         meta = source.metadata()
-    if meta != {'adapter_version':ADAPTER_VERSION,'selection_policy':POLICY,
-                'base_model_sha256':base_sha,'kind':'head_only'}:
+    expected = {'adapter_version':ADAPTER_VERSION,'selection_policy':POLICY,
+                'base_model_sha256':base_sha,'kind':'head_only'}
+    if input_view in (EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
+        expected.update(adapter_version=EXPERIMENT_ADAPTER_VERSION,
+                        model_input_view=input_view)
+    if meta != expected:
         raise ValueError('head_artifact_provenance_mismatch')
     return path
 
@@ -214,10 +265,14 @@ def train(model_dir, request, *, max_updates=None, verification=False):
 
     if request.get('schema_version') != 1 or not isinstance(request.get('artifact_path'), str):
         raise ValueError('invalid_train_request')
+    record_step_losses = request.get('record_step_losses', False)
+    if type(record_step_losses) is not bool:
+        raise ValueError('invalid_train_request')
     artifact = Path(request['artifact_path'])
     if not artifact.is_absolute() or artifact.exists(): raise ValueError('unsafe_artifact_path')
+    input_view = _request_view(request)
     base_sha = model_identity(model_dir)
-    model, tok, cfg = _load(model_dir)
+    model, tok, cfg = _load(model_dir, input_view=input_view)
     items = _pairs(request.get('train'), tok, cfg, with_gold=True)
     torch.manual_seed(17)
     random.Random(17).shuffle(items)
@@ -227,8 +282,13 @@ def train(model_dir, request, *, max_updates=None, verification=False):
     optimizer = torch.optim.SGD(params, lr=0.01)
     model.train(); model.encoder.eval()
     updates = 0
-    for start in range(0, len(items), 2):
-        current = items[start:start+2]
+    step_losses = [] if record_step_losses else None
+    train_groups = (prediction_batches(items, max_padded_tokens=cfg['max_len'],
+                                       max_size=2)
+                    if input_view == EDIT_INPUT_VIEW else
+                    [items[start:start+2] for start in range(0, len(items), 2)])
+    for current in train_groups:
+        step_started = time.perf_counter() if record_step_losses else None
         batch = _batch(current, tok, next(model.parameters()).device)
         targets = torch.tensor([x['gold_label'] for x in current],
             device=batch['input_ids'].device, dtype=torch.long)
@@ -242,6 +302,10 @@ def train(model_dir, request, *, max_updates=None, verification=False):
             raise ValueError('nonfinite_head_gradient')
         optimizer.step()
         updates += 1
+        if step_losses is not None:
+            step_losses.append({'step': updates, 'pairs': len(current),
+                                'cross_entropy': float(loss.detach().cpu().item()),
+                                'wall_seconds': round(time.perf_counter() - step_started, 6)})
         if max_updates is not None and updates >= max_updates: break
     if not updates: raise ValueError('empty_train')
     if torch.equal(witness, model.scorer[-1].weight.detach()):
@@ -255,56 +319,171 @@ def train(model_dir, request, *, max_updates=None, verification=False):
             probe_logits, _ = model(**batch)
         probe = {'candidate_id':item['candidate_id'],
                  'logits':probe_logits[0].detach().cpu().tolist()}
-    _save_head(artifact, model, base_sha)
+    _save_head(artifact, model, base_sha, input_view)
     response = {'schema_version':1,'status':'trained'}
+    if step_losses is not None:
+        response['step_losses'] = step_losses
     return (response, probe) if verification else response
 
 
+def prediction_batches(items, *, max_padded_tokens=8192, max_size=4):
+    if (not isinstance(items, list) or not 1 <= max_size <= 4
+            or not 128 <= max_padded_tokens <= 8192):
+        raise ValueError('invalid_predict_request')
+    # Bound the padded tokens in flight, rather than batching an arbitrary
+    # number of long edit windows. A four-card microbatch is safe for the
+    # measured local 8192-position encoder; a near-limit pair runs alone.
+    batches = []
+    current = []
+    longest = 0
+    for item in items:
+        length = len(item['ids'])
+        if not 1 <= length <= max_padded_tokens:
+            raise ValueError('model_token_budget_exceeded')
+        proposed_longest = max(longest, length)
+        if current and (len(current) >= max_size or
+                        proposed_longest * (len(current) + 1) > max_padded_tokens):
+            batches.append(current)
+            current = []
+            longest = 0
+        current.append(item)
+        longest = max(longest, length)
+    if current:
+        batches.append(current)
+    return batches
+
+
 def predict(model_dir, request):
-    import torch
     if request.get('schema_version') != 1 or not isinstance(request.get('artifact_path'), str):
         raise ValueError('invalid_predict_request')
+    input_view = _request_view(request)
     base_sha = model_identity(model_dir)
-    head = _head_path(request['artifact_path'], base_sha)
-    model, tok, cfg = _load(model_dir, head_artifact=head)
-    items = _pairs(request.get('cases'), tok, cfg, with_gold=False)
+    head = _head_path(request['artifact_path'], base_sha, input_view)
+    model, tok, cfg = _load(model_dir, head_artifact=head, input_view=input_view)
+    return predict_loaded(model, tok, cfg, request)
+
+
+def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
+                   max_padded_tokens=None, timing=None, cancelled=None):
+    """Use an already loaded, pinned head for a bounded selection batch."""
+    import torch
+    if (request.get('schema_version') != 1
+            or _request_view(request) != cfg.get('model_input_view', LEGACY_INPUT_VIEW)):
+        raise ValueError('invalid_predict_request')
+    if cancelled is not None and cancelled():
+        raise ValueError('prediction_cancelled')
+    began = time.perf_counter()
+    if timing is not None:
+        timing.update(tokenize_seconds=None, batch_prepare_seconds=None,
+                      forward_seconds=None,
+                      total_seconds=None, batches=0, pairs=0)
+    try:
+        items = _pairs(request.get('cases'), tok, cfg, with_gold=False,
+                       cancelled=cancelled)
+    finally:
+        if timing is not None:
+            timing['tokenize_seconds'] = round(time.perf_counter() - began, 6)
+    if cancelled is not None and cancelled():
+        raise ValueError('prediction_cancelled')
     by_request = {}
+    batches = prediction_batches(items,
+        max_padded_tokens=min(cfg['max_len'], max_padded_tokens or cfg['max_len']),
+        max_size=max_batch_size)
+    forward_seconds = 0.0
+    batch_prepare_seconds = 0.0
+    if timing is not None:
+        timing.update(planned_pairs=len(items), planned_batches=len(batches),
+                      pairs=0, batches=0, batch_prepare_seconds=0.0,
+                      forward_seconds=0.0)
     with torch.no_grad():
-        for item in items:
-            batch = _batch([item], tok, next(model.parameters()).device)
-            logits, _ = model(**batch)
-            if logits.shape != (1, 2): raise ValueError('unexpected_laya_logit_shape')
-            p = torch.softmax(logits[0].float(), -1)[1].item()
-            by_request.setdefault(item['request_id'], []).append((item['candidate_id'], p))
+        for group in batches:
+            if cancelled is not None and cancelled():
+                raise ValueError('prediction_cancelled')
+            preparing = time.perf_counter()
+            try:
+                batch = _batch(group, tok, next(model.parameters()).device)
+            finally:
+                batch_prepare_seconds += time.perf_counter() - preparing
+                if timing is not None:
+                    timing['batch_prepare_seconds'] = round(batch_prepare_seconds, 6)
+            started = time.perf_counter()
+            try:
+                logits, _ = model(**batch)
+                if logits.shape != (len(group), 2):
+                    raise ValueError('unexpected_laya_logit_shape')
+                # .tolist() synchronizes MPS results. Timing only model(...)
+                # understated the actual scoring cost of every microbatch.
+                probabilities = torch.softmax(logits.float(), -1)[:, 1].tolist()
+            finally:
+                forward_seconds += time.perf_counter() - started
+                if timing is not None:
+                    timing['forward_seconds'] = round(forward_seconds, 6)
+            if timing is not None:
+                timing['pairs'] += len(group)
+                timing['batches'] += 1
+            for item, probability in zip(group, probabilities):
+                by_request.setdefault(item['request_id'], []).append(
+                    (item['candidate_id'], probability))
+            if cancelled is not None and cancelled():
+                raise ValueError('prediction_cancelled')
     predictions = []
     for case in request['cases']:
         predictions.append({'request_id':case['request_id'],
             'input_sha256':case['input_sha256'],
             'selected_ids':select_ids(by_request[case['request_id']])})
+    if timing is not None:
+        timing.update(total_seconds=round(time.perf_counter() - began, 6),
+                      max_batch_size=max_batch_size,
+                      max_padded_tokens=max_padded_tokens or cfg['max_len'],
+                      device=str(next(model.parameters()).device))
     return {'schema_version':1,'predictions':predictions}
 
 
 def smoke(model_dir, directory):
     """Actual local synthetic tokenizer, forward, one update, save/reload proof."""
     from safetensors.torch import load_file
+    from transformers import AutoTokenizer
+    root = Path(model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(str(root/'tokenizer'),
+                                              local_files_only=True)
+    checkpoint = _read_json(root/'rl_agent_config.json')
+    encoder = _read_json(root/'encoder'/'config.json')
+    long_view = (checkpoint.get('max_len') == 512 and
+                 checkpoint.get('head_max_len', 192) == 192 and
+                 encoder.get('max_position_embeddings', 0) >= EXPERIMENT_INPUT_TOKENS and
+                 tokenizer.model_max_length >= EXPERIMENT_INPUT_TOKENS)
+    input_view = EXPERIMENT_INPUT_VIEW if long_view else LEGACY_INPUT_VIEW
+    def body_with_tokens(sentence, count):
+        seed = tokenizer(sentence * 85, add_special_tokens=False)['input_ids']
+        text = tokenizer.decode(seed[:count], skip_special_tokens=True,
+                                clean_up_tokenization_spaces=False)
+        if len(tokenizer(text, add_special_tokens=False)['input_ids']) != count:
+            raise ValueError('synthetic_long_body_roundtrip_changed')
+        return text
     sample = {'request_id':'synthetic-1','input_sha256':'0'*64,
         'prompt':'Which synthetic town has the blue bridge?',
         'candidates':[{'id':'card-blue','input_kind':'full_compact_wiki_body',
-                       'input_text':'Synthetic town Arin has a blue bridge. '*24},
+                       'input_text':body_with_tokens(
+                           'Synthetic town Arin has a blue bridge. ', 527 if long_view else 25)},
                       {'id':'card-red','input_kind':'full_compact_wiki_body',
-                       'input_text':'Synthetic town Bori has a red bridge. '*24}],
+                       'input_text':body_with_tokens(
+                           'Synthetic town Bori has a red bridge. ', 735 if long_view else 25)}],
         'selected_ids':['card-blue']}
     base_sha = model_identity(model_dir)
     with tempfile.TemporaryDirectory(prefix='qmd-laya-smoke-',dir=directory) as temp:
         artifact = Path(temp)/'head.artifact'
         _, probe = train(model_dir, {'schema_version':1,
+            'model_input_view':input_view,
             'artifact_path':str(artifact),'train':[sample]},
             max_updates=1, verification=True)
         head = load_file(str(artifact))
         if not head: raise ValueError('empty_head_artifact')
-        model, tok, cfg = _load(model_dir, head_artifact=artifact)
+        model, tok, cfg = _load(model_dir, head_artifact=artifact,
+                                input_view=input_view)
         matched = next(c for c in sample['candidates'] if c['id']==probe['candidate_id'])
         item = _pair(sample['prompt'], matched, tok, cfg)
+        if long_view and not 512 < len(item['ids']) <= EXPERIMENT_INPUT_TOKENS:
+            raise ValueError('synthetic_long_view_not_exercised')
         import torch
         too_long = dict(matched, input_text='synthetic overflow ' * 700)
         try:
@@ -325,8 +504,10 @@ def smoke(model_dir, directory):
         _write_json(base, {'schema_version':1,'kind':'laya_base_head',
             'base_model_sha256':base_sha,'adapter_version':ADAPTER_VERSION})
         base_prediction = predict(model_dir, {'schema_version':1,
+            'model_input_view':input_view,
             'artifact_path':str(base),'cases':[unlabeled]})
         trained_prediction = predict(model_dir, {'schema_version':1,
+            'model_input_view':input_view,
             'artifact_path':str(artifact),'cases':[unlabeled]})
         assert select_ids([('a',.9),('b',.8),('c',.7),('d',.6)]) == ['a','b','c']
         return {'schema_version':1,'base_model_sha256':base_sha,
@@ -338,7 +519,29 @@ def smoke(model_dir, directory):
             'reloaded_logits':reloaded_logits[0].cpu().tolist(),
             'synthetic_body_bytes':len(matched['input_text'].encode()),
             'model_input_tokens':len(item['ids']),
+            'model_input_view':input_view,
             'head_bytes':artifact.stat().st_size,'device':str(_device(__import__('torch')))}
+
+
+def segment_edit(model_dir, request):
+    from transformers import AutoTokenizer
+    from edit_segments import split_with_offsets
+    if (not isinstance(request, dict) or set(request) !=
+            {'schema_version', 'text', 'target_tokens', 'overlap_tokens'}
+            or request['schema_version'] != 1 or not isinstance(request['text'], str)
+            or len(request['text'].encode()) > 65536):
+        raise ValueError('invalid_edit_segmentation')
+    tokenizer = AutoTokenizer.from_pretrained(str(Path(model_dir)/'tokenizer'),
+                                              local_files_only=True, use_fast=True)
+    if not tokenizer.is_fast or tokenizer.model_max_length < 8192:
+        raise ValueError('edit_tokenizer_unsupported')
+    encoded = tokenizer(request['text'], add_special_tokens=False,
+                        return_offsets_mapping=True)
+    segments = split_with_offsets(request['text'],
+        encoded['offset_mapping'], target_tokens=request['target_tokens'],
+        overlap_tokens=request['overlap_tokens'])
+    return {'schema_version': 1, 'segments': segments,
+            'source_sha256': hashlib.sha256(request['text'].encode()).hexdigest()}
 
 
 def main(argv):
@@ -350,9 +553,48 @@ def main(argv):
     if mode == 'train': result = train(model_dir, _read_json(request_path))
     elif mode == 'predict': result = predict(model_dir, _read_json(request_path))
     elif mode == 'smoke': result = smoke(model_dir, Path(request_path).parent)
+    elif mode == 'segment': result = segment_edit(model_dir, _read_json(request_path))
     else: raise ValueError('invalid_adapter_mode')
     _write_json(response_path, result)
 
 
+_SAFE_ERRORS = {
+    'model_token_budget_exceeded', 'tokenizer_model_limit_exceeded',
+    'model_input_view_unsupported', 'invalid_complete_input',
+    'invalid_request_file', 'invalid_predict_request',
+    'head_artifact_provenance_mismatch', 'missing_artifact',
+    'invalid_model_max_len', 'unexpected_laya_logit_shape',
+    'checkpoint_reload_logits_changed', 'invalid_candidate_pool',
+    'invalid_case_count', 'invalid_case', 'invalid_model_input_view',
+    'invalid_edit_segmentation', 'edit_tokenizer_unsupported',
+    'invalid_edit_offsets', 'invalid_edit_window', 'invalid_edit_overlap',
+    'edit_segment_limit', 'edit_segment_coverage_failed',
+}
+
+
+def _safe_error(exc):
+    """Never copy source text, a traceback, or a local path into diagnostics."""
+    if isinstance(exc, MemoryError):
+        return 'adapter_memory_error'
+    if isinstance(exc, PermissionError):
+        return 'adapter_permission_error'
+    if isinstance(exc, FileNotFoundError):
+        return 'adapter_file_missing'
+    if isinstance(exc, RuntimeError):
+        return 'adapter_runtime_error'
+    if isinstance(exc, ValueError) and str(exc) in _SAFE_ERRORS:
+        return str(exc)
+    return 'adapter_unclassified_error'
+
+
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except BaseException as exc:
+        if len(sys.argv) == 5:
+            try:
+                _write_json(sys.argv[4], {'schema_version': 1,
+                          'error_code': _safe_error(exc)})
+            except (OSError, ValueError):
+                pass
+        raise SystemExit(1)

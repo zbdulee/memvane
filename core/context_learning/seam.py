@@ -22,7 +22,7 @@ def _snapshot(path):
     return {"sha256": hashlib.sha256(content).hexdigest()}, content
 
 
-def _private_state(config, root):
+def _private_state(config, root, *, create=True):
     configured = config.get('contextLearning', {}).get('stateRoot')
     if not isinstance(configured, str):
         return None
@@ -33,7 +33,11 @@ def _private_state(config, root):
     if any(p.is_symlink() for p in (parent, *parent.parents)):
         return None
     parent = parent.resolve(strict=True)
-    if parent == root or root in parent.parents:
+    # A private state directory may live under the project root when every
+    # indexed collection is narrower. The checks below still reject any
+    # state directory inside a configured collection (including a collection
+    # that indexes the entire project root).
+    if parent == root:
         return None
     for base in config.get('collectionPaths', {}).values():
         collection_root = (root / base).resolve()
@@ -46,7 +50,10 @@ def _private_state(config, root):
     state = parent / namespace
     if state.is_symlink():
         return None
-    state.mkdir(mode=0o700, exist_ok=True)
+    if create:
+        state.mkdir(mode=0o700, exist_ok=True)
+    elif not state.is_dir():
+        return None
     info = state.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         return None
@@ -65,8 +72,25 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
     opts = config.get('contextLearning', {})
     if not isinstance(opts, dict) or opts.get('capture') is not True:
         return 'disabled'
+    # An edit may be stored only after shared enqueue atomically consumes its
+    # one-use host-edit ticket. A project setting alone is never sufficient.
+    is_edit = payload.get('context_origin') == 'tool_edit'
+    if is_edit and (not isinstance(payload.get('edit_event'), dict)
+                    or not payload['edit_event'].get('ticket_id')):
+        return 'edit_ticket_required'
     try:
         root = Path(project_root).resolve(strict=True)
+        deferred_allowed = None
+        if is_edit and payload['edit_event'].get('deferred_capture') is True:
+            from .deferred_edit import pending, allowed_paths
+            ticket_id = payload['edit_event']['ticket_id']
+            if not pending(root, ticket_id):
+                return 'deferred_edit_observation_missing'
+            if os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') != '1':
+                return 'deferred_index_pending'
+            deferred_allowed = allowed_paths(root, ticket_id)
+            if not deferred_allowed:
+                return 'deferred_registered_candidates_unavailable'
         state = _private_state(config, root)
         if state is None:
             return 'unsafe_or_missing_state'
@@ -80,12 +104,22 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
         phases = phases if pool_mode else [{'name':'primary','results':final_results,'wiki_scoped':False,'returned_count':len(final_results)}]
         expanded = pool_mode and candidate_limit is not None
         phase_limit = 30 if expanded else 8
-        rows=[]; eligible=[]; excluded=[]; failures=[]; seen=set(); counts={}; assessed=True
+        rows=[]; eligible=[]; excluded=[]; failures=[]; seen=set(); counts={}
+        # The daemon may over-return. Rows sliced to the requested bound are
+        # safe to inject, but do not prove the complete returned universe for
+        # training/gold. pool.expand has its own candidate_budget evidence.
+        assessed=not any(p.get('returned_count', 0) > len(p['results']) for p in phases)
         compact_sources={}
         for phase in phases:
             counts[phase['name']]=phase['returned_count']
             for hit in phase['results'][:phase_limit]:
                 file=_id(hit)
+                if deferred_allowed is not None:
+                    from .deferred_edit import candidate_allowed
+                    if not candidate_allowed(file, deferred_allowed):
+                        excluded.append({'candidate_id':file,'phase':phase['name'],
+                                         'reason':'not_from_registered_edit_source'})
+                        continue
                 decision=verdict(hit,phase['wiki_scoped']) if pool_mode else 'eligible'
                 if decision!='eligible':
                     excluded.append({'candidate_id':file,'phase':phase['name'],'reason':decision})
@@ -145,9 +179,41 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
         elif not rows:
             return 'no_snapshot_candidates'
         sample=request(payload,rows,host=os.environ.get('QMD_ENGINE','claude'),request_id=str(uuid.uuid4()),sampling=sampling)
+        if is_edit:
+            if config.get('sharedLearning', {}).get('enabled') is not True:
+                return 'edit_shared_enrollment_required'
+            from .shared import enqueue, launch, activate_edit_case
+            shared_status = enqueue(config, root, sample, compact_sources)
+            if shared_status != 'awaiting_local':
+                return shared_status
+            status = capture(sample,enabled=True,state_dir=state,compact_sources=compact_sources)
+            activated = activate_edit_case(config, root, sample,
+                                           captured=status == 'stored')
+            if status == 'stored':
+                if current_corpus is not None:
+                    reconcile_corpus(state, current_corpus)
+                if activated == 'queued':
+                    launch(config, root)
+            return activated
         status = capture(sample,enabled=True,state_dir=state,compact_sources=compact_sources)
         if status == 'stored' and current_corpus is not None:
             reconcile_corpus(state, current_corpus)
+        if status == 'stored' and config.get('sharedLearning', {}).get('enabled') is True:
+            # The shared path is a separate, explicitly enrolled local queue.
+            # It never runs an external teacher in the prompt hook.
+            try:
+                from .shared import enqueue, launch
+                shared_status = enqueue(config, root, sample, compact_sources)
+                if shared_status == 'queued':
+                    launch(config, root)
+            except Exception:
+                shared_status = 'unavailable'
+            try:
+                from .local_cycle import _atomic_json
+                _atomic_json(state / 'shared-last-status.json',
+                             {'status': shared_status, 'request_id_hash': digest(sample['request_id'])})
+            except Exception:
+                pass
         return status
     except Exception:
         return 'capture_unavailable'

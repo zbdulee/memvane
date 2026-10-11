@@ -297,6 +297,8 @@ COMPILE_TRIGGERS = {
     # 수동 sync(core/sync.py)가 스냅샷 diff로 찾아낸 소스 변경. git pull·rebase·외부
     # 편집은 PostToolUse 훅을 타지 않으므로 `post_tool_source`로는 잡히지 않는다.
     "post_sync_source",
+    # 별도 동의가 있을 때만 clone/pull 이후 SessionStart가 새 소스를 감지한다.
+    "session_start_source",
     "repeated_recall",
     "cross_file_conclusion",
     "manual",
@@ -1014,6 +1016,22 @@ def normalize_config(input_config):
             'candidateTopK': 15 if live_selection else learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
             'stateRoot': learning.get('stateRoot') if isinstance(learning.get('stateRoot'), str) else None,
         }
+    shared = input_config.get('sharedLearning')
+    if isinstance(shared, dict):
+        rerank_target = shared.get('rerankTargetSeconds', 1.0)
+        if (type(rerank_target) not in (int, float)
+                or not math.isfinite(rerank_target)
+                or not .2 <= rerank_target <= 10):
+            rerank_target = 1.0
+        config['sharedLearning'] = {
+            'enabled': shared.get('enabled') is True,
+            'root': shared.get('root') if isinstance(shared.get('root'), str) else None,
+            'trialSelection': shared.get('trialSelection') is True,
+            'rerankTargetSeconds': rerank_target,
+        }
+        if (config['sharedLearning']['enabled'] and config['sharedLearning']['trialSelection']
+                and 'contextLearning' in config):
+            config['contextLearning']['candidateTopK'] = 15
     config["name"] = input_config.get("name", DEFAULT_CONFIG["name"]) if isinstance(input_config.get("name", ""), str) else DEFAULT_CONFIG["name"]
     config["collections"] = string_list(input_config.get("collections"), DEFAULT_CONFIG["collections"])
     config["minScore"] = coerce_float(input_config.get("minScore", DEFAULT_CONFIG["minScore"]), DEFAULT_CONFIG["minScore"])
@@ -1177,6 +1195,31 @@ def _candidate_configs(project_dir):
     ]
 
 
+def _declared_project_owner(scope):
+    """Keep the nearest story config as its search scope; owner is separate."""
+    scope = Path(scope).resolve()
+    home = Path.home().resolve()
+    if scope == home or not _is_within(scope, home):
+        return scope
+    for parent in scope.parents:
+        if parent == home:
+            break
+        settings = parent / CONFIG_DIR_NAME / SETTINGS_FILE_NAME
+        if not settings.is_file() or settings.is_symlink():
+            continue
+        try:
+            raw = json.loads(settings.read_text())
+            names = raw.get('ownedScopes') if isinstance(raw, dict) else None
+            if (isinstance(names, list) and scope.parent == parent
+                    and scope.name in names and all(
+                        isinstance(name, str) and name not in ('', '.', '..')
+                        and '/' not in name and '\\' not in name for name in names)):
+                return parent
+        except (OSError, ValueError, TypeError):
+            continue
+    return scope
+
+
 def find_project_config(cwd):
     """cwd→부모(HOME 경계)로 project config를 찾고 normalized config와 위치를 반환한다.
 
@@ -1199,6 +1242,7 @@ def find_project_config(cwd):
             "configPath": None,
             "configFormat": "none",
             "projectRoot": project_root,
+            "projectOwner": project_root,
         }
 
 
@@ -1213,6 +1257,7 @@ def _find_project_config_unsafe(cwd):
             "configPath": str(local_optout["marker"]),
             "configFormat": "local-optout",
             "projectRoot": str(local_optout["root"]),
+            "projectOwner": str(local_optout["root"]),
         }
     config_file = None
     config_format = "none"
@@ -1237,6 +1282,7 @@ def _find_project_config_unsafe(cwd):
                 "configPath": str(config_file),
                 "configFormat": config_format,
                 "projectRoot": str(project_root),
+                "projectOwner": str(_declared_project_owner(project_root)),
             }
         except (json.JSONDecodeError, OSError):
             pass
@@ -1247,6 +1293,7 @@ def _find_project_config_unsafe(cwd):
         "configPath": None,
         "configFormat": "none",
         "projectRoot": str(path),
+        "projectOwner": str(path),
     }
 
 

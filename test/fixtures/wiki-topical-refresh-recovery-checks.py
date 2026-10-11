@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, 'core')
 import wiki_topical as topical
@@ -48,6 +49,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-refresh-recovery-') as name:
     similarity.retrieve=lambda *args,**kwargs: []
     cfg={'extractor':{'builtins':['codex']},
          'verify':{'builtins':['codex'],'crossEngine':'off'}}
+    policy={'schema':'qmd-topical-auto-refresh-v1','enabled':True,
+        'sourceRoots':['sources'],'engine':'codex','compileCfg':cfg,
+        'maxEstimatedCents':20}
+    policy_path=root/refresh.AUTO_CONFIG
     calls=[]
     def uncertain_runner(*args):
         calls.append('generation')
@@ -72,6 +77,24 @@ with tempfile.TemporaryDirectory(prefix='qmd-refresh-recovery-') as name:
             assert str(error)=='synthetic_transport_disconnected_after_send'
         else:
             raise AssertionError('uncertain_transport_not_recorded')
+        journal_path=root/refresh.JOURNAL
+        saved_journal=journal_path.read_bytes()
+        late=json.loads(saved_journal)
+        late['phase']='new_published'
+        journal_path.write_text(json.dumps(late)+'\n')
+        with patch.object(refresh, 'refresh_one',
+                          side_effect=AssertionError('policyless_recovery_ran')):
+            assert refresh.recover_pending(root)=={'status':'pending_review',
+                'reason':'auto_teacher_policy_required'}
+        policy_path.write_text(json.dumps({**policy,'enabled':False}))
+        policy_path.chmod(0o600)
+        with patch.object(refresh, 'refresh_one',
+                          side_effect=AssertionError('disabled_recovery_ran')):
+            assert refresh.recover_pending(root)=={'status':'pending_review',
+                'reason':'auto_teacher_policy_disabled'}
+        journal_path.write_bytes(saved_journal)
+        policy_path.write_text(json.dumps(policy))
+        policy_path.chmod(0o600)
         automatic=refresh.recover_pending(root)
         assert automatic=={'status':'pending_review',
                           'reason':'generation_attempt_uncertain'}

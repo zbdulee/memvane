@@ -65,6 +65,11 @@ set_status_for_workdir() {
   fi
 }
 
+report_search_readiness() {
+  [ -z "${QMD_UPDATE_HOOK_KEY:-}" ] && return 0
+  python3 "$(dirname "$0")/update_hook_queue.py" readiness "$QMD_UPDATE_HOOK_KEY" "$1" "$QMD_UPDATE_HOOK_RUN_ID" >>"$LOG" 2>&1 || true
+}
+
 # SessionStart 헬스체크: 데몬 포트 확인. 데몬 기동은 plugin-managed backend manager가 담당한다.
 qmd_health_timeout() {
   python3 - <<'PY'
@@ -83,7 +88,7 @@ PY
 }
 
 qmd_healthcheck() {
-  local port="${QMD_HEALTHCHECK_PORT:-8483}"
+  local port="${QMD_HEALTHCHECK_PORT:-8484}"
   local timeout
   timeout="$(qmd_health_timeout)"
   # localhost(not 127.0.0.1): 데몬은 IPv6 ::1 바인딩. IPv4로 찌르면 false-dead 판정 → "데몬 미응답" 오탐.
@@ -977,7 +982,8 @@ PY
       log "PRUNE MISSING COLLECTION: $name is not registered in qmd, settings cleanup only"
       successful="${successful}${name}
 "
-    elif qmd collection remove "$name" >>"$LOG" 2>&1; then
+    elif python3 "$_QMD_CORE_DIR/qmd_route.py" verify-prune "$collection_base" "$name" >/dev/null 2>&1 \
+         && qmd collection remove "$name" >>"$LOG" 2>&1; then
       qmd_registry_invalidate
       mark_orphan_reclaim_pending
       successful="${successful}${name}
@@ -1111,6 +1117,20 @@ run_update() {
   qmd() { "$qmd_bin" "$@"; }
 
   workdir="$1"
+  # Config and collection paths belong to the canonical settings root. A
+  # SessionStart may arrive from a nested story cwd; retain that cwd for the
+  # scoped hook/maintenance work below, but register and resolve against the
+  # exact owner root required by qmd_route.
+  local collection_base
+  collection_base="$(python3 - "$_QMD_CORE_DIR" "$workdir" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import config
+found = config.find_project_config(sys.argv[2])
+print(found['projectRoot'])
+PY
+)" || exit 0
+  [ -n "$collection_base" ] || exit 0
   # A selected project shadow DB is the only writable index for this project.
   # Invalid pointers fail closed instead of falling back to the user's DB.
   local selected_qmd_env
@@ -1144,7 +1164,7 @@ run_update() {
 
   # 2. Get collections and paths via resolve-only logic
   local resolved
-  resolved=$(echo "$config_json" | bash "$0" --resolve-only --cwd "$workdir" 2>/dev/null || echo '{"refused":true}')
+  resolved=$(echo "$config_json" | bash "$0" --resolve-only --cwd "$collection_base" 2>/dev/null || echo '{"refused":true}')
 
   refused=$(echo "$resolved" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("refused"))' 2>/dev/null || echo "")
   if [ "$refused" = "True" ]; then
@@ -1164,8 +1184,24 @@ run_update() {
       exit 0
     fi
   fi
+  # Missing roots were removed only after an exact owner check above. Retire
+  # their registry rows after QMD and settings both reflect the deletion;
+  # otherwise all future shared updates would fail the enrollment check.
+  if ! python3 "$_QMD_CORE_DIR/qmd_route.py" retire-pruned "$collection_base" >/dev/null 2>&1; then
+    log "ABORT: pruned shared collection did not settle"
+    exit 0
+  fi
+  # Reserve all remaining paths before source-role removes, adds, or update.
+  if ! python3 "$_QMD_CORE_DIR/qmd_route.py" register-config "$collection_base" >/dev/null 2>&1; then
+    log "ABORT: shared QMD collection ownership conflict"
+    exit 0
+  fi
+  if ! python3 "$_QMD_CORE_DIR/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1; then
+    log "ABORT: registered shared collection withdrew or changed; reconciliation required"
+    exit 0
+  fi
   config_json=$(load_config_json "$workdir")
-  resolved=$(echo "$config_json" | bash "$0" --resolve-only --cwd "$workdir" 2>/dev/null || echo '{"refused":true}')
+  resolved=$(echo "$config_json" | bash "$0" --resolve-only --cwd "$collection_base" 2>/dev/null || echo '{"refused":true}')
   refused=$(echo "$resolved" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("refused"))' 2>/dev/null || echo "")
   if [ "$refused" = "True" ]; then
     log "ABORT: resolve-only refused path '$workdir' after prune"
@@ -1204,15 +1240,15 @@ run_update() {
   # 하고, 둘을 떼어 놓으면 그 사이 실패가 컬렉션을 지운 채로 남긴다 — 함수 주석 참조).
   # 그래도 add 루프 **앞**에 둔다: 여기서 등록에 성공하면 아래 루프는 `already exists`
   # 로 no-op 이고, 실패했으면 아래 루프가 같은 세션에 한 번 더 시도하는 복구 기회다.
-  reconcile_registry_paths "$entries_tsv" "$workdir"
+  reconcile_registry_paths "$entries_tsv" "$collection_base"
 
   collections_ok=1
   while read -r name path; do
     [ -z "$name" ] && continue
-    # Resolve relative path against workdir
+    # Resolve relative collection paths against their settings owner.
     local full_path="$path"
     if [[ "$path" != /* ]]; then
-      full_path="$workdir/$path"
+      full_path="$collection_base/$path"
     fi
     log "ADD COLLECTION: name=$name path=$full_path"
     retry qmd collection add "$full_path" --name "$name" || collections_ok=0
@@ -1233,9 +1269,10 @@ run_update() {
   fi
 
   # 4. update and embed
-  if [ "$collections_ok" = 1 ] && retry qmd update; then
+  if [ "$collections_ok" = 1 ] && python3 "$_QMD_CORE_DIR/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1 && retry qmd update; then
     rm -f "$STATUS"
     log "END rc=0"
+    report_search_readiness lexical_ready
     
     # EMBED 락: index_worker.sh의 EMBED_LOCK(QMD_EMBED_LOCKDIR)과 기본값 공유 → 직렬화.
     EMBED_LOCK="${QMD_EMBED_LOCKDIR:-$_QMD_LOCK_BASE/qmd-embed.lock.d}"
@@ -1256,10 +1293,15 @@ run_update() {
     elif ! mkdir "$EMBED_LOCK" 2>/dev/null; then
       log "EMBED: already running, skip"
     else
-      LOG="$LOG" EMBED_LOCK="$EMBED_LOCK" QMD_BIN_RESOLVED="$qmd_bin" QMD_DAEMON_PORT="${QMD_DAEMON_PORT:-8483}" QMD_BACKEND_MANAGER="${QMD_BACKEND_MANAGER:-}" QMD_AUTO_CYCLE_ENABLED="$auto_cycle_enabled" WORKDIR="$workdir" CORE_DIR="$(dirname "$0")" nohup bash -c '
+      LOG="$LOG" EMBED_LOCK="$EMBED_LOCK" QMD_BIN_RESOLVED="$qmd_bin" QMD_DAEMON_PORT="${QMD_DAEMON_PORT:-8484}" QMD_BACKEND_MANAGER="${QMD_BACKEND_MANAGER:-}" QMD_AUTO_CYCLE_ENABLED="$auto_cycle_enabled" WORKDIR="$workdir" CORE_DIR="$(dirname "$0")" nohup bash -c '
         echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
         trap "rm -f \"$EMBED_LOCK/pid\" 2>/dev/null; rmdir \"$EMBED_LOCK\" 2>/dev/null" EXIT
-        out=$("$QMD_BIN_RESOLVED" embed 2>&1); embed_rc=$?; printf "%s\n" "$out" >> "$LOG"
+        if python3 "$CORE_DIR/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1; then
+          out=$("$QMD_BIN_RESOLVED" embed 2>&1); embed_rc=$?
+        else
+          out="shared collection enrollment changed before embed"; embed_rc=1
+        fi
+        printf "%s\n" "$out" >> "$LOG"
         if [ -z "${QMD_PROJECT_SHADOW_INDEX:-}" ] && printf "%s" "$out" | grep -qiE "embedded|chunks"; then
           # SIGTERM 으로 graceful shutdown 유도 → 데몬이 SQLite clean close 하며 WAL checkpoint.
           # SIGKILL 강제종료는 clean close 차단 → WAL checkpoint 누락 → vec query 저하.
@@ -1269,6 +1311,27 @@ run_update() {
             printf "[%s] EMBED reload skipped: QMD_BACKEND_MANAGER unavailable\n" "$(date +%H:%M:%S)" >> "$LOG"
           fi
         fi
+        if [ -n "${QMD_UPDATE_HOOK_KEY:-}" ]; then
+          phase=embed_failed; [ "$embed_rc" -eq 0 ] && phase=completed
+          python3 "$CORE_DIR/update_hook_queue.py" readiness "$QMD_UPDATE_HOOK_KEY" "$phase" "$QMD_UPDATE_HOOK_RUN_ID" >> "$LOG" 2>&1 || true
+        fi
+        # A clone/pull has no edit-hook event. This separate persistent scan
+        # runs only under an explicit session_start_source compile trigger.
+        if [ "$embed_rc" -eq 0 ]; then
+          sync_result=$(python3 "$CORE_DIR/sync.py" --session-start --cwd "$WORKDIR" --json 2>>"$LOG" || true)
+          printf "%s\n" "$sync_result" >> "$LOG"
+          queued=$(printf "%s" "$sync_result" | python3 -c "import json,sys; print(int(json.load(sys.stdin).get(\"compileQueued\") or 0))" 2>/dev/null || echo 0)
+          if [ "$queued" -gt 0 ] && [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
+            bash "$QMD_BACKEND_MANAGER" kick-wiki-compile "$WORKDIR" --flush >> "$LOG" 2>&1 || true
+          fi
+        fi
+        # The exact owner-approved synthetic story has compile.mode=off.
+        # Its local-only source inventory still needs SessionStart detection
+        # after shell/pull edits. The helper rejects every other project and
+        # never sends changed bytes to a teacher without generation proof.
+        reconcile_result=$(QMD_RECONCILE_CWD="$WORKDIR" python3 "$CORE_DIR/context_learning_synthetic_reconcile.py" 2>> "$LOG" || true)
+        printf "%s\n" "$reconcile_result" >> "$LOG"
+        reconcile_queued=$(printf "%s" "$reconcile_result" | python3 -c "import json,sys; print(int(json.load(sys.stdin).get(\"wikiCollectionsQueued\") or 0))" 2>/dev/null || echo 0)
         # Current-corpus cycles must see the index after update AND embed.
         # The policy helper itself skips projects without explicit opt-in.
         if [ "$embed_rc" -eq 0 ] && [ "$QMD_AUTO_CYCLE_ENABLED" = 1 ]; then
@@ -1286,12 +1349,29 @@ run_update() {
         # 기다린 뒤 성공한다. 새 스케줄러를 만들지 않고 기존 배수 경로(3단계 dedup scan과
         # 같은 자리)를 재사용한다.
         python3 "$CORE_DIR/orphan_reclaim.py" --cwd "$WORKDIR" --qmd-bin "$QMD_BIN_RESOLVED" >> "$LOG" 2>&1 || true
+        # The synthetic archive may have queued a wiki deactivation after the
+        # QMD update. Finish embed and maintenance, release their
+        # lock, then wake the durable index queue for a same-session drain.
+        if [ "${reconcile_queued:-0}" -gt 0 ] && [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
+          # Disarm our EXIT trap before a new worker can recreate this path;
+          # otherwise the old child could remove that new workers lock.
+          trap - EXIT
+          if [ "$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+            rm -f "$EMBED_LOCK/pid" 2>/dev/null || true
+            if rmdir "$EMBED_LOCK" 2>/dev/null; then
+              bash "$QMD_BACKEND_MANAGER" kick-index >> "$LOG" 2>&1 || true
+            else
+              printf "[%s] synthetic index kick deferred: embed lock release failed\n" "$(date +%H:%M:%S)" >> "$LOG"
+            fi
+          fi
+        fi
       ' >/dev/null 2>&1 &
       log "EMBED: started in background (pid=$!)"
     fi
   else
     write_failure_status "qmd update" "$LAST_OUT"
     log "END rc=1 - status written to $STATUS"
+    report_search_readiness failed
   fi
 
   # 소스 소실 스캔(로드맵 3단계). 여기(worker 경로)인 이유:
@@ -1975,6 +2055,11 @@ PY
     # Current-corpus work launches in the embed child after QMD update/embed.
     python3 "$(dirname "$0")/context_learning_auto.py" launch-historical "$workdir" >/dev/null 2>&1 || true
   fi
+  # Resume the owner-private shared local queue after a restart. This launcher
+  # never calls an external teacher; projects must explicitly enroll.
+  if [[ "$config_json" == *'"sharedLearning"'* ]]; then
+    python3 "$(dirname "$0")/context_learning_shared.py" launch-project "$workdir" >/dev/null 2>&1 || true
+  fi
 
   # 테스트 전용 가드. worker 는 **detached** 라 호출자 반환 뒤에도 살아 있고, 스크립트를
   # 처음부터 재실행하므로 선두의 `mkdir -p "$_QMD_CACHE_DIR"` 가 **테스트가 이미 지운**
@@ -1992,6 +2077,13 @@ PY
   fi
   # main()이 이미 계산한 STATUS/STATUS_WORKDIR을 worker에 env로 넘겨 재계산을
   # 없앤다(resolve_workdir_meta의 QMD_UPDATE_STATUS+QMD_CANONICAL_WORKDIR 단락).
+  # update_hook_queue 자체가 이미 detached worker다. 여기서 다시 fork하면
+  # queue의 성공 판정이 실제 QMD update보다 먼저 달려 job을 잘못 ACK한다.
+  if [ "${QMD_UPDATE_HOOK_WAIT:-}" = 1 ]; then
+    QMD_UPDATE_STATUS="$STATUS" QMD_CANONICAL_WORKDIR="$STATUS_WORKDIR" \
+      bash "$0" --worker "$workdir" >>"$LOG" 2>&1
+    exit $?
+  fi
   QMD_UPDATE_STATUS="$STATUS" QMD_CANONICAL_WORKDIR="$STATUS_WORKDIR" \
     nohup bash "$0" --worker "$workdir" </dev/null >>"$LOG" 2>&1 &
   exit 0

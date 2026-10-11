@@ -83,6 +83,20 @@ def _setup_allowed(cwd: str) -> bool:
         return False
 
 
+def _scope_allowed(action: str, payload: dict, raw_cwd: Any) -> bool:
+    """Use the core pilot boundary before any Hermes backend side effect."""
+    try:
+        guard = Path(__file__).resolve().parent.parent / 'core' / 'synthetic_invocation_gate.py'
+        event = {**payload, 'cwd': raw_cwd}
+        result = subprocess.run([sys.executable, str(guard), action, '-', payload.get('cwd') or os.getcwd()],
+                                input=json.dumps(event, ensure_ascii=False), text=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                timeout=2.0, env=_env(), check=False)
+        return result.returncode == 0
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
 def _manager_path() -> str:
     return os.environ.get("QMD_BACKEND_MANAGER") or str(_core_path("core", "backend_manager.sh"))
 
@@ -210,12 +224,14 @@ def recall_context(
             return None
         if not _setup_allowed(_cwd(cwd, **kwargs)):
             return None
-        _ensure_background()
         payload = {
             "hook_event_name": "UserPromptSubmit",
             "prompt": prompt,
             "cwd": _cwd(cwd, **kwargs),
         }
+        if not _scope_allowed('recall', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
+            return None
+        _ensure_background()
         proc = _run([sys.executable, str(_core_path("core", "recall.py"))], payload=payload)
         parsed = _json_stdout(proc)
         if not parsed:
@@ -244,11 +260,13 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             return None
         if not _setup_allowed(_cwd(cwd, **kwargs)):
             return None
+        payload = {"hook_event_name": "SessionStart", "cwd": _cwd(cwd, **kwargs)}
+        if not _scope_allowed('update', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
+            return None
         manager = _manager_path()
         _run_quiet(["bash", manager, "ensure", "--wait"])
         _run_quiet(["bash", manager, "warm"])
         _run_quiet(["bash", manager, "rotate"])
-        payload = {"hook_event_name": "SessionStart", "cwd": _cwd(cwd, **kwargs)}
         _run(
             ["bash", str(_core_path("core", "update.sh"))],
             payload=payload,
@@ -281,6 +299,8 @@ def pre_edit_gate(
             "tool_input": tool_input,
             "cwd": _cwd(cwd, **kwargs),
         }
+        if not _scope_allowed('gate', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
+            return None
         proc = _run([sys.executable, str(_core_path("core", "preflight_gate.py"))], payload=payload)
         parsed = _json_stdout(proc)
         if not parsed:
@@ -324,6 +344,8 @@ def post_edit_sync(
             "tool_input": tool_input,
             "cwd": _cwd(cwd, **kwargs),
         }
+        if not _scope_allowed('posttool', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
+            return None
         manager = _manager_path()
         payload_cwd = payload["cwd"]
         _run_quiet(["bash", manager, "ensure", "--wait"])

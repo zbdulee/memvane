@@ -10,6 +10,7 @@ test('opt-in live recall uses fifteen complete synthetic cards and preserves fal
   const report = JSON.parse(raw);
   for (const key of ['liveTop15', 'relevanceOrder', 'semanticZero',
     'timeoutFallback', 'unsupportedRuntimeFallback', 'captureMatchesLivePool',
-    'staleIndexFallback']) assert.equal(report[key], true);
+    'staleIndexFallback', 'sharedWithoutGrantKeepsTopN',
+    'adaptiveWiderCapture', 'overReturnNeverComplete']) assert.equal(report[key], true);
   assert.equal(report.externalCalls, 0);
 });

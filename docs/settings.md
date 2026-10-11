@@ -72,7 +72,7 @@
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
 | `wikiPath` | `".auto-context/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
-| `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. |
+| `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. 새 clone/pull의 SessionStart 자동 감지는 별도 `session_start_source` 동의가 있어야 합니다. |
 | `compile.defaultStatus` | `"generated"` | 새 카드의 status입니다. `generated`·`tentative`만 허용합니다(`verified`를 넣으면 검수를 우회합니다). |
 | `compile.recallVerifiedOnly` | `true` | `true`면 미검수(`generated`·`tentative`) 카드를 recall에 아예 내지 않습니다. |
 | `compile.excludeStatusesFromRecall` | `["discarded","contested"]` | recall에서 제외할 wiki status입니다. |
@@ -934,6 +934,11 @@ jq -c 'select(.event=="qmd_recall_shadow" and .verdict.selected_empty_raw_nonemp
 `triggers`의 `post_sync_source`는 수동 sync가 스냅샷 diff로 찾아낸 변경(`git pull`·
 rebase·외부 편집 — PostToolUse 훅을 타지 않는 경로)을 compile 큐에 넣게 합니다.
 하위호환으로 `post_tool_source`만 있어도 sync 경유 enqueue는 허용됩니다.
+`session_start_source`는 별도 opt-in입니다. 지정하면 SessionStart의 비동기 worker가
+QMD update/embed 후 소스 snapshot을 비교하여 변경된 Markdown을 compile 큐에 넣습니다.
+한 차례에 최대 50개를 큐에 넣고 나머지는 다음 SessionStart에 미루며, 변경이 없는
+반복 실행은 다시 큐에 넣지 않습니다. 이 설정은 host CLI를 통한 wiki 생성과 검수를
+자동으로 시작할 수 있으므로 프로젝트에서 명시적으로 켜야 합니다.
 `post_session_summary`는 **자동 발화 경로가 없습니다**(compact session summary를 훅에
 넘겨주는 host가 없습니다) — 수동 `wiki-compile` skill의 레코드 라벨로만 쓰입니다.
 세션 결론의 자동 수집은 세션 노트를 `raw`/`session`/`source` collection의 `.md`로

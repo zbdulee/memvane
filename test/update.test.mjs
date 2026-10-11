@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { removeTemp, repoTemp, tempCacheDir } from './helpers/temp.mjs';
-import { waitUntil } from './helpers/timing.mjs';
+import { waitUntil, waitUntilAsync } from './helpers/timing.mjs';
 
 // 생성기는 delta-only다(기본값과 같은 키는 쓰지 않는다). 따라서 "writer가 설정을 켰는가"는
 // emit된 키가 아니라 **effective config**(= normalize_config 통과 결과)로 봐야 한다.
@@ -1087,6 +1087,69 @@ test('update core: dedup scanner actually runs inside the embed subshell at runt
     const seen = waitUntil(() => existsSync(dedupLog));
     assert.equal(seen, true, 'wiki_dedup_scan.py did not log within the wait budget; embed subshell wiring likely broken');
   } finally {
+    removeTemp(work);
+  }
+});
+
+test('synthetic SessionStart kick releases its embed lock without deleting the successor lock', async () => {
+  const work = repoTemp('qmd-synthetic-kick-lock');
+  const bin = join(work, 'bin');
+  const fakeHome = join(work, 'fakehome');
+  const lock = join(work, 'embed.lock');
+  const managerLog = join(work, 'manager.log');
+  const hookLog = join(work, 'hook.log');
+  try {
+    mkdirSync(join(work, '.auto-context'), {recursive: true});
+    mkdirSync(join(work, 'docs'), {recursive: true});
+    mkdirSync(bin, {recursive: true});
+    mkdirSync(fakeHome, {recursive: true});
+    writeFileSync(join(work, '.auto-context/settings.json'), JSON.stringify({
+      indexing: true, collections: ['x'], collectionPaths: {x: 'docs'},
+    }));
+    const python = execFileSync('which', ['python3'], {encoding: 'utf8'}).trim();
+    writeFileSync(join(bin, 'python3'), [
+      '#!/bin/sh',
+      'case "$1" in',
+      '  */context_learning_synthetic_reconcile.py) echo \'{"wikiCollectionsQueued":1}\'; exit 0 ;;',
+      'esac',
+      `exec "${python}" "$@"`,
+    ].join('\n'), {mode: 0o755});
+    writeFileSync(join(bin, 'qmd'), [
+      '#!/bin/sh',
+      'case "$1" in embed) echo "0 chunks" ;; esac',
+      'exit 0',
+    ].join('\n'), {mode: 0o755});
+    const manager = join(work, 'manager.sh');
+    writeFileSync(manager, [
+      '#!/bin/sh',
+      '[ "$1" = kick-index ] || exit 0',
+      `[ ! -d "${lock}" ] || { echo busy > "${managerLog}"; exit 1; }`,
+      `mkdir "${lock}" || exit 1`,
+      `echo $$ > "${lock}/pid"`,
+      `echo successor > "${managerLog}"`,
+    ].join('\n'), {mode: 0o755});
+    execFileSync('bash', [join(process.cwd(), 'core/update.sh'), '--worker', work], {
+      encoding: 'utf8', env: {
+        ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: fakeHome,
+        QMD_CACHE_DIR: join(work, 'cache'), QMD_LOCK_BASE: join(work, 'locks'),
+        QMD_HOOK_LOG: hookLog, QMD_EMBED_LOCKDIR: lock,
+        QMD_BACKEND_MANAGER: manager, QMD_SETUP_GUARD_FIXTURE: '1',
+        QMD_SKIP_BACKGROUND_EMBED: '', QMD_SKIP_BACKGROUND_WORKER: '',
+        QMD_RECALL_LOG: '',
+      },
+    });
+    assert.equal(await waitUntilAsync(() => existsSync(managerLog)), true);
+    assert.equal(readFileSync(managerLog, 'utf8').trim(), 'successor');
+    const match = readFileSync(hookLog, 'utf8').match(/EMBED: started in background \(pid=(\d+)\)/);
+    assert.ok(match, 'detached child pid must be recorded');
+    const finished = await waitUntilAsync(() => {
+      try { process.kill(Number(match[1]), 0); return false; } catch { return true; }
+    });
+    assert.equal(finished, true, 'detached child did not exit');
+    assert.equal(existsSync(join(lock, 'pid')), true,
+      'old child EXIT trap removed its successor lock');
+  } finally {
+    rmSync(lock, {recursive: true, force: true});
     removeTemp(work);
   }
 });

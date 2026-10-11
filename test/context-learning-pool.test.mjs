@@ -26,7 +26,7 @@ for host in ('claude','codex'):
  settings=root/'.auto-context'/'settings.json'
  def run(enabled=True,raw=None,prompt="OAuth access review"):
   settings.write_text(json.dumps(dict(config,contextLearning={'capture':enabled,'stateRoot':str(state)})))
-  env=dict(os.environ,QMD_ENGINE=host,QMD_RECALL_LOG='',QMD_QUERY_FIXTURE=str(fixture),QMD_QUERY_FIXTURE_RAW=str(raw) if raw else '',PYTHONDONTWRITEBYTECODE='1')
+  env=dict(os.environ,QMD_ENGINE=host,QMD_RECALL_LOG='',QMD_QUERY_FIXTURE=str(fixture),QMD_QUERY_FIXTURE_RAW=str(raw) if raw else '',INDEX_PATH=str(base/'unused-index.sqlite'),PYTHONDONTWRITEBYTECODE='1')
   return subprocess.check_output(['python3','core/recall.py'],input=json.dumps({'prompt':prompt,'cwd':str(root)}).encode(),env=env)
  before=run(False);assert run()==before
  ns=state/digest(str(root))

@@ -69,8 +69,10 @@ def main():
     reason = result.get("reason")
     # pending이 아니면(동의/거절/risky/정상) 통과. pending이어도 skip이면 통과.
     if reason != "pending":
+        _snapshot_allowed_edit(payload)
         return 0
     if has_skip_marker(cwd):
+        _snapshot_allowed_edit(payload)
         return 0
     hint = " (collections가 비어 pending입니다)" if not config.get("collections") else ""
     msg = (f"⛔ qmd-auto-context: 이 프로젝트는 인덱싱 미설정(pending){hint}이라 편집이 보류됩니다. "
@@ -82,6 +84,15 @@ def main():
         "permissionDecisionReason": msg,
     }}, ensure_ascii=False))
     return 0
+
+
+def _snapshot_allowed_edit(payload):
+    """Only an allowed real host edit may create a deletion preimage."""
+    try:
+        from edit_context import before
+        before(payload)
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+        pass  # Ordinary projects and unsupported edit payloads stay unchanged.
 
 
 if __name__ == "__main__":

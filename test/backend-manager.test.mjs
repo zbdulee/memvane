@@ -215,6 +215,43 @@ test("start ignores a live pid file that is not the qmd daemon", () => {
   }
 });
 
+test("occupied port without managed PID proof preserves the PID file on start and reload", () => {
+  const home = mkdtempSync(join(tmpdir(), "qmd-foreign-port-"));
+  try {
+    makeFakeQmd(home);
+    const bin = join(home, "mock-bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "lsof"), "#!/bin/sh\necho 999999\n", { mode: 0o755 });
+    writeFileSync(join(bin, "pgrep"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    writeFileSync(join(bin, "curl"), "#!/bin/sh\nexit 7\n", { mode: 0o755 });
+    const marker = join(home, "daemon-started");
+    const daemon = join(home, "daemon.sh");
+    writeFileSync(daemon, `#!/bin/sh\necho started > "${marker}"\n`, { mode: 0o755 });
+    const pidFile = join(home, "daemon.pid");
+    writeFileSync(pidFile, "7654321\n");
+    const env = {
+      HOME: home, PATH: `${bin}:/usr/bin:/bin`, QMD_SETUP_GUARD_FIXTURE: "1",
+      QMD_BACKEND_STATE_DIR: home, QMD_DAEMON_PID: pidFile,
+      QMD_DAEMON_SCRIPT: daemon, QMD_DAEMON_PORT: "19486",
+      QMD_BACKEND_LOG: join(home, "manager.log"),
+    };
+    assert.equal(run(["start"], env).status, 1);
+    assert.equal(readFileSync(pidFile, "utf8"), "7654321\n");
+    assert.equal(existsSync(marker), false);
+    assert.equal(run(["reload"], env).status, 1);
+    assert.equal(readFileSync(pidFile, "utf8"), "7654321\n");
+    assert.equal(existsSync(marker), false);
+    assert.match(readFileSync(join(home, "manager.log"), "utf8"),
+      /port occupied without managed PID proof/);
+    writeFileSync(join(bin, "lsof"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    assert.equal(run(["start"], env).status, 0);
+    waitUntil(() => existsSync(marker));
+    assert.equal(existsSync(marker), true, "free port should permit normal start");
+  } finally {
+    removeTemp(home);
+  }
+});
+
 test("concurrent start calls do not double-start a transitioning daemon", () => {
   const home = mkdtempSync(join(tmpdir(), "qmd-start-race-"));
   try {

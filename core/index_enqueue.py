@@ -2,6 +2,8 @@
 import sys
 import os
 import json
+import re
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
@@ -22,6 +24,28 @@ def enqueue(selected, *, project_root=None):
         dirty_queue.enqueue_project_collections(project_root, selected)
 
 
+def _synthetic_receipt(project_root, selected):
+    """Private proof for the bounded launcher that enqueue actually happened."""
+    raw = os.environ.get("QMD_SYNTHETIC_INDEX_RECEIPT")
+    if not raw:
+        return
+    path = Path(raw)
+    parent = path.parent
+    if (not path.is_absolute() or not re.fullmatch(r"receipt-[0-9a-f]{32}\.json", path.name)
+            or not parent.name.startswith("qmd-synthetic-hook-")
+            or parent.parent.resolve() != Path(tempfile.gettempdir()).resolve()
+            or parent.is_symlink() or not parent.is_dir()
+            or parent.stat().st_uid != os.getuid() or parent.stat().st_mode & 0o077
+            or path.exists() or path.is_symlink()):
+        raise ValueError("invalid_synthetic_index_receipt")
+    # An exclusive file in the launcher's owner-only temporary directory is
+    # never an ordinary hook output or a success indicator for unrelated edits.
+    with path.open("x", encoding="utf8") as output:
+        os.chmod(path, 0o600)
+        json.dump({"projectRoot": str(project_root), "selected": selected}, output,
+                  sort_keys=True, separators=(",", ":"))
+
+
 def main():
     if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
         return 0
@@ -35,12 +59,26 @@ def main():
     if payload.get("hook_event_name") not in (None, "PostToolUse", "AfterTool"):
         return 0
     cwd = payload.get("cwd") or os.getcwd()
-    config = qmd_config.load_project_config(cwd)
+    found = qmd_config.find_project_config(cwd)
+    config = found["config"]
+    project_root = found["projectRoot"]
+    paths = posttool.edited_paths(payload)
+    from context_learning.synthetic_scope import invocation_in_generated_story
+    if not invocation_in_generated_story(found, payload.get("cwd"), paths):
+        return 0
     if not config.get("collections"):
         return 0
     if not qmd_config.event_enabled(config, "postToolUse"):
         return 0
-    selected = select_collections(posttool.edited_paths(payload), cwd, config)
+    # Host edit paths are relative to the tool's cwd, while collectionPaths
+    # belong to the discovered project root. Resolve edits first and keep the
+    # canonical root for collection ownership and the durable queue key.
+    try:
+        edit_cwd = Path(cwd).resolve(strict=True)
+        absolute_paths = [str((edit_cwd / path).resolve()) for path in paths]
+    except (OSError, ValueError, TypeError):
+        return 0
+    selected = select_collections(absolute_paths, project_root, config)
     if not selected:
         return 0
     # dirty 큐는 **인덱싱 큐**다. role `source`는 qmd에 등록되지 않으므로 넣으면
@@ -56,8 +94,8 @@ def main():
     if not selected:
         return 0
     try:
-        root = qmd_config.find_project_config(cwd).get('projectRoot', cwd)
-        enqueue(selected, project_root=root)
+        enqueue(selected, project_root=project_root)
+        _synthetic_receipt(project_root, selected)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         # Do not emit a two-column queue item when this project's selected
         # pointer is damaged; that could route its external collection globally.

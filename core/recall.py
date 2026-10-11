@@ -23,8 +23,10 @@ import yaml_scalars
 import hook_budget
 import qmd_route
 import qmd_project_query
+import qmd_scope
+import qmd_shared_store
 
-DEFAULT_DAEMON_URL = "http://localhost:8483"
+DEFAULT_DAEMON_URL = "http://localhost:8484"
 DEFAULT_HEALTH_TIMEOUT = 2.0
 QUERY_TIMEOUT = 5.0
 
@@ -132,6 +134,69 @@ def resolve_wiki_result_path(
         if candidate.is_file():
             return candidate
     return None
+
+
+def story_topical_namespace(result: dict, story_root: Path | None) -> bool:
+    """Recognize protected topical URIs even when the story policy is denied."""
+    if story_root is None:
+        return False
+    import topical_story_scope
+    raw = result.get('file', '')
+    if not isinstance(raw, str):
+        return False
+    body = raw[len('qmd://'):] if raw.startswith('qmd://') else raw
+    prefix = topical_story_scope.WIKI_COLLECTION + '/topical-v2/'
+    if body.startswith(prefix):
+        relative = body[len(prefix):].split('/')
+    else:
+        if not Path(body).is_absolute():
+            return False
+        try:
+            relative = Path(body).resolve().relative_to(
+                story_root / '.auto-context/wiki/topical-v2').parts
+        except (OSError, ValueError):
+            return False
+    return (len(relative) == 2
+            and re.fullmatch(r'[0-9a-f]{24}', relative[0]) is not None
+            and re.fullmatch(r'[a-z0-9][a-z0-9-]*\.md', relative[1]) is not None)
+
+
+def deny_story_topical_result(result: dict) -> None:
+    """Erase untrusted daemon annotations before hard-filtering a denied card."""
+    import topical_story_scope
+    for key in tuple(result):
+        if key.startswith('_wiki_'):
+            result.pop(key)
+    result['_collection'] = topical_story_scope.WIKI_COLLECTION
+    result['_wiki_status'] = 'scope_denied'
+    result['_wiki_trusted'] = False
+    result['_wiki_scope_denied'] = True
+
+
+def topical_source_root(result: dict, config: dict, cwd: str,
+                        roots: tuple[Path, Path], story_root: Path | None) -> Path:
+    """Resolve only this exact story's topical cards against story-relative sources."""
+    project_root, wiki_root = roots
+    if story_root is None:
+        return project_root
+    import topical_story_scope
+    collection = qmd_uri_to_collection(result.get('file', ''))
+    if (collection != topical_story_scope.WIKI_COLLECTION or
+            result.get('_collection', collection) != collection or
+            wiki_root != (story_root / '.auto-context/wiki').resolve()):
+        return project_root
+    card_path = resolve_wiki_result_path(result, config, cwd, roots)
+    if card_path is None:
+        return project_root
+    try:
+        relative = card_path.relative_to(wiki_root / 'topical-v2')
+    except ValueError:
+        return project_root
+    if (len(relative.parts) != 2 or
+            re.fullmatch(r'[0-9a-f]{24}', relative.parts[0]) is None or
+            re.fullmatch(r'[a-z0-9][a-z0-9-]*\.md', relative.parts[1]) is None):
+        return project_root
+    return story_root
 
 # Static automatic trust vocabulary.  A status string alone is insufficient;
 # ``is_auto_trusted_card`` also requires qmd ownership and source revisions.
@@ -891,7 +956,8 @@ def _apply_match_position(meta: dict, text: str, body_start: int, result: dict,
 def read_wiki_meta(result: dict, config: dict, cwd: str, summary_max_chars: int = DEFAULT_INJECT_SUMMARY_MAX_CHARS,
                    roots: tuple[Path, Path] | None = None,
                    source_opts: tuple[int, list[Path]] | None = None,
-                   pending_cutoffs: dict[str, int | None] | None = None, *, bounded_shadow=False) -> dict:
+                   pending_cutoffs: dict[str, int | None] | None = None, *,
+                   source_root: Path | None = None, bounded_shadow=False) -> dict:
     """Read a wiki result's status, automatic trust, title, and body.
 
     Trust is fail-closed: only verified qmd-owned cards with non-empty compiler
@@ -919,7 +985,7 @@ def read_wiki_meta(result: dict, config: dict, cwd: str, summary_max_chars: int 
     if roots is None:
         # 여기서 한 번만 계산한다(예전엔 resolve_wiki_result_path가 카드마다 재탐색했다).
         roots = wiki_roots(config, cwd)
-    project_root = roots[0]
+    project_root = source_root if source_root is not None else roots[0]
     if source_opts is None:
         source_opts = source_inject_opts(config)
     path = resolve_wiki_result_path(result, config, cwd, roots)
@@ -1041,14 +1107,16 @@ def read_wiki_meta(result: dict, config: dict, cwd: str, summary_max_chars: int 
 def annotate_wiki_result(result: dict, config: dict, cwd: str, summary_max_chars: int,
                          roots: tuple[Path, Path] | None = None,
                          source_opts: tuple[int, list[Path]] | None = None,
-                         pending_cutoffs: dict[str, int | None] | None = None, *, bounded_shadow=False) -> None:
+                         pending_cutoffs: dict[str, int | None] | None = None, *,
+                         source_root: Path | None = None, bounded_shadow=False) -> None:
     """wiki role 결과에 `_wiki_*` 메타를 붙인다(카드 파일 읽기 1회).
 
     본문·title·표시 경로는 wiki role 결과에만 붙으므로, raw 결과에는 어떤 경우에도
     본문이 실리지 않는다(wikiOnly 경계 유지).
     """
     meta = read_wiki_meta(
-        result, config, cwd, summary_max_chars, roots, source_opts, pending_cutoffs, bounded_shadow=bounded_shadow)
+        result, config, cwd, summary_max_chars, roots, source_opts, pending_cutoffs,
+        source_root=source_root, bounded_shadow=bounded_shadow)
     result["_wiki_status"] = meta["status"]
     result["_wiki_trusted"] = meta["trusted"]
     result["_wiki_created_by"] = meta["createdBy"]
@@ -2040,11 +2108,37 @@ def main():
     found_config = qmd_config.find_project_config(cwd)
     config = found_config["config"]
     set_log_project_root(found_config.get("projectRoot"))
+    from context_learning.synthetic_scope import invocation_in_generated_story
+    if not invocation_in_generated_story(found_config, payload.get("cwd")):
+        log_recall_event(log_path, "invocation_outside_generated_story")
+        return 0
     if not qmd_config.event_enabled(config, payload.get("hook_event_name", "UserPromptSubmit")):
         log_recall_event(log_path, "event_disabled")
         return 0
-    live_selection = config.get('contextLearning', {}).get('liveSelection') is True
-    primary_limit = 15 if live_selection else DAEMON_QUERY_LIMIT
+    shared_options = config.get('sharedLearning', {})
+    shared_trial = (shared_options.get('enabled') is True
+                    and shared_options.get('trialSelection') is True)
+    internal_edit = (os.environ.get('QMD_EDIT_INTERNAL') == '1'
+                     and payload.get('context_origin') == 'tool_edit')
+    deferred_replay = (internal_edit and
+                       os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') == '1')
+    live_selection = (config.get('contextLearning', {}).get('liveSelection') is True
+                      or shared_trial)
+    # Only the new shared trial uses resource-dependent pool sizing. Existing
+    # local live selection and the 24-hour autoCycle retain their old bounds.
+    live_plan = None
+    if shared_trial:
+        from context_learning.adaptive_pool import plan as plan_live_pool
+        live_plan = plan_live_pool(
+            prompt, hook_budget.deadline(), edit_view=internal_edit,
+            rerank_target_seconds=shared_options.get('rerankTargetSeconds', 1.0))
+    primary_limit = ((live_plan['requested'] or DAEMON_QUERY_LIMIT) if shared_trial
+                     else 15 if live_selection else DAEMON_QUERY_LIMIT)
+    if deferred_replay:
+        # Search deeper to discover the newly published source-bound cards,
+        # then apply the registered-card filter before selection and capture.
+        # Thirty is the existing experiment candidate contract maximum.
+        primary_limit = 30
     
     # Extract keywords + identifiers(정확 토큰) + lexical terms.
     # EP 게이팅과 조립 순서는 keywords.build_lexical_terms가 SSOT다 — CLI(main)와
@@ -2152,6 +2246,17 @@ def main():
         log_recall_event(log_path, "project_index_invalid")
         return 0
     project_index = qmd_paths if qmd_paths['selected'] else None
+    shared_index = qmd_paths.get('shared') is True
+    if shared_index:
+        try:
+            owned = qmd_shared_store.owned_collections(
+                found_config['projectRoot'], config)
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            log_recall_event(log_path, 'collection_scope_unavailable')
+            return 0
+        if not set(collections).issubset(owned):
+            log_recall_event(log_path, 'collection_scope_unavailable')
+            return 0
 
     if fixture_path:
         results = load_fixture(fixture_path)
@@ -2257,10 +2362,18 @@ def main():
             log_recall_event(log_path, "query_failed", daemon=daemon_url)
             return 0
 
+    if shared_index:
+        results = qmd_scope.scoped_hits(results, found_config['projectRoot'],
+                                       config, set(queried_collections),
+                                       qmd_paths['INDEX_PATH'])
+
     # The daemon's requested limit is not a trust boundary.  Enforce the
     # primary phase bound locally before any wiki card annotation or hashing.
     learning_primary_unbounded = results if fixture_path or len(results) >= 30 else None
-    learning_primary_returned = min(len(results), primary_limit) if live_selection else len(results)
+    # Preserve the actual daemon/fixture count. A response beyond the
+    # requested bound is evidence of incomplete assessment, not a smaller
+    # truthful pool merely because injection itself is locally sliced.
+    learning_primary_returned = len(results)
     results = results[:primary_limit]
 
     # Log raw score observation if requested (log_path read once near the top)
@@ -2280,11 +2393,32 @@ def main():
     # project_root / wiki_root는 한 recall 호출 안에서 불변이다 — 1회만 계산해 재사용한다
         # (카드마다 find_project_config 재탐색이 52ms/장 → 8장 424ms였다).
     card_roots = wiki_roots(config, cwd)
+    # Identify the protected namespace from the configured novel owner, not
+    # from cwd: a parent-root turn must not revive a story card via a
+    # same-content parent file if the story scope is unavailable.
+    from context_learning.synthetic_scope import NOVEL_ROOT
+    from context_learning.synthetic_experiment import story_for
+    protected_story = (story_for(card_roots[0]).resolve()
+                       if card_roots[0] == NOVEL_ROOT.resolve() else None)
+    # Topical worker evidence is relative to the one opted-in synthetic story,
+    # while the shared QMD settings live at its parent. Validate that exact
+    # scope once; ordinary wiki cards retain their parent-relative behavior.
+    story_source_root = None
+    candidate_story = None
+    try:
+        import topical_story_scope
+        candidate_story = topical_story_scope.story_for_cwd(cwd)
+        if candidate_story is not None:
+            topical_story_scope.read(candidate_story)
+            story_source_root = candidate_story
+    except (OSError, ValueError):
+        pass
     # Pending metadata is project-local and immutable for this one recall
     # decision.  Read it once; per-card ledger reads would make the blocking
     # hook scale with candidate count and could observe mixed event snapshots.
     card_pending_cutoffs = pending_refresh_cutoffs(card_roots[0])
-    card_pending_unknown = card_pending_cutoffs is None
+    story_pending_cutoffs = (pending_refresh_cutoffs(story_source_root)
+                             if story_source_root is not None else None)
     # 원문 경로 주입 예산(카드당 상한 + allowRoots). 호출당 1회 계산해 카드마다 재사용한다.
     # 로그가 켜져 있으면 상한 0에서도 분류만 돌린다(cards_all_sources_missing 유지).
     card_source_opts = source_inject_opts(config, observe=bool(log_path))
@@ -2315,13 +2449,24 @@ def main():
                 collection_guess = qmd_uri_to_collection(result.get("file", ""))
                 if collection_guess:
                     result["_collection"] = collection_guess
+            if (story_topical_namespace(result, protected_story)
+                    and (story_source_root is None
+                         or result.get("_collection") != topical_story_scope.WIKI_COLLECTION)):
+                deny_story_topical_result(result)
+                annotated_cards.append(result)
+                continue
             if not qmd_config.is_wiki_collection(roles_map, result.get("_collection", "")):
                 continue
             if not worth_annotating(result):
                 continue
+            source_root = topical_source_root(result, config, cwd, card_roots,
+                                              story_source_root)
+            cutoffs = (story_pending_cutoffs if source_root == story_source_root
+                       and story_source_root is not None else card_pending_cutoffs)
             annotate_wiki_result(
                 result, config, cwd, summary_max_chars, card_roots,
-                card_source_opts, card_pending_cutoffs, bounded_shadow=bounded_shadow)
+                card_source_opts, cutoffs, source_root=source_root,
+                bounded_shadow=bounded_shadow)
             annotated_cards.append(result)
 
     annotate_all(results)
@@ -2379,6 +2524,8 @@ def main():
         통째로 0건이 됐다. 자격 판정을 전 후보에 대해 따로 계산해 두면 cutoff 밖에서
         eligible 1건을 구제(rescue)할 수 있다.
         """
+        if r.get('_wiki_scope_denied') is True:
+            return "unverified"
         if is_wiki_meta_noise(r, config):
             # Drop wiki metadata files (index.md/log.md) -- aggregate noise.
             return "skip"
@@ -2509,7 +2656,14 @@ def main():
         return freshness_cache[cache_key]
 
     def card_freshness(result: dict, *, snapshotter=None) -> str:
-        if card_pending_unknown:
+        if (story_topical_namespace(result, protected_story)
+                and story_source_root is None):
+            return wiki_freshness.UNKNOWN
+        source_root = topical_source_root(result, config, cwd, card_roots,
+                                          story_source_root)
+        cutoffs = (story_pending_cutoffs if source_root == story_source_root
+                   and story_source_root is not None else card_pending_cutoffs)
+        if cutoffs is None:
             return wiki_freshness.UNKNOWN
         revisions = result.get("_wiki_source_revisions")
         if (
@@ -2531,7 +2685,7 @@ def main():
                 if cutoff > normalized["mtimeNs"]:
                     return wiki_freshness.STALE
             resolved, reason = resolve_existing_source(
-                normalized["path"], card_roots[0], freshness_allow_roots)
+                normalized["path"], source_root, freshness_allow_roots)
             if resolved is None:
                 return wiki_freshness.STALE if reason == "missing" else wiki_freshness.UNKNOWN
             current = (snapshotter or current_snapshot_cached)(resolved)
@@ -2613,10 +2767,14 @@ def main():
             if raw_results is None:
                 log_recall_event(log_path, "query_failed", daemon=daemon_url)
                 return 0
+        if shared_index:
+            raw_results = qmd_scope.scoped_hits(raw_results, found_config['projectRoot'],
+                                                config, set(raw_collections),
+                                                qmd_paths['INDEX_PATH'])
         # Raw backfill is a separate phase with its own local daemon bound.  It
         # is never source-hashed, but an over-return must not expand injection.
         learning_raw_unbounded = raw_results if fixture_path or len(raw_results) >= 30 else None
-        learning_raw_returned = min(len(raw_results), primary_limit) if live_selection else len(raw_results)
+        learning_raw_returned = len(raw_results)
         raw_results = raw_results[:primary_limit]
         annotate_all(raw_results)
         if learning_phases:
@@ -2647,8 +2805,27 @@ def main():
         top_n_eligible_count = len(filtered_results)
         primary_freshness_drops_before_fallback = 0
 
-    # The normal path retains topN. An explicitly enabled local selector sees
-    # the same fifteen trusted wiki candidates that optional capture records.
+    if deferred_replay:
+        from context_learning.deferred_edit import allowed_paths, candidate_allowed
+        try:
+            permitted = allowed_paths(found_config['projectRoot'],
+                                      payload['edit_event']['ticket_id'])
+        except (OSError, ValueError, TypeError, KeyError):
+            permitted = set()
+        def registered_hit(hit):
+            return candidate_allowed(str(hit.get('file', '')).removeprefix('qmd://'),
+                                     permitted)
+        filtered_results = [hit for hit in filtered_results if registered_hit(hit)]
+        for phase in learning_phases:
+            phase['results'] = [hit for hit in phase['results'] if registered_hit(hit)]
+            if phase.get('unbounded_results') is not None:
+                phase['unbounded_results'] = [hit for hit in phase['unbounded_results']
+                                              if registered_hit(hit)]
+            phase['returned_count'] = len(phase['results'])
+        top_n_eligible_count = len(filtered_results)
+
+    # The normal path retains topN. The local selector sees the exact bounded
+    # QMD pool that optional capture records, with no synthetic padding.
     # Any missing/invalid local prerequisite restores the bounded QMD choice.
     final_results = filtered_results[:min(top_n, 3) if live_selection else top_n]
     live_reason = 'disabled'
@@ -2657,16 +2834,30 @@ def main():
         candidate_count = min(len(filtered_results), primary_limit)
         resources = {}
         current_corpus = None
+        model_rows = []
+        work_estimate = {}
         try:
             from context_learning.corpus import snapshot as corpus_snapshot
             from context_learning.live_select import choose
             from context_learning.seam import _private_state, _snapshot
             state = _private_state(config, card_roots[0])
+            shared_state = None
+            if shared_trial:
+                from context_learning.shared import _current_config, _policy, _safe_root
+                shared_state = _safe_root(config, card_roots[0])
+                if shared_state is not None:
+                    _policy(shared_state)
+                    if _current_config(shared_state, card_roots[0]) is None:
+                        shared_state = None
             current_corpus = corpus_snapshot(card_roots[0], config, qmd_paths=qmd_paths)
             indexed_hashes = ({(collection, relative): revision
                 for collection, relative, revision in current_corpus['material']['activeDocuments']}
                 if current_corpus else {})
-            if state is None:
+            if shared_trial and live_plan['requested'] == 0:
+                live_reason = live_plan['reason']
+            elif shared_trial and shared_state is None:
+                live_reason = 'shared_state_unavailable'
+            elif state is None and shared_state is None:
                 live_reason = 'private_state_unavailable'
             elif not filtered_results:
                 live_reason = 'no_candidates'
@@ -2689,19 +2880,60 @@ def main():
                     model_rows.append({'id': hit['file'].removeprefix('qmd://'),
                                        'revision_sha256': revision['sha256'],
                                        'source_text': content.decode('utf8')})
+                if shared_trial:
+                    from context_learning.adaptive_pool import actual_work
+                    from context_learning.compact_input import derive
+                    bodies = [derive(row['source_text'], row['revision_sha256'])['body_text']
+                              for row in model_rows]
+                    work_estimate = actual_work(prompt, bodies,
+                        edit_view=internal_edit,
+                        rerank_target_seconds=shared_options.get('rerankTargetSeconds', 1.0))
+                    if not work_estimate['all_pairs_fit_estimate']:
+                        raise ValueError('input_window_unavailable')
+                    if (internal_edit and
+                            not work_estimate['within_rerank_target_estimate']):
+                        # Preserve the complete captured QMD pool. Scoring a
+                        # shorter subset would make applied inference differ
+                        # from the gold/training candidate view.
+                        raise ValueError('responsiveness_deferred')
+                selection_kwargs = {
+                    'corpus_fingerprint': current_corpus['fingerprint'] if current_corpus else None,
+                    'deadline': hook_budget.deadline()}
+                if shared_state is not None:
+                    from context_learning.shared import trial_eligible
+                    if not trial_eligible(shared_state, deadline=hook_budget.deadline()):
+                        raise ValueError('shared_trial_not_eligible')
+                    selection_kwargs['pointer_name'] = 'experimental-checkpoint.json'
                 selected_ids, live_reason, resources = choose(
-                    state, prompt, model_rows,
-                    corpus_fingerprint=current_corpus['fingerprint'] if current_corpus else None,
-                    deadline=hook_budget.deadline())
+                    shared_state if shared_state is not None else state,
+                    prompt, model_rows, **selection_kwargs)
                 if selected_ids is not None:
                     by_id = {r['file'].removeprefix('qmd://'): r
                              for r in filtered_results[:primary_limit]}
                     final_results = [by_id[cid] for cid in selected_ids]
                     live_chose_zero = not selected_ids
-        except (OSError, ValueError, UnicodeError, KeyError, TypeError):
-            live_reason = 'candidate_unavailable'
+        except (OSError, ValueError, UnicodeError, KeyError, TypeError) as exc:
+            live_reason = (str(exc) if str(exc) in
+                           ('input_window_unavailable', 'responsiveness_deferred')
+                           else 'candidate_unavailable')
+        if shared_trial and live_reason != 'selected':
+            final_results = filtered_results[:top_n]
         log_recall_event(log_path, live_reason, event_override='qmd_laya_selection',
                          candidates=candidate_count, selected=len(final_results),
+                         requested=live_plan['requested'] if live_plan else primary_limit,
+                         available=candidate_count,
+                         scored=len(model_rows) if live_reason == 'selected' else 0,
+                         completeness=(live_reason == 'selected' and
+                                       learning_primary_returned < primary_limit and
+                                       all(p['returned_count'] < primary_limit
+                                           for p in learning_phases) and
+                                       len(model_rows) == candidate_count),
+                         admission=live_plan['reason'] if live_plan else 'legacy',
+                         input_tokens_estimate=work_estimate.get('input_tokens_estimate'),
+                         input_windows_estimate=work_estimate.get('input_windows_estimate'),
+                         largest_pair_tokens_estimate=work_estimate.get('largest_pair_tokens_estimate'),
+                         estimated_rerank_seconds=work_estimate.get('estimated_rerank_seconds'),
+                         rerank_target_seconds=shared_options.get('rerankTargetSeconds', 1.0),
                          fallback=live_reason != 'selected',
                          candidate_id_hashes=[hashlib.sha256(str(r.get('file', '')).encode()).hexdigest()[:16]
                                               for r in filtered_results[:primary_limit]],
@@ -2709,7 +2941,23 @@ def main():
                                              for r in final_results],
                          corpus_fingerprint=current_corpus['fingerprint'] if current_corpus else None,
                          elapsed_seconds=resources.get('elapsed_seconds'),
-                         observed_peak_rss_kib=resources.get('observed_peak_rss_kib'))
+                         observed_peak_rss_kib=resources.get('observed_peak_rss_kib'),
+                         laya_selector_wall_seconds=resources.get('selector_wall_seconds'),
+                         laya_resident_start_seconds=resources.get('resident_start_seconds'),
+                         laya_queue_wait_seconds=resources.get('queue_wait_seconds'),
+                         laya_rerank_wall_seconds=resources.get('rerank_wall_seconds'),
+                         laya_worker_elapsed_seconds=resources.get('worker_elapsed_seconds'),
+                         laya_tokenize_seconds=resources.get('tokenize_seconds'),
+                         laya_batch_prepare_seconds=resources.get('batch_prepare_seconds'),
+                         laya_forward_seconds=resources.get('forward_seconds'),
+                         laya_total_score_seconds=resources.get('total_seconds'),
+                         laya_microbatches=resources.get('batches'),
+                         laya_scored_pairs=resources.get('pairs'),
+                         laya_planned_microbatches=resources.get('planned_batches'),
+                         laya_planned_pairs=resources.get('planned_pairs'),
+                         laya_process_peak_rss_kib=resources.get('process_peak_rss_kib'),
+                         model_version=resources.get('model_version') if live_reason == 'selected' else None,
+                         model_input_view=resources.get('model_input_view') if live_reason == 'selected' else None)
 
     # ── lex 게이트 ────────────────────────────────────────────────────────────
     # 상세 근거는 위 `lex_probe_searches` 블록 주석 참고. 여기서는 배치 규칙만:
@@ -2948,7 +3196,7 @@ def main():
 
     # Output formatted JSON. shadow 진단보다 "먼저" 출력해, 진단이 어떤 이유로 지연·
     # 실패하더라도 본 recall 결과가 구조적으로 영향받지 않게 한다.
-    if final_results:
+    if final_results or internal_edit:
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
@@ -2961,9 +3209,33 @@ def main():
                     final_results, resolve_prefix_style(config),
                     config.get("collectionRoles", {}),
                     lex_gated=lex_gate_applied,
-                )
+                ) if final_results else ''
             }
         }
+        if internal_edit:
+            indexed_for_edit = ({(collection, relative): revision
+                for collection, relative, revision in current_corpus['material']['activeDocuments']}
+                if live_selection and current_corpus else {})
+            selected_for_edit = []
+            provenance_complete = True
+            for result in final_results:
+                candidate_id = str(result.get('file', '')).removeprefix('qmd://')
+                collection, sep, relative = candidate_id.partition('/')
+                if not sep or not qmd_config.is_wiki_collection(roles, collection):
+                    provenance_complete = False
+                    continue
+                revision = indexed_for_edit.get((collection, relative))
+                if revision is None:
+                    provenance_complete = False
+                    continue
+                selected_for_edit.append({'candidate_id': candidate_id,
+                    'revision_sha256': revision,
+                    'context': format_context([result], resolve_prefix_style(config),
+                        config.get('collectionRoles', {}), lex_gated=lex_gate_applied)})
+            output['qmdInternalEdit'] = {
+                'selected': selected_for_edit,
+                'provenance_complete': provenance_complete,
+                'selection_reason': live_reason if live_selection else selection_reason}
         print(json.dumps(output, ensure_ascii=False))
 
     # Optional learning observes eligible returned candidates; never changes output.
@@ -2997,9 +3269,9 @@ def main():
             candidate_limit = None
             requested_k = config.get('contextLearning', {}).get('candidateTopK', 8)
             if live_selection:
-                # The live QMD query itself returned up to 15. Capture that
+                # The live QMD query itself returned a bounded pool. Capture that
                 # exact pool rather than issuing a different shadow search.
-                candidate_limit = 15
+                candidate_limit = primary_limit
             elif requested_k != 8:
                 try:
                     from context_learning.pool import expand

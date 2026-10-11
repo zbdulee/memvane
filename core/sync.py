@@ -180,7 +180,7 @@ def resolve_collection_roots(project_root, config):
     return entries, None
 
 
-def scan_files(root):
+def scan_files(root, *, hash_markdown=False):
     files = {}
     if not root.is_dir():
         return None
@@ -189,14 +189,24 @@ def scan_files(root):
         current = Path(dirpath)
         for filename in filenames:
             path = current / filename
-            if not path.is_file():
+            if not path.is_file() or path.is_symlink():
                 continue
             try:
                 stat = path.stat()
                 rel = path.relative_to(root).as_posix()
             except OSError:
                 continue
-            files[rel] = {"mtimeNs": stat.st_mtime_ns, "size": stat.st_size}
+            meta = {"mtimeNs": stat.st_mtime_ns, "size": stat.st_size}
+            if hash_markdown and path.suffix.lower() == '.md':
+                digest = hashlib.sha256()
+                try:
+                    with path.open('rb') as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                            digest.update(chunk)
+                except OSError:
+                    continue
+                meta['sha256'] = digest.hexdigest()
+            files[rel] = meta
     return files
 
 
@@ -213,7 +223,8 @@ def compare_collection(previous_files, current_files):
         old = previous_files.get(rel)
         if old is None:
             created.append(rel)
-        elif old.get("mtimeNs") != meta.get("mtimeNs") or old.get("size") != meta.get("size"):
+        elif (old.get("mtimeNs") != meta.get("mtimeNs") or old.get("size") != meta.get("size")
+              or old.get('sha256') != meta.get('sha256')):
             updated.append(rel)
     for rel in previous_files:
         if rel not in current_files:
@@ -221,7 +232,7 @@ def compare_collection(previous_files, current_files):
     return sorted(created), sorted(updated), sorted(deleted)
 
 
-def build_snapshot(project_root, config_path, roots, previous):
+def build_snapshot(project_root, config_path, roots, previous, *, hash_markdown=False):
     collections = {}
     warnings = []
     totals = {"created": 0, "updated": 0, "deleted": 0}
@@ -230,7 +241,7 @@ def build_snapshot(project_root, config_path, roots, previous):
     previous_collections = (previous or {}).get("collections", {})
 
     for name, root in sorted(roots):
-        files = scan_files(root)
+        files = scan_files(root, hash_markdown=hash_markdown)
         if files is None:
             warnings.append({"collection": name, "reason": "missing_root"})
             if name in previous_collections:
@@ -301,7 +312,7 @@ def compile_engine(compile_cfg):
     return env_engine if isinstance(env_engine, str) and env_engine else qmd_config.UNKNOWN_ENGINE
 
 
-def compile_candidates(project_root, config, compile_cfg, changed_files):
+def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER):
     """변경 파일 중 compile source가 될 수 있는 것만 (컬렉션, 상대경로, 레코드)로 추린다.
 
     per-file 게이팅(.md 확장자 / raw·session role / dot-prefix / DENIED_SOURCE_SEGMENTS)은
@@ -320,7 +331,7 @@ def compile_candidates(project_root, config, compile_cfg, changed_files):
                 project_root,
                 config,
                 engine,
-                trigger=COMPILE_TRIGGER,
+                trigger=trigger,
             )
             if record is not None:
                 candidates.append((name, rel, record))
@@ -341,7 +352,8 @@ def defer_snapshot_entries(snapshot, previous, deferred):
             files.pop(rel, None)
 
 
-def enqueue_compile_sources(project_root, config, changed_files, snapshot, previous):
+def enqueue_compile_sources(project_root, config, changed_files, snapshot, previous,
+                            *, session_start=False):
     """sync가 감지한 변경 .md를 compile source-queue에도 넣는다.
 
     git pull·rebase·외부 도구 편집은 PostToolUse 훅을 타지 않아 wiki 카드가 조용히 낡는다.
@@ -351,13 +363,15 @@ def enqueue_compile_sources(project_root, config, changed_files, snapshot, previ
     LLM은 호출하지 않는다 — 메타데이터만 append하고 실제 compile은 기존 backend manager
     kick 경로(편집 훅의 kick-wiki-compile, SessionStart의 --flush)가 처리한다.
     """
-    compile_cfg = compile_enqueue.compile_gate(config, COMPILE_ACCEPTED_TRIGGERS)
+    accepted = ('session_start_source',) if session_start else COMPILE_ACCEPTED_TRIGGERS
+    compile_cfg = compile_enqueue.compile_gate(config, accepted)
     if compile_cfg is None:
         return {"queued": 0, "deferred": 0, "reason": "compile_disabled"}
     queue_path = compile_enqueue._safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
     if queue_path is None:
         return {"queued": 0, "deferred": 0, "reason": "queue_path_rejected"}
-    candidates = compile_candidates(project_root, config, compile_cfg, changed_files)
+    candidates = compile_candidates(project_root, config, compile_cfg, changed_files,
+        trigger='session_start_source' if session_start else COMPILE_TRIGGER)
     if not candidates:
         return {"queued": 0, "deferred": 0, "reason": "no_sources"}
     cap = compile_max_files()
@@ -372,13 +386,26 @@ def enqueue_compile_sources(project_root, config, changed_files, snapshot, previ
     }
 
 
-def run(cwd, *, json_output=False, dry_run=False, baseline_only=False):
+def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
+        session_start=False):
     if os.environ.get("QMD_SANDBOX"):
         return 0
     import setup_guard
     if setup_guard.status(cwd)['status'] != 'ready':
         emit_json(json_output, {'ok': False, 'reason': 'setup_required'})
         return 1
+
+    if session_start:
+        found = qmd_config.find_project_config(cwd)
+        if compile_enqueue.compile_gate(found['config'], ('session_start_source',)) is None:
+            emit_json(json_output, {'ok': True, 'reason': 'session_start_compile_disabled',
+                                    'compileQueued': 0})
+            return 0
+        import qmd_shared_store
+        qmd_shared_store.select(os.environ.get('HOME'))
+        shared = qmd_shared_store.root(os.environ.get('HOME'))
+        os.environ['QMD_SYNC_STATE_DIR'] = str(shared / 'session-sync')
+        os.environ['QMD_SYNC_LOCKDIR'] = str(shared / '.session-sync.lock.d')
 
     lock = acquire_lock()
     if lock is None:
@@ -408,7 +435,7 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False):
 
         previous = read_state(out_state)
         snapshot, totals, changed, changed_files, warnings = build_snapshot(
-            project_root, config_path, roots, previous
+            project_root, config_path, roots, previous, hash_markdown=session_start
         )
         # 같은 diff가 두 소비자로 갈라진다. dirty 큐(=qmd 인덱싱)는 INDEXED_ROLES만,
         # compile source 큐는 `changed_files` 그대로(role `source` 포함)다 — 그것이
@@ -433,12 +460,13 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False):
                 # role `source`만 바뀐 sync는 dirty 큐에 넣을 것이 없다. 그래도 compile
                 # enqueue와 스냅샷 전진은 해야 한다 — 안 하면 그 변경이 매 sync마다
                 # 재검출되고 compile이 같은 파일을 반복 큐잉한다(유료 호출 반복).
-                if indexed_changed:
+                if indexed_changed and not session_start:
                     dirty_queue.enqueue_project_collections(project_root, indexed_changed)
                 # compile enqueue를 스냅샷 기록 "전"에 한다: 상한으로 미룬 파일의 스냅샷
                 # 엔트리를 되돌려 다음 sync가 다시 집게 하기 때문이다.
                 compile_result = enqueue_compile_sources(
-                    project_root, config, changed_files, snapshot, previous
+                    project_root, config, changed_files, snapshot, previous,
+                    session_start=session_start
                 )
                 # 스냅샷 전진 실패는 예외로 나간다(위 docstring). 그 경우 다음 sync가
                 # 같은 변경을 다시 감지해 재enqueue하고, worker가 이미 컴파일한 뒤라면
@@ -476,8 +504,10 @@ def main():
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
+    parser.add_argument("--session-start", action="store_true")
     args = parser.parse_args()
-    return run(args.cwd, json_output=args.json, dry_run=args.dry_run, baseline_only=args.baseline_only)
+    return run(args.cwd, json_output=args.json, dry_run=args.dry_run,
+               baseline_only=args.baseline_only, session_start=args.session_start)
 
 
 if __name__ == "__main__":

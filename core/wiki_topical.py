@@ -154,7 +154,13 @@ def safe_source(root: Path, raw) -> tuple[str, Path]:
             or any(ord(char) < 32 or ord(char) == 127 for char in raw)):
         raise TopicalError("unsafe_source_path")
     relative = Path(raw)
-    if (relative.is_absolute() or not relative.parts or relative.parts[0] != "sources"
+    import topical_story_scope
+    if topical_story_scope.exact_story(root):
+        topical_story_scope.read(root)
+        allowed_roots = topical_story_scope.SOURCES
+    else:
+        allowed_roots = ('sources',)
+    if (relative.is_absolute() or not relative.parts or relative.parts[0] not in allowed_roots
             or any(part in (".", "..") or part.startswith(".") for part in relative.parts)):
         raise TopicalError("unsafe_source_path")
     current = root
@@ -183,7 +189,10 @@ def source_snapshot(root: Path, raw, cache: dict) -> tuple[dict, str, list[str]]
             body = data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise TopicalError("source_not_utf8") from exc
-        revision = {"kind": "file", "path": rel, "collection": "sandbox-source", **rev}
+        import topical_story_scope
+        collection = (topical_story_scope.SOURCE_COLLECTIONS[rel.split('/', 1)[0]]
+                      if topical_story_scope.exact_story(root) else 'sandbox-source')
+        revision = {"kind": "file", "path": rel, "collection": collection, **rev}
         assert yaml_scalars.normalize_source_revision(revision) == revision
         cache[rel] = revision, body, body.splitlines(keepends=True)
     return cache[rel]

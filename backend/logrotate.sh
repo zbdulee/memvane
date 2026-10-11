@@ -15,7 +15,7 @@
 # 유계다 — 계획서 §5 처럼 장기 수집을 할 때는 `.1` 이 덮이는 시점에 그 앞 세대가 사라진다.
 set -u
 HOME="${HOME:-/Users/$(/usr/bin/id -un)}"
-PORT="${QMD_DAEMON_PORT:-8483}"
+PORT="${QMD_DAEMON_PORT:-8484}"
 LOG="${QMD_DAEMON_LOG:-$HOME/.cache/qmd/mcp.daemon.log}"
 MAX_BYTES=$((10 * 1024 * 1024))   # 10MB
 

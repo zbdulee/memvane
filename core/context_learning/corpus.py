@@ -29,6 +29,10 @@ def snapshot(project_root, config, *, qmd_paths=None):
         if not names or len(names) > 32 or any(not isinstance(n, str) or not n for n in names):
             return None
         route = qmd_paths if qmd_paths is not None else qmd_route.project_paths(root)
+        if route.get('shared') is True:
+            import qmd_shared_store
+            if not set(names).issubset(qmd_shared_store.owned_collections(root, config)):
+                return None
         db_path = Path(route['INDEX_PATH'])
         if db_path is None or not db_path.is_file() or db_path.is_symlink():
             return None

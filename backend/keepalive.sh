@@ -11,7 +11,7 @@
 # 서버를 더 바쁘게 만들어 /health 까지 막는다. 그래서:
 #  (1) single-flight: 이전 핑이 아직 돌면 skip (mkdir atomic lock)
 #  (2) health 가 즉답할 때만 선택적 vec warm 핑 (busy/down 이면 skip)
-PORT="${QMD_DAEMON_PORT:-8483}"
+PORT="${QMD_DAEMON_PORT:-8484}"
 LOCKDIR="${TMPDIR:-/tmp}/qmd-keepalive.lock.d"
 
 # (1) single-flight. 이미 도는 핑이 있으면(=lock 존재) 그냥 빠진다.

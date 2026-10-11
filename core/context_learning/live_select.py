@@ -27,7 +27,8 @@ def _file_hash(path):
     return checksum.hexdigest()
 
 
-def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None):
+def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
+           pointer_name='active-checkpoint.json'):
     """Return (selected IDs or None, reason, bounded resource observation).
 
     A real 0-card prediction is []. None means use the preexisting QMD topN.
@@ -35,9 +36,10 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None):
     """
     if not isinstance(corpus_fingerprint, str) or len(corpus_fingerprint) != 64:
         return None, 'corpus_unavailable', {}
-    if (not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 2000
-            or not isinstance(rows, list) or not 1 <= len(rows) <= 15):
+    if (not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 65536
+            or not isinstance(rows, list) or not 1 <= len(rows) <= 30):
         return None, 'invalid_pool', {}
+    started = time.perf_counter()
     state = Path(state_dir)
     try:
         policy = read_private_json(state / 'live-selector.json')
@@ -56,9 +58,25 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None):
         adapter = Path(__file__).with_name('laya_adapter.py').resolve()
         if Path(policy['trainerArgv'][1]).resolve() != adapter:
             return None, 'unsupported_adapter', {}
-        active = read_private_json(state / 'active-checkpoint.json')
+        if pointer_name not in ('active-checkpoint.json', 'experimental-checkpoint.json'):
+            return None, 'invalid_pointer', {}
+        active = read_private_json(state / pointer_name)
         if not isinstance(active, dict) or active.get('schema_version') != 1:
             return None, 'no_active_checkpoint', {}
+        from .laya_adapter import EDIT_INPUT_VIEW
+        if (pointer_name == 'experimental-checkpoint.json'
+                and active.get('model_input_view') == EDIT_INPUT_VIEW):
+            # The ordinary live selector still pins the preserved English
+            # base. Edit-view heads are trained against the separately
+            # validated multilingual shared policy; mixing bases must fail.
+            from .shared import _policy as shared_policy, inference_argv
+            shared = shared_policy(state)
+            if shared.get('modelInputView') != EDIT_INPUT_VIEW:
+                return None, 'invalid_shared_model_input_view', {}
+            policy = {**policy, 'trainerArgv': inference_argv(shared, 'predict'),
+                      'maxRssMib': shared['maxRssMib']}
+        if (active.get('model_input_view') != EDIT_INPUT_VIEW and len(prompt) > 2000):
+            return None, 'invalid_pool', {}
         artifact = _safe_file(active.get('artifact_path'))
         if _file_hash(artifact) != active.get('artifact_sha256'):
             return None, 'checkpoint_changed', {}
@@ -81,14 +99,28 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None):
         remaining = deadline - time.monotonic() if deadline is not None else policy['timeoutSeconds']
         if remaining < 1:
             return None, 'timeout', {}
-        trainer = VerifiedLayaTrainer(policy['trainerArgv'],
-                               max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
-                               max_rss_mib=policy['maxRssMib'],proof_cache_dir=state,
-                               deadline=deadline)
-        with tempfile.TemporaryDirectory(prefix='live-', dir=state) as temporary:
-            result, resources = trainer.call('predict', {'schema_version': 1,
-                'artifact_path': str(artifact), 'cases': [case]},
-                Path(temporary) / 'prediction.json', cwd=Path(temporary))
+        request = {'schema_version': 1,
+                   'artifact_path': str(artifact), 'cases': [case]}
+        if active.get('model_input_view') is not None:
+            request['model_input_view'] = active['model_input_view']
+        if (pointer_name == 'experimental-checkpoint.json'
+                and active.get('model_input_view') == EDIT_INPUT_VIEW):
+            # QMD supplies the unchanged candidate pool. The resident worker
+            # is only the interchangeable rerank stage for this edit model.
+            from .resident import predict as resident_predict
+            resident_deadline = min(deadline, time.monotonic() +
+                                    policy['timeoutSeconds']) if deadline is not None else (
+                                        time.monotonic() + policy['timeoutSeconds'])
+            result, resources = resident_predict(state, policy, request,
+                active['artifact_sha256'], deadline=resident_deadline)
+        else:
+            trainer = VerifiedLayaTrainer(policy['trainerArgv'],
+                                   max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
+                                   max_rss_mib=policy['maxRssMib'],proof_cache_dir=state,
+                                   deadline=deadline)
+            with tempfile.TemporaryDirectory(prefix='live-', dir=state) as temporary:
+                result, resources = trainer.call('predict', request,
+                    Path(temporary) / 'prediction.json', cwd=Path(temporary))
         expected = {'schema_version': 1, 'predictions': [{
             'request_id': case['request_id'], 'input_sha256': case['input_sha256'],
             'selected_ids': result.get('predictions', [{}])[0].get('selected_ids')}]}
@@ -99,17 +131,27 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None):
                 or len(set(selected)) != len(selected) or
                 any(not isinstance(x, str) or x not in seen for x in selected)):
             return None, 'invalid_prediction', resources
-        return selected, 'selected', resources
+        return selected, 'selected', {
+            **resources, 'model_version': active.get('cycle_id'),
+            'model_input_view': active.get('model_input_view'),
+            'selector_wall_seconds': round(time.perf_counter() - started, 6)}
     except (OSError, ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if reason == 'trainer_timeout':
             reason = 'timeout'
         elif reason == 'trainer_memory_budget':
             reason = 'memory_budget'
+        elif reason.startswith('trainer_failed:'):
+            reason = reason.split(':', 1)[1]
+        elif reason.startswith('resident_'):
+            reason = reason[:80]
         elif reason in ('trainer_failed', 'invalid_trainer_executable',
                         'missing_local_model_dir', 'laya_runtime_not_verified',
                         'laya_runtime_or_source_changed') or reason.startswith('missing_local_model_file:'):
             reason = 'runtime_unavailable'
         else:
             reason = 'selector_unavailable'
-        return None, reason, {}
+        timing = getattr(exc, 'timing', {})
+        return None, reason, {
+            **(timing if isinstance(timing, dict) else {}),
+            'selector_wall_seconds': round(time.perf_counter() - started, 6)}

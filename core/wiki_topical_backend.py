@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
+import resource
 import stat
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 import wiki_compile_worker as worker
@@ -25,6 +29,41 @@ VERIFY_TASK = "verify_topical_claims_sandbox_only"
 BUNDLE_VERIFY_TASK = "verify_topical_bundle_sandbox_only"
 ATTEMPT_ID = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 ATTEMPT_SCHEMA = "qmd-topical-backend-attempt-v1"
+RC17_GENERATION = '352eac5670c6655c56cc2d26'
+RC17_TRANSPORT = '606394136a35811305b9978683ef422ca28884071cb445e431a9284182bcdd8d'
+RC17_ADAPTER = '762a9d37c8c32e0572291f737da8baef2bf4db0fa75c193976a66c644cdb4413'
+RC17_LIBRARY = 'abe70feea257d119ec1fb958df993115937b77811906088f0d639cc5aff30fc1'
+RC17_GENERATION_REQUEST = '4c62e7af72a487659088bd3cfaaf497b6e047a2c424eb69840b72ccaae7ff8f4'
+RC17_GENERATION_RESPONSE = '7ff72335d722e1e5eaba020c44c312015f5bcd5891958d5ffc3b77098247efc8'
+
+
+def transport_fingerprint(root: Path, argv: list[str]) -> str:
+    """Pin bundled adapter bytes across plugin cache version path changes."""
+    import topical_story_scope
+    if not topical_story_scope.exact_story(root):
+        return topical.digest(topical.encoded(argv))
+    if (len(argv) != 2 or Path(argv[1]).name != 'codex_adapter.py'
+            or not Path(argv[1]).is_file()
+            or not Path(argv[1]).with_name('lib.py').is_file()):
+        raise topical.TopicalError('topical_story_transport_unreviewed')
+    adapter = hashlib.sha256(Path(argv[1]).read_bytes()).hexdigest()
+    library = hashlib.sha256(Path(argv[1]).with_name('lib.py').read_bytes()).hexdigest()
+    return topical.digest(topical.encoded([
+        'qmd-topical-adapter-content-v1', argv[0], 'codex', adapter, library]))
+
+
+def accepted_transport_fingerprints(root: Path, generation_id: str,
+                                    argv: list[str]) -> set[str]:
+    """Accept the current adapter and one byte-identical completed rc17 batch."""
+    accepted = {transport_fingerprint(root, argv)}
+    if generation_id == RC17_GENERATION and len(argv) == 2:
+        adapter = Path(argv[1])
+        if (adapter.name == 'codex_adapter.py'
+                and adapter.is_file() and adapter.with_name('lib.py').is_file()
+                and hashlib.sha256(adapter.read_bytes()).hexdigest() == RC17_ADAPTER
+                and hashlib.sha256(adapter.with_name('lib.py').read_bytes()).hexdigest() == RC17_LIBRARY):
+            accepted.add(RC17_TRANSPORT)
+    return accepted
 
 
 def _audit_fd(root: Path) -> int:
@@ -84,6 +123,20 @@ def _write_audit(fd: int, name: str, value: dict, *, replace: bool) -> None:
             except FileNotFoundError: pass
 
 
+def _process_metrics(start: float, before) -> dict:
+    """Measure the reaped adapter/CLI child tree without claiming a per-call RSS peak."""
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    divisor = 1024 * 1024 if sys.platform == 'darwin' else 1024
+    return {
+        'wallMs': round((time.monotonic() - start) * 1000, 3),
+        'childCpuMs': round(max(0.0, (after.ru_utime + after.ru_stime -
+                                    before.ru_utime - before.ru_stime) * 1000), 3),
+        'childRssHighWaterMiB': round(after.ru_maxrss / divisor, 3),
+        'childRssHighWaterBeforeMiB': round(before.ru_maxrss / divisor, 3),
+        'rssMeaning': 'reaped_children_lifetime_high_water_not_per_call_peak',
+    }
+
+
 def _attempt(root: Path, kind: str, payload: dict, argv: list[str], timeout: int, runner,
              attempt_id: str, max_attempts: int, estimated_cost_cents: int,
              max_cost_cents: int, *, selected_engine: str | None = None) -> tuple[object, bool]:
@@ -98,8 +151,20 @@ def _attempt(root: Path, kind: str, payload: dict, argv: list[str], timeout: int
             or type(estimated_cost_cents) is not int or not 1 <= estimated_cost_cents <= 1000
             or type(max_cost_cents) is not int or not 1 <= max_cost_cents <= 1000):
         raise topical.TopicalError("invalid_backend_attempt_budget")
+    import topical_story_scope
+    if topical_story_scope.exact_story(root):
+        topical_story_scope.read(root)
+        if kind == 'generation':
+            topical_story_scope.validate_wiki_candidates(
+                root, payload.get('existingWikiCandidates'))
+        reviewed = json.loads((root / topical_story_scope.AUTO_POLICY).read_text())
+        expected = worker.resolve_extractor_argv(reviewed['compileCfg'], 'codex')
+        if (argv != expected or selected_engine not in (None, 'codex')
+                or (runner is not worker.run_extractor and
+                    os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1')):
+            raise topical.TopicalError('topical_story_transport_unreviewed')
     request_sha = topical.digest(topical.encoded(payload))
-    transport_sha = topical.digest(topical.encoded(argv))
+    transport_sha = transport_fingerprint(root, argv)
     prefix = f"{kind}.{request_sha}."
     name = prefix + attempt_id + ".attempt.json"
     fd = _audit_fd(root)
@@ -135,6 +200,17 @@ def _attempt(root: Path, kind: str, payload: dict, argv: list[str], timeout: int
                       "requestSha256": request_sha, "attemptId": attempt_id,
                       "transportSha256": transport_sha,
                       "state": "reserved", "estimatedCostCents": estimated_cost_cents}
+            if kind == 'generation':
+                record['requestContext'] = {
+                    'sourcePaths': [item['path'] for item in payload['sources']],
+                    'leadBudgetChars': payload['leadBudgetChars'],
+                    'existingWikiCandidates': payload.get('existingWikiCandidates')}
+            if kind == 'similarity':
+                if payload.get('task') != 'dedup':
+                    raise topical.TopicalError('invalid_similarity_request')
+                # Full bounded page bytes are necessary to replay the exact
+                # semantic comparison after an index reorder or process crash.
+                record['requestContext'] = payload
             if kind == 'verification':
                 if not isinstance(selected_engine, str) or not selected_engine:
                     raise topical.TopicalError('verification_policy_required')
@@ -144,27 +220,33 @@ def _attempt(root: Path, kind: str, payload: dict, argv: list[str], timeout: int
             os.close(lock_fd)
     finally:
         os.close(fd)
+    started = time.monotonic()
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         parsed, error, code = runner(argv, payload, timeout, root)
     except BaseException:
         # The host may have been charged, even if our process saw no result.
-        _finish_attempt(root, name, record, "uncertain")
+        _finish_attempt(root, name, record, "uncertain",
+                        metrics=_process_metrics(started, before))
         raise
+    metrics = _process_metrics(started, before)
     if error or code != 0:
-        _finish_attempt(root, name, record, "failed")
+        _finish_attempt(root, name, record, "failed", metrics=metrics)
         raise topical.TopicalError(error or kind + "_backend_failed")
-    _finish_attempt(root, name, record, "completed", parsed)
+    _finish_attempt(root, name, record, "completed", parsed, metrics=metrics)
     return parsed, False
 
 
 def _finish_attempt(root: Path, name: str, record: dict, state: str,
-                    response: object = None) -> None:
+                    response: object = None, *, metrics: dict | None = None) -> None:
     fd = _audit_fd(root)
     try:
         current = _read_audit(fd, name)
         if current != record:
             raise topical.TopicalError("backend_attempt_changed")
         updated = {**record, "state": state}
+        if metrics is not None:
+            updated['runtimeMetrics'] = metrics
         if state == "completed":
             updated["adapterResponse"] = response
         _write_audit(fd, name, updated, replace=True)

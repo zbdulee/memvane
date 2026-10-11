@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-hook-') as name:
     update.write_text('#!/bin/sh\nif [ "$1" = "--resolve-only" ]; then echo "{}"; exit 0; fi\ncat >/dev/null\necho run >> "$QMD_TEST_COUNT"\nsleep 0.25\n')
     count = base/'count'
     env = {**os.environ, 'CLAUDE_PLUGIN_ROOT': str(Path.cwd()),
+           'QMD_SETUP_GUARD_FIXTURE': '1',
            'QMD_BACKEND_MANAGER': str(manager), 'QMD_CORE_UPDATE_SCRIPT': str(update),
            'QMD_UPDATE_HOOK_QUEUE_DIR': str(queue), 'QMD_TEST_COUNT': str(count),
            'QMD_RECALL_LOG': ''}
@@ -26,7 +27,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-hook-') as name:
         hook = subprocess.run(['bash','hooks/run-hook','update-queued','codex'],
             input=payload,text=True,capture_output=True,env=env,timeout=3,check=True)
         notices.append(hook.stdout)
-    assert 'setup skill' in notices[0] and 'settings_not_ready' in notices[0]
+    first = json.loads(notices[0])
+    assert list(first) == ['hookSpecificOutput']
+    assert first['hookSpecificOutput']['hookEventName'] == 'SessionStart'
+    assert 'setup skill' in first['hookSpecificOutput']['additionalContext']
+    assert 'settings_not_ready' in first['hookSpecificOutput']['additionalContext']
     assert not notices[1], notices
     marker = list(queue.glob('setup-notice-*.json'))
     assert len(marker) == 1
@@ -36,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-hook-') as name:
     status = queue/(key+'.status.json')
     deadline = time.monotonic()+5
     while time.monotonic()<deadline and not status.is_file(): time.sleep(.03)
-    assert json.loads(status.read_text())['status']=='completed'
+    assert json.loads(status.read_text())['status']=='completed', (status.read_text(), (queue/(key+'.log')).read_text())
     assert count.read_text().splitlines()==['run']
     assert not (queue/(key+'.job.json')).exists()
     assert (queue/(key+'.log')).stat().st_mode & 0o077 == 0
@@ -45,7 +50,18 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-hook-') as name:
     notice = subprocess.run(['bash','hooks/run-hook','update-queued','codex'],
         input=json.dumps({'cwd': str(notice_project)}), text=True,capture_output=True,
         env=env,timeout=3,check=True)
-    assert 'opt-in 또는 opt-out' in notice.stdout
+    second = json.loads(notice.stdout)
+    assert len(notice.stdout.splitlines()) == 1
+    assert second['hookSpecificOutput']['hookEventName'] == 'SessionStart'
+    assert 'opt-in 또는 opt-out' in second['hookSpecificOutput']['additionalContext']
+    assert 'setup skill' in second['hookSpecificOutput']['additionalContext']
+    assert len(second['hookSpecificOutput']['additionalContext'].splitlines()) == 2
+    claude_project = base/'claude-notice'; claude_project.mkdir()
+    claude_notice = subprocess.run(['bash','hooks/run-hook','update-queued','claude'],
+        input=json.dumps({'cwd': str(claude_project)}), text=True,capture_output=True,
+        env=env,timeout=3,check=True)
+    assert claude_notice.stdout.startswith('[qmd] ')
+    assert 'setup skill' in claude_notice.stdout
     notice_key = hashlib.sha256(str(notice_project).encode()).hexdigest()[:32]
     deadline = time.monotonic()+5
     while time.monotonic()<deadline and not (queue/(notice_key+'.status.json')).exists(): time.sleep(.03)

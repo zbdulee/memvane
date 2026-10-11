@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -34,6 +35,59 @@ def _spawn_worker(root):
         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
 
 
+def _spawn_deferred_alarm(root):
+    return subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+        'deferred-alarm', str(root)], cwd=root, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        close_fds=True, start_new_session=True)
+
+
+def deferred_alarm(root):
+    """One owner-scoped timer for the next local retry; no provider call."""
+    root = _root(root)
+    import topical_story_scope
+    if not topical_story_scope.exact_story(root):
+        return
+    lock = root / QUEUE / '.deferred-alarm.lock'
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.fstat(fd).st_uid != os.getuid() or os.fstat(fd).st_mode & 0o077:
+            raise ValueError('unsafe_deferred_alarm_lock')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        from context_learning.deferred_edit import next_retry_due
+        from context_learning.synthetic_scope import NOVEL_ROOT
+        while True:
+            due = next_retry_due(NOVEL_ROOT)
+            if due is None:
+                return
+            remaining = due - time.time()
+            if remaining <= 0:
+                import setup_guard
+                policy, problem = _auto_policy(root)
+                if (setup_guard.status(root)['status'] != 'ready' or
+                        problem is not None or policy is None or
+                        policy['enabled'] is not True):
+                    return
+                job = root / QUEUE / 'deferred-alarm.json'
+                if job.is_symlink():
+                    raise ValueError('unsafe_deferred_alarm_job')
+                if not job.exists():
+                    _atomic(job, {'schema': 'topical-hook-job-v1',
+                                  'action': 'deferred', 'turnKey': 'recovery'})
+                # A previous worker can leave this one job after setup or a
+                # local error. Retry it on each due pass; flock bounds a busy
+                # worker and the fixed name prevents queue growth.
+                worker(root)
+                time.sleep(30.0)
+                continue
+            time.sleep(min(remaining, 30.0))
+    finally:
+        os.close(fd)
+
+
 def _close_worker_lock(fd):
     os.close(fd)
 
@@ -54,6 +108,9 @@ def _root(value):
     path = Path(value)
     if not path.is_absolute() or path.is_symlink() or not topical.opted_in(path):
         raise ValueError('topical_project_not_opted_in')
+    import topical_story_scope
+    if topical_story_scope.exact_story(path):
+        topical_story_scope.read(path)
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise ValueError('unsafe_topical_project')
@@ -152,7 +209,7 @@ def enqueue(root, action, payload=None):
     import setup_guard
     if setup_guard.status(root)['status'] != 'ready':
         return {'status': 'setup_required'}
-    if action not in ('boundary', 'reconcile'):
+    if action not in ('boundary', 'reconcile', 'deferred'):
         raise ValueError('invalid_topical_hook_action')
     policy, _policy_problem = _auto_policy(root)
     if policy is not None and not policy['enabled']:
@@ -200,6 +257,14 @@ def _run(root, job):
         return policy_problem
     if policy is not None and not policy['enabled']:
         return {'status': 'disabled'}
+    if job['action'] == 'deferred':
+        if policy is None:
+            return {'status': 'pending_review', 'reason': 'auto_teacher_policy_required'}
+        from context_learning.deferred_edit import resume_ready
+        from context_learning.synthetic_scope import NOVEL_ROOT
+        captures, more = resume_ready(NOVEL_ROOT, return_more=True)
+        return {'status': 'deferred_capture_pass', 'deferredCaptures': captures,
+                'deferredMore': more}
     if settings_path.is_file() or policy is not None:
         settings, cards = _settings(root, policy)
         if (policy is not None and
@@ -211,7 +276,10 @@ def _run(root, job):
             # In the auto path the immutable published sidecars are the card
             # baseline. The opt-in settings file may be intentionally empty or
             # older than a completed create/refresh turn.
-            refs, cards = refresh._baseline_cards(root)
+            # A crash between replacement publish and retirement leaves two
+            # generations of the same card ID on disk. The active refresh
+            # journal pins the pre-batch baseline until settlement completes.
+            refs, cards = refresh._baseline_cards(root, refresh._read(root))
             import wiki_topical_publish as publisher
             trusted = []
             for ref in refs:
@@ -255,6 +323,45 @@ def _run(root, job):
                 '--root', str(root)], cwd=root, stdin=subprocess.DEVNULL,
                 stdout=out, stderr=subprocess.STDOUT, close_fds=True,
                 start_new_session=True)
+    import topical_story_scope
+    if policy is not None and topical_story_scope.exact_story(root):
+        from context_learning.topical_worker_provenance import reconcile_pending
+        from context_learning.synthetic_scope import NOVEL_ROOT
+        from context_learning.synthetic_experiment import shared_for
+        try:
+            provenance = reconcile_pending(shared_for(NOVEL_ROOT), NOVEL_ROOT)
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            from context_learning.deferred_edit import resume_ready
+            try:
+                resume_ready(NOVEL_ROOT, allow_replay=False)
+            except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                pass
+            return {'status':'pending_review','reason':'worker_provenance_unavailable',
+                    'lastResult':result,'detail':str(exc)[:80]}
+        # A genuine host edit was saved with a one-use ticket before its new
+        # topical cards existed. Resume its exact search/capture input only
+        # after publication, QMD ACK, and source-version registration.
+        from context_learning.deferred_edit import resume_ready
+        try:
+            deferred_captures, deferred_more = resume_ready(
+                NOVEL_ROOT, return_more=True)
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+            return {'status':'pending_review','reason':'deferred_edit_capture_unavailable',
+                    'lastResult':result,'detail':str(exc)[:80]}
+        if provenance['deferred']:
+            return {'status':'pending_review','reason':'worker_provenance_deferred',
+                    'lastResult':result,'workerProvenance':provenance,
+                    'deferredCaptures':deferred_captures,
+                    'deferredMore':deferred_more}
+        if result is not None:
+            result = {**result, 'workerProvenance':provenance,
+                      'deferredCaptures':deferred_captures,
+                      'deferredMore':deferred_more}
+        else:
+            result = {'status': 'deferred_capture_pass',
+                      'workerProvenance': provenance,
+                      'deferredCaptures': deferred_captures,
+                      'deferredMore': deferred_more}
     return result
 
 
@@ -286,6 +393,7 @@ def worker(root):
                          if path.name not in attempted]
                 if not batch:
                     break
+                yield_after_replay = False
                 for path in batch[:MAX_JOBS_PER_WAKE-len(attempted)]:
                     attempted.add(path.name)
                     result = None
@@ -294,7 +402,7 @@ def worker(root):
                         job = json.loads(path.read_text())
                         if (not isinstance(job, dict) or set(job) != {'schema', 'action', 'turnKey'}
                                 or job['schema'] != 'topical-hook-job-v1'
-                                or job['action'] not in ('boundary', 'reconcile')):
+                                or job['action'] not in ('boundary', 'reconcile', 'deferred')):
                             raise ValueError('invalid_topical_job')
                         import setup_guard
                         if setup_guard.status(root)['status'] != 'ready':
@@ -312,6 +420,15 @@ def worker(root):
                         'job': path.name, 'status': outcome, 'result': result if outcome == 'completed' else None,
                         'at': time.time()})
                     output.write(f'{time.time():.3f} {path.name} {outcome}\n'); output.flush()
+                    if (outcome == 'completed' and isinstance(result, dict)
+                            and result.get('deferredMore') is True):
+                        _atomic(queue / (uuid.uuid4().hex + '.json'), {
+                            'schema': 'topical-hook-job-v1',
+                            'action': 'deferred', 'turnKey': 'recovery'})
+                        yield_after_replay = True
+                        break
+                if yield_after_replay:
+                    break
     finally:
         _close_worker_lock(fd)
     if acquired:
@@ -323,12 +440,25 @@ def worker(root):
             _atomic(root / 'topical-hook-status.json', {'schema': 'topical-hook-status-v1',
                 'job': None, 'status': 'queued', 'pending': len(remaining), 'at': time.time()})
             _spawn_worker(root)
+        # The one-shot worker cannot wait under its writer lock. A separate
+        # owner-private alarm wakes only at a persisted local retry time.
+        import topical_story_scope
+        if topical_story_scope.exact_story(root):
+            from context_learning.deferred_edit import next_retry_due
+            from context_learning.synthetic_scope import NOVEL_ROOT
+            try:
+                if next_retry_due(NOVEL_ROOT) is not None:
+                    _spawn_deferred_alarm(root)
+            except (OSError, ValueError, sqlite3.Error):
+                pass
 
 
 if __name__ == '__main__':
     try:
         if len(sys.argv) == 3 and sys.argv[1] == 'worker':
             worker(sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == 'deferred-alarm':
+            deferred_alarm(sys.argv[2])
         elif len(sys.argv) == 3 and sys.argv[1] in ('boundary', 'reconcile'):
             payload = json.load(sys.stdin) if sys.argv[1] == 'boundary' else None
             enqueue(sys.argv[2], sys.argv[1], payload)

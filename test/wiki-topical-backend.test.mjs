@@ -228,7 +228,13 @@ with tempfile.TemporaryDirectory(prefix='qmd-topical-retry-') as temporary:
  else:raise AssertionError('unexpected third call')
  # Two calls are recorded; a third would require a separate explicit budget.
  assert calls==['timeout','empty']
- states=sorted(x['state'] for p in (root/'topical-backend-audit').glob('*.attempt.json') for x in [json.loads(p.read_text())])
+ records=[json.loads(p.read_text()) for p in (root/'topical-backend-audit').glob('*.attempt.json')]
+ states=sorted(x['state'] for x in records)
+ for record in records:
+  metrics=record['runtimeMetrics']
+  assert metrics['wallMs']>=0 and metrics['childCpuMs']>=0
+  assert metrics['childRssHighWaterMiB']>=metrics['childRssHighWaterBeforeMiB']
+  assert metrics['rssMeaning']=='reaped_children_lifetime_high_water_not_per_call_peak'
  print(json.dumps({'calls':len(calls),'states':states}))
 `);
   assert.deepEqual(result, { calls: 2, states: ['completed', 'failed'] });

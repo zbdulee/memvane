@@ -11,13 +11,34 @@ MAX_RESPONSE_BYTES = 32768
 import re
 
 
+def _provider_failure(event, fallback):
+    """Classify provider failures without persisting their untrusted text."""
+    item = event.get('item') if isinstance(event.get('item'), dict) else {}
+    parts = [event.get('message'), item.get('message'), item.get('text')]
+    nested = item.get('error')
+    if isinstance(nested, dict):
+        parts.extend((nested.get('message'), nested.get('code')))
+    elif isinstance(nested, str):
+        parts.append(nested)
+    detail = ' '.join(part for part in parts if isinstance(part, str)).lower()
+    if re.search(r'rate.?limit|usage.?limit|quota|retry.?after|too many requests|resource_exhausted', detail):
+        return 'provider_quota_waiting'
+    if re.search(r'(unknown|unsupported|unavailable|not found).{0,40}model|model.{0,40}(unknown|unsupported|unavailable|not found)', detail):
+        return 'provider_model_unavailable'
+    if re.search(r'network|connection|websocket|transport|timed? out|http 50[234]', detail):
+        return 'provider_transport_waiting'
+    return fallback
+
+
 def argv(*, model=MODEL):
     if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}', model):
         raise ValueError('invalid_model')
     overrides = (
         'model_reasoning_effort="low"', 'approval_policy="never"',
         'project_doc_max_bytes=0', 'web_search="disabled"',
-        'features.plugins=false', 'features.shell_tool=false',
+        'features.plugins=false', 'features.apps=false',
+        'features.browser_use=false', 'features.in_app_browser=false',
+        'features.computer_use=false', 'features.shell_tool=false',
         'features.multi_agent=false', 'features.multi_agent_v2=false',
         'features.view_image=false', 'features.skip_host_skill_discovery=true',
         'features.memories=false', 'features.goals=false',
@@ -44,7 +65,7 @@ def child_environment(parent):
     return result
 
 
-def inspect_event(event):
+def inspect_event(event, *, max_response_bytes=MAX_RESPONSE_BYTES):
     if not isinstance(event, dict):
         raise ValueError('invalid_event')
     kind = event.get('type')
@@ -53,7 +74,7 @@ def inspect_event(event):
                     'turn.failed', 'error'}:
         raise ValueError('unexpected_event')
     if kind in {'turn.failed', 'error'}:
-        raise ValueError('provider_error')
+        raise ValueError(_provider_failure(event, 'provider_error'))
     result = {'event_type': kind}
     if kind.startswith('item.'):
         item = event.get('item')
@@ -62,13 +83,13 @@ def inspect_event(event):
         item_type = item.get('type')
         if item_type == 'error':
             # Do not expose raw provider errors, paths or arbitrary user content.
-            raise ValueError('provider_error_item')
+            raise ValueError(_provider_failure(event, 'provider_error_item'))
         if item_type not in {'agent_message', 'reasoning'}:
             raise ValueError('unexpected_action_item')
         result['item_type'] = item_type
         if kind == 'item.completed' and item_type == 'agent_message':
             text = item.get('text')
-            if not isinstance(text, str) or len(text.encode()) > MAX_RESPONSE_BYTES:
+            if not isinstance(text, str) or len(text.encode()) > max_response_bytes:
                 raise ValueError('response_budget')
             result['response'] = text
     if kind == 'turn.completed':

@@ -43,6 +43,11 @@ def run(main) -> int:
     try:
         main()
     except hook_budget.HookDeadlineExceeded:
+        if hook_budget.deferred_replay():
+            try:
+                sys.stderr.write('qmd_deferred_capture_deadline_exceeded\n')
+            except BaseException:
+                pass
         try:
             path = os.environ.get('QMD_RECALL_LOG')
             if path:

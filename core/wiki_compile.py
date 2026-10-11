@@ -1209,7 +1209,9 @@ def resolve_daemon_result_path(root: Path, wiki_root: Path, uri: str, collection
         rest = uri[len("qmd://"):]
         if "/" not in rest:
             return None
-        _, rel = rest.split("/", 1)
+        actual, rel = rest.split("/", 1)
+        if actual != collection:
+            return None
     elif collection and uri.startswith(f"{collection}/"):
         rel = uri[len(collection) + 1:]
     else:
@@ -1250,6 +1252,14 @@ def query_wiki_similar(daemon_url: str, collection: str, text: str, top_k: int, 
         except (OSError, json.JSONDecodeError):
             return None
         return results if isinstance(results, list) else []
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+        try:
+            import qmd_shared_store
+            qmd_shared_store.select()
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if daemon_url != 'http://localhost:8484':
+            return None
     # qmd's vec search rejects multi-line queries (store.js structuredSearch:
     # "queries must be single-line. Remove newline characters.") with a 500.
     # Card bodies are almost always multi-line, so passing them raw made every
@@ -1284,6 +1294,16 @@ def query_wiki_similar(daemon_url: str, collection: str, text: str, top_k: int, 
         return None
 
 
+def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+        return True
+    try:
+        import qmd_shared_store
+        return collection in qmd_shared_store.owned_collections(root, config)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _numeric_score(value) -> float:
     return value if isinstance(value, (int, float)) else 0
 
@@ -1303,12 +1323,12 @@ def query_wiki_candidates(
     if not semantic_cfg.get("enabled", True):
         return []
     collection, _ = find_wiki_collection(config)
-    if not collection:
+    if not collection or not shared_collection_owned(root, config, collection):
         return []
     text = f"{candidate.get('title') or ''} {summary}".strip()
     if not text:
         return []
-    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8483")
+    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8484")
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
     results = query_wiki_similar(daemon_url, collection, text, qmd_config.DEDUP_TOP_K, timeout)
     if not results:

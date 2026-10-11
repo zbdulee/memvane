@@ -2,10 +2,12 @@
 import contextlib,hashlib,io,json,os,pathlib,sqlite3,sys,tempfile
 from types import SimpleNamespace
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[2] / 'core'))
-import install_update as coordinator, runtime_update, setup_entry, setup_guard
+import install_update as coordinator, runtime_update, setup_entry, setup_guard, qmd_route
 with tempfile.TemporaryDirectory(prefix='qmd-bootstrap-recovery-') as name:
  root=pathlib.Path(name).resolve();project=root/'project';project.mkdir();home=root/'home';home.mkdir()
  os.environ['HOME']=str(home);os.environ.pop('QMD_SETUP_GUARD_FIXTURE',None)
+ original_route=qmd_route.project_paths
+ qmd_route.project_paths=lambda project_root,**kwargs: original_route(project_root,fixture_env=True,**{**kwargs,'reject_conflicts':False})
  auto=project/'.auto-context';auto.mkdir();wiki=auto/'wiki';wiki.mkdir()
  marker=project/'.qmd-topical-v2-project';marker.write_text('explicit opt-in\n');marker.chmod(0o600)
  (auto/'settings.json').write_text(json.dumps({'indexing':True,'collections':['wiki'],

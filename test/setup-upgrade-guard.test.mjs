@@ -26,6 +26,10 @@ function fixture() {
     QMD_BACKEND_MANAGER:manager, CALLED:called};
   return {base,project,home,queue,docs,called,env};
 }
+function activateSharedStore(f) {
+  const prepared=run('python3',['test/fixtures/prepare-shared-qmd-store.py',f.home],f.env);
+  assert.equal(prepared.status,0,prepared.stderr);
+}
 
 test('code upgrade blocks old project hooks before SessionStart for both hosts and preserves legacy bytes',()=>{
   const f=fixture();
@@ -81,8 +85,9 @@ test('first SessionStart only gives setup notice; old queued workers retain work
   assert.equal(existsSync(f.called),false);
 });
 
-test('activation resumes new code; rollback or optout blocks it again',()=>{
+test('shared-store activation resumes new code; journal or optout blocks it',()=>{
   const f=fixture();
+  activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
   unlinkSync(join(f.project,'.auto-context.json'));
@@ -101,7 +106,9 @@ test('activation resumes new code; rollback or optout blocks it again',()=>{
   assert.equal(existsSync(f.called),false);
   writeFileSync(journal,JSON.stringify({schema:'qmd-install-update-v1',phase:'rolled_back'}));
   unlinkSync(pointer);
-  assert.equal(run('python3',['core/setup_guard.py','check',f.project],f.env).status,3);
+  // The plugin-wide store remains selected when a legacy local pointer is
+  // retired; only the project's optout can disable its own hooks.
+  assert.equal(run('python3',['core/setup_guard.py','check',f.project],f.env).status,0);
   writeFileSync(pointer,JSON.stringify({schema:'qmd-index-pointer-v1'}));
   writeFileSync(join(f.project,'.qmd-topical-v2-project'),'owner opt-in\n',{mode:0o600});
   const opt=run('python3',['-c',`import sys;sys.path.insert(0,'core');import config;config.write_local_optout(sys.argv[1])`,f.project],f.env);
@@ -123,6 +130,7 @@ test('activation resumes new code; rollback or optout blocks it again',()=>{
 
 test('topical hook binds selected opted-in project from host cwd without test root',()=>{
   const f=fixture();
+  activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
   unlinkSync(join(f.project,'.auto-context.json'));
@@ -145,6 +153,7 @@ test('topical hook binds selected opted-in project from host cwd without test ro
 
 test('version change gives one local setup review notice',()=>{
   const f=fixture();
+  activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
   unlinkSync(join(f.project,'.auto-context.json'));
@@ -176,6 +185,7 @@ test('unreadable legacy settings are setup-required before any hook work',()=>{
 
 test('prepared journal gives one SessionStart repair notice while work stays blocked',()=>{
   const f=fixture();
+  activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
   unlinkSync(join(f.project,'.auto-context.json'));

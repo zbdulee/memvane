@@ -37,7 +37,9 @@ def _stop_owned(process):
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return True
+    except PermissionError:
+        return False
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
@@ -45,12 +47,21 @@ def _stop_owned(process):
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait(timeout=1)
+        except PermissionError:
+            return False
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return False
     # A descendant may keep pipes open even after the group leader exits.
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
+        # The leader and its process group have already exited.
         pass
+    except PermissionError:
+        return False
+    return True
 
 
 def _unique_object(pairs):
@@ -299,13 +310,20 @@ def run_teacher(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
     except Exception:
         report['reason'] = 'transport_internal_error'
     finally:
-        if process is not None:
-            _stop_owned(process)
-            for stream in (process.stdin, process.stdout, process.stderr):
-                if stream is not None:
-                    stream.close()
-        if locked:
-            _SERIAL.release()
+        try:
+            if process is not None:
+                try:
+                    if not _stop_owned(process):
+                        report.update(status='failed', reason='transport_cleanup_unavailable')
+                except (OSError, subprocess.SubprocessError):
+                    report.update(status='failed', reason='transport_cleanup_unavailable')
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+        finally:
+            if locked:
+                _SERIAL.release()
     return report
 
 

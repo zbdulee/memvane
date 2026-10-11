@@ -58,10 +58,12 @@ print(json.dumps({'python':sys.version.split()[0],'versions':versions,
  'laya_direct_url':json.loads(direct) if direct else None}))'''
 
 
-def _run_probe(executable):
+def _run_probe(executable, *, temp_dir=None):
     env={k:os.environ[k] for k in ('PATH','LANG','TMPDIR') if k in os.environ}
+    if temp_dir is not None:
+        env['TMPDIR']=str(temp_dir)
     env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1',QMD_SANDBOX='1')
-    with tempfile.TemporaryDirectory(prefix='qmd-runtime-probe-') as cwd:
+    with tempfile.TemporaryDirectory(prefix='qmd-runtime-probe-', dir=temp_dir) as cwd:
         result=subprocess.run([str(executable),'-I','-c',_PROBE],cwd=cwd,env=env,
             stdin=subprocess.DEVNULL,capture_output=True,timeout=30,check=False)
     if result.returncode or len(result.stdout)>MAX_PROBE_BYTES or len(result.stderr)>MAX_PROBE_BYTES:
@@ -88,7 +90,7 @@ def _editable_identity(direct):
     return {'path':str(root.resolve()),'commit':commit.stdout.strip()}
 
 
-def probe_runtime(executable, *, managed_root=None, runner=None):
+def probe_runtime(executable, *, managed_root=None, runner=None, temp_dir=None):
     path=Path(executable)
     if not path.is_absolute(): return {'status':'invalid_executable_path'}
     resolved=path.resolve()
@@ -102,7 +104,7 @@ def probe_runtime(executable, *, managed_root=None, runner=None):
         if root not in resolved.parents:
             return {'status':'external_interpreter_dependency','executable':str(path)}
     try:
-        raw=(runner or _run_probe)(path)
+        raw=runner(path) if runner is not None else _run_probe(path, temp_dir=temp_dir)
         if not isinstance(raw,dict) or set(raw)!={'python','versions','laya_import','torch_import','mps_available','laya_direct_url'}:
             raise ValueError('invalid_probe_output')
         versions=raw['versions']
@@ -142,7 +144,7 @@ def verify_compatibility(probe, attestation, base_model_sha256):
 
 
 def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
-                   max_rss_mib=8192):
+                   max_rss_mib=8192, temp_dir=None):
     """Run the real local synthetic Laya smoke before explicit runtime reuse.
 
     This prepares no runtime and writes only disposable owner-only temp files.
@@ -151,7 +153,8 @@ def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
     from .laya_adapter import model_identity
     from .local_cycle import LocalTrainer
 
-    probe = probe_runtime(executable)
+    probe = (probe_runtime(executable, temp_dir=temp_dir) if temp_dir is not None
+             else probe_runtime(executable))
     if probe['status'] != 'metadata_compatible':
         raise ValueError('runtime_metadata_incompatible')
     adapter = Path(adapter_path)
@@ -160,8 +163,8 @@ def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
     adapter_sha = _sha_file(adapter)
     model_sha = model_identity(model_dir)
     trainer = LocalTrainer([str(executable),str(adapter),str(model_dir)],
-        max_seconds=max_seconds,max_rss_mib=max_rss_mib)
-    with tempfile.TemporaryDirectory(prefix='qmd-laya-compat-') as tmp:
+        max_seconds=max_seconds,max_rss_mib=max_rss_mib,scratch_dir=temp_dir)
+    with tempfile.TemporaryDirectory(prefix='qmd-laya-compat-', dir=temp_dir) as tmp:
         root = Path(tmp)
         os.chmod(root,0o700)
         result, resources = trainer.call('smoke',{'schema_version':1},

@@ -67,7 +67,8 @@ class LocalTrainer:
     Its subprocess has a minimal offline environment and bounded wall/RSS/output.
     Offline variables are advisory; the executable itself must be audited local code.
     """
-    def __init__(self, argv, *, max_seconds=900, max_rss_mib=8192):
+    def __init__(self, argv, *, max_seconds=900, max_rss_mib=8192,
+                 pressure_probe=None, require_monitor=False, scratch_dir=None):
         if not isinstance(argv, (tuple, list)) or not argv or len(argv) > 4 or any(not isinstance(x, str) or not x for x in argv):
             raise ValueError('invalid_trainer_command')
         executable = Path(argv[0]).resolve()
@@ -76,10 +77,28 @@ class LocalTrainer:
         if type(max_seconds) is not int or not 1 <= max_seconds <= 3600 or type(max_rss_mib) is not int or not 128 <= max_rss_mib <= 65536:
             raise ValueError('invalid_resource_budget')
         self.argv = tuple(argv); self.max_seconds = max_seconds; self.max_rss_mib = max_rss_mib
+        if pressure_probe is not None and not callable(pressure_probe):
+            raise ValueError('invalid_pressure_probe')
+        self.pressure_probe = pressure_probe
+        self.require_monitor = require_monitor
+        self.scratch_dir = Path(scratch_dir) if scratch_dir is not None else None
+        if self.scratch_dir is not None:
+            folder = self.scratch_dir
+            if folder.is_symlink() or not folder.is_dir():
+                raise ValueError('unsafe_trainer_scratch')
+            info = folder.stat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('unsafe_trainer_scratch')
         self.identity = digest(canonical([self.argv, max_seconds, max_rss_mib]))
+        self.last_resources = None
+        self.last_exit_code = None
+        self.last_error_code = None
 
     def call(self, mode, request, result_path, *, cwd):
-        if mode not in ('train', 'predict', 'smoke'): raise ValueError('invalid_trainer_mode')
+        self.last_resources = None
+        self.last_exit_code = None
+        self.last_error_code = None
+        if mode not in ('train', 'predict', 'smoke', 'segment'): raise ValueError('invalid_trainer_mode')
         request_path = Path(cwd) / (mode+'-request.json')
         _atomic_json(request_path, request)
         result_path = Path(result_path)
@@ -87,6 +106,8 @@ class LocalTrainer:
         pending = result_path.with_name(result_path.name+'.pending')
         pending.unlink(missing_ok=True)  # Only this cycle's interrupted output.
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TMPDIR') if k in os.environ}
+        if self.scratch_dir is not None:
+            env['TMPDIR'] = str(self.scratch_dir)
         env.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_LOCAL_TRAINER='1', PYTHONDONTWRITEBYTECODE='1')
         # Avoid inheriting API keys, HOME, proxy settings and project-wide hooks.
@@ -94,44 +115,110 @@ class LocalTrainer:
             cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True)
         started = time.monotonic(); peak_kib = 0
+        rss_sum = cpu_sum = peak_cpu = samples = 0
+        next_pressure_check = started + 2
+        def observed():
+            return {'elapsed_seconds': round(time.monotonic()-started, 3),
+                    'observed_peak_rss_kib': peak_kib if samples else None,
+                    'observed_avg_rss_kib': round(rss_sum / samples, 1) if samples else None,
+                    'observed_peak_cpu_percent': round(peak_cpu, 2) if samples else None,
+                    'observed_avg_cpu_percent': round(cpu_sum / samples, 2) if samples else None,
+                    'resource_samples': samples if samples else None,
+                    'rss_monitor': 'sampled-ps-process-group' if samples else 'unavailable'}
         try:
             while proc.poll() is None:
                 if time.monotonic()-started > self.max_seconds:
                     raise ValueError('trainer_timeout')
                 try:
-                    stat_out = subprocess.run(['/bin/ps', '-axo', 'pgid=,rss='],
+                    stat_out = subprocess.run(['/bin/ps', '-axo', 'pgid=,%cpu=,rss='],
                         capture_output=True, text=True, timeout=1, check=False)
-                    rss = sum(int(parts[1]) for line in stat_out.stdout.splitlines()
-                        if len(parts := line.split()) == 2 and parts[0] == str(proc.pid))
-                    peak_kib = max(peak_kib, rss)
-                    if rss > self.max_rss_mib*1024:
-                        raise ValueError('trainer_memory_budget')
+                    if stat_out.returncode != 0:
+                        raise OSError('process_stats_unavailable')
+                    group = [parts for line in stat_out.stdout.splitlines()
+                             if len(parts := line.split()) == 3 and parts[0] == str(proc.pid)]
+                    if group:
+                        rss = sum(int(parts[2]) for parts in group)
+                        cpu = sum(float(parts[1]) for parts in group)
+                        peak_kib = max(peak_kib, rss)
+                        peak_cpu = max(peak_cpu, cpu)
+                        rss_sum += rss; cpu_sum += cpu; samples += 1
+                        if rss > self.max_rss_mib*1024:
+                            raise ValueError('trainer_memory_budget')
                 except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                     if isinstance(exc, ValueError) and str(exc) == 'trainer_memory_budget': raise
+                    if self.require_monitor:
+                        raise ValueError('trainer_resource_monitor_unavailable') from exc
+                if self.pressure_probe is not None and time.monotonic() >= next_pressure_check:
+                    if not self.pressure_probe()['ready']:
+                        raise ValueError('trainer_system_pressure')
+                    next_pressure_check = time.monotonic() + 2
                 time.sleep(.05)
-            if proc.returncode != 0: raise ValueError('trainer_failed')
+            if proc.returncode != 0:
+                code = 'trainer_process_failed'
+                try:
+                    failure = read_private_json(_safe_file(pending, max_size=512))
+                    if (isinstance(failure, dict) and set(failure) ==
+                            {'schema_version', 'error_code'} and failure['schema_version'] == 1
+                            and isinstance(failure['error_code'], str) and
+                            failure['error_code'] in {
+                                'adapter_memory_error', 'adapter_permission_error',
+                                'adapter_file_missing', 'adapter_runtime_error',
+                                'adapter_unclassified_error',
+                                'model_token_budget_exceeded',
+                                'tokenizer_model_limit_exceeded',
+                                'model_input_view_unsupported',
+                                'invalid_complete_input', 'invalid_request_file',
+                                'invalid_predict_request',
+                                'head_artifact_provenance_mismatch',
+                                'missing_artifact', 'invalid_model_max_len',
+                                'unexpected_laya_logit_shape',
+                                'checkpoint_reload_logits_changed',
+                                'invalid_candidate_pool', 'invalid_case_count',
+                                'invalid_case', 'invalid_model_input_view',
+                                'invalid_edit_segmentation',
+                                'edit_tokenizer_unsupported',
+                                'invalid_edit_offsets', 'invalid_edit_window',
+                                'invalid_edit_overlap', 'edit_segment_limit',
+                                'edit_segment_coverage_failed'}):
+                        # Tokenizer-only segmentation shares the same bounded
+                        # local process protocol as prediction.
+                        code = failure['error_code']
+                except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                    pass
+                self.last_error_code = code
+                # Keep the historical generic error for child exits without
+                # a validated sidecar; only audited codes gain specificity.
+                raise ValueError('trainer_failed' if code == 'trainer_process_failed'
+                                 else 'trainer_failed:' + code)
             response = read_private_json(_safe_file(pending, max_size=MAX_FILE))
             os.replace(pending, result_path)
-            return response, {'elapsed_seconds': round(time.monotonic()-started, 3),
-                              'observed_peak_rss_kib': peak_kib, 'rss_monitor': 'sampled-ps-process-group'}
+            return response, observed()
         except BaseException:
             if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGTERM)
-                try: proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL); proc.wait()
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    try: proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(proc.pid, signal.SIGKILL); proc.wait()
+                except OSError:
+                    pass  # Cleanup must not replace the original trainer error.
             raise
         finally:
+            self.last_exit_code = proc.returncode
+            self.last_resources = observed()
             try: os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            request_path.unlink(missing_ok=True)
+            except OSError: pass
+            try: request_path.unlink(missing_ok=True)
+            except OSError: pass
 
 
 class VerifiedLayaTrainer(LocalTrainer):
     """Existing local Laya runtime, checked with real synthetic smoke on first use."""
-    def __init__(self, argv, *, proof_cache_dir=None, deadline=None, **kwargs):
-        super().__init__(argv, **kwargs)
+    def __init__(self, argv, *, proof_cache_dir=None, deadline=None,
+                 isolated_temp_dir=None, **kwargs):
+        super().__init__(argv, scratch_dir=isolated_temp_dir, **kwargs)
         self.deadline = deadline
+        self.isolated_temp_dir = self.scratch_dir
         expected=Path(__file__).with_name('laya_adapter.py').resolve()
         if len(self.argv)!=3 or Path(self.argv[1]).resolve()!=expected or not Path(self.argv[2]).is_absolute():
             raise ValueError('invalid_verified_laya_command')
@@ -158,7 +245,8 @@ class VerifiedLayaTrainer(LocalTrainer):
             self.max_seconds = min(self.max_seconds, max(1, int(left)))
         adapter_sha=_hash_bytes(self.argv[1])
         model_sha=model_identity(self.argv[2])
-        runtime=probe_runtime(self.argv[0])
+        runtime=(probe_runtime(self.argv[0], temp_dir=self.isolated_temp_dir)
+                 if self.isolated_temp_dir is not None else probe_runtime(self.argv[0]))
         if runtime.get('status')!='metadata_compatible':
             raise ValueError('laya_runtime_or_source_changed')
         if self.proof is None:
@@ -178,8 +266,11 @@ class VerifiedLayaTrainer(LocalTrainer):
                 self.proof={'attestation':cached['attestation']}
             else:
                 from .runtime_setup import attest_runtime
-                proof=attest_runtime(self.argv[0],self.argv[1],self.argv[2],
-                    max_seconds=min(120,self.max_seconds),max_rss_mib=self.max_rss_mib)
+                options={'max_seconds':min(120,self.max_seconds),
+                         'max_rss_mib':self.max_rss_mib}
+                if self.isolated_temp_dir is not None:
+                    options['temp_dir']=self.isolated_temp_dir
+                proof=attest_runtime(self.argv[0],self.argv[1],self.argv[2],**options)
                 if (proof['probe']['runtime_identity_sha256']!=runtime['runtime_identity_sha256']
                         or proof['attestation']['adapter_sha256']!=adapter_sha
                         or not verify_compatibility(runtime,proof['attestation'],model_sha)):

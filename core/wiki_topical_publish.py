@@ -40,6 +40,10 @@ def _same_published_card(existing: bytes, freshly_stamped: bytes) -> bool:
 
 def _project(root: Path):
     root = experiment.require_sandbox(root)
+    import topical_story_scope
+    if topical_story_scope.exact_story(root):
+        scope = topical_story_scope.read(root)
+        return root, scope['wiki'], scope['collection']
     found = qmd_config.find_project_config(str(root))
     if found["configFormat"] != "auto-context-dir" or Path(found["projectRoot"]).resolve() != root:
         raise topical.TopicalError("project_optin_required")
@@ -102,6 +106,113 @@ def _publication_similarity(root: Path, wiki: Path, generation_id: str, card_id:
     return result
 
 
+def _create_review_proof(root, generation_id, card_id, generated_sha, record):
+    """Bind create-time legacy and staged sibling reviews outside the old proof."""
+    path = root / 'topical-create-review-proofs' / generation_id / (card_id + '.json')
+    import topical_story_scope
+    required = topical_story_scope.exact_story(root)
+    if path.parent.is_symlink() or path.parent.parent.is_symlink():
+        raise topical.TopicalError('unsafe_create_review_proof')
+    if not path.exists() and not path.is_symlink():
+        if required:
+            raise topical.TopicalError('create_review_proof_required')
+        return None
+    if path.is_symlink() or not path.is_file():
+        raise topical.TopicalError('unsafe_create_review_proof')
+    info = path.stat()
+    if (info.st_uid != os.getuid() or info.st_nlink != 1
+            or info.st_mode & 0o077 or info.st_size > 65536):
+        raise topical.TopicalError('unsafe_create_review_proof')
+    proof = json.loads(path.read_text())
+    if (proof.get('schema') != 'qmd-topical-create-review-proof-v1'
+            or proof.get('generationId') != generation_id
+            or proof.get('cardId') != card_id
+            or proof.get('generatedSha256') != generated_sha
+            or proof.get('attestationSha256') != topical.digest(topical.encoded(record))
+            or not isinstance(proof.get('pairs'), list)
+            or len(proof['pairs']) > 72):
+        raise topical.TopicalError('create_review_proof_changed')
+    import wiki_topical_similarity as similarity
+    decisions = similarity._review(root)
+    seen = set()
+    for row in proof['pairs']:
+        complementary = isinstance(row, dict) and row.get('verdict') == 'complementary_overlap'
+        fields = {'pairSha256', 'candidatePath', 'candidateSha256',
+                  'relation', 'verdict'}
+        if complementary:
+            fields.add('reviewDecisionSha256')
+        decision = decisions.get(row.get('pairSha256')) if isinstance(row, dict) else None
+        if (not isinstance(row, dict)
+                or set(row) != fields
+                or row['verdict'] not in ('distinct', 'complementary_overlap')
+                or not isinstance(row['candidatePath'], str)
+                or not isinstance(row['candidateSha256'], str)
+                or not re.fullmatch(r'[0-9a-f]{64}', row['candidateSha256'])
+                or not isinstance(row['relation'], str)
+                or row['pairSha256'] != topical.digest(topical.encoded([
+                    'qmd-topical-pair-v1',
+                    *sorted((generated_sha, row['candidateSha256']))]))
+                or row['pairSha256'] in seen
+                or not isinstance(decision, dict)
+                or decision.get('verdict') != row['verdict']
+                or (complementary and row['reviewDecisionSha256'] !=
+                    topical.digest(topical.encoded(decision)))):
+            raise topical.TopicalError('create_review_proof_changed')
+        seen.add(row['pairSha256'])
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def save_create_review_proof(root, generation_id, card_id, pairs):
+    """Create an immutable additive proof, including a pre-rc18 published card."""
+    root = experiment.require_sandbox(root)
+    record = _attested(root, generation_id, card_id)
+    generated_sha = hashlib.sha256(topical.read_generation_bytes(
+        root, generation_id, f'cards/{card_id}.md')).hexdigest()
+    import wiki_topical_similarity as similarity
+    decisions = similarity._review(root)
+    rows = []
+    for row in pairs:
+        item = {key: row[key] for key in
+                ('pairSha256', 'candidatePath', 'candidateSha256', 'relation', 'verdict')}
+        if item['verdict'] == 'complementary_overlap':
+            decision = decisions.get(item['pairSha256'])
+            if not isinstance(decision, dict) or decision.get('verdict') != item['verdict']:
+                raise topical.TopicalError('create_review_unresolved')
+            item['reviewDecisionSha256'] = topical.digest(topical.encoded(decision))
+        rows.append(item)
+    if any(row['verdict'] not in ('distinct', 'complementary_overlap')
+           for row in rows):
+        raise topical.TopicalError('create_review_unresolved')
+    proof = {'schema': 'qmd-topical-create-review-proof-v1',
+             'generationId': generation_id, 'cardId': card_id,
+             'generatedSha256': generated_sha,
+             'attestationSha256': topical.digest(topical.encoded(record)),
+             'pairs': rows}
+    base = root / 'topical-create-review-proofs'
+    for folder in (base, base / generation_id):
+        if folder.is_symlink():
+            raise topical.TopicalError('unsafe_create_review_proof')
+        folder.mkdir(mode=0o700, exist_ok=True)
+        info = folder.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise topical.TopicalError('unsafe_create_review_proof')
+    path = base / generation_id / (card_id + '.json')
+    content = topical.encoded(proof) + b'\n'
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or path.read_bytes() != content:
+            raise topical.TopicalError('create_review_proof_changed')
+    else:
+        fd, temporary = tempfile.mkstemp(prefix='.review-', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as out:
+                os.fchmod(out.fileno(), 0o600)
+                out.write(content); out.flush(); os.fsync(out.fileno())
+            os.link(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    return _create_review_proof(root, generation_id, card_id, generated_sha, record)
+
+
 def _publication_proof(root, generation_id, card_id, generated_sha, record):
     path=root/'topical-publication-proofs'/generation_id/(card_id+'.json')
     if path.is_symlink() or not path.is_file():
@@ -117,9 +228,21 @@ def _publication_proof(root, generation_id, card_id, generated_sha, record):
         raise topical.TopicalError('publication_proof_changed')
     import wiki_topical_similarity as similarity
     decisions=similarity._review(root)
-    if any(not isinstance(pair,str) or decisions.get(pair,{}).get('verdict')!='distinct'
+    bound = proof.get('reviewDecisionSha256')
+    if bound is not None and (not isinstance(bound, dict)
+                              or set(bound) != set(proof['reviewPairs'])):
+        raise topical.TopicalError('publication_proof_changed')
+    if any(not isinstance(pair,str) or decisions.get(pair,{}).get('verdict')
+           not in ('distinct', 'complementary_overlap')
+           or (bound is None and decisions[pair]['verdict'] != 'distinct')
+           or (bound is not None and
+               bound.get(pair) != topical.digest(topical.encoded(decisions[pair])))
            for pair in proof['reviewPairs']):
         raise topical.TopicalError('publication_review_revoked')
+    create_sha = _create_review_proof(root, generation_id, card_id,
+                                      generated_sha, record)
+    if create_sha is not None:
+        proof = {**proof, 'createReviewSha256': create_sha}
     return proof
 
 
@@ -132,10 +255,19 @@ def _save_publication_proof(root, generation_id, card_id, generated_sha, record,
         if info.st_uid!=os.getuid() or info.st_mode & 0o077:
             raise topical.TopicalError('unsafe_publication_proof')
     path=base/generation_id/(card_id+'.json')
+    import wiki_topical_similarity as similarity
+    decisions = similarity._review(root)
+    bound = {}
+    for row in review['pairs']:
+        decision = decisions.get(row['pairSha256'])
+        if not isinstance(decision, dict) or decision.get('verdict') != row['verdict']:
+            raise topical.TopicalError('publication_review_revoked')
+        bound[row['pairSha256']] = topical.digest(topical.encoded(decision))
     proof={'schema':'qmd-topical-publication-proof-v1',
            'generatedSha256':generated_sha,
            'attestationSha256':topical.digest(topical.encoded(record)),
            'reviewPairs':[row['pairSha256'] for row in review['pairs']]}
+    proof['reviewDecisionSha256'] = bound
     content=topical.encoded(proof)+b'\n'
     if path.exists() or path.is_symlink():
         if path.is_symlink() or path.read_bytes()!=content:
@@ -190,6 +322,7 @@ def _publish_locked(root: Path, generation_id: str, card_id: str) -> dict:
     generated = topical.read_generation_bytes(root, generation_id, f"cards/{card_id}.md").decode("utf8")
     generated_sha=hashlib.sha256(generated.encode()).hexdigest()
     destination = wiki / 'topical-v2' / generation_id / (card_id + '.md')
+    _create_review_proof(root, generation_id, card_id, generated_sha, record)
     proof=_publication_proof(root,generation_id,card_id,generated_sha,record) if destination.is_file() else None
     review=None if proof is not None else _publication_similarity(root, wiki, generation_id, card_id)
     body_hash = yaml_scalars.card_body_hash(generated)
@@ -278,8 +411,16 @@ def _retire_stale_locked(root: Path, generation_id: str, card_id: str,
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise topical.TopicalError('unsafe_retirement_directory')
     target = folder / (card_id + '.md')
-    if published.is_symlink() or target.is_symlink() or (published.exists() and target.exists()):
+    if published.is_symlink() or target.is_symlink():
         raise topical.TopicalError('retirement_conflict')
+    linked_before_unlink = published.exists() and target.exists()
+    if linked_before_unlink:
+        source_stat, archive_stat = published.stat(), target.stat()
+        if (not stat.S_ISREG(source_stat.st_mode)
+                or not stat.S_ISREG(archive_stat.st_mode)
+                or (source_stat.st_dev, source_stat.st_ino) !=
+                   (archive_stat.st_dev, archive_stat.st_ino)):
+            raise topical.TopicalError('retirement_conflict')
     proof_page = published if published.is_file() else target
     if not proof_page.is_file():
         raise topical.TopicalError('published_card_missing')
@@ -320,6 +461,14 @@ def _retire_stale_locked(root: Path, generation_id: str, card_id: str,
     if proof_page == target:
         return {'status': 'already_retired_stale', 'cardId': card_id,
                 'generationId': generation_id, 'archivePath': str(target)}
+    if linked_before_unlink:
+        source_stat, archive_stat = published.stat(), target.stat()
+        if ((source_stat.st_dev, source_stat.st_ino) !=
+                (archive_stat.st_dev, archive_stat.st_ino)):
+            raise topical.TopicalError('retirement_conflict')
+        published.unlink()
+        return {'status': 'retired_stale', 'cardId': card_id,
+                'generationId': generation_id, 'archivePath': str(target)}
     try:
         os.link(published, target, follow_symlinks=False)
     except FileExistsError as exc:
@@ -331,8 +480,16 @@ def _retire_stale_locked(root: Path, generation_id: str, card_id: str,
 
 def _qmd_runtime(root: Path):
     try:
-        paths = qmd_route.project_paths(root, isolated=True, reject_conflicts=True,
-            fixture_env=os.environ.get('QMD_TOPICAL_SYNTHETIC_RUNTIME') == '1')
+        import topical_story_scope
+        if topical_story_scope.exact_story(root):
+            scope = topical_story_scope.read(root)
+            paths = qmd_route.project_paths(scope['project'], isolated=True,
+                reject_conflicts=True)
+            if paths.get('selected') is not True:
+                raise ValueError('shared_qmd_store_unselected')
+        else:
+            paths = qmd_route.project_paths(root, isolated=True, reject_conflicts=True,
+                fixture_env=os.environ.get('QMD_TOPICAL_SYNTHETIC_RUNTIME') == '1')
         binary = qmd_route.binary_info()['QMD_BIN']
         if os.environ.get('QMD_BIN'):
             from qmd_runtime import probe_cli
@@ -359,8 +516,33 @@ def _call(root: Path, runtime: dict, args: list[str]):
     return result
 
 
+def _reload_shared_daemon():
+    # The shared QMD daemon may hold the old SQLite view. The same writer
+    # lock remains held until reload finishes, as in index_worker.sh.
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+        return
+    manager = Path(__file__).resolve().parent / 'backend_manager.sh'
+    result = subprocess.run(['bash', str(manager), 'reload'],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise topical.TopicalError('qmd_daemon_reload_failed')
+
+
 def sync(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
          reclaim_retired: bool = False) -> dict:
+    import topical_story_scope
+    if topical_story_scope.exact_story(root):
+        topical_story_scope.read(root)
+        import qmd_writer_lock
+        with qmd_writer_lock.acquire():
+            return _sync_locked(root, allow_empty=allow_empty,
+                allow_stale=allow_stale, reclaim_retired=reclaim_retired)
+    return _sync_locked(root, allow_empty=allow_empty,
+        allow_stale=allow_stale, reclaim_retired=reclaim_retired)
+
+
+def _sync_locked(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
+                 reclaim_retired: bool = False) -> dict:
     root, wiki, collection = _project(root)
     runtime = _qmd_runtime(root)
     cards = list((wiki / "topical-v2").glob("*/*.md")) if (wiki / "topical-v2").is_dir() else []
@@ -404,7 +586,8 @@ def sync(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
     try:
         db.execute("PRAGMA query_only=ON")
         if not cards and db.execute(
-                "SELECT 1 FROM documents WHERE collection=? AND active=1 LIMIT 1",
+            "SELECT 1 FROM documents WHERE collection=? AND path GLOB 'topical-v2/*' "
+            "AND active=1 LIMIT 1",
                 (collection,)).fetchone():
             raise topical.TopicalError("qmd_retired_card_still_active")
         for page in fresh_cards:
@@ -417,9 +600,18 @@ def sync(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
                 raise topical.TopicalError("qmd_verified_card_not_ready")
     finally:
         db.close()
+    registration = None
+    import topical_story_scope
+    if topical_story_scope.exact_story(root):
+        _reload_shared_daemon()
+        from context_learning.topical_worker_provenance import reconcile_pending
+        from context_learning.synthetic_scope import NOVEL_ROOT
+        from context_learning.synthetic_experiment import shared_for
+        registration = reconcile_pending(shared_for(NOVEL_ROOT), NOVEL_ROOT)
     return {"status": "ready", "collection": collection, "verifiedCards": len(fresh_cards),
             "pendingStaleCards": len(stale_cards),
-            "lexicalReady": True, "vectorReady": True}
+            "lexicalReady": True, "vectorReady": True,
+            **({'workerProvenance': registration} if registration is not None else {})}
 
 
 def main(argv):

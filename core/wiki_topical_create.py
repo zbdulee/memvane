@@ -117,19 +117,24 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
         journal['phase'] = 'pre_retrieved'; reconcile._atomic(root / JOURNAL, journal)
     generation_id = journal['generationId']
     if generation_id is None:
+        pre_context = similarity.generation_context(root, journal['preCandidates'])
         pending = None
         try:
             if journal['phase'] == 'generation_failed_wait':
                 if budget < 30:
                     return {'status': 'pending_review', 'reason': 'estimated_budget_exceeded'}
                 payload = experiment.generation_contract(root, [source_path])
-                payload['existingWikiCandidates'] = journal['preCandidates']
+                payload['existingWikiCandidates'] = pre_context
                 payload['timeout'] = 420
-                response, pending, _audit = refresh._recorded(root, 'generation',
+                response, pending, audit = refresh._recorded(root, 'generation',
                     payload, 'retry1')
                 if pending:
                     return {'status': 'pending_review', 'reason': pending}
                 if response is not None:
+                    if not refresh._generation_transport_reviewed(
+                            root, payload, response, audit, compile_cfg, engine):
+                        return {'status': 'pending_review',
+                                'reason': 'generation_policy_changed'}
                     generated = backend.stage_generation_response(root, response,
                         requested_sources=[source_path], reuse_existing=True)
                 elif recovery_only:
@@ -137,18 +142,18 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
                             'reason': 'generation_retry_requires_explicit_backend'}
                 else:
                     generated = backend.run_generation_backend(root, [source_path],
-                        compile_cfg, engine, existing_wiki_candidates=journal['preCandidates'],
+                        compile_cfg, engine, existing_wiki_candidates=pre_context,
                         allow_backend_execution=True, runner=generation_runner,
                         attempt_id='retry1', max_attempts=2,
                         estimated_cost_cents=10, max_cost_cents=20)
             else:
                 generated, pending = refresh._generation(root, [source_path], compile_cfg,
-                    engine, journal['preCandidates'], generation_runner, recovery_only)
+                    engine, pre_context, generation_runner, recovery_only)
         except topical.TopicalError as exc:
             if journal['phase'] != 'generation_failed_wait':
                 try:
                     payload = experiment.generation_contract(root, [source_path])
-                    payload['existingWikiCandidates'] = journal['preCandidates']
+                    payload['existingWikiCandidates'] = pre_context
                     payload['timeout'] = 420
                     _response, failure, _audit = refresh._recorded(root, 'generation', payload)
                     if failure == 'generation_attempt_failed':
@@ -184,26 +189,63 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
             return {'status': 'pending_review', 'reason': 'created_backend_pass_required'}
     journal['phase'] = 'verified'; reconcile._atomic(root / JOURNAL, journal)
     cards = [experiment.load_staged_card(root, generation_id, cid) for cid in journal['cardIds']]
+    _project_root, wiki, _collection = publisher._project(root)
+    published_other = (any(wiki.glob('*.md'))
+                       or any((wiki / 'topical-v2').glob('*/*.md')))
+    proof_dir = root / 'topical-create-review-proofs' / generation_id
+    publication_dir = wiki / 'topical-v2' / generation_id
+    # Once publication starts, the immutable proofs fix the reviewed candidate
+    # set. A later QMD index can reorder its top hits, so searching again would
+    # change a completed review during crash recovery.
+    resume_review = (all((proof_dir / (cid + '.json')).is_file()
+                         for cid in journal['cardIds'])
+                     and any((publication_dir / (cid + '.md')).is_file()
+                             for cid in journal['cardIds']))
+    batch_exclude = [(generation_id, cid) for cid in journal['cardIds']]
+    reviewed = {}
     for card in cards:
         if {row['path'] for row in card['sourceRevisions']} != {source_path}:
             return {'status': 'pending_review', 'reason': 'created_card_source_mismatch'}
+    for card in ([] if resume_review else cards):
         try:
-            existing = [page for page in (root / '.auto-context/wiki/topical-v2').glob('*/*.md')
-                        if (page.parent.name, page.stem) != (generation_id, card['cardId'])]
             matches = (similarity.retrieve(root, card['lead'],
-                exclude=(generation_id, card['cardId'])) if existing else [])
+                exclude=batch_exclude) if published_other else [])
+            # Review the immutable staged sibling pages as one batch. A retry
+            # sees the same pairs even if an earlier publish partly completed.
+            for sibling in cards:
+                if sibling['cardId'] == card['cardId']:
+                    continue
+                sibling_id = sibling['cardId']
+                sibling_page = topical.read_generation_bytes(root, generation_id,
+                    f'cards/{sibling_id}.md')
+                matches.append({'path': f'topical-v2/{generation_id}/{sibling_id}.md',
+                    'pageSha256': topical.digest(sibling_page), 'card': sibling})
+            if sum(item.get('legacy') is not True for item in matches) > similarity.MAX_RESULTS:
+                raise topical.TopicalError('similarity_review_budget_exceeded')
             result = similarity.evaluate(root, card, generation_id, matches)
+            original_pairs = result['pairs']
+            if result['status'] == 'pending_review':
+                journal['phase'] = 'awaiting_similarity'
+                reconcile._atomic(root / JOURNAL, journal)
+                result = similarity.auto_review_pending(root, card, generation_id,
+                    matches, compile_cfg, engine, verification_runner,
+                    recovery_only=recovery_only)
         except topical.TopicalError as exc:
             return {'status': 'pending_review', 'reason': exc.code}
         if result['status'] == 'pending_review':
             journal['phase'] = 'awaiting_similarity'; reconcile._atomic(root / JOURNAL, journal)
-            return {'status': 'pending_review', 'reason': 'similarity_unresolved',
-                    'pairs': result['pairs']}
+            return {'status': 'pending_review', 'reason': result.get('reason', 'similarity_unresolved'),
+                    'pairs': result.get('pairs', original_pairs)}
+        reviewed[card['cardId']] = result['pairs']
     if reconcile._scan(root, source_roots, skip_paths) != batch['snapshot']:
         reconcile.finish_mock_batch(root, source_roots, batch['batchId'],
                                     success=False, skip_paths=skip_paths)
         (root / JOURNAL).unlink()
         return {'status': 'superseded_source_changed'}
+    if not resume_review:
+        for card_id in journal['cardIds']:
+            publisher.save_create_review_proof(root, generation_id, card_id,
+                                               reviewed[card_id])
     for card_id in journal['cardIds']:
         publisher.publish(root, generation_id, card_id)
     journal['phase'] = 'published'; reconcile._atomic(root / JOURNAL, journal)

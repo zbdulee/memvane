@@ -72,7 +72,7 @@ for host in ('claude','codex'):
  config={'collections':['sample'],'collectionPaths':{'sample':'.'}}
  settings=root/'.auto-context'/'settings.json'
  def run():
-  env=dict(os.environ,QMD_ENGINE=host,QMD_RECALL_LOG='',QMD_QUERY_FIXTURE='test/fixtures/daemon-response.json',PYTHONDONTWRITEBYTECODE='1')
+  env=dict(os.environ,QMD_ENGINE=host,QMD_RECALL_LOG='',QMD_QUERY_FIXTURE='test/fixtures/daemon-response.json',INDEX_PATH=str(base/'unused-index.sqlite'),PYTHONDONTWRITEBYTECODE='1')
   return subprocess.check_output(['python3','core/recall.py'],input=json.dumps({'prompt':'검색 결과 정렬은 어떻게 동작해?', 'cwd':str(root),'hook_event_name':'UserPromptSubmit','session_id':'synthetic'}).encode(),env=env)
  settings.write_text(json.dumps(config)); before=run()
  import hashlib

@@ -366,7 +366,9 @@ def run(cwd: str) -> None:
     suppressions = load_skip_suppressions(skipped_path)
     hash_cache: dict[str, str | None] = {}
 
-    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8483")
+    if not wc.shared_collection_owned(root, config, collection):
+        return
+    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8484")
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
     # topK·autoMergeThreshold는 상수다(daemon score가 순위 기반 — qmd_config 참조).
     top_k = qmd_config.DEDUP_TOP_K

@@ -188,6 +188,10 @@ def main():
     found = qmd_config.find_project_config(cwd)
     config = found["config"]
     project_root = found["projectRoot"]
+    paths = posttool.edited_paths(payload)
+    from context_learning.synthetic_scope import invocation_in_generated_story
+    if not invocation_in_generated_story(found, payload.get("cwd"), paths):
+        return 0
     if not qmd_config.event_enabled(config, "postToolUse"):
         return 0
     compile_cfg = compile_gate(config, (POST_TOOL_TRIGGER,))
@@ -200,7 +204,7 @@ def main():
 
     records = []
     seen = set()
-    for edited_path in posttool.edited_paths(payload):
+    for edited_path in paths:
         if not isinstance(edited_path, str):
             continue
         record = _source_record(edited_path, cwd, project_root, config, _engine(payload))

@@ -114,18 +114,28 @@ with tempfile.TemporaryDirectory(prefix='qmd-similarity-e2e-') as name:
     assert publisher.sync(root)['verifiedCards']==2
     initial=similarity.retrieve(root,old['lead'],exclude=(old_id,'silver-bell'))
     assert [(x['generationId'],x['cardId']) for x in initial]==[(near_id,'silver-bell-plan')]
+    legacy=wiki/'legacy-card.md'
+    legacy.write_text('# Legacy card\nUnrelated archival note.\n')
+    legacy_db=root/'legacy-index.sqlite'
+    with sqlite3.connect(legacy_db) as db:
+        db.execute('CREATE TABLE documents(collection TEXT, path TEXT, hash TEXT, active INTEGER)')
+        db.execute('INSERT INTO documents VALUES(?,?,?,1)',
+            (collection, legacy.name, hashlib.sha256(legacy.read_bytes()).hexdigest()))
     qmd_call=publisher._call
+    qmd_runtime=publisher._qmd_runtime
     try:
+        publisher._qmd_runtime=lambda *args,**kwargs: {'INDEX_PATH':str(legacy_db)}
         publisher._call=lambda *args,**kwargs: SimpleNamespace(stdout=json.dumps([
             {'file':'qmd://'+collection+'/legacy-card.md'}]))
-        try:
-            similarity.retrieve(root,old['lead'])
-        except topical.TopicalError as error:
-            assert error.code=='similarity_unreviewed_wiki_hit'
-        else:
-            raise AssertionError('legacy_hit_was_silently_ignored')
+        legacy_hit=similarity.retrieve(root,old['lead'])
+        legacy_pair=similarity.evaluate(root,near,near_id,legacy_hit)
+        assert legacy_pair['status']=='pending_review'
+        assert legacy_pair['pairs'][0]['relation']=='legacy_wiki_review_required'
+        assert legacy_pair['pairs'][0]['candidatePath']=='legacy-card.md'
     finally:
         publisher._call=qmd_call
+        publisher._qmd_runtime=qmd_runtime
+        legacy.unlink()
     reconcile.reconcile(root,['sources'],[old,near],
         trusted_card_ids=['silver-bell','silver-bell-plan'])
     (sources/'a.md').unlink()

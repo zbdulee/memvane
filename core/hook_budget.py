@@ -7,6 +7,8 @@ import time
 DEFAULT_SECONDS = 18.0
 MIN_SECONDS = 2.0
 MAX_SECONDS = 20.0
+DEFERRED_REPLAY_SECONDS = 55.0
+DEFERRED_REPLAY_MAX_SECONDS = 60.0
 _deadline = None
 
 
@@ -14,12 +16,24 @@ class HookDeadlineExceeded(BaseException):
     pass
 
 
+def deferred_replay():
+    """Only a ticket-bound local capture replay may use the background budget."""
+    ticket = os.environ.get('QMD_DEFERRED_CAPTURE_TICKET', '')
+    return (os.environ.get('QMD_EDIT_INTERNAL') == '1'
+            and os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') == '1'
+            and len(ticket) == 32
+            and all(ch in '0123456789abcdef' for ch in ticket))
+
+
 def _seconds():
+    replay = deferred_replay()
+    default = DEFERRED_REPLAY_SECONDS if replay else DEFAULT_SECONDS
+    maximum = DEFERRED_REPLAY_MAX_SECONDS if replay else MAX_SECONDS
     try:
-        value = float(os.environ.get('QMD_HOOK_TOTAL_SECONDS', DEFAULT_SECONDS))
+        value = float(os.environ.get('QMD_HOOK_TOTAL_SECONDS', default))
     except (TypeError, ValueError):
-        return DEFAULT_SECONDS
-    return value if math.isfinite(value) and MIN_SECONDS <= value <= MAX_SECONDS else DEFAULT_SECONDS
+        return default
+    return value if math.isfinite(value) and MIN_SECONDS <= value <= maximum else default
 
 
 def arm(*, watchdog=True):
@@ -32,7 +46,8 @@ def arm(*, watchdog=True):
             inherited = 0
         now = time.monotonic()
         # A child must never reset an already exhausted parent budget.
-        _deadline = inherited if math.isfinite(inherited) and 0 < inherited <= now + MAX_SECONDS else now + _seconds()
+        maximum = DEFERRED_REPLAY_MAX_SECONDS if deferred_replay() else MAX_SECONDS
+        _deadline = inherited if math.isfinite(inherited) and 0 < inherited <= now + maximum else now + _seconds()
         os.environ['QMD_HOOK_DEADLINE_MONO'] = str(_deadline)
     left = _deadline - time.monotonic()
     if left <= 0:

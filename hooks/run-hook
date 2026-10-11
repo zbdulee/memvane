@@ -37,6 +37,13 @@ if [ -z "$ROOT" ]; then
 fi
 _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 
+# A fresh installed SessionStart may acknowledge an owner-requested history
+# cutover. It never selects history or touches project content.
+if [ "$ACTION" = "update-queued" ]; then
+  python3 "$_qmd_code_root/core/context_learning_host_ack.py" "$ENGINE" \
+    >/dev/null 2>&1 || true
+fi
+
 # Local trial installs may ship this marker to keep existing auto-wiki projects
 # from sending source text to a model. It does not affect manual skills.
 [ -f "$ROOT/.qmd-local-auto-compile-disabled" ] && export QMD_AUTO_COMPILE_DISABLED=1
@@ -69,6 +76,12 @@ if [ "$ACTION" != "update-queued" ]; then
       ;;
     *)
       if ! python3 "$_qmd_code_root/core/setup_guard.py" hook "$ACTION" "$_qmd_payload_file" "$PWD" >/dev/null 2>&1; then
+        exit 0
+      fi
+      # Stop before backend ensure/kick as well as before the per-action core
+      # guard. The inherited novel-root settings belong to one generated story.
+      if ! python3 "$_qmd_code_root/core/synthetic_invocation_gate.py" \
+          "$ACTION" "$_qmd_payload_file" "$PWD" >/dev/null 2>&1; then
         exit 0
       fi
       ;;
@@ -120,7 +133,16 @@ MANAGER="${QMD_BACKEND_MANAGER:-$ROOT/core/backend_manager.sh}"
 
 case "$ACTION" in
   update-queued)
-    QMD_BACKEND_MANAGER="$MANAGER" python3 "$ROOT/core/update_hook_queue.py" enqueue 2>/dev/null || true
+    # Codex can interpret a leading "[qmd]" notice as malformed JSON. Collect
+    # every notice into one event-shaped object; Claude keeps its text output.
+    _qmd_session_notice="$(QMD_BACKEND_MANAGER="$MANAGER" python3 "$ROOT/core/update_hook_queue.py" enqueue 2>/dev/null)" || true
+    if [ -n "$_qmd_session_notice" ]; then
+      if [ "$ENGINE" = codex ]; then
+        printf '%s' "$_qmd_session_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
+      else
+        printf '%s\n' "$_qmd_session_notice"
+      fi
+    fi
     exit 0
     ;;
   recall)

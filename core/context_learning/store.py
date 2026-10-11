@@ -14,14 +14,21 @@ def canonical(value):
 
 
 @contextmanager
-def database(state_dir):
+def database(state_dir, *, home=None):
     root = Path(state_dir)
     if not root.is_absolute() or not root.is_dir() or root.is_symlink():
         raise ValueError('invalid_state_dir')
     info = root.stat()
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('unsafe_state_permissions')
-    db_path = root / 'learning.sqlite3'
+    from .history_activation import writer_access
+    with writer_access(root / 'learning.sqlite3', home=home) as db_path:
+        with _database_at(db_path) as db:
+            yield db
+
+
+@contextmanager
+def _database_at(db_path):
     if db_path.is_symlink():
         raise ValueError('invalid_state_dir')
     if db_path.exists():
@@ -30,8 +37,10 @@ def database(state_dir):
             raise ValueError('unsafe_database')
     with closing(sqlite3.connect(str(db_path), timeout=0.05)) as db, db:
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise ValueError('unknown_database_version')
+        if version == 2:
+            db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA secure_delete=ON')
         db.execute('CREATE TABLE IF NOT EXISTS samples (request_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, body TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS tombstones (request_id TEXT PRIMARY KEY)')
@@ -46,7 +55,8 @@ def database(state_dir):
         yield db
 
 
-def capture(sample: dict, *, enabled: bool = False, state_dir=None, compact_sources=None) -> str:
+def capture(sample: dict, *, enabled: bool = False, state_dir=None,
+            compact_sources=None, home=None) -> str:
     if enabled is not True:
         return 'disabled'
     if state_dir is None:
@@ -64,7 +74,7 @@ def capture(sample: dict, *, enabled: bool = False, state_dir=None, compact_sour
             if cid in compact_sources:
                 compact_rows.append((sample['request_id'], cid,
                     canonical(derive(compact_sources[cid], candidate['revision_sha256']))))
-        with database(state_dir) as db:
+        with database(state_dir, home=home) as db:
             rid = sample['request_id']
             if db.execute('SELECT 1 FROM tombstones WHERE request_id=?', (rid,)).fetchone():
                 return 'deleted_case'
@@ -78,6 +88,26 @@ def capture(sample: dict, *, enabled: bool = False, state_dir=None, compact_sour
                 if old is not None and old[0] != compact_body: return 'compact_source_conflict'
             if row is None:
                 db.execute('INSERT INTO samples VALUES (?, ?, ?)', (rid, sample['schema_version'], body))
+            from .history_activation import active_mapping
+            mapping = active_mapping(db, home=home)
+            if mapping is not None:
+                project_id, project_root, _story_root = mapping
+                permitted_story = None
+                if sample.get('context_origin') == 'tool_edit':
+                    found = db.execute(
+                        'SELECT story_root FROM case_projects WHERE request_id=? '
+                        'AND project_id=? AND project_root=?',
+                        (rid, project_id, project_root)).fetchone()
+                    permitted_story = found[0] if found else None
+                existing = db.execute(
+                    'SELECT project_id,project_root,story_root FROM sample_projects '
+                    'WHERE request_id=?', (rid,)).fetchone()
+                expected = (project_id, project_root, permitted_story)
+                if existing is None:
+                    db.execute('INSERT INTO sample_projects VALUES (?,?,?,?)',
+                               (rid, *expected))
+                elif existing != expected:
+                    raise ValueError('history_sample_mapping_conflict')
             for request_id, cid, compact_body in compact_rows:
                 old = db.execute('SELECT 1 FROM compact_inputs WHERE request_id=? AND candidate_id=?',
                     (request_id, cid)).fetchone()

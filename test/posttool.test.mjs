@@ -47,7 +47,8 @@ function posttool(payload, env = {}) {
   const out = execFileSync('python3', ['core/posttool.py'], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response-ep.json', ...env },
+    env: { ...process.env, QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response-ep.json',
+      QMD_SETUP_GUARD_FIXTURE: '1', ...env },
   });
   return out.trim() ? JSON.parse(out) : null;
 }

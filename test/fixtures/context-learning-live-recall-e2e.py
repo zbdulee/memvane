@@ -54,12 +54,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-recall-', dir=Path.home() / 'w
     code = '''import json,os,sys,time
 sys.path.insert(0,'core')
 import context_learning.live_select as selector
+import context_learning.adaptive_pool as planner
+if os.environ['QMD_LIVE_CASE'] in ('shared_30','shared_5'):
+    planner.plan=lambda prompt,deadline,**_kwargs:{'requested':5 if os.environ['QMD_LIVE_CASE']=='shared_5' else 30,'reason':'admitted'}
 def choose(state,prompt,rows,*,corpus_fingerprint,deadline=None):
     assert len(rows)==15 and all('Synthetic complete wiki body' in r['source_text'] for r in rows)
     assert corpus_fingerprint and len(corpus_fingerprint)==64
     assert deadline is not None
     case=os.environ['QMD_LIVE_CASE']
-    if case=='selected':return ['wiki/card14.md','wiki/card02.md'],'selected',{'elapsed_seconds':.01}
+    if case=='selected':return ['wiki/card14.md','wiki/card02.md'],'selected',{'elapsed_seconds':.01,'model_version':'fixture-cycle','model_input_view':'full-candidate-1024-v1'}
     if case=='zero':return [],'selected',{'elapsed_seconds':.01}
     if case=='deadline':time.sleep(5)
     return None,'timeout',{}
@@ -70,6 +73,7 @@ import hook_main
 hook_main.run(recall.main)
 '''
     env = {**os.environ, 'QMD_QUERY_FIXTURE': str(fixture),
+           'QMD_SETUP_GUARD_FIXTURE': '1',
            'QMD_RECALL_LOG': str(log), 'INDEX_PATH': str(index),
            'QMD_CONFIG_DIR': str(qmd_config.parent), 'PYTHONDONTWRITEBYTECODE': '1'}
     def run(case):
@@ -85,6 +89,8 @@ hook_main.run(recall.main)
     assert selected.index('card14.md') < selected.index('card02.md')
     assert 'card00.md' not in selected
     assert event['candidates'] == 15 and event['selected'] == 2 and not event['fallback']
+    assert event['model_version'] == 'fixture-cycle'
+    assert event['model_input_view'] == 'full-candidate-1024-v1'
     zero, event = run('zero')
     assert not zero.strip() and event['reason'] == 'selected' and event['selected'] == 0
     fallback, event = run('fallback')
@@ -131,7 +137,59 @@ hook_main.run(recall.main)
     assert event['fallback'] and event['reason'] == 'candidate_unavailable'
     assert all(f'card{i:02}.md' in stale_output for i in range(3))
     stale_card.write_text(original_card)
+    settings_path = project / '.auto-context/settings.json'
+    settings = json.loads(settings_path.read_text())
+    settings['topN'] = 5
+    settings['contextLearning']['liveSelection'] = False
+    settings['sharedLearning'] = {'enabled': True, 'trialSelection': True,
+                                  'root': str(base / 'missing-shared-grant')}
+    settings_path.write_text(json.dumps(settings))
+    no_grant, event = run('shared_30')
+    assert all(f'card{i:02}.md' in no_grant for i in range(5)), no_grant
+    assert 'card05.md' not in no_grant
+    assert event['fallback'] and event['reason'] == 'shared_state_unavailable'
+    assert event['requested'] == 30 and event['available'] == 16 and event['scored'] == 0
+    with sqlite3.connect(saved_db) as db:
+        latest = json.loads(db.execute('SELECT body FROM samples ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+    assert latest['sampling']['candidate_limit'] == 30 and len(latest['candidates']) == 16
+    limited, event = run('shared_5')
+    assert event['requested'] == 5 and event['available'] == 5
+    with sqlite3.connect(saved_db) as db:
+        limited_sample = json.loads(db.execute('SELECT body FROM samples ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+    assert (limited_sample['sampling']['candidate_limit'] == 5
+            and len(limited_sample['candidates']) == 5
+            and limited_sample['sampling']['phase_counts']['primary'] == 16
+            and not limited_sample['sampling']['assessment_complete']
+            and not limited_sample['sampling']['complete_within_returned_bound'])
+    with sqlite3.connect(index) as db:
+        for i in range(16, 32):
+            source = sources / f'source{i:02}.md'
+            source.write_text(f'Synthetic source record {i:02}.\n')
+            info = source.stat()
+            revision = {'kind': 'file', 'path': 'docs/' + source.name,
+                        'collection': 'docs', 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                        'size': info.st_size, 'mtimeNs': info.st_mtime_ns}
+            card = wiki / f'card{i:02}.md'
+            card.write_text('---\ntitle: Synthetic card ' + str(i) + '\nstatus: verified\n'
+                'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                + json.dumps(revision) + '\n---\n'
+                + f'Synthetic complete wiki body for card {i:02}; source details are local.\n')
+            db.execute('INSERT INTO documents VALUES (?,?,?,1)',
+                       ('wiki', card.name, hashlib.sha256(card.read_bytes()).hexdigest()))
+            hits.append({'file': 'wiki/' + card.name, 'score': 1 - i / 100,
+                         'title': 'Synthetic', 'line': 1})
+    fixture.write_text(json.dumps({'results': hits}))
+    _over, event = run('shared_30')
+    assert event['requested'] == 30 and event['available'] == 30 and not event['completeness']
+    with sqlite3.connect(saved_db) as db:
+        over_sample = json.loads(db.execute('SELECT body FROM samples ORDER BY rowid DESC LIMIT 1').fetchone()[0])
+    assert (over_sample['sampling']['phase_counts']['primary'] == 32
+            and over_sample['sampling']['retrieval_truncated']
+            and not over_sample['sampling']['complete_within_returned_bound'])
     print(json.dumps({'liveTop15': True, 'relevanceOrder': True, 'semanticZero': True,
                       'timeoutFallback': True, 'unsupportedRuntimeFallback': True,
                       'captureMatchesLivePool': True, 'staleIndexFallback': True,
+                      'sharedWithoutGrantKeepsTopN': True,
+                      'adaptiveWiderCapture': True,
+                      'overReturnNeverComplete': True,
                       'externalCalls': 0}))

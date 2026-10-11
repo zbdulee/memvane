@@ -91,6 +91,21 @@ if sys.argv[1]=='query':
     assert all(row['cache']==selected['XDG_CACHE_HOME'] for row in recorded),recorded
     assert old.read_bytes()==original
     assert queue.read_text()==''
+    # A selected-index claim must also respect the SessionStart embed lock.
+    # A busy child leaves the queue intact and makes no QMD write.
+    queue.write_text('synthetic\t'+str(docs)+'\t'+str(root)+'\n')
+    embed_lock=Path(env['QMD_EMBED_LOCKDIR'])
+    embed_lock.mkdir()
+    (embed_lock/'pid').write_text(str(os.getpid()))
+    before_lock_calls=calls.read_bytes()
+    blocked=subprocess.run(['bash','backend/index_worker.sh'],env=env,timeout=15,
+                           capture_output=True,text=True,check=False)
+    assert blocked.returncode==75,blocked
+    assert queue.read_text()=='synthetic\t'+str(docs)+'\t'+str(root)+'\n'
+    assert calls.read_bytes()==before_lock_calls
+    (embed_lock/'pid').unlink();embed_lock.rmdir()
+    subprocess.run(['bash','backend/index_worker.sh'],env=env,timeout=15,check=True)
+    assert queue.read_text()=='' and not embed_lock.exists()
     # External allowRoot collections cannot infer ownership from their path;
     # the selected project's third queue column carries the owner explicitly.
     with tempfile.TemporaryDirectory(prefix='qmd-external-',dir=Path.home()) as external:
