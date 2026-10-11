@@ -1256,11 +1256,13 @@ with tempfile.TemporaryDirectory(prefix="qmd-fifteenth-continuation-schema-") as
     assert (root / "attempt-evidence/writing_015_1_retry1.raw-response.txt").is_file()
 
 with tempfile.TemporaryDirectory(prefix="qmd-continuation-rejected-root-") as tmp:
+    approved = Path(tmp) / "approved-novel"; approved.mkdir()
     foreign = Path(tmp) / "other-novel"; foreign.mkdir()
     foreign_root = foreign / experiment.SHARED_NAME; foreign_root.mkdir(mode=0o700)
-    refused(lambda: launcher.launch_one(
-        foreign_root, foreign, "writing", 15, 1, recovery=1,
-        invoke=lambda *_a, **_k: "unexpected"), "outside_synthetic_bundle")
+    with patch.object(scope, "NOVEL_ROOT", approved):
+        refused(lambda: launcher.launch_one(
+            foreign_root, foreign, "writing", 15, 1, recovery=1,
+            invoke=lambda *_a, **_k: "unexpected"), "outside_synthetic_bundle")
     assert not (foreign_root / "continuation-reconcile.lock").exists()
 
 for completed_files in range(5):

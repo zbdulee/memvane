@@ -656,7 +656,12 @@ with tempfile.TemporaryDirectory(prefix="qmd-v2-shared-synthetic-test-", dir="/t
             stdout.flush()
         def poll(self):
             return 0
+    # The fake process is the entire provider boundary. Keep CI independent
+    # of a locally installed Codex binary and plugin inventory here.
     with patch("context_learning.synthetic_launcher.subprocess.Popen", FakeProcess), patch(
+            "context_learning.synthetic_launcher.shutil.which", return_value="codex"), patch(
+            "context_learning.synthetic_launcher._plugin_overrides",
+            return_value=['plugins."old-local".enabled=false']), patch(
             "context_learning.synthetic_launcher._mcp_overrides", return_value=[]), patch(
             "context_learning.shared.resource_report",
             return_value={"ready": True, "memory_pressure": None,
