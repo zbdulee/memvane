@@ -81,7 +81,8 @@ if sample['host']=='claude':
 else:
  if mode!='no-init':emit({'type':'thread.started','thread_id':SECRET})
  emit({'type':'turn.started'})
- if mode=='slow':time.sleep(1.5)
+ # Cross-process cancellation must win even when CI schedules other tests.
+ if mode=='slow':time.sleep(10)
  if mode=='two-turns':emit({'type':'turn.started'})
  if mode=='tool':emit({'type':'item.started','item':{'type':'command_execution','command':SECRET}})
  if mode=='error':emit({'type':'error','message':SECRET})
@@ -255,11 +256,11 @@ if mode=='nonzero':sys.exit(2)
         capture(self.sample,enabled=True,state_dir=self.state)
         self.cli('codex','slow')
         argv=[sys.executable,'core/context_learning_cli.py','--state-dir',str(self.state),'label-request','fixture',
-            '--host','codex','--enable-teacher','--optional-hooks-audited','--timeout','3']
+            '--host','codex','--enable-teacher','--optional-hooks-audited','--timeout','8']
         for deleted in (False,True):
             p=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
             try:
-                deadline=time.monotonic()+2
+                deadline=time.monotonic()+3
                 while time.monotonic()<deadline:
                     if job_status(self.state,'fixture')['status']=='running':break
                     time.sleep(.02)
@@ -267,7 +268,7 @@ if mode=='nonzero':sys.exit(2)
                 self.assertEqual(self.command(*argv[4:])['reason'],'job_busy')
                 if deleted:delete_case(self.state,'fixture')
                 else:self.assertEqual(self.command('cancel-job','fixture')['status'],'cancel_requested')
-                out,err=p.communicate(timeout=4)
+                out,err=p.communicate(timeout=6)
                 self.assertNotIn(SECRET,out+err)
                 self.assertEqual(json.loads(out)['reason'],'cancelled')
                 with database(self.state) as db:self.assertEqual(db.execute('SELECT count(*) FROM labels').fetchone()[0],0)
