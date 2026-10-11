@@ -65,12 +65,25 @@ AI가 판정하지 못한 항목은 격리하고 다음 작업으로 넘어가�
 
 대체 방향: worker 결과를 상태 파일에 쌓는다. 다음 UserPromptSubmit이나 SessionStart의 동기 출력이 그 파일을 읽어 agent 지시로 전달하고, 전달한 뒤에 marker를 소진한다. A5(dedup resolver 스폰)도 이 채널에 의존한다.
 
+## 플랫폼 제약
+
+| # | 지점 | 동작 | 근거 |
+|---|---|---|---|
+| E1 | 비 macOS arm64 (92ecd89) | `setup_guard`는 프로젝트 pointer를 요구한다. pointer를 만드는 `activate_shadow_index`의 유일한 호출부는 `supported_platform()`(darwin + arm64) 게이트 뒤에 있다. 그래서 Linux·Intel Mac의 opt-in 프로젝트는 영구히 `setup_required`이고 모든 hook이 무출력이다. README가 안내하는 "전역 qmd 수동 설치 경로"로는 guard가 풀리지 않는다 | `core/install_update.py:58-59,796,875`, `core/setup_guard.py` · 코드 추론 |
+| E2 | 모든 플랫폼 (ff7e0db) | 이후 커밋 `e17927b`에서 guard 판정이 `qmd_route.project_paths(..., isolated=True)`로 바뀌었다. 운영 경로에서는 이 함수가 프로젝트 pointer를 보지 않고 플러그인 공용 store(`qmd_shared_store.select`, `~/Library/Application Support/qmd-auto-context/shared-qmd`)만 고른다. 이 store를 만드는 `stage_empty`/`activate_empty`의 호출부는 테스트 fixture(`test/fixtures/prepare-shared-qmd-store.py`)뿐이고, setup 경로(`setup_entry`, `install_update`)는 이 store를 만들지 않는다. 격리 HOME에서 모던 설정 프로젝트의 `status`는 `plugin_qmd_store_not_selected`다. 즉 이 시점에는 macOS arm64를 포함한 모든 플랫폼에서 opt-in 프로젝트를 ready로 만들 제품 경로가 없다 | `core/setup_guard.py:49-59`, `core/qmd_route.py:66-78`, `core/qmd_shared_store.py:25-26,382-435` · 코드 확인 + 실측 |
+| E3 | Laya runtime | hash lock이 `laya-macos-arm64-py312.lock` 하나뿐이다. 다른 플랫폼에는 설치 경로가 없다 | `core/context_learning/locks/` · 코드 확인 |
+| E4 | CI | CI는 ubuntu에서만 돌고 관리형 경로는 darwin arm64에서만 동작한다. 그래서 지원 플랫폼 경로를 CI가 실행하지 않는다 | `.github/workflows/test.yml` · 코드 확인 |
+
+대체 방향: 지원 플랫폼 밖에서는 관리형 설치 없이 전역 qmd를 재사용해 store나 pointer를 만드는 경로를 연다. 그 경로가 없으면 플러그인 설치 시점에 미지원임을 알리고 hook을 등록하지 않는다. 공용 store 생성은 setup 경로에 연결하고, 그 경로를 CI 매트릭스에 넣는다.
+
 ## 우선순위
 
-1. **D1 알림 채널 복구.** A5, A6과 모든 실패 표면화의 전제다.
-2. **B1 topical 격리.** A1~A4가 남아 있어도 파이프라인 전체가 멈추지 않게 한다.
-3. **A1·A2 topical 판정을 AI로.** 이미 있는 `wiki_dedup_judge`와 verify 삭제 규칙을 재사용한다.
-4. **B2 index_worker skip-and-preserve.**
-5. **C1·C2 runtime·pointer 자동 롤백.**
-6. **A6·A7 source repair와 merge-needed 자동화.** 검수를 게이트로 두면 잘못된 재지정은 fail로 걸러진다.
-7. **A8 Laya 정답 정책.** AI 합의로 정답을 승격하는 정책을 만들거나, liveSelection을 실험 기능으로 분리한다.
+1. **E2 공용 store 생성 경로.** 현재 HEAD에서는 어떤 플랫폼도 setup을 끝낼 수 없다. 다른 항목보다 먼저다.
+2. **D1 알림 채널 복구.** A5, A6과 모든 실패 표면화의 전제다.
+3. **B1 topical 격리.** A1~A4가 남아 있어도 파이프라인 전체가 멈추지 않게 한다.
+4. **A1·A2 topical 판정을 AI로.** 이미 있는 `wiki_dedup_judge`와 verify 삭제 규칙을 재사용한다.
+5. **B2 index_worker skip-and-preserve.**
+6. **C1·C2 runtime·pointer 자동 롤백.**
+7. **A6·A7 source repair와 merge-needed 자동화.** 검수를 게이트로 두면 잘못된 재지정은 fail로 걸러진다.
+8. **E1·E3 비 arm64 지원.** 전역 qmd 재사용 경로를 만들거나 미지원을 명시한다.
+9. **A8 Laya 정답 정책.** AI 합의로 정답을 승격하는 정책을 만들거나, liveSelection을 실험 기능으로 분리한다.
