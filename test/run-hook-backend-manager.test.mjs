@@ -25,7 +25,9 @@ test("sandbox exits before backend manager", () => {
   try {
     const marker = join(d, "manager.log");
     const manager = makeExecutable(join(d, "manager.sh"), `#!/usr/bin/env bash\necho "$@" >> "${marker}"\n`);
-    const out = runHook(["update", "claude", "--sandbox"], "{}", { QMD_BACKEND_MANAGER: manager });
+    // Sandbox exits before reading stdin; writing to its closed pipe can
+    // raise EPIPE on Node 22 under CI load.
+    const out = runHook(["update", "claude", "--sandbox"], undefined, { QMD_BACKEND_MANAGER: manager });
     assert.equal(out, "");
     assert.equal(existsSync(marker), false);
   } finally {
