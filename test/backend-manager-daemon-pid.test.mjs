@@ -124,6 +124,8 @@ function managerEnv(home, port, extra = {}) {
     PATH: BASE_PATH,
     QMD_BACKEND_STATE_DIR: home,
     QMD_DAEMON_PORT: String(port),
+    // These legacy adoption cases exercise the explicit fixture-only path.
+    QMD_SETUP_GUARD_FIXTURE: '1',
     QMD_DAEMON_PID: join(home, 'daemon.pid'),
     QMD_BACKEND_LOG: join(home, 'manager.log'),
     QMD_DAEMON_LOG: join(home, 'daemon-out.log'),
@@ -138,6 +140,42 @@ function run(args, env) {
 function managerLog(home) {
   try { return readFileSync(join(home, 'manager.log'), 'utf8'); } catch { return ''; }
 }
+
+test('default managed PID proof is isolated by port', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'qmd-port-pid-'));
+  const firstPort = await freePort();
+  let secondPort = await freePort();
+  while (secondPort === firstPort) secondPort = await freePort();
+  let first = null;
+  let second = null;
+  try {
+    makeFakeQmd(home);
+    const fake = writeFakeDaemon(home);
+    first = spawnFakeDaemon(fake, firstPort);
+    second = spawnFakeDaemon(fake, secondPort);
+    assert.ok(await waitHealthy(firstPort));
+    assert.ok(await waitHealthy(secondPort));
+    writeFileSync(join(home, 'daemon.pid'), `${first.pid}\n`);
+    const envFor = (port) => {
+      const env = managerEnv(home, port, { QMD_SETUP_GUARD_FIXTURE: '1' });
+      delete env.QMD_DAEMON_PID;
+      return env;
+    };
+    assert.equal(run(['start'], envFor(firstPort)).status, 0);
+    assert.equal(run(['start'], envFor(secondPort)).status, 0);
+    assert.equal(readFileSync(join(home, `daemon-${firstPort}.pid`), 'utf8').trim(), String(first.pid));
+    assert.equal(readFileSync(join(home, `daemon-${secondPort}.pid`), 'utf8').trim(), String(second.pid));
+    assert.equal(readFileSync(join(home, 'daemon.pid'), 'utf8').trim(), String(first.pid),
+      'other ports must never overwrite the legacy proof');
+    assert.match(managerLog(home), /daemon PID proof migrated pid=/,
+      'upgrade must preserve a verified legacy listener');
+    assert.ok(childAlive(first) && childAlive(second), 'neither listener may be replaced');
+  } finally {
+    killQuiet(first && first.pid);
+    killQuiet(second && second.pid);
+    removeTemp(home);
+  }
+});
 
 test('reload kills and restarts a live daemon even when the pid file is missing (adoption)', async () => {
   const home = mkdtempSync(join(tmpdir(), 'qmd-reload-adopt-'));

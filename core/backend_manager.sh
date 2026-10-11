@@ -15,7 +15,11 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 PORT="${QMD_DAEMON_PORT:-8484}"
 STATE_DIR="${QMD_BACKEND_STATE_DIR:-${TMPDIR:-/tmp}/qmd-auto-context-backend}"
-PID_FILE="${QMD_DAEMON_PID:-$STATE_DIR/daemon.pid}"
+# A second QMD instance (for example the user's :8483 service) can share the
+# default state directory. Keep each port's managed PID proof separate.
+PID_FILE="${QMD_DAEMON_PID:-$STATE_DIR/daemon-${PORT}.pid}"
+LEGACY_PID_FILE=""
+[ -z "${QMD_DAEMON_PID:-}" ] && LEGACY_PID_FILE="$STATE_DIR/daemon.pid"
 MANAGER_LOG="${QMD_BACKEND_LOG:-$HOME/.cache/qmd/backend-manager.log}"
 DAEMON_LOG="${QMD_DAEMON_LOG:-$HOME/.cache/qmd/mcp.daemon.log}"
 DAEMON_SCRIPT="${QMD_DAEMON_SCRIPT:-$ROOT/backend/daemon.sh}"
@@ -169,6 +173,18 @@ read_pid() {
   cat "$PID_FILE" 2>/dev/null || true
 }
 
+# On upgrade, carry an old default proof forward only when its live process
+# passes the exact executable and port checks. A legacy file for :8483 cannot
+# authorize the plugin's :8484 daemon. Explicit QMD_DAEMON_PID never migrates.
+migrate_legacy_pid() {
+  [ -n "$LEGACY_PID_FILE" ] && [ ! -e "$PID_FILE" ] && [ ! -L "$PID_FILE" ] || return 0
+  local pid
+  pid="$(cat "$LEGACY_PID_FILE" 2>/dev/null || true)"
+  pid_is_daemon "$pid" || return 0
+  ( umask 077; printf '%s\n' "$pid" >"$PID_FILE" ) || return 1
+  log "daemon PID proof migrated pid=$pid port=$PORT"
+}
+
 # 포트를 LISTEN 중인 데몬 pid를 찾는다(발견은 항상 pid_is_daemon 재검증을 거친다).
 # lsof 우선 — 기본적으로 자기 소유 프로세스만 보이고 "이 포트를 실제로 쥔 자"를 답한다.
 # pgrep은 폴백이며 uid를 제한하고 cmdline에 qmd 진입점이 있는지까지 본다("mcp --http"만으로는
@@ -257,6 +273,7 @@ PY
 }
 
 start_daemon() {
+  migrate_legacy_pid || return 1
   if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
     python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 0
   fi
@@ -378,6 +395,7 @@ clear_pid_file_if() {
 
 reload_locked() {
   local pid file_pid
+  migrate_legacy_pid || return 1
   file_pid="$(read_pid)"
   pid="$(daemon_pid)"
   if [ -n "$pid" ]; then
