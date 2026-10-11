@@ -7,6 +7,6 @@
     "node": "^22.0.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
-    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= node --test"
+    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= node --test --test-concurrency=4"
   }
 }

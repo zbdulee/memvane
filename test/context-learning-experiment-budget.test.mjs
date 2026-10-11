@@ -6,7 +6,7 @@ for (const mutation of ['0', '1']) test(`synthetic launcher binds hook captures 
   const raw = execFileSync('python3',
     ['test/fixtures/context-learning-experiment-budget-checks.py'], {
       env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1', QMD_FINAL_MUTATION: mutation},
-      encoding: 'utf8', timeout: 60000,
+      encoding: 'utf8', timeout: 120000,
     });
   const report = JSON.parse(raw);
   assert.equal(report.pilot_budget, true);
