@@ -53,7 +53,8 @@ def _installed_adapters(adapter, reviewed_sha):
         manifest = path.parents[2] / ('.claude-plugin' if host == 'claude'
                                       else '.codex-plugin') / 'plugin.json'
         try:
-            if manifest.is_symlink() or not manifest.is_file():
+            if (manifest.is_symlink() or manifest.parent.is_symlink()
+                    or not manifest.is_file()):
                 raise ValueError('runtime_authorization_adapter_invalid')
             info = manifest.stat()
             if (info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode)
@@ -343,6 +344,8 @@ def _chain(root, reviewed_sha):
         if old_hash not in records:
             break
         following = records.pop(old_hash)
+        if proposal_sha256(following) == old_hash:
+            raise ValueError('runtime_authorization_stale_or_invalid')
         _same_execution_scope(current, following, reviewed_sha)
         current = following
     if records:
