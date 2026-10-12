@@ -25,9 +25,22 @@ with tempfile.TemporaryDirectory(prefix='qmd-runtime-auth-', dir='/tmp') as tmp:
     project = base / 'novel'; project.mkdir(mode=0o700)
     story = project / 'story'; story.mkdir(mode=0o700)
     root = project / 'shared'; root.mkdir(mode=0o700)
-    adapter = base / 'reviewed.py'; adapter.write_text('print("reviewed")\n')
-    peer_adapter = base / 'peer-reviewed.py'
+    home = base / 'home'; home.mkdir(mode=0o700)
+    adapter = (home / '.codex/plugins/cache/qmd-shared-v21-local/'
+               'qmd-auto-context' / auth.REVIEWED_PLUGIN_VERSION /
+               'core/context_learning/laya_adapter.py')
+    peer_adapter = (home / '.claude/plugins/cache/qmd-shared-v44-local/'
+                    'qmd-auto-context' / auth.REVIEWED_PLUGIN_VERSION /
+                    'core/context_learning/laya_adapter.py')
+    adapter.parent.mkdir(parents=True); adapter.write_text('print("reviewed")\n')
+    peer_adapter.parent.mkdir(parents=True)
     peer_adapter.write_bytes(adapter.read_bytes())
+    for host, path in [('codex', adapter), ('claude', peer_adapter)]:
+        manifest = path.parents[2] / ('.codex-plugin' if host == 'codex'
+                                      else '.claude-plugin') / 'plugin.json'
+        manifest.parent.mkdir()
+        save_private(manifest, {'name': 'qmd-auto-context',
+                                'version': auth.REVIEWED_PLUGIN_VERSION})
     python = base / 'python'; python.write_text('runtime\n')
     model = base / 'model'; model.mkdir(mode=0o700)
     save_private(model / 'rl_agent_config.json',
@@ -69,7 +82,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-runtime-auth-', dir='/tmp') as tmp:
               'minTrainFamilies': 5, 'minValidationCases': 50,
               'minValidationFamilies': 5,
               'minEmptyValidation': 10, 'baselineRawPaths': []}
-    with patch.object(synthetic_scope, 'NOVEL_ROOT', project), patch.object(
+    with patch.object(Path, 'home', return_value=home), patch.object(
+            synthetic_scope, 'NOVEL_ROOT', project), patch.object(
             synthetic_scope, 'policy_for', return_value=consent), patch.object(
             synthetic_experiment, 'shared_for', return_value=root), patch.object(
             synthetic_experiment, 'story_for', return_value=story), patch.object(
@@ -194,5 +208,75 @@ with tempfile.TemporaryDirectory(prefix='qmd-runtime-auth-', dir='/tmp') as tmp:
             assert 'adapter_invalid' in str(exc)
         else:
             raise AssertionError('changed adapter accepted')
+        adapter.write_bytes(peer_adapter.read_bytes())
+        original_grant = auth_file.read_bytes()
+        next_version = 'next-reviewed-version'
+        next_codex = (home / '.codex/plugins/cache/qmd-shared-v21-local/'
+                      'qmd-auto-context' / next_version /
+                      'core/context_learning/laya_adapter.py')
+        next_claude = (home / '.claude/plugins/cache/qmd-shared-v44-local/'
+                       'qmd-auto-context' / next_version /
+                       'core/context_learning/laya_adapter.py')
+        for host, path in [('codex', next_codex), ('claude', next_claude)]:
+            path.parent.mkdir(parents=True)
+            path.write_bytes(adapter.read_bytes())
+            manifest = path.parents[2] / ('.codex-plugin' if host == 'codex'
+                                          else '.claude-plugin') / 'plugin.json'
+            manifest.parent.mkdir()
+            save_private(manifest, {'name': 'qmd-auto-context',
+                                    'version': next_version})
+        adapter.unlink()  # A normal Codex update can prune the old cache.
+        with patch.object(auth, 'REVIEWED_PLUGIN_VERSION', next_version), patch.object(
+                auth, '_approved_adapter_paths', return_value={
+                    'codex': next_codex, 'claude': next_claude}):
+            new_plan = auth.proposal(root, project, policy, next_codex,
+                reviewed_adapter_sha256=current_sha, cohort=cohort,
+                expires_at_unix_ms=expiry)
+            new_sha = auth.proposal_sha256(new_plan)
+            assert new_sha != plan_sha
+            with patch.object(auth.time, 'time_ns',
+                              return_value=expiry * 1_000_000):
+                try:
+                    auth.rebind(root, project, policy, next_codex, plan_sha,
+                        new_sha, reviewed_adapter_sha256=current_sha)
+                except ValueError as exc:
+                    assert str(exc) == 'runtime_authorization_expired'
+                else:
+                    raise AssertionError('expired grant rebound')
+            try:
+                auth.rebind(root, project, policy, next_codex, '0' * 64,
+                    new_sha, reviewed_adapter_sha256=current_sha)
+            except ValueError as exc:
+                assert str(exc) == 'runtime_authorization_plan_changed'
+            else:
+                raise AssertionError('wrong predecessor accepted')
+            assert auth.rebind(root, project, policy, next_codex, plan_sha,
+                new_sha, reviewed_adapter_sha256=current_sha)['status'] == 'rebound'
+            assert auth_file.read_bytes() == original_grant
+            assert auth.active(root, policy, next_codex,
+                reviewed_adapter_sha256=current_sha) == new_plan
+            assert auth.effective_argv(root, policy, next_codex,
+                reviewed_adapter_sha256=current_sha)[1] == str(next_codex)
+            assert (root / auth.UPDATES_DIR / (new_sha + '.json')).is_file()
+            next_claude.write_text('different adapter bytes')
+            try:
+                auth.active(root, policy, next_codex,
+                    reviewed_adapter_sha256=current_sha)
+            except ValueError as exc:
+                assert str(exc) == 'runtime_authorization_adapter_invalid'
+            else:
+                raise AssertionError('changed new peer adapter accepted')
+            next_claude.write_bytes(next_codex.read_bytes())
+            assert auth.active(root, policy, next_codex,
+                reviewed_adapter_sha256=current_sha) == new_plan
+            try:
+                auth.rebind(root, project, {**policy, 'goldModel': 'other'},
+                    next_codex, new_sha, new_sha,
+                    reviewed_adapter_sha256=current_sha)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('scope-changing rebind accepted')
     print(json.dumps({'plan_bound': True, 'idempotent': True,
-                      'stale_denied': True, 'scope': 'single-synthetic-story'}))
+                      'stale_denied': True, 'scope': 'single-synthetic-story',
+                      'append_only_rebind': True}))

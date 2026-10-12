@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import fcntl
 from pathlib import Path
 import re
 import sqlite3
 import stat
+import tempfile
 import time
 
 from .store import canonical
@@ -24,7 +26,9 @@ SCOPE = 'single-synthetic-story'
 OPERATIONS = ['gold', 'local_train', 'quality_evaluate']
 COHORT_SCHEMA = 'qmd-synthetic-edit-cohort-v1'
 MAX_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000
-REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261011-fantasy-pilot-v46-rc35-deferred-budget'
+REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261012-fantasy-pilot-v46-rc35-pid2'
+UPDATES_DIR = 'runtime-authorization-updates'
+UPDATE_SCHEMA = 'qmd-runtime-authorization-update-v1'
 
 
 def _approved_adapter_paths():
@@ -46,6 +50,21 @@ def _installed_adapters(adapter, reviewed_sha):
     installed = []
     for host in ('claude', 'codex'):
         path = _reviewed_adapter(approved[host], reviewed_sha)
+        manifest = path.parents[2] / ('.claude-plugin' if host == 'claude'
+                                      else '.codex-plugin') / 'plugin.json'
+        try:
+            if manifest.is_symlink() or not manifest.is_file():
+                raise ValueError('runtime_authorization_adapter_invalid')
+            info = manifest.stat()
+            if (info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1):
+                raise ValueError('runtime_authorization_adapter_invalid')
+            metadata = json.loads(manifest.read_text(encoding='utf8'))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError('runtime_authorization_adapter_invalid') from exc
+        if (metadata.get('name') != 'qmd-auto-context' or
+                metadata.get('version') != REVIEWED_PLUGIN_VERSION):
+            raise ValueError('runtime_authorization_adapter_invalid')
         installed.append({'host': host, 'path': str(path),
                           'sha256': reviewed_sha})
     if requested not in {Path(row['path']) for row in installed}:
@@ -246,16 +265,157 @@ def proposal_sha256(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+def _adapter_rows(value, reviewed_sha):
+    rows = value.get('adapterInstalls') if isinstance(value, dict) else None
+    if not isinstance(rows, list) or len(rows) != 2:
+        raise ValueError('runtime_authorization_stale_or_invalid')
+    versions = set()
+    for row, host, market in zip(rows, ('claude', 'codex'),
+                                  ('qmd-shared-v44-local', 'qmd-shared-v21-local')):
+        if (not isinstance(row, dict) or set(row) != {'host', 'path', 'sha256'}
+                or row['host'] != host or row['sha256'] != reviewed_sha
+                or not isinstance(row['path'], str)):
+            raise ValueError('runtime_authorization_stale_or_invalid')
+        base = Path.home() / ('.claude' if host == 'claude' else '.codex') / \
+            'plugins/cache' / market / 'qmd-auto-context'
+        path = Path(row['path'])
+        version = path.parent.parent.parent.name
+        if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version)
+                or path != base / version / 'core/context_learning/laya_adapter.py'):
+            raise ValueError('runtime_authorization_stale_or_invalid')
+        versions.add(version)
+    if len(versions) != 1:
+        raise ValueError('runtime_authorization_stale_or_invalid')
+
+
+def _same_execution_scope(previous, current, reviewed_sha):
+    if (not isinstance(previous, dict) or not isinstance(current, dict)
+            or set(previous) != set(current)
+            or {k: v for k, v in previous.items() if k != 'adapterInstalls'}
+            != {k: v for k, v in current.items() if k != 'adapterInstalls'}):
+        raise ValueError('runtime_authorization_scope_changed')
+    _adapter_rows(previous, reviewed_sha)
+    _adapter_rows(current, reviewed_sha)
+
+
+def _chain(root, reviewed_sha):
+    """Read an append-only chain. Missing ancestors, forks, and edits fail closed."""
+    base_path = _private(Path(root) / NAME)
+    try:
+        current = json.loads(base_path.read_text(encoding='utf8'))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError('runtime_authorization_invalid') from exc
+    if not isinstance(current, dict) or current.get('schema') != SCHEMA:
+        raise ValueError('runtime_authorization_stale_or_invalid')
+    _adapter_rows(current, reviewed_sha)
+    directory = Path(root) / UPDATES_DIR
+    if not directory.exists() and not directory.is_symlink():
+        return current
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError('runtime_authorization_unsafe_file')
+    info = directory.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('runtime_authorization_unsafe_file')
+    records = {}
+    paths = list(directory.iterdir())
+    if len(paths) > 32:
+        raise ValueError('runtime_authorization_stale_or_invalid')
+    for path in paths:
+        _private(path)
+        try:
+            record = json.loads(path.read_text(encoding='utf8'))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError('runtime_authorization_invalid') from exc
+        if (not isinstance(record, dict) or set(record) !=
+                {'schema', 'previousProposalSha256', 'proposal'}
+                or record['schema'] != UPDATE_SCHEMA
+                or not isinstance(record['proposal'], dict)
+                or path.name != proposal_sha256(record['proposal']) + '.json'):
+            raise ValueError('runtime_authorization_stale_or_invalid')
+        previous_hash = record['previousProposalSha256']
+        if (not isinstance(previous_hash, str) or
+                not re.fullmatch(r'[0-9a-f]{64}', previous_hash)
+                or previous_hash in records):
+            raise ValueError('runtime_authorization_stale_or_invalid')
+        records[previous_hash] = record['proposal']
+    for _ in range(len(records)):
+        old_hash = proposal_sha256(current)
+        if old_hash not in records:
+            break
+        following = records.pop(old_hash)
+        _same_execution_scope(current, following, reviewed_sha)
+        current = following
+    if records:
+        raise ValueError('runtime_authorization_stale_or_invalid')
+    return current
+
+
+def rebind(root, project, policy, adapter, previous_sha256,
+           accepted_sha256, *, reviewed_adapter_sha256):
+    """Append a same-scope adapter relocation receipt; keep the old grant intact."""
+    root = Path(root).resolve(strict=True)
+    lock_path = root / (UPDATES_DIR + '.lock')
+    if lock_path.is_symlink():
+        raise ValueError('runtime_authorization_unsafe_file')
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('runtime_authorization_unsafe_file')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        current = _chain(root, reviewed_adapter_sha256)
+        old_hash = proposal_sha256(current)
+        if old_hash != previous_sha256:
+            raise ValueError('runtime_authorization_plan_changed')
+        if time.time_ns() // 1_000_000 >= current['expiresAtUnixMs']:
+            raise ValueError('runtime_authorization_expired')
+        updated = proposal(root, project, policy, adapter,
+                           reviewed_adapter_sha256=reviewed_adapter_sha256,
+                           cohort=current['cohort'],
+                           expires_at_unix_ms=current['expiresAtUnixMs'])
+        _same_execution_scope(current, updated, reviewed_adapter_sha256)
+        new_hash = proposal_sha256(updated)
+        if new_hash != accepted_sha256:
+            raise ValueError('runtime_authorization_plan_changed')
+        if new_hash == old_hash:
+            return {'status': 'already_active', 'proposalSha256': new_hash}
+        directory = root / UPDATES_DIR
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.is_symlink() or directory.stat().st_mode & 0o077:
+            raise ValueError('runtime_authorization_unsafe_file')
+        record = {'schema': UPDATE_SCHEMA, 'previousProposalSha256': old_hash,
+                  'proposal': updated}
+        raw = (json.dumps(record, ensure_ascii=False, sort_keys=True,
+                          separators=(',', ':')) + '\n').encode()
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix='.pending-', dir=directory)
+        try:
+            os.fchmod(tmp_fd, 0o600)
+            os.write(tmp_fd, raw)
+            os.fsync(tmp_fd)
+            os.close(tmp_fd)
+            tmp_fd = -1
+            os.link(tmp_name, directory / (new_hash + '.json'))
+            dir_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if tmp_fd >= 0:
+                os.close(tmp_fd)
+            Path(tmp_name).unlink(missing_ok=True)
+        return {'status': 'rebound', 'previousProposalSha256': old_hash,
+                'proposalSha256': new_hash}
+    finally:
+        os.close(fd)
+
+
 def active(root, policy, adapter, *, reviewed_adapter_sha256):
     """Return only a current exact grant; absent or expired means no grant."""
     path = Path(root) / NAME
     if not path.exists() and not path.is_symlink():
         return None
-    path = _private(path)
-    try:
-        value = json.loads(path.read_text(encoding='utf8'))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError('runtime_authorization_invalid') from exc
+    value = _chain(root, reviewed_adapter_sha256)
     from .synthetic_experiment import project_for
     if not isinstance(value, dict) or value.get('schema') != SCHEMA:
         raise ValueError('runtime_authorization_stale_or_invalid')
