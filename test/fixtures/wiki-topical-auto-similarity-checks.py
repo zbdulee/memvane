@@ -174,6 +174,13 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-similarity-') as temporary:
             cfg, 'codex', distinct, recovery_only=True)
         assert replay['status'] == 'distinct_or_no_candidates'
         assert len(calls) - before == 10
+        target_pair = similarity._dedup_payload(root, gid, 'new-rule',
+                                                many[0])['pairSha256']
+        with patch.object(similarity, '_dedup_payload',
+                          wraps=similarity._dedup_payload) as checked:
+            limited = similarity._review(root, required_pairs={target_pair})
+        assert set(limited) == {target_pair}
+        assert checked.call_count == 1, checked.call_count
         technical = {'cardId': 'keeper-k42-corrections', 'sourceRevisions': [
             {'path': '02_Characters/qmd-prospective/tr-character-keeper/'
                      'keeper-consent-k42-20261012.md'}]}

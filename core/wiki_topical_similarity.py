@@ -233,7 +233,7 @@ def review_candidates(root: Path, card: dict, generation_id: str,
     return legacy + list(found.values())
 
 
-def _review(root: Path) -> dict:
+def _review(root: Path, *, required_pairs=None) -> dict:
     path = root / REVIEW_FILE
     value = {'schema': 'qmd-topical-similarity-review-v1', 'decisions': []}
     if path.exists() or path.is_symlink():
@@ -279,8 +279,9 @@ def _review(root: Path) -> dict:
                     or any(set(row['sharedClaims'][cid]) & set(row['uniqueClaims'][cid])
                            for cid in row['sharedClaims'])):
                 raise topical.TopicalError('invalid_similarity_review')
-        decisions[row['pairSha256']] = row
-    for pair, row in _automatic_decisions(root).items():
+        if required_pairs is None or row['pairSha256'] in required_pairs:
+            decisions[row['pairSha256']] = row
+    for pair, row in _automatic_decisions(root, required_pairs=required_pairs).items():
         if pair in decisions and decisions[pair]['verdict'] != row['verdict']:
             raise topical.TopicalError('similarity_review_conflict')
         decisions.setdefault(pair, row)
@@ -348,13 +349,14 @@ def _page_bytes(root: Path, relative: str, *, staged: bool = False) -> bytes:
 
 
 def _dedup_payload(root: Path, generation_id: str, card_id: str,
-                   candidate: dict) -> dict:
+                   candidate: dict, *, page_reader=None) -> dict:
+    read_page = page_reader or _page_bytes
     proposed_path = f'topical-v2/{generation_id}/{card_id}.md'
     other_path = candidate['path']
-    proposed = _page_bytes(root, proposed_path, staged=True)
+    proposed = read_page(root, proposed_path, staged=True)
     # A sibling in the same unpublished batch is read from its immutable stage.
     sibling = other_path.startswith(f'topical-v2/{generation_id}/')
-    other = _page_bytes(root, other_path, staged=sibling)
+    other = read_page(root, other_path, staged=sibling)
     a_sha, b_sha = (hashlib.sha256(body).hexdigest() for body in (proposed, other))
     if b_sha != candidate['pageSha256']:
         raise topical.TopicalError('similarity_candidate_changed')
@@ -385,7 +387,7 @@ def _semantic_decision(response, pair):
             'reviewerId': 'codex-cli-semantic-dedup', 'reason': reason}
 
 
-def _automatic_decisions(root: Path) -> dict:
+def _automatic_decisions(root: Path, *, required_pairs=None) -> dict:
     """Rebuild decisions from exact, completed, full-content adapter receipts."""
     import topical_story_scope
     if not topical_story_scope.exact_story(root):
@@ -401,6 +403,15 @@ def _automatic_decisions(root: Path) -> dict:
         return {}
     fd = backend._audit_fd(root)
     decisions = {}
+    # Hundreds of immutable receipts can reference the same few pages. Keep
+    # one verified byte snapshot per page for this scan, then recheck every
+    # snapshot before returning so a concurrent edit cannot bless old bytes.
+    pages = {}
+    def read_page(project, relative, *, staged=False):
+        key = (relative, staged)
+        if key not in pages:
+            pages[key] = _page_bytes(project, relative, staged=staged)
+        return pages[key]
     try:
         for name in sorted(os.listdir(fd)):
             if not name.startswith('similarity.') or not name.endswith('.attempt.json'):
@@ -419,6 +430,8 @@ def _automatic_decisions(root: Path) -> dict:
             page_a, page_b = payload.get('pageA'), payload.get('pageB')
             if (payload.get('task') != 'dedup' or not isinstance(page_a, dict)
                     or not isinstance(page_b, dict) or
+                    not isinstance(payload.get('pairSha256'), str) or
+                    not re.fullmatch(r'[0-9a-f]{64}', payload['pairSha256']) or
                     set(page_a) != {'path', 'content'} or
                     set(page_b) != {'path', 'content'} or
                     any(not isinstance(page.get(key), str)
@@ -430,10 +443,15 @@ def _automatic_decisions(root: Path) -> dict:
                     not experiment.GENERATION_ID.fullmatch(parts[1]) or
                     not parts[2].endswith('.md')):
                 raise topical.TopicalError('similarity_receipt_changed')
+            # A published proof binds only its own pairs. Still validate the
+            # envelope of every receipt, but do not re-read unrelated pages.
+            if required_pairs is not None and payload['pairSha256'] not in required_pairs:
+                continue
             candidate = {'path': page_b['path'],
                          'pageSha256': hashlib.sha256(page_b['content'].encode('utf8')).hexdigest()}
             try:
-                current = _dedup_payload(root, parts[1], parts[2][:-3], candidate)
+                current = _dedup_payload(root, parts[1], parts[2][:-3], candidate,
+                                         page_reader=read_page)
             except (OSError, UnicodeError, topical.TopicalError):
                 # A changed or retired page invalidates this decision for new
                 # publication; the old receipt remains intact for audit.
@@ -447,6 +465,9 @@ def _automatic_decisions(root: Path) -> dict:
             if prior is not None and prior['verdict'] != decision['verdict']:
                 raise topical.TopicalError('similarity_receipt_conflict')
             decisions.setdefault(decision['pairSha256'], decision)
+        for (relative, staged), body in pages.items():
+            if _page_bytes(root, relative, staged=staged) != body:
+                raise topical.TopicalError('similarity_candidate_changed')
     finally:
         os.close(fd)
     return decisions

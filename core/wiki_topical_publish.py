@@ -191,7 +191,8 @@ def _create_review_proof(root, generation_id, card_id, generated_sha, record):
         if any((row['path'], row['pageSha256']) not in reviewed_legacy
                for row in selected):
             raise topical.TopicalError('create_review_proof_changed')
-    decisions = similarity._review(root)
+    decisions = similarity._review(root, required_pairs={
+        row.get('pairSha256') for row in proof['pairs'] if isinstance(row, dict)})
     seen = set()
     for row in proof['pairs']:
         complementary = isinstance(row, dict) and row.get('verdict') == 'complementary_overlap'
@@ -296,7 +297,8 @@ def _publication_proof(root, generation_id, card_id, generated_sha, record):
             not isinstance(proof.get('reviewPairs'),list)):
         raise topical.TopicalError('publication_proof_changed')
     import wiki_topical_similarity as similarity
-    decisions=similarity._review(root)
+    decisions=similarity._review(root, required_pairs={
+        pair for pair in proof['reviewPairs'] if isinstance(pair, str)})
     bound = proof.get('reviewDecisionSha256')
     if bound is not None and (not isinstance(bound, dict)
                               or set(bound) != set(proof['reviewPairs'])):
