@@ -6,7 +6,7 @@
     {
       "name": "qmd-auto-context",
       "description": "qmd 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/sync/query/update/wiki-compile/wiki-dedup/wiki-source-repair/enable-compile manual skills",
-      "version": "0.35.2-dev.20261012-fantasy-pilot-v49-rc39-receipt-scope",
+      "version": "0.35.2-dev.20261012-fantasy-pilot-v50-rc40-late-gold-wake",
       "category": "Productivity",
       "source": { "source": "url", "url": "https://github.com/zbdulee/qmd-auto-context" },
       "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },

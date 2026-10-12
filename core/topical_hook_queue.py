@@ -281,8 +281,9 @@ def _run(root, job):
         from context_learning.deferred_edit import resume_ready
         from context_learning.synthetic_scope import NOVEL_ROOT
         captures, more = resume_ready(NOVEL_ROOT, return_more=True)
+        shared_wake = _wake_shared_after_capture(captures)
         return {'status': 'deferred_capture_pass', 'deferredCaptures': captures,
-                'deferredMore': more}
+                'deferredMore': more, 'sharedWake': shared_wake}
     if settings_path.is_file() or policy is not None:
         settings, cards = _settings(root, policy)
         if (policy is not None and
@@ -363,6 +364,7 @@ def _run(root, job):
         try:
             deferred_captures, deferred_more = resume_ready(
                 NOVEL_ROOT, return_more=True)
+            shared_wake = _wake_shared_after_capture(deferred_captures)
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             return {'status':'pending_review','reason':'deferred_edit_capture_unavailable',
                     'lastResult':result,'detail':str(exc)[:80]}
@@ -370,17 +372,26 @@ def _run(root, job):
             return {'status':'pending_review','reason':'worker_provenance_deferred',
                     'lastResult':result,'workerProvenance':provenance,
                     'deferredCaptures':deferred_captures,
-                    'deferredMore':deferred_more}
+                    'deferredMore':deferred_more, 'sharedWake': shared_wake}
         if result is not None:
             result = {**result, 'workerProvenance':provenance,
                       'deferredCaptures':deferred_captures,
-                      'deferredMore':deferred_more}
+                      'deferredMore':deferred_more, 'sharedWake': shared_wake}
         else:
             result = {'status': 'deferred_capture_pass',
                       'workerProvenance': provenance,
                       'deferredCaptures': deferred_captures,
-                      'deferredMore': deferred_more}
+                      'deferredMore': deferred_more, 'sharedWake': shared_wake}
     return result
+
+
+def _wake_shared_after_capture(captures):
+    """A late, indexed edit capture needs a fresh normal gold worker wake."""
+    if not any(row.get('state') == 'completed' for row in captures):
+        return None
+    from context_learning.shared import wake_after_index
+    from context_learning.synthetic_scope import NOVEL_ROOT
+    return wake_after_index(NOVEL_ROOT)
 
 
 def worker(root):

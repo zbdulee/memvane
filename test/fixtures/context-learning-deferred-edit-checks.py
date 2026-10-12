@@ -288,6 +288,26 @@ with tempfile.TemporaryDirectory(prefix='qmd-deferred-edit-') as temporary:
     assert all(call.args == (30.0,) for call in alarm_sleep.call_args_list)
     assert len(list((alarm_root / '.topical-hook-jobs').glob('*.json'))) == 1
 
+    # A deferred case is born after index ACK. Wake the ordinary gold worker
+    # only for a newly completed replay, never for an unresolved retry.
+    with patch.object(shared, 'wake_after_index',
+                      return_value={'status': 'launched'}) as wake:
+        assert topical_hook_queue._wake_shared_after_capture([
+            {'state': 'pending'}]) is None
+        wake.assert_not_called()
+        assert topical_hook_queue._wake_shared_after_capture([
+            {'state': 'completed'}]) == {'status': 'launched'}
+        wake.assert_called_once()
+    with patch.object(topical_hook_queue, '_auto_policy', return_value=(
+            {'enabled': True}, None)), \
+         patch.object(deferred_edit, 'resume_ready', return_value=(
+            [{'state': 'completed'}], False)), \
+         patch.object(topical_hook_queue, '_wake_shared_after_capture',
+                      return_value={'status': 'launched'}) as wake:
+        result = topical_hook_queue._run(story, {'action': 'deferred'})
+    assert result['sharedWake'] == {'status': 'launched'}
+    wake.assert_called_once_with([{'state': 'completed'}])
+
 print(json.dumps({'immutablePrePost': True, 'ticketExtended': True,
                   'waitedForRegistration': True, 'oneReplay': True,
                   'orphanTerminates': True, 'lateValidation': True,
