@@ -38,6 +38,32 @@ def _same_published_card(existing: bytes, freshly_stamped: bytes) -> bool:
         b"verifiedAt: <publication-time>", freshly_stamped)
 
 
+def canonical_published_card(root: Path, generation_id: str, card_id: str,
+                             published: bytes) -> bytes:
+    """Bind a stamped public page to its attested, immutable model input."""
+    record = _attested(root, generation_id, card_id)
+    staged = topical.read_generation_bytes(root, generation_id,
+                                           f'cards/{card_id}.md')
+    if hashlib.sha256(staged).hexdigest() != record['cardMarkdownSha256']:
+        raise topical.TopicalError('staged_body_changed')
+    body_hash = yaml_scalars.card_body_hash(staged.decode('utf8'))
+    if body_hash is None:
+        raise topical.TopicalError('staged_body_changed')
+    fd, temporary = tempfile.mkstemp(prefix='.similarity-', dir=root)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(staged)
+        if not wiki_compile.stamp_verification(Path(temporary), 'verified',
+                record['engine'], qmd_config.VERIFIED_MODE_UNKNOWN, body_hash):
+            raise topical.TopicalError('verification_stamp_failed')
+        if not _same_published_card(published, Path(temporary).read_bytes()):
+            raise topical.TopicalError('published_card_changed')
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return staged
+
+
 def _project(root: Path):
     root = experiment.require_sandbox(root)
     import topical_story_scope
@@ -73,14 +99,13 @@ def _attested(root: Path, generation_id: str, card_id: str):
     return record
 
 
-def _publication_similarity(root: Path, wiki: Path, generation_id: str, card_id: str):
-    """Every public publish entrypoint reviews all other fresh v2 pages."""
-    import wiki_topical_similarity as similarity
-    proposed = experiment.load_staged_card(root, generation_id, card_id)
+def fresh_published_candidates(root: Path, wiki: Path, *, exclude=()):
+    """Return every fresh, attested topical page with canonical pair hashes."""
+    excluded = set(exclude)
     matches = []
     for page in sorted((wiki / 'topical-v2').glob('*/*.md')):
         gid, cid = page.parent.name, page.stem
-        if (gid, cid) == (generation_id, card_id):
+        if (gid, cid) in excluded:
             continue
         if page.is_symlink() or not page.is_file():
             raise topical.TopicalError('unsafe_published_card')
@@ -94,12 +119,21 @@ def _publication_similarity(root: Path, wiki: Path, generation_id: str, card_id:
         if stale:
             continue
         _attested(root, gid, cid)
+        canonical_published_card(root, gid, cid, page.read_bytes())
         card = experiment.load_staged_card(root, gid, cid)
         matches.append({'path':page.relative_to(wiki).as_posix(),
             'pageSha256':hashlib.sha256(topical.read_generation_bytes(root, gid,
-                f'cards/{cid}.md')).hexdigest(), 'card':card})
-        if len(matches) > similarity.MAX_RESULTS:
-            raise topical.TopicalError('similarity_review_budget_exceeded')
+                f'cards/{cid}.md')).hexdigest(), 'card':card,
+            'lead': card['lead'][:600]})
+    return matches
+
+
+def _publication_similarity(root: Path, wiki: Path, generation_id: str, card_id: str):
+    """Every public publish entrypoint reviews all other fresh v2 pages."""
+    import wiki_topical_similarity as similarity
+    proposed = experiment.load_staged_card(root, generation_id, card_id)
+    matches = fresh_published_candidates(root, wiki,
+        exclude=[(generation_id, card_id)])
     result = similarity.evaluate(root, proposed, generation_id, matches)
     if result['status'] == 'pending_review':
         raise topical.TopicalError('similarity_unresolved')
@@ -121,18 +155,42 @@ def _create_review_proof(root, generation_id, card_id, generated_sha, record):
         raise topical.TopicalError('unsafe_create_review_proof')
     info = path.stat()
     if (info.st_uid != os.getuid() or info.st_nlink != 1
-            or info.st_mode & 0o077 or info.st_size > 65536):
+            or info.st_mode & 0o077 or info.st_size > 1_000_000):
         raise topical.TopicalError('unsafe_create_review_proof')
     proof = json.loads(path.read_text())
+    import wiki_topical_similarity as similarity
+    selection_sha = similarity.selection_sha(root, generation_id, card_id)
+    already_published = (
+        (root / '.auto-context/wiki/topical-v2' / generation_id /
+         (card_id + '.md')).is_file() and
+        (root / 'topical-publication-proofs' / generation_id /
+         (card_id + '.json')).is_file())
+    if (required and not already_published and selection_sha is None and
+            (root / 'topical-generations' /
+            generation_id / 'manifest.json').is_file() and
+            similarity._record_anchor(experiment.load_staged_card(
+                root, generation_id, card_id)) is not None):
+        raise topical.TopicalError('similarity_selection_missing')
     if (proof.get('schema') != 'qmd-topical-create-review-proof-v1'
             or proof.get('generationId') != generation_id
             or proof.get('cardId') != card_id
             or proof.get('generatedSha256') != generated_sha
             or proof.get('attestationSha256') != topical.digest(topical.encoded(record))
             or not isinstance(proof.get('pairs'), list)
-            or len(proof['pairs']) > 72):
+            or len(proof['pairs']) > 512
+            or (selection_sha is not None and
+                proof.get('legacySelectionSha256') != selection_sha)
+            or (selection_sha is None and
+                'legacySelectionSha256' in proof)):
         raise topical.TopicalError('create_review_proof_changed')
-    import wiki_topical_similarity as similarity
+    if selection_sha is not None:
+        staged = experiment.load_staged_card(root, generation_id, card_id)
+        selected = similarity._selection(root, staged, generation_id, None)
+        reviewed_legacy = {(row.get('candidatePath'), row.get('candidateSha256'))
+                           for row in proof['pairs'] if isinstance(row, dict)}
+        if any((row['path'], row['pageSha256']) not in reviewed_legacy
+               for row in selected):
+            raise topical.TopicalError('create_review_proof_changed')
     decisions = similarity._review(root)
     seen = set()
     for row in proof['pairs']:
@@ -183,11 +241,22 @@ def save_create_review_proof(root, generation_id, card_id, pairs):
     if any(row['verdict'] not in ('distinct', 'complementary_overlap')
            for row in rows):
         raise topical.TopicalError('create_review_unresolved')
+    selection_sha = similarity.selection_sha(root, generation_id, card_id)
+    if selection_sha is not None:
+        staged = experiment.load_staged_card(root, generation_id, card_id)
+        selected = similarity._selection(root, staged, generation_id, None)
+        reviewed_legacy = {(row['candidatePath'], row['candidateSha256'])
+                           for row in rows}
+        if any((row['path'], row['pageSha256']) not in reviewed_legacy
+               for row in selected):
+            raise topical.TopicalError('create_review_unresolved')
     proof = {'schema': 'qmd-topical-create-review-proof-v1',
              'generationId': generation_id, 'cardId': card_id,
              'generatedSha256': generated_sha,
              'attestationSha256': topical.digest(topical.encoded(record)),
              'pairs': rows}
+    if selection_sha is not None:
+        proof['legacySelectionSha256'] = selection_sha
     base = root / 'topical-create-review-proofs'
     for folder in (base, base / generation_id):
         if folder.is_symlink():
@@ -218,7 +287,7 @@ def _publication_proof(root, generation_id, card_id, generated_sha, record):
     if path.is_symlink() or not path.is_file():
         return None
     info=path.stat()
-    if info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_size>65536:
+    if info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_size>1_000_000:
         raise topical.TopicalError('unsafe_publication_proof')
     proof=json.loads(path.read_text())
     if (proof.get('schema')!='qmd-topical-publication-proof-v1' or

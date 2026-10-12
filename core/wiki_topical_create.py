@@ -25,7 +25,7 @@ def _read(root):
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > 65536):
+                or info.st_mode & 0o077 or info.st_size > 1_000_000):
             raise topical.TopicalError('unsafe_create_journal')
         row = json.loads(os.read(fd, info.st_size + 1))
     finally:
@@ -208,8 +208,8 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
             return {'status': 'pending_review', 'reason': 'created_card_source_mismatch'}
     for card in ([] if resume_review else cards):
         try:
-            matches = (similarity.retrieve(root, card['lead'],
-                exclude=batch_exclude) if published_other else [])
+            matches = similarity.review_candidates(root, card, generation_id,
+                exclude=batch_exclude) if published_other else []
             # Review the immutable staged sibling pages as one batch. A retry
             # sees the same pairs even if an earlier publish partly completed.
             for sibling in cards:
@@ -220,8 +220,6 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
                     f'cards/{sibling_id}.md')
                 matches.append({'path': f'topical-v2/{generation_id}/{sibling_id}.md',
                     'pageSha256': topical.digest(sibling_page), 'card': sibling})
-            if sum(item.get('legacy') is not True for item in matches) > similarity.MAX_RESULTS:
-                raise topical.TopicalError('similarity_review_budget_exceeded')
             result = similarity.evaluate(root, card, generation_id, matches)
             original_pairs = result['pairs']
             if result['status'] == 'pending_review':
@@ -235,7 +233,8 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
         if result['status'] == 'pending_review':
             journal['phase'] = 'awaiting_similarity'; reconcile._atomic(root / JOURNAL, journal)
             return {'status': 'pending_review', 'reason': result.get('reason', 'similarity_unresolved'),
-                    'pairs': result.get('pairs', original_pairs)}
+                    'pairs': result.get('pairs', original_pairs),
+                    'reviewedThisPass': result.get('reviewedThisPass', 0)}
         reviewed[card['cardId']] = result['pairs']
     if reconcile._scan(root, source_roots, skip_paths) != batch['snapshot']:
         reconcile.finish_mock_batch(root, source_roots, batch['batchId'],

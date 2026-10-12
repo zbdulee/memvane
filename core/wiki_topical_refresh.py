@@ -42,7 +42,7 @@ def _read(root: Path):
     try:
         info = os.fstat(fd)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > 65536):
+                or info.st_mode & 0o077 or info.st_size > 1_000_000):
             raise topical.TopicalError('unsafe_refresh_journal')
         row = json.loads(os.read(fd, info.st_size + 1))
     finally:
@@ -421,7 +421,8 @@ def _refresh_locked(root, source_roots, old_card, old_generation_id,
         excluded += [(generation_id, cid) for cid in card_ids]
         for card in ([] if resume_review else new_cards):
             try:
-                matches = similarity.retrieve(root, card['lead'], exclude=excluded)
+                matches = similarity.review_candidates(root, card,
+                    generation_id, exclude=excluded)
                 for sibling in new_cards:
                     if sibling['cardId'] == card['cardId']:
                         continue
@@ -430,8 +431,6 @@ def _refresh_locked(root, source_roots, old_card, old_generation_id,
                         generation_id, f'cards/{sibling_id}.md')
                     matches.append({'path': f'topical-v2/{generation_id}/{sibling_id}.md',
                         'pageSha256': topical.digest(sibling_page), 'card': sibling})
-                if sum(item.get('legacy') is not True for item in matches) > similarity.MAX_RESULTS:
-                    raise topical.TopicalError('similarity_review_budget_exceeded')
                 result = similarity.evaluate(root, card, generation_id, matches)
                 original_pairs = result['pairs']
                 if result['status'] == 'pending_review':
@@ -446,7 +445,8 @@ def _refresh_locked(root, source_roots, old_card, old_generation_id,
                 return {'status': 'pending_review',
                         'reason': result.get('reason', 'similarity_unresolved'),
                         'cardId': card['cardId'],
-                        'pairs': result.get('pairs', original_pairs)}
+                        'pairs': result.get('pairs', original_pairs),
+                        'reviewedThisPass': result.get('reviewedThisPass', 0)}
             reviewed[card['cardId']] = result['pairs']
         # Pair rows can be numerous and are persisted as per-card immutable
         # publication proofs below. Duplicating them in the bounded journal

@@ -412,6 +412,18 @@ def worker(root):
                             output.write(f'{time.time():.3f} {path.name} setup_required\n'); output.flush()
                             return
                         result = _run(root, job)
+                        # A review round has made durable, content-pair-bound
+                        # progress. Queue its successor before retiring this
+                        # job so a crash cannot strand the verified batch.
+                        continue_review = (isinstance(result, dict)
+                            and result.get('status') == 'pending_review'
+                            and result.get('reason') == 'similarity_review_deferred'
+                            and type(result.get('reviewedThisPass')) is int
+                            and result['reviewedThisPass'] > 0)
+                        if continue_review:
+                            successor = queue / (uuid.uuid4().hex + '.json')
+                            _atomic(successor, {'schema': 'topical-hook-job-v1',
+                                'action': 'reconcile', 'turnKey': 'recovery'})
                         path.unlink()
                         outcome = 'completed'
                     except Exception as exc:
@@ -425,6 +437,9 @@ def worker(root):
                         _atomic(queue / (uuid.uuid4().hex + '.json'), {
                             'schema': 'topical-hook-job-v1',
                             'action': 'deferred', 'turnKey': 'recovery'})
+                        yield_after_replay = True
+                        break
+                    if outcome == 'completed' and continue_review:
                         yield_after_replay = True
                         break
                 if yield_after_replay:

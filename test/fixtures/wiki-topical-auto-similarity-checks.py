@@ -156,6 +156,37 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-similarity-') as temporary:
             assert exc.code == 'similarity_candidate_missing'
         else:
             raise AssertionError('hard-linked external content was read')
+        many = []
+        for index in range(10):
+            page = wiki / f'unrelated-{index}.md'
+            page.write_text(f'Independent archive rule {index}.\n')
+            many.append(match(page))
+        before = len(calls)
+        round_one = similarity.auto_review_pending(root, proposed, gid, many,
+            cfg, 'codex', distinct, recovery_only=False)
+        assert round_one['reason'] == 'similarity_review_deferred'
+        assert round_one['reviewedThisPass'] == 8 and len(calls) - before == 8
+        round_two = similarity.auto_review_pending(root, proposed, gid, many,
+            cfg, 'codex', distinct, recovery_only=False)
+        assert round_two['status'] == 'distinct_or_no_candidates'
+        assert len(calls) - before == 10
+        replay = similarity.auto_review_pending(root, proposed, gid, many,
+            cfg, 'codex', distinct, recovery_only=True)
+        assert replay['status'] == 'distinct_or_no_candidates'
+        assert len(calls) - before == 10
+        technical = {'cardId': 'keeper-k42-corrections', 'sourceRevisions': [
+            {'path': '02_Characters/qmd-prospective/tr-character-keeper/'
+                     'keeper-consent-k42-20261012.md'}]}
+        assert similarity._record_anchor(technical) == 'k42'
+        candidate_census = [{'path': f'legacy-{i:02}.md',
+            '_body': (b'k42 exact source cross-reference' if i == 11
+                      else f'unrelated archive {i}'.encode())}
+            for i in range(12)]
+        selected = similarity._selected_legacy(candidate_census,
+            [row['path'] for row in candidate_census], 'k42')
+        assert selected == [f'legacy-{i:02}.md' for i in range(8)] + [
+            'legacy-11.md']
+        assert len(similarity._selected_legacy(candidate_census, [], None)) == 12
         auto_dir = root / '.auto-context'
         auto_dir.rename(root / 'saved-auto-context')
         auto_dir.symlink_to(root / 'saved-auto-context', target_is_directory=True)

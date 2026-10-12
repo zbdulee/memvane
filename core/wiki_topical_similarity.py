@@ -10,8 +10,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
+import tempfile
 import wiki_topical_backend as backend
 import wiki_compile_worker as compile_worker
 
@@ -20,10 +22,215 @@ import wiki_topical_experiment as experiment
 import wiki_topical_publish as publisher
 from wiki_topical_selection import exact_card_identity
 
-MAX_RESULTS = 8
-MAX_LEGACY_RESULTS = 64
-SEARCH_LIMIT = 64
+# Bound new provider work per worker pass, never the total candidate set. A
+# completed pair is keyed by both immutable page hashes and is reused on resume.
+MAX_NEW_REVIEWS_PER_PASS = 8
+# The isolated story has 53 legacy wiki pages plus the live topical families.
+# QMD's approximate vsearch returned only 44 hits with -n 64, but all 59
+# indexed pages with -n 256 for the same query. Saturation still fails closed.
+MAX_LEGACY_RESULTS = 128
+SEARCH_LIMIT = 256
 REVIEW_FILE = 'topical-similarity-review.json'
+SELECTION_DIR = 'topical-similarity-selection'
+SELECTION_SCHEMA = 'qmd-topical-similarity-selection-v1'
+LEGACY_VECTOR_HEAD = 8
+
+
+def _technical_ids(value: str) -> set[str]:
+    return {letter.lower() + number for letter, number in
+            re.findall(r'(?i)(?<![a-z0-9])([a-z]{1,2})[-_ ]?(\d{1,3})'
+                       r'(?![a-z0-9])', value)}
+
+
+def _selected_legacy(census: list[dict], qmd_legacy: list[str],
+                     anchor: str | None) -> list[str]:
+    if anchor is None:
+        return sorted(row['path'] for row in census)
+    selected = set(qmd_legacy[:LEGACY_VECTOR_HEAD])
+    selected.update(row['path'] for row in census
+                    if anchor in _technical_ids(row['_body'].decode('utf8')))
+    return sorted(selected)
+
+
+def _record_anchor(card: dict) -> str | None:
+    """Use a fixture record ID only when source path and card ID agree."""
+    revisions = card.get('sourceRevisions')
+    if not isinstance(revisions, list) or not revisions:
+        return None
+    paths = [row.get('path') for row in revisions if isinstance(row, dict)]
+    if len(paths) != len(revisions) or any(not isinstance(p, str) or
+            not re.fullmatch(r'(?:01_Settings|02_Characters|03_Plot)/'
+                r'qmd-prospective/(?:tr|va)-[a-z-]+/[A-Za-z0-9._-]+\.md', p)
+            for p in paths):
+        return None
+    shared = _technical_ids(card.get('cardId', ''))
+    for path in paths:
+        shared &= _technical_ids(Path(path).stem)
+    return next(iter(shared)) if len(shared) == 1 else None
+
+
+def _legacy_census(root: Path, *, require_index: bool = True) -> list[dict]:
+    """Read every legacy page through the same no-follow reader as a review."""
+    _project, wiki, collection = publisher._project(root)
+    pages = sorted(p for p in wiki.rglob('*.md')
+                   if 'topical-v2' not in p.relative_to(wiki).parts)
+    if len(pages) > 512:
+        raise topical.TopicalError('similarity_census_too_large')
+    if not pages:
+        return []
+    runtime = publisher._qmd_runtime(root) if require_index else None
+    rows = []
+    db = sqlite3.connect(runtime['INDEX_PATH']) if runtime else None
+    try:
+        if db:
+            db.execute('PRAGMA query_only=ON')
+        for page in pages:
+            rel = page.relative_to(wiki).as_posix()
+            body = _page_bytes(root, rel)
+            digest = hashlib.sha256(body).hexdigest()
+            if db:
+                indexed = db.execute('SELECT hash FROM documents WHERE '
+                    'collection=? AND path=? AND active=1',
+                    (collection, rel)).fetchone()
+                if indexed is None or indexed[0] != digest:
+                    raise topical.TopicalError('similarity_index_stale')
+            rows.append({'path': rel, 'pageSha256': digest,
+                         'lead': body.decode('utf8')[:600], 'legacy': True,
+                         '_body': body})
+    finally:
+        if db:
+            db.close()
+    return rows
+
+
+def _selection_path(root: Path, generation_id: str, card_id: str) -> Path:
+    if (not experiment.GENERATION_ID.fullmatch(generation_id) or
+            not topical.CARD_ID.fullmatch(card_id)):
+        raise topical.TopicalError('invalid_similarity_selection')
+    return root / SELECTION_DIR / generation_id / (card_id + '.json')
+
+
+def _selection_bytes(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077
+                or info.st_size > 1_000_000):
+            raise topical.TopicalError('unsafe_similarity_selection')
+        return os.read(fd, info.st_size + 1)
+    finally:
+        os.close(fd)
+
+
+def _selection(root: Path, card: dict, generation_id: str,
+               retrieved: list[dict] | None,
+               plan_bytes: bytes | None = None) -> list[dict]:
+    """Freeze a small legacy set while binding every omitted page's hash."""
+    path = _selection_path(root, generation_id, card['cardId'])
+    census = _legacy_census(root, require_index=retrieved is not None)
+    by_path = {row['path']: row for row in census}
+    census_hashes = [{'path': row['path'], 'sha256': row['pageSha256']}
+                     for row in census]
+    staged_sha = hashlib.sha256(topical.read_generation_bytes(
+        root, generation_id, f"cards/{card['cardId']}.md")).hexdigest()
+    anchor = _record_anchor(card)
+    if path.exists() or path.is_symlink():
+        plan = json.loads(plan_bytes if plan_bytes is not None
+                          else _selection_bytes(path))
+        # Publication freezes the candidate snapshot for crash recovery.
+        # Additional legacy pages may arrive later, while every original page
+        # and hash must remain available. Before publication, any census drift
+        # stops the batch for a new review.
+        _project, wiki, _collection = publisher._project(root)
+        publication_started = any((wiki / 'topical-v2' /
+            generation_id).glob('*.md'))
+        frozen = plan.get('census') if isinstance(plan, dict) else None
+        frozen_paths = ({row.get('path') for row in frozen}
+                        if isinstance(frozen, list) and all(
+                            isinstance(row, dict) for row in frozen) else set())
+        frozen_census = [by_path[name] for name in sorted(frozen_paths)
+                         if name in by_path]
+        frozen_hashes = [{'path': row['path'], 'sha256': row['pageSha256']}
+                         for row in frozen_census]
+        if (not isinstance(plan, dict) or set(plan) != {
+                'schema', 'generationId', 'cardId', 'stagedSha256', 'anchor',
+                'census', 'qmdLegacyHits', 'selected'}
+                or plan['schema'] != SELECTION_SCHEMA
+                or plan['generationId'] != generation_id
+                or plan['cardId'] != card['cardId']
+                or plan['stagedSha256'] != staged_sha
+                or plan['anchor'] != anchor
+                or (plan['census'] != census_hashes and not (
+                    publication_started and len(frozen_census) == len(frozen_paths)
+                    and plan['census'] == frozen_hashes))
+                or not isinstance(plan['qmdLegacyHits'], list)
+                or len(plan['qmdLegacyHits']) != len(set(plan['qmdLegacyHits']))
+                or any(name not in by_path for name in plan['qmdLegacyHits'])
+                or not isinstance(plan['selected'], list)
+                or plan['selected'] != _selected_legacy(
+                    frozen_census, plan['qmdLegacyHits'], anchor)):
+            raise topical.TopicalError('similarity_selection_changed')
+        return [by_path[name] for name in plan['selected']]
+    if retrieved is None:
+        raise topical.TopicalError('similarity_selection_missing')
+    qmd_legacy = [row['path'] for row in retrieved
+                  if row.get('legacy') is True]
+    if len(qmd_legacy) != len(set(qmd_legacy)) or any(
+            name not in by_path for name in qmd_legacy):
+        raise topical.TopicalError('similarity_selection_changed')
+    selected = _selected_legacy(census, qmd_legacy, anchor)
+    plan = {'schema': SELECTION_SCHEMA, 'generationId': generation_id,
+            'cardId': card['cardId'], 'stagedSha256': staged_sha,
+            'anchor': anchor, 'census': census_hashes,
+            'qmdLegacyHits': qmd_legacy, 'selected': selected}
+    for directory in (path.parent.parent, path.parent):
+        if directory.is_symlink():
+            raise topical.TopicalError('unsafe_similarity_selection')
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
+            raise topical.TopicalError('unsafe_similarity_selection')
+    data = topical.encoded(plan) + b'\n'
+    fd, temporary = tempfile.mkstemp(prefix='.selection-', dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush(); os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return [by_path[name] for name in plan['selected']]
+
+
+def selection_sha(root: Path, generation_id: str, card_id: str) -> str | None:
+    path = _selection_path(root, generation_id, card_id)
+    if not path.exists() and not path.is_symlink():
+        return None
+    data = _selection_bytes(path)
+    card = experiment.load_staged_card(root, generation_id, card_id)
+    _selection(root, card, generation_id, None, plan_bytes=data)
+    return hashlib.sha256(data).hexdigest()
+
+
+def review_candidates(root: Path, card: dict, generation_id: str,
+                      exclude=()) -> list[dict]:
+    """Share the exact frozen legacy set and full fresh topical census."""
+    root, wiki, _collection = publisher._project(root)
+    plan = _selection_path(root, generation_id, card['cardId'])
+    retrieved = None if plan.is_file() else retrieve(
+        root, card['lead'], exclude=exclude)
+    legacy = _selection(root, card, generation_id, retrieved)
+    topical_hits = [] if retrieved is None else [
+        row for row in retrieved if row.get('legacy') is not True]
+    found = {row['path']: row for row in topical_hits}
+    for row in publisher.fresh_published_candidates(root, wiki,
+                                                     exclude=exclude):
+        prior = found.get(row['path'])
+        if prior is not None and prior['pageSha256'] != row['pageSha256']:
+            raise topical.TopicalError('similarity_candidate_changed')
+        found[row['path']] = row
+    return legacy + list(found.values())
 
 
 def _review(root: Path) -> dict:
@@ -127,7 +334,6 @@ def _page_bytes(root: Path, relative: str, *, staged: bool = False) -> bytes:
             body = os.read(fd, info.st_size + 1)
             if len(body) != info.st_size:
                 raise topical.TopicalError('similarity_candidate_changed')
-            return body
         finally:
             os.close(fd)
     except OSError as exc:
@@ -135,6 +341,10 @@ def _page_bytes(root: Path, relative: str, *, staged: bool = False) -> bytes:
     finally:
         for directory in reversed(opened):
             os.close(directory)
+    if len(parts) == 3 and parts[0] == 'topical-v2':
+        return publisher.canonical_published_card(root, parts[1],
+                                                   parts[2][:-3], body)
+    return body
 
 
 def _dedup_payload(root: Path, generation_id: str, card_id: str,
@@ -255,10 +465,14 @@ def auto_review_pending(root: Path, proposed: dict, generation_id: str,
     argv = compile_worker.resolve_extractor_argv(compile_cfg, engine)
     if argv is None:
         raise topical.TopicalError('similarity_transport_unavailable')
+    new_reviews = 0
     for item in matches:
         payload = _dedup_payload(root, generation_id, proposed['cardId'], item)
         if payload['pairSha256'] in _review(root):
             continue
+        if new_reviews >= MAX_NEW_REVIEWS_PER_PASS:
+            return {'status': 'pending_review', 'reason': 'similarity_review_deferred',
+                    'reviewedThisPass': new_reviews}
         if recovery_only or runner is None:
             return {'status': 'pending_review', 'reason': 'similarity_backend_required'}
         from wiki_topical_refresh import _recorded
@@ -280,6 +494,9 @@ def auto_review_pending(root: Path, proposed: dict, generation_id: str,
                 break
         if attempt_id is None:
             return {'status': 'pending_review', 'reason': 'similarity_response_invalid'}
+        # Count the dispatch, including a failed or invalid response, so a
+        # retry cannot silently exceed the bounded work budget.
+        new_reviews += 1
         try:
             response, _replayed = backend._attempt(root, 'similarity', payload,
                 argv, 120, runner, attempt_id, 2, 10, 20)
@@ -333,7 +550,6 @@ def retrieve(root: Path, text: str, *,
     db = sqlite3.connect(runtime['INDEX_PATH'])
     matches = []
     legacy_count = 0
-    topical_count = 0
     try:
         db.execute('PRAGMA query_only=ON')
         for hit in hits:
@@ -395,9 +611,6 @@ def retrieve(root: Path, text: str, *,
             matches.append({'generationId': gid, 'cardId': card_id, 'path': rel,
                             'pageSha256': staged_sha, 'card': card,
                             'lead': card['lead'][:600]})
-            topical_count += 1
-            if topical_count > MAX_RESULTS:
-                raise topical.TopicalError('similarity_review_budget_exceeded')
     finally:
         db.close()
     return matches

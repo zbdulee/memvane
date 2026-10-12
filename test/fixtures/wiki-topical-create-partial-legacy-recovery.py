@@ -134,6 +134,20 @@ with tempfile.TemporaryDirectory(prefix='qmd-partial-legacy-') as name:
     first = publisher.publish(root, gid, 'amber')
     first_sha = hashlib.sha256(Path(first['path']).read_bytes()).hexdigest()
     first_rel = Path(first['path']).relative_to(wiki).as_posix()
+    assert similarity._page_bytes(root, first_rel) == topical.read_generation_bytes(
+        root, gid, 'cards/amber.md')
+    published_page = Path(first['path'])
+    stamped = published_page.read_bytes()
+    published_page.write_bytes(stamped.replace(b'status: verified',
+                                              b'status: altered'))
+    try:
+        similarity._page_bytes(root, first_rel)
+    except topical.TopicalError as exc:
+        assert exc.code == 'published_card_changed'
+    else:
+        raise AssertionError('modified stamped card entered the model payload')
+    finally:
+        published_page.write_bytes(stamped)
     with sqlite3.connect(db) as conn:
         conn.execute('INSERT INTO documents VALUES(?,?,?,1)',
             (collection, first_rel, first_sha))
@@ -198,6 +212,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-partial-legacy-') as name:
     assert first_main['reviewPairs'] == []  # old partially completed publication
     additive = root / 'topical-create-review-proofs' / gid / 'amber.json'
     additive_data = json.loads(additive.read_text())
+    selection_file = root / similarity.SELECTION_DIR / gid / 'amber.json'
+    selection_bytes = selection_file.read_bytes()
+    selection = json.loads(selection_bytes)
+    assert selection['selected'] == ['legacy-card.md', nested_rel]
+    assert additive_data['legacySelectionSha256'] == hashlib.sha256(
+        selection_bytes).hexdigest()
     assert len(additive_data['pairs']) == 3
     assert {row['relation'] for row in additive_data['pairs']} == {
         'legacy_wiki_review_required', 'semantic_review_required'}
@@ -205,6 +225,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-partial-legacy-') as name:
     record = publisher._attested(root, gid, 'amber')
     staged_sha = hashlib.sha256(topical.read_generation_bytes(
         root, gid, 'cards/amber.md')).hexdigest()
+    changed_selection = dict(selection)
+    changed_selection['selected'] = []
+    selection_file.write_text(json.dumps(changed_selection)); selection_file.chmod(0o600)
+    try:
+        publisher.publish(root, gid, 'amber')
+    except topical.TopicalError as exc:
+        assert exc.code == 'similarity_selection_changed'
+    else:
+        raise AssertionError('reviewed legacy candidate was silently omitted')
+    finally:
+        selection_file.write_bytes(selection_bytes); selection_file.chmod(0o600)
     missing = additive.with_suffix('.held')
     additive.rename(missing)
     try:
