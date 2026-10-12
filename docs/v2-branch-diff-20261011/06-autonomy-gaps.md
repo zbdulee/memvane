@@ -39,6 +39,8 @@ AI가 판정하지 못한 항목은 격리하고 다음 작업으로 넘어가�
 | B1 | topical 작업 큐 | `auto_refresh_pending`은 남아 있는 create/refresh journal을 항상 먼저 이어서 처리하고, `_drain_auto`는 첫 `pending_review`에서 반환한다. journal은 완료되거나 그 원문이 바뀔 때만 지워진다. 그래서 A1~A4 중 하나에 걸린 원문이 이후의 모든 원문·stale 카드 처리를 막는다 | `core/wiki_topical_refresh.py:418-430`, `core/topical_hook_queue.py:139-142`, `core/wiki_topical_create.py:98,106,205,215` · 코드 확인 |
 | B2 | index_worker | 큐 엔트리 하나가 setup 미완 프로젝트이면 run 전체가 exit 1로 끝나고 claim을 유지한다. 그러면 모든 프로젝트의 편집 후 인덱싱이 멈춘다. optout으로도 풀리지 않는다 | `backend/index_worker.sh:117-125` · 코드 확인 + 실측 |
 
+2026-10-12 후속 범위: B1의 **새 원문 생성 중 유사성 duplicate/conflict 판정**은 확인된 다른 카드만 게시·QMD 동기화한 뒤 원문을 `heldSources`에 보류하고, 완료 처리 없이 다른 원문을 선택하도록 보정한다. 보류 카드·원문 참조·판정 영수증은 유지하며 재시작 시 동일 원문에 provider 호출을 반복하지 않는다. 보완 정보의 자동 병합이나 기존 판정 재해석은 이 변경의 범위 밖이다. `unclear`·예산/전송 실패·기존 카드 refresh의 보류는 여전히 B1의 일부 head-of-line 위험이며, B2 index worker 문제도 그대로다.
+
 대체 방향: 막힌 항목을 별도 원장으로 옮기고(원인·원문 hash 포함), 원문이 바뀌면 다시 큐에 넣는다. 큐는 다음 항목으로 진행한다.
 
 ## 자가 복구가 없는 장애

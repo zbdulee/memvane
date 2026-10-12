@@ -130,6 +130,11 @@ def _read(root):
             or not all(isinstance(value[key], dict) for key in
                        ("sources", "settledSources", "queue", "projection"))):
         raise ValueError("unknown_state_schema")
+    held = value.get("heldSources", {})
+    if (not isinstance(held, dict) or any(
+            not isinstance(path, str) or not isinstance(sha, str) or len(sha) != 64
+            for path, sha in held.items())):
+        raise ValueError("unknown_state_schema")
     return value
 
 
@@ -269,6 +274,9 @@ def reconcile(root, source_roots, cards, *, trusted_card_ids=(), hints=(), skip_
                     projection[card_id] = carried
         state = {"schema": "topical-reconcile-v1", "sourceRoots": roots,
                  "sources": files, "settledSources": settled, "queue": pending,
+                 "heldSources": {path: sha for path, sha in
+                                 (previous.get("heldSources", {}) if previous else {}).items()
+                                 if path in files and files[path]["sha256"] == sha},
                  "moves": moves, "projection": projection,
                  "inFlight": previous["inFlight"] if previous else None,
                  "awaitingVerification": previous["awaitingVerification"] if previous else [],
@@ -276,8 +284,8 @@ def reconcile(root, source_roots, cards, *, trusted_card_ids=(), hints=(), skip_
                  "generatedProjection": previous.get("generatedProjection", {}) if previous else {},
                  "qmdIndexState": previous.get("qmdIndexState", {"status": "not_configured"}) if previous else {"status": "not_configured"},
                  "revision": (previous["revision"] + 1 if previous else 1)}
-        changed = previous is None or any(state[key] != previous[key] for key in
-                                          ("sources", "queue", "moves", "projection"))
+        changed = previous is None or any(state[key] != previous.get(key) for key in
+                                          ("sources", "queue", "moves", "projection", "heldSources"))
         if not changed:
             return {"changed": False, "events": [], "state": previous}
         if dry_run:
@@ -425,7 +433,10 @@ def start_batch(root, source_roots, cards, *, trusted_card_ids=(), skip_paths=()
         previous = _read(root)
         if previous["inFlight"]:
             return {"started": False, "reason": "batch_running", "batch": previous["inFlight"]}
-        if not previous["queue"]:
+        held = previous.get("heldSources", {})
+        selectable = {path: row for path, row in previous["queue"].items()
+                      if path not in held or held[path] != row.get("currentSha256")}
+        if not selectable:
             return {"started": False, "reason": "no_net_changes"}
         # The batch is a handoff record, not an invocation of a model. A future
         # worker must recheck these hashes before accepting generated results.
@@ -433,11 +444,37 @@ def start_batch(root, source_roots, cards, *, trusted_card_ids=(), skip_paths=()
                                      "settled": previous["settledSources"],
                                      "current": previous["sources"]}),
                  "turnKey": turn_key_value,
-                 "sources": dict(previous["queue"]), "snapshot": dict(previous["sources"])}
+                 "sources": selectable, "snapshot": dict(previous["sources"])}
         state = json.loads(canonical(previous))
         state["inFlight"] = batch
         _commit(root, previous, state)
         return {"started": True, "batch": batch}
+
+
+def park_created_batch(root, source_roots, batch_id, source_path, source_sha,
+                       *, skip_paths=()):
+    """Release only a semantically held create source; retain its queue entry."""
+    root = sandbox(root)
+    roots = sorted(set(safe_rel(p, explicit_root=True) for p in source_roots))
+    source_path = safe_rel(source_path, roots=roots)
+    lock = root / '.topical-reconcile.lock'
+    if lock.is_symlink():
+        raise ValueError('unsafe_lock_symlink')
+    with lock.open('a') as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        previous = _read(root)
+        batch = previous.get('inFlight') if previous else None
+        if not batch or batch['batchId'] != batch_id or source_path not in batch['sources']:
+            raise ValueError('created_batch_not_in_flight')
+        current = _scan(root, roots, skip_paths)
+        if (current != batch['snapshot'] or current[source_path]['sha256'] != source_sha
+                or previous['queue'].get(source_path, {}).get('currentSha256') != source_sha):
+            raise ValueError('source_changed_during_backend')
+        state = json.loads(canonical(previous))
+        state['inFlight'] = None
+        state.setdefault('heldSources', {})[source_path] = source_sha
+        _commit(root, previous, state)
+        return {'outcome': 'created_source_held', 'pending': len(state['queue'])}
 
 
 def safe_projection(root, source_roots, cards, *, trusted_card_ids=(), skip_paths=()):

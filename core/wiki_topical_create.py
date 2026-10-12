@@ -65,9 +65,24 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
                    generation_runner, verification_runner, recovery_only, skip_paths):
     journal = _read(root)
     refs, baseline_cards = refresh._baseline_cards(root)
+    state = reconcile._read(root)
+    if (journal is not None and journal.get('phase') == 'held_similarity'
+            and state is not None and not state.get('inFlight')):
+        archived = root / 'topical-held-create' / (journal['batchId'] + '.json')
+        if archived.is_symlink() or not archived.is_file():
+            raise topical.TopicalError('held_create_journal_missing')
+        info = archived.stat()
+        if (info.st_uid != os.getuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > 1_000_000
+                or json.loads(archived.read_text()) != journal):
+            raise topical.TopicalError('held_create_journal_missing')
+        (root / JOURNAL).unlink()
+        return {'status': 'created_source_held' if
+                state.get('heldSources', {}).get(journal['sourcePath']) ==
+                journal['sourceSha256'] else 'superseded_source_changed',
+                'sourcePath': journal['sourcePath']}
     if journal is None:
         if recovery_only: return {'status': 'no_pending_create'}
-        state = reconcile._read(root)
         if state is None or source_path not in state['queue'] or not state['queue'][source_path]['currentSha256']:
             return {'status': 'no_new_source_pending'}
         claimed = reconcile.start_batch(root, source_roots, baseline_cards,
@@ -203,6 +218,7 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
                              for cid in journal['cardIds']))
     batch_exclude = [(generation_id, cid) for cid in journal['cardIds']]
     reviewed = {}
+    held = {}
     for card in cards:
         if {row['path'] for row in card['sourceRevisions']} != {source_path}:
             return {'status': 'pending_review', 'reason': 'created_card_source_mismatch'}
@@ -232,9 +248,17 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
             return {'status': 'pending_review', 'reason': exc.code}
         if result['status'] == 'pending_review':
             journal['phase'] = 'awaiting_similarity'; reconcile._atomic(root / JOURNAL, journal)
-            return {'status': 'pending_review', 'reason': result.get('reason', 'similarity_unresolved'),
-                    'pairs': result.get('pairs', original_pairs),
-                    'reviewedThisPass': result.get('reviewedThisPass', 0)}
+            reason = result.get('reason', 'similarity_unresolved')
+            if reason not in ('similarity_duplicate', 'similarity_conflict'):
+                return {'status': 'pending_review', 'reason': reason,
+                        'pairs': result.get('pairs', original_pairs),
+                        'reviewedThisPass': result.get('reviewedThisPass', 0)}
+            held[card['cardId']] = {'reason': reason,
+                'blockingPairs': [row['pairSha256'] for row in
+                                  result.get('pairs', original_pairs)
+                                  if row['verdict'] not in
+                                  ('distinct', 'complementary_overlap')]}
+            continue
         reviewed[card['cardId']] = result['pairs']
     if reconcile._scan(root, source_roots, skip_paths) != batch['snapshot']:
         reconcile.finish_mock_batch(root, source_roots, batch['batchId'],
@@ -242,11 +266,41 @@ def _create_locked(root, source_roots, source_path, compile_cfg, engine, budget,
         (root / JOURNAL).unlink()
         return {'status': 'superseded_source_changed'}
     if not resume_review:
-        for card_id in journal['cardIds']:
+        for card_id in reviewed:
             publisher.save_create_review_proof(root, generation_id, card_id,
                                                reviewed[card_id])
-    for card_id in journal['cardIds']:
+    for card_id in reviewed if held else journal['cardIds']:
         publisher.publish(root, generation_id, card_id)
+    if held:
+        if reviewed:
+            publisher.sync(root, allow_stale=True)
+        archived = dict(journal, phase='held_similarity', heldCards=held,
+                        publishedCardIds=list(reviewed))
+        folder = root / 'topical-held-create'
+        if folder.is_symlink():
+            raise topical.TopicalError('unsafe_held_create_directory')
+        folder.mkdir(mode=0o700, exist_ok=True)
+        if folder.stat().st_uid != os.getuid() or folder.stat().st_mode & 0o077:
+            raise topical.TopicalError('unsafe_held_create_directory')
+        destination = folder / (journal['batchId'] + '.json')
+        if destination.is_symlink():
+            raise topical.TopicalError('unsafe_held_create_journal')
+        if destination.exists():
+            if json.loads(destination.read_text()) != archived:
+                raise topical.TopicalError('held_create_journal_conflict')
+        else:
+            reconcile._atomic(destination, archived)
+        journal = archived
+        reconcile._atomic(root / JOURNAL, journal)
+        reconcile.park_created_batch(root, source_roots, batch['batchId'],
+            source_path, journal['sourceSha256'], skip_paths=skip_paths)
+        (root / JOURNAL).unlink()
+        return {'status': 'created_source_held',
+                'reason': 'similarity_duplicate' if any(
+                    item['reason'] == 'similarity_duplicate' for item in held.values())
+                    else 'similarity_conflict',
+                'generationId': generation_id, 'published': len(reviewed),
+                'held': list(held), 'sourcePath': source_path}
     journal['phase'] = 'published'; reconcile._atomic(root / JOURNAL, journal)
     ready = publisher.sync(root, allow_stale=True)
     journal['phase'] = 'qmd_synced'; reconcile._atomic(root / JOURNAL, journal)

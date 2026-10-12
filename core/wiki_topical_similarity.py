@@ -687,6 +687,8 @@ def evaluate(root: Path, proposed: dict, generation_id: str,
                ('distinct', 'complementary_overlap')]
     reason = ('similarity_duplicate' if any(row['verdict'] in
               ('duplicate', 'exact_duplicate') for row in pending) else
+              'similarity_conflict' if any(row['verdict'] == 'conflict'
+              for row in pending) else
               'similarity_unclear' if any(row['verdict'] == 'unclear' for row in pending)
               else 'similarity_unresolved') if pending else None
     return {'status': 'pending_review' if pending else 'distinct_or_no_candidates',

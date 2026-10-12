@@ -129,14 +129,25 @@ def _drain_auto(root, policy, skip_paths, *, turn_key=None):
     """Reserve each operation against one durable turn+source snapshot budget."""
     completed = 0
     initial = reconcile._read(root)
+    import wiki_topical_create as creator
     if initial is None:
         return {'status': 'pending_review', 'reason': 'reconcile_state_missing',
                 'completedInHandoff': 0, 'pending': 0}
     if not initial['queue'] and not initial.get('inFlight'):
-        import wiki_topical_create as creator
         if refresh._read(root) is None and creator._read(root) is None:
             # A no-work Stop needs no budget identity, lock, or disk record.
             return {'status': 'no_net_changes'}
+    if (initial['queue'] and initial.get('heldSources')
+            and not initial.get('inFlight')
+            and refresh._read(root) is None
+            and creator._read(root) is None
+            and not any(row.get('state') == 'excluded_stale'
+                        for row in initial['projection'].values())
+            and all(path in initial.get('heldSources', {}) and
+                    initial['heldSources'][path] == row.get('currentSha256')
+                    for path, row in initial['queue'].items())):
+        return {'status': 'pending_review', 'reason': 'held_source_similarity',
+                'completedInHandoff': 0, 'pending': len(initial['queue'])}
     with stop_budget.Budget(root, policy, initial.get('sources', {}), turn_key) as budget:
         # A completed journal can need one cleanup pass without settling a new
         # source. Still bound such passes so a malformed journal cannot loop.
@@ -177,6 +188,13 @@ def _drain_auto(root, policy, skip_paths, *, turn_key=None):
                 return {'status': 'pending_review', 'reason': 'reconcile_state_missing',
                         'completedInHandoff': completed, 'pending': pending}
             budget.finish(before, after)
+            if status == 'created_source_held':
+                # A safely published sibling is progress, but the source is
+                # deliberately unsettled. Never count this as a completed batch.
+                if before == after:
+                    return {'status': 'pending_review', 'reason': 'stop_batch_no_progress',
+                            'completedInHandoff': completed, 'pending': pending}
+                continue
             if status in ('backend_created_synced', 'backend_verified_synced',
                           'already_completed'):
                 if status != 'already_completed' and before == after and pending:

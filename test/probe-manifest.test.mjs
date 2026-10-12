@@ -15,7 +15,7 @@ test('codex marketplace.json: qmd-auto-context plugin 항목', () => {
   assert.ok(Array.isArray(m.plugins), 'plugins 배열 존재');
   const p = m.plugins.find(x => x.name === 'qmd-auto-context');
   assert.ok(p, 'qmd-auto-context plugin 항목');
-  assert.equal(p.version, '0.35.2-dev.20261012-fantasy-pilot-v46-rc36-similarity1', 'codex marketplace version');
+  assert.equal(p.version, '0.35.2-dev.20261012-fantasy-pilot-v47-rc37-held-create1', 'codex marketplace version');
 });
 
 // codex manifest는 단순 source:"./"가 아니라 git 배포용 source 객체 + policy + category를
@@ -36,7 +36,7 @@ test('codex marketplace.json: git source 객체 + policy + category 스키마', 
 test('agy 루트 plugin.json: name qmd-auto-context', () => {
   const p = JSON.parse(readFileSync('plugin.json', 'utf8'));
   assert.equal(p.name, 'qmd-auto-context');
-  assert.equal(p.version, '0.35.2-dev.20261012-fantasy-pilot-v46-rc36-similarity1');
+  assert.equal(p.version, '0.35.2-dev.20261012-fantasy-pilot-v47-rc37-held-create1');
   assert.doesNotMatch(p.description, /Task \d|install\.sh|uninstall\.sh/);
 });
 

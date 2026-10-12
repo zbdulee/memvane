@@ -626,7 +626,8 @@ def auto_refresh_pending(root: Path, *, generation_runner=None,
         if not stale:
             claimed = {row['path'] for card in cards for row in card['sourceRevisions']}
             unclaimed = [path for path, row in sorted(state['queue'].items())
-                         if path not in claimed and row['currentSha256'] is not None]
+                         if path not in claimed and row['currentSha256'] is not None
+                         and state.get('heldSources', {}).get(path) != row['currentSha256']]
             if unclaimed:
                 return creator.create_one(root, source_roots, unclaimed[0],
                     cfg['compileCfg'], cfg['engine'], cfg['maxEstimatedCents'],
@@ -634,7 +635,12 @@ def auto_refresh_pending(root: Path, *, generation_runner=None,
                     verification_runner=verification_runner or backend.worker.run_extractor,
                     skip_paths=skip_paths)
             if state['queue']:
-                return {'status': 'pending_review', 'reason': 'unclaimed_source_change'}
+                return {'status': 'pending_review', 'reason':
+                        'held_source_similarity' if all(
+                            path in state.get('heldSources', {}) and
+                            state['heldSources'][path] == row.get('currentSha256')
+                            for path, row in state['queue'].items()) else
+                        'unclaimed_source_change'}
             return {'status': 'no_net_changes'}
         old_id = stale[0]
         old = next(card for card in cards if card['cardId'] == old_id)
