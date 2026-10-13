@@ -136,3 +136,29 @@
   - **Claude 디렉터리 marketplace `~/Documents/Codex/2026-10-09/task/qmd-v44-local-marketplace/plugins/qmd-auto-context-v52-rc42-claude-load-root`: 세 작업 모두 `runtime_authorization_adapter_invalid`**
 - 원인: `runtime_authorization._approved_adapter_paths`와 `_adapter_rows`가 Claude adapter를 `~/.claude/plugins/cache/qmd-shared-v44-local/…`로 고정한다. 그런데 Claude는 디렉터리 marketplace 플러그인을 원본 위치에서 실행한다(`5991efa`가 history ack 쪽에서만 반영한 사실). 그래서 실제 Claude 세션에서 도는 코드는 자기 adapter가 승인 목록에 없어 실패로 닫힌다. 안전 방향이므로 데이터 위험은 없고, Claude 세션에서 gold·학습·평가가 돌지 않을 뿐이다. Codex 세션은 정상이다.
 - 고치려면 `5991efa`와 같은 방식(Claude 자체 설치 기록으로 실제 로드 폴더를 찾아 승인)으로 runtime_authorization을 바꿔야 한다. 그러면 proposal 해시가 바뀌므로 새 rc 설치와 또 한 번의 rebind 승인이 필요하다. 아직 하지 않았다.
+
+## 2026-10-13 KST — rc43: Claude 실행 폴더 권한 수정, 설치, rebind 완료
+
+- 수정 `58640d5`: `runtime_authorization._installed_adapters`가 Claude 실행 폴더의 adapter도 받는다.
+  - 인정 조건: `history_activation._claude_load_roots`가 Claude 자체 설치 기록으로 그 폴더를 지목해야 한다. 이 함수는 캐시 사본과의 바이트 일치도 함께 요구한다. 폴더의 `.claude-plugin/plugin.json` 버전이 `REVIEWED_PLUGIN_VERSION`과 같아야 한다.
+  - grant에는 계속 캐시 경로만 기록되므로 proposal 해시와 기록된 범위는 바뀌지 않는다.
+  - Claude 기록을 읽지 못하면 이 추가 경로만 닫힌다.
+  - 테스트 `test/context-learning-runtime-authorization-claude-directory.test.mjs`. 세 가드를 각각 빼면 실패하는 것을 확인했다.
+- 버전 `0905639` = rc43 `0.35.2-dev.20261013-claude-handoff-v53-rc43-claude-grant-root`.
+  - 로컬 `npm test`: 1,482건 중 1,476건 통과. 실패 4건은 PyYAML 환경 산물이다.
+  - CI `38343282593`·`38343279142` 통과.
+- 설치: Claude·Codex marketplace에 각각 581개 파일을 넣었고 커밋 대비 차이는 0개다. 두 host가 rc43으로 업데이트됐다.
+  - `_installed_hosts_compatible`이 통과했다. Claude는 `…/qmd-v44-local-marketplace/plugins/qmd-auto-context-v53-rc43-claude-grant-root`로 잡힌다.
+  - 설치 전 설정 백업은 `~/Documents/Codex/2026-10-13/task/qmd-install-rc43-backup/`에 있다.
+- rebind(소유자 승인): `fdfda5c5…` → `2a6403bee484cda985b9aadd7ced037e2b4985cc26100350d8e5049644d32b68`, 결과 `rebound`.
+  - 바뀐 것은 adapter 경로(rc42 → rc43)뿐이다. adapter 해시 `1509e683…`, operations, goldModel, modelDir, cohort, 만료(10-18 17:15 KST)는 그대로다.
+- `require_operation` 결과(gold, local_train, quality_evaluate):
+  - Codex 캐시 rc43, Claude 캐시 rc43, Claude 실행 폴더 rc43: 모두 통과
+  - Claude 실행 폴더 rc42: `runtime_authorization_adapter_invalid`(의도한 동작. rc42로 시작한 세션은 실행 권한이 닫힌다)
+- history DB 해시는 rebind 전후로 같다. 아직 새 history에 쓰기가 없어 rollback 창은 열려 있다.
+- 실제 Claude·Codex 새 세션에서 hook이 rc43을 로드하는지는 아직 확인하지 않았다. 확인 방법은 12:14 절의 headless 세션 방식이다.
+
+**남은 일**
+1. rc42로 시작한 세션(이 문서를 쓴 세션 포함)을 재시작한다.
+2. 2단계(MacBook 신규 설치 검증)를 rc43으로 진행한다.
+3. 3단계(agy 리뷰).
