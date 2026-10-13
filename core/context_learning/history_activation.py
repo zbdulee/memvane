@@ -477,8 +477,10 @@ def _writer_pids_from_lsof(returncode, stdout, stderr, own_pid):
 
 def _legacy_writer_pids(paths):
     """Other processes holding a legacy DB open read-write (pre-seal fds)."""
+    # 'f' must be requested explicitly: macOS lsof always emits it, Linux
+    # lsof emits only the selected fields, and the parser needs fd records.
     try:
-        result = subprocess.run(('lsof', '-w', '-F', 'pan', '--',
+        result = subprocess.run(('lsof', '-w', '-F', 'pfan', '--',
                                  *map(str, paths)),
                                 capture_output=True, text=True, timeout=30,
                                 check=False)

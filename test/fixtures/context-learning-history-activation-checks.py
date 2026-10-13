@@ -341,6 +341,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
             'history_legacy_writer_probe_unavailable')
     rejects(lambda: parse(0, 'f3\nau\n', '', own),
             'history_legacy_writer_probe_unavailable')
+    # Linux lsof emits only requested fields; without 'f' every access record
+    # arrives with no fd and the probe fails closed on every activation.
+    with patch.object(activation_module.subprocess, 'run') as run:
+        run.return_value = subprocess.CompletedProcess((), 1, '', '')
+        assert activation_module._legacy_writer_pids(('/x',)) == set()
+        fields = run.call_args[0][0][run.call_args[0][0].index('-F') + 1]
+        assert set('pfan') <= set(fields), fields
+    rejects(lambda: parse(0, 'p1\nau\nn/x\n', '', own),
+            'history_legacy_writer_probe_unavailable')
     # A memory-mapped reader (SQLite mmap) reports a blank access mode on a
     # txt/mem fd: not a writer. A blank mode on a numbered fd still fails closed.
     assert parse(0, 'p404\nftxt\na \nn/x\np505\nfmem\na\nn/x\np202\nf5\nau\nn/x\n',
