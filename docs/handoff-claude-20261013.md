@@ -162,3 +162,25 @@
 1. rc42로 시작한 세션(이 문서를 쓴 세션 포함)을 재시작한다.
 2. 2단계(MacBook 신규 설치 검증)를 rc43으로 진행한다.
 3. 3단계(agy 리뷰).
+
+## 2026-10-13 14:10 KST — rc43 로딩 확인, Codex의 오래된 qmd 복사본 두 개 비활성화
+
+- 새 headless 세션에서 확인했다. 실행 위치는 중립 폴더 `~/Documents/Codex/2026-10-13/task/qmd-ack-check`다. lifecycle request를 내지 않았으므로 ack는 확인 범위에 넣지 않았다.
+  - Claude `claude -p`는 `…/qmd-v44-local-marketplace/plugins/qmd-auto-context-v53-rc43-claude-grant-root`(rc43)를 불러왔다. SessionStart·UserPromptSubmit·Stop 훅이 모두 exit 0이다.
+  - Codex `codex exec`도 rc43으로 응답했다. 그런데 SessionStart 훅 7개 중 2개가 `Failed`였다.
+- 원인: `~/.codex/config.toml`에 오래된 qmd 두 개가 `enabled = true`로 남아 있었다. Codex는 rc43과 함께 이 둘을 계속 불러왔다.
+  - `qmd-auto-context@qmd-v2-frozen-synthetic-20261007`, 버전 0.35.2-dev.20261004
+  - `qmd-auto-context@qmd-v2-stop-hook-20261007`, 버전 0.35.2-dev.20261007-stop-batch
+  - 두 플러그인의 marketplace는 등록이 지워져 `codex plugin list`에 나오지 않는다. 하지만 config의 활성화 항목과 cache 폴더가 남아 있었다.
+  - 이전 버전의 `update-queued`는 `[qmd] …` 알림을 JSON이 아닌 일반 텍스트로 출력한다. Codex는 이 출력을 잘못된 JSON으로 보고 그 훅을 `Failed`로 표시했다. 실패한 훅 2개가 정확히 이 둘이다.
+  - 표시 문제로 끝나지 않았다. Codex에서 qmd 훅(update-queued·recall·topical-stop)이 매번 세 벌씩 실행됐다.
+  - 원인 확인 방법 1: `QMD_SANDBOX=1`로 qmd 훅을 모두 무력화하면 7개가 전부 성공했다.
+  - 원인 확인 방법 2: PATH 앞에 둔 python3 shim에 qmd 진입점이 3회씩 기록됐다. 두 이전 복사본의 훅을 직접 실행하면 JSON이 아닌 텍스트가 나왔다.
+- 조치(소유자 승인): 두 항목을 `enabled = false`로 바꿨다. cache 폴더는 지우지 않았다.
+  - 변경 전 설정은 `~/Documents/Codex/2026-10-13/task/qmd-codex-stale-plugins-backup/`에 백업했다.
+  - 재확인: SessionStart 3/3 Completed. qmd 진입점은 이벤트마다 1회만 실행됐고, 이전 복사본은 한 번도 호출되지 않았다. Codex에서 활성 상태인 qmd는 `qmd-shared-v21-local`(rc43) 하나다.
+
+**남은 일**
+1. rc42로 시작한 세션을 재시작한다.
+2. 2단계(MacBook 신규 설치 검증)를 rc43으로 진행한다. 새 머신에도 이전 qmd 활성화 항목이 남아 있지 않은지 함께 본다.
+3. 3단계(agy 리뷰).
