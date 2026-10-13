@@ -17,6 +17,7 @@ import re
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -296,9 +297,42 @@ def _discover_host_roots(account):
     return {'codex': codex_roots, 'claude': claude_roots}
 
 
+def _account_homes():
+    """The account's home as the environment and the OS user database name
+    it. HOME alone is caller-controlled, so both count as the real account."""
+    homes = [Path.home()]
+    try:
+        import pwd
+        homes.append(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except (ImportError, KeyError, OSError):
+        pass
+    return homes
+
+
+def is_account_home(home=None):
+    """True when ``home`` is this account's real home by file identity.
+
+    Path strings are not identity: APFS is case-insensitive and symlinks or
+    another spelling reach the same directory, so compare (st_dev, st_ino).
+    """
+    if home is None:
+        return True
+    try:
+        target = os.stat(home)
+    except OSError:
+        return False
+    for candidate in _account_homes():
+        try:
+            if os.path.samestat(target, os.stat(candidate)):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def _installed_hosts_compatible(host_roots=None, *, home=None):
     account = Path(home or Path.home()).resolve()
-    if account == Path.home().resolve():
+    if is_account_home(home):
         discovered = _discover_host_roots(account)
         if host_roots is not None and {
                 key: sorted(map(str, value if isinstance(value, (list, tuple)) else [value]))
@@ -507,21 +541,86 @@ def _remove_partial_fences(paths, manifest, *, timeout=5):
             history_fence.remove_partial(db, tables)
 
 
-def activate(generation, *, host_roots=None, home=None, lock_timeout=5):
-    """Select a fresh sealed snapshot only while both writers are barred."""
+REAL_HOME_APPROVAL_SCHEMA = 'qmd-history-real-home-approval-v1'
+REAL_HOME_APPROVAL_KEYS = frozenset({
+    'schema', 'generation', 'project_id', 'learning_root', 'source_shared',
+    'source_private', 'request_nonce', 'old_host_sessions_restarted'})
+SANDBOX_ENV = ('QMD_SANDBOX', 'GEMINI_SANDBOX', 'CLAUDE_SANDBOX', 'CODEX_SANDBOX',
+               'HERMES_SANDBOX')
+HEADLESS_ENV = ('CLAUDE_HEADLESS', 'HERMES_HEADLESS')
+
+
+def environment_denies():
+    """Every signal hooks/run-hook and the Hermes adapter treat as the
+    execution environment refusing work, for any engine."""
+    return (any(os.environ.get(name) for name in SANDBOX_ENV)
+            or any(os.environ.get(name) == '1' for name in HEADLESS_ENV)
+            or '--sandbox' in sys.argv[1:])
+
+
+def _approval_shape(approval):
+    """Reject a malformed approval before anything else is read."""
+    if (not isinstance(approval, dict) or set(approval) != REAL_HOME_APPROVAL_KEYS
+            or approval['schema'] != REAL_HOME_APPROVAL_SCHEMA
+            or approval['old_host_sessions_restarted'] is not True
+            or not all(isinstance(approval[key], str) and approval[key]
+                       for key in REAL_HOME_APPROVAL_KEYS
+                       - {'old_host_sessions_restarted'})):
+        raise ValueError('history_real_home_approval_invalid')
+
+
+def _approval_binds(approval, *, generation, manifest, base, nonce):
+    """The owner's approval names exactly this switch: one generation of one
+    project, these two legacy files, this account's learning root, and the
+    one lifecycle request whose acks are being consumed. It lifts only the
+    real-home refusal; every other check still runs."""
+    try:
+        bound = (approval['generation'] == generation
+                 and approval['project_id'] == manifest['project_id']
+                 and Path(approval['learning_root']).resolve() == base.resolve()
+                 and Path(approval['source_shared']).resolve()
+                 == Path(manifest['source_shared']).resolve()
+                 and Path(approval['source_private']).resolve()
+                 == Path(manifest['source_private']).resolve()
+                 and approval['request_nonce'] == nonce)
+    except (KeyError, TypeError, OSError) as exc:
+        raise ValueError('history_real_home_approval_mismatch') from exc
+    if not bound:
+        raise ValueError('history_real_home_approval_mismatch')
+
+
+def activate(generation, *, host_roots=None, home=None, lock_timeout=5,
+             real_home_approval=None):
+    """Select a fresh sealed snapshot only while both writers are barred.
+
+    The real account is refused unless ``real_home_approval`` names this
+    exact switch (see ``_approval_binds``). The approval never applies to a
+    disposable home, never applies inside a sandboxed or headless run, and
+    does not relax any other check: OS permission errors propagate unchanged.
+    ``old_host_sessions_restarted`` records the owner's attestation; nothing
+    here can verify it, so the seal and writer probe remain the enforcement.
+    """
     if not isinstance(generation, str) or not re.fullmatch(r'g-[0-9a-f]{32}', generation):
         raise ValueError('invalid_generation')
-    # Old already-running host code can issue CREATE TABLE against a legacy
-    # connection after the snapshot. SQLite DML triggers cannot fence DDL.
-    # Keep real-account activation closed until a complete old-writer boundary
-    # is proven; disposable homes still exercise the transition protocol.
-    if Path(home or Path.home()).resolve() == Path.home().resolve():
-        raise ValueError('history_legacy_ddl_unfenced')
+    real_home = is_account_home(home)
+    if real_home:
+        # Old already-running host code can issue CREATE TABLE against a
+        # legacy connection after the snapshot; the seal below closes that,
+        # but switching the real account stays an explicit owner decision.
+        if real_home_approval is None:
+            raise ValueError('history_legacy_ddl_unfenced')
+        # A sandbox is the execution environment denying this run; an
+        # approval must not override it.
+        if environment_denies():
+            raise ValueError('history_real_home_sandboxed')
+        _approval_shape(real_home_approval)
+    elif real_home_approval is not None:
+        raise ValueError('history_real_home_approval_out_of_scope')
     if _read_pointer(home) is not None:
         raise ValueError('history_already_active')
     from .history_lifecycle import pause_workers, verify_acks
     roots = _installed_hosts_compatible(host_roots, home=home)
-    verify_acks(generation, roots, home=home)
+    first_request = verify_acks(generation, roots, home=home)
     base = learning_root(home)
     manifest_path = base / 'migrations' / generation / 'prepared.json'
     manifest_raw = _regular_owner_file(manifest_path).read_bytes()
@@ -530,10 +629,17 @@ def activate(generation, *, host_roots=None, home=None, lock_timeout=5):
     account = Path(home or Path.home()).resolve()
     if any(account not in Path(path).parents for path in paths):
         raise ValueError('history_project_outside_account')
+    if real_home:
+        _approval_binds(real_home_approval, generation=generation,
+                        manifest=manifest, base=base, nonce=first_request['nonce'])
     with pause_workers(home=home, timeout=lock_timeout):
         with _locks(paths, exclusive=True, timeout=lock_timeout):
             roots = _installed_hosts_compatible(host_roots, home=home)
             verified_request = verify_acks(generation, roots, home=home)
+            if real_home and verified_request['nonce'] != real_home_approval['request_nonce']:
+                # A new request between the first check and the lock would
+                # otherwise consume a request the owner never approved.
+                raise ValueError('history_real_home_approval_mismatch')
             if _read_pointer(home) is not None:
                 raise ValueError('history_already_active')
             verified = verify_prepared(generation, home=home)
