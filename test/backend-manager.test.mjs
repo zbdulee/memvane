@@ -426,7 +426,8 @@ test("kick-wiki-compile runs compile worker with explicit cwd and stays silent",
     });
     assert.equal(result.status, 0);
     assert.equal(result.stdout, "");
-    waitUntil(() => existsSync(log));
+    // `>>` creates the file before printf writes; wait for the whole line.
+    waitUntil(() => existsSync(log) && readFileSync(log, "utf8").endsWith("\n"));
     assert.equal(readFileSync(log, "utf8").trim(), `--cwd ${cwd}`);
   } finally {
     removeTemp(home);
