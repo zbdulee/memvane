@@ -149,7 +149,8 @@ def baseline_raw_paths(story, cohort, root):
     from .synthetic_experiment import project_for
     owner = str(project_for(Path(root)).resolve(strict=True))
     cutoff = cohort['notBeforeUnixMs'] / 1000
-    with sqlite3.connect(f'file:{db_path}?mode=ro', uri=True) as db:
+    from .history_activation import read_database
+    with read_database(db_path, timeout=5) as db:
         db.execute('PRAGMA query_only=ON')
         tickets = db.execute(
             'SELECT relative_path FROM edit_tickets WHERE project_root=? '
@@ -477,7 +478,8 @@ def activate(root, project, policy, adapter, accepted_sha256,
     db_path = root / 'shared-learning.sqlite3'
     if db_path.is_symlink() or not db_path.is_file():
         raise ValueError('runtime_authorization_cohort_ledger_missing')
-    with sqlite3.connect(f'file:{db_path}?mode=ro', uri=True) as db:
+    from .history_activation import read_database
+    with read_database(db_path, timeout=5) as db:
         db.execute('PRAGMA query_only=ON')
         case_max = db.execute('SELECT MAX(captured_at) FROM cases').fetchone()[0]
         ticket_max = db.execute('SELECT MAX(created_at) FROM edit_tickets').fetchone()[0]
