@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,13 +23,26 @@ import context_learning.synthetic_teacher as teacher_module
 import edit_context
 from context_learning.history_activation import (
     HOST_FILES, activate, recover, rollback, selected_database, writer_access,
-    read_database, record_case_mapping, _write_state)
+    read_database, record_case_mapping, _write_state, schema_digest)
 from context_learning import history_fence
+import context_learning.history_activation as activation_module
 from context_learning.history_migration import prepare
 from context_learning.history_lifecycle import request as lifecycle_request
 from context_learning.shared import _db
 from context_learning.storage_layout import register_project
 from context_learning.store import canonical, database, capture
+
+
+def closing_ro(path):
+    from contextlib import closing
+    return closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True))
+
+
+def closing_rw(path):
+    # sqlite3's own context manager commits but never closes; a leaked rw fd
+    # is exactly what the activation writer probe must refuse.
+    from contextlib import closing
+    return closing(sqlite3.connect(path))
 
 
 def rejects(action, reason):
@@ -197,12 +211,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
             'history_lifecycle_used_receipt_invalid')
     malformed_used.unlink()
 
-    with sqlite3.connect(shared_db) as db:
+    with closing_rw(shared_db) as db, db:
         db.execute("UPDATE cases SET error='new-source-change'")
     rejects(lambda: activate(generation, host_roots=hosts, home=home),
             'history_sources_changed')
     assert not pointer.exists()
-    with sqlite3.connect(shared_db) as db:
+    with closing_rw(shared_db) as db, db:
         db.execute('UPDATE cases SET error=NULL')
 
     child_script = ('from context_learning.history_activation import writer_access; '
@@ -262,7 +276,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     assert recover(host_roots=hosts, home=home) == {
         'active': False, 'generation': generation, 'sources_current': True,
         'recovered_interrupted_phase': 'fencing'}
-    with sqlite3.connect(shared_db) as db:
+    with closing_ro(shared_db) as db:
         assert not history_fence._actual(db)
 
     with patch('context_learning.history_activation.os.replace',
@@ -291,13 +305,155 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         'sources_current': True,
         'recovered_interrupted_phase': 'activating'}
 
+
+    # ---- Seal: legacy files become read-only before the pointer is published.
+    # Old cached host code opens the legacy path with plain sqlite3.connect()
+    # and issues CREATE TABLE IF NOT EXISTS; a DML trigger cannot stop that.
+    def mode(path):
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def state_phase():
+        return json.loads((pointer.parent / 'history-state.json').read_text())['phase']
+
+    os.chmod(private_db, 0o644)  # the real private DB is 0644; restore THAT
+    original_modes = (mode(shared_db), mode(private_db))
+    assert original_modes == (0o600, 0o644), original_modes
+
+    def assert_unsealed_inactive():
+        assert (mode(shared_db), mode(private_db)) == original_modes
+        for path in (shared_db, private_db):
+            with closing_ro(path) as db:
+                assert not history_fence._actual(db)
+        assert state_phase() == 'inactive'
+        assert not pointer.exists()
+
+    # lsof output parsing: own pid excluded, read-only fds ignored, rw counted.
+    own = os.getpid()
+    parse = activation_module._writer_pids_from_lsof
+    listing = f'p{own}\nf3\nau\nn/x\np101\nf4\nar\nn/x\np202\nf5\nau\nn/x\np303\nf6\naw\nn/x\n'
+    assert parse(0, listing, '', own) == {202, 303}
+    assert parse(1, '', '', own) == set()  # lsof: no process has the file open
+    rejects(lambda: parse(1, '', 'lsof: status error', own),
+            'history_legacy_writer_probe_unavailable')
+    rejects(lambda: parse(0, 'garbage\n', '', own),
+            'history_legacy_writer_probe_unavailable')
+    rejects(lambda: parse(0, 'p1\nf3\naz\n', '', own),
+            'history_legacy_writer_probe_unavailable')
+    rejects(lambda: parse(0, 'f3\nau\n', '', own),
+            'history_legacy_writer_probe_unavailable')
+    # A memory-mapped reader (SQLite mmap) reports a blank access mode on a
+    # txt/mem fd: not a writer. A blank mode on a numbered fd still fails closed.
+    assert parse(0, 'p404\nftxt\na \nn/x\np505\nfmem\na\nn/x\np202\nf5\nau\nn/x\n',
+                 '', own) == {202}
+    rejects(lambda: parse(0, 'p1\nf3\na \nn/x\n', '', own),
+            'history_legacy_writer_probe_unavailable')
+
     new_lifecycle()
+    with patch.object(activation_module, '_legacy_writer_pids', return_value={4242}):
+        rejects(lambda: activate(generation, host_roots=hosts, home=home),
+                'history_legacy_writer_open')
+    assert_unsealed_inactive()
+
+    with patch.object(activation_module.subprocess, 'run',
+                      side_effect=FileNotFoundError('lsof')):
+        rejects(lambda: activate(generation, host_roots=hosts, home=home),
+                'history_legacy_writer_probe_unavailable')
+    assert_unsealed_inactive()
+
+    real_verify_fences = activation_module._verify_fences
+    def verify_then_old_ddl(paths, manifest):
+        real_verify_fences(paths, manifest)
+        old = sqlite3.connect(shared_db)  # v44 DDL slips in after fencing
+        old.execute('CREATE TABLE IF NOT EXISTS teacher_jobs (job_id TEXT)')
+        old.commit()
+        old.close()
+    with patch.object(activation_module, '_verify_fences', side_effect=verify_then_old_ddl):
+        rejects(lambda: activate(generation, host_roots=hosts, home=home),
+                'history_legacy_schema_changed')
+    assert_unsealed_inactive()
+    with closing_rw(shared_db) as db, db:
+        db.execute('DROP TABLE teacher_jobs')
+
+    if shutil.which('lsof'):
+        holder_script = ('import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); '
+                         'db.execute("SELECT count(*) FROM sqlite_master").fetchone(); '
+                         'db.commit(); print("held",flush=True); sys.stdin.readline()')
+        holder = subprocess.Popen([sys.executable, '-c', holder_script, str(private_db)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == 'held'
+            rejects(lambda: activate(generation, host_roots=hosts, home=home),
+                    'history_legacy_writer_open')
+            assert_unsealed_inactive()
+        finally:
+            holder.communicate('\n', timeout=5)
+    else:
+        print('skip: lsof unavailable for the real-process writer probe', file=sys.stderr)
+
+    # A crash mid-seal leaves read-only files and fences; recover() undoes both.
+    seal_crash = (
+        'import os,sys; from unittest.mock import patch; '
+        'from context_learning.history_activation import activate; '
+        'stop=lambda *args,**kwargs: os._exit(96); '
+        'guard=patch("context_learning.history_activation._legacy_writer_pids", '
+        'side_effect=stop); guard.start(); '
+        'activate(sys.argv[1],home=sys.argv[2],host_roots={'
+        '"claude":sys.argv[3],"codex":sys.argv[4]})')
+    crashed = subprocess.run([sys.executable, '-c', seal_crash, generation, str(home),
+                              str(hosts['claude']), str(hosts['codex'])],
+                             env=child_env, check=False)
+    assert crashed.returncode == 96 and not pointer.exists()
+    assert state_phase() == 'sealing'
+    assert (mode(shared_db), mode(private_db)) == (0o400, 0o400)
+    assert recover(host_roots=hosts, home=home) == {
+        'active': False, 'generation': generation, 'sources_current': True,
+        'recovered_interrupted_phase': 'sealing'}
+    assert_unsealed_inactive()
+
+    # Sealed activation: a v44-style opener cannot create tables or insert.
+    new_lifecycle()
+    activate(generation, host_roots=hosts, home=home)
+    assert (mode(shared_db), mode(private_db)) == (0o400, 0o400)
+    legacy_listing = {path: sorted(os.listdir(path.parent)) for path in (shared_db, private_db)}
+    digests = {}
+    for path in (shared_db, private_db):
+        with closing_ro(path) as db:
+            digests[path] = schema_digest(db)
+    v44 = ('import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); '
+           'db.execute("CREATE TABLE IF NOT EXISTS teacher_jobs (job_id TEXT PRIMARY KEY)"); '
+           'db.execute("INSERT INTO teacher_jobs VALUES (\'lost\')"); db.commit()')
+    for path in (shared_db, private_db):
+        old = subprocess.run([sys.executable, '-c', v44, str(path)],
+                             capture_output=True, text=True, check=False)
+        assert old.returncode != 0 and 'readonly' in old.stderr, old.stderr
+        assert path.exists()
+    for path in (shared_db, private_db):
+        with closing_ro(path) as db:
+            assert schema_digest(db) == digests[path]
+    assert {path: sorted(os.listdir(path.parent))
+            for path in (shared_db, private_db)} == legacy_listing
+    assert recover(host_roots=hosts, home=home)['active'] is True
+
+    # Someone made a legacy file writable again while the pointer exists.
+    os.chmod(shared_db, 0o600)
+    rejects(lambda: recover(host_roots=hosts, home=home), 'history_legacy_unsealed')
+    rejects(lambda: rollback(host_roots=hosts, home=home), 'history_legacy_unsealed')
+    assert pointer.exists()
+    os.chmod(shared_db, 0o400)
+    assert recover(host_roots=hosts, home=home)['active'] is True
+    assert rollback(host_roots=hosts, home=home) == {'active': False, 'generation': generation}
+    assert_unsealed_inactive()
+
+    new_lifecycle()
+    # Connections opened BEFORE the seal keep a rw fd in this (excluded)
+    # process; the DML fence still refuses their writes.
+    stale_shared = sqlite3.connect(shared_db)
+    stale_private = sqlite3.connect(private_db)
     activated = activate(generation, host_roots=hosts, home=home)
     assert activated['generation'] == generation and pointer.exists()
     assert selected_database(shared_db, home=home) == Path(prepared['path'])
     assert selected_database(private_db, home=home) == Path(prepared['path'])
-    stale_shared = sqlite3.connect(shared_db)
-    stale_private = sqlite3.connect(private_db)
     for connection, statement in ((stale_shared,
                                    "INSERT INTO meta VALUES ('stale-old-writer','blocked')"),
                                   (stale_private,
@@ -343,7 +499,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     assert crashed.returncode == 95 and not pointer.exists()
     rejects(lambda: selected_database(shared_db, home=home),
             'history_pointer_missing_after_activation')
-    with sqlite3.connect(shared_db) as stale:
+    with closing_rw(shared_db) as stale:
         try:
             stale.execute("INSERT INTO meta VALUES ('rollback-crash','blocked')")
         except sqlite3.IntegrityError as exc:
@@ -471,7 +627,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         with database(private) as db:
             assert db.execute('SELECT story_root FROM sample_projects WHERE request_id=?',
                               ('edit-after-cutover',)).fetchone() == (str(story),)
-        with sqlite3.connect(shared_db) as old_db:
+        with closing_ro(shared_db) as old_db:
             assert old_db.execute('SELECT 1 FROM cases WHERE request_id=?',
                                   ('edit-after-cutover',)).fetchone() is None
     rejects(lambda: rollback(host_roots=hosts, home=home),

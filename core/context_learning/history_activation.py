@@ -29,6 +29,11 @@ from .store import canonical
 PROTOCOL = 'qmd-history-active-v1'
 STATE_PROTOCOL = 'qmd-history-state-v1'
 HOSTS = ('claude', 'codex')
+# Phases in which the legacy files may be read-only. The state then records
+# each file's original mode (restored on unwind, never a hardcoded 0600) and
+# the schema digest taken under the fence transaction.
+SEALED_PHASES = ('sealing', 'activating', 'active', 'rollback_pending')
+SEALED_MODE = 0o400
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 HOST_FILES = tuple(sorted({str(path.relative_to(_PLUGIN_ROOT)) for pattern in
                            ('core/*.py', 'core/*.sh', 'core/context_learning/*.py',
@@ -123,19 +128,35 @@ def _read_state(home=None):
     if path.stat().st_mode & 0o077:
         raise ValueError('unsafe_history_state')
     value = json.loads(path.read_text())
-    if (not isinstance(value, dict) or set(value) !=
-            {'schema', 'generation', 'phase'} or value['schema'] != STATE_PROTOCOL
-            or value['phase'] not in ('fencing', 'activating', 'active',
-                                     'rollback_pending', 'inactive')
+    if (not isinstance(value, dict) or not isinstance(value.get('phase'), str)
+            or set(value) != ({'schema', 'generation', 'phase', 'seal'}
+                              if value['phase'] in SEALED_PHASES else
+                              {'schema', 'generation', 'phase'})
+            or value['schema'] != STATE_PROTOCOL
+            or value['phase'] not in ('fencing', 'inactive') + SEALED_PHASES
             or not isinstance(value['generation'], str)
-            or not re.fullmatch(r'g-[0-9a-f]{32}', value['generation'])):
+            or not re.fullmatch(r'g-[0-9a-f]{32}', value['generation'])
+            or ('seal' in value and not _valid_seal(value['seal']))):
         raise ValueError('invalid_history_state')
     return value
 
 
-def _write_state(generation, phase, *, home=None):
-    _atomic_file(_state_path(home),
-                 {'schema': STATE_PROTOCOL, 'generation': generation, 'phase': phase})
+def _valid_seal(seal):
+    return (isinstance(seal, dict) and set(seal) == {'modes', 'schema'}
+            and isinstance(seal['modes'], list) and len(seal['modes']) == 2
+            and all(type(mode) is int and 0 <= mode <= 0o777 for mode in seal['modes'])
+            and isinstance(seal['schema'], list) and len(seal['schema']) == 2
+            and all(isinstance(item, str) and re.fullmatch(r'[0-9a-f]{64}', item)
+                    for item in seal['schema']))
+
+
+def _write_state(generation, phase, *, home=None, seal=None):
+    if (phase in SEALED_PHASES) != (seal is not None):
+        raise ValueError('invalid_history_state')
+    value = {'schema': STATE_PROTOCOL, 'generation': generation, 'phase': phase}
+    if seal is not None:
+        value['seal'] = seal
+    _atomic_file(_state_path(home), value)
 
 
 def _read_pointer(home=None):
@@ -353,6 +374,131 @@ def _verify_fences(paths, manifest):
             history_fence.verify(db, tables)
 
 
+def schema_digest(db):
+    """Digest of the complete SQLite schema (tables, indexes, triggers, views).
+
+    The fence covers DML on manifest tables only; an old writer can still run
+    DDL (CREATE TABLE IF NOT EXISTS ...). Any schema change, including a new
+    table, changes this value.
+    """
+    rows = sorted(canonical(list(row)) for row in db.execute(
+        'SELECT type,name,tbl_name,sql FROM sqlite_master'))
+    version = db.execute('PRAGMA user_version').fetchone()[0]
+    return hashlib.sha256(canonical({'rows': rows, 'user_version': version})
+                          .encode('utf8')).hexdigest()
+
+
+def _read_only(path):
+    return closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True))
+
+
+def _file_mode(path):
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError('unsafe_legacy_database')
+    return stat.S_IMODE(info.st_mode)
+
+
+def _set_modes(paths, modes):
+    """Change only the legacy files' modes (never their directories, whose
+    policy/queue files other workers still write), then make it durable."""
+    for path, mode in zip(paths, modes):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1):
+                raise ValueError('unsafe_legacy_database')
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    for directory in dict.fromkeys(str(Path(path).parent) for path in paths):
+        directory_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _writer_pids_from_lsof(returncode, stdout, stderr, own_pid):
+    """Parse `lsof -F pan`; return other pids holding a file read-write.
+
+    Anything not understood fails closed as probe-unavailable.
+    """
+    unavailable = ValueError('history_legacy_writer_probe_unavailable')
+    # lsof exits 1 when any named file has no opener (so also when none of
+    # them has one). With -w, any stderr means it could not inspect fully.
+    if returncode not in (0, 1) or stderr.strip():
+        raise unavailable
+    if not stdout.strip():
+        if returncode == 1:
+            return set()
+        raise unavailable
+    pid = None
+    open_fd = False
+    writers = set()
+    fd = None
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == 'p':
+            if open_fd or not value.isdigit():
+                raise unavailable
+            pid = int(value)
+        elif tag == 'f':
+            if pid is None or open_fd:
+                raise unavailable
+            open_fd = True
+            fd = value
+        elif tag == 'a':
+            if not open_fd:
+                raise unavailable
+            open_fd = False
+            # A memory mapping (fd 'txt'/'mem', e.g. SQLite mmap_size>0) has
+            # no access mode. It is not a write descriptor; any other blank
+            # or unknown mode still fails closed.
+            if value.strip() == '' and fd in ('txt', 'mem'):
+                continue
+            if value not in ('r', 'w', 'u'):
+                raise unavailable
+            if value in ('w', 'u') and pid != own_pid:
+                writers.add(pid)
+        elif tag == 'n':
+            if pid is None:
+                raise unavailable
+        else:
+            raise unavailable
+    if pid is None or open_fd:
+        raise unavailable
+    return writers
+
+
+def _legacy_writer_pids(paths):
+    """Other processes holding a legacy DB open read-write (pre-seal fds)."""
+    try:
+        result = subprocess.run(('lsof', '-w', '-F', 'pan', '--',
+                                 *map(str, paths)),
+                                capture_output=True, text=True, timeout=30,
+                                check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError('history_legacy_writer_probe_unavailable') from exc
+    return _writer_pids_from_lsof(result.returncode, result.stdout,
+                                  result.stderr, os.getpid())
+
+
+def _verify_seal(paths, seal):
+    if seal is None:
+        raise ValueError('history_legacy_unsealed')
+    if any(_file_mode(path) != SEALED_MODE for path in paths):
+        raise ValueError('history_legacy_unsealed')
+    for path, expected in zip(paths, seal['schema']):
+        with _read_only(path) as db:
+            if schema_digest(db) != expected:
+                raise ValueError('history_legacy_schema_changed')
+
+
 def _remove_partial_fences(paths, manifest, *, timeout=5):
     with history_fence.exclusive_pair(paths, timeout=timeout) as databases:
         for db, tables in zip(databases, _source_tables(manifest)):
@@ -406,21 +552,56 @@ def activate(generation, *, host_roots=None, home=None, lock_timeout=5):
                 _verify_source_pair(databases, manifest)
                 for source_db, tables in zip(databases, _source_tables(manifest)):
                     history_fence.install(source_db, tables)
+                # Taken inside the fence transaction: the exact schema the
+                # sealed files must still have (fence triggers included).
+                fenced_schema = [schema_digest(db) for db in databases]
             _verify_fences(paths, manifest)
-            _write_state(generation, 'activating', home=home)
-            from .history_lifecycle import consume_request
-            consume_request(generation, expected_nonce=verified_request['nonce'],
-                            home=home)
-            # A failure here leaves a fenced, fail-closed state for recover().
-            _atomic_pointer(pointer, home=home)
-            _write_state(generation, 'active', home=home)
+            # Seal: DML triggers cannot stop old host code's DDL, so the legacy
+            # files become read-only before the pointer is published. Original
+            # modes are recorded first so any unwind restores exactly them.
+            seal = {'modes': [_file_mode(path) for path in paths],
+                    'schema': fenced_schema}
+            _write_state(generation, 'sealing', home=home, seal=seal)
+            try:
+                _set_modes(paths, (SEALED_MODE, SEALED_MODE))
+                # chmod does not revoke an fd opened read-write before it.
+                if _legacy_writer_pids(paths):
+                    raise ValueError('history_legacy_writer_open')
+                _verify_seal(paths, seal)
+                for path, expected in zip(paths, _source_tables(manifest)):
+                    with _read_only(path) as db:
+                        if _inventory(db) != expected:
+                            raise ValueError('history_sources_changed_under_sqlite_lock')
+                _write_state(generation, 'activating', home=home, seal=seal)
+                from .history_lifecycle import consume_request
+                consume_request(generation, expected_nonce=verified_request['nonce'],
+                                home=home)
+                _atomic_pointer(pointer, home=home)
+            except BaseException:
+                # Never make legacy files writable while a pointer may exist;
+                # that case stays sealed and fenced for recover().
+                if not _pointer(home).exists() and not _pointer(home).is_symlink():
+                    try:
+                        _unseal(paths, manifest, seal, generation, home=home)
+                    except Exception:
+                        pass  # state still names a sealed phase; recover() unwinds
+                raise
+            _write_state(generation, 'active', home=home, seal=seal)
             return pointer
+
+
+def _unseal(paths, manifest, seal, generation, *, home=None):
+    """Unwind before pointer publication: modes first (fence removal needs a
+    writable file), then our fences, then mark the state inactive."""
+    _set_modes(paths, seal['modes'])
+    _remove_partial_fences(paths, manifest)
+    _write_state(generation, 'inactive', home=home)
 
 
 def recover(*, host_roots=None, home=None):
     """Validate a restart's selected generation; never silently fall back."""
     state = _read_state(home)
-    if (state is not None and state['phase'] in ('fencing', 'activating',
+    if (state is not None and state['phase'] in ('fencing', 'sealing', 'activating',
                                                 'rollback_pending')
             and not _pointer(home).exists() and not _pointer(home).is_symlink()):
         from .history_lifecycle import pause_workers
@@ -436,6 +617,10 @@ def recover(*, host_roots=None, home=None):
                     raise ValueError('history_recovery_state_changed')
                 if hashlib.sha256(target.read_bytes()).hexdigest() != manifest['history_sha256']:
                     raise ValueError('history_changed_after_activation')
+                if 'seal' in state:
+                    # Restore the recorded original modes before the fence
+                    # removal below opens the files read-write.
+                    _set_modes(paths, state['seal']['modes'])
                 with history_fence.exclusive_pair(paths) as databases:
                     source_current = all(_inventory(db) == expected for db, expected
                                          in zip(databases, _source_tables(manifest)))
@@ -450,7 +635,9 @@ def recover(*, host_roots=None, home=None):
         return {'active': False}
     _installed_hosts_compatible(host_roots, home=home)
     manifest, target = _manifest_for(pointer, home=home)
-    _verify_fences((pointer['source_shared'], pointer['source_private']), manifest)
+    paths = (pointer['source_shared'], pointer['source_private'])
+    _verify_fences(paths, manifest)
+    _verify_seal(paths, (_read_state(home) or {}).get('seal'))
     with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)) as db:
         if (db.execute('PRAGMA quick_check').fetchone()[0] != 'ok'
                 or db.execute('PRAGMA foreign_key_check').fetchone() is not None
@@ -480,7 +667,10 @@ def rollback(*, host_roots=None, home=None):
             if not verified['sources_current']:
                 raise ValueError('history_legacy_changed')
             _verify_fences(paths, manifest)
-            _write_state(pointer['generation'], 'rollback_pending', home=home)
+            seal = (_read_state(home) or {}).get('seal')
+            _verify_seal(paths, seal)
+            _write_state(pointer['generation'], 'rollback_pending', home=home,
+                         seal=seal)
             path = _pointer(home)
             os.unlink(path)
             directory_fd = os.open(path.parent, os.O_RDONLY)
@@ -488,6 +678,8 @@ def rollback(*, host_roots=None, home=None):
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
+            # Only now, with no pointer, may legacy files become writable again.
+            _set_modes(paths, seal['modes'])
             _remove_partial_fences(paths, manifest)
             _write_state(pointer['generation'], 'inactive', home=home)
             return {'active': False, 'generation': pointer['generation']}
