@@ -103,3 +103,36 @@
 1. 실행 권한 rebind: rc41부터 기존 실행 권한(gold, local_train, quality_evaluate)은 막힌 상태로 닫혀 있다. 이 권한은 rc40 adapter 경로에 묶여 있었다. 다시 쓰려면 소유자가 승인한 해시로 `runtime_authorization.rebind`를 실행해야 한다.
 2. transport 잠금 수정(`6b860b4`)은 반영됐다. 원인과 재현 조건은 해당 커밋 메시지에 있다.
 3. 2단계(MacBook 신규 설치)와 3단계(agy 리뷰)는 그대로 남아 있다.
+
+## 2026-10-13 12:23 KST — 활성화 후 읽기 전용 확인
+
+12:14 절이 다음 세션에 넘긴 확인 세 가지를 마쳤다. 모든 DB는 `mode=ro`로만 열었고 파일·권한·상태 파일은 바꾸지 않았다.
+
+**결과**
+- `selected_database`: shared·private 레거시 경로 둘 다 `migrations/g-a511b279646649d0bcea5c309aa4a571/history.sqlite3`로 해석된다. 포인터와 `history-state.json`(`phase: active`, `seal.modes` `[384, 420]` = `[0600, 0644]`)이 일치한다.
+- history 행 수: 테이블 36개, 56,658행, `quick_check` ok. cases 203, samples 429, corpus_review_queue 49,054, gold_attempt_receipts 176, deferred_edit_captures 11.
+- fence trigger 수: shared 63개(테이블 22개 중 `sqlite_sequence`를 뺀 21개 × INSERT·UPDATE·DELETE), private 30개(10 × 3). history DB에는 trigger가 없다.
+- 봉인: 레거시 DB 두 개 모두 `0400`, `journal_mode=delete`.
+- 쓰기 여부: `history.sqlite3`의 SHA-256 `7ae01bd7…`이 `prepared.json`의 `history_sha256`과 같고 mtime도 prepare 시점(11:25)이다. **활성화 뒤 새 history에 쓰기가 아직 없으므로 `rollback()`으로 깨끗하게 되돌릴 수 있다.** 첫 쓰기가 생기면 이 창은 닫힌다.
+
+**하지 않은 것**
+- 쓰기 거부 확인과 `recover()` 검증은 쓰기를 동반하므로 이번 확인 범위에서 뺐다.
+
+**남은 일 (변화 없음)**
+1. 실행 권한 rebind(gold, local_train, quality_evaluate): 읽기 전용으로 계획을 계산했다(파일 변경 없음 확인). 소유자 승인 후 실행한다.
+   - 현재 체인 끝: `67fe4b2ae48150843a60739853f475e6ceef5e745321b3cd69eeb2fec3da73a8` (adapter rc40, 만료 2026-10-18 17:15 KST)
+   - rc42 adapter `laya_adapter.py` SHA-256: `1509e6833ba8b2ca23d6e7811173d268c09b16005a2b3d9f9f2838c9ae23bf5e` (Claude 캐시·Codex 캐시·Claude 디렉터리 marketplace 세 곳 동일, nlink 1)
+   - 새 proposal: `fdfda5c508b32931b6e01a1dc4f273d4b749c8a44da1e2262894fb829d80c68c`. `_same_execution_scope` 통과 — adapter 경로 외 범위(operations, goldModel `gpt-6.1-sol`, modelDir, cohort, 만료)는 그대로다.
+   - rebind는 shared 루트의 `runtime-authorization-updates/`에 receipt 파일 하나만 추가하고 원래 grant는 그대로 둔다. history DB에는 쓰지 않으므로 **rebind 자체는 rollback 창을 닫지 않는다.** 창을 닫는 것은 그 뒤 실제 gold·학습 작업이 history에 쓰는 순간이다.
+2. 2단계(MacBook 신규 설치)와 3단계(agy 리뷰)는 그대로 남아 있다.
+
+## 2026-10-13 12:36 KST — 실행 권한 rebind 완료, Claude 디렉터리 로드 경로는 여전히 거부
+
+- 소유자 승인으로 `runtime_authorization.rebind`를 실행했다. 결과 `rebound`, `67fe4b2a…` → `fdfda5c508b32931b6e01a1dc4f273d4b749c8a44da1e2262894fb829d80c68c`. receipt `runtime-authorization-updates/fdfda5c5….json`이 추가됐고 원래 grant 파일은 그대로다. `active()`가 새 해시를 돌려주고 두 adapter 행이 rc42를 가리킨다.
+- history DB 해시는 rebind 전후 동일하다. rollback 창은 아직 열려 있다.
+- 설치된 코드 위치별 `require_operation`(gold, local_train, quality_evaluate):
+  - Codex 캐시 `~/.codex/plugins/cache/qmd-shared-v21-local/…/rc42`: 세 작업 모두 통과
+  - Claude 캐시 `~/.claude/plugins/cache/qmd-shared-v44-local/…/rc42`: 세 작업 모두 통과
+  - **Claude 디렉터리 marketplace `~/Documents/Codex/2026-10-09/task/qmd-v44-local-marketplace/plugins/qmd-auto-context-v52-rc42-claude-load-root`: 세 작업 모두 `runtime_authorization_adapter_invalid`**
+- 원인: `runtime_authorization._approved_adapter_paths`와 `_adapter_rows`가 Claude adapter를 `~/.claude/plugins/cache/qmd-shared-v44-local/…`로 고정한다. 그런데 Claude는 디렉터리 marketplace 플러그인을 원본 위치에서 실행한다(`5991efa`가 history ack 쪽에서만 반영한 사실). 그래서 실제 Claude 세션에서 도는 코드는 자기 adapter가 승인 목록에 없어 실패로 닫힌다. 안전 방향이므로 데이터 위험은 없고, Claude 세션에서 gold·학습·평가가 돌지 않을 뿐이다. Codex 세션은 정상이다.
+- 고치려면 `5991efa`와 같은 방식(Claude 자체 설치 기록으로 실제 로드 폴더를 찾아 승인)으로 runtime_authorization을 바꿔야 한다. 그러면 proposal 해시가 바뀌므로 새 rc 설치와 또 한 번의 rebind 승인이 필요하다. 아직 하지 않았다.
