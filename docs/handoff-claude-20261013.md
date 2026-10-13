@@ -66,3 +66,40 @@
 - 활성화된 뒤 외부 작업으로 레거시 파일 권한이 바뀌면 recover/rollback이 `history_legacy_unsealed`로 거부한다. 해결은 손으로 다시 `chmod 0400` 하는 것이다.
 - 레거시 DB가 WAL 모드이면 봉인 뒤 검증이 실패로 닫힌다. 현재 DB는 `delete` 모드라 해당하지 않는다.
 - 봉인 이전 형식의 sealed-phase 상태 파일은 읽히지 않는다. 실제 홈 활성화가 불가능했으므로 실사용 상태는 없다.
+
+## 2026-10-13 12:14 KST — Mac mini 공용 학습 저장소 활성화 완료
+
+**현재 상태 (소유자가 `stat`·상태 파일로 확인)**
+- 활성 generation: `g-a511b279646649d0bcea5c309aa4a571`. 위치는 `~/Library/Application Support/qmd-auto-context/learning/migrations/`.
+- 포인터 `history-active.json`이 기록돼 있고, 상태 파일은 `phase: active`다.
+- 레거시 원본 두 개는 `0400`으로 봉인됐다. 원래 권한은 상태 파일 `seal.modes`에 `[0600, 0644]`로 기록돼 있다.
+- 런타임 읽기·쓰기는 포인터를 따라 새 history로 간다.
+- activate 이후의 쓰기 거부 확인과 `recover()` 검증은 세션 권한 분류기에 막혀 실행하지 못했다. 다음 세션에서 읽기 전용으로 확인할 것: `selected_database` 경로, history 행 수, fence trigger 수.
+
+**활성화 전 검증**
+- 준비: 11:25 백업 직후 prepare를 실행했다.
+- 대조: 백업 사본과 행 단위로 비교해 shared 21개 테이블 2,283행, private 10개 테이블 53,740행이 모두 일치했다.
+- 그 밖의 확인 결과:
+  - `quick_check` ok, 외래키 위반 0
+  - gold receipt 176건 committed, deferred capture 11건 completed
+  - staged `cohort-6728087f…` artifact 해시 `afb0c18e…` 일치
+- 설치: rc42 = `ada16fc`(`0.35.2-dev.20261013-claude-handoff-v52-rc42-claude-load-root`). CI `38340033880`이 Node 22/24/26 모두 통과했다.
+- 두 host의 ack는 새 headless 세션의 실제 SessionStart hook이 기록했다(nonce `9b46b0da`, 지문 `ab04634b`). 기록된 경로는 다음과 같다.
+  - Claude: `…/qmd-v44-local-marketplace/plugins/qmd-auto-context-v52-rc42-claude-load-root`. Claude는 디렉터리 marketplace 플러그인을 원본 위치에서 그대로 실행한다. 이 사실을 반영한 것이 `5991efa`다.
+  - Codex: `~/.codex/plugins/cache/qmd-shared-v21-local/…/rc42`
+- 옛 세션 처리:
+  - Codex 17217·98014는 소유자가 종료했다.
+  - Claude 29479는 활성화 전에 이미 종료돼 있었다.
+  - rc40으로 남은 세션은 activate를 실행한 세션(27808) 하나이고, activate 직후 종료한다.
+  - 이 조건을 소유자가 알고 승인해서 `old_host_sessions_restarted=true`로 넘겼다.
+
+**복구**
+- 새 history에 기록이 생기기 전에만 `rollback()`으로 깨끗하게 되돌릴 수 있다. 포인터를 지우고, 기록된 원래 권한을 복원하고, fence를 제거한다.
+- 기록이 생긴 뒤에는 감사된 역이전이 따로 필요하고, 코드에는 아직 구현돼 있지 않다.
+- 백업: `~/Documents/Codex/2026-10-13/task/qmd-learning-backup-20261013-112502/`. 원본 디렉터리 전체, SQLite 백업 2개, 활성화 전 학습 루트가 들어 있다.
+- 설치 전 설정 백업: `~/Documents/Codex/2026-10-13/task/qmd-install-rc41-backup/`, `…/qmd-install-rc42-backup/`
+
+**남은 일**
+1. 실행 권한 rebind: rc41부터 기존 실행 권한(gold, local_train, quality_evaluate)은 막힌 상태로 닫혀 있다. 이 권한은 rc40 adapter 경로에 묶여 있었다. 다시 쓰려면 소유자가 승인한 해시로 `runtime_authorization.rebind`를 실행해야 한다.
+2. transport 잠금 수정(`6b860b4`)은 반영됐다. 원인과 재현 조건은 해당 커밋 메시지에 있다.
+3. 2단계(MacBook 신규 설치)와 3단계(agy 리뷰)는 그대로 남아 있다.
