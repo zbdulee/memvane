@@ -101,6 +101,13 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
                    ('gold:old-request-id:first_running', 'gold', 1, 1.0))
         db.execute('INSERT INTO experiment_invocations VALUES (?,?,?,?,?)',
                    ('gold:old-request-id:first_running', 'a'*64, 'uncertain', None, None))
+        # Activation re-inventories sources under the lock; BLOB rows must
+        # digest there exactly as in prepare.
+        db.execute('INSERT INTO topical_worker_versions VALUES ('
+                   + ','.join('?' for _ in range(17)) + ')',
+                   ('reg-1', str(project), str(story), 'wiki/card.md', 'a'*64,
+                    b'\x00card bytes\xff', 'gen-1', 'card-1', '[]', 'b'*64, 'c'*64,
+                    'd'*64, 'e'*64, 'f'*64, 'ack', 'active', 3.0))
     with database(private, home=home) as db:
         db.execute('INSERT INTO samples VALUES (?,?,?)',
                    (request_id, sample['schema_version'], body))

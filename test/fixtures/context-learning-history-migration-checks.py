@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from context_learning.history_migration import prepare, verify_prepared
+from context_learning.history_migration import _table_digest, prepare, verify_prepared
 from context_learning.contracts import digest
 from context_learning.shared import _db
 from context_learning.storage_layout import register_project
@@ -79,6 +79,20 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-migration-', dir='/tmp') as
                     '{}', 'session', 'turn', 'tool', 'write', 1.0, 2.0, rid,
                     digest(canonical(samples_by_id[rid])),
                     digest(canonical([['card-1', 'e'*64]]))))
+        # Topical/source-card registrations keep exact card bytes as BLOBs.
+        # A JSON-only row digest cannot serialize them, so preparation of any
+        # store that has registered a card used to fail with TypeError.
+        db.execute('INSERT INTO topical_worker_versions VALUES ('
+                   + ','.join('?' for _ in range(17)) + ')',
+                   ('reg-1', str(project), str(story), 'wiki/card.md', 'a'*64,
+                    b'\x00card \xed\x95\x9c bytes\xff', 'gen-1', 'card-1', '[]',
+                    'b'*64, 'c'*64, 'd'*64, 'e'*64, 'f'*64, 'ack', 'active', 3.0))
+        # Two BLOB columns, one empty: b'' must stay distinct from NULL.
+        db.execute('INSERT INTO source_card_versions VALUES ('
+                   + ','.join('?' for _ in range(16)) + ')',
+                   ('src-reg-1', str(project), str(story), 'approved-story/file.md',
+                    'a'*64, b'', 'src-ticket-1', 'b'*64, 'wiki/source-card.md', 'c'*64,
+                    b'\x00source card\xff', 'card-ticket-1', 'd'*64, 'host', 'ack', 4.0))
     with database(private) as db:
         for request_id, origin in [(rid, 'tool_edit'), (second, 'user_prompt'),
                                    (scripted, 'user_prompt'),
@@ -143,6 +157,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-migration-', dir='/tmp') as
         assert db.execute('SELECT story_root FROM sample_projects WHERE request_id=?',
                           ('private-only-edit',)).fetchone()[0] is None
         assert db.execute('SELECT count(*) FROM model_selections').fetchone()[0] == 0
+        assert db.execute('SELECT source_bytes,card_bytes FROM source_card_versions').fetchone() == \
+            (b'', b'\x00source card\xff')
+        assert db.execute('SELECT card_bytes FROM topical_worker_versions').fetchone()[0] == \
+            b'\x00card \xed\x95\x9c bytes\xff'
+        # Tables without BLOBs keep the original digest formula, so manifests
+        # prepared before BLOB support stay verifiable.
+        legacy = hashlib.sha256()
+        for row in sorted(canonical(list(row)) for row in db.execute('SELECT * FROM cases')):
+            legacy.update(row.encode('utf8'))
+            legacy.update(b'\n')
+        assert _table_digest(db, 'cases')['sha256'] == legacy.hexdigest()
     assert not (target.parent.parent.parent / 'history-active.json').exists()
     assert before == (hashlib.sha256(shared_path.read_bytes()).hexdigest(),
                       hashlib.sha256(private_path.read_bytes()).hexdigest())
@@ -206,6 +231,27 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-migration-', dir='/tmp') as
     with sqlite3.connect(shared_path) as db:
         db.execute('UPDATE cases SET project_key=? WHERE request_id=?',
                    (project_key, rid))
+    # Card registrations from another project must not migrate silently.
     with sqlite3.connect(shared_path) as db:
+        db.execute('INSERT INTO topical_worker_versions VALUES ('
+                   + ','.join('?' for _ in range(17)) + ')',
+                   ('foreign-reg', str(home / 'other-novel'), str(home / 'other-novel/story'),
+                    'wiki/other.md', '9'*64,
+                    b'other', 'gen-2', 'card-9', '[]', 'b'*64, 'c'*64, 'd'*64, 'e'*64,
+                    'f'*64, 'ack', 'active', 5.0))
+    rejects(lambda: prepare(project_id, shared_path, private_path, home=home),
+            'card_registration_scope_mismatch')
+    with sqlite3.connect(shared_path) as db:
+        db.execute("DELETE FROM topical_worker_versions WHERE registration_id='foreign-reg'")
+    with sqlite3.connect(shared_path) as db:
+        original_error = db.execute('SELECT error FROM cases WHERE request_id=?',
+                                    (rid,)).fetchone()[0]
         db.execute("UPDATE cases SET error='new-after-snapshot' WHERE request_id=?", (rid,))
+    with sqlite3.connect(shared_path) as db:
+        db.execute('UPDATE cases SET error=? WHERE request_id=?', (original_error, rid))
+    assert verify_prepared(second_result['generation'], home=home)['sources_current'] is True
+    # A change confined to BLOB bytes is drift too.
+    with sqlite3.connect(shared_path) as db:
+        db.execute('UPDATE topical_worker_versions SET card_bytes=? WHERE registration_id=?',
+                   (b'\x00card \xed\x95\x9c bytes\xfe', 'reg-1'))
     assert verify_prepared(second_result['generation'], home=home)['sources_current'] is False

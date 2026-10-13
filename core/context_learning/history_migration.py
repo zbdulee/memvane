@@ -78,12 +78,22 @@ def _tables(db):
         "SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
 
 
+def _digest_value(value):
+    # SQLite values are None/int/float/str/bytes. JSON has no bytes, and card
+    # registrations store exact card bytes as BLOBs. A dict marker cannot
+    # collide with any SQLite value, and non-BLOB rows keep the original
+    # digest so manifests prepared before BLOB support stay verifiable.
+    if isinstance(value, bytes):
+        return {'$blob': value.hex()}
+    return value
+
+
 def _table_digest(db, table):
     if not table.replace('_', '').isalnum():
         raise ValueError('invalid_table_name')
     rows = db.execute(f'SELECT * FROM "{table}"').fetchall()
     digest = hashlib.sha256()
-    for row in sorted(canonical(list(row)) for row in rows):
+    for row in sorted(canonical([_digest_value(value) for value in row]) for row in rows):
         digest.update(row.encode('utf8'))
         digest.update(b'\n')
     return {'rows': len(rows), 'sha256': digest.hexdigest()}
@@ -169,6 +179,16 @@ def prepare(project_id, shared_path, private_path, *, home=None):
             if any(row[0] != view['current_root'] or row[1] != view['story_root']
                    for row in shared_copy.execute('SELECT DISTINCT project_root,story_root FROM edit_tickets')):
                 raise ValueError('edit_ticket_scope_mismatch')
+            # Card registrations carry their own scope, and their readers
+            # (latest_paths) do not filter by project. Foreign rows would
+            # silently join this project's provenance census.
+            shared_tables = _tables(shared_copy)
+            for table in ('source_card_versions', 'topical_worker_versions'):
+                if table in shared_tables and any(
+                        row[0] != view['current_root'] or row[1] != view['story_root']
+                        for row in shared_copy.execute(
+                            f'SELECT DISTINCT project_root,story_root FROM "{table}"')):
+                    raise ValueError('card_registration_scope_mismatch')
             private_samples = dict(private_copy.execute('SELECT request_id,body FROM samples'))
             compact_inputs = {(request_id, candidate_id): json.loads(body)
                               for request_id, candidate_id, body in private_copy.execute(
