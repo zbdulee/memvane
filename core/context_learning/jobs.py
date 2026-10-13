@@ -4,11 +4,25 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sqlite3
 import stat
 import time
 
 from .contracts import digest
 from .store import canonical, database
+
+
+# The cancel probe runs every 0.1s inside a paid teacher call. Another
+# process's short transaction (job-status, cancel-job) must not abort that
+# call: the probe waits briefly, treats a lock as "not cancelled yet", and
+# re-raises only once the lock has persisted past CANCEL_PROBE_GRACE.
+CANCEL_PROBE_TIMEOUT = 0.25
+CANCEL_PROBE_GRACE = 5.0
+
+
+def _lock_contention(exc):
+    return isinstance(exc, sqlite3.OperationalError) and str(exc) in (
+        'database is locked', 'database table is locked')
 
 
 def _table(db):
@@ -29,7 +43,7 @@ class JobLease:
         self.state_dir=state_dir;self.request_id=request_id
         self.seconds=lease_seconds;self.owner=secrets.token_hex(16)
         self.fd=None;self.acquired=False;self.result_status='failed'
-        self.next_check=0
+        self.next_check=0;self.busy_since=None
 
     def __enter__(self):
         try:
@@ -63,10 +77,17 @@ class JobLease:
         now=time.monotonic()
         if now<self.next_check:return False
         self.next_check=now+.1
-        with database(self.state_dir) as db:
-            row=db.execute('SELECT owner,status,expires,cancel_requested FROM teacher_jobs WHERE request_id=?',(self.request_id,)).fetchone()
-            deleted=db.execute('SELECT 1 FROM tombstones WHERE request_id=?',(self.request_id,)).fetchone()
-            return bool(deleted or not row or row[0]!=self.owner or row[1]!='running' or row[2]<=time.time() or row[3])
+        try:
+            with database(self.state_dir,timeout=CANCEL_PROBE_TIMEOUT) as db:
+                row=db.execute('SELECT owner,status,expires,cancel_requested FROM teacher_jobs WHERE request_id=?',(self.request_id,)).fetchone()
+                deleted=db.execute('SELECT 1 FROM tombstones WHERE request_id=?',(self.request_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if not _lock_contention(exc):raise
+            if self.busy_since is None:self.busy_since=now
+            if now-self.busy_since>=CANCEL_PROBE_GRACE:raise
+            return False
+        self.busy_since=None
+        return bool(deleted or not row or row[0]!=self.owner or row[1]!='running' or row[2]<=time.time() or row[3])
 
     def __exit__(self, kind, value, traceback):
         try:

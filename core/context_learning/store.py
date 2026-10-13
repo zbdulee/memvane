@@ -9,12 +9,20 @@ from .contracts import SUPPORTED_VERSIONS, validate_request
 from .compact_input import derive
 
 
+# Every connection takes the write lock (BEGIN IMMEDIATE), so a concurrent
+# opener must wait for the holder's commit. Offline and CLI work waits up to
+# BUSY_TIMEOUT; the blocking prompt hook (capture) must not stall a prompt
+# and keeps the short HOOK_BUSY_TIMEOUT, failing open instead.
+BUSY_TIMEOUT = 5.0
+HOOK_BUSY_TIMEOUT = 0.05
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
 @contextmanager
-def database(state_dir, *, home=None):
+def database(state_dir, *, home=None, timeout=BUSY_TIMEOUT):
     root = Path(state_dir)
     if not root.is_absolute() or not root.is_dir() or root.is_symlink():
         raise ValueError('invalid_state_dir')
@@ -23,19 +31,19 @@ def database(state_dir, *, home=None):
         raise ValueError('unsafe_state_permissions')
     from .history_activation import writer_access
     with writer_access(root / 'learning.sqlite3', home=home) as db_path:
-        with _database_at(db_path) as db:
+        with _database_at(db_path, timeout=timeout) as db:
             yield db
 
 
 @contextmanager
-def _database_at(db_path):
+def _database_at(db_path, *, timeout=BUSY_TIMEOUT):
     if db_path.is_symlink():
         raise ValueError('invalid_state_dir')
     if db_path.exists():
         stat = db_path.stat()
         if stat.st_uid != os.getuid() or stat.st_nlink != 1:
             raise ValueError('unsafe_database')
-    with closing(sqlite3.connect(str(db_path), timeout=0.05)) as db, db:
+    with closing(sqlite3.connect(str(db_path), timeout=timeout)) as db, db:
         version = db.execute('PRAGMA user_version').fetchone()[0]
         if version not in (0, 1, 2):
             raise ValueError('unknown_database_version')
@@ -74,7 +82,7 @@ def capture(sample: dict, *, enabled: bool = False, state_dir=None,
             if cid in compact_sources:
                 compact_rows.append((sample['request_id'], cid,
                     canonical(derive(compact_sources[cid], candidate['revision_sha256']))))
-        with database(state_dir, home=home) as db:
+        with database(state_dir, home=home, timeout=HOOK_BUSY_TIMEOUT) as db:
             rid = sample['request_id']
             if db.execute('SELECT 1 FROM tombstones WHERE request_id=?', (rid,)).fetchone():
                 return 'deleted_case'
