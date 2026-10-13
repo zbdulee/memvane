@@ -266,6 +266,94 @@ def record_case_mapping(db, project, sample, *, home=None):
                    (story_scope, sample['request_id'], project_id, registered_root))
 
 
+def _owner_json(path, reason):
+    path = Path(path)
+    info = path.stat()
+    if (any(part.is_symlink() for part in (path, *path.parents))
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid() or info.st_nlink != 1):
+        raise ValueError(reason)
+    return json.loads(path.read_text())
+
+
+def _same_host_files(left, right):
+    for name in HOST_FILES:
+        a, b = Path(left) / name, Path(right) / name
+        if (not a.is_file() or a.is_symlink() or not b.is_file() or b.is_symlink()
+                or hashlib.sha256(a.read_bytes()).digest()
+                != hashlib.sha256(b.read_bytes()).digest()):
+            return False
+    return True
+
+
+def _claude_load_roots(account):
+    """The directories Claude actually executes for each installed qmd plugin.
+
+    Claude loads a plugin from a ``directory``-source marketplace in place:
+    the session's plugin path is the marketplace's plugin folder, not the
+    cache copy named by ``installPath``. That folder is derived only from
+    Claude's own records (installed_plugins -> known_marketplaces ->
+    marketplace.json) and must match the installed version exactly, stay
+    inside the marketplace, and equal the cache copy byte for byte. Any other
+    source loads from ``installPath`` as before.
+    """
+    plugins = Path(account) / '.claude/plugins'
+    cache = plugins / 'cache'
+    claude = _owner_json(plugins / 'installed_plugins.json',
+                         'history_claude_inventory_unsafe')
+    if not isinstance(claude, dict) or not isinstance(claude.get('plugins'), dict):
+        raise ValueError('history_claude_inventory_unsafe')
+    known = None
+    roots = []
+    for key, values in claude['plugins'].items():
+        if not key.startswith('qmd-auto-context@'):
+            continue
+        marketplace = key.split('@', 1)[1]
+        for item in values:
+            install = Path(item['installPath'])
+            # Whatever Claude runs, its install record must be a cache copy;
+            # only the directory branch below may name a folder outside it.
+            if not install.is_absolute() or cache not in install.parents:
+                raise ValueError('history_claude_inventory_unsafe')
+            if known is None:
+                known = _owner_json(plugins / 'known_marketplaces.json',
+                                    'history_claude_inventory_unsafe')
+            source = known[marketplace]['source']
+            if not isinstance(source, dict):
+                raise ValueError('history_claude_marketplace_invalid')
+            if source.get('source') != 'directory':
+                roots.append(install)
+                continue
+            base = Path(source['path'])
+            if not base.is_absolute():
+                raise ValueError('history_claude_marketplace_invalid')
+            manifest = _owner_json(base / '.claude-plugin/marketplace.json',
+                                   'history_claude_marketplace_invalid')
+            if not isinstance(manifest, dict) or not isinstance(manifest.get('plugins'), list):
+                raise ValueError('history_claude_marketplace_invalid')
+            entries = [row for row in manifest['plugins']
+                       if isinstance(row, dict) and row.get('name') == 'qmd-auto-context']
+            if len(entries) != 1 or entries[0].get('version') != item['version']:
+                raise ValueError('history_claude_marketplace_changed')
+            relative = entries[0].get('source')
+            if (not isinstance(relative, str) or not relative.startswith('./')
+                    or '..' in Path(relative).parts):
+                raise ValueError('history_claude_marketplace_invalid')
+            load = base / relative
+            if (any(part.is_symlink() for part in (load, *load.parents))
+                    or not load.is_dir()
+                    or base.resolve() not in load.resolve().parents
+                    or load.stat().st_uid != os.getuid()):
+                raise ValueError('history_claude_marketplace_invalid')
+            load = load.resolve()
+            # The cache copy is what Claude would fall back to; it must not
+            # differ from the code that actually runs.
+            if not _same_host_files(load, install):
+                raise ValueError('history_claude_cache_differs')
+            roots.append(load)
+    return roots
+
+
 def _discover_host_roots(account):
     """Use host installation records, not arbitrary cached plugin folders."""
     try:
@@ -281,18 +369,9 @@ def _discover_host_roots(account):
                    and item.get('enabled') is True]
         codex_roots = [account / '.codex/plugins/cache' / item['marketplaceName']
                        / 'qmd-auto-context' / item['version'] for item in entries]
-        claude_registry = account / '.claude/plugins/installed_plugins.json'
-        registry_info = claude_registry.stat()
-        if (any(part.is_symlink() for part in (claude_registry, *claude_registry.parents))
-                or not stat.S_ISREG(registry_info.st_mode)
-                or registry_info.st_uid != os.getuid() or registry_info.st_nlink != 1):
-            raise ValueError('history_claude_inventory_unsafe')
-        claude = json.loads(claude_registry.read_text())
-        claude_roots = [Path(item['installPath'])
-                        for key, values in claude['plugins'].items()
-                        if key.startswith('qmd-auto-context@')
-                        for item in values]
-    except (OSError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+        claude_roots = _claude_load_roots(account)
+    except (OSError, KeyError, TypeError, ValueError, AttributeError,
+            subprocess.TimeoutExpired) as exc:
         raise ValueError('history_host_inventory_unavailable') from exc
     return {'codex': codex_roots, 'claude': claude_roots}
 
@@ -332,8 +411,12 @@ def is_account_home(home=None):
 
 def _installed_hosts_compatible(host_roots=None, *, home=None):
     account = Path(home or Path.home()).resolve()
+    # Roots outside the host caches are accepted only when the real account's
+    # own Claude records name them as the executed plugin directory.
+    claude_loaded = set()
     if is_account_home(home):
         discovered = _discover_host_roots(account)
+        claude_loaded = {str(Path(item)) for item in discovered['claude']}
         if host_roots is not None and {
                 key: sorted(map(str, value if isinstance(value, (list, tuple)) else [value]))
                 for key, value in host_roots.items()} != {
@@ -352,8 +435,9 @@ def _installed_hosts_compatible(host_roots=None, *, home=None):
         for raw in roots:
             path = Path(raw)
             cache = account / ('.claude' if host == 'claude' else '.codex') / 'plugins/cache'
+            located = cache in path.parents or (host == 'claude' and str(path) in claude_loaded)
             if (not path.is_absolute() or any(item.is_symlink() for item in (path, *path.parents))
-                    or cache not in path.parents or not path.is_dir()):
+                    or not located or not path.is_dir()):
                 raise ValueError('history_host_not_coordinated:' + host)
             for name in HOST_FILES:
                 installed = path / name

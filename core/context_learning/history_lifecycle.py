@@ -142,9 +142,18 @@ def acknowledge_host(engine, plugin_root, *, home=None, now=None):
     account = Path(home or Path.home()).resolve()
     cache = account / ('.claude' if engine == 'claude' else '.codex') / 'plugins/cache'
     if (not root.is_absolute() or root.is_symlink()
-            or any(part.is_symlink() for part in root.parents)
-            or cache not in root.parents):
+            or any(part.is_symlink() for part in root.parents)):
         raise ValueError('history_host_ack_root_invalid')
+    if cache not in root.parents:
+        # Claude runs a directory-marketplace plugin in place; accept exactly
+        # the folder its own install records name, nothing else.
+        from .history_activation import _claude_load_roots
+        try:
+            loaded = engine == 'claude' and root in _claude_load_roots(account)
+        except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise ValueError('history_host_ack_root_invalid') from exc
+        if not loaded:
+            raise ValueError('history_host_ack_root_invalid')
     fingerprint = runtime_fingerprint(root)
     if fingerprint != value['runtime_sha256']:
         raise ValueError('history_host_ack_runtime_mismatch')
