@@ -26,7 +26,7 @@ SCOPE = 'single-synthetic-story'
 OPERATIONS = ['gold', 'local_train', 'quality_evaluate']
 COHORT_SCHEMA = 'qmd-synthetic-edit-cohort-v1'
 MAX_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000
-REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261013-claude-handoff-v52-rc42-claude-load-root'
+REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261013-claude-handoff-v53-rc43-claude-grant-root'
 UPDATES_DIR = 'runtime-authorization-updates'
 UPDATE_SCHEMA = 'qmd-runtime-authorization-update-v1'
 
@@ -68,9 +68,39 @@ def _installed_adapters(adapter, reviewed_sha):
             raise ValueError('runtime_authorization_adapter_invalid')
         installed.append({'host': host, 'path': str(path),
                           'sha256': reviewed_sha})
-    if requested not in {Path(row['path']) for row in installed}:
+    if (requested not in {Path(row['path']) for row in installed}
+            and requested not in _claude_executed_adapters()):
         raise ValueError('runtime_authorization_adapter_invalid')
     return installed
+
+
+def _claude_executed_adapters():
+    """The adapter in the folder Claude actually runs, if it is the reviewed one.
+
+    Claude runs a directory-marketplace plugin in place, so the code asking
+    for a grant lives outside the cache copy that the grant names. That folder
+    counts only when Claude's own install records name it
+    (history_activation._claude_load_roots, which also requires it to equal
+    the cache copy byte for byte) and it carries the reviewed version. The
+    grant keeps naming the cache copies, so this widens no recorded scope.
+    """
+    from .history_activation import _claude_load_roots
+    try:
+        roots = _claude_load_roots(Path.home().resolve())
+    except (OSError, KeyError, TypeError, ValueError, AttributeError):
+        return set()
+    adapters = set()
+    for root in roots:
+        try:
+            metadata = json.loads((Path(root) / '.claude-plugin/plugin.json')
+                                  .read_text(encoding='utf8'))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if (isinstance(metadata, dict)
+                and metadata.get('name') == 'qmd-auto-context'
+                and metadata.get('version') == REVIEWED_PLUGIN_VERSION):
+            adapters.add(Path(root) / 'core/context_learning/laya_adapter.py')
+    return adapters
 
 
 def _cohort(value):
