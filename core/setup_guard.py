@@ -46,6 +46,16 @@ def status(cwd):
     if fmt in ('auto-context-json', 'agents-legacy'):
         return {'status': 'setup_required', 'reason': 'legacy_config', 'project': str(root)}
     if fmt == 'auto-context-dir':
+        install_journal=auto/'shared-install-journal.json'
+        if install_journal.exists() or install_journal.is_symlink():
+            try:
+                import shared_install
+                intent=shared_install._journal(auto)
+                if intent['request']['project']!=str(root):raise ValueError('wrong_install_project')
+                if intent.get('phase')=='completed':shared_install._scope(root,intent['request'])
+                else:shared_install._pin(root,intent['request'])
+            except (OSError,ValueError,KeyError,TypeError):
+                return {'status':'setup_required','reason':'shared_install_settings_changed_requires_review','project':str(root)}
         if pointer.exists():
             try:
                 if pointer.stat().st_size > 65536 or json.loads(pointer.read_text()).get('schema') != 'qmd-index-pointer-v1':
@@ -55,7 +65,9 @@ def status(cwd):
         try:
             import qmd_route
             qmd_route.project_paths(root, isolated=True, reject_conflicts=True)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            if str(error) in ('project_shared_migration_not_approved','project_shared_store_transition_pending'):
+                return {'status':'setup_required','reason':str(error),'project':str(root)}
             return {'status': 'setup_required', 'reason': 'plugin_qmd_store_not_selected', 'project': str(root)}
     elif settings.exists():
         return {'status': 'setup_required', 'reason': 'invalid_modern_settings', 'project': str(root)}

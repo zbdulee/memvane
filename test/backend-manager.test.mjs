@@ -331,7 +331,7 @@ test("kick-index starts one-shot worker through a silent background kick", () =>
   }
 });
 
-test("kick-index recovers stale kick lock and starts worker in the same call", () => {
+test("kick-index preserves an old construction lock without proved owner death", () => {
   const home = mkdtempSync(join(tmpdir(), "qmd-manager-stale-"));
   try {
     const worker = join(home, "worker.sh");
@@ -348,8 +348,8 @@ test("kick-index recovers stale kick lock and starts worker in the same call", (
       QMD_BACKEND_LOG: join(home, "backend.log"),
     });
     assert.equal(result.status, 0);
-    waitUntil(() => existsSync(marker));
-    assert.ok(existsSync(marker), "worker was not kicked after stale lock recovery");
+    assert.equal(existsSync(marker),false,"age alone must not authorize a second worker");
+    assert.ok(existsSync(lock));
   } finally {
     removeTemp(home);
   }
@@ -523,7 +523,8 @@ print(json.dumps({'wakeAfterSeconds': 2 if n < 3 else 0}))
 test("debounce retry lock records the actual background sleeper PID", () => {
   const src = readFileSync("core/backend_manager.sh", "utf8");
   assert.doesNotMatch(src, /echo "\$\$" >"\$retry_lock\/pid"/, 'Bash $$ is the parent shell, not the background retry');
-  assert.match(src, /\) >\/dev\/null 2>&1 &[\s\S]{0,300}?echo "\$!" >"\$retry_lock\/pid"/, 'lock must track the spawned retry process');
+  assert.match(src, /exec 4<"\$retry_lock" 5>"\$retry_lock\/pid"/, 'retain the original marker inode before spawning');
+  assert.match(src, /\) >\/dev\/null 2>&1 &[\s\S]{0,300}?echo "\$!" >&5/, 'publish the actual sleeper PID to the retained inode');
 });
 
 

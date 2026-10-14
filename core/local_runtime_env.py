@@ -55,7 +55,7 @@ def parse(path):
             if not value.isascii() or not value.isdecimal() or not 1024<=int(value)<=65535:
                 raise ValueError('invalid_runtime_port')
         elif key=='QMD_DAEMON_URL':
-            if not re.fullmatch(r'http://(?:localhost|127\.0\.0\.1):[0-9]{4,5}',value):
+            if not re.fullmatch(r'http://(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]{4,5}',value):
                 raise ValueError('invalid_runtime_url')
         elif key=='PATH':
             if not re.fullmatch(r'/[^:$]*:\$PATH',value):

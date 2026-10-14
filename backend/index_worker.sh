@@ -16,7 +16,7 @@ _QMD_LOCK_BASE="${QMD_LOCK_BASE:-${TMPDIR:-/tmp}/qmd-auto-context-locks-${_QMD_U
 _QMD_CACHE_DIR="${QMD_CACHE_DIR:-$HOME/.cache/qmd}"
 mkdir -p "$_QMD_CACHE_DIR" "$_QMD_LOCK_BASE" 2>/dev/null || true
 
-QUEUE="${QMD_DIRTY_QUEUE:-$HOME/.config/qmd/dirty-queue}"
+QUEUE="$(python3 "$_QMD_ROOT/core/dirty_queue.py" path)" || exit 1
 WORKER_LOCK="${QMD_INDEX_WORKER_LOCKDIR:-$_QMD_LOCK_BASE/qmd-index-worker.lock.d}"
 WRITER_LOCK="${QMD_WRITER_LOCKDIR:-$_QMD_LOCK_BASE/qmd-update.lock.d}"
 EMBED_LOCK="${QMD_EMBED_LOCKDIR:-$_QMD_LOCK_BASE/qmd-embed.lock.d}"
@@ -29,17 +29,11 @@ LOG="${QMD_INDEX_WORKER_LOG:-$_QMD_CACHE_DIR/index-worker.log}"
 log() { printf '[%s] index-worker: %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG" 2>&1 || true; }
 
 reclaim_dead_lock() {
-  local lockdir="$1" holder
-  [ -d "$lockdir" ] && [ ! -L "$lockdir" ] || return 1
-  holder="$(cat "$lockdir/pid" 2>/dev/null || true)"
-  if [ -z "$holder" ]; then
-    # Another process may be between mkdir and writing its pid.
-    sleep 0.2
-    holder="$(cat "$lockdir/pid" 2>/dev/null || true)"
-  fi
-  [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null && return 1
-  [ -z "$holder" ] || rm -f "$lockdir/pid" 2>/dev/null || return 1
-  rmdir "$lockdir" 2>/dev/null
+  python3 "$_QMD_ROOT/core/worker_lock.py" reclaim "$1" >>"$LOG" 2>&1
+}
+
+release_owned_lock() {
+  python3 "$_QMD_ROOT/core/worker_lock.py" release-pid "$1" "$$" >>"$LOG" 2>&1 || true
 }
 
 ack_claim() {
@@ -69,11 +63,11 @@ unset BUN_INSTALL; export PATH
 
 # single-flight
 if ! mkdir "$WORKER_LOCK" 2>/dev/null; then
-  reclaim_dead_lock "$WORKER_LOCK" || exit 0
+  reclaim_dead_lock "$WORKER_LOCK" || exit 75
   mkdir "$WORKER_LOCK" 2>/dev/null || exit 1
 fi
 echo "$$" > "$WORKER_LOCK/pid" 2>/dev/null || true
-trap 'rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
+trap 'release_owned_lock "$WORKER_LOCK"' EXIT
 
 # The durable claim contains the exact queue prefix and is fsynced before QMD
 # work. The live queue remains untouched until every stage succeeds.
@@ -96,7 +90,7 @@ if ! mkdir "$WRITER_LOCK" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$WRITER_LOCK/pid" 2>/dev/null || true
-trap 'rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
+trap 'release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
 
 # Older workers may have left a successful global embed awaiting daemon
 # handoff. Complete that obligation before changing the claimed prefix; an
@@ -196,19 +190,15 @@ if [ "$has_project_index" = 1 ]; then
   # Selected project stores write their own QMD index, but still share this
   # embed process with SessionStart maintenance. Take the same embed lock so
   # a post-reconcile kick cannot race the detached update/embed child.
-  if [ -d "$EMBED_LOCK" ]; then
-    epid="$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)"
-    { [ -z "$epid" ] || ! kill -0 "$epid" 2>/dev/null; } && {
-      rm -f "$EMBED_LOCK/pid" 2>/dev/null
-      rmdir "$EMBED_LOCK" 2>/dev/null || true
-    }
+  if [ -d "$EMBED_LOCK" ] || [ -L "$EMBED_LOCK" ]; then
+    reclaim_dead_lock "$EMBED_LOCK" || { log "embed holder live/unknown — claim retained"; exit 75; }
   fi
   if ! mkdir "$EMBED_LOCK" 2>/dev/null; then
     log "embed lock busy — selected claim retained"
     exit 75
   fi
   echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
-  trap 'rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
+  trap 'release_owned_lock "$EMBED_LOCK"; release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
   # The existing writer lock is held throughout. Each subshell receives only
   # its own project index environment; no project DB can absorb another queue.
   touched_global=0
@@ -301,16 +291,15 @@ printf '%s\n' "$UPDATE_OUT" >>"$LOG"
 
 # embed lock 획득 (update.sh 백그라운드 embed와 동시 실행 방지)
 # stale 방어: pid liveness 체크 (update.sh 프로토콜과 대칭)
-if [ -d "$EMBED_LOCK" ]; then
-  epid="$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)"
-  { [ -z "$epid" ] || ! kill -0 "$epid" 2>/dev/null; } && { rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; }
+if [ -d "$EMBED_LOCK" ] || [ -L "$EMBED_LOCK" ]; then
+  reclaim_dead_lock "$EMBED_LOCK" || { log "embed holder live/unknown — claim retained"; exit 75; }
 fi
 if ! mkdir "$EMBED_LOCK" 2>/dev/null; then
   log "embed lock busy — claim retained"
   exit 75
 fi
 echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
-trap 'rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; rm -f "$WRITER_LOCK/pid" 2>/dev/null; rmdir "$WRITER_LOCK" 2>/dev/null || true; rm -f "$WORKER_LOCK/pid" 2>/dev/null; rmdir "$WORKER_LOCK" 2>/dev/null || true' EXIT
+trap 'release_owned_lock "$EMBED_LOCK"; release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
 
 # embed (전체 incremental). 출력에서 새 임베딩 수 파싱.
 if ! EMBED_OUT="$("$QMD" embed 2>&1)"; then

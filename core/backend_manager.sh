@@ -13,15 +13,25 @@ set -u
 [ -n "${GEMINI_SANDBOX:-}" ] && exit 0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
-PORT="${QMD_DAEMON_PORT:-8484}"
-STATE_DIR="${QMD_BACKEND_STATE_DIR:-${TMPDIR:-/tmp}/qmd-auto-context-backend}"
+PORT="${QMD_DAEMON_PORT:-8584}"
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  STATE_DIR="${QMD_BACKEND_STATE_DIR:-$HOME/Library/Application Support/qmd-auto-context/backend}"
+  selected_port="$(python3 "$ROOT/core/qmd_endpoint.py" port 2>/dev/null)" || selected_port=""
+  [ -z "$selected_port" ] || PORT="$selected_port"
+else
+  STATE_DIR="${QMD_BACKEND_STATE_DIR:-${TMPDIR:-/tmp}/qmd-auto-context-backend}"
+fi
 # A second QMD instance (for example the user's :8483 service) can share the
 # default state directory. Keep each port's managed PID proof separate.
 PID_FILE="${QMD_DAEMON_PID:-$STATE_DIR/daemon-${PORT}.pid}"
 LEGACY_PID_FILE=""
 [ -z "${QMD_DAEMON_PID:-}" ] && LEGACY_PID_FILE="$STATE_DIR/daemon.pid"
 MANAGER_LOG="${QMD_BACKEND_LOG:-$HOME/.cache/qmd/backend-manager.log}"
-DAEMON_LOG="${QMD_DAEMON_LOG:-$HOME/.cache/qmd/mcp.daemon.log}"
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  DAEMON_LOG="$STATE_DIR/daemon.log"
+else
+  DAEMON_LOG="${QMD_DAEMON_LOG:-$HOME/.cache/qmd/mcp.daemon.log}"
+fi
 DAEMON_SCRIPT="${QMD_DAEMON_SCRIPT:-$ROOT/backend/daemon.sh}"
 KEEPALIVE_SCRIPT="${QMD_KEEPALIVE_SCRIPT:-$ROOT/backend/keepalive.sh}"
 LOGROTATE_SCRIPT="${QMD_LOGROTATE_SCRIPT:-$ROOT/backend/logrotate.sh}"
@@ -37,7 +47,7 @@ SUPPORTED_QMD_MAJOR="${QMD_SUPPORTED_MAJOR:-2}"
 
 . "$ROOT/core/qmd_path.sh"
 
-mkdir -p "$STATE_DIR" "$(dirname "$MANAGER_LOG")" "$(dirname "$DAEMON_LOG")" 2>/dev/null || true
+( umask 077; mkdir -p "$STATE_DIR" "$(dirname "$MANAGER_LOG")" "$(dirname "$DAEMON_LOG")" ) 2>/dev/null || true
 
 log() {
   printf '[%s] backend-manager: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$MANAGER_LOG" 2>&1 || true
@@ -60,6 +70,10 @@ PY
 }
 
 health() {
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_endpoint.py" health >/dev/null 2>&1
+    return $?
+  fi
   local timeout
   if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
     python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 1
@@ -175,7 +189,7 @@ read_pid() {
 
 # On upgrade, carry an old default proof forward only when its live process
 # passes the exact executable and port checks. A legacy file for :8483 cannot
-# authorize the plugin's :8484 daemon. Explicit QMD_DAEMON_PID never migrates.
+# authorize the plugin's selected-endpoint daemon. Explicit QMD_DAEMON_PID never migrates.
 migrate_legacy_pid() {
   [ -n "$LEGACY_PID_FILE" ] && [ ! -e "$PID_FILE" ] && [ ! -L "$PID_FILE" ] || return 0
   local pid
@@ -273,6 +287,12 @@ PY
 }
 
 start_daemon() {
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 0
+    check_qmd >/dev/null 2>&1 || return 0
+    python3 "$ROOT/core/qmd_endpoint.py" ensure >/dev/null
+    return $?
+  fi
   migrate_legacy_pid || return 1
   if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
     python3 "$ROOT/core/qmd_route.py" resolve-shared-env >/dev/null 2>&1 || return 0
@@ -394,6 +414,10 @@ clear_pid_file_if() {
 }
 
 reload_locked() {
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_endpoint.py" reload >/dev/null
+    return $?
+  fi
   local pid file_pid
   migrate_legacy_pid || return 1
   file_pid="$(read_pid)"
@@ -453,9 +477,7 @@ reload() {
 
 kick_index() {
   if ! mkdir "$KICK_LOCK" 2>/dev/null; then
-    if [ -n "$(find "$KICK_LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
-      rm -f "$KICK_LOCK/pid" "$KICK_LOCK/rekick" 2>/dev/null || true
-      rmdir "$KICK_LOCK" 2>/dev/null || true
+    if python3 "$ROOT/core/worker_lock.py" reclaim "$KICK_LOCK" >>"$MANAGER_LOG" 2>&1; then
       mkdir "$KICK_LOCK" 2>/dev/null || return 0
     else
       # busy: 실행 중인 worker에게 재-drain 요청(lost-wakeup 방지). worker가 큐를
@@ -465,10 +487,17 @@ kick_index() {
       return 0
     fi
   fi
+  exec 8<"$KICK_LOCK" 9>"$KICK_LOCK/pid" || return 0
   (
     # trap이 rekick도 지워야 rmdir(빈 디렉토리 요구)이 성공한다 — 안 지우면 lock 누수.
-    trap 'rm -f "$KICK_LOCK/pid" "$KICK_LOCK/rekick" 2>/dev/null; rmdir "$KICK_LOCK" 2>/dev/null || true' EXIT
-    echo "$$" >"$KICK_LOCK/pid" 2>/dev/null || true
+    trap 'python3 "$ROOT/core/worker_lock.py" release-rekick "$KICK_LOCK" 9 8 >>"$MANAGER_LOG" 2>&1 || true' EXIT
+    # Bash $$ names the parent even in a background subshell. The parent
+    # publishes $! below; construction without a PID is conservatively busy.
+    for publication_try in {1..50}; do
+      python3 "$ROOT/core/worker_lock.py" published "$KICK_LOCK" 9 8 >/dev/null 2>&1 && break
+      sleep .02
+    done
+    python3 "$ROOT/core/worker_lock.py" published "$KICK_LOCK" 9 8 >/dev/null 2>&1 || exit 0
     while :; do
       # 이번 run이 커버할 것으로 간주하고 요청을 먼저 소비. run "도중" 들어온 rekick만
       # 남아 다음 루프를 돈다(잔여 window = 마지막 체크~lock 해제 사이 마이크로초, self-heal).
@@ -477,6 +506,8 @@ kick_index() {
       [ -e "$KICK_LOCK/rekick" ] || break
     done
   ) >/dev/null 2>&1 &
+  echo "$!" >&9
+  exec 8<&- 9>&-
 }
 
 compile_wake_seconds() {
@@ -502,37 +533,25 @@ schedule_wiki_compile_retry() {
   local lock_hash="$2"
   local delay="$3"
   local retry_lock="${COMPILE_RETRY_LOCK}.${lock_hash}"
-  local retry_pid
   [ -z "$delay" ] && return 0
   if ! mkdir "$retry_lock" 2>/dev/null; then
-    retry_pid="$(cat "$retry_lock/pid" 2>/dev/null || true)"
-    case "$retry_pid" in
-      ''|*[!0-9]*) retry_pid="" ;;
-    esac
-    if [ -n "$retry_pid" ] && kill -0 "$retry_pid" 2>/dev/null; then
-      # A live retry owns the earliest existing wake-up. When it wakes, the
-      # worker recomputes any newer delay, so no source job is stranded.
-      return 0
-    fi
-    # The sleeper died before clearing its exact, per-project lock. Reclaim
-    # only the marker we own; unexpected directory contents keep the lock.
-    rm -f "$retry_lock/pid" 2>/dev/null || true
-    rmdir "$retry_lock" 2>/dev/null || return 0
+    python3 "$ROOT/core/worker_lock.py" reclaim "$retry_lock" >>"$MANAGER_LOG" 2>&1 || return 0
     mkdir "$retry_lock" 2>/dev/null || return 0
   fi
+  exec 4<"$retry_lock" 5>"$retry_lock/pid" || return 0
   (
-    trap 'rm -f "$retry_lock/pid" 2>/dev/null; rmdir "$retry_lock" 2>/dev/null || true' EXIT
+    trap 'python3 "$ROOT/core/worker_lock.py" release "$retry_lock" 5 4 >>"$MANAGER_LOG" 2>&1 || true' EXIT
     sleep "$delay" || exit 0
     # Release before re-kicking: otherwise a newly deferred worker would see
     # this predecessor as live and lose its next wake-up.
-    rm -f "$retry_lock/pid" 2>/dev/null || true
-    rmdir "$retry_lock" 2>/dev/null || exit 0
+    python3 "$ROOT/core/worker_lock.py" release "$retry_lock" 5 4 >>"$MANAGER_LOG" 2>&1 || exit 0
     trap - EXIT
     kick_wiki_compile "$cwd"
   ) >/dev/null 2>&1 &
   # Bash 3.2's `$$` remains the parent shell in a subshell. `$!` is the
   # portable PID of the background sleeper whose liveness owns this lock.
-  echo "$!" >"$retry_lock/pid" 2>/dev/null || true
+  echo "$!" >&5
+  exec 4<&- 5>&-
 }
 
 kick_wiki_compile() {
@@ -552,17 +571,20 @@ PY
   [ -z "$lock_hash" ] && lock_hash="default"
   lock_dir="${COMPILE_KICK_LOCK}.${lock_hash}"
   if ! mkdir "$lock_dir" 2>/dev/null; then
-    if [ -n "$(find "$lock_dir" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
-      rm -f "$lock_dir/pid" 2>/dev/null || true
-      rmdir "$lock_dir" 2>/dev/null || true
+    if python3 "$ROOT/core/worker_lock.py" reclaim "$lock_dir" >>"$MANAGER_LOG" 2>&1; then
       mkdir "$lock_dir" 2>/dev/null || return 0
     else
       return 0
     fi
   fi
+  exec 6<"$lock_dir" 7>"$lock_dir/pid" || return 0
   (
-    trap 'rm -f "$lock_dir/pid" 2>/dev/null; rmdir "$lock_dir" 2>/dev/null || true' EXIT
-    echo "$$" >"$lock_dir/pid" 2>/dev/null || true
+    trap 'python3 "$ROOT/core/worker_lock.py" release "$lock_dir" 7 6 >>"$MANAGER_LOG" 2>&1 || true' EXIT
+    for publication_try in {1..50}; do
+      python3 "$ROOT/core/worker_lock.py" published "$lock_dir" 7 6 >/dev/null 2>&1 && break
+      sleep .02
+    done
+    python3 "$ROOT/core/worker_lock.py" published "$lock_dir" 7 6 >/dev/null 2>&1 || exit 0
     case "$COMPILE_WORKER_SCRIPT" in
       *.sh|*.bash) bash "$COMPILE_WORKER_SCRIPT" --cwd "$cwd" $flush_arg >>"$MANAGER_LOG" 2>&1 || true ;;
       *) worker_report="$(python3 "$COMPILE_WORKER_SCRIPT" --cwd "$cwd" $flush_arg --json 2>>"$MANAGER_LOG" || true)" ;;
@@ -577,6 +599,8 @@ PY
     # 그래도 큐는 보존되므로 다음 kick/SessionStart에 drain된다(기존엔 항상 SessionStart까지 대기).
     kick_index
   ) >/dev/null 2>&1 &
+  echo "$!" >&7
+  exec 6<&- 7>&-
 }
 
 has_marker() {
@@ -584,6 +608,10 @@ has_marker() {
 }
 
 daemon_identity() {
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    python3 "$ROOT/core/qmd_endpoint.py" identity
+    return $?
+  fi
   local pid
   # Identity is an inspection command: discover a managed process without
   # adopting it into PID_FILE or changing backend state.

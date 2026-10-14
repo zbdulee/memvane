@@ -15,8 +15,14 @@
 # 유계다 — 계획서 §5 처럼 장기 수집을 할 때는 `.1` 이 덮이는 시점에 그 앞 세대가 사라진다.
 set -u
 HOME="${HOME:-/Users/$(/usr/bin/id -un)}"
-PORT="${QMD_DAEMON_PORT:-8484}"
+PORT="${QMD_DAEMON_PORT:-8584}"
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  PORT="$(python3 "$(dirname "$0")/../core/qmd_endpoint.py" port 2>/dev/null)" || exit 0
+fi
 LOG="${QMD_DAEMON_LOG:-$HOME/.cache/qmd/mcp.daemon.log}"
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  LOG="$(python3 "$(dirname "$0")/../core/qmd_endpoint.py" log 2>/dev/null)" || exit 0
+fi
 MAX_BYTES=$((10 * 1024 * 1024))   # 10MB
 
 # cross-platform 파일 크기: BSD(macOS) stat -f%z → GNU(Linux) stat -c%s → wc -c 폴백.
@@ -48,7 +54,11 @@ over_max "$LOG" || exit 0
 mv -f "$LOG" "$LOG.1" 2>/dev/null || exit 0
 # 데몬을 SIGTERM 으로 graceful 재시작 → fd 닫히고 새 LOG 를 연다(sparse 문제 없음).
 # (SIGKILL 강제종료는 SQLite clean close 를 막아 WAL checkpoint 누락 → WAL 누적. update.sh 와 동일 이슈)
-if [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
+if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+  # Only the endpoint coordinator may signal an attested plugin daemon.
+  # A stale/raw PID file can belong to Slack or another unrelated service.
+  python3 "$(dirname "$0")/../core/qmd_endpoint.py" reload >/dev/null 2>&1 || mv -f "$LOG.1" "$LOG" 2>/dev/null || true
+elif [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
   "$QMD_BACKEND_MANAGER" reload >/dev/null 2>&1 || mv -f "$LOG.1" "$LOG" 2>/dev/null || true
 elif [ -n "${QMD_DAEMON_PID:-}" ] && [ -f "$QMD_DAEMON_PID" ]; then
   pid="$(cat "$QMD_DAEMON_PID" 2>/dev/null || true)"

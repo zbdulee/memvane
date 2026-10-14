@@ -88,7 +88,17 @@ PY
 }
 
 qmd_healthcheck() {
-  local port="${QMD_HEALTHCHECK_PORT:-8484}"
+  local port="${QMD_HEALTHCHECK_PORT:-8584}"
+  if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then
+    local endpoint_error
+    if endpoint_error="$(python3 "$_QMD_CORE_DIR/qmd_endpoint.py" health 2>&1)"; then return 0; fi
+    case "$endpoint_error" in
+      *qmd_endpoint_identity_unavailable*) printf '[qmd] %s\n' "$endpoint_error" >&2; return 1 ;;
+    esac
+    port="$(python3 "$_QMD_CORE_DIR/qmd_endpoint.py" port 2>/dev/null)" || port="not-selected"
+    echo "[qmd] 데몬 미응답(:${port}). backend manager가 준비되지 않았으면 이번 update는 건너뜁니다." >&2
+    return 1
+  fi
   local timeout
   timeout="$(qmd_health_timeout)"
   # localhost(not 127.0.0.1): 데몬은 IPv6 ::1 바인딩. IPv4로 찌르면 false-dead 판정 → "데몬 미응답" 오탐.
@@ -798,16 +808,9 @@ acquire_lock() {
     return 0
   fi
 
-  local pid
-  pid=$(cat "$LOCKDIR/pid" 2>/dev/null || true)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    return 1
-  fi
-
-  rm -f "$LOCKDIR/pid" 2>/dev/null || true
-  if rmdir "$LOCKDIR" 2>/dev/null && mkdir "$LOCKDIR" 2>/dev/null; then
+  if python3 "$_QMD_CORE_DIR/worker_lock.py" reclaim "$LOCKDIR" >>"$LOG" 2>&1 && mkdir "$LOCKDIR" 2>/dev/null; then
     echo "$$" >"$LOCKDIR/pid"
-    log "LOCK: removed stale qmd update lock"
+    log "LOCK: recovered proved dead owned update holder"
     return 0
   fi
 
@@ -815,8 +818,7 @@ acquire_lock() {
 }
 
 release_lock() {
-  rm -f "$LOCKDIR/pid" 2>/dev/null || true
-  rmdir "$LOCKDIR" 2>/dev/null || true
+  python3 "$_QMD_CORE_DIR/worker_lock.py" release-pid "$LOCKDIR" "$$" >>"$LOG" 2>&1 || true
 }
 
 write_failure_status() {
@@ -1280,7 +1282,7 @@ PY
       epid="$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)"
       # stale 정리: rm -rf 대신 우리 락 구조(pid 파일만)에 맞춰 unlink 후 rmdir.
       # 예상 밖 내용이 있으면 rmdir 실패로 보호된다(env override 재귀 삭제 위험 제거).
-      { [ -z "$epid" ] || ! kill -0 "$epid" 2>/dev/null; } && { rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; }
+      python3 "$_QMD_CORE_DIR/worker_lock.py" reclaim "$EMBED_LOCK" >>"$LOG" 2>&1 || true
     fi
     
     if [ -n "${QMD_SKIP_BACKGROUND_EMBED:-}" ]; then
@@ -1293,9 +1295,9 @@ PY
     elif ! mkdir "$EMBED_LOCK" 2>/dev/null; then
       log "EMBED: already running, skip"
     else
-      LOG="$LOG" EMBED_LOCK="$EMBED_LOCK" QMD_BIN_RESOLVED="$qmd_bin" QMD_DAEMON_PORT="${QMD_DAEMON_PORT:-8484}" QMD_BACKEND_MANAGER="${QMD_BACKEND_MANAGER:-}" QMD_AUTO_CYCLE_ENABLED="$auto_cycle_enabled" WORKDIR="$workdir" CORE_DIR="$(dirname "$0")" nohup bash -c '
+      LOG="$LOG" EMBED_LOCK="$EMBED_LOCK" QMD_BIN_RESOLVED="$qmd_bin" QMD_DAEMON_PORT="${QMD_DAEMON_PORT:-8584}" QMD_BACKEND_MANAGER="${QMD_BACKEND_MANAGER:-}" QMD_AUTO_CYCLE_ENABLED="$auto_cycle_enabled" WORKDIR="$workdir" CORE_DIR="$(dirname "$0")" nohup bash -c '
         echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
-        trap "rm -f \"$EMBED_LOCK/pid\" 2>/dev/null; rmdir \"$EMBED_LOCK\" 2>/dev/null" EXIT
+        trap "python3 \"$CORE_DIR/worker_lock.py\" release-pid \"$EMBED_LOCK\" \"$$\" >>\"$LOG\" 2>&1 || true" EXIT
         if python3 "$CORE_DIR/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1; then
           out=$("$QMD_BIN_RESOLVED" embed 2>&1); embed_rc=$?
         else
@@ -1357,8 +1359,7 @@ PY
           # otherwise the old child could remove that new workers lock.
           trap - EXIT
           if [ "$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
-            rm -f "$EMBED_LOCK/pid" 2>/dev/null || true
-            if rmdir "$EMBED_LOCK" 2>/dev/null; then
+            if python3 "$CORE_DIR/worker_lock.py" release-pid "$EMBED_LOCK" "$$" >>"$LOG" 2>&1; then
               bash "$QMD_BACKEND_MANAGER" kick-index >> "$LOG" 2>&1 || true
             else
               printf "[%s] synthetic index kick deferred: embed lock release failed\n" "$(date +%H:%M:%S)" >> "$LOG"
@@ -1828,7 +1829,7 @@ else:
 
   # 색인 대기열 적체 표면화: 이 프로젝트 컬렉션 라인만 집계(데몬 호출 없는 파일 검사만 —
   # 동기 SessionStart 경로 원칙). 임계는 config staleQueueThreshold(기본 20).
-  queue_file="${QMD_DIRTY_QUEUE:-$HOME/.config/qmd/dirty-queue}"
+  queue_file="$(python3 "$_QMD_CORE_DIR/dirty_queue.py" path)" || return 1
   stale_msg=""
   if [ -s "$queue_file" ]; then
     # config는 argv로 전달(heredoc이 stdin을 차지하므로 pipe 불가 — config_event_enabled와 동일 패턴).

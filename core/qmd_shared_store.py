@@ -21,6 +21,57 @@ import uuid
 
 SCHEMA = 'qmd-plugin-shared-store-v1'
 
+def _scope_policy(generation,prepared):
+    sha=prepared.get('scopePolicySha256')
+    if sha is None:return None  # Existing reviewed legacy store format.
+    file=_private_file(generation/'scope-policy.json')
+    if file.stat().st_size>65536 or hashlib.sha256(file.read_bytes()).hexdigest()!=sha:
+        raise ValueError('plugin_qmd_scope_policy_changed')
+    value=json.loads(file.read_text())
+    if (not isinstance(value,dict) or set(value)!={'schema','projects'} or value['schema']!='qmd-shared-scope-v1'
+        or not isinstance(value['projects'],dict) or not value['projects'] or any(
+            not isinstance(p,str) or not Path(p).is_absolute() or str(Path(p).resolve())!=p
+            or not isinstance(h,str) or not re.fullmatch('[0-9a-f]{64}',h) for p,h in value['projects'].items())):
+        raise ValueError('plugin_qmd_scope_policy_changed')
+    return value['projects']
+
+def check_project(scope,selected=None,*,home=None):
+    selected=selected or select(home)
+    approved=selected.get('approvedProjects')
+    if approved is None:return  # Compatibility for already reviewed stores.
+    journal=json.loads(_private_file(_unlinked_root(home)/'bootstrap-journal.json').read_text())
+    if journal.get('phase')!='activated' or journal.get('generation')!=selected['generation']:
+        raise ValueError('project_shared_store_transition_pending')
+    import config as qmd_config
+    owner=qmd_config.find_project_config(str(scope))['projectRoot']
+    if owner not in approved:raise ValueError('project_shared_migration_not_approved')
+
+
+def _enrolled_projects(generation, prepared):
+    """Owner-approved additions belong only to this sealed store generation."""
+    path = generation / 'enrolled-projects.json'
+    if not path.exists() and not path.is_symlink():
+        return {}
+    file = _private_file(path)
+    if file.stat().st_size > 1048576:
+        raise ValueError('plugin_qmd_scope_enrollment_invalid')
+    value = json.loads(file.read_text())
+    if (not isinstance(value, dict) or set(value) != {'schema', 'generation', 'scopePolicySha256', 'projects'}
+            or value['schema'] != 'qmd-shared-enrollment-v1'
+            or value['generation'] != str(generation)
+            or value['scopePolicySha256'] != prepared.get('scopePolicySha256')
+            or not isinstance(value['projects'], dict)):
+        raise ValueError('plugin_qmd_scope_enrollment_invalid')
+    for project, row in value['projects'].items():
+        if (not isinstance(project, str) or not Path(project).is_absolute()
+                or str(Path(project).resolve()) != project or not isinstance(row, dict)
+                or set(row) != {'settingsSha256', 'queued'}
+                or not isinstance(row['settingsSha256'], str)
+                or not re.fullmatch('[0-9a-f]{64}', row['settingsSha256'])
+                or type(row['queued']) is not bool):
+            raise ValueError('plugin_qmd_scope_enrollment_invalid')
+    return value['projects']
+
 
 def root(home=None):
     return Path(home or Path.home()) / 'Library/Application Support/qmd-auto-context/shared-qmd'
@@ -151,11 +202,13 @@ def select(home=None):
     if proof.stat().st_size > 65536:
         raise ValueError('plugin_qmd_store_proof_invalid')
     prepared = json.loads(proof.read_text())
-    if (not isinstance(prepared, dict) or set(prepared) !=
-            {'schema', 'generation', 'configSha256', 'indexSchemaSha256'}
+    fields={'schema','generation','configSha256','indexSchemaSha256'}
+    if (not isinstance(prepared, dict) or set(prepared) not in
+            (fields,fields|{'scopePolicySha256'})
             or prepared['schema'] != SCHEMA
             or prepared['generation'] != value['generation']):
         raise ValueError('plugin_qmd_store_proof_invalid')
+    approved=_scope_policy(generation,prepared)
     config_bytes = config_file.read_bytes()
     if (prepared['configSha256'] != hashlib.sha256(config_bytes).hexdigest()
             and not _registered_config_extension(base, index, config_bytes,
@@ -166,9 +219,15 @@ def select(home=None):
     if (inspected.get('status') != 'readable'
             or inspected.get('schemaSha256') != prepared['indexSchemaSha256']):
         raise ValueError('plugin_qmd_store_index_changed')
-    return {'INDEX_PATH': str(index), 'QMD_CONFIG_DIR': str(config),
+    result={'INDEX_PATH': str(index), 'QMD_CONFIG_DIR': str(config),
             'XDG_CACHE_HOME': str(cache), 'generation': str(generation),
             'selected': True, 'shared': True}
+    if approved is not None:
+        additions = _enrolled_projects(generation, prepared)
+        if set(additions) & set(approved):
+            raise ValueError('plugin_qmd_scope_enrollment_invalid')
+        result['approvedProjects'] = {**approved, **{p: row['settingsSha256'] for p, row in additions.items()}}
+    return result
 
 
 def _registry(base):
@@ -194,6 +253,14 @@ def register_config(scope, config, *, home=None):
     selected = select(home)
     base = _unlinked_root(home)
     scope = Path(scope).resolve(strict=True)
+    check_project(scope,selected,home=home)
+    _reserve_owners(base, _collection_owners(scope, config))
+    return selected
+
+
+def _collection_owners(scope, config):
+    """The same strict name/path validation for workers and approved enrollment."""
+    scope = Path(scope).resolve(strict=True)
     import resolve_paths
     resolved = resolve_paths.resolve_paths(str(scope), json.dumps(config))
     if resolved.get('refused'):
@@ -214,6 +281,15 @@ def register_config(scope, config, *, home=None):
             raise ValueError('plugin_qmd_collection_scope_invalid')
         wanted[name] = {'scope': str(scope), 'path': str(path),
                         'indexed': name in indexed}
+    return wanted
+
+
+def _reserve_owners(base, wanted):
+    """Reserve names before opening a newly approved project's route.
+
+    A crash leaves metadata reservations for an identical approved retry;
+    never reassign another owner's name or write a QMD collection here.
+    """
     lock = base / 'collections.lock'
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
@@ -228,7 +304,7 @@ def register_config(scope, config, *, home=None):
             # A path move needs an explicit index migration. Reassigning the
             # registry first would let an old qmd://name/relative hit resolve
             # against an unindexed file at the new path.
-            if current[name].get('scope') == str(scope):
+            if current[name].get('scope') == owner['scope']:
                 raise ValueError('plugin_qmd_collection_path_change_requires_migration')
             raise ValueError('plugin_qmd_collection_collision')
         current.update(wanted)
@@ -243,7 +319,6 @@ def register_config(scope, config, *, home=None):
             Path(temp_name).unlink(missing_ok=True)
     finally:
         os.close(fd)
-    return selected
 
 
 def verify_missing_collection(scope, name, config, *, home=None):
@@ -274,6 +349,40 @@ def verify_missing_collection(scope, name, config, *, home=None):
                               (name,)).fetchall()
     if physical != [(str(path),)]:
         raise ValueError('plugin_qmd_collection_scope_invalid')
+
+
+def _discard_unpublished_reservations(scope, *, home=None):
+    """Recover only an unapproved owner's metadata with no physical collection.
+
+    Never changes SQLite, a committed approval, or another owner's registry.
+    Common setup/writer locks are held by the enrollment caller.
+    """
+    base = _unlinked_root(home)
+    fd = os.open(base/'collections.lock', os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('unsafe_plugin_qmd_registry')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        selected = select(home)
+        approved = selected.get('approvedProjects')
+        if approved is None or scope in approved:
+            return
+        current = _registry(base)
+        stale = {n for n, row in current.items() if row['scope'] == scope}
+        if not stale:
+            return
+        import sqlite_read
+        with sqlite_read.connect(selected['INDEX_PATH']) as db:
+            physical = {row[0] for row in db.execute('SELECT name FROM store_collections')}
+        if stale & physical:
+            raise ValueError('plugin_qmd_unapproved_physical_collection')
+        for name in stale:
+            del current[name]
+        import install_update
+        install_update._atomic(base/'collections.json', current)
+    finally:
+        os.close(fd)
 
 
 def retire_pruned(scope, config, *, home=None):
@@ -345,8 +454,18 @@ def assert_all_enrolled(*, home=None):
     different story. Retain historical rows and registry entries; resolving a
     revoked collection requires a separate, explicit migration decision.
     """
-    select(home)
+    selected = select(home)
     registry = _registry(_unlinked_root(home))
+    approved = selected.get('approvedProjects')
+    if approved is not None:
+        # Metadata reserved before an approval receipt is not an indexed
+        # project. A physical unapproved name is still a hard blocker.
+        import sqlite_read
+        with sqlite_read.connect(selected['INDEX_PATH']) as db:
+            physical = {row[0] for row in db.execute('SELECT name FROM store_collections')}
+        if any(n in physical and row['scope'] not in approved for n,row in registry.items()):
+            raise ValueError('plugin_qmd_unapproved_physical_collection')
+        registry = {n: row for n,row in registry.items() if row['scope'] in approved}
     import config as qmd_config
     import resolve_paths
     scopes = {}
@@ -447,10 +566,12 @@ def activate_empty(generation, *, home=None):
     index = _private_file(target / 'index.sqlite')
     _private_dir(target / 'cache')
     inspected = runtime_update.inspect_index(index, include_file_hash=False)
-    if (proof != {'schema': SCHEMA, 'generation': target.name,
+    expected={'schema': SCHEMA, 'generation': target.name,
                   'configSha256': hashlib.sha256(config.read_bytes()).hexdigest(),
                   'indexSchemaSha256': inspected.get('schemaSha256')}
-            or inspected.get('status') != 'readable'
+    if 'scopePolicySha256' in proof:
+        _scope_policy(target,proof);expected['scopePolicySha256']=proof['scopePolicySha256']
+    if (proof!=expected or inspected.get('status') != 'readable'
             or inspected['activeDocuments'] != 0):
         raise ValueError('plugin_qmd_generation_invalid')
     with sqlite_read.connect(index) as db:
@@ -459,13 +580,16 @@ def activate_empty(generation, *, home=None):
                              'content_vectors')):
             raise ValueError('plugin_qmd_generation_not_empty')
     pointer = base / 'active.json'
-    fd = os.open(pointer, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd,name=tempfile.mkstemp(prefix='.shared-active-',dir=base)
     try:
+        os.fchmod(fd,0o600)
         with os.fdopen(fd, 'w') as out:
             json.dump({'schema': SCHEMA, 'generation': target.name}, out,
                       sort_keys=True, separators=(',', ':'))
             out.flush(); os.fsync(out.fileno())
-    except BaseException:
-        pointer.unlink(missing_ok=True)
-        raise
+        os.link(name,pointer,follow_symlinks=False)  # Atomic, exclusive; never overwrite.
+    finally:Path(name).unlink(missing_ok=True)
+    directory=os.open(base,os.O_RDONLY)
+    try:os.fsync(directory)
+    finally:os.close(directory)
     return select(home)

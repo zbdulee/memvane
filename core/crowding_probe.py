@@ -822,7 +822,8 @@ def build_record(project_dir: str, args: argparse.Namespace) -> dict:
         record["status"] = "no_wiki_collections"
         return record
 
-    daemon_url = os.environ.get("QMD_DAEMON_URL", qmd_recall.DEFAULT_DAEMON_URL)
+    import qmd_endpoint
+    daemon_url = qmd_endpoint.optional_url()
     record["daemon"] = daemon_url
     qmd_bin = None if args.no_index_composition else resolve_qmd_bin()
     record["index"] = (

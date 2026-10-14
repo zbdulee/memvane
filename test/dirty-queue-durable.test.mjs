@@ -11,19 +11,32 @@ function fixture(script) {
   const docs = join(root, 'docs'); mkdirSync(docs);
   const queue = join(root, 'queue');
   const row = `synthetic\t${docs}\n`;
-  writeFileSync(queue, row);
+  writeFileSync(queue, row, {mode: 0o600});
   const qmd = join(root, 'qmd');
   writeFileSync(qmd, `#!/bin/bash\nprintf '%s\\n' "$1" >> '${root}/calls'\n${script}\n`, {mode: 0o700});
+  // The restricted test host denies kill-zero even for exited processes.
+  // Node wait/spawnSync supplies actual exit receipts for these synthetic
+  // children; the test helper never treats EPERM as death or forces removal.
+  const exits=join(root,'exited-pids.json');writeFileSync(exits,'[]');
+  const python=spawnSync('python3',['-c','import sys;print(sys.executable)'],{encoding:'utf8'}).stdout.trim();
+  const proof=join(root,'lock-proof.py');
+  writeFileSync(proof,`import json,sys\nfrom pathlib import Path\nsys.path.insert(0,${JSON.stringify(join(process.cwd(),'core'))})\nimport worker_lock as L\nif sys.argv[1]!='reclaim':raise SystemExit(L.main(sys.argv[1:]))\ndead=json.loads(Path(${JSON.stringify(exits)}).read_text())\nrow=L.reclaim(sys.argv[2],alive=lambda pid:False if pid in dead else L.process_alive(pid))\nprint(json.dumps(row))\nraise SystemExit(0 if row['status'] in ('reclaimed','absent') else 75)\n`);
+  writeFileSync(join(root,'python3'),`#!/bin/sh\ncase "$1" in */worker_lock.py) shift; exec '${python}' '${proof}' "$@";; esac\nexec '${python}' "$@"\n`,{mode:0o700});
   const env = {...process.env, QMD_DIRTY_QUEUE: queue, QMD_FAKE_QMD: qmd,
+    QMD_BIN:qmd,PATH:root+':'+process.env.PATH,
     QMD_CACHE_DIR: join(root, 'cache'), QMD_LOCK_BASE: join(root, 'locks'),
     QMD_INDEX_WORKER_LOCKDIR: join(root, 'worker.lock'),
     QMD_WRITER_LOCKDIR: join(root, 'writer.lock'),
     QMD_EMBED_LOCKDIR: join(root, 'embed.lock'), QMD_NO_RELOAD: '1'};
-  return {root, docs, queue, row, qmd, env};
+  return {root, docs, queue, row, qmd, env,exits};
 }
 
+function exited(f,pid) {const rows=JSON.parse(readFileSync(f.exits,'utf8'));rows.push(pid);writeFileSync(f.exits,JSON.stringify(rows));}
+
 function run(f) {
-  return spawnSync('bash', ['backend/index_worker.sh'], {cwd: process.cwd(), env: f.env, encoding: 'utf8'});
+  const result=spawnSync('bash', ['backend/index_worker.sh'], {cwd: process.cwd(), env: f.env, encoding: 'utf8'});
+  if (result.status!==null) exited(f,result.pid);
+  return result;
 }
 
 test('add and update errors retain the durable claim and report failure until retry succeeds', () => {
@@ -83,10 +96,11 @@ test('SIGKILL during embed preserves claim and concurrent enqueue for separate r
       {cwd: process.cwd(), env: f.env, encoding: 'utf8'});
     assert.equal(py.status, 0, py.stderr);
     assert.match(readFileSync(f.queue, 'utf8'), /next\t/);
-    assert.equal(run(f).status, 0, 'a concurrent worker leaves the live claim alone');
+    assert.equal(run(f).status, 75, 'a concurrent worker leaves the live/unknown claim alone');
     assert.match(readFileSync(f.queue, 'utf8'), /next\t/);
     process.kill(-child.pid, 'SIGKILL');
     await new Promise(resolve => child.once('exit', resolve));
+    exited(f,child.pid);
     writeFileSync(f.env.RETRY_MARKER, 'ok');
     const restarted = run(f);
     assert.equal(restarted.status, 0, restarted.stderr);

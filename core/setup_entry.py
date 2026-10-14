@@ -48,7 +48,19 @@ def _sha_file(path):
 def discover(project):
     root = coordinator.project_root(project)
     inventory = coordinator.inspect(root)
-    paths = qmd_route.project_paths(root)
+    store_status, store_reason = 'selected', None
+    try:
+        paths = qmd_route.project_paths(root)
+    except (OSError, ValueError) as exc:
+        # Inventory is not a runtime fallback. Preparing the shared store is
+        # an explicit phase; production hooks still fail closed in qmd_route.
+        store_reason = str(exc)
+        store_status = 'not_prepared' if store_reason == 'plugin_qmd_store_not_ready' else 'invalid'
+        cache = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache')
+        paths = {'INDEX_PATH': str(Path(os.environ.get('INDEX_PATH') or cache / 'qmd/index.sqlite')),
+                 'QMD_CONFIG_DIR': str(Path(os.environ.get('QMD_CONFIG_DIR') or
+                     Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'qmd')),
+                 'XDG_CACHE_HOME': str(cache), 'selected': False}
     settings_source = inventory['config']
     settings = None
     if settings_source['kind'] != 'missing':
@@ -75,7 +87,10 @@ def discover(project):
                              'uv': _file(shutil.which('uv')),
                              'layaAdapter': _file(Path(__file__).parent / 'context_learning/laya_adapter.py'),
                              'layaLock': _file(Path(__file__).parent / 'context_learning/locks/laya-macos-arm64-py312.lock'),
-                             'routeSelected': paths['selected']},
+                             'routeSelected': paths['selected'],
+                             'commonStoreSelected': bool(paths.get('shared')),
+                             'sharedStoreStatus': store_status,
+                             'sharedStoreReason': store_reason},
               'changesApplied': 0}
     return result
 
@@ -176,6 +191,8 @@ def check_update(project):
     found = discover(project)
     inv, detected = found['inventory'], found['discovered']
     reasons = []
+    if detected['sharedStoreStatus'] != 'selected':
+        reasons.append(detected['sharedStoreReason'])
     if inv['status'] != 'ready_to_plan': reasons.append(inv['status'])
     if inv['config']['kind'] != 'modern': reasons.append('modern_settings_not_selected')
     selected = inv['managedQmd'] or {}
@@ -185,9 +202,9 @@ def check_update(project):
           not set(qmd_runtime.CAPABILITIES) <= set(selected['proof'].get('capabilities', []))):
         reasons.append('managed_qmd_incompatible')
     if not detected['routeSelected']: reasons.append('project_index_not_selected')
-    if not detected['v2OptedIn'] or not detected['publishedV2Cards']:
+    if not detected['commonStoreSelected'] and (not detected['v2OptedIn'] or not detected['publishedV2Cards']):
         reasons.append('published_v2_wiki_required')
-    if inv['legacyWiki']:
+    if inv['legacyWiki'] and not detected['commonStoreSelected']:
         journal = coordinator.status(inv['project'])
         reviewed = (journal.get('phase') == 'activated' and
                     journal.get('frozen', {}).get('legacyWiki') == inv['legacyWiki'] and
@@ -203,6 +220,8 @@ def plan(args):
     found = discover(args.project)
     inv, detected = found['inventory'], found['discovered']
     blockers = []
+    if detected['sharedStoreStatus'] != 'selected':
+        blockers.append(detected['sharedStoreReason'])
     if inv['status'] != 'ready_to_plan': blockers.append(inv['status'])
     if inv['config']['kind'] == 'missing': blockers.append('project_settings_required')
     try: qmd = _qmd_choice(args, inv)
@@ -320,7 +339,8 @@ def prepare(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback'))
+    parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
+                                          'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store','plan-install','install'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -332,6 +352,17 @@ def main(argv=None):
     parser.add_argument('--expected-dimension', type=int)
     parser.add_argument('--approve-index-execution', action='store_true')
     parser.add_argument('--bootstrap-empty-wiki', action='store_true')
+    parser.add_argument('--embedding-model-file')
+    parser.add_argument('--qmd-cpu', action='store_true')
+    parser.add_argument('--qmd-backend', choices=('auto','cpu'))
+    parser.add_argument('--replace-inactive-store-preparation', action='store_true')
+    parser.add_argument('--store-scope', action='append')
+    parser.add_argument('--allow-live-host-sessions', action='store_true')
+    parser.add_argument('--writer-wait-seconds', type=float, default=30)
+    parser.add_argument('--deadline-seconds',type=float,default=600)
+    parser.add_argument('--approve-store-activation', action='store_true')
+    parser.add_argument('--approve-project-enrollment', action='store_true')
+    parser.add_argument('--old-host-sessions-restarted', action='store_true')
     parser.add_argument('--reviewed-v2-mappings')
     parser.add_argument('--laya-mode', choices=('defer', 'active', 'reuse', 'install'), default='defer')
     parser.add_argument('--laya-executable'); parser.add_argument('--laya-adapter')
@@ -339,14 +370,22 @@ def main(argv=None):
     parser.add_argument('--approve-laya-install', action='store_true')
     args = parser.parse_args(argv)
     try:
-        result = {'inspect': lambda: discover(args.project), 'check-update': lambda: check_update(args.project),
+        if args.action in ('install','plan-install'):
+            import shared_install
+            result=shared_install.install(args) if args.action=='install' else shared_install.plan(args)
+        elif args.action.endswith('-store') or args.action == 'store-status':
+            import shared_qmd_setup
+            result = shared_qmd_setup.run(args)
+        else:
+            result = {'inspect': lambda: discover(args.project), 'check-update': lambda: check_update(args.project),
                   'plan': lambda: plan(args),
                   'prepare': lambda: prepare(args), 'status': lambda: coordinator.status(args.project),
                   'activate': lambda: coordinator.activate(args.project),
-                  'rollback': lambda: coordinator.rollback(args.project)}[args.action]()
+                      'rollback': lambda: coordinator.rollback(args.project)}[args.action]()
     except Exception as exc:
         result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing',
         'recovery_required', 'rolled_back_after_activation_failure') else 0
 

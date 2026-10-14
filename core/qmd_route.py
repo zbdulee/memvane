@@ -42,7 +42,7 @@ def binary_info(environ=None):
         override = env.get('QMD_NODE_BIN')
         if override and Path(override).resolve() != node.resolve():
             raise ValueError('managed_qmd_node_conflict')
-        entry = package_bin.parent.parent / 'dist/cli/qmd.js'
+        entry = Path(managed['entry']) if managed.get('entry') else package_bin.parent.parent / 'dist/cli/qmd.js'
         if not entry.is_file() or entry.is_symlink():
             # bin/qmd is a JavaScript entry in the pinned package too.
             entry = package_bin
@@ -70,6 +70,7 @@ def project_paths(project_root, *, environ=None, isolated=False,
     root = Path(project_root).resolve()
     if not fixture_env and env.get('QMD_SETUP_GUARD_FIXTURE') != '1':
         selected = qmd_shared_store.select(env.get('HOME'))
+        qmd_shared_store.check_project(root,selected,home=env.get('HOME'))
         if reject_conflicts:
             for key in PATH_KEYS:
                 inherited = env.get(key)

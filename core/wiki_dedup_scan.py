@@ -368,7 +368,8 @@ def run(cwd: str) -> None:
 
     if not wc.shared_collection_owned(root, config, collection):
         return
-    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8484")
+    import qmd_endpoint
+    daemon_url = qmd_endpoint.optional_url()
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
     # topK·autoMergeThreshold는 상수다(daemon score가 순위 기반 — qmd_config 참조).
     top_k = qmd_config.DEDUP_TOP_K

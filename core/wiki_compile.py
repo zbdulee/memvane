@@ -1258,7 +1258,9 @@ def query_wiki_similar(daemon_url: str, collection: str, text: str, top_k: int, 
             qmd_shared_store.select()
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        if daemon_url != 'http://localhost:8484':
+        import qmd_endpoint
+        selected_url=qmd_endpoint.optional_url()
+        if not selected_url or daemon_url != selected_url:
             return None
     # qmd's vec search rejects multi-line queries (store.js structuredSearch:
     # "queries must be single-line. Remove newline characters.") with a 500.
@@ -1328,7 +1330,8 @@ def query_wiki_candidates(
     text = f"{candidate.get('title') or ''} {summary}".strip()
     if not text:
         return []
-    daemon_url = os.environ.get("QMD_DAEMON_URL", "http://localhost:8484")
+    import qmd_endpoint
+    daemon_url = qmd_endpoint.optional_url()
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
     results = query_wiki_similar(daemon_url, collection, text, qmd_config.DEDUP_TOP_K, timeout)
     if not results:

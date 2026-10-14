@@ -25,8 +25,8 @@ import qmd_route
 import qmd_project_query
 import qmd_scope
 import qmd_shared_store
+import qmd_endpoint
 
-DEFAULT_DAEMON_URL = "http://localhost:8484"
 DEFAULT_HEALTH_TIMEOUT = 2.0
 QUERY_TIMEOUT = 5.0
 
@@ -2199,7 +2199,7 @@ def main():
     raw_collections = []
     queried_collections = list(collections)
     queried_wiki_first = False
-    daemon_url = os.environ.get("QMD_DAEMON_URL", DEFAULT_DAEMON_URL)
+    daemon_url = qmd_endpoint.optional_url()
 
     # opt-in 진단(shadow query). env가 없으면 아래 어떤 shadow 코드도 실행되지 않는다.
     shadow_on = shadow_diagnostics_enabled()

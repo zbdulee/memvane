@@ -84,7 +84,7 @@ flowchart TD
     Hermes[Hermes Python plugin]
     Core[core scripts]
     Manager[core/backend_manager.sh]
-    Daemon[qmd HTTP daemon :8483]
+    Daemon[qmd HTTP daemon at selected loopback endpoint]
     QmdCLI[qmd CLI]
     Dirty[~/.config/qmd/dirty-queue]
     CompileQ[.auto-context/compile/source-queue.jsonl]
@@ -276,17 +276,17 @@ Hermes calls `core/recall.py` directly through `recall_context`.
    and hierarchical raw backfill.
 9. Emits a hook JSON object with `additionalContext`.
 
-The default daemon URL is:
+New managed startup begins at port8584, advancing by1 when either loopback
+address family is occupied. The existing bounded scan defaults to16 candidates
+(maximum128), accepts an explicit `QMD_DAEMON_PORT` as its start, and refuses
+ranges outside1024–65535. Bind probes never contact or stop external listeners;
+the actual child bind, process identity and health are verified before selection.
 
-```text
-http://localhost:8483
-```
-
-It can be overridden for query-time recall and semantic wiki lookup with:
-
-```text
-QMD_DAEMON_URL=http://host:port
-```
+Clients resolve the saved, proved `endpoint.json` URL, for example
+`http://127.0.0.1:8584` or an IPv6 loopback URL at the selected port. A healthy
+owned endpoint is reused unchanged, including a port chosen before this default
+changed. A `QMD_DAEMON_URL` override must equal the verified selected URL; it
+does not authorize a remote or unrelated server.
 
 The query HTTP contract is:
 
@@ -508,11 +508,13 @@ Commands:
 `backend/daemon.sh` runs qmd in foreground HTTP MCP mode:
 
 ```text
-qmd mcp --http --port 8483
+<verified-node> <verified-qmd-entry> mcp --http --port <selected-port>
 ```
 
-The daemon script resolves the qmd binary, follows the real qmd entrypoint when
-possible, and picks a Node binary compatible with `better-sqlite3`.
+The managed wrapper pins Node and QMD entry identity. The daemon script directly
+executes that verified entry with the coordinator-selected port, in the same
+process tracked by the endpoint coordinator. It does not spawn a second MCP
+proxy or leave a launcher grandchild untracked.
 
 ## Concurrency and Isolation
 

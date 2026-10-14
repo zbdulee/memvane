@@ -109,21 +109,44 @@ def _write(path,payload):
         Path(temporary).unlink(missing_ok=True)
 
 
-def prepare_existing(root,qmd,node):
+def prepare_existing(root,qmd,node, *, force_cpu=False, native_no_build=False):
     root=_private(root,create=True)
     generations=_private(root/'generations',create=True)
     proof=_probe(qmd,node)
+    cli=Path(proof['qmd']).parent.parent/'dist/cli/qmd.js'
+    if native_no_build and (force_cpu or not cli.is_file() or cli.is_symlink() or
+            not (cli.parent.parent/'llm.js').is_file()):
+        raise ValueError('qmd_no_build_contract_missing')
     generation=generations/('g-'+uuid.uuid4().hex)
     generation.mkdir(mode=0o700)
     wrapper=generation/'qmd'
+    entry=Path(proof['qmd'])
+    if force_cpu:
+        # The package launcher spawns a child and drops inherited lease FDs.
+        # Direct CLI exec keeps the bootstrap lease on the actual writer.
+        for source in (cli,cli.parent.parent/'llm.js'):
+            info=source.lstat()
+            if (source.is_symlink() or not stat.S_ISREG(info.st_mode) or
+                    info.st_uid not in (0,os.getuid()) or info.st_mode&0o022):
+                raise ValueError('qmd_direct_cli_contract_missing')
+        entry=cli
+    if native_no_build:
+        entry=generation/'qmd-native.mjs'
+        policy=Path(__file__).with_name('qmd_native_policy.mjs').read_text()
+        entry.write_text(policy.replace('__QMD_CLI_JSON__',json.dumps(str(cli))))
+        entry.chmod(0o600)
     # Resolved paths originate from the checked local installation; no shell
     # input or project text is interpolated into the command line.
     import shlex
-    wrapper.write_text('#!/bin/sh\nexec '+shlex.quote(proof['node'])+' '+
-                       shlex.quote(proof['qmd'])+' "$@"\n')
+    wrapper.write_text('#!/bin/sh\n'+('export QMD_FORCE_CPU=1\n' if force_cpu else '')+'exec '+shlex.quote(proof['node'])+' '+
+                       shlex.quote(str(entry))+' "$@"\n')
     wrapper.chmod(0o700)
-    _write(generation/'prepared.json',{'schema':SCHEMA,'proof':proof,
-        'wrapper':str(wrapper),'wrapperSha256':_sha(wrapper)})
+    prepared={'schema':SCHEMA,'proof':proof,'wrapper':str(wrapper),'wrapperSha256':_sha(wrapper)}
+    if force_cpu:prepared.update(forceCpu=True,directCli=True,entry=str(entry),entrySha256=_sha(entry),
+        llmSha256=_sha(cli.parent.parent/'llm.js'),cliSha256=_sha(cli))
+    if native_no_build:prepared.update(nativeNoBuild=True,entry=str(entry),entrySha256=_sha(entry),
+        llmSha256=_sha(cli.parent.parent/'llm.js'),cliSha256=_sha(cli))
+    _write(generation/'prepared.json',prepared)
     return {'status':'prepared_inactive','generation':str(generation),
             'wrapper':str(wrapper),'proof':proof}
 
@@ -137,6 +160,24 @@ def _prepared(generation):
     if not isinstance(value,dict) or value.get('schema')!=SCHEMA:
         raise ValueError('qmd_preparation_invalid')
     proof=value['proof'];wrapper=Path(value['wrapper'])
+    if value.get('nativeNoBuild'):
+        entry=Path(value['entry'])
+        cli=Path(proof['qmd']).parent.parent/'dist/cli/qmd.js'
+        if (entry.parent!=generation or entry.is_symlink() or not entry.is_file() or
+                entry.stat().st_uid!=os.getuid() or entry.stat().st_mode&0o077 or
+                _sha(entry)!=value['entrySha256']):
+            raise ValueError('qmd_native_policy_changed')
+        if _sha(cli)!=value['cliSha256'] or _sha(cli.parent.parent/'llm.js')!=value['llmSha256']:
+            raise ValueError('qmd_native_contract_changed')
+    if value.get('directCli'):
+        cli=Path(proof['qmd']).parent.parent/'dist/cli/qmd.js'
+        if not value.get('forceCpu') or Path(value['entry'])!=cli:raise ValueError('qmd_direct_cli_contract_changed')
+        for source in (cli,cli.parent.parent/'llm.js'):
+            st=source.lstat()
+            if source.is_symlink() or not stat.S_ISREG(st.st_mode) or st.st_uid not in (0,os.getuid()) or st.st_mode&0o022:
+                raise ValueError('qmd_direct_cli_contract_changed')
+        if _sha(cli)!=value['entrySha256'] or _sha(cli)!=value['cliSha256'] or _sha(cli.parent.parent/'llm.js')!=value['llmSha256']:
+            raise ValueError('qmd_direct_cli_contract_changed')
     if (wrapper.parent!=generation or wrapper.is_symlink() or
             _sha(wrapper)!=value['wrapperSha256'] or
             _probe(proof['qmd'],proof['node'])!=proof):
@@ -144,7 +185,7 @@ def _prepared(generation):
     return value
 
 
-def activate(root,generation):
+def activate(root,generation, *, require_unselected=False):
     root=_private(root)
     generation=Path(generation)
     if generation.parent!=root/'generations':raise ValueError('qmd_generation_outside_root')
@@ -158,6 +199,7 @@ def activate(root,generation):
         fcntl.flock(fd,fcntl.LOCK_EX)
         path=root/'active.json'
         if path.is_symlink():raise ValueError('unsafe_qmd_pointer')
+        if require_unselected and path.exists():raise ValueError('qmd_managed_already_active')
         previous=json.loads(path.read_text()) if path.is_file() else None
         _write(path,{'schema':SCHEMA,'generation':str(generation),
                      'previous':previous.get('generation') if isinstance(previous,dict) else None})
@@ -178,7 +220,30 @@ def select(root=None):
     if generation.parent!=root/'generations':raise ValueError('qmd_generation_outside_root')
     prepared=_prepared(generation)
     return {'status':'selected_managed','wrapper':prepared['wrapper'],
-            'proof':prepared['proof'],'generation':str(generation)}
+            'proof':prepared['proof'],'generation':str(generation),
+            'forceCpu':prepared.get('forceCpu') is True,
+            'nativeNoBuild':prepared.get('nativeNoBuild') is True,
+            'entry':prepared.get('entry')}
+
+
+def deselect_if_matches(root, expected_sha256):
+    """Undo only our new selection, serialized with all runtime activations."""
+    root=_private(root)
+    fd=os.open(root/'activation.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        info=os.fstat(fd)
+        if info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_nlink!=1:
+            raise ValueError('unsafe_qmd_activation_lock')
+        fcntl.flock(fd,fcntl.LOCK_EX)
+        path=root/'active.json'
+        if path.is_symlink() or not path.is_file() or _sha(path)!=expected_sha256:
+            return False
+        path.unlink()
+        directory=os.open(root,os.O_RDONLY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+        return True
+    finally:os.close(fd)
 
 
 def rollback(root=None):

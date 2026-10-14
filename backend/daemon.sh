@@ -18,7 +18,7 @@ QMD_BIN="$(resolve_qmd_bin 2>/dev/null)" || {
   echo "[qmd-daemon] FATAL: QMD runtime selection failed" >&2
   exit 1
 }
-PORT="${QMD_DAEMON_PORT:-8484}"
+PORT="${QMD_DAEMON_PORT:-8584}"
 FNM_ROOT="$HOME/.local/share/fnm/node-versions"
 
 # qmd 의 bin/qmd 런처는 dist/cli/qmd.js 를 child 로 spawn 한다(2단 프로세스).

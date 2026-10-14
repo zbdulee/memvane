@@ -847,6 +847,8 @@ def _rollback_under_lock(root, auto, journal):
 
 
 def _check_activated(root, journal):
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE')!='1':
+        qmd_route.project_paths(root,isolated=True,reject_conflicts=True)
     request = journal['request']
     activation = journal['activation']
     for kind, recorded_sha in activation.get('applied', {}).items():
@@ -917,6 +919,10 @@ def activate(root):
                 activation['daemonAfter'] = _reload_and_check_daemon(before=activation['daemonBefore'])
                 activation['daemonIntent'] = False;_save(auto, journal)
             _check_index(root, request, journal['staged']['index'])
+            if os.environ.get('QMD_SETUP_GUARD_FIXTURE')!='1':
+                # Production hooks require the approved common tuple. An old
+                # shadow pointer alone cannot attest a completed install.
+                qmd_route.project_paths(root,isolated=True,reject_conflicts=True)
             journal['phase'] = 'activated';journal['lastError'] = None;_save(auto, journal)
             return {'status': 'activated', 'journal': str(auto / JOURNAL),
                     'laya': journal['staged']['laya']['mode'],
