@@ -152,7 +152,7 @@ def _config_source(root):
     return {'kind': 'missing'}
 
 
-def inspect(root):
+def inspect(root, *, probe_laya=True):
     root = project_root(root)
     result = {'schema': SCHEMA, 'status': 'ready_to_plan' if supported_platform() else 'unsupported_managed_platform',
               'project': str(root), 'managedPlatform': 'macos-arm64',
@@ -173,8 +173,9 @@ def inspect(root):
         try: result['managedQmd'] = qmd_runtime.select(qmd_root)
         except (OSError, ValueError, KeyError, TypeError): result['managedQmd'] = {'status': 'invalid_pointer'}
     laya_root = laya_setup.default_managed_root()
-    if (laya_root / 'active.json').is_file():
-        result['managedLaya'] = laya_setup.choose_runtime(managed_root=laya_root)
+    if probe_laya and (laya_root / 'active.json').is_file():
+        try: result['managedLaya'] = laya_setup.choose_runtime(managed_root=laya_root)
+        except (OSError, ValueError, KeyError, TypeError): result['managedLaya'] = {'status': 'invalid_managed_pointer'}
     try:
         selected = runtime_update.select_runtime(root)
         if selected: result['projectIndex'] = {'generation': selected['generation'], 'index': selected['INDEX_PATH']}

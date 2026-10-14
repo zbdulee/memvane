@@ -1006,7 +1006,9 @@ esac
     assert json.loads(generated_path.read_text()) == auto_plan['request']
     assert entry_cli('activate', reviewed)[1]['status'] == 'activated'
     code, current_check = entry_cli('check-update', reviewed)
-    assert code == 0 and current_check['status'] == 'up_to_date', current_check
+    assert code == 0 and current_check['status'] == 'update_review_required', current_check
+    assert current_check['qmdReady'] and not current_check['overallReady'], current_check
+    assert 'laya_managed_runtime_not_prepared' in current_check['reasons'], current_check
     assert entry_cli('rollback', reviewed)[1]['status'] == 'rolled_back'
     assert old_v1.read_bytes() == old_v1_bytes
     code, update_check = entry_cli('check-update', reviewed)

@@ -126,7 +126,11 @@ def _setup_notice(cwd, queue, guard=None):
         state = json.loads(version_path.read_text())
         if isinstance(state, dict) and state.get('schema') == 'qmd-setup-version-v1':
             previous = state.get('version')
-    if reason is None and previous is not None and previous != version:
+    version_changed = previous is not None and previous != version
+    if reason is None and settings.is_file():
+        import setup_readiness
+        reason = setup_readiness.laya_preflight()['reason']
+    if reason is None and version_changed:
         reason = 'plugin_version_changed'
     version_state = {'schema': 'qmd-setup-version-v1', 'version': version,
                      'project': str(project)}
@@ -145,7 +149,8 @@ def _setup_notice(cwd, queue, guard=None):
         try: os.link(tmp, marker, follow_symlinks=False)
         except FileExistsError: return
         _write(version_path, version_state)
-        print(f'[qmd] 플러그인 {version}: 이 프로젝트 설치 상태({reason})를 검토하세요. '
+        version_hint = ' plugin_version_changed;' if version_changed and reason != 'plugin_version_changed' else ''
+        print(f'[qmd] 플러그인 {version}:{version_hint} 이 프로젝트 설치 상태({reason})를 검토하세요. '
               'setup skill에 “설치 계획 보여줘”를 요청하면 읽기 전용 점검을 시작합니다. '
               '긴 준비와 적용은 각각 명시적 승인 후에만 실행됩니다.')
     finally:

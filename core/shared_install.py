@@ -9,7 +9,7 @@ from urllib.parse import quote
 import config,install_update as C,shared_qmd_setup as B,qmd_shared_store as S
 import qmd_runtime as R,qmd_route,setup_guard,qmd_endpoint as E
 import dirty_queue,sqlite_read,install_maintenance as maintenance
-import vector_integrity,qmd_write_fence
+import vector_integrity,qmd_write_fence,setup_readiness
 
 SCHEMA='qmd-shared-install-v1'
 JOURNAL='shared-install-journal.json'
@@ -324,7 +324,8 @@ def install(args):
    if maintenance.snapshot(dirty_queue.queue_path(),_expected_queue(selected))['pending']:
     row['phase']='deferred';_save(auto,row);return {'status':'deferred','exitCode':75,'reason':'concurrent_index_work'}
    row['phase']='completed';row['readiness']=ready;row['completedAt']=time.time();_save(auto,row)
-   return {'status':'completed','exitCode':0,'readiness':ready,'journal':str(auto/JOURNAL),'workerAttempts':totals['attempts'],'busyWaits':totals['waits'],'sourceStabilityPasses':stable['passes'],'laya':'deferred_no_learning','originalsPreserved':True}
+   components=setup_readiness.components(True)
+   return {**components,'status':'completed' if components['overallReady'] else 'qmd_ready','completionScope':'overall' if components['overallReady'] else 'qmd','exitCode':0,'readiness':ready,'journal':str(auto/JOURNAL),'workerAttempts':totals['attempts'],'busyWaits':totals['waits'],'sourceStabilityPasses':stable['passes'],'laya':'deferred_no_learning','originalsPreserved':True}
   except (TimeoutError,subprocess.TimeoutExpired,maintenance.QueueBusy) as exc:
    row['phase']='deferred';row['lastError']=str(exc);_save(auto,row)
    return {'status':'deferred','exitCode':75,'reason':str(exc),'journal':str(auto/JOURNAL)}

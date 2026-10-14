@@ -23,6 +23,7 @@ import qmd_route
 import qmd_runtime
 import runtime_update
 import wiki_topical
+import setup_readiness
 
 
 def _file(value):
@@ -45,9 +46,9 @@ def _sha_file(path):
     return digest.hexdigest()
 
 
-def discover(project):
+def discover(project, *, probe_laya=True):
     root = coordinator.project_root(project)
-    inventory = coordinator.inspect(root)
+    inventory = coordinator.inspect(root, probe_laya=probe_laya)
     store_status, store_reason = 'selected', None
     try:
         paths = qmd_route.project_paths(root)
@@ -188,7 +189,7 @@ def _configured_model(path):
 
 
 def check_update(project):
-    found = discover(project)
+    found = discover(project, probe_laya=False)
     inv, detected = found['inventory'], found['discovered']
     reasons = []
     if detected['sharedStoreStatus'] != 'selected':
@@ -210,10 +211,17 @@ def check_update(project):
                     journal.get('frozen', {}).get('legacyWiki') == inv['legacyWiki'] and
                     journal.get('wikiReview', {}).get('status') == 'reviewed_v2_preserving_legacy')
         if not reviewed: reasons.append('legacy_wiki_review_required')
-    return {'schema': 'qmd-setup-update-check-v1',
+    if detected['commonStoreSelected']:
+        model_reason = setup_readiness.qmd_model_reason()
+        if model_reason: reasons.append(model_reason)
+    readiness = setup_readiness.components(not reasons)
+    laya_reason = readiness['componentReadiness']['laya']['reason']
+    if laya_reason: reasons.append(laya_reason)
+    return {**readiness, 'schema': 'qmd-setup-update-check-v1',
             'status': 'up_to_date' if not reasons else 'update_review_required',
             'reasons': reasons, 'project': inv['project'],
-            'targetQmdVersion': qmd_runtime.VERSION, 'changesApplied': 0}
+            'targetQmdVersion': qmd_runtime.VERSION,
+            'targetLayaVersion': setup_readiness.runtime.LAYA_PIN, 'changesApplied': 0}
 
 
 def plan(args):
