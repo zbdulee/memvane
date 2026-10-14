@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -90,16 +90,16 @@ test('BUG-5: update.sh 로그/status 기본값이 /tmp 고정 경로가 아니�
   assert.match(upd, /update-status-\{digest\}\.txt/);
 });
 
-// BUG-6: env-override 가능한 EMBED_LOCK stale 정리가 rm -rf가 아니라 pid unlink + rmdir여야 한다.
+// BUG-6: stale cleanup must use the proved-owner helper, never recursive deletion.
 test('BUG-6: update.sh stale embed lock 정리가 rm -rf 대신 rmdir를 쓴다', () => {
   const upd = readFileSync('core/update.sh', 'utf8');
   // EMBED_LOCK stale 분기에서 rm -rf "$EMBED_LOCK"가 없어야 한다.
   assert.ok(!/rm -rf "\$EMBED_LOCK"/.test(upd), 'update.sh가 EMBED_LOCK을 rm -rf로 재귀 삭제');
-  assert.match(upd, /rm -f "\$EMBED_LOCK\/pid"[^\n]*rmdir "\$EMBED_LOCK"/, 'EMBED_LOCK 정리는 pid unlink 후 rmdir여야 함');
+  assert.match(upd, /python3 "\$_QMD_CORE_DIR\/worker_lock\.py" reclaim "\$EMBED_LOCK"/, 'EMBED_LOCK cleanup must delegate owner/inode checks');
 });
 
 // BUG-6 동작: 예상 밖 내용이 든 lock dir은 rmdir 실패로 보호되어 삭제되지 않는다.
-test('BUG-6: 예상 밖 파일이 든 stale embed lock dir은 삭제되지 않는다(rmdir 보호)', () => {
+test('BUG-6: unsafe lock contents retain both directory and PID marker', () => {
   const d = mkdtempSync(join(tmpdir(), 'qmd-rmdir-'));
   try {
     const lock = join(d, 'el.d');
@@ -108,13 +108,10 @@ test('BUG-6: 예상 밖 파일이 든 stale embed lock dir은 삭제되지 않�
     writeFileSync(join(lock, 'pid'), '2147483646');
     // 예상 밖 내용 추가
     writeFileSync(join(lock, 'unexpected'), 'do-not-delete');
-    // update.sh의 stale 정리 로직을 동일하게 실행
-    execFileSync('bash', ['-c',
-      `EMBED_LOCK="${lock}"
-       if [ -d "$EMBED_LOCK" ]; then
-         epid="$(cat "$EMBED_LOCK/pid" 2>/dev/null || true)"
-         { [ -z "$epid" ] || ! kill -0 "$epid" 2>/dev/null; } && { rm -f "$EMBED_LOCK/pid" 2>/dev/null; rmdir "$EMBED_LOCK" 2>/dev/null || true; }
-       fi`]);
+    const result=spawnSync('python3',['core/worker_lock.py','reclaim',lock],{encoding:'utf8',env:{...process.env,QMD_RECALL_LOG:''}});
+    assert.equal(result.status,1,result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout),{status:'unsafe',reason:'unsafe_worker_lock_contents'});
+    assert.equal(readFileSync(join(lock,'pid'),'utf8'),'2147483646','unknown contents must retain the PID marker too');
     // 예상 밖 파일이 있으므로 rmdir 실패 → dir 보존
     assert.equal(existsSync(lock), true, 'rmdir 보호로 lock dir이 보존돼야 함');
     assert.equal(existsSync(join(lock, 'unexpected')), true, '예상 밖 파일은 삭제되지 않아야 함');

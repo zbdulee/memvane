@@ -20,6 +20,10 @@ import qmd_shared_store
 class SharedSetup(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='qmd-shared-setup-')
+        # These fixtures execute a synthetic supported runtime on Linux CI too.
+        # The product gate stays unchanged and has its own no-mutation case.
+        self.platform_patch = patch('install_update.supported_platform', return_value=True)
+        self.platform_patch.start(); self.addCleanup(self.platform_patch.stop)
         self.home = Path(self.temp.name).resolve()
         self.env = patch.dict(os.environ, {'HOME': str(self.home), 'QMD_LOCK_BASE':str(self.home/'locks'), 'QMD_BACKEND_STATE_DIR':str(self.home/'backend'), 'QMD_SETUP_GUARD_FIXTURE': '', 'QMD_RECALL_LOG': ''})
         self.env.start()
@@ -101,6 +105,14 @@ db.commit();db.close()
         update=setup_entry.check_update(self.project)
         self.assertIn('plugin_qmd_store_not_ready',update['reasons'])
         self.assertFalse((self.home/'Library').exists())
+
+    def test_unsupported_platform_remains_blocked_without_staging(self):
+        with patch('install_update.supported_platform', return_value=False):
+            code,result=self.cli('prepare-store')
+        self.assertEqual(code,1,result)
+        self.assertIn('unsupported_managed_platform',result['blockers'])
+        self.assertFalse((self.home/'Library').exists())
+        self.assert_preserved()
 
     def test_missing_approval_model_and_invalid_dimension_do_not_stage(self):
         for opts in [self.options[:-1], self.options[:-3]+['--expected-dimension','0','--approve-index-execution']]:

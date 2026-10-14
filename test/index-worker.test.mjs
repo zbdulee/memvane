@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,7 +78,7 @@ test("존재하지 않는 경로 skip", () => {
   assert.doesNotMatch(logContent, /collection add/);
 });
 
-test("single-flight: 이미 lock이면 즉시 종료(큐 보존)", () => {
+test("single-flight: live lock defers with75 and preserves queue and owner", () => {
   const d = mkdtempSync(join(tmpdir(), "wk-"));
   const log = join(d, "calls.log");
   const stub = makeStubQmd(d, log);
@@ -87,10 +87,13 @@ test("single-flight: 이미 lock이면 즉시 종료(큐 보존)", () => {
   writeFileSync(q, `x\t${join(proj, "04_M")}\n`);
   const wlock = join(d, "wlock.d"); mkdirSync(wlock); // 미리 잡아둠
   writeFileSync(join(wlock, 'pid'), String(process.pid));
-  execFileSync("bash", ["backend/index_worker.sh"], { encoding: "utf8", env: {
+  const result = spawnSync("bash", ["backend/index_worker.sh"], { encoding: "utf8", env: {
     ...process.env, QMD_DIRTY_QUEUE: q, QMD_FAKE_QMD: stub,
+    QMD_CACHE_DIR: join(d,'cache'),QMD_LOCK_BASE: join(d,'locks'),QMD_INDEX_WORKER_LOG: join(d,'worker.log'),
     QMD_INDEX_WORKER_LOCKDIR: wlock, QMD_WRITER_LOCKDIR: join(d, "ulock.d"), QMD_NO_RELOAD: "1",
   }});
+  assert.equal(result.status,75,result.stderr);
+  assert.equal(readFileSync(join(wlock,'pid'),'utf8'),String(process.pid));
   assert.equal(existsSync(log), false);      // qmd 미호출
   assert.match(readFileSync(q, "utf8"), /04_M/); // 큐 보존
 });
