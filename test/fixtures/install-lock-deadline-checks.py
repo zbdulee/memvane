@@ -1,5 +1,5 @@
 """Real flock contention in disposable installer state; no user processes."""
-import fcntl, json, os, runpy, sys, time, unittest, tempfile
+import fcntl, json, os, runpy, sys, time, unittest, tempfile, threading
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, 'core')
@@ -69,6 +69,19 @@ class Contention(Install):
   self.assertFalse((S.root()/'active.json').exists());self.preserved()
 
 class Budget(unittest.TestCase):
+ def test_ordinary_queue_lock_still_waits_for_its_holder(self):
+  import dirty_queue_claim as Q
+  with tempfile.TemporaryDirectory() as tmp:
+   q=Path(tmp)/'queue';fd=os.open(str(q)+'.lock',os.O_RDWR|os.O_CREAT,0o600)
+   fcntl.flock(fd,fcntl.LOCK_EX);entered=threading.Event();finished=threading.Event()
+   def waiter():
+    with Q.queue_lock(q):entered.set()
+    finished.set()
+   thread=threading.Thread(target=waiter);thread.start()
+   try:self.assertFalse(entered.wait(.08))
+   finally:os.close(fd)
+   self.assertTrue(finished.wait(2));thread.join(2)
+   self.assertFalse(thread.is_alive())
  def test_real_flock_wait_is_bounded_and_context_resets(self):
   import install_deadline as D
   with tempfile.TemporaryDirectory() as tmp:

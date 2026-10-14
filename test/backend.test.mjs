@@ -45,13 +45,14 @@ test('backend manager health timeout invalid 값은 2초 fallback', () => {
 });
 
 // BUG-4: index_worker 큐 락은 flock(1) 명령에 의존하면 안 된다(macOS 부재).
-// core/dirty_queue.py와 동일한 python fcntl.flock으로 직렬화해야 한다.
+// core/dirty_queue.py와 동일한 Python advisory lock으로 직렬화해야 한다.
 test('BUG-4: index_worker 큐 스냅샷이 flock(1) 명령에 의존하지 않고 python fcntl을 쓴다', () => {
   const sh = readFileSync('backend/index_worker.sh', 'utf8');
   // flock(1) 셸 명령 호출 형태(`flock 9`, `flock -u 9`)가 없어야 한다. python fcntl.flock은 허용.
   assert.ok(!/(^|[;&|\s])flock\s+(-[a-z]\s+)?[0-9]/m.test(sh), 'index_worker.sh가 flock(1) 명령을 사용 — macOS에서 무동작');
   assert.match(sh, /dirty_queue_claim\.py/, 'index_worker.sh는 공통 fcntl 기반 claim/ack 경로를 사용해야 함');
-  assert.match(readFileSync('core/dirty_queue_claim.py', 'utf8'), /fcntl\.flock/, 'claim/ack는 고정 큐 락을 잡아야 함');
+  assert.match(readFileSync('core/dirty_queue_claim.py', 'utf8'), /install_deadline\.flock\(fd, fcntl\.LOCK_EX\)/, 'claim/ack는 고정 큐 락을 잡아야 함');
+  assert.match(readFileSync('core/install_deadline.py', 'utf8'), /fcntl\.flock\(fd, flags\)/, '설치 밖 큐 락은 Python fcntl로 직렬화해야 함');
 });
 
 // BUG-5(b)/락 통일: update.sh와 index_worker.sh의 공유 락 기본값(WRITER/EMBED)이 동일해야
