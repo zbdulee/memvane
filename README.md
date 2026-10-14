@@ -210,6 +210,8 @@ wiki compile 꺼줘.
 `.auto-context/settings.json`의 `collectionPaths`가 가리키는 폴더 자체가
 없어지면, 다음 update가 해당 기억 대상을 제거하고 settings에서도 정리합니다.
 폴더 안의 파일만 삭제한 경우에는 일반 qmd update가 삭제를 반영합니다.
+Claude의 Bash 삭제는 기본 편집 훅 대상이 아닙니다. 이처럼 훅이 포착하지 못한
+생성·수정·삭제는 “놓친 변경을 동기화해줘”라고 요청하거나 sync 스킬로 반영합니다.
 
 ### 예전 글로벌 훅을 정리하고 싶을 때
 

@@ -456,6 +456,9 @@ def resolve_bin(name: str, env_override: str) -> str | None:
     if override:
         return override
     path = os.environ.get("PATH", "")
+    selected = shutil.which(name, path=path)
+    if selected:
+        return selected
     extra = []
     fnm_root = Path.home() / ".local" / "share" / "fnm" / "node-versions"
     if fnm_root.exists():
@@ -465,8 +468,10 @@ def resolve_bin(name: str, env_override: str) -> str | None:
     bun = Path.home() / ".bun" / "bin"
     if bun.exists():
         extra.append(str(bun))
-    search = os.pathsep.join(extra + [path]) if extra else path
-    return shutil.which(name, path=search)
+    # These locations help when the host shell omits a CLI, not when it has
+    # already selected one. Prepending fnm silently selected an older Codex
+    # instead of the user's working standalone installation on macOS.
+    return shutil.which(name, path=os.pathsep.join(extra)) if extra else None
 
 
 def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
@@ -630,6 +635,7 @@ def run_adapter(
             sys.stderr.write("topical_raw_audit_failed\n")
             return 1
     if code != 0:
+        sys.stderr.write(f"extractor_cli_failed: engine={engine} returncode={code}\n")
         return code
     if task == "verify":
         return emit_verdict(extract_verdict(out), effort)

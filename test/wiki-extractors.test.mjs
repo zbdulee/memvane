@@ -10,6 +10,44 @@ function runLib(pyBody, input) {
   return execFileSync('python3', ['-c', pyBody], { cwd: process.cwd(), input, encoding: 'utf8' });
 }
 
+test('extractor CLI resolution preserves PATH choice before fnm/bun fallback', () => {
+  const out = JSON.parse(runLib(`import sys,os,json,tempfile
+from pathlib import Path
+sys.path.insert(0,'core/extractors');import lib
+with tempfile.TemporaryDirectory() as tmp:
+ home=Path(tmp);os.environ['HOME']=tmp
+ preferred=home/'host-bin';preferred.mkdir()
+ fallback=home/'.local/share/fnm/node-versions/v99.0.0/installation/bin';fallback.mkdir(parents=True)
+ for base in (preferred,fallback):
+  p=base/'codex';p.write_text('#!/bin/sh\\nexit 0\\n');p.chmod(0o700)
+ os.environ['PATH']=str(preferred)
+ selected=lib.resolve_bin('codex','QMD_EXTRACTOR_TEST_CODEX_BIN')
+ os.environ['PATH']=str(home/'missing-bin')
+ absent=lib.resolve_bin('codex','QMD_EXTRACTOR_TEST_CODEX_BIN')
+ os.environ['QMD_EXTRACTOR_TEST_CODEX_BIN']='/explicit/reviewed/codex'
+ explicit=lib.resolve_bin('codex','QMD_EXTRACTOR_TEST_CODEX_BIN')
+ print(json.dumps({'pathFirst':selected==str(preferred/'codex'),'fallbackWhenAbsent':absent==str(fallback/'codex'),'explicitUnchanged':explicit=='/explicit/reviewed/codex'}))`, ''));
+  assert.deepEqual(out, { pathFirst: true, fallbackWhenAbsent: true, explicitUnchanged: true });
+});
+
+test('adapter reports a bounded CLI signal failure without exposing prompt body', () => {
+  const d = mkdtempSync(join(tmpdir(), 'extractor-signal-'));
+  try {
+    const fake = join(d, 'signal-codex');
+    writeFileSync(fake, '#!/bin/sh\nkill -KILL $$\n', { mode: 0o700 });
+    let failure;
+    try {
+      execFileSync('python3', ['core/extractors/codex_adapter.py'], {
+        input: JSON.stringify({ task: 'verify', card: { content: 'PRIVATE_SYNTHETIC_BODY' }, sources: [] }),
+        encoding: 'utf8', env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: fake }, stdio: 'pipe',
+      });
+    } catch (err) { failure = err; }
+    assert.ok(failure);
+    assert.match(failure.stderr, /extractor_cli_failed: engine=codex returncode=-9/);
+    assert.doesNotMatch(failure.stderr, /PRIVATE_SYNTHETIC_BODY/);
+  } finally { removeTemp(d); }
+});
+
 test('extract_candidates pulls JSON object from fenced/prose output', () => {
   const py = `import sys; sys.path.insert(0,'core/extractors'); import lib
 text = 'Here you go:\\n\\u0060\\u0060\\u0060json\\n{"candidates":[{"title":"T"}]}\\n\\u0060\\u0060\\u0060\\nDone.'
