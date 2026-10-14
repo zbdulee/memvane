@@ -1,4 +1,5 @@
 """Entire synthetic path with mocked Codex and Laya, never a provider call."""
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -14,7 +15,7 @@ from unittest.mock import patch
 
 from context_learning.contracts import digest
 from context_learning.seam import observe
-from context_learning.shared import _db, _policy, train_due
+from context_learning.shared import DATABASE_NAME, _db, _policy, train_due
 from context_learning.store import canonical
 from context_learning.synthetic_experiment import (
     CONTROL_NAME, DISK_LIMIT, EXPERIMENT, FINAL_IDS, GOLD_LIMIT, LOG_LIMIT,
@@ -558,6 +559,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-v2-shared-synthetic-test-", dir="/t
             "SELECT c.split FROM cases c JOIN experiment_query_tickets t "
             "USING(request_id) WHERE t.episode=?", (episode,)))) == 1
                    for episode in range(1, 6))
+    final_prediction_calls = []
     class FakeTrainer:
         def call(self, mode, payload, result_path, *, cwd):
             if mode == "train":
@@ -565,6 +567,8 @@ with tempfile.TemporaryDirectory(prefix="qmd-v2-shared-synthetic-test-", dir="/t
                 Path(payload["artifact_path"]).chmod(0o600)
                 result = {"schema_version": 1, "status": "trained"}
             else:
+                if Path(cwd).name == "final-evaluation":
+                    final_prediction_calls.append(os.environ.get("QMD_FINAL_MUTATION", "0"))
                 result = {"schema_version": 1, "predictions": [
                     {"request_id": case["request_id"], "input_sha256": case["input_sha256"],
                      "selected_ids": [case["candidates"][0]["id"]]}
@@ -719,28 +723,55 @@ with tempfile.TemporaryDirectory(prefix="qmd-v2-shared-synthetic-test-", dir="/t
     with _db(root) as db:
         row = db.execute("SELECT split,status FROM cases c JOIN experiment_query_tickets t USING(request_id) WHERE t.episode=81 AND t.slot=2").fetchone()
         assert row == ("final", "gold"), row
-    with patch("context_learning.shared.resource_report",
-               return_value={"ready": True}):
-        if os.environ.get("QMD_FINAL_MUTATION") == "1":
-            denied(lambda: evaluate_final(root, trainer_factory=lambda _: FakeTrainer()),
-                   "experiment_final_changed_during_evaluation")
-            assert snapshot(root)["final_evaluation"] == "uncertain"
-            with _db(root) as db:
-                assert db.execute("SELECT result FROM experiment_final WHERE id=1").fetchone() == (None,)
-        else:
-            final = evaluate_final(root, trainer_factory=lambda _: FakeTrainer())
-            assert final["status"] == "complete" and final["questions"] == 20, final
-            assert evaluate_final(root, trainer_factory=lambda _: (_ for _ in ()).throw(
-                AssertionError("final evaluation repeated"))) == final
-            with _db(root) as db:
-                first = db.execute("SELECT project_key,request_id,gold FROM cases WHERE split='final' AND status='gold' ORDER BY request_id LIMIT 1").fetchone()
-                db.execute("UPDATE cases SET gold=? WHERE project_key=? AND request_id=?",
-                           (canonical(dict(json.loads(first[2]), selected_ids=[])), first[0], first[1]))
-            assert snapshot(root)["final_evaluation"] == "invalidated"
-            assert evaluate_final(root)["status"] == "final_result_invalidated"
-    denied(lambda: launch_one(root, project, "writing", 16,
-                              invoke=fake_codex), "experiment_final_sealed")
+    # Both final branches use the identical, fully validated 100-episode
+    # fixture. Only its disposable SQLite is checkpointed/restored; no additional
+    # product guard is mocked and no operating DB can enter this fixture.
+    mode = os.environ.get("QMD_FINAL_MUTATION", "0")
+    mutations = ["0", "1"] if mode == "both" else [mode]
+    assert all(value in ("0", "1") for value in mutations)
+    checkpoint_restored = False
+    final_folder = root / "final-evaluation"
+    assert not final_folder.exists()
+    with closing(sqlite3.connect(":memory:")) as checkpoint:
+        with closing(sqlite3.connect(root / DATABASE_NAME)) as source:
+            source.backup(checkpoint)
+        expected_dump = hashlib.sha256("\n".join(checkpoint.iterdump()).encode()).hexdigest()
+        for offset, mutation in enumerate(mutations):
+            if offset:
+                # _predict caches results in this folder. Keep each branch
+                # fresh exactly as the original two disposable processes did.
+                final_folder.rename(Path(approvals) / f"final-mutation-{mutations[offset - 1]}")
+                with closing(sqlite3.connect(root / DATABASE_NAME)) as restored:
+                    checkpoint.backup(restored)
+                    assert hashlib.sha256("\n".join(restored.iterdump()).encode()).hexdigest() == expected_dump
+                    assert restored.execute("SELECT COUNT(*) FROM experiment_final").fetchone()[0] == 0
+                checkpoint_restored = True
+            os.environ["QMD_FINAL_MUTATION"] = mutation
+            with patch("context_learning.shared.resource_report",
+                       return_value={"ready": True}):
+                if mutation == "1":
+                    denied(lambda: evaluate_final(root, trainer_factory=lambda _: FakeTrainer()),
+                           "experiment_final_changed_during_evaluation")
+                    assert snapshot(root)["final_evaluation"] == "uncertain"
+                    with _db(root) as db:
+                        assert db.execute("SELECT result FROM experiment_final WHERE id=1").fetchone() == (None,)
+                else:
+                    final = evaluate_final(root, trainer_factory=lambda _: FakeTrainer())
+                    assert final["status"] == "complete" and final["questions"] == 20, final
+                    assert evaluate_final(root, trainer_factory=lambda _: (_ for _ in ()).throw(
+                        AssertionError("final evaluation repeated"))) == final
+                    with _db(root) as db:
+                        first = db.execute("SELECT project_key,request_id,gold FROM cases WHERE split='final' AND status='gold' ORDER BY request_id LIMIT 1").fetchone()
+                        db.execute("UPDATE cases SET gold=? WHERE project_key=? AND request_id=?",
+                                   (canonical(dict(json.loads(first[2]), selected_ids=[])), first[0], first[1]))
+                    assert snapshot(root)["final_evaluation"] == "invalidated"
+                    assert evaluate_final(root)["status"] == "final_result_invalidated"
+            denied(lambda: launch_one(root, project, "writing", 16,
+                                      invoke=fake_codex), "experiment_final_sealed")
+    assert final_prediction_calls == mutations, final_prediction_calls
     print(json.dumps({"pilot_budget": True, "batch_restart": True,
                       "final_sealed": True, "real_hook_uuid": True,
                       "late_cycle": True, "final_gold_mutation": True,
-                      "external_calls": 0}))
+                      "external_calls": 0, "final_mutations": mutations,
+                      "final_checkpoint_restored": checkpoint_restored,
+                      "final_prediction_calls": final_prediction_calls}))

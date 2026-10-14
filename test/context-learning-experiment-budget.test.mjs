@@ -2,10 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 
-for (const mutation of ['0', '1']) test(`synthetic launcher binds hook captures and checks final mutation ${mutation}`, () => {
+test('synthetic launcher binds hook captures and checks both isolated final mutations', () => {
   const raw = execFileSync('python3',
     ['test/fixtures/context-learning-experiment-budget-checks.py'], {
-      env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1', QMD_FINAL_MUTATION: mutation},
+      env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1', QMD_FINAL_MUTATION: 'both'},
       encoding: 'utf8', timeout: 120000,
     });
   const report = JSON.parse(raw);
@@ -16,4 +16,7 @@ for (const mutation of ['0', '1']) test(`synthetic launcher binds hook captures 
   assert.equal(report.late_cycle, true);
   assert.equal(report.final_gold_mutation, true);
   assert.equal(report.external_calls, 0);
+  assert.deepEqual(report.final_mutations, ['0', '1']);
+  assert.equal(report.final_checkpoint_restored, true);
+  assert.deepEqual(report.final_prediction_calls, ['0', '1']);
 });
