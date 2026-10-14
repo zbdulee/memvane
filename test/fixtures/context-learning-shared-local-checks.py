@@ -267,8 +267,14 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     pointer_path = root / "experimental-checkpoint.json"
     pointer_path.write_text(canonical({**pointer,
         "sourceCases": pointer["sourceCases"] * 400}))
-    with patch("context_learning.shared._case_active",
-               side_effect=lambda *args, **kwargs: (time.sleep(.0003) or True)):
+    # Deadline semantics must not depend on the OS minimum sleep resolution.
+    # The original wall-clock sleep failed at this same line on the base SHA.
+    simulated_clock = [0.0]
+    def timed_active(*args, **kwargs):
+        simulated_clock[0] += .0003
+        return True
+    with patch("context_learning.shared._case_active", side_effect=timed_active), patch(
+            "context_learning.shared.time.monotonic", side_effect=lambda: simulated_clock[0]):
         assert not trial_eligible(root)
         assert trial_eligible(root, max_seconds=5)
     pointer_path.write_text(canonical(pointer))

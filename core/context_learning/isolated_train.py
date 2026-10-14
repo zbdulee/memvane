@@ -327,7 +327,7 @@ def _make_trainer(plan):
             policy['trainerArgv'][2]]
     return VerifiedLayaTrainer(argv, max_seconds=policy['safetySeconds'],
         max_rss_mib=policy['maxRssMib'], proof_cache_dir=plan['output'],
-        pressure_probe=lambda: resource_report(policy), require_monitor=True,
+        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True,
         isolated_temp_dir=plan['output'])
 
 
@@ -370,7 +370,9 @@ def _run_plan(plan, revalidate, *, validation_label='holdout'):
 
     before = resource_report(plan['policy'], detailed=True)
     if not before['ready']:
-        raise ValueError('isolated_resource_deferred')
+        from .local_cycle import ResourceDeferred
+        # Output-only approval does not authorize a shared-root journal write.
+        raise ResourceDeferred('isolated_resource_deferred', before)
     output = plan['output']
     output.mkdir(mode=0o700, exist_ok=False)
     started = time.perf_counter()
@@ -443,7 +445,10 @@ def _run_plan(plan, revalidate, *, validation_label='holdout'):
                 'candidate_artifact_sha256': result['candidate_artifact_sha256'],
                 'evidence_sha256': plan['evidence_sha256']}
     except Exception as exc:
+        from .local_cycle import ResourceDeferred
         _atomic_json(output / 'failure.json', {'schema':
-            'qmd-isolated-multilingual-failure-v1', 'status': 'failed',
+            'qmd-isolated-multilingual-failure-v1',
+            'status': 'deferred_resource' if isinstance(exc, ResourceDeferred) else 'failed',
+            'completionAck': False,
             'reason': str(exc)[:80], 'evidence_sha256': plan['evidence_sha256']})
         raise

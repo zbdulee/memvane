@@ -60,6 +60,26 @@ def _load_state(path):
     return read_private_json(path) if Path(path).exists() else None
 
 
+class ResourceDeferred(ValueError):
+    def __init__(self, reason, report=None):
+        super().__init__(reason)
+        self.report = report or {}
+
+
+def record_resource_defer(root, report, *, reason='trainer_system_pressure'):
+    """Durable pending-work diagnostic, never a trained/completion receipt."""
+    value = {'schema': 'qmd-resource-defer-v1', 'status': 'deferred_resource',
+             'reason': reason, 'resources': report, 'recordedAt': time.time(),
+             'completionAck': False, 'retryScheduled': False}
+    _atomic_json(Path(root) / 'resource-defer.json', value)
+    fd = os.open(root, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return value
+
+
 class LocalTrainer:
     """Trusted executable implementing train/predict JSON file protocol.
 
@@ -94,11 +114,33 @@ class LocalTrainer:
         self.last_exit_code = None
         self.last_error_code = None
 
+    def _pressure_report(self):
+        try:
+            report = self.pressure_probe()
+        except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+            report = None
+        if not isinstance(report, dict) or type(report.get('ready')) is not bool:
+            return {'ready': False, 'reason': 'pressure_probe_unavailable'}
+        return report
+
+    def _admission(self, cwd):
+        if self.pressure_probe is None:
+            return None
+        report = self._pressure_report()
+        if (not report.get('ready') or 'memory_admission' in report
+                and report.get('training_limits') is None):
+            record_resource_defer(cwd, report)
+            raise ResourceDeferred('trainer_system_pressure', report)
+        return report.get('training_limits')
+
     def call(self, mode, request, result_path, *, cwd):
         self.last_resources = None
         self.last_exit_code = None
         self.last_error_code = None
         if mode not in ('train', 'predict', 'smoke', 'segment'): raise ValueError('invalid_trainer_mode')
+        limits = self._admission(cwd)
+        if mode in ('train', 'predict') and limits is not None:
+            request = {**request, 'training_limits': limits}
         request_path = Path(cwd) / (mode+'-request.json')
         _atomic_json(request_path, request)
         result_path = Path(result_path)
@@ -143,14 +185,15 @@ class LocalTrainer:
                         peak_cpu = max(peak_cpu, cpu)
                         rss_sum += rss; cpu_sum += cpu; samples += 1
                         if rss > self.max_rss_mib*1024:
-                            raise ValueError('trainer_memory_budget')
+                            raise ResourceDeferred('trainer_memory_budget', {'reason':'process_group_rss_budget'})
                 except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
                     if isinstance(exc, ValueError) and str(exc) == 'trainer_memory_budget': raise
                     if self.require_monitor:
-                        raise ValueError('trainer_resource_monitor_unavailable') from exc
+                        raise ResourceDeferred('trainer_resource_monitor_unavailable', {'reason':'process_stats_unavailable'}) from exc
                 if self.pressure_probe is not None and time.monotonic() >= next_pressure_check:
-                    if not self.pressure_probe()['ready']:
-                        raise ValueError('trainer_system_pressure')
+                    report = self._pressure_report()
+                    if not report['ready']:
+                        raise ResourceDeferred('trainer_system_pressure', report)
                     next_pressure_check = time.monotonic() + 2
                 time.sleep(.05)
             if proc.returncode != 0:
@@ -179,7 +222,9 @@ class LocalTrainer:
                                 'edit_tokenizer_unsupported',
                                 'invalid_edit_offsets', 'invalid_edit_window',
                                 'invalid_edit_overlap', 'edit_segment_limit',
-                                'edit_segment_coverage_failed'}):
+                                'edit_segment_coverage_failed',
+                                'invalid_training_limits', 'training_memory_profile_changed',
+                                'training_memory_unavailable', 'training_memory_budget'}):
                         # Tokenizer-only segmentation shares the same bounded
                         # local process protocol as prediction.
                         code = failure['error_code']
@@ -188,12 +233,15 @@ class LocalTrainer:
                 self.last_error_code = code
                 # Keep the historical generic error for child exits without
                 # a validated sidecar; only audited codes gain specificity.
+                if code in {'adapter_memory_error', 'training_memory_budget',
+                            'training_memory_profile_changed', 'training_memory_unavailable'}:
+                    raise ResourceDeferred('trainer_failed:' + code, {'reason': code})
                 raise ValueError('trainer_failed' if code == 'trainer_process_failed'
                                  else 'trainer_failed:' + code)
             response = read_private_json(_safe_file(pending, max_size=MAX_FILE))
             os.replace(pending, result_path)
             return response, observed()
-        except BaseException:
+        except BaseException as exc:
             if proc.poll() is None:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)
@@ -202,6 +250,8 @@ class LocalTrainer:
                         os.killpg(proc.pid, signal.SIGKILL); proc.wait()
                 except OSError:
                     pass  # Cleanup must not replace the original trainer error.
+            if isinstance(exc, ResourceDeferred):
+                record_resource_defer(cwd, exc.report, reason=str(exc))
             raise
         finally:
             self.last_exit_code = proc.returncode
@@ -237,6 +287,8 @@ class VerifiedLayaTrainer(LocalTrainer):
 
     def call(self, mode, request, result_path, *, cwd):
         if mode not in ('train','predict'):raise ValueError('invalid_verified_laya_mode')
+        # Admission precedes metadata/attestation subprocesses as well.
+        limits = self._admission(cwd)
         from .laya_adapter import model_identity
         from .runtime_setup import probe_runtime, verify_compatibility
         if self.deadline is not None:
@@ -245,10 +297,33 @@ class VerifiedLayaTrainer(LocalTrainer):
             self.max_seconds = min(self.max_seconds, max(1, int(left)))
         adapter_sha=_hash_bytes(self.argv[1])
         model_sha=model_identity(self.argv[2])
+        if limits is not None:
+            def defer(reason):
+                record_resource_defer(cwd, {'reason': reason}, reason=reason)
+                raise ResourceDeferred(reason, {'reason': reason})
+            if limits['modelIdentitySha256'] != model_sha:
+                defer('training_memory_profile_changed')
+            if self.proof is None:
+                cache = self.proof_cache_dir / 'laya-synthetic-attestation.json' if self.proof_cache_dir else None
+                try:
+                    cached = read_private_json(cache) if cache is not None else None
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    cached = None
+                attestation = cached.get('attestation', {}) if isinstance(cached, dict) else {}
+                if not (isinstance(cached, dict)
+                        and cached.get('schema') == 'qmd-laya-live-proof-v1'
+                        and type(cached.get('verifiedAt')) in (int, float)
+                        and 0 <= time.time() - cached['verifiedAt'] <= 86400
+                        and isinstance(attestation, dict)
+                        and attestation.get('adapter_sha256') == adapter_sha
+                        and attestation.get('base_model_sha256') == model_sha):
+                    defer('trainer_adaptive_attestation_required')
         runtime=(probe_runtime(self.argv[0], temp_dir=self.isolated_temp_dir)
                  if self.isolated_temp_dir is not None else probe_runtime(self.argv[0]))
         if runtime.get('status')!='metadata_compatible':
             raise ValueError('laya_runtime_or_source_changed')
+        if limits is not None and limits['device'] != ('mps' if runtime['mps_available'] else 'cpu'):
+            defer('training_memory_profile_changed')
         if self.proof is None:
             cached=None
             path=self.proof_cache_dir/'laya-synthetic-attestation.json' if self.proof_cache_dir else None
@@ -265,6 +340,8 @@ class VerifiedLayaTrainer(LocalTrainer):
                     and verify_compatibility(runtime,cached['attestation'],model_sha)):
                 self.proof={'attestation':cached['attestation']}
             else:
+                if limits is not None:
+                    defer('trainer_adaptive_attestation_required')
                 from .runtime_setup import attest_runtime
                 options={'max_seconds':min(120,self.max_seconds),
                          'max_rss_mib':self.max_rss_mib}

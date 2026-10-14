@@ -252,6 +252,28 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             'context_learning.synthetic_experiment.reserve_train'), patch(
             'context_learning.laya_adapter.model_identity',
             return_value='local-model-identity'):
+        from context_learning.local_cycle import ResourceDeferred
+        with patch.object(shared, 'resource_report', return_value={
+                'ready': False, 'memory_admission': {
+                    'reason': 'minimum_microbatch_unavailable'}}):
+            deferred = shared.train_due(root, policy,
+                trainer_factory=lambda _: FakeTrainer())
+        assert deferred['status'] == 'deferred_resource', deferred
+        receipt = json.loads((root / 'resource-defer.json').read_text())
+        assert receipt['completionAck'] is False and not calls
+        with shared._db_at(dbpath) as db:
+            assert db.execute('SELECT COUNT(*) FROM cycles').fetchone()[0] == 0
+            assert db.execute('SELECT COUNT(*) FROM cases WHERE trained_cycle IS NOT NULL').fetchone()[0] == 0
+        class DeferredTrainer:
+            def call(self, *args, **kwargs):
+                raise ResourceDeferred('trainer_system_pressure', {'ready':False})
+        deferred = shared.train_due(root, policy,
+            trainer_factory=lambda _: DeferredTrainer())
+        assert deferred['status'] == 'deferred_resource', deferred
+        with shared._db_at(dbpath) as db:
+            assert db.execute('SELECT status FROM cycles').fetchone()[0] == 'deferred'
+            assert db.execute('SELECT COUNT(*) FROM cases WHERE trained_cycle IS NOT NULL').fetchone()[0] == 0
+        assert not (root / 'experimental-checkpoint.json').exists()
         result = shared.train_due(root, policy,
             trainer_factory=lambda _: FakeTrainer())
         assert result['status'] == 'staged_waiting_quality_cohort', result

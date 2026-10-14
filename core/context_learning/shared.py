@@ -184,7 +184,7 @@ def _policy(root):
             "batchMax", "targetExact", "trainerArgv", "baseArtifact",
             "maxRssMib", "minAvailableMib", "maxLoadPerCpu",
             "safetySeconds", "experimental"}
-    if not isinstance(value, dict) or set(value) not in (keys, keys | {'modelInputView'}) or value["schema"] != SCHEMA or value["enabled"] is not True:
+    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {'modelInputView', 'adaptiveMemory'} or value["schema"] != SCHEMA or value["enabled"] is not True:
         raise ValueError("invalid_shared_policy")
     if not isinstance(value["goldModel"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value["goldModel"]):
         raise ValueError("invalid_gold_model")
@@ -213,6 +213,9 @@ def _policy(root):
             or (Path(argv[1]).resolve() != adapter
                 and not _historical_v45_adapter_reference(argv[1], adapter))):
         raise ValueError("invalid_shared_trainer")
+    if 'adaptiveMemory' in value:
+        from .memory_policy import validate
+        validate(value['adaptiveMemory'])
     if 'modelInputView' in value:
         from .laya_adapter import EDIT_INPUT_VIEW, _read_json
         if value['modelInputView'] != EDIT_INPUT_VIEW:
@@ -1024,58 +1027,78 @@ def activate_edit_case(config, project, sample, *, captured):
     return 'queued'
 
 
-def resource_report(policy, *, detailed=False):
-    """Cheap OS pressure signal; no model or network call."""
+def resource_report(policy, *, detailed=False, admission=True):
+    """OS provenance plus existing floors and optional additive admission."""
+    from .memory_policy import assess
     cpus = os.cpu_count() or 1
+    status = {'load': 'ok', 'available': 'unavailable',
+              'total': 'not_requested', 'memory_pressure': 'not_requested'}
     try:
         load = os.getloadavg()[0] / cpus
     except OSError:
-        load = float("inf")
-    available = None
-    swap_used = None
-    pressure = None
-    gpu_usage = None
-    if Path("/proc/meminfo").is_file():
-        lines = Path("/proc/meminfo").read_text().splitlines()
-        values = {parts[0].rstrip(":"): int(parts[1]) for line in lines
+        load = float('inf'); status['load'] = 'failed'
+    available = total = swap_used = pressure = None
+    adaptive = 'adaptiveMemory' in policy
+    if Path('/proc/meminfo').is_file():
+        lines = Path('/proc/meminfo').read_text().splitlines()
+        values = {parts[0].rstrip(':'): int(parts[1]) for line in lines
                   if len(parts := line.split()) >= 2 and parts[1].isdigit()}
-        value = values.get("MemAvailable")
-        if value is not None:
-            available = value // 1024
-        if detailed and "SwapTotal" in values and "SwapFree" in values:
-            swap_used = (values["SwapTotal"] - values["SwapFree"]) // 1024
-        if detailed and Path("/proc/pressure/memory").is_file():
-            pressure = Path("/proc/pressure/memory").read_text().strip()[:200]
-    elif sys.platform == "darwin":
-        try:
-            result = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True, timeout=2, check=False)
-            page = re.search(r"page size of (\d+) bytes", result.stdout)
-            if page:
-                counts = dict((name, int(raw.replace(".", ""))) for name, raw in
-                              re.findall(r"Pages (free|inactive|speculative):\s*([0-9.]+)", result.stdout))
-                available = sum(counts.values()) * int(page.group(1)) // (1024 * 1024)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if detailed:
+        if 'MemAvailable' in values:
+            available = values['MemAvailable'] // 1024; status['available'] = 'ok'
+        if 'MemTotal' in values:
+            total = values['MemTotal'] // 1024; status['total'] = 'ok'
+        if detailed and 'SwapTotal' in values and 'SwapFree' in values:
+            swap_used = (values['SwapTotal'] - values['SwapFree']) // 1024
+        if detailed or adaptive:
+            if Path('/proc/pressure/memory').is_file():
+                pressure = Path('/proc/pressure/memory').read_text().strip()[:200]
+            # PSI has different semantics; no macOS-percent fallback is allowed.
+            status['memory_pressure'] = 'unsupported'
+    elif sys.platform == 'darwin':
+        def query(argv):
             try:
-                swap = subprocess.run(["/usr/sbin/sysctl", "-n", "vm.swapusage"],
-                    capture_output=True, text=True, timeout=2, check=False)
-                match = re.search(r"used\s*=\s*([0-9.]+)M", swap.stdout)
-                if swap.returncode == 0 and match:
-                    swap_used = float(match.group(1))
-                meter = subprocess.run(["/usr/bin/memory_pressure", "-Q"],
-                    capture_output=True, text=True, timeout=2, check=False)
-                match = re.search(r"System-wide free percentage:\s*(\d+)%", meter.stdout)
-                if meter.returncode == 0 and match:
-                    pressure = {"system_free_percent": int(match.group(1))}
+                result = subprocess.run(argv, capture_output=True, text=True, timeout=2, check=False)
+                return (result.stdout, 'ok') if result.returncode == 0 else ('', 'failed')
             except (OSError, subprocess.TimeoutExpired):
-                pass
-    return {"load_per_cpu": round(load, 3), "available_mib": available,
-            "gpu": "mps-possible" if sys.platform == "darwin" else "unknown",
-            "gpu_usage_percent": gpu_usage,
-            "memory_pressure": pressure, "swap_used_mib": swap_used,
-            "ready": load <= policy["maxLoadPerCpu"] and
-                     available is not None and available >= policy["minAvailableMib"]}
+                return '', 'failed'
+        raw, state = query(['/usr/bin/vm_stat'])
+        page = re.search(r'page size of (\d+) bytes', raw)
+        counts = dict((name, int(number.replace('.', ''))) for name, number in
+            re.findall(r'Pages (free|inactive|speculative):\s*([0-9.]+)', raw))
+        if page and set(counts) == {'free', 'inactive', 'speculative'}:
+            available = sum(counts.values()) * int(page.group(1)) // (1024 * 1024)
+            status['available'] = 'ok'
+        else:
+            status['available'] = state if state != 'ok' else 'unrecognized'
+        if detailed or adaptive:
+            raw, state = query(['/usr/sbin/sysctl', '-n', 'hw.memsize'])
+            if raw.strip().isdigit() and int(raw) > 0:
+                total = int(raw) // (1024 * 1024); status['total'] = 'ok'
+            else:
+                status['total'] = state if state != 'ok' else 'unrecognized'
+            raw, state = query(['/usr/bin/memory_pressure', '-Q'])
+            match = re.search(r'System-wide (?:memory )?free percentage:\s*(\d+)%', raw)
+            if match and 0 <= int(match.group(1)) <= 100:
+                pressure = {'system_free_percent': int(match.group(1))}
+                status['memory_pressure'] = 'ok'
+            else:
+                status['memory_pressure'] = state if state != 'ok' else 'unrecognized'
+        if detailed:
+            raw, _ = query(['/usr/sbin/sysctl', '-n', 'vm.swapusage'])
+            match = re.search(r'used\s*=\s*([0-9.]+)M', raw)
+            if match: swap_used = float(match.group(1))
+    report = {'load_per_cpu': round(load, 3), 'available_mib': available,
+        'total_mib': total, 'query_status': status,
+        'gpu': 'mps-possible' if sys.platform == 'darwin' else 'unknown',
+        'gpu_usage_percent': None, 'memory_pressure': pressure, 'swap_used_mib': swap_used,
+        'ready': load <= policy['maxLoadPerCpu'] and available is not None
+                 and available >= policy['minAvailableMib']}
+    if adaptive:
+        decision = assess(report, policy, admission=admission)
+        report.update(ready=decision['ready'], memory_admission=decision)
+        if decision['training_limits'] is not None:
+            report['training_limits'] = decision['training_limits']
+    return report
 
 
 def _meta(db, key, default):
@@ -1371,6 +1394,8 @@ def train_due(root, policy, *, trainer_factory=None):
                                 trainer_factory=trainer_factory)
     report = resource_report(policy, detailed=True)
     if not report["ready"]:
+        from .local_cycle import record_resource_defer
+        record_resource_defer(root, report)
         return {"status": "deferred_resource", "resources": report}
     _reconcile_cases(root)
     pointer_path = root / "experimental-checkpoint.json"
@@ -1415,7 +1440,7 @@ def train_due(root, policy, *, trainer_factory=None):
             old_evidence = json.loads(old[1])
             old_pointer = old_evidence.get("pointer") if old[0] == "evaluated" else None
             input_view = (old_pointer or old_evidence).get("model_input_view")
-        elif old and old[0] in ("training", "failed"):
+        elif old and old[0] in ("training", "failed", "deferred"):
             input_view = json.loads(old[1]).get("model_input_view", input_view)
         if old and old[0] == "evaluated":
             evaluated = json.loads(old[1])
@@ -1490,7 +1515,7 @@ def train_due(root, policy, *, trainer_factory=None):
             raise ValueError("invalid_shared_trainer")
         trainer = VerifiedLayaTrainer(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                         max_rss_mib=policy["maxRssMib"],
-                        pressure_probe=lambda: resource_report(policy), require_monitor=True)
+                        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
     else:
         trainer = trainer_factory(policy)
     try:
@@ -1530,7 +1555,7 @@ def train_due(root, policy, *, trainer_factory=None):
                 if answer != {"schema_version": 1, "status": "trained"}:
                     raise ValueError("invalid_shared_train_result")
                 with _db(root) as db:
-                    db.execute("UPDATE cycles SET status='trained',evidence=? WHERE cycle_id=? AND status IN ('training','failed')",
+                    db.execute("UPDATE cycles SET status='trained',evidence=? WHERE cycle_id=? AND status IN ('training','failed','deferred')",
                                (canonical({"input_sha256": evidence, "artifact_sha256": _hash(artifact),
                                            "incumbent_sha256": _hash(incumbent),
                                            "model_input_view": input_view}), cycle_id))
@@ -1619,13 +1644,17 @@ def train_due(root, policy, *, trainer_factory=None):
                        (canonical(evaluated), cycle_id))
         return _publish_evaluated(root, cycle_id, evaluated, rows)
     except Exception as exc:
+        from .local_cycle import ResourceDeferred, record_resource_defer
+        deferred = isinstance(exc, ResourceDeferred)
+        if deferred:
+            record_resource_defer(root, exc.report, reason=str(exc))
         with _db(root) as db:
             # A trained artifact stays pinned across downstream failures.
             # Evaluated publication also resumes without a second training.
-            db.execute("UPDATE cycles SET status='failed',evidence=?,finished_at=? WHERE cycle_id=? AND status IN ('training','failed')",
-                       (canonical({"reason": str(exc)[:80],
+            db.execute("UPDATE cycles SET status=?,evidence=?,finished_at=? WHERE cycle_id=? AND status IN ('training','failed','deferred')",
+                       ("deferred" if deferred else "failed", canonical({"reason": str(exc)[:80],
                                    "model_input_view": input_view}), time.time(), cycle_id))
-        return {"status": "failed", "reason": str(exc)[:80], "cycle_id": cycle_id}
+        return {"status": "deferred_resource" if deferred else "failed", "reason": str(exc)[:80], "cycle_id": cycle_id}
 
 
 def rollback(root):
@@ -1778,7 +1807,7 @@ def observe_trial(root, policy, *, trainer_factory=None):
         klass = VerifiedLayaTrainer if Path(policy["trainerArgv"][1]).resolve() == adapter.resolve() else LocalTrainer
         trainer = klass(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                         max_rss_mib=policy["maxRssMib"],
-                        pressure_probe=lambda: resource_report(policy), require_monitor=True)
+                        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
     else:
         trainer = trainer_factory(policy)
     folder = root / "observations" / (current["cycle_id"] + "-" + fingerprint[:16])

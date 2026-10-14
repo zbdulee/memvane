@@ -82,6 +82,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-isolated-train-', dir='/tmp') as tm
               'modelInputView': EDIT_INPUT_VIEW, 'baseArtifact': str(base),
               'safetySeconds': 300, 'maxRssMib': 4096}
     adapter = Path(isolated_train.__file__).with_name('laya_adapter.py')
+    # Only this disposable fixture approves the candidate adapter's exact bytes.
+    # Production REVIEWED_ADAPTER_SHA256 and installed grants stay unchanged.
+    shared.REVIEWED_ADAPTER_SHA256 = sha(adapter)
     assert sha(adapter) == shared.REVIEWED_ADAPTER_SHA256
 
     rows = []

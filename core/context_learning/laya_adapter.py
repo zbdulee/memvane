@@ -259,6 +259,68 @@ def _head_path(artifact, base_sha, input_view):
     return path
 
 
+def _training_limits(request, model_sha, device):
+    value = request.get('training_limits')
+    if value is None:
+        return None
+    keys = {'microbatchSize', 'effectiveBatchSize', 'device',
+            'modelIdentitySha256', 'reserveFraction'}
+    if (not isinstance(value, dict) or set(value) != keys
+            or type(value['microbatchSize']) is not int
+            or value['microbatchSize'] not in (1, 2)
+            or type(value['effectiveBatchSize']) is not int
+            or value['effectiveBatchSize'] != 2
+            or type(value['reserveFraction']) not in (int, float)
+            or not .10 <= value['reserveFraction'] <= .50):
+        raise ValueError('invalid_training_limits')
+    if value['modelIdentitySha256'] != model_sha or value['device'] != str(device):
+        raise ValueError('training_memory_profile_changed')
+    return value
+
+
+def _check_mps_budget(torch, limits):
+    if limits is None or limits['device'] != 'mps':
+        return
+    try:
+        used = torch.mps.driver_allocated_memory()
+        recommended = torch.mps.recommended_max_memory()
+        if (type(used) is not int or used < 0 or type(recommended) is not int
+                or recommended <= 0):
+            raise ValueError('training_memory_unavailable')
+    except Exception as exc:
+        raise ValueError('training_memory_unavailable') from exc
+    if used > recommended * (1 - limits['reserveFraction']):
+        raise ValueError('training_memory_budget')
+
+
+def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
+                 *, limits):
+    """One effective group/update; all microbatch means weighted by pair count."""
+    optimizer.zero_grad(set_to_none=True)
+    total_loss = 0.0
+    for start in range(0, len(current), microbatch):
+        group = current[start:start+microbatch]
+        _check_mps_budget(torch, limits)
+        batch = _batch(group, tok, params[0].device)
+        targets = torch.tensor([x['gold_label'] for x in group],
+            device=params[0].device, dtype=torch.long)
+        logits, _ = model(**batch)
+        if logits.shape != (len(group), 2):
+            raise ValueError('unexpected_laya_logit_shape')
+        loss = F.cross_entropy(logits.float(), targets)
+        if not torch.isfinite(loss):
+            raise ValueError('nonfinite_training_loss')
+        weight = len(group) / len(current)
+        (loss * weight).backward()
+        total_loss += float(loss.detach().cpu().item()) * weight
+        if not all(p.grad is None or torch.isfinite(p.grad).all().item() for p in params):
+            raise ValueError('nonfinite_head_gradient')
+        _check_mps_budget(torch, limits)
+    optimizer.step()
+    _check_mps_budget(torch, limits)
+    return total_loss
+
+
 def train(model_dir, request, *, max_updates=None, verification=False):
     import torch
     import torch.nn.functional as F
@@ -272,7 +334,9 @@ def train(model_dir, request, *, max_updates=None, verification=False):
     if not artifact.is_absolute() or artifact.exists(): raise ValueError('unsafe_artifact_path')
     input_view = _request_view(request)
     base_sha = model_identity(model_dir)
+    limits = _training_limits(request, base_sha, _device(torch))
     model, tok, cfg = _load(model_dir, input_view=input_view)
+    _check_mps_budget(torch, limits)
     items = _pairs(request.get('train'), tok, cfg, with_gold=True)
     torch.manual_seed(17)
     random.Random(17).shuffle(items)
@@ -289,22 +353,13 @@ def train(model_dir, request, *, max_updates=None, verification=False):
                     [items[start:start+2] for start in range(0, len(items), 2)])
     for current in train_groups:
         step_started = time.perf_counter() if record_step_losses else None
-        batch = _batch(current, tok, next(model.parameters()).device)
-        targets = torch.tensor([x['gold_label'] for x in current],
-            device=batch['input_ids'].device, dtype=torch.long)
-        optimizer.zero_grad(set_to_none=True)
-        logits, _ = model(**batch)
-        if logits.shape != (len(current), 2): raise ValueError('unexpected_laya_logit_shape')
-        loss = F.cross_entropy(logits.float(), targets)
-        if not torch.isfinite(loss): raise ValueError('nonfinite_training_loss')
-        loss.backward()
-        if not all(p.grad is None or torch.isfinite(p.grad).all().item() for p in params):
-            raise ValueError('nonfinite_head_gradient')
-        optimizer.step()
+        loss_value = _train_group(torch, F, model, tok, params, optimizer,
+            current, limits['microbatchSize'] if limits is not None else 2,
+            limits=limits)
         updates += 1
         if step_losses is not None:
             step_losses.append({'step': updates, 'pairs': len(current),
-                                'cross_entropy': float(loss.detach().cpu().item()),
+                                'cross_entropy': loss_value,
                                 'wall_seconds': round(time.perf_counter() - step_started, 6)})
         if max_updates is not None and updates >= max_updates: break
     if not updates: raise ValueError('empty_train')
@@ -359,14 +414,22 @@ def predict(model_dir, request):
     input_view = _request_view(request)
     base_sha = model_identity(model_dir)
     head = _head_path(request['artifact_path'], base_sha, input_view)
+    limits = None
+    if request.get('training_limits') is not None:
+        import torch
+        limits = _training_limits(request, base_sha, _device(torch))
     model, tok, cfg = _load(model_dir, head_artifact=head, input_view=input_view)
-    return predict_loaded(model, tok, cfg, request)
+    return predict_loaded(model, tok, cfg, request, memory_limits=limits)
 
 
 def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
-                   max_padded_tokens=None, timing=None, cancelled=None):
+                   max_padded_tokens=None, timing=None, cancelled=None,
+                   memory_limits=None):
     """Use an already loaded, pinned head for a bounded selection batch."""
     import torch
+    if memory_limits is not None:
+        max_batch_size = min(max_batch_size, memory_limits['microbatchSize'])
+        _check_mps_budget(torch, memory_limits)
     if (request.get('schema_version') != 1
             or _request_view(request) != cfg.get('model_input_view', LEGACY_INPUT_VIEW)):
         raise ValueError('invalid_predict_request')
@@ -397,6 +460,7 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                       forward_seconds=0.0)
     with torch.no_grad():
         for group in batches:
+            _check_mps_budget(torch, memory_limits)
             if cancelled is not None and cancelled():
                 raise ValueError('prediction_cancelled')
             preparing = time.perf_counter()
@@ -414,6 +478,7 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                 # .tolist() synchronizes MPS results. Timing only model(...)
                 # understated the actual scoring cost of every microbatch.
                 probabilities = torch.softmax(logits.float(), -1)[:, 1].tolist()
+                _check_mps_budget(torch, memory_limits)
             finally:
                 forward_seconds += time.perf_counter() - started
                 if timing is not None:
@@ -569,6 +634,8 @@ _SAFE_ERRORS = {
     'invalid_edit_segmentation', 'edit_tokenizer_unsupported',
     'invalid_edit_offsets', 'invalid_edit_window', 'invalid_edit_overlap',
     'edit_segment_limit', 'edit_segment_coverage_failed',
+    'invalid_training_limits', 'training_memory_profile_changed',
+    'training_memory_unavailable', 'training_memory_budget',
 }
 
 

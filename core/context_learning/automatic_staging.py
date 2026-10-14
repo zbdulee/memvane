@@ -14,7 +14,7 @@ import job_telemetry
 
 from .automatic_cohort import training_and_validation
 from .contracts import digest
-from .local_cycle import VerifiedLayaTrainer, _hash
+from .local_cycle import VerifiedLayaTrainer, _hash, ResourceDeferred, record_resource_defer
 from .runtime_authorization import proposal_sha256, require_operation
 from .store import canonical
 
@@ -32,7 +32,7 @@ def _trainer(policy, factory):
     from .shared import resource_report
     return VerifiedLayaTrainer(policy['trainerArgv'],
         max_seconds=policy['safetySeconds'], max_rss_mib=policy['maxRssMib'],
-        pressure_probe=lambda: resource_report(policy), require_monitor=True)
+        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
 
 
 def _quality_ready(train, validation, cohort):
@@ -63,6 +63,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
         return {'status': 'existing_trial_requires_review'}
     resources = resource_report(policy, detailed=True)
     if not resources['ready']:
+        record_resource_defer(root, resources)
         return {'status': 'deferred_resource', 'resources': resources}
     project = project_for(root)
     with _db(root) as db:
@@ -104,7 +105,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                     'authorizationSha256': grant_sha,
                     'trainEvidenceSha256': train_sha,
                     'model_input_view': EDIT_INPUT_VIEW}), time.time()))
-        elif old[0] not in ('training', 'failed', 'staged', 'staged_evaluated'):
+        elif old[0] not in ('training', 'failed', 'deferred', 'staged', 'staged_evaluated'):
             return {'status': 'cohort_cycle_conflict', 'cycle_id': cycle_id}
     cycles = root / 'cycles'
     cycles.mkdir(mode=0o700, exist_ok=True)
@@ -170,7 +171,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                 if _case_evidence(latest) != train_sha:
                     stage['sourceActiveAtStage'] = False
                 db.execute("UPDATE cycles SET status='staged',evidence=? "
-                           "WHERE cycle_id=? AND status IN ('training','failed')",
+                           "WHERE cycle_id=? AND status IN ('training','failed','deferred')",
                            (canonical(stage), cycle_id))
                 if stage['sourceActiveAtStage']:
                     for row in train:
@@ -186,17 +187,20 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                 return {'status': 'staged_source_revoked',
                         'cycle_id': cycle_id}
         except Exception as exc:
+            deferred = isinstance(exc, ResourceDeferred)
+            if deferred:
+                record_resource_defer(root, exc.report, reason=str(exc))
             if meta is not None and start is not None:
                 job_telemetry.emit(root / 'job-telemetry.jsonl', 'finished',
                     status='failure', run_ms=(time.monotonic() - start) * 1000,
                     error_type=type(exc).__name__, **meta)
             with _db(root) as db:
-                db.execute("UPDATE cycles SET status='failed',evidence=? "
-                           "WHERE cycle_id=? AND status IN ('training','failed')",
-                    (canonical({'reason': str(exc)[:80],
+                db.execute("UPDATE cycles SET status=?,evidence=? "
+                           "WHERE cycle_id=? AND status IN ('training','failed','deferred')",
+                    ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
-            return {'status': 'failed', 'reason': str(exc)[:80],
+            return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
                     'cycle_id': cycle_id}
     ready, empty, train_families, validation_families = _quality_ready(
         train, validation, grant['cohort'])
