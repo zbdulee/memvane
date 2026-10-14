@@ -57,7 +57,9 @@ class Enrollment(C):
   import setup_entry
   self.assertEqual(self.enroll()[0],0)
   row=setup_entry.check_update(self.other)
-  self.assertEqual(row['status'],'up_to_date',row)
+  self.assertEqual(row['status'],'update_review_required',row)
+  self.assertTrue(row['qmdReady'],row);self.assertFalse(row['layaReady']);self.assertFalse(row['overallReady'])
+  self.assertEqual(row['reasons'],['laya_managed_runtime_not_prepared'])
  def test_interrupted_enqueue_resumes_and_does_not_rewrite_existing_db(self):
   import dirty_queue,qmd_shared_store as S
   with patch.object(dirty_queue,'enqueue_collections',side_effect=OSError('synthetic_queue_interruption')):
