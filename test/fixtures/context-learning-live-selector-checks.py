@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-from context_learning import live_select
+from context_learning import live_select, shared
 from context_learning.resident import ResidentFailure
 from context_learning.contracts import digest
 from context_learning.laya_adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
@@ -25,6 +25,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
         'schema_version': 1, 'artifact_path': str(artifact),
         'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()})
     adapter = Path('core/context_learning/laya_adapter.py').resolve()
+    candidate_sha = hashlib.sha256(adapter.read_bytes()).hexdigest()
+    production_pin = shared.REVIEWED_ADAPTER_SHA256
+    different_pin = '0' * 64
+    assert candidate_sha not in (production_pin, different_pin)
     private(state / 'live-selector.json', {
         'schema': 'qmd-live-selector-v1',
         'trainerArgv': [sys.executable, str(adapter), str(state)],
@@ -95,13 +99,22 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
-            'context_learning.resident.predict', side_effect=resident_stub):
-        edit_ids, edit_reason, edit_resources = live_select.choose(
-            state, 'Synthetic edit content', rows,
-            corpus_fingerprint='a' * 64,
-            pointer_name='experimental-checkpoint.json')
-        assert edit_ids == ['wiki/card.md'] and edit_reason == 'selected'
-        assert edit_resources['model_input_view'] == EDIT_INPUT_VIEW
+            'context_learning.resident.predict', side_effect=resident_stub) as resident:
+        for unapproved in (production_pin, different_pin):
+            with patch.object(shared, 'REVIEWED_ADAPTER_SHA256', unapproved):
+                ids, reason, _ = live_select.choose(state, 'Synthetic edit content', rows,
+                    corpus_fingerprint='a' * 64, pointer_name='experimental-checkpoint.json')
+            assert ids is None and reason == 'selector_unavailable', (ids, reason)
+            resident.assert_not_called()
+        # Explicit candidate review applies only inside this synthetic fixture.
+        with patch.object(shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
+            edit_ids, edit_reason, edit_resources = live_select.choose(
+                state, 'Synthetic edit content', rows,
+                corpus_fingerprint='a' * 64,
+                pointer_name='experimental-checkpoint.json')
+            assert edit_ids == ['wiki/card.md'] and edit_reason == 'selected'
+            assert edit_resources['model_input_view'] == EDIT_INPUT_VIEW
+        assert resident.call_count == 1
     from context_learning.shared import _v45_adapter_path
     with patch.object(Path, 'home', return_value=state):
         historical = str(_v45_adapter_path())
@@ -110,7 +123,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
                 'modelInputView': EDIT_INPUT_VIEW,
                 'trainerArgv': [sys.executable, historical, str(multilingual_dir)],
                 'maxRssMib': 4096}), patch(
-                'context_learning.resident.predict', side_effect=resident_stub):
+                'context_learning.resident.predict', side_effect=resident_stub), patch.object(
+                shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
             edit_ids, edit_reason, _ = live_select.choose(
                 state, 'Synthetic edit content', rows,
                 corpus_fingerprint='a' * 64,
@@ -121,7 +135,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
             'context_learning.resident.predict', side_effect=ResidentFailure(
-                'input_budget_exceeded', {'queue_wait_seconds': .123})):
+                'input_budget_exceeded', {'queue_wait_seconds': .123})), patch.object(
+            shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
         missed, reason, metrics = live_select.choose(state,
             'Synthetic edit content', rows, corpus_fingerprint='a' * 64,
             pointer_name='experimental-checkpoint.json')
@@ -133,6 +148,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
                               corpus_fingerprint='a' * 64)[1] == 'checkpoint_changed'
     assert live_select.choose(state, 'Synthetic user request', rows,
                               corpus_fingerprint=None)[1] == 'corpus_unavailable'
+    assert shared.REVIEWED_ADAPTER_SHA256 == production_pin
     print(json.dumps({'fullBodyInput': True, 'rankedSelection': True,
                       'semanticZero': True, 'invalidOutputFallback': True,
                       'timeoutFallback': True, 'checkpointPin': True,

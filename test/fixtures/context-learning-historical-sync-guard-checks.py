@@ -1,5 +1,6 @@
 """Real queued shared/private stores; no provider, trainer, or live data."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -9,12 +10,18 @@ import time
 from unittest.mock import patch
 
 from job_telemetry import replay
+from context_learning import shared as shared_module
 from context_learning.contracts import digest, request
 from context_learning.seam import _private_state
 from context_learning.selection_gold import _table
 from context_learning.shared import _db, _v45_adapter_path, enqueue, run, sync_reviewed
 from context_learning.store import canonical, capture, database
 
+candidate = Path(shared_module.__file__).with_name('laya_adapter.py')
+candidate_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+production_pin = shared_module.REVIEWED_ADAPTER_SHA256
+different_pin = '0' * 64
+assert candidate_sha not in (production_pin, different_pin)
 
 with tempfile.TemporaryDirectory(prefix='qmd-historical-sync-', dir='/tmp') as name:
     base = Path(name).resolve()
@@ -38,7 +45,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-historical-sync-', dir='/tmp') as n
     base_artifact = base / 'base.artifact'
     base_artifact.write_text('synthetic base')
     base_artifact.chmod(0o600)
-    with patch.object(Path, 'home', return_value=base):
+    # Only this disposable test process reviews the candidate's exact bytes.
+    with patch.object(Path, 'home', return_value=base), patch.object(
+            shared_module, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
         historical_adapter = _v45_adapter_path()
         policy = {'schema': 'qmd-shared-learning-v1', 'enabled': True,
                   'goldModel': 'gpt-6-luna', 'maxGoldCalls': 10,
@@ -50,6 +59,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-historical-sync-', dir='/tmp') as n
         policy_path = shared / 'shared-policy.json'
         policy_path.write_text(canonical(policy))
         policy_path.chmod(0o600)
+        policy_bytes = policy_path.read_bytes()
+        for unapproved in (production_pin, different_pin):
+            with patch.object(shared_module, 'REVIEWED_ADAPTER_SHA256', unapproved):
+                try:
+                    shared_module._policy(shared)
+                except ValueError as exc:
+                    assert str(exc) == 'invalid_shared_trainer', str(exc)
+                else:
+                    raise AssertionError('unapproved candidate source accepted')
+            assert policy_path.read_bytes() == policy_bytes
+            assert not (shared / 'shared-learning.sqlite3').exists()
         config = {'sharedLearning': {'enabled': True, 'root': str(shared)},
                   'contextLearning': {'capture': True, 'stateRoot': str(private)},
                   'collectionPaths': {'wiki': '.auto-context/wiki'}}
@@ -112,5 +132,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-historical-sync-', dir='/tmp') as n
         assert after == [(f'synthetic-{number}', 'queued', 'historical',
                           'consent_or_source_changed') for number in (1, 2)]
 
+assert shared_module.REVIEWED_ADAPTER_SHA256 == production_pin
 print(json.dumps({'queuedCases': len(before), 'guardPreservedBytes': True,
                   'realSyncWouldMutate': len(after), 'telemetryDeferred': True}))
