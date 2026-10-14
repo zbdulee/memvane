@@ -11,6 +11,7 @@ import argparse
 import base64
 from contextlib import contextmanager
 import fcntl
+import install_deadline
 import hashlib
 import json
 import os
@@ -99,7 +100,7 @@ def _locked(root):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_install_update_lock')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         yield auto
     finally:
         os.close(fd)
@@ -182,7 +183,7 @@ def inspect(root, *, probe_laya=True):
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         result['projectIndex'] = {'status': 'invalid_pointer'}
     if not supported_platform():
-        result['guidance'] = 'Managed setup is limited to macOS arm64; use the documented global QMD plugin path on this host.'
+        result['guidance'] = 'V2 managed routing is limited to macOS arm64. Existing global QMD data is preserved; this host remains setup_required.'
     return result
 
 
@@ -569,7 +570,7 @@ def prepare(root, request_path):
     request = load_request(request_path, root)
     if not supported_platform():
         return {'status': 'unsupported_managed_platform', 'changesApplied': 0,
-                'guidance': 'The bundled managed install is macOS arm64 only; use documented global QMD on this host.'}
+                'guidance': 'V2 managed routing is macOS arm64 only. Existing global QMD data is preserved; this host remains setup_required.'}
     if not wiki_topical.opted_in(root) and request['index']['mode'] == 'shadow':
         return {'status': 'project_v2_optin_required', 'changesApplied': 0}
     with _locked(root) as auto:
@@ -718,7 +719,7 @@ def _restore_pointer(root, request, journal, kind):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_setup_pointer_lock')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         if not _target_matches(root, request, journal, kind) or (recorded and
                 _snapshot(path)['sha256'] != recorded):
             raise ValueError('setup_pointer_changed_after_activation')

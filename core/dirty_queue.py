@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import fcntl
+import install_deadline
 import os
 from pathlib import Path
 
@@ -35,10 +36,10 @@ def enqueue_collections(selected, *, project_root=None):
         except Exception:
             os.close(fd);raise
         with os.fdopen(fd,"a",encoding="utf-8") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            install_deadline.flock(f.fileno(), fcntl.LOCK_EX)
             f.writelines(lines)
             f.flush(); os.fsync(f.fileno())
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            install_deadline.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def enqueue_project_collections(project_root, selected):

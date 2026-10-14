@@ -24,8 +24,10 @@ qmd auto-context는 프로젝트 안의 문서, 메모, wiki를 자동으로 찾
 qmd auto-context injects relevant project documentation into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
 `setup` skill to inspect the project and prepare a reviewed runtime. The managed
-QMD setup is available on macOS arm64; other hosts can use a separately installed
-supported global qmd CLI. Projects remain inactive until you explicitly opt in.
+QMD setup and v2 runtime routing are available on macOS arm64. On other hosts,
+v2 stays `setup_required` and preserves existing global QMD binaries, settings,
+and data; a global CLI does not enable v2 routing. Projects remain inactive
+until you explicitly opt in.
 Managed QMD accepts Node 22 or 24 LTS. Node 26 Current is in the test matrix;
 its native QMD compatibility still needs a Node 26 probe. Node 20 is end of life;
 upgrade to Node 22 or 24 LTS before managed setup.
@@ -52,9 +54,10 @@ QMD 2.5.3을 격리된 관리형 세대에 준비하거나 호환되는 기존 �
 실제 native QMD 호환성 검증은 남아 있습니다. 수명이 끝난 Node 20은 관리형
 설치·재사용에서 거부하므로 Node 22 또는 24 LTS로 올린 뒤 준비하세요.
 
-Linux 및 다른 아키텍처에는 현재 관리형 설치가 제공되지 않습니다. 해당
-환경에서는 지원 버전(`>=2.5.3 <3.0.0`)의 qmd CLI를 별도로 설치한 뒤
-플러그인을 사용할 수 있습니다. 관리형 신규 설치나 기존 버전 갱신에는
+Linux 및 다른 아키텍처에서는 v2 관리형 설치와 런타임 라우팅을 지원하지
+않습니다. v1에서 플러그인을 자동 갱신하더라도 `setup_required` 상태를
+유지하며 기존 전역 QMD 실행 파일·설정·데이터를 보존합니다. 전역 CLI를
+별도로 설치해도 v2 라우팅이 활성화되지는 않습니다. 관리형 신규 설치나 기존 버전 갱신에는
 패키지 실행 범위와 원본 데이터 보존 계획을 먼저 검토해야 합니다.
 
 호스트별 플러그인 설치 명령은 다음과 같습니다.

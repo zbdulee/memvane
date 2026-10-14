@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import fcntl
+import install_deadline
 import json
 import os
 from pathlib import Path
@@ -196,7 +197,7 @@ def activate(root,generation, *, require_unselected=False):
         info=os.fstat(fd)
         if info.st_uid!=os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_qmd_activation_lock')
-        fcntl.flock(fd,fcntl.LOCK_EX)
+        install_deadline.flock(fd,fcntl.LOCK_EX)
         path=root/'active.json'
         if path.is_symlink():raise ValueError('unsafe_qmd_pointer')
         if require_unselected and path.exists():raise ValueError('qmd_managed_already_active')
@@ -234,7 +235,7 @@ def deselect_if_matches(root, expected_sha256):
         info=os.fstat(fd)
         if info.st_uid!=os.getuid() or info.st_mode & 0o077 or info.st_nlink!=1:
             raise ValueError('unsafe_qmd_activation_lock')
-        fcntl.flock(fd,fcntl.LOCK_EX)
+        install_deadline.flock(fd,fcntl.LOCK_EX)
         path=root/'active.json'
         if path.is_symlink() or not path.is_file() or _sha(path)!=expected_sha256:
             return False

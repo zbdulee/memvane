@@ -6,6 +6,7 @@ The user's global DB/config and existing plugin generations are never migrated.
 """
 from contextlib import contextmanager
 import fcntl
+import install_deadline
 import hashlib
 import json
 import os
@@ -114,7 +115,7 @@ def _locked():
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
             raise ValueError('unsafe_store_setup_lock')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         yield base
     finally: os.close(fd)
 
@@ -145,7 +146,7 @@ def _native_lease(base):
         st=os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.getuid() or st.st_nlink!=1 or st.st_mode&0o077:
             raise ValueError('unsafe_bootstrap_native_lease')
-        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        install_deadline.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         yield fd
     finally:os.close(fd)
 
@@ -377,6 +378,10 @@ def prepare(args):
                     'proof': journal['proof'], 'changesApplied': 0}
         except BlockingIOError:
             return {'status':'deferred','reason':'bootstrap_native_writer_busy','exitCode':75,'changesApplied':0}
+        except install_deadline.InstallBusy as exc:
+            # Retain preparation receipts for the identical approved retry.
+            journal['lastError'] = str(exc); _save(base, journal)
+            return {'status':'deferred','reason':str(exc),'exitCode':75}
         except Exception as exc:
             journal['phase'] = 'failed_preparing'; journal['lastError'] = str(exc); _save(base, journal)
             return {'status': 'failed_preparing', 'reason': str(exc), 'changesApplied': 0}
@@ -450,11 +455,16 @@ def _activate_locked(args,base,live,verify_fence):
                     'migrationScope': 'empty_plugin_store_no_user_data_migration',
                     'liveHostSessionsAllowed':live,'writerFence':'writer-and-embed-held',
                     'approvedProjects':sorted(journal['request'].get('scopes',{}))}
-        except Exception:
+        except Exception as original:
             # Only the newly selected runtime can be undone here. A selected
             # store may receive writes, so preserve it for explicit recovery.
             if not pointer.exists() and not pointer.is_symlink() and qmd['mode'] == 'reuse' and runtime_pointer.exists():
-                if qmd_runtime.deselect_if_matches(qmd_runtime.managed_root(), journal.get('runtimePointerSha256')):
+                try:
+                    deselected=qmd_runtime.deselect_if_matches(qmd_runtime.managed_root(), journal.get('runtimePointerSha256'))
+                except install_deadline.InstallBusy as exc:
+                    journal['phase']='recovery_required';journal['lastError']=str(exc);_save(base,journal)
+                    raise ValueError('store_activation_cleanup_busy_requires_recovery') from exc
+                if deselected:
                     journal['phase'] = 'prepared_inactive'
                 else: journal['phase'] = 'recovery_required'
             elif not pointer.exists() and not pointer.is_symlink() and (
@@ -462,6 +472,8 @@ def _activate_locked(args,base,live,verify_fence):
                 journal['phase'] = 'prepared_inactive'
             else: journal['phase'] = 'recovery_required'
             _save(base, journal)
+            if journal['phase']=='recovery_required' and isinstance(original,TimeoutError):
+                raise ValueError('interrupted_store_activation_requires_recovery') from original
             raise
 
 
@@ -525,6 +537,10 @@ def enroll(args,*,expected_settings_sha256=None):
 
 
 def run(args):
-    coordinator.project_root(args.project)
-    return {'plan-store': lambda: plan(args), 'prepare-store': lambda: prepare(args),
-            'store-status': status, 'activate-store': lambda: activate(args), 'enroll-store': lambda: enroll(args)}[args.action]()
+    with install_deadline.operation(getattr(args,'deadline_seconds',600)):
+        coordinator.project_root(args.project)
+        try:
+            return {'plan-store': lambda: plan(args), 'prepare-store': lambda: prepare(args),
+                    'store-status': status, 'activate-store': lambda: activate(args), 'enroll-store': lambda: enroll(args)}[args.action]()
+        except TimeoutError as exc:
+            return {'status':'deferred','reason':str(exc),'exitCode':75}

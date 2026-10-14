@@ -10,6 +10,7 @@ import config,install_update as C,shared_qmd_setup as B,qmd_shared_store as S
 import qmd_runtime as R,qmd_route,setup_guard,qmd_endpoint as E
 import dirty_queue,sqlite_read,install_maintenance as maintenance
 import vector_integrity,qmd_write_fence,setup_readiness
+import install_deadline
 
 SCHEMA='qmd-shared-install-v1'
 JOURNAL='shared-install-journal.json'
@@ -263,6 +264,13 @@ def _readiness(root,selected,request,deadline):
  return {'guard':'ready','store':selected['generation'],'runtime':runtime['generation'],'endpoint':current['url'],'daemonPid':current['pid'],'quickCheck':'ok','scopedSearchCounts':searches,'documents':counts,'physicalVectorAudit':True,'vectorCoverage':vector_report}
 
 def install(args):
+ with install_deadline.operation(args.deadline_seconds) as deadline:
+  try:return _install(args,deadline)
+  except install_deadline.InstallBusy as exc:
+   # The outer project lock was never acquired: do not touch its journal.
+   return {'status':'deferred','exitCode':75,'reason':str(exc)}
+
+def _install(args,deadline):
  if not args.approve_project_enrollment or not args.approve_index_execution:raise ValueError('shared_install_review_required')
  for key in ('QMD_SETUP_GUARD_FIXTURE','QMD_SANDBOX','GEMINI_SANDBOX','QMD_QUERY_FIXTURE','NODE_OPTIONS','QMD_NO_RELOAD'):
   if os.environ.get(key):raise ValueError('install_inherited_override_rejected:'+key)
@@ -271,7 +279,7 @@ def install(args):
  proposal=plan(args)
  if proposal['status']!='ready_to_install':return proposal
  if not _selected() and not args.approve_store_activation:raise ValueError('store_activation_review_required')
- root=C.project_root(args.project);deadline=time.monotonic()+args.deadline_seconds
+ root=C.project_root(args.project)
  with C._locked(root) as auto:
   old=C._journal(auto)
   if old and old['phase'] not in ('activated','rolled_back'):raise ValueError('existing_setup_transition_requires_review')

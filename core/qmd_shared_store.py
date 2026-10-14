@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import fcntl
+import install_deadline
 import json
 import os
 from pathlib import Path
@@ -296,7 +297,7 @@ def _reserve_owners(base, wanted):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_plugin_qmd_registry')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         current = _registry(base)
         for name, owner in wanted.items():
             if name not in current or current[name] == owner:
@@ -363,7 +364,7 @@ def _discard_unpublished_reservations(scope, *, home=None):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_plugin_qmd_registry')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         selected = select(home)
         approved = selected.get('approvedProjects')
         if approved is None or scope in approved:
@@ -399,7 +400,7 @@ def retire_pruned(scope, config, *, home=None):
         info = os.fstat(fd)
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError('unsafe_plugin_qmd_registry')
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         registry = _registry(base)
         stale = {name: owner for name, owner in registry.items()
                  if owner['scope'] == str(scope) and name not in current_names}

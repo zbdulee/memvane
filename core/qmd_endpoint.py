@@ -1,6 +1,7 @@
 """Private, proved localhost endpoint; publish only after QMD actually binds."""
 from contextlib import contextmanager
 import fcntl
+import install_deadline
 import errno
 import json
 import os
@@ -135,7 +136,7 @@ def locked():
         info=os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_nlink!=1:
             raise ValueError('unsafe_qmd_endpoint_lock')
-        fcntl.flock(fd,fcntl.LOCK_EX);yield base
+        install_deadline.flock(fd,fcntl.LOCK_EX);yield base
     finally:os.close(fd)
 
 def publish(base,row):

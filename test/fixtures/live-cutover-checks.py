@@ -97,7 +97,7 @@ class WriterFence(unittest.TestCase):
   import qmd_write_fence as F,tempfile
   with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'QMD_LOCK_BASE':tmp}),patch.object(F,'alive',return_value=True):
    lock=Path(tmp)/'qmd-embed.lock.d';lock.mkdir();(lock/'pid').write_text('12345')
-   with self.assertRaisesRegex(ValueError,'qmd_writer_fence_busy'):
+   with self.assertRaisesRegex(TimeoutError,'qmd_writer_fence_busy'):
     with F.hold(.1):pass
    self.assertEqual((lock/'pid').read_text(),'12345');self.assertFalse((Path(tmp)/'qmd-update.lock.d').exists())
    with patch.object(F,'alive',side_effect=ValueError('qmd_endpoint_identity_unavailable')):

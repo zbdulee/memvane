@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 import fcntl
+import install_deadline
 import hashlib
 import json
 import os
@@ -39,7 +40,7 @@ def queue_lock(queue):
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         _private_regular(lock)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        install_deadline.flock(fd, fcntl.LOCK_EX)
         yield q
     finally:
         os.close(fd)
