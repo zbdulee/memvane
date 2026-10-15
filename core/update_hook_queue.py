@@ -179,6 +179,10 @@ def enqueue(raw):
             try: _setup_notice(cwd, queue, guard)
             except (OSError, ValueError, KeyError, TypeError): pass
         return
+    if os.environ.get('QMD_ENGINE') == 'claude':
+        import file_change_queue
+        try: file_change_queue.handle('reconcile',payload)
+        except (OSError,ValueError,TypeError,KeyError): pass
     job = queue/(key+'.job.json')
     # One pending job per project. Never replace a running worker's input.
     fd = None
@@ -201,8 +205,9 @@ def enqueue(raw):
     if not os.environ.get('QMD_SUPPRESS_NOTICE'):
         try:
             update_script = os.environ.get('QMD_CORE_UPDATE_SCRIPT') or str(Path(__file__).with_name('update.sh'))
-            result = subprocess.run(['bash', update_script, '--resolve-only', '--cwd', cwd],
-                cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            found = qmd_config.find_project_config(cwd)
+            result = subprocess.run(['bash', update_script, '--resolve-only', '--cwd', found['projectRoot']],
+                cwd=cwd, input=json.dumps(found['config']), capture_output=True, text=True,
                 timeout=1.0, check=False)
             resolved = json.loads(result.stdout)
             if result.returncode == 0 and isinstance(resolved, dict) and resolved.get('reason') == 'pending':

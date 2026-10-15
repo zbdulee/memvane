@@ -16,9 +16,12 @@ import hashlib
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 CLI_ABSENT = 127
@@ -480,29 +483,71 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
     # and core scripts honor it with an immediate silent exit), so the headless
     # extractor can never recurse back into the compile pipeline.
     child_env = {**os.environ, "QMD_SANDBOX": "1"}
+    # Popen resolves bare names against the child's PATH/cwd, not our checkout.
+    # Capture that selection before launch without changing the command itself.
+    if os.path.dirname(cmd[0]):
+        selected = Path(cmd[0]) if os.path.isabs(cmd[0]) else Path(workdir) / cmd[0]
+        executable = str(selected.resolve())
+    else:
+        search_path = os.pathsep.join(
+            part if os.path.isabs(part) else str(Path(workdir) / part)
+            for part in child_env.get("PATH", os.defpath).split(os.pathsep)
+        )
+        selected = shutil.which(cmd[0], path=search_path)
+        executable = str(Path(selected).resolve()) if selected else None
+    started = time.monotonic()
+    started_at = datetime.now(timezone.utc).isoformat()
+    proc = None
+    timed_out = False
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             shell=False,
             cwd=workdir,
             env=child_env,
         )
-        if proc.stderr:
-            sys.stderr.write(proc.stderr[-4000:])
-        return proc.stdout, proc.returncode, proc.stderr
-    except subprocess.TimeoutExpired as exc:
-        partial_out = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        partial_err = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        if partial_err:
-            sys.stderr.write(partial_err[-4000:])
-        return partial_out, 124, partial_err
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Match subprocess.run's owned-child cleanup; never signal another PID.
+            timed_out = True
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        if stderr:
+            sys.stderr.write(stderr[-4000:])
+            if not stderr.endswith('\n'):
+                sys.stderr.write('\n')
+        code = 124 if timed_out else proc.returncode
+        observed_signal = None
+        if proc.returncode is not None and proc.returncode < 0:
+            try: observed_signal = signal.Signals(-proc.returncode).name
+            except ValueError: observed_signal = 'UNKNOWN_SIGNAL'
+        # Success and failure retain the same bounded identity evidence. No
+        # argv, prompt, stdout, credential or environment values are recorded.
+        # A signal sender is unknown unless this adapter's deadline fired.
+        sys.stderr.write(json.dumps({
+            'event':'extractor_cli_exit','pid':proc.pid,'parentPid':os.getpid(),
+            'command':cmd[0],'executable':executable,
+            'startedAt':started_at,'endedAt':datetime.now(timezone.utc).isoformat(),
+            'elapsedMs':round((time.monotonic()-started)*1000),
+            'timeoutSeconds':timeout,'returncode':code,'childReturncode':proc.returncode,
+            'signal':observed_signal,'timedOut':timed_out,
+            'terminationOrigin':'adapter_timeout' if timed_out else 'unknown',
+        },sort_keys=True)+'\n')
+        return stdout, code, stderr
     except FileNotFoundError:
         return None, CLI_ABSENT, ""
     finally:
+        if proc is not None:
+            # Reap only this owned child if communicate itself raised.
+            if proc.poll() is None:
+                proc.kill();proc.wait()
+            if proc.stdout is not None: proc.stdout.close()
+            if proc.stderr is not None: proc.stderr.close()
         shutil.rmtree(workdir, ignore_errors=True)
 
 

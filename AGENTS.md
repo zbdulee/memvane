@@ -69,6 +69,7 @@ backend/   ← qmd MCP HTTP 데몬(:8483) launcher + keepalive/logrotate/index w
 - `backend_manager.sh` — plugin runtime backend lifecycle SSOT. qmd version check(`>=2.5.3 <3.0.0`), daemon ensure/reload, health-only keepalive, logrotate, async `index_worker.sh` kick, explicit legacy cleanup. Hooks must keep stdout silent; manual skills may print install guidance. qmd 자동 설치/업그레이드는 하지 않는다.
 - `index_enqueue.py` — PostToolUse hook. config 게이팅(collections 미설정/indexing:false/event 비활성/collectionPaths 밖) 후 편집 파일이 속한 (컬렉션명, 절대경로)를 dirty 큐에 원자 append. stdout 무출력.
 - `sync.py` — 수동/skill 기반 missed CUD 복구. `.auto-context/settings.json`의 `collectionPaths`를 snapshot(`mtime_ns + size`)과 비교해 변경된 collection만 dirty 큐에 append한다. `skipPaths`는 recall 필터라 sync/delete cleanup에는 적용하지 않는다.
+- `file_change_queue.py` — Claude의 성공한 Bash PostToolUse는 프로젝트별 pending 표시만 기록한다. 기존 Stop/SessionStart handoff가 실제 파일 snapshot·Markdown hash를 비교해 내부 컬렉션의 CUD/rename을 기존 owner-bound 큐에 합친다. 명령 문자열은 읽거나 저장하지 않으며 외부 allowRoots·실패/미확인/백그라운드 작업은 제외한다. 별도 sync wrapper 실행 없이 기존 큐와 compile 정책을 따른다.
 - `collection_match.py` — 편집 경로 → collectionPaths longest-prefix 컬렉션 선정. 복수 컬렉션 지원, 컬렉션 밖 편집은 빈 결과.
 - `recommend_config.py` — `--recommend`용 추천 생성. read-only(`.auto-context/settings.json` 쓰지 않음). `docs/current`·`docs/plans`·`docs` 등 좁은 경로를 탐색해 크기 가드(200파일/5MB) 통과 경로만 추천. `{available, config}` JSON 출력. 쓰기는 `--optin`/`--optin --recommended`에서만.
 - `preflight_gate.py` — PreToolUse hook. pending 프로젝트에서 Edit/Write/apply_patch 등 편집 도구를 deny로 차단(Claude·Codex). sandbox·skip 마커·pending 아닌 상태면 즉시 통과.

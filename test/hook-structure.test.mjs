@@ -20,6 +20,15 @@ function assertStandardHooks(file) {
 }
 
 test('claude hooks.json 표준 구조', () => assertStandardHooks('hooks/hooks.json'));
+test('Claude Bash changes use a dedicated deferred detector, never blanket index or compile', () => {
+  const hooks = JSON.parse(readFileSync('hooks/hooks.json', 'utf8')).hooks.PostToolUse;
+  const bash = hooks.find(entry => entry.matcher === 'Bash');
+  assert.ok(bash, 'successful Bash changes need a PostToolUse detector');
+  assert.equal(bash.hooks.length, 1);
+  assert.ok(bash.hooks[0].command.includes('file-change-event claude'));
+  assert.ok(!bash.hooks[0].command.includes(' index '));
+  assert.ok(!bash.hooks[0].command.includes(' compile '));
+});
 test('codex hooks-codex.json 표준 구조', () => assertStandardHooks('hooks/hooks-codex.json'));
 
 test('prompt hooks stay synchronous with bounded host timeouts', () => {

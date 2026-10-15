@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { writeFileSync, mkdtempSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
@@ -44,8 +44,74 @@ test('adapter reports a bounded CLI signal failure without exposing prompt body'
     } catch (err) { failure = err; }
     assert.ok(failure);
     assert.match(failure.stderr, /extractor_cli_failed: engine=codex returncode=-9/);
+    const diagnostic=failure.stderr.split('\n').find(line => line.startsWith('{'));
+    assert.ok(diagnostic,'CLI signal failure lacks process/timeout diagnostic');
+    const audit=JSON.parse(diagnostic);
+    assert.equal(audit.event,'extractor_cli_exit');
+    assert.equal(audit.signal,'SIGKILL');
+    assert.equal(audit.timedOut,false);
+    assert.equal(audit.terminationOrigin,'unknown');
+    assert.ok(audit.pid>0 && audit.parentPid>0);
+    assert.equal(audit.command,fake);
+    assert.equal(audit.executable,realpathSync(fake));
+    assert.ok(audit.elapsedMs>=0);
     assert.doesNotMatch(failure.stderr, /PRIVATE_SYNTHETIC_BODY/);
   } finally { removeTemp(d); }
+});
+
+test('adapter records successful native child identity without exposing the prompt', () => {
+  const d = mkdtempSync(join(tmpdir(), 'extractor-success-audit-'));
+  try {
+    const fake = join(d, 'success-codex');
+    writeFileSync(fake, '#!/bin/sh\nprintf warning >&2\nprintf \'{"verdict":"pass","reason":"synthetic"}\\n\'\n', { mode: 0o700 });
+    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+      input: JSON.stringify({ task: 'verify', card: {content:'PRIVATE_SYNTHETIC_BODY'}, sources: [] }),
+      encoding: 'utf8', env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: fake },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).verdict, 'pass');
+    const line = result.stderr.split('\n').find(line => line.startsWith('{'));
+    assert.ok(line, 'successful CLI lacks child identity evidence');
+    const audit = JSON.parse(line);
+    assert.equal(audit.event, 'extractor_cli_exit');
+    assert.equal(audit.executable, realpathSync(fake));
+    assert.equal(audit.childReturncode, 0);
+    assert.equal(audit.signal, null);
+    assert.ok(audit.pid > 0 && audit.startedAt && audit.endedAt);
+    assert.doesNotMatch(result.stderr, /PRIVATE_SYNTHETIC_BODY/);
+  } finally { removeTemp(d); }
+});
+
+test('adapter diagnostic resolves a bare-name override through the child PATH', () => {
+  const d = mkdtempSync(join(tmpdir(), 'extractor-path-audit-'));
+  try {
+    const fake = join(d, 'fake-codex');
+    writeFileSync(fake, '#!/bin/sh\nexit 7\n', { mode: 0o700 });
+    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+      input: JSON.stringify({ task: 'verify', card: {}, sources: [] }), encoding: 'utf8',
+      env: { ...process.env, PATH: `${d}:${process.env.PATH}`, QMD_EXTRACTOR_CODEX_BIN: 'fake-codex' },
+    });
+    assert.match(result.stderr, /extractor_cli_failed: engine=codex returncode=7/);
+    const audit = JSON.parse(result.stderr.split('\n').find(line => line.startsWith('{')));
+    assert.equal(audit.command, 'fake-codex');
+    assert.equal(audit.executable, realpathSync(fake));
+  } finally { removeTemp(d); }
+});
+
+test('adapter timeout records its own cleanup separately from an unexplained SIGKILL', () => {
+  const result=spawnSync('python3',['-c',`import sys,json
+sys.path.insert(0,'core/extractors');import lib
+out,code,err=lib.run_isolated_detailed([sys.executable,'-c','import time;time.sleep(2)'],0.05)
+print(json.dumps({'code':code}))`],{encoding:'utf8'});
+  assert.equal(result.status,0,'timeout helper must return its classified code');
+  assert.equal(JSON.parse(result.stdout).code,124);
+  const diagnostic=result.stderr.split('\n').find(line => line.startsWith('{'));
+  assert.ok(diagnostic,'adapter timeout lacks process/timeout diagnostic');
+  const audit=JSON.parse(diagnostic);
+  assert.equal(audit.timedOut,true);
+  assert.equal(audit.terminationOrigin,'adapter_timeout');
+  assert.equal(audit.returncode,124);
+  assert.ok(audit.pid>0);
 });
 
 test('extract_candidates pulls JSON object from fenced/prose output', () => {

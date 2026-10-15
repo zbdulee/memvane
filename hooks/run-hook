@@ -2,7 +2,7 @@
 # qmd auto-context 공통 hook 디스패처.
 # usage: run-hook <action> <engine> [--sandbox]
 #   action: recall | update | update-queued | posttool | index | compile | gate
-#   topical-event | topical-stop | topical-reconcile
+#   topical-event | topical-stop | topical-reconcile | file-change-event
 #   engine: claude | codex | gemini
 # 플러그인 루트는 CLAUDE_PLUGIN_ROOT/PLUGIN_ROOT(있으면) 또는 스크립트 위치(dirname)로 결정.
 set -u
@@ -67,6 +67,12 @@ if [ "$ACTION" != "update-queued" ]; then
   _qmd_payload_file="$(mktemp "${TMPDIR:-/tmp}/qmd-hook-payload.XXXXXXXX")" || exit 0
   trap 'rm -f "$_qmd_payload_file"' EXIT
   cat >"$_qmd_payload_file" || exit 0
+  if [ "$ACTION" = "topical-stop" ] && [ "$ENGINE" = "claude" ]; then
+    # Ordinary opted-in projects do not require the separate topical pilot.
+    # Only wake the durable file-state job; no scan/QMD/model work in Stop.
+    QMD_ENGINE="$ENGINE" python3 "$_qmd_code_root/core/file_change_queue.py" boundary \
+      <"$_qmd_payload_file" >/dev/null 2>&1 || true
+  fi
   case "$ACTION" in
     topical-event|topical-stop|topical-reconcile)
       if ! _qmd_topical_root="$(python3 "$_qmd_code_root/core/setup_guard.py" hook-root "$ACTION" "$_qmd_payload_file" "$PWD" 2>/dev/null)"; then
@@ -132,6 +138,9 @@ export QMD_RECALL_LOG
 MANAGER="${QMD_BACKEND_MANAGER:-$ROOT/core/backend_manager.sh}"
 
 case "$ACTION" in
+  file-change-event)
+    exec python3 "$ROOT/core/file_change_queue.py" event
+    ;;
   update-queued)
     # Codex can interpret a leading "[qmd]" notice as malformed JSON. Collect
     # every notice into one event-shaped object; Claude keeps its text output.
