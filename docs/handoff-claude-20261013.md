@@ -191,3 +191,14 @@
 직전 로컬 기록에 자동화 일시정지와 과거 PID 재확인을 전환 필수 조건으로 다시 넣은 것은 잘못이었다. 이 조건은 이전 합의에서 폐기됐다. 기존 세션과 inbox는 유지하며, 실제 충돌 증거가 있는 경우에만 프로젝트·작업·영향을 정확히 보고한다. 옛 PID나 자동화의 존재만으로 중단·종료·일시정지를 요구하지 않는다. 이 문서 정정은 운영 상태를 바꾸지 않았다.
 
 Laya 상주 현황은 [읽기 조사](plans/2026-10-15-laya-residency-readonly-findings.md), 후속 구현 범위는 [singleton 설계](plans/2026-10-15-laya-singleton-design.md)에 기록한다. 일반 selector 연결은 별도 로컬 분기에서 합성 검증하며 서비스 등록·운영 설치·실제 학습/teacher 호출은 수행하지 않는다.
+
+## 추가 요청 — 운영 handoff 직전 service-engineering 자동화 확인
+
+사용자가 이번 handoff 전에 Codex inbox 자동화 일시정지를 절차에 명시하도록 요청했다. 이 요청은 `service-engineering`의 실제 운영 activate에 한정한다. 격리 fixture 검증이나 다른 프로젝트·자동화의 중단 조건으로 확대하지 않는다. 이번 문서 수정으로 자동화를 정지하거나 운영 activate를 실행하지 않았다.
+
+1. 실제 운영 activate 담당자는 `service-engineering`에서 `codex exec` 세션을 만드는 inbox 작업을 식별하고, 해당 작업의 일시정지 상태를 확인·기록한다. 중지 여부를 확인하지 못하면 이번 activate를 보류한다. 기존 세션 종료는 별도 대상·영향 보고 없이 수행하지 않는다.
+2. 사용자 보고상 이 자동화는 16:16~18:12 사이 6~20분 간격으로 8개 세션을 생성했다. 새 세션은 v2 SessionStart를 통해 재색인을 enqueue할 수 있으므로, activate 직전에 새 세션·pending queue·실제 writer/embed 락을 다시 확인한다. 일시정지는 이미 실행 중인 worker나 큐를 제거하지 않는다. 기존 writer fence와 범위 검증은 계속 필요하다.
+3. PID 41636·48375는 사용자 보고상 이미 종료됐다. 과거 종료 대상으로 재사용하지 않는다. PID 38080은 09:34에 시작한 v1 Claude `bg-spare`로 보고됐다. PID 재사용 가능성을 고려해 일반 호스트에서 시작 시각·명령·cwd·실제 DB 대상을 다시 확인한 뒤 필요한 조치와 영향을 보고한다. 이 기록은 현재 생존 확인이나 종료 승인이 아니다.
+4. 승인된 전환과 큐/ACK 확인을 마친 뒤 담당자가 해당 inbox 작업의 재개 시점을 정하고 기록한다. 현재 작업에서 자동화를 임의로 정지·재개하지 않는다.
+
+workspaceWrite seatbelt 안의 `ps`/kill-zero EPERM은 프로세스 종료 증거가 아니다. 이때는 `qmd_endpoint_identity_unavailable`로 닫고, “샌드박스/OS 제한으로 QMD 프로세스 상태를 확인할 수 없어 자동 시작·재시작을 중단했습니다. 승인된 호스트 hook 또는 사용자 터미널에서 확인하세요.”라고 안내한다. 실제 프로세스·GPU 검증은 승인된 일반 호스트 문맥에서 수행하며 가드를 끄지 않는다.

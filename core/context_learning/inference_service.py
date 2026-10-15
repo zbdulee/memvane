@@ -118,12 +118,47 @@ class GenerationEngine:
         self.load, self.forward, self.admission, self.rss = load, forward, admission, rss
         self.active = None
         self.footprint_mib = None
+        self.pending = None
+        self.last_activation = None
+
+    def _pending_key(self,job):
+        return (job['apply_id'],job['namespace'],tuple(job['generation']),tuple(job['expected_old']))
+
+    def prepare(self,job,*,cancelled,revalidate):
+        from .contracts import digest
+        from .store import canonical
+        key=self._pending_key(job);token=digest(canonical(key))
+        if self.pending is not None and time.monotonic()>=self.pending[4]:self.pending=None
+        if self.pending is not None:
+            if self.pending[0]!=token:raise ServiceFailure('busy')
+            if self._pending_key(revalidate())!=key or cancelled():raise ServiceFailure('request_changed')
+            return token
+        candidate=GenerationEngine(load=self.load,forward=self.forward,admission=self.admission,rss=self.rss)
+        candidate.active=self.active;candidate.footprint_mib=self.footprint_mib
+        candidate.run(job,cancelled=cancelled,revalidate=revalidate)
+        self.pending=(token,key,candidate.active,candidate.footprint_mib,job['deadline'])
+        return token
+
+    def activate(self,token,job):
+        key=self._pending_key(job)
+        if self.last_activation==(token,key) and self.active is not None and self.active[0]==job['generation']:return
+        if (self.pending is None or self.pending[:2]!=(token,key)
+                or time.monotonic()>=self.pending[4] or not math.isfinite(self.rss()) or self.rss()>job['policy']['maxRssMib']):
+            raise ServiceFailure('request_changed')
+        limits,_=self.admission(job['policy']['maxRssMib'],already_running=True)
+        if limits is None:raise ServiceFailure('resource_deferred')
+        self.active,self.footprint_mib=self.pending[2:4]
+        self.last_activation=(token,key);self.pending=None
 
     def run(self, job, *, cancelled, revalidate):
         def check():
             if cancelled() or time.monotonic() >= job['deadline']:
                 raise ServiceFailure('deadline_expired')
         check()
+        if self.pending is not None:
+            if time.monotonic()>=self.pending[4]:self.pending=None
+            elif self.active is None or self.active[0]!=job['generation']:
+                raise ServiceFailure('replacement_deferred')
         limits, report = self.admission(job['policy']['maxRssMib'],
                                          already_running=self.active is not None)
         if limits is None:
@@ -382,6 +417,9 @@ def _validate_request(envelope):
         raise ServiceFailure('request_rejected')
     deadline, _ = resident._request_window(envelope, now_epoch=time.time(), now_monotonic=time.monotonic())
     state = Path(envelope['state_dir'])
+    if envelope['pointer_name']=='active-checkpoint.json':
+        from .candidate_apply import readable
+        readable(state)
     scope = namespace(state)
     if envelope['namespace'] != scope:
         raise ServiceFailure('request_rejected')
@@ -401,6 +439,10 @@ def _validate_request(envelope):
             or len(request['cases']) != 1):
         raise ServiceFailure('request_rejected')
     active = read_private_json(state / envelope['pointer_name'])
+    if envelope['pointer_name']=='active-checkpoint.json' and active.get('application') is not None:
+        from .learning_profile import NAME,selection_enabled
+        profile=read_private_json(state/NAME)['proposal']
+        if not selection_enabled(state,Path(profile['projectRoot'])):raise ServiceFailure('request_changed')
     if (not isinstance(active, dict) or active.get('schema_version') != 1
             or active.get('artifact_sha256') != envelope['artifact_sha256']
             or active.get('artifact_path') != request.get('artifact_path')
@@ -479,12 +521,46 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
         'resident_wall_seconds': round(time.perf_counter()-started, 6)}
 
 
-def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
+def _validate_apply(envelope):
+    from .dataset import read_private_json
+    from . import candidate_apply as application
+    from .shared import _policy as shared_policy
+    from .contracts import digest
+    from .store import canonical
+    if (set(envelope)!={'command','schema','signature','state_dir','namespace','apply_id','queued_at_epoch','deadline_epoch'}
+            or envelope['command'] not in ('apply_prepare','apply_activate')
+            or envelope['schema']!=PROTOCOL or envelope['signature']!=_signature()):raise ServiceFailure('request_rejected')
+    deadline,_=resident._request_window(envelope,now_epoch=time.time(),now_monotonic=time.monotonic())
+    state=Path(envelope['state_dir']);scope=namespace(state)
+    if envelope['namespace']!=scope:raise ServiceFailure('request_rejected')
+    record=application.read_journal(state)
+    if record['namespace_root']!=str(state) or record['apply_id']!=envelope['apply_id']:raise ServiceFailure('request_changed')
+    policy=shared_policy(state)
+    profile,stage,_=application.validate_candidate(state,policy,record['cycle_id'],expected=record)
+    application._check_receipts(state,record)
+    if envelope['command']=='apply_activate' and (record['phase']!='pointer_committed'
+            or read_private_json(state/'active-checkpoint.json')!=record['new_pointer']):raise ServiceFailure('request_changed')
+    _,live=_policy(state,'active-checkpoint.json',deadline=deadline);argv=live['trainerArgv']
+    if argv!=policy['trainerArgv'] or argv[0]!=sys.executable:raise ServiceFailure('model_family_mismatch')
+    verified=_IDENTITY_CACHE.verify(state,argv,profile['view'])
+    if verified['base_model_sha256']!=profile['modelIdentitySha256']:raise ServiceFailure('model_family_mismatch')
+    case={'request_id':'apply-synthetic','prompt':'What is the synthetic Cobalt marker?',
+          'candidates':[{'id':'synthetic/cobalt','revision_sha256':'0'*64,'input_text':'Synthetic Cobalt marker is COBALT-271.','input_kind':'full_compact_wiki_body'}]}
+    case['input_sha256']=digest(canonical(case))
+    family=(verified['runtime_identity_sha256'],verified['base_model_sha256'],profile['view'])
+    return {'namespace':scope,'family':family,'generation':(*family,stage['artifactSha256']),
+        'expected_old':(*family,record['old_pointer']['artifact_sha256']),'apply_id':record['apply_id'],
+        'policy':live,'deadline':deadline,'model_dir':argv[2],
+        'request':{'schema_version':1,'artifact_path':stage['artifactPath'],'model_input_view':profile['view'],'cases':[case]}}
+
+
+def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,apply_validate=None):
     root = resident._private_state(root)
     engine = engine or GenerationEngine()
     validate = validate or _validate_request
     from .resource_coordination import Coordinator
     coordinator=Coordinator(root)
+    apply_validate=apply_validate or _validate_apply
     pending = queue.Queue(maxsize=capacity)
     busy = threading.Event()
     stopped = threading.Event()
@@ -514,6 +590,21 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
             try:
                 if resident._cancelled(conn, deadline):
                     raise ServiceFailure('deadline_expired')
+                if envelope.get('command') in ('apply_prepare','apply_activate'):
+                    from .local_cycle import ResourceDeferred
+                    # Background preparation yields to ordinary queued inference.
+                    reload_pending=(engine.pending is None or time.monotonic()>=engine.pending[-1])
+                    if (envelope['command']=='apply_prepare' or reload_pending) and coordinator.demand():
+                        raise ServiceFailure('resource_deferred')
+                    try:
+                        with coordinator._gate('compute.lock'):
+                            job=apply_validate(envelope)
+                            token=engine.prepare(job,cancelled=lambda:resident._cancelled(conn,deadline),revalidate=lambda:apply_validate(envelope))
+                            if envelope['command']=='apply_activate':
+                                job=apply_validate(envelope);engine.activate(token,job)
+                            respond(conn,{'status':'prepared' if envelope['command']=='apply_prepare' else 'activated','token':token,'generation':job['generation'][-1]})
+                    except ResourceDeferred:raise ServiceFailure('resource_deferred') from None
+                    continue
                 with coordinator.inference(deadline,str(envelope.get('namespace',''))), coordinator.inference_compute(deadline):
                     validation_started = time.perf_counter()
                     job = validate(envelope)

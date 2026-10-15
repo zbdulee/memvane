@@ -30,6 +30,11 @@ RESULT = "last-auto-cycle.json"
 def _policy(project: Path):
     found = qmd_config.find_project_config(str(project))
     cfg = found["config"]
+    from context_learning.learning_profile import SCHEMA,present
+    shared=cfg.get('sharedLearning',{})
+    if shared.get('profile')==SCHEMA or (isinstance(shared.get('root'),str) and present(shared['root'])):
+        # Selected profiles have a separate bounded local-only worker.
+        return None
     if (found["configFormat"] != "auto-context-dir"
             or Path(found["projectRoot"]).resolve() != project
             or cfg.get("contextLearning", {}).get("autoCycle") is not True

@@ -345,10 +345,38 @@ def prepare(args):
     return result
 
 
+def learning_plan(args):
+    from context_learning import learning_profile as profile
+    if args.learning_choice=='preserve' or not args.learning_namespace:
+        raise ValueError('explicit_learning_profile_and_namespace_required')
+    root=Path(args.learning_namespace)
+    # Exact accepted retry uses its original frozen proposal, never retimes it.
+    old=root/profile.INSTALL
+    row=None
+    if args.accepted_learning_profile and (old.exists() or old.is_symlink()):
+        from context_learning.dataset import read_private_json
+        previous=read_private_json(old)
+        if previous['acceptedSha256']==args.accepted_learning_profile:
+            row=previous['proposal']
+    if row is None:
+        row=profile.proposal(Path(args.project),root,choice=args.learning_choice,
+            mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
+    return {'status':'learning_profile_proposed','proposal':row,'proposalSha256':profile.digest(row),'changesApplied':0}
+
+
+def select_learning(args):
+    from context_learning import learning_profile as profile
+    if not args.accepted_learning_profile:raise ValueError('profile_acceptance_required')
+    return profile.activate(Path(args.project),Path(args.learning_namespace),
+        accepted_sha256=args.accepted_learning_profile,choice=args.learning_choice,
+        mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
-                                          'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store','plan-install','install'))
+                                          'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store','plan-install','install',
+                                          'plan-learning-profile','activate-learning-profile'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -376,11 +404,32 @@ def main(argv=None):
     parser.add_argument('--laya-executable'); parser.add_argument('--laya-adapter')
     parser.add_argument('--laya-model-dir'); parser.add_argument('--uv'); parser.add_argument('--laya-lock')
     parser.add_argument('--approve-laya-install', action='store_true')
+    parser.add_argument('--learning-choice',choices=('preserve','local-auto-apply','local-staged','off'),default='preserve')
+    parser.add_argument('--learning-namespace')
+    parser.add_argument('--learning-migration',choices=('new','preserve'),default='preserve')
+    parser.add_argument('--learning-expires-at-unix-ms',type=int)
+    parser.add_argument('--accepted-learning-profile')
     args = parser.parse_args(argv)
     try:
-        if args.action in ('install','plan-install'):
+        if args.action=='plan-learning-profile':result=learning_plan(args)
+        elif args.action=='activate-learning-profile':result=select_learning(args)
+        elif args.action in ('install','plan-install'):
+            selected=learning_plan(args) if args.learning_choice!='preserve' else None
+            if args.action=='install' and selected and args.accepted_learning_profile!=selected['proposalSha256']:
+                raise ValueError('profile_acceptance_required')
             import shared_install
             result=shared_install.install(args) if args.action=='install' else shared_install.plan(args)
+            from context_learning.learning_profile import recommendation
+            source=coordinator._config_source(coordinator.project_root(args.project))
+            raw=json.loads(Path(source['path']).read_text()) if source['kind']!='missing' else {}
+            result['learningProfileOffer']=recommendation(raw)
+            if selected:result['learningProfileProposal']=selected
+            if args.action=='install' and selected and result.get('qmdReady') is True:
+                # Outside shared_install's settings lock; independent exact CAS.
+                try:result['learningProfile']=select_learning(args)
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    result['learningProfile']={'status':'profile_review_required','reason':str(exc),'changesApplied':0}
+                    result['status']='qmd_ready_learning_profile_review_required'
         elif args.action.endswith('-store') or args.action == 'store-status':
             import shared_qmd_setup
             result = shared_qmd_setup.run(args)

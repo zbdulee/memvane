@@ -68,6 +68,13 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         active = read_private_json(state / pointer_name)
         if not isinstance(active, dict) or active.get('schema_version') != 1:
             return None, 'no_active_checkpoint', {}
+        if pointer_name=='active-checkpoint.json':
+            from .candidate_apply import readable
+            readable(state)
+            if active.get('application') is not None:
+                from .learning_profile import NAME,selection_enabled
+                profile=read_private_json(state/NAME)['proposal']
+                if not selection_enabled(state,Path(profile['projectRoot'])):return None,'profile_selection_disabled',{}
         from .laya_adapter import EDIT_INPUT_VIEW
         if (pointer_name == 'experimental-checkpoint.json'
                 and active.get('model_input_view') == EDIT_INPUT_VIEW):

@@ -76,25 +76,27 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
         return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
     family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
                             _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+    from . import learning_profile
+    minimum=policy['batchMin']
+    if learning_profile.present(root):
+        profile=learning_profile.require(root,policy,'local_train')
+        if not profile['localTrain']:return {'status':'disabled'}
+        minimum=profile['minFreshTrainCases']
     queue=LearningQueue(root)
     job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
-                   family=family,minimum=policy['batchMin'],maximum=policy['batchMax'],
+                   family=family,minimum=minimum,maximum=policy['batchMax'],
                    roles=['train']*len(cohort_train))
-    if job is None:return {'status':'waiting_fresh_batch','threshold':policy['batchMin']}
+    if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
+    with _db(root) as db:
+        previous=db.execute('SELECT status FROM cycles WHERE cycle_id=?',(job['id'],)).fetchone()
+    if previous and previous[0]=='applied':return {'status':'already_applied','cycle_id':job['id']}
     try: train=queue.rows(job,cohort_train)
     except ValueError:
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if job['status']=='blocked':
         return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
     if job['status']=='staged':
-        # Staged quality evaluation is local ML too: join the same controller.
-        from .resource_coordination import Coordinator
-        coordinator=coordinator or Coordinator()
-        try:
-            with coordinator.training(policy,resource_report(policy,detailed=True)) as lease:
-                return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,
-                    trainer_factory=trainer_factory,coordination=(coordinator,lease))
-        except ResourceDeferred:return {'status':'staged_evaluation_deferred','cycle_id':job['id']}
+        return evaluate_pending(root,policy,job['id'],trainer_factory=trainer_factory,coordinator=coordinator)
     report=resource_report(policy,detailed=True)
     if not report['ready']:
         queue.defer(job['id'],'resource')
@@ -245,6 +247,108 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             queue.defer(cycle_id,'resource' if deferred else 'trainer_failed',failure=not deferred)
             return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
                     'cycle_id': cycle_id}
+    return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
+        trainer_factory=trainer_factory,coordination=coordination)
+
+
+def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*,trainer_factory,coordination):
+    from .evaluation_queue import EvaluationQueue
+    from .resource_coordination import admission_policy
+    from .synthetic_experiment import project_for
+    from .shared import _db,_predict,_case,_case_active
+    from .laya_adapter import EDIT_INPUT_VIEW
+    cycle_id=job['id'];project=project_for(root);grant_sha=proposal_sha256(grant)
+    try:require_operation(root,policy,'quality_evaluate',approval_sha256=grant_sha)
+    except ValueError:return {'status':'staged_authorization_expired','cycle_id':cycle_id}
+    queue=EvaluationQueue(root)
+    pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
+    evaluation=queue.ensure(cycle_id,pin,_case_evidence(validation))
+    controller,(coord_fd,_)=coordination
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),'namespace':job['namespace'],'job_id':evaluation['id']}
+    folder=root/'cycles'/cycle_id;incumbent=Path(policy['baseArtifact'])
+    with queue.claim(evaluation['id']) as claim:
+        if claim is None:
+            if evaluation['status']=='waiting_quality':
+                _,empty,tf,vf=_quality_ready(train,validation,grant['cohort'])
+                return {'status':'staged_waiting_quality_cohort','cycle_id':cycle_id,
+                    'train':len(train),'validation':len(validation),'train_families':tf,
+                    'validation_families':vf,'empty_validation':empty,
+                    'required_train':grant['cohort']['minQualityTrainCases'],
+                    'required_validation':grant['cohort']['minValidationCases']}
+            return {'status':'staged_evaluation_deferred','cycle_id':cycle_id}
+        result=_evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,
+            cycle_id=cycle_id,project=project,grant_sha=grant_sha,folder=folder,
+            incumbent=incumbent,trainer_factory=trainer_factory,control=control,
+            fds=(claim,coord_fd),coord_fd=coord_fd,
+            quality_epoch=digest(canonical([evaluation['id'],queue.get(evaluation['id'])['attempts']])))
+        status=result['status']
+        if status=='staged_evaluated':queue.finish(evaluation['id'],'completed')
+        elif status=='staged_waiting_quality_cohort':queue.finish(evaluation['id'],'waiting_quality')
+        elif status=='staged_evaluation_deferred':queue.defer(evaluation['id'],result.get('reason','resource'),failure=result.get('failure',False))
+        else:queue.finish(evaluation['id'],'blocked')
+        return result
+
+
+def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=None):
+    """Quality-only recovery: never reserves or calls a training operation."""
+    from .shared import _db,_case_active,resource_report
+    from .learning_queue import LearningQueue
+    from .evaluation_queue import EvaluationQueue
+    from .synthetic_experiment import project_for
+    from .resource_coordination import Coordinator
+    root=Path(root)
+    grant=require_operation(root,policy,'quality_evaluate')
+    queue=LearningQueue(root);job=queue.get(cycle_id)
+    if job is None or job['approval']!=proposal_sha256(grant):return {'status':'staged_authorization_expired','cycle_id':cycle_id}
+    with _db(root) as db:
+        old=db.execute('SELECT status,evidence FROM cycles WHERE cycle_id=?',(cycle_id,)).fetchone()
+        cohort_train,validation=training_and_validation(db,project_for(root),grant)
+    if old is None or old[0] not in ('staged','staged_evaluated'):return {'status':'evaluation_stage_unavailable','cycle_id':cycle_id}
+    stage=json.loads(old[1]);train=queue.rows(job,cohort_train)
+    if (not stage['sourceActiveAtStage'] or stage['artifactSha256']!=_hash(stage['artifactPath'])
+            or stage['baseArtifactSha256']!=_hash(policy['baseArtifact'])
+            or any(not _case_active(root,(r[7],r[1],r[3])) for r in train+validation)):
+        return {'status':'staged_source_revoked','cycle_id':cycle_id}
+    if old[0]=='staged_evaluated':
+        from .learning_profile import present,require
+        refresh=False
+        if present(root):
+            from .dataset import read_private_json
+            profile=require(root,policy,'quality_evaluate');metrics=stage['metrics']
+            active=read_private_json(root/'active-checkpoint.json')
+            refresh=(not 0<=time.time()-metrics.get('evaluatedAt',0)<=profile['maxQualityAgeSeconds']
+                or metrics.get('validationEvidenceSha256')!=_case_evidence(validation)
+                or metrics.get('incumbentArtifactSha256')!=active['artifact_sha256'])
+        if not refresh:return {'status':'already_staged_evaluated','cycle_id':cycle_id,'metrics':stage['metrics']}
+        with _db(root) as db:
+            if db.execute("UPDATE cycles SET status='staged' WHERE cycle_id=? AND status='staged_evaluated' AND evidence=?",(cycle_id,old[1])).rowcount!=1:
+                return {'status':'staged_cohort_changed','cycle_id':cycle_id}
+        EvaluationQueue(root).refresh(cycle_id)
+    evaluations=EvaluationQueue(root)
+    pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
+    evaluation=evaluations.ensure(cycle_id,pin,_case_evidence(validation))
+    controller=coordinator or Coordinator()
+    try:
+        with controller.training(policy,resource_report(policy,detailed=True)) as lease:
+            return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
+                trainer_factory=trainer_factory,coordination=(controller,lease))
+    except ResourceDeferred as exc:
+        evaluations.defer(evaluation['id'],'resource')
+        return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
+
+
+def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle_id,project,grant_sha,folder,incumbent,trainer_factory,control,fds,coord_fd,quality_epoch):
+    from .shared import _db,_predict,_case,_case_active
+    from .laya_adapter import EDIT_INPUT_VIEW
+    artifact=Path(stage['artifactPath'])
+    from .learning_profile import present,require
+    active_anchor=None
+    if present(root):
+        require(root,policy,'quality_evaluate')
+        from .dataset import read_private_json
+        from .candidate_apply import readable
+        readable(root);active_anchor=read_private_json(root/'active-checkpoint.json')
+        incumbent=Path(active_anchor['artifact_path'])
     try:
         require_operation(root, policy, 'quality_evaluate',
                           approval_sha256=grant_sha)
@@ -273,20 +377,24 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
         cases = [_case(row[:6]) for row in validation]
         before, before_resources = _predict(trainer, folder, incumbent, cases,
                                             'staged-incumbent',
-                                            input_view=EDIT_INPUT_VIEW)
+                                            input_view=EDIT_INPUT_VIEW,cache_epoch=quality_epoch)
         after, after_resources = _predict(trainer, folder, artifact, cases,
                                           'staged-candidate',
-                                          input_view=EDIT_INPUT_VIEW)
+                                          input_view=EDIT_INPUT_VIEW,cache_epoch=quality_epoch)
         require_operation(root, policy, 'quality_evaluate',
                           approval_sha256=grant_sha)
         metrics = {'incumbent': before, 'candidate': after,
                    'validation_questions': len(validation),
                    'empty_validation': empty,
                    'evaluation_scope': 'fresh_candidate_disjoint_edit_cohort',
-                   'applied': False,
+                   'applied': False, 'evaluatedAt':time.time(),
+                   'validationEvidenceSha256':_case_evidence(validation),
+                   'incumbentArtifactSha256':_hash(incumbent),
                    'resources': {'incumbent': before_resources,
                                  'candidate': after_resources}}
         with _db(root) as db:
+            if active_anchor is not None and read_private_json(root/'active-checkpoint.json')!=active_anchor:
+                return {'status':'staged_cohort_changed','cycle_id':cycle_id}
             latest_train, latest_validation = training_and_validation(
                 db, project, grant)
             if (_case_evidence(latest_train) != _case_evidence(cohort_train)
@@ -309,7 +417,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 'metrics': metrics}
     except Exception as exc:
         return {'status': 'staged_evaluation_deferred', 'cycle_id': cycle_id,
-                'reason': str(exc)[:80]}
+                'reason': str(exc)[:80],'failure':not isinstance(exc,ResourceDeferred)}
 
 
 def _train_once(trainer,request,folder):

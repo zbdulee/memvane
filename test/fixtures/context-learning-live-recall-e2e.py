@@ -57,17 +57,31 @@ import context_learning.live_select as selector
 import context_learning.adaptive_pool as planner
 if os.environ['QMD_LIVE_CASE'] in ('shared_30','shared_5'):
     planner.plan=lambda prompt,deadline,**_kwargs:{'requested':5 if os.environ['QMD_LIVE_CASE']=='shared_5' else 30,'reason':'admitted'}
-def choose(state,prompt,rows,*,corpus_fingerprint,deadline=None):
+def choose(state,prompt,rows,*,corpus_fingerprint,deadline=None,**options):
     assert len(rows)==15 and all('Synthetic complete wiki body' in r['source_text'] for r in rows)
     assert corpus_fingerprint and len(corpus_fingerprint)==64
     assert deadline is not None
     case=os.environ['QMD_LIVE_CASE']
-    if case=='selected':return ['wiki/card14.md','wiki/card02.md'],'selected',{'elapsed_seconds':.01,'model_version':'fixture-cycle','model_input_view':'full-candidate-1024-v1'}
+    if case=='profile':
+        assert str(state)==os.environ['QMD_PROFILE_ROOT'] and not options
+    if case in ('selected','profile'):return ['wiki/card14.md','wiki/card02.md'],'selected',{'elapsed_seconds':.01,'model_version':'fixture-cycle','model_input_view':'full-candidate-1024-v1'}
     if case=='zero':return [],'selected',{'elapsed_seconds':.01}
     if case=='deadline':time.sleep(5)
     return None,'timeout',{}
 if os.environ['QMD_LIVE_CASE'] != 'real_missing_runtime':
     selector.choose=choose
+if os.environ['QMD_LIVE_CASE']=='profile':
+    from pathlib import Path
+    from context_learning import learning_profile as profile,shared
+    root=Path(os.environ['QMD_PROFILE_ROOT']);project=Path(os.environ['QMD_PROFILE_PROJECT'])
+    settings=json.loads((project/'.auto-context/settings.json').read_text())
+    row={'schema':profile.SCHEMA,'namespaceRoot':str(root),'projectRoot':str(project),'choice':'local-auto-apply',
+         'expiresAtUnixMs':int(time.time()*1000)+60000,'settings':settings,'settingsBindingSha256':profile.digest(profile.binding(settings))}
+    file=root/profile.NAME;file.write_text(json.dumps({'proposal':row,'acceptedSha256':profile.digest(row)}));file.chmod(0o600)
+    shared._policy=lambda _:{} # Scope/model admission is tested separately; this case proves recall routing.
+    def forbidden(*args,**kwargs):raise AssertionError('legacy capture/teacher consent path used')
+    shared._current_config=forbidden;shared.trial_eligible=forbidden
+    planner.plan=lambda *args,**kwargs:{'requested':15,'reason':'admitted'}
 import recall
 import hook_main
 hook_main.run(recall.main)
@@ -139,6 +153,16 @@ hook_main.run(recall.main)
     stale_card.write_text(original_card)
     settings_path = project / '.auto-context/settings.json'
     settings = json.loads(settings_path.read_text())
+    previous_settings=json.loads(settings_path.read_text())
+    profile_root=base/'accepted-profile';profile_root.mkdir(mode=0o700)
+    (profile_root/'active-checkpoint.json').write_bytes(active.read_bytes());(profile_root/'active-checkpoint.json').chmod(0o600)
+    settings['contextLearning']['capture']=False
+    settings['sharedLearning']={'enabled':True,'profile':'qmd-local-learning-profile-v1','autoApply':True,'root':str(profile_root)}
+    settings_path.write_text(json.dumps(settings))
+    env.update({'QMD_PROFILE_ROOT':str(profile_root),'QMD_PROFILE_PROJECT':str(project)})
+    routed,event=run('profile')
+    assert not event['fallback'] and event['selected']==2 and 'card14.md' in routed,event
+    settings=previous_settings
     settings['topN'] = 5
     settings['contextLearning']['liveSelection'] = False
     settings['sharedLearning'] = {'enabled': True, 'trialSelection': True,
@@ -192,4 +216,5 @@ hook_main.run(recall.main)
                       'sharedWithoutGrantKeepsTopN': True,
                       'adaptiveWiderCapture': True,
                       'overReturnNeverComplete': True,
+                      'acceptedProfileWithoutCaptureRoutesSharedActive':True,
                       'externalCalls': 0}))

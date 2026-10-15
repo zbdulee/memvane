@@ -258,6 +258,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             'context_learning.laya_adapter.model_identity',
             return_value='local-model-identity'):
         from context_learning.local_cycle import ResourceDeferred
+        from context_learning import learning_profile
+        with patch.object(learning_profile,'present',return_value=True),patch.object(
+                learning_profile,'require',return_value={'localTrain':True,'minFreshTrainCases':100}):
+            waiting=shared.train_due(root,policy,trainer_factory=lambda _:FakeTrainer())
+        assert waiting=={'status':'waiting_fresh_batch','threshold':100},waiting
+        assert not calls
         with patch.object(shared, 'resource_report', return_value={
                 'ready': False, 'memory_admission': {
                     'reason': 'minimum_microbatch_unavailable'}}):
@@ -342,12 +348,21 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
                    train_prefixes[n % 5] + 'source-' + str(n) + '.md',
                    5100 + n)
         def predict(_trainer, _folder, _artifact, cases, _label,
-                    *, input_view=None):
+                    *, input_view=None,cache_epoch=None):
             return {'questions': len(cases), 'exact': len(cases),
                     'exact_rate': 1.0, 'projects': {}}, {'fake': True}
-        with patch.object(shared, '_predict', side_effect=predict):
-            evaluated = shared.train_due(root, policy,
-                trainer_factory=lambda _: FakeTrainer())
+        with patch.object(shared, '_predict', side_effect=ResourceDeferred('fixture memory')):
+            deferred_evaluation = shared.train_due(root, policy,trainer_factory=lambda _:FakeTrainer())
+        assert deferred_evaluation['status']=='staged_evaluation_deferred',deferred_evaluation
+        assert hasattr(automatic_staging,'evaluate_pending'),'quality-only recovery missing'
+        with shared._db_at(dbpath) as db:
+            assert db.execute("SELECT COUNT(*) FROM learning_evaluations WHERE status='deferred'").fetchone()[0]==1
+            db.execute('UPDATE learning_evaluations SET retry_at=0')
+        def quality_only(_root,_policy,op,**kwargs):
+            assert op=='quality_evaluate','evaluation requested training or gold permission'
+            return grant
+        with patch.object(shared, '_predict', side_effect=predict),patch.object(automatic_staging,'require_operation',side_effect=quality_only):
+            evaluated=automatic_staging.evaluate_pending(root,policy,deferred_evaluation['cycle_id'],trainer_factory=lambda _:FakeTrainer())
         assert evaluated['status'] == 'staged_evaluated', evaluated
         assert evaluated['metrics']['applied'] is False
         assert evaluated['metrics']['empty_validation'] == 10

@@ -2116,8 +2116,11 @@ def main():
         log_recall_event(log_path, "event_disabled")
         return 0
     shared_options = config.get('sharedLearning', {})
+    shared_profile = (shared_options.get('enabled') is True
+                      and shared_options.get('profile') == 'qmd-local-learning-profile-v1'
+                      and config.get('contextLearning',{}).get('liveSelection') is True)
     shared_trial = (shared_options.get('enabled') is True
-                    and shared_options.get('trialSelection') is True)
+                    and (shared_options.get('trialSelection') is True or shared_profile))
     internal_edit = (os.environ.get('QMD_EDIT_INTERNAL') == '1'
                      and payload.get('context_origin') == 'tool_edit')
     deferred_replay = (internal_edit and
@@ -2847,8 +2850,10 @@ def main():
                 shared_state = _safe_root(config, card_roots[0])
                 if shared_state is not None:
                     _policy(shared_state)
-                    if _current_config(shared_state, card_roots[0]) is None:
-                        shared_state = None
+                    if shared_profile:
+                        from context_learning.learning_profile import selection_root
+                        shared_state=selection_root(config,card_roots[0])
+                    elif _current_config(shared_state, card_roots[0]) is None:shared_state = None
             current_corpus = corpus_snapshot(card_roots[0], config, qmd_paths=qmd_paths)
             indexed_hashes = ({(collection, relative): revision
                 for collection, relative, revision in current_corpus['material']['activeDocuments']}
@@ -2900,10 +2905,13 @@ def main():
                     'corpus_fingerprint': current_corpus['fingerprint'] if current_corpus else None,
                     'deadline': hook_budget.deadline()}
                 if shared_state is not None:
-                    from context_learning.shared import trial_eligible
-                    if not trial_eligible(shared_state, deadline=hook_budget.deadline()):
-                        raise ValueError('shared_trial_not_eligible')
-                    selection_kwargs['pointer_name'] = 'experimental-checkpoint.json'
+                    if shared_profile:
+                        from context_learning.candidate_apply import readable
+                        readable(shared_state)
+                    else:
+                        from context_learning.shared import trial_eligible
+                        if not trial_eligible(shared_state, deadline=hook_budget.deadline()):raise ValueError('shared_trial_not_eligible')
+                        selection_kwargs['pointer_name'] = 'experimental-checkpoint.json'
                 selected_ids, live_reason, resources = choose(
                     shared_state if shared_state is not None else state,
                     prompt, model_rows, **selection_kwargs)

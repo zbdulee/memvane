@@ -1,9 +1,11 @@
 # Approved-profile defaults and candidate application design
 
-Status: design only. This document does not change configuration defaults,
-permissions, installed packages or active checkpoints. Durable queue/resource
-coordination is implemented separately on `feat/user-singleton-laya-service`;
-automatic application remains unimplemented.
+Status: implemented on `feat/user-singleton-laya-service` with isolated synthetic
+fixtures; not installed or activated. Exact accepted project profiles,
+evaluation-only jobs and journaled candidate application now implement the
+constraints below. Ordinary installation offers a recommendation but does not
+accept it. Existing operating settings, execution grants, packages and active
+checkpoints remain unchanged. See [implementation and rollout limits](../continual-learning.md#scoped-profiles-and-candidate-application-feature-branch-not-installed).
 
 ## Enrollment and explicit existing settings
 
@@ -37,8 +39,8 @@ on every query.
 
 ## Separate candidate application authority
 
-The current train/evaluate grant stops at staged output. A future application
-grant must be distinct and bind the project/namespace, runtime/base/view family,
+The train/evaluate grant stops at staged output. Application
+authority is distinct and binds the project/namespace, runtime/base/view family,
 candidate lineage, permitted validation policy, explicit regression tolerance,
 publication scope and expiry/revocation. Never infer apply permission from
 training success, existing live selection or an inference identity receipt.
@@ -46,9 +48,10 @@ training success, existing live selection or an inference identity receipt.
 Immediately before publication, recheck the grant and fresh disjoint validation
 including empty-choice cases, source/cohort validity, incumbent/candidate
 identity, required family coverage and regression criteria. Insufficient or
-changed evidence remains staged. The source-of-truth approval protocol and
-schema require a separate reviewed implementation; this design does not mint a
-new grant or relax a reviewed adapter hash.
+changed evidence remains staged. The owner-private accepted profile is the
+application authority; it requires the existing execution grant and exact
+shared/live policy, settings and code identities. It does not mint an execution
+grant or relax a reviewed adapter hash.
 
 ## Publication transaction and recovery
 
@@ -80,8 +83,8 @@ automation must be stopped merely to use this controller.
 
 Expose concise states such as waiting for fresh data, deferred for inference or
 memory, blocked by authorization, staged waiting for quality, prepared and
-applied. Current queue status supplies counts; the future product presentation
-must not imply preparation/application already exists. Keep source bodies,
+applied. Queue and setup results distinguish these states; operating product
+presentation must not imply this branch has been installed. Keep source bodies,
 credentials and provider content out of common diagnostics.
 
 Before any operating rollout, inspect the installed package and running worker

@@ -19,7 +19,8 @@ test('opt-in live recall uses fifteen complete synthetic cards and preserves fal
     for (const key of ['liveTop15', 'relevanceOrder', 'semanticZero',
       'timeoutFallback', 'unsupportedRuntimeFallback', 'captureMatchesLivePool',
       'staleIndexFallback', 'sharedWithoutGrantKeepsTopN',
-      'adaptiveWiderCapture', 'overReturnNeverComplete']) assert.equal(report[key], true);
+      'adaptiveWiderCapture', 'overReturnNeverComplete',
+      'acceptedProfileWithoutCaptureRoutesSharedActive']) assert.equal(report[key], true);
     assert.equal(report.externalCalls, 0);
   } finally { rmSync(home, {recursive: true, force: true}); }
 });

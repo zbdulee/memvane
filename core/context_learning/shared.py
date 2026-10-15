@@ -247,16 +247,13 @@ def _policy(root):
 @contextmanager
 def _db(root, *, home=None):
     if _READ_ONLY_VALIDATION.get():
-        path = Path(root) / DATABASE_NAME
-        if path.is_symlink() or not path.is_file():
-            raise ValueError('unsafe_shared_database')
-        info = path.stat()
-        if info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o077:
-            raise ValueError('unsafe_shared_database')
-        with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True,
-                                     timeout=1)) as db:
-            db.execute('PRAGMA query_only=ON')
-            yield db
+        from .history_activation import writer_access
+        with writer_access(Path(root)/DATABASE_NAME,home=home) as path:
+            if path.is_symlink() or not path.is_file():raise ValueError('unsafe_shared_database')
+            info=path.stat()
+            if info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:raise ValueError('unsafe_shared_database')
+            with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+                db.execute('PRAGMA query_only=ON');yield db
         return
     from .history_activation import writer_access
     with writer_access(Path(root) / DATABASE_NAME, home=home) as path:
@@ -1205,6 +1202,7 @@ def _score(cases, predictions):
         raise ValueError("incomplete_shared_prediction")
     per_project = {}
     total = correct = 0
+    needed=retrieved=irrelevant=empty=empty_correct=0
     for case in cases:
         prediction = by_id.pop(case["request_id"])
         if prediction["input_sha256"] != case["input_sha256"]:
@@ -1213,6 +1211,9 @@ def _score(cases, predictions):
         if not isinstance(selected, list) or len(selected) > 3 or not set(selected) <= {c["id"] for c in case["candidates"]}:
             raise ValueError("invalid_shared_prediction")
         good = set(selected) == set(case["selected_ids"])
+        gold=set(case['selected_ids']);chosen=set(selected)
+        needed+=len(gold);retrieved+=len(gold&chosen);irrelevant+=len(chosen-gold)
+        if not gold:empty+=1;empty_correct+=int(not chosen)
         group = per_project.setdefault(case["project_key"], {"questions": 0, "exact": 0})
         group["questions"] += 1
         group["exact"] += good
@@ -1221,16 +1222,18 @@ def _score(cases, predictions):
     if by_id:
         raise ValueError("unexpected_shared_prediction")
     return {"questions": total, "exact": correct, "exact_rate": correct / total,
-            "projects": per_project}
+            "projects": per_project,'necessary_recall':retrieved/needed if needed else 1,
+            'irrelevant_injection_rate':irrelevant/total,'none_exact_rate':empty_correct/empty if empty else 1}
 
 
-def _predict(trainer, folder, artifact, cases, label, *, input_view=None):
+def _predict(trainer, folder, artifact, cases, label, *, input_view=None,cache_epoch=None):
     bare = [{k: v for k, v in case.items() if k not in ("selected_ids", "project_key")}
             for case in cases]
     output = folder / (label + ".json")
     pin_path = folder / (label + ".pin.json")
     pin = {"artifact_sha256": _hash(artifact), "cases_sha256": digest(canonical(bare)),
            "model_input_view": input_view}
+    if cache_epoch is not None:pin['evaluation_epoch']=cache_epoch
     if output.exists() and pin_path.exists() and read_private_json(pin_path) == pin:
         answer, resources = read_private_json(output), {"resumed": True}
     else:
@@ -1912,6 +1915,14 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
             return {'status': 'gold_allowlist_required'}
         sync_config = None
     root = Path(root)
+    from .learning_profile import present,SCHEMA
+    marker=(sync_config or {}).get('sharedLearning',{}).get('profile')==SCHEMA
+    if present(root) or marker:
+        if os.environ.get('QMD_SHARED_GOLD_ONLY')=='1':return {'status':'profile_forbids_teacher_worker'}
+        if project is None:
+            from .learning_profile import NAME
+            project=Path(read_private_json(root/NAME)['proposal']['projectRoot'])
+        return run_training_pending(root,project)
     if _policy(root).get('_runtime_authorization_v2') is True:
         # The generic local-review import scans every historical queued row.
         # A v2 normal worker admits fresh ticket cases inside _run_impl only.
@@ -2125,7 +2136,9 @@ def launch(config, project, *, parent_id=None, episode=None,
         return {"status": "disabled"}
     # A source/card edit has its own one-use hook tickets. SessionStart also
     # retries admission if the prior index worker died after its QMD ACK.
-    _reconcile_source_cards(root, project)
+    from .learning_profile import present,SCHEMA
+    selected_profile=present(root) or config.get('sharedLearning',{}).get('profile')==SCHEMA
+    if not selected_profile:_reconcile_source_cards(root, project)
     policy = _policy(root)
     if _historical_trainer_policy(policy) and os.environ.get("QMD_SHARED_GOLD_ONLY") != "1":
         return {"status": "runtime_approval_required"}
@@ -2261,14 +2274,65 @@ def run_training_pending(root,project):
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
-    try:require_operation(root,policy,'local_train')
-    except ValueError:return {'status':'runtime_approval_required'}
+    from . import learning_profile
+    selected_profile=learning_profile.present(root) or cfg.get('sharedLearning',{}).get('profile')==learning_profile.SCHEMA
+    profile=None
+    if selected_profile:
+        try:profile=learning_profile.require(root,policy,'quality_evaluate')
+        except (OSError,ValueError,KeyError,TypeError):return {'status':'runtime_approval_required'}
     fd=_lock(root/'shared-worker.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy'}
-        return train_due(root,policy)
+        if selected_profile:
+            from . import candidate_apply
+            path=root/candidate_apply.JOURNAL
+            if path.exists() or path.is_symlink():
+                intent=candidate_apply.read_journal(root)
+                if intent['phase'] not in ('activated','rejected'):
+                    if not profile['autoApply']:return {'status':'apply_blocked','reason':'profile_apply_disabled'}
+                    return _profile_apply(root,policy,profile,{'status':'already_staged_evaluated','cycle_id':intent['cycle_id']})
+                if intent['phase']=='activated':
+                    candidate_apply.readable(root);candidate_apply._finish_cycle(root,intent['cycle_id'])
+        # Existing fixtures without a shared ledger have no evaluation work.
+        if (root/DATABASE_NAME).exists():
+            from .evaluation_queue import EvaluationQueue
+            from .automatic_staging import evaluate_pending
+            evaluations=EvaluationQueue(root).pending()
+            if evaluations:
+                result=evaluate_pending(root,policy,evaluations[0]['cycle_id'])
+                return _profile_apply(root,policy,profile,result)
+            if selected_profile:
+                with _db(root) as db:
+                    stage=db.execute("SELECT c.cycle_id FROM cycles c LEFT JOIN learning_evaluations e ON e.cycle_id=c.cycle_id WHERE c.status IN ('staged','staged_evaluated') AND (e.status IS NULL OR e.status!='blocked') AND (e.retry_at IS NULL OR e.retry_at<=?) ORDER BY c.started_at DESC LIMIT 1",(time.time(),)).fetchone()
+                if stage:
+                    result=evaluate_pending(root,policy,stage[0])
+                    if (result['status'] not in ('staged_waiting_quality_cohort','already_staged_evaluated')
+                            or (result['status']=='already_staged_evaluated' and profile['autoApply'])):
+                        return _profile_apply(root,policy,profile,result)
+                    if not profile['localTrain']:return result
+        if profile and not profile['localTrain']:return {'status':'disabled'}
+        try:
+            require_operation(root,policy,'local_train')
+            if selected_profile:learning_profile.require(root,policy,'local_train')
+        except ValueError:return {'status':'runtime_approval_required'}
+        return _profile_apply(root,policy,profile,train_due(root,policy))
     finally:os.close(fd)
+
+
+def _profile_apply(root,policy,profile,result):
+    if profile and profile['autoApply'] and result['status'] in ('staged_evaluated','already_staged_evaluated'):
+        from .candidate_apply import apply_candidate
+        answer=apply_candidate(root,policy,result['cycle_id'])
+        if (root/DATABASE_NAME).exists():
+            from .evaluation_queue import EvaluationQueue
+            queue=EvaluationQueue(root);job=queue.get('evaluate:'+result['cycle_id'])
+            if job is not None:
+                if answer['status']=='apply_deferred':queue.defer(job['id'],'apply_resource')
+                elif answer['status'] in ('applied','already_applied'):queue.finish(job['id'],'completed')
+                elif answer['status']=='apply_blocked':queue.finish(job['id'],'blocked')
+        return answer
+    return result
 
 
 def main(argv):
@@ -2294,7 +2358,7 @@ def main(argv):
             else:
                 result = run(root, project=project, sync_config=cfg,
                              wait_for_lock=argv[0] == "run-project-after-index")
-                if (result['status']=='deferred_resource'
+                if (result['status'] in ('deferred_resource','staged_evaluation_deferred','apply_deferred')
                         and os.environ.get('QMD_SHARED_GOLD_ONLY')!='1'
                         and _policy(root).get('_runtime_authorization_v2') is True):
                     from .learning_retry import wait_pending

@@ -14,8 +14,11 @@ def wait_pending(root,execute,*,max_seconds=60,max_runs=2,clock=time.monotonic,
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'retry_waiter_exists','retryScheduled':False}
         queue=LearningQueue(root);deadline=clock()+max_seconds;runs=0
+        from .evaluation_queue import EvaluationQueue
+        evaluations=EvaluationQueue(root,connect=queue.connect)
+        def pending():return evaluations.pending(now=float('inf'))+queue.pending(now=float('inf'))
         while runs<max_runs:
-            jobs=queue.pending(now=float('inf'))
+            jobs=pending()
             if not jobs:return {'status':'drained','runs':runs,'retryScheduled':False}
             at=min(job['retry_at'] for job in jobs)
             while at>wall():
@@ -26,6 +29,6 @@ def wait_pending(root,execute,*,max_seconds=60,max_runs=2,clock=time.monotonic,
             result=execute();runs+=1
             if result['status'] in ('runtime_approval_required','disabled','learning_job_blocked','staged_source_revoked'):
                 return {'status':result['status'],'runs':runs,'retryScheduled':False}
-        jobs=queue.pending(now=float('inf'))
+        jobs=pending()
         return {'status':'pending' if jobs else 'drained','runs':runs,'retryScheduled':False}
     finally:os.close(fd)

@@ -48,6 +48,35 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(self.run_job(job(namespace='two'))['namespace'], 'two')
         self.assertEqual(len(self.loads),1)
 
+    def test_explicit_prepare_keeps_incumbent_until_bound_activation(self):
+        self.assertTrue(hasattr(self.engine,'prepare'),'candidate prepare missing')
+        self.run_job(job());old=self.engine.active
+        candidate=job('b');candidate['apply_id']='apply-b';candidate['expected_old']=job()['generation']
+        token=self.engine.prepare(candidate,cancelled=lambda:False,revalidate=lambda:candidate)
+        self.assertEqual(self.engine.active,old)
+        self.assertEqual(self.run_job(job())['head'],'a')
+        wrong={**candidate,'namespace':'other'}
+        with self.assertRaises(service.ServiceFailure):self.engine.activate(token,wrong)
+        self.engine.activate(token,candidate)
+        self.assertEqual(self.run_job(job('b'))['head'],'b')
+        self.engine.activate(token,candidate) # Lost ACK is idempotent.
+
+    def test_prepare_failure_or_resource_loss_never_mutates_incumbent(self):
+        self.assertTrue(hasattr(self.engine,'prepare'),'candidate prepare missing')
+        self.run_job(job());old=self.engine.active
+        candidate=job('b');candidate['apply_id']='apply-b';candidate['expected_old']=job()['generation']
+        self.engine.admission=lambda *a,**kw:(None,{})
+        with self.assertRaises(service.ServiceFailure):self.engine.prepare(candidate,cancelled=lambda:False,revalidate=lambda:candidate)
+        self.assertEqual(self.engine.active,old)
+
+    def test_unknown_rss_at_activation_keeps_old_model(self):
+        self.run_job(job());old=self.engine.active
+        candidate=job('b');candidate['apply_id']='apply-b';candidate['expected_old']=job()['generation']
+        token=self.engine.prepare(candidate,cancelled=lambda:False,revalidate=lambda:candidate)
+        self.engine.rss=lambda:float('nan')
+        with self.assertRaises(service.ServiceFailure):self.engine.activate(token,candidate)
+        self.assertEqual(self.engine.active,old)
+
     def test_failed_replacement_preserves_incumbent(self):
         self.run_job(job())
         def broken(_request):raise RuntimeError('private body must not cross wire')
@@ -218,6 +247,36 @@ def fake_validate(env):
 
 
 class ServerTests(unittest.TestCase):
+    def test_apply_commands_prepare_activate_recover_and_yield_to_inference(self):
+        from context_learning.resource_coordination import Coordinator
+        with tempfile.TemporaryDirectory(prefix='qmd-a-',dir='/tmp') as temp:
+            root=Path(temp).resolve();root.chmod(0o700)
+            tokens=[]
+            for restart in range(2):
+                ready=threading.Event()
+                engine=service.GenerationEngine(load=lambda request:request['generation'][-1],
+                    forward=lambda loaded,request,**kw:{'head':loaded},admission=admit,rss=lambda:100)
+                def validate_apply(env):
+                    request=fake_validate(env);request['apply_id']='synthetic-apply'
+                    request['expected_old']=job()['generation'];return request
+                thread=threading.Thread(target=service._serve,args=(root,),kwargs={
+                    'engine':engine,'validate':fake_validate,'apply_validate':validate_apply,'ready':ready},daemon=True)
+                thread.start();self.assertTrue(ready.wait(2))
+                try:
+                    if not restart:self.assertEqual(exchange(root,envelope())['status'],'ok')
+                    control={**envelope(head='b'),'command':'apply_prepare'}
+                    with Coordinator(root).inference(time.monotonic()+1,'priority'):
+                        self.assertEqual(exchange(root,control)['status'],'resource_deferred')
+                        self.assertEqual(exchange(root,{**control,'command':'apply_activate'})['status'],'resource_deferred')
+                    prepared=exchange(root,control);self.assertEqual(prepared['status'],'prepared');tokens.append(prepared['token'])
+                    if not restart:self.assertEqual(exchange(root,envelope())['prediction']['head'],'a')
+                    activated=exchange(root,{**control,'command':'apply_activate'})
+                    self.assertEqual(activated['status'],'activated');self.assertEqual(activated['token'],prepared['token'])
+                    self.assertEqual(exchange(root,envelope(head='b'))['prediction']['head'],'b')
+                finally:shutdown_idle(root);thread.join(2)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(tokens[0],tokens[1])
+
     def test_dispatcher_exists(self):
         self.assertTrue(hasattr(service,'_serve'),'bounded_dispatcher_missing')
 

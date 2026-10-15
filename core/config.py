@@ -1033,6 +1033,9 @@ def normalize_config(input_config):
             'trialSelection': shared.get('trialSelection') is True,
             'rerankTargetSeconds': rerank_target,
         }
+        if shared.get('profile') == 'qmd-local-learning-profile-v1':
+            config['sharedLearning']['profile'] = shared['profile']
+            config['sharedLearning']['autoApply'] = shared.get('autoApply') is True
         if (config['sharedLearning']['enabled'] and config['sharedLearning']['trialSelection']
                 and 'contextLearning' in config):
             config['contextLearning']['candidateTopK'] = 15
