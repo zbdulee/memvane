@@ -15,7 +15,8 @@ test('both host predictions reuse fresh proof or fall back without training', ()
       'unsafeProofDenied', 'permissionDenied', 'malformedDenied', 'checksPreserved',
       'cacheRevocationHonored', 'memoryProofExpires', 'explicitTrainThenPredict',
       'stateUnchanged', 'noPredictionAttestation', 'expiryDuringProbeDenied',
-      'revocationDuringProbeDenied']) assert.equal(report[key], true, `${host}:${key}`);
+      'revocationDuringProbeDenied', 'inferenceOnlyAfterTrainingExpiry',
+      'inferenceOnlyWarmNoMetadata', 'inferenceOnlyMutationDenied', 'inferenceOnlyBindingRevocation']) assert.equal(report[key], true, `${host}:${key}`);
     assert.equal(report.actualModelCalls, 0);
     assert.equal(report.teacherCalls, 0);
   }

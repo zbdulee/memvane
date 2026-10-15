@@ -9,6 +9,9 @@ import sys
 import time
 
 from . import resident
+from .inference_identity import IdentityCache, has_evidence
+
+_IDENTITY_CACHE = IdentityCache()
 
 
 class ServiceFailure(ValueError):
@@ -298,7 +301,10 @@ def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
         env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-        spawn([python, '-m', 'context_learning.inference_service', 'worker', str(root)],
+        bootstrap = ('import sys,runpy;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[1]))
+                     + ');sys.argv=["context_learning.inference_service","worker",sys.argv[1]];'
+                     + 'runpy.run_module("context_learning.inference_service",run_name="__main__")')
+        spawn([python, '-I', '-B', '-c', bootstrap, str(root)],
               env=env, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
               stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
         while time.monotonic() < deadline:
@@ -313,7 +319,7 @@ def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
 def _failure(exc):
     if isinstance(exc, ServiceFailure) and exc.code in _CODES:
         return exc.code
-    if str(exc) == 'trainer_inference_attestation_required':
+    if str(exc) == 'trainer_inference_attestation_required' or str(exc).startswith('inference_identity_'):
         return 'inference_attestation_required'
     if str(exc) in ('resident_deadline_expired', 'prediction_cancelled'):
         return 'deadline_expired'
@@ -424,13 +430,21 @@ def _validate_request(envelope):
     view = request.get('model_input_view', LEGACY_INPUT_VIEW)
     if view not in (LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
         raise ServiceFailure('request_rejected')
-    trainer = VerifiedLayaTrainer(argv, max_seconds=policy['timeoutSeconds'],
-        max_rss_mib=policy['maxRssMib'], proof_cache_dir=state, deadline=deadline)
-    verified = trainer.validate_prediction(cwd=state)
+    identity_started = time.perf_counter()
+    identity_timing = {}
+    if has_evidence(state):
+        verified = _IDENTITY_CACHE.verify(state, argv, view)
+        identity_timing = dict(_IDENTITY_CACHE.last_timing)
+    else:
+        trainer = VerifiedLayaTrainer(argv, max_seconds=policy['timeoutSeconds'],
+            max_rss_mib=policy['maxRssMib'], proof_cache_dir=state, deadline=deadline)
+        verified = trainer.validate_prediction(cwd=state)
+    identity_timing['validation_seconds'] = round(time.perf_counter()-identity_started, 6)
     family = (verified['runtime_identity_sha256'], verified['base_model_sha256'], view)
     return {'namespace': scope, 'family': family,
             'generation': (*family, envelope['artifact_sha256']), 'policy': policy,
-            'model_dir': argv[2], 'request': request, 'deadline': deadline}
+            'model_dir': argv[2], 'request': request, 'deadline': deadline,
+            'identity_timing': identity_timing}
 
 
 def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json'):
@@ -496,10 +510,20 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
             try:
                 if resident._cancelled(conn, deadline):
                     raise ServiceFailure('deadline_expired')
+                validation_started = time.perf_counter()
                 job = validate(envelope)
+                initial_validation = time.perf_counter()-validation_started
+                revalidation_seconds = [0.0]
+                def revalidate():
+                    began = time.perf_counter()
+                    try: return validate(envelope)
+                    finally: revalidation_seconds[0] += time.perf_counter()-began
                 result, timing = engine.run(job,
                     cancelled=lambda: resident._cancelled(conn, deadline),
-                    revalidate=lambda: validate(envelope))
+                    revalidate=revalidate)
+                timing.update(job.get('identity_timing', {}))
+                timing['initial_validation_seconds'] = round(initial_validation,6)
+                timing['revalidation_seconds'] = round(revalidation_seconds[0],6)
                 timing['queue_wait_seconds'] = queue_wait
                 respond(conn, {'status': 'ok', 'prediction': result, 'timing': timing})
             except Exception as exc:

@@ -30,6 +30,8 @@ Operation grants have their own scope/revocation/expiry and must remain separate
 
 ## Commit 1: Distinct identity-bound inference eligibility
 
+Implemented on the feature branch; see [inference identity and measurements](2026-10-15-inference-identity.md). This has not been installed or enabled in operating projects. Subsequent learning/apply/default items below remain proposals and are outside this inference-only change.
+
 Files: runtime_setup.py, local_cycle.py, inference_service.py, runtime_installer.py plus a small inference receipt module/tests.
 
 - Define a separate `qmd-laya-inference-proof-v1` protocol with read-only load/forward/fixed-choice evidence. Create it only in an explicit approved prepare/validation flow; never train/smoke, retime a full receipt, renew an operation grant or send data externally from prediction.

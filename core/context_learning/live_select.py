@@ -110,11 +110,18 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
             request['model_input_view'] = active['model_input_view']
         # Validate before creating a shared process or socket. No prediction
         # can mint training evidence, even when capture/autoCycle are disabled.
-        trainer = VerifiedLayaTrainer(policy['trainerArgv'],
-            max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
-            max_rss_mib=policy['maxRssMib'], proof_cache_dir=state,
-            deadline=deadline)
-        trainer.validate_prediction(cwd=state)
+        from .inference_identity import admit
+        from .laya_adapter import LEGACY_INPUT_VIEW
+        admission_started = time.perf_counter()
+        inference_receipt = admit(state, policy['trainerArgv'],
+                                  active.get('model_input_view', LEGACY_INPUT_VIEW))
+        if inference_receipt is None:
+            trainer = VerifiedLayaTrainer(policy['trainerArgv'],
+                max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
+                max_rss_mib=policy['maxRssMib'], proof_cache_dir=state,
+                deadline=deadline)
+            trainer.validate_prediction(cwd=state)
+        client_identity_seconds = time.perf_counter() - admission_started
         from .inference_service import predict as service_predict
         service_deadline = min(deadline, time.monotonic() + policy['timeoutSeconds']) if deadline is not None else (
             time.monotonic() + policy['timeoutSeconds'])
@@ -132,14 +139,14 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 any(not isinstance(x, str) or x not in seen for x in selected)):
             return None, 'invalid_prediction', resources
         return selected, 'selected', {
-            **resources, 'model_version': active.get('cycle_id'),
+            **resources, 'client_identity_seconds': round(client_identity_seconds, 6), 'model_version': active.get('cycle_id'),
             'model_input_view': active.get('model_input_view'),
             'selector_wall_seconds': round(time.perf_counter() - started, 6)}
     except (OSError, ValueError, KeyError, TypeError, IndexError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if reason == 'trainer_timeout':
             reason = 'timeout'
-        elif reason == 'trainer_inference_attestation_required':
+        elif reason == 'trainer_inference_attestation_required' or reason.startswith('inference_identity_'):
             reason = 'inference_attestation_required'
         elif reason == 'trainer_memory_budget':
             reason = 'memory_budget'

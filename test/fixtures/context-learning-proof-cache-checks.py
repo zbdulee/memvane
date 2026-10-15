@@ -204,13 +204,39 @@ def host_checks(root, state):
             except ValueError as exc: assert str(exc) == 'trainer_inference_attestation_required'
             else: raise AssertionError('in-memory training proof never expires')
         assert len(smokes) == 1
+        from context_learning import inference_identity as identity
+        library_root = state/'fixture-runtime'; library_root.mkdir()
+        library = library_root/'library.py'; library.write_text('version=1')
+        with patch.object(identity,'runtime_roots',return_value=[library_root]), \
+             patch.object(identity,'_module_scope',return_value=None), \
+             patch.object(identity,'device_identity',return_value={'backend':'cpu'}):
+            identity._record(state,argv,view=laya_adapter.LEGACY_INPUT_VIEW,
+                verified={'runtime_identity_sha256':'c'*64,
+                          'base_model_sha256':proof['attestation']['base_model_sha256'],
+                          'adapter_sha256':proof['attestation']['adapter_sha256']})
+            inference_service._IDENTITY_CACHE = identity.IdentityCache()
+            with patch.object(runtime_setup,'probe_runtime',side_effect=AssertionError('prepared inference probed metadata')), \
+                 patch.object(identity.time,'time',return_value=time.time()+172800):
+                choose(no_probe=True)
+                request,artifact_sha=service_requests[-1]
+                env=inference_service._make_envelope(state,request,artifact_sha,time.monotonic()+4,'active-checkpoint.json')
+                inference_service._validate_request(env)
+                inference_service._validate_request(env)
+                original_library=library.read_bytes();library.write_bytes(original_library+b'changed')
+                reject(env,'inference_identity_changed')
+                library.write_bytes(original_library)
+                # A deleted binding must never downgrade to legacy metadata checks.
+                (state/identity.BINDING).unlink()
+                choose('inference_attestation_required',no_probe=True)
+                reject(env,'inference_identity_changed')
     assert 'torch' not in sys.modules and 'laya' not in sys.modules
     return {key: True for key in ('freshReuseWithoutSmoke', 'ageInvalidates', 'missingDenied',
         'modelChangeInvalidates', 'adapterChangeInvalidates', 'runtimeChangeInvalidates',
         'unsafeProofDenied', 'permissionDenied', 'malformedDenied', 'checksPreserved',
         'cacheRevocationHonored', 'memoryProofExpires', 'explicitTrainThenPredict',
         'stateUnchanged', 'noPredictionAttestation', 'expiryDuringProbeDenied',
-        'revocationDuringProbeDenied')} | {'actualModelCalls': 0, 'teacherCalls': 0}
+        'revocationDuringProbeDenied','inferenceOnlyAfterTrainingExpiry',
+        'inferenceOnlyWarmNoMetadata','inferenceOnlyMutationDenied','inferenceOnlyBindingRevocation')} | {'actualModelCalls': 0, 'teacherCalls': 0}
 
 
 if len(sys.argv) > 1:

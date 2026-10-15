@@ -74,7 +74,7 @@ def _run_probe(executable, *, temp_dir=None, deadline=None):
         env['TMPDIR']=str(temp_dir)
     env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1',QMD_SANDBOX='1')
     with tempfile.TemporaryDirectory(prefix='qmd-runtime-probe-', dir=temp_dir) as cwd:
-        result=subprocess.run([str(executable),'-I','-c',_PROBE],cwd=cwd,env=env,
+        result=subprocess.run([str(executable),'-I','-B','-c',_PROBE],cwd=cwd,env=env,
             stdin=subprocess.DEVNULL,capture_output=True,timeout=_remaining_timeout(30, deadline),check=False)
     if result.returncode or len(result.stdout)>MAX_PROBE_BYTES or len(result.stderr)>MAX_PROBE_BYTES:
         raise ValueError('runtime_probe_failed')

@@ -284,7 +284,12 @@ class ServerTests(unittest.TestCase):
                     self.assertNotIn('private-secret',json.dumps(reply))
                 self.assertNotIn('synthetic-private-secret',json.dumps(exchange(root,envelope())))
                 with patch.object(service.resident,'_same_owner',return_value=False):
-                    self.assertEqual(exchange(root,envelope())['status'],'request_rejected')
+                    # Peer rejection precedes wire parsing. Sending after the
+                    # server closes races BrokenPipe; read the refusal directly
+                    # and prove no request body is needed to reject the peer.
+                    with socket.socket(socket.AF_UNIX) as conn:
+                        conn.settimeout(1);conn.connect(str(root/service.SOCKET_NAME))
+                        self.assertEqual(service.resident._read(conn)['status'],'request_rejected')
             finally:
                 shutdown_idle(root);thread.join(2)
             self.assertFalse(thread.is_alive())
