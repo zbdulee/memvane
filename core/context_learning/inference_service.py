@@ -123,14 +123,14 @@ class GenerationEngine:
         result = self.forward(loaded, job, limits=limits, timing=timing,
                               cancelled=lambda: cancelled() or time.monotonic() >= job['deadline'])
         check()
+        fresh = revalidate()
+        if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
+                or fresh['policy'] != job['policy']):
+            raise ServiceFailure('request_changed')
+        check()
+        if self.rss() > job['policy']['maxRssMib']:
+            raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
         if pending is not None:
-            fresh = revalidate()
-            if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
-                    or fresh['policy'] != job['policy']):
-                raise ServiceFailure('request_changed')
-            check()
-            if self.rss() > job['policy']['maxRssMib']:
-                raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
             self.active = pending
             self.footprint_mib = footprint
         return result, timing

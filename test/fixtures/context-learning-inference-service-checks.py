@@ -75,6 +75,21 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(self.run_job(job())['head'],'a')
         self.assertEqual(len(self.loads),2)
 
+    def test_warm_forward_revocation_is_rechecked(self):
+        self.run_job(job());request=job()
+        def revoked():raise service.ServiceFailure('inference_attestation_required')
+        with self.assertRaisesRegex(service.ServiceFailure,'inference_attestation_required'):
+            self.engine.run(request,cancelled=lambda:False,revalidate=revoked)
+
+    def test_warm_forward_memory_growth_is_rejected(self):
+        self.run_job(job());rss=[100]
+        original=self.engine.forward
+        def grow(loaded,request,**kwargs):
+            rss[0]=2048;return original(loaded,request,**kwargs)
+        self.engine.rss=lambda:rss[0];self.engine.forward=grow
+        with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):
+            self.run_job(job())
+
     def test_different_family_rejected_without_loading(self):
         self.run_job(job())
         with self.assertRaisesRegex(service.ServiceFailure,'model_family_mismatch'):
