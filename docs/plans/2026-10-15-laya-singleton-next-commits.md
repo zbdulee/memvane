@@ -42,6 +42,11 @@ Files: runtime_setup.py, local_cycle.py, inference_service.py, runtime_installer
 
 ## Commit 2: Fresh-data ledger and bounded replay
 
+Implemented in the feature branch, with the resource/recovery slice below.
+See [implementation boundaries](2026-10-15-learning-coordination.md) and
+the durable coordination section in [continual learning](../continual-learning.md).
+Validation is synthetic only; no operating rollout or model training followed.
+
 Files: automatic_cohort.py, automatic_staging.py, shared.py and private schema migration/tests.
 
 - Preserve existing safeguards: stable evidence-derived cycle_id, `trained_cycle`, batchMin *new* cases, source-active/cohort provenance and already-staged/evaluated short-circuits. Repeated wakes of an unchanged completed cohort must not create a new cycle.
@@ -50,6 +55,11 @@ Files: automatic_cohort.py, automatic_staging.py, shared.py and private schema m
 - Recovery resumes the same leased cycle/update cursor and persisted optimizer/RNG/checkpoint state; a crash must not count another reservation or replay committed updates forever. Poison jobs have bounded retries and explicit blocked status. Tests cover duplicate events, unchanged cohort, changed source/gold, crash before/after update commit and no holdout leakage.
 
 ## Commit 3: Durable resource-aware learning coordination
+
+Implemented in the same feature branch. Retry uses one bounded existing
+worker waiter, with reboot recovery at the next authorized ordinary hook.
+Legacy private 24h cadence is unchanged. Inference priority is cooperative at
+safe boundaries, not forced GPU preemption or a hard allocator reservation.
 
 Files: inference_service.py, shared.py, memory_policy.py, local_cycle.py, jobs.py/new scheduling module and synthetic contention tests.
 
@@ -61,6 +71,9 @@ Files: inference_service.py, shared.py, memory_policy.py, local_cycle.py, jobs.p
 
 ## Commit 4: Validated candidate application transaction
 
+Design only: [defaults and application](2026-10-15-learning-defaults-apply-design.md).
+No new apply grant, transaction, pointer publication or operating activation.
+
 Files: automatic_staging.py, local_cycle.py, runtime_authorization.py, inference_service.py and a narrow publication journal module/tests.
 
 - Current authorized v2 automation intentionally stops at staged/staged_evaluated with `forbidden_without_separate_apply_authorization`. Do not route it into the legacy publisher or reinterpret a train/evaluate grant as apply permission.
@@ -70,6 +83,10 @@ Files: automatic_staging.py, local_cycle.py, runtime_authorization.py, inference
 - Tests inject failure at every journal/CAS boundary, caller disconnect, resource loss, concurrent namespace requests, policy revocation and process crash. No automatic application merely because training finished.
 
 ## Commit 5: Product defaults and scoped migration
+
+Design only in the same separate document. Existing explicit false settings
+and external permissions remain authoritative; no default or migration code
+has changed in this queue/resource slice.
 
 Files: config.py, approved setup/enrollment flow, project policy defaults and docs/tests.
 
