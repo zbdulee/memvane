@@ -1,0 +1,58 @@
+"""Synthetic durable batch lifecycle, no model or teacher imports."""
+from contextlib import contextmanager
+import json, os
+from pathlib import Path
+import sqlite3,tempfile,time,unittest
+from context_learning.learning_queue import LearningQueue, semantic_key
+
+class Checks(unittest.TestCase):
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.root.chmod(0o700)
+  @contextmanager
+  def connect():
+   with sqlite3.connect(self.root/'fixture.sqlite3',timeout=.1) as db:yield db
+  self.q=LearningQueue(self.root,connect=connect)
+ def row(self,i,rid=None):
+  return ('owner',rid or f'r{i}','input'+str(i),json.dumps({'prompt':{'text':f'question {i}'},'candidates':[{'candidate_id':'card','revision_sha256':str(i)}],'request_id':rid or f'r{i}'}),json.dumps({'card':f'body {i}'}),json.dumps({'selected_ids':['card'],'input_sha256':'changes-with-uuid'}),'train','/synthetic/owner','corpus','[]',None,100,'source')
+ def plan(self,rows,**kw):return self.q.plan(rows,approval='a'*64,cohort='c',family='f'*64,minimum=2,maximum=4,**kw)
+ def test_semantic_identity_ignores_uuid_time_but_fences_revision_label_scope_model(self):
+  a=self.row(1);b=list(self.row(1,'new-uuid'));b[11]=200
+  self.assertEqual(semantic_key(a,'ns','family'),semantic_key(b,'ns','family'))
+  for index,value in [(4,json.dumps({'card':'new body'})),(5,json.dumps({'selected_ids':[]})),(7,'/other')]:
+   c=list(a);c[index]=value;self.assertNotEqual(semantic_key(a,'ns','family'),semantic_key(c,'ns','family'))
+  self.assertNotEqual(semantic_key(a,'ns','family'),semantic_key(a,'ns','other'))
+ def test_duplicate_wakes_and_completed_evidence_not_consumed_twice(self):
+  rows=[self.row(i) for i in range(2)];job=self.plan(rows)
+  self.assertEqual(job,self.plan(rows))
+  with self.q.claim(job['id']) as claim:
+   self.assertIsNotNone(claim)
+   with self.q.claim(job['id']) as duplicate:self.assertIsNone(duplicate)
+   self.q.complete(job['id'])
+  renamed=[self.row(i,'new'+str(i)) for i in range(2)]
+  again=self.plan(renamed);self.assertEqual(again['id'],job['id']);self.assertEqual(again['status'],'staged')
+  with self.q.claim(job['id']) as duplicate:self.assertIsNone(duplicate)
+ def test_fresh_threshold_bounded_replay_and_holdout_rejected(self):
+  rows=[self.row(i) for i in range(10)];job=self.plan(rows)
+  self.assertLessEqual(len(job['members']),4)
+  with self.q.claim(job['id']):self.q.complete(job['id'])
+  nextjob=self.plan(rows);self.assertNotEqual(nextjob['id'],job['id']);self.assertLessEqual(len(nextjob['members']),4)
+  hold=list(self.row(12));hold[6]='holdout'
+  with self.assertRaises(ValueError):self.plan([hold,self.row(11)])
+ def test_abandoned_claim_recovers_same_job_without_new_reservation(self):
+  job=self.plan([self.row(1),self.row(2)])
+  with self.q.claim(job['id']) as claim:self.assertIsNotNone(claim)
+  with self.q.connect() as db:db.execute("UPDATE learning_jobs SET status='running',retry_at=0 WHERE job_id=?",(job['id'],))
+  with self.q.claim(job['id']) as recovered:self.assertIsNotNone(recovered)
+  self.assertEqual(self.plan([self.row(1),self.row(2)])['id'],job['id'])
+ def test_resource_backoff_and_bounded_failure(self):
+  job=self.plan([self.row(1),self.row(2)])
+  self.q.defer(job['id'],'memory',now=100)
+  self.assertGreater(self.q.get(job['id'])['retry_at'],100)
+  with self.q.claim(job['id'],now=100) as claim:self.assertIsNone(claim)
+  for _ in range(3):self.q.defer(job['id'],'failed',failure=True,now=100)
+  self.assertEqual(self.q.get(job['id'])['status'],'blocked')
+ def test_changed_authorization_cannot_take_old_pinned_job(self):
+  job=self.plan([self.row(1),self.row(2)])
+  other=self.q.plan([self.row(1),self.row(2)],approval='b'*64,cohort='c',family='f'*64,minimum=2,maximum=4)
+  self.assertNotEqual(job['id'],other['id'])
+if __name__=='__main__':unittest.main()

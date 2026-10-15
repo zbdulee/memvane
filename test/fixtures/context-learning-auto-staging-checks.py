@@ -264,6 +264,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         with shared._db_at(dbpath) as db:
             assert db.execute('SELECT COUNT(*) FROM cycles').fetchone()[0] == 0
             assert db.execute('SELECT COUNT(*) FROM cases WHERE trained_cycle IS NOT NULL').fetchone()[0] == 0
+        # Advance the durable retry eligibility in this disposable fixture.
+        with shared._db_at(dbpath) as db:
+            assert db.execute("SELECT retry_at FROM learning_jobs").fetchone()[0] > 0
+            db.execute("UPDATE learning_jobs SET retry_at=0")
         class DeferredTrainer:
             def call(self, *args, **kwargs):
                 raise ResourceDeferred('trainer_system_pressure', {'ready':False})
@@ -274,6 +278,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             assert db.execute('SELECT status FROM cycles').fetchone()[0] == 'deferred'
             assert db.execute('SELECT COUNT(*) FROM cases WHERE trained_cycle IS NOT NULL').fetchone()[0] == 0
         assert not (root / 'experimental-checkpoint.json').exists()
+        with shared._db_at(dbpath) as db:
+            db.execute("UPDATE learning_jobs SET retry_at=0")
         result = shared.train_due(root, policy,
             trainer_factory=lambda _: FakeTrainer())
         assert result['status'] == 'staged_waiting_quality_cohort', result

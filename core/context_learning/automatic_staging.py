@@ -51,41 +51,55 @@ def _quality_ready(train, validation, cohort):
 
 
 def train_due_staged(root, policy, grant, *, trainer_factory=None):
-    from .shared import (_case, _case_active, _db, resource_report,
-                         _predict)
-    from .synthetic_experiment import project_for, reserve_train
+    from .shared import _db, _case_active, resource_report
+    from .synthetic_experiment import project_for
     from .laya_adapter import EDIT_INPUT_VIEW, model_identity
+    from .learning_queue import LearningQueue
     root = Path(root)
-    grant_sha = proposal_sha256(grant)
     if policy.get('modelInputView') != EDIT_INPUT_VIEW:
-        return {'status': 'multilingual_policy_required'}
-    if (root / 'experimental-checkpoint.json').exists():
-        return {'status': 'existing_trial_requires_review'}
-    resources = resource_report(policy, detailed=True)
-    if not resources['ready']:
-        record_resource_defer(root, resources)
-        return {'status': 'deferred_resource', 'resources': resources}
-    project = project_for(root)
+        return {'status':'multilingual_policy_required'}
+    if (root/'experimental-checkpoint.json').exists():
+        return {'status':'existing_trial_requires_review'}
     with _db(root) as db:
-        train, validation = training_and_validation(db, project, grant)
-    if len(train) > 2000 or len(validation) > 2000:
-        return {'status': 'cohort_source_revoked'}
-    # A normal edit can retire one old card while other fresh cases remain
-    # usable. Keep the retired cases in the ledger, but exclude them here.
-    train = [r for r in train if _case_active(root, (r[7], r[1], r[3]))]
-    validation = [r for r in validation
-                  if _case_active(root, (r[7], r[1], r[3]))]
-    # The historical cadence can be higher than this fresh cohort's first
-    # training threshold. Start at batchMin; subsequent cycles still require
-    # batchMin new training cases. No old gold contributes to this count.
-    new_train = sum(row[10] is None for row in train)
-    if len(train) < grant['cohort']['minTrainCases']:
-        return {'status': 'waiting_fresh_train', 'train': len(train),
-                'required': grant['cohort']['minTrainCases']}
+        cohort_train, validation = training_and_validation(db, project_for(root), grant)
+    if len(cohort_train)>2000 or len(validation)>2000:
+        return {'status':'cohort_source_revoked'}
+    cohort_train=[r for r in cohort_train if _case_active(root,(r[7],r[1],r[3]))]
+    validation=[r for r in validation if _case_active(root,(r[7],r[1],r[3]))]
+    if len(cohort_train)<grant['cohort']['minTrainCases']:
+        return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
+    family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
+                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+    queue=LearningQueue(root)
+    job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
+                   family=family,minimum=policy['batchMin'],maximum=policy['batchMax'])
+    if job is None:return {'status':'waiting_fresh_batch','threshold':policy['batchMin']}
+    try: train=queue.rows(job,cohort_train)
+    except ValueError:
+        return {'status':'staged_source_revoked','cycle_id':job['id']}
+    if job['status']=='blocked':
+        return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    if job['status']=='staged':
+        return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,trainer_factory=trainer_factory)
+    report=resource_report(policy,detailed=True)
+    if not report['ready']:
+        queue.defer(job['id'],'resource')
+        record_resource_defer(root,report)
+        return {'status':'deferred_resource','resources':report,'cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
+    with queue.claim(job['id']) as claim:
+        if claim is None:return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
+        return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,trainer_factory=trainer_factory,claim_fd=claim)
+
+
+def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None):
+    from .shared import _case, _case_active, _db, _predict
+    from .synthetic_experiment import project_for,reserve_train
+    from .laya_adapter import EDIT_INPUT_VIEW
+    grant_sha=proposal_sha256(grant)
+    project=project_for(root)
+    new_train=sum(m['fresh'] for m in job['members'])
     train_sha = _case_evidence(train)
-    cycle_id = 'cohort-' + digest(canonical([
-        grant['cohort']['id'], grant_sha, train_sha, EDIT_INPUT_VIEW,
-        model_identity(policy['trainerArgv'][2])]))[:20]
+    cycle_id = job['id']
     with _db(root) as db:
         old = db.execute('SELECT status,evidence FROM cycles WHERE cycle_id=?',
                          (cycle_id,)).fetchone()
@@ -133,8 +147,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
             require_operation(root, policy, 'local_train',
                               approval_sha256=grant_sha)
             trainer = _trainer(policy, trainer_factory)
-            artifact.unlink(missing_ok=True)
-            (folder / 'train.json').unlink(missing_ok=True)
+            trainer.inherited_fds = (claim_fd,) if claim_fd is not None else ()
             cases = [_case(row[:6]) for row in train]
             request = {'schema_version': 1,
                 'train': [{k: v for k, v in case.items() if k != 'project_key'}
@@ -149,8 +162,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
             start = time.monotonic()
             job_telemetry.emit(root / 'job-telemetry.jsonl', 'started',
                                queue_wait_ms=0, **meta)
-            answer, train_resources = trainer.call('train', request,
-                                                    folder / 'train.json', cwd=folder)
+            answer, train_resources = _train_once(trainer, request, folder)
             if answer != {'schema_version': 1, 'status': 'trained'}:
                 raise ValueError('invalid_shared_train_result')
             source_active = all(_case_active(root, (r[7], r[1], r[3]))
@@ -168,7 +180,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                 'publication': 'forbidden_without_separate_apply_authorization'}
             with _db(root) as db:
                 latest, _ = training_and_validation(db, project, grant)
-                if _case_evidence(latest) != train_sha:
+                if _case_evidence(queue.rows(job, latest)) != train_sha:
                     stage['sourceActiveAtStage'] = False
                 db.execute("UPDATE cycles SET status='staged',evidence=? "
                            "WHERE cycle_id=? AND status IN ('training','failed','deferred')",
@@ -180,6 +192,9 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                             "AND status='gold' AND use_state='active' "
                             "AND trained_cycle IS NULL",
                             (cycle_id, row[0], row[1], row[2]))
+                    queue.complete(cycle_id, db=db)
+                else:
+                    db.execute("UPDATE learning_jobs SET status='blocked',reason='source_revoked' WHERE job_id=?",(cycle_id,))
             job_telemetry.emit(root / 'job-telemetry.jsonl', 'finished',
                 status='success', run_ms=(time.monotonic() - start) * 1000,
                 resources=train_resources, **meta)
@@ -200,10 +215,11 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                     ('deferred' if deferred else 'failed', canonical({'reason': str(exc)[:80],
                                 'authorizationSha256': grant_sha,
                                 'trainEvidenceSha256': train_sha}), cycle_id))
+            queue.defer(cycle_id,'resource' if deferred else 'trainer_failed',failure=not deferred)
             return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
                     'cycle_id': cycle_id}
     ready, empty, train_families, validation_families = _quality_ready(
-        train, validation, grant['cohort'])
+        cohort_train, validation, grant['cohort'])
     if not ready:
         return {'status': 'staged_waiting_quality_cohort', 'cycle_id': cycle_id,
             'train': len(train), 'validation': len(validation),
@@ -246,7 +262,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
         with _db(root) as db:
             latest_train, latest_validation = training_and_validation(
                 db, project, grant)
-            if (_case_evidence(latest_train) != train_sha
+            if (_case_evidence(latest_train) != _case_evidence(cohort_train)
                     or _case_evidence(latest_validation) !=
                        _case_evidence(validation)):
                 return {'status': 'staged_cohort_changed', 'cycle_id': cycle_id}
@@ -267,3 +283,24 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
     except Exception as exc:
         return {'status': 'staged_evaluation_deferred', 'cycle_id': cycle_id,
                 'reason': str(exc)[:80]}
+
+
+def _train_once(trainer,request,folder):
+    """A durable completion is reused; uncertain final artifacts never retrain."""
+    from .dataset import read_private_json
+    from .local_cycle import _atomic_json
+    from .training_cursor import request_identity, completion
+    key=request_identity(request)
+    intent={'schema':1,'request_sha256':key}
+    path=folder/'train-intent.json'
+    if path.exists() and read_private_json(path)!=intent:
+        raise ValueError('learning_train_intent_changed')
+    _atomic_json(path,intent)
+    done=completion(request)
+    if done is not None:return {'schema_version':1,'status':'trained'},{'recovered_completion':True}
+    if Path(request['artifact_path']).exists():raise ValueError('learning_completion_uncertain')
+    answer,resources=trainer.call('train',request,folder/'train.json',cwd=folder)
+    if answer!={'schema_version':1,'status':'trained'}:raise ValueError('invalid_shared_train_result')
+    from .training_cursor import record_completion
+    record_completion(request)
+    return answer,resources
