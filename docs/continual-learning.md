@@ -133,6 +133,23 @@ without provider API keys or a model session. This compatibility check does
 not authorize a new model/runtime or bypass a failed attestation. A separate
 bounded synthetic inference check is needed before claiming live execution.
 
+Verified prediction only reads existing compatibility evidence. A missing,
+expired, unsafe, unreadable or incompatible proof returns
+`inference_attestation_required` and preserves ordinary QMD fallback. Prediction
+never calls the training attestation prover, runs synthetic smoke/training,
+renews a proof timestamp or writes a training grant. Capture/autoCycle settings
+do not change this prediction-only boundary.
+
+The full compatibility attestation still includes one-step training and
+checkpoint reload checks and remains an explicit setup/training concern. Its
+24-hour TTL, adapter/model SHA and runtime/check predicates are unchanged.
+Every prediction rereads a configured private cache and rechecks evidence
+before launching; deletion, replacement or expiry during probing fails closed.
+Without a cache, the same trainer can reuse a fresh proof already established
+by explicit training, retaining its original verification time. This change
+does not issue a new inference-only proof or promise Laya scoring after expiry;
+that needs a separately reviewed no-training verification protocol.
+
 Shared project settings should omit `contextLearning.stateRoot`. The private
 parent then defaults to the current user's plugin directory:
 `~/Library/Application Support/qmd-auto-context/live-selection` on macOS,

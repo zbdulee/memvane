@@ -276,6 +276,7 @@ class VerifiedLayaTrainer(LocalTrainer):
         self.identity=digest(canonical([self.identity,_hash_bytes(expected),
             model_identity(self.argv[2])]))
         self.proof=None
+        self.proof_verified_at=None
         self.proof_cache_dir=Path(proof_cache_dir) if proof_cache_dir is not None else None
         if self.proof_cache_dir is not None:
             folder=self.proof_cache_dir
@@ -285,10 +286,32 @@ class VerifiedLayaTrainer(LocalTrainer):
             if info.st_uid!=os.getuid() or info.st_mode & 0o077:
                 raise ValueError('unsafe_laya_proof_cache')
 
+    def _prediction_proof(self):
+        """Read existing evidence only; prediction never creates or retimes it."""
+        cached = None
+        if self.proof_cache_dir is not None:
+            try:
+                cached = read_private_json(self.proof_cache_dir / 'laya-synthetic-attestation.json')
+            except (OSError, ValueError, TypeError):
+                pass
+        elif isinstance(self.proof, dict):
+            # Explicit training can establish a proof in this trainer without
+            # a disk cache. Keep its original verification time and full checks.
+            cached = {'schema': 'qmd-laya-live-proof-v1',
+                      'verifiedAt': self.proof_verified_at,
+                      'attestation': self.proof.get('attestation')}
+        if (not isinstance(cached, dict) or cached.get('schema') != 'qmd-laya-live-proof-v1'
+                or type(cached.get('verifiedAt')) not in (int, float)
+                or not 0 <= time.time() - cached['verifiedAt'] <= 86400
+                or not isinstance(cached.get('attestation'), dict)):
+            raise ValueError('trainer_inference_attestation_required')
+        return cached
+
     def call(self, mode, request, result_path, *, cwd):
         if mode not in ('train','predict'):raise ValueError('invalid_verified_laya_mode')
         # Admission precedes metadata/attestation subprocesses as well.
         limits = self._admission(cwd)
+        prediction_proof = self._prediction_proof() if mode == 'predict' else None
         from .laya_adapter import model_identity
         from .runtime_setup import probe_runtime, verify_compatibility
         if self.deadline is not None:
@@ -297,6 +320,10 @@ class VerifiedLayaTrainer(LocalTrainer):
             self.max_seconds = min(self.max_seconds, max(1, int(left)))
         adapter_sha=_hash_bytes(self.argv[1])
         model_sha=model_identity(self.argv[2])
+        if prediction_proof is not None and (
+                prediction_proof['attestation'].get('adapter_sha256') != adapter_sha
+                or prediction_proof['attestation'].get('base_model_sha256') != model_sha):
+            raise ValueError('trainer_inference_attestation_required')
         if limits is not None:
             def defer(reason):
                 record_resource_defer(cwd, {'reason': reason}, reason=reason)
@@ -324,7 +351,12 @@ class VerifiedLayaTrainer(LocalTrainer):
             raise ValueError('laya_runtime_or_source_changed')
         if limits is not None and limits['device'] != ('mps' if runtime['mps_available'] else 'cpu'):
             defer('training_memory_profile_changed')
-        if self.proof is None:
+        if mode == 'predict':
+            if not verify_compatibility(runtime, prediction_proof['attestation'], model_sha):
+                raise ValueError('trainer_inference_attestation_required')
+            self.proof = {'attestation': prediction_proof['attestation']}
+            self.proof_verified_at = prediction_proof['verifiedAt']
+        elif self.proof is None:
             cached=None
             path=self.proof_cache_dir/'laya-synthetic-attestation.json' if self.proof_cache_dir else None
             if path is not None and path.exists():
@@ -339,6 +371,7 @@ class VerifiedLayaTrainer(LocalTrainer):
                     and cached['attestation'].get('adapter_sha256')==adapter_sha
                     and verify_compatibility(runtime,cached['attestation'],model_sha)):
                 self.proof={'attestation':cached['attestation']}
+                self.proof_verified_at=cached['verifiedAt']
             else:
                 if limits is not None:
                     defer('trainer_adaptive_attestation_required')
@@ -353,13 +386,18 @@ class VerifiedLayaTrainer(LocalTrainer):
                         or not verify_compatibility(runtime,proof['attestation'],model_sha)):
                     raise ValueError('laya_runtime_not_verified')
                 self.proof=proof
+                self.proof_verified_at=time.time()
                 if path is not None:
                     _atomic_json(path,{'schema':'qmd-laya-live-proof-v1',
-                        'verifiedAt':time.time(),'attestation':proof['attestation']})
+                        'verifiedAt':self.proof_verified_at,'attestation':proof['attestation']})
         attestation=self.proof['attestation']
         if (adapter_sha!=attestation['adapter_sha256'] or
             not verify_compatibility(runtime,attestation,model_sha)):
             raise ValueError('laya_runtime_or_source_changed')
+        if mode == 'predict' and self._prediction_proof() != prediction_proof:
+            # Metadata probing may outlive the proof or race its revocation.
+            # Changed evidence is reviewed afresh on the next caller attempt.
+            raise ValueError('trainer_inference_attestation_required')
         if self.deadline is not None:
             left = self.deadline - time.monotonic()
             if left < 1: raise ValueError('trainer_timeout')

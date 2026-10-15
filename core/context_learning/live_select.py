@@ -145,6 +145,8 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         reason = str(exc)
         if reason == 'trainer_timeout':
             reason = 'timeout'
+        elif reason == 'trainer_inference_attestation_required':
+            reason = 'inference_attestation_required'
         elif reason == 'trainer_memory_budget':
             reason = 'memory_budget'
         elif reason.startswith('trainer_failed:'):
