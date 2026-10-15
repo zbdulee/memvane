@@ -103,6 +103,36 @@ checkpoint or runtime failure restores the ordinary bounded QMD choice.
 `live-selector.json` and an active local checkpoint are separately required;
 this development checkout does not install either in an operating project.
 
+Installed-package byte identity, a `ready` setup gate and resolution of an
+existing state directory do not prove a successful Laya prediction. The rc44
+installation validation covered those checks without exercising real selector
+inference. Policies retaining an rc43 adapter path could therefore still fall
+back with `unsupported_adapter`; that earlier readiness result must not be
+read as an execution or quality guarantee.
+
+For a different host/version path, the live selector accepts only a retained
+adapter under the current user's official `qmd-auto-context-marketplace`
+Claude/Codex cache namespace. The owner-controlled regular files and host
+manifest/package version must match that namespace, the current host must
+report an official installation from `zbdulee/qmd-auto-context`, and both
+adapter files must have identical SHA-256 content. Only then is the adapter
+argument replaced **in memory** with the current package's adapter. The policy
+file, interpreter, model directory, checkpoint and authorization stay intact;
+the normal trainer/runtime/attestation checks still run.
+
+Missing historical cache files, modified adapters, unsafe paths, ambiguous or
+unavailable install metadata, local/directory marketplace relocations and
+custom Codex homes fail back to ordinary QMD selection. The existing exact
+current-adapter case remains supported. Cross-path Codex inventory lookup is
+bounded to two seconds or the caller’s remaining deadline, whichever is shorter.
+Expired budgets or less than one second remaining return `timeout` without
+starting inventory. Identical Claude bindings across multiple scopes are
+accepted; conflicting or malformed records are rejected. Inventory invokes
+only the existing plugin inventory command,
+without provider API keys or a model session. This compatibility check does
+not authorize a new model/runtime or bypass a failed attestation. A separate
+bounded synthetic inference check is needed before claiming live execution.
+
 Shared project settings should omit `contextLearning.stateRoot`. The private
 parent then defaults to the current user's plugin directory:
 `~/Library/Application Support/qmd-auto-context/live-selection` on macOS,
