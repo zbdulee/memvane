@@ -289,18 +289,25 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     (root / "live-selector.json").chmod(0o600)
     class FakeSelector:
         def __init__(self, *args, **kwargs): pass
-        def call(self, mode, payload, result_path, *, cwd):
-            case = payload["cases"][0]
-            return ({"schema_version": 1, "predictions": [{
-                "request_id": case["request_id"], "input_sha256": case["input_sha256"],
-                "selected_ids": [cid]}]}, {"elapsed_seconds": .01})
+        def validate_prediction(self, *, cwd):
+            assert cwd == root
+    service_calls = []
+    def shared_prediction(state, policy, payload, artifact_sha, **options):
+        assert state == root and options['pointer_name'] == 'experimental-checkpoint.json'
+        service_calls.append(state)
+        case = payload["cases"][0]
+        return ({"schema_version": 1, "predictions": [{
+            "request_id": case["request_id"], "input_sha256": case["input_sha256"],
+            "selected_ids": [cid]}]}, {"elapsed_seconds": .01})
     from context_learning.live_select import choose
-    with patch("context_learning.live_select.VerifiedLayaTrainer", FakeSelector):
+    with patch("context_learning.live_select.VerifiedLayaTrainer", FakeSelector), patch(
+            "context_learning.inference_service.predict", side_effect=shared_prediction):
         selected, reason, _ = choose(root, "What bridge?", [
             {"id": cid, "revision_sha256": digest(source), "source_text": source}],
             corpus_fingerprint=digest("synthetic corpus"),
             pointer_name="experimental-checkpoint.json")
     assert selected == [cid] and reason == "selected", (selected, reason)
+    assert service_calls == [root]
     with sqlite3.connect(root / "shared-learning.sqlite3") as db:
         assert db.execute("SELECT COUNT(DISTINCT project_key) FROM cases").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM cycles WHERE status='complete'").fetchone()[0] == 1
