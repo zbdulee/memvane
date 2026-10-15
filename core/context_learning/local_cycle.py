@@ -307,7 +307,7 @@ class VerifiedLayaTrainer(LocalTrainer):
             raise ValueError('trainer_inference_attestation_required')
         return cached
 
-    def call(self, mode, request, result_path, *, cwd):
+    def _prepare(self, mode, *, cwd):
         if mode not in ('train','predict'):raise ValueError('invalid_verified_laya_mode')
         # Admission precedes metadata/attestation subprocesses as well.
         limits = self._admission(cwd)
@@ -345,8 +345,12 @@ class VerifiedLayaTrainer(LocalTrainer):
                         and attestation.get('adapter_sha256') == adapter_sha
                         and attestation.get('base_model_sha256') == model_sha):
                     defer('trainer_adaptive_attestation_required')
-        runtime=(probe_runtime(self.argv[0], temp_dir=self.isolated_temp_dir)
-                 if self.isolated_temp_dir is not None else probe_runtime(self.argv[0]))
+        probe_options = {}
+        if self.isolated_temp_dir is not None:
+            probe_options['temp_dir'] = self.isolated_temp_dir
+        if self.deadline is not None:
+            probe_options['deadline'] = self.deadline
+        runtime = probe_runtime(self.argv[0], **probe_options)
         if runtime.get('status')!='metadata_compatible':
             raise ValueError('laya_runtime_or_source_changed')
         if limits is not None and limits['device'] != ('mps' if runtime['mps_available'] else 'cpu'):
@@ -402,6 +406,15 @@ class VerifiedLayaTrainer(LocalTrainer):
             left = self.deadline - time.monotonic()
             if left < 1: raise ValueError('trainer_timeout')
             self.max_seconds = min(self.max_seconds, max(1, int(left)))
+        return {'runtime_identity_sha256': runtime['runtime_identity_sha256'],
+                'base_model_sha256': model_sha, 'adapter_sha256': adapter_sha}
+
+    def validate_prediction(self, *, cwd):
+        """Read-only admission for the shared inference service; never train."""
+        return self._prepare('predict', cwd=cwd)
+
+    def call(self, mode, request, result_path, *, cwd):
+        self._prepare(mode, cwd=cwd)
         return super().call(mode,request,result_path,cwd=cwd)
 
 

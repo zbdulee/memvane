@@ -18,21 +18,23 @@ DRIVER = '''import json,sys,time
 from pathlib import Path
 sys.dont_write_bytecode=True
 root=Path(sys.argv[1]);state=Path(sys.argv[2]);sys.path.insert(0,str(root/'core'))
-from context_learning import live_select
+from context_learning import live_select, inference_service
 from context_learning.local_cycle import VerifiedLayaTrainer
 from context_learning.contracts import digest
 calls=[]
-def prediction(self,mode,request,result_path,*,cwd):
+def admission(self,*,cwd):
     assert self.argv[1]==str(root/'core/context_learning/laya_adapter.py'),self.argv
     assert self.argv[0]==sys.executable and self.argv[2]==sys.argv[3]
     assert self.identity and self.proof is None
-    assert mode=='predict'
-    calls.append(mode)
+    return {}
+def prediction(state,policy,request,artifact_sha,**kwargs):
+    calls.append('predict')
     case=request['cases'][0]
     assert case['candidates'][0]['input_text']=='Synthetic complete body.\\n'
     return {'schema_version':1,'predictions':[{'request_id':case['request_id'],
         'input_sha256':case['input_sha256'],'selected_ids':['wiki/synthetic.md']}]},{}
-VerifiedLayaTrainer.call=prediction
+VerifiedLayaTrainer.validate_prediction=admission
+inference_service.predict=prediction
 text='---\\ntitle: Synthetic\\nstatus: verified\\n---\\nSynthetic complete body.\\n'
 started=time.monotonic()
 deadline=started+float(sys.argv[4]) if sys.argv[4]!='none' else None

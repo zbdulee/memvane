@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import tempfile
 import time
 
 from .compact_input import derive
@@ -109,24 +108,19 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                    'artifact_path': str(artifact), 'cases': [case]}
         if active.get('model_input_view') is not None:
             request['model_input_view'] = active['model_input_view']
-        if (pointer_name == 'experimental-checkpoint.json'
-                and active.get('model_input_view') == EDIT_INPUT_VIEW):
-            # QMD supplies the unchanged candidate pool. The resident worker
-            # is only the interchangeable rerank stage for this edit model.
-            from .resident import predict as resident_predict
-            resident_deadline = min(deadline, time.monotonic() +
-                                    policy['timeoutSeconds']) if deadline is not None else (
-                                        time.monotonic() + policy['timeoutSeconds'])
-            result, resources = resident_predict(state, policy, request,
-                active['artifact_sha256'], deadline=resident_deadline)
-        else:
-            trainer = VerifiedLayaTrainer(policy['trainerArgv'],
-                                   max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
-                                   max_rss_mib=policy['maxRssMib'],proof_cache_dir=state,
-                                   deadline=deadline)
-            with tempfile.TemporaryDirectory(prefix='live-', dir=state) as temporary:
-                result, resources = trainer.call('predict', request,
-                    Path(temporary) / 'prediction.json', cwd=Path(temporary))
+        # Validate before creating a shared process or socket. No prediction
+        # can mint training evidence, even when capture/autoCycle are disabled.
+        trainer = VerifiedLayaTrainer(policy['trainerArgv'],
+            max_seconds=min(policy['timeoutSeconds'], max(1, int(remaining))),
+            max_rss_mib=policy['maxRssMib'], proof_cache_dir=state,
+            deadline=deadline)
+        trainer.validate_prediction(cwd=state)
+        from .inference_service import predict as service_predict
+        service_deadline = min(deadline, time.monotonic() + policy['timeoutSeconds']) if deadline is not None else (
+            time.monotonic() + policy['timeoutSeconds'])
+        result, resources = service_predict(state, policy, request,
+            active['artifact_sha256'], deadline=service_deadline,
+            pointer_name=pointer_name)
         expected = {'schema_version': 1, 'predictions': [{
             'request_id': case['request_id'], 'input_sha256': case['input_sha256'],
             'selected_ids': result.get('predictions', [{}])[0].get('selected_ids')}]}

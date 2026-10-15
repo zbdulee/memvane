@@ -5,7 +5,6 @@ import hashlib
 import math
 import os
 from pathlib import Path
-import resource
 import sys
 import time
 
@@ -19,8 +18,12 @@ class ServiceFailure(ValueError):
         self.timing = timing or {}
 
 
-def service_root(*, create=False):
-    home = Path.home().resolve()
+def service_root(*, create=False, home=None):
+    # Host HOME/CODEX_HOME overrides must not create a second user service.
+    if home is None:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    home = Path(home).resolve()
     parts = ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
     root = home.joinpath(*parts, 'qmd-auto-context', 'laya-inference')
     for part in (root, *root.parents):
@@ -48,9 +51,32 @@ def namespace(state):
 
 
 def _rss_mib():
-    # Portable conservative high-water mark, not another process's identity.
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return peak / (1024 * 1024 if sys.platform == 'darwin' else 1024)
+    """Current self RSS. A past failed allocation must not poison admission."""
+    try:
+        if sys.platform == 'darwin':
+            import ctypes as c
+            class Info(c.Structure):
+                _fields_ = [('virtual_size', c.c_uint64), ('resident_size', c.c_uint64),
+                            ('resident_size_max', c.c_uint64), ('user_time', c.c_int*2),
+                            ('system_time', c.c_int*2), ('policy', c.c_int), ('suspend_count', c.c_int)]
+            libc = c.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+            task = c.c_uint.in_dll(libc, 'mach_task_self_')
+            info = Info();count = c.c_uint(c.sizeof(info)//c.sizeof(c.c_uint))
+            task_info = libc.task_info
+            task_info.argtypes = [c.c_uint, c.c_int, c.POINTER(c.c_uint), c.POINTER(c.c_uint)]
+            task_info.restype = c.c_int
+            status = task_info(task, 20, c.cast(c.byref(info), c.POINTER(c.c_uint)), c.byref(count))
+            if status != 0 or count.value < c.sizeof(info)//c.sizeof(c.c_uint):
+                raise OSError('self_memory_unavailable')
+            value = info.resident_size / (1024*1024)
+        else:
+            pages = int(Path('/proc/self/statm').read_text().split()[1])
+            value = pages * os.sysconf('SC_PAGE_SIZE') / (1024*1024)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError('self_memory_unavailable')
+        return value
+    except (OSError, ValueError, IndexError, AttributeError) as exc:
+        raise ServiceFailure('resource_unavailable') from exc
 
 
 def _load(job):
@@ -61,8 +87,25 @@ def _load(job):
 
 def _forward(loaded, job, *, limits, timing, cancelled):
     from .laya_adapter import predict_loaded
-    return predict_loaded(*loaded, job['request'], **limits,
-                          timing=timing, cancelled=cancelled)
+    result = predict_loaded(*loaded, job['request'], **limits,
+                            timing=timing, cancelled=cancelled)
+    case = job['request']['cases'][0]
+    if (not isinstance(result, dict) or set(result) != {'schema_version','predictions'}
+            or result['schema_version'] != 1 or not isinstance(result['predictions'], list)
+            or len(result['predictions']) != 1):
+        raise ServiceFailure('invalid_prediction')
+    prediction = result['predictions'][0]
+    if (not isinstance(prediction, dict) or set(prediction) != {'request_id','input_sha256','selected_ids'}
+            or prediction['request_id'] != case['request_id']
+            or prediction['input_sha256'] != case['input_sha256']):
+        raise ServiceFailure('invalid_prediction')
+    selected = prediction['selected_ids']
+    ids = {row['id'] for row in case['candidates']}
+    if (not isinstance(selected, list) or len(selected) > 3
+            or any(not isinstance(key, str) or key not in ids for key in selected)
+            or len(set(selected)) != len(selected)):
+        raise ServiceFailure('invalid_prediction')
+    return result
 
 
 class GenerationEngine:
@@ -81,6 +124,8 @@ class GenerationEngine:
         limits, report = self.admission(job['policy']['maxRssMib'],
                                          already_running=self.active is not None)
         if limits is None:
+            raise ServiceFailure('resource_deferred')
+        if not math.isfinite(self.rss()) or self.rss() > job['policy']['maxRssMib']:
             raise ServiceFailure('resource_deferred')
         replacement = self.active is not None and self.active[0] != job['generation']
         if replacement and self.active[0][:3] != job['family']:
@@ -128,7 +173,7 @@ class GenerationEngine:
                 or fresh['policy'] != job['policy']):
             raise ServiceFailure('request_changed')
         check()
-        if self.rss() > job['policy']['maxRssMib']:
+        if not math.isfinite(self.rss()) or self.rss() > job['policy']['maxRssMib']:
             raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
         if pending is not None:
             self.active = pending
@@ -154,7 +199,8 @@ LEASE_NAME = 'service-lease.lock'
 _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_deferred',
           'replacement_failed', 'load_failed', 'model_family_mismatch',
           'request_changed', 'request_rejected', 'inference_attestation_required',
-          'worker_error', 'version_mismatch', 'busy', 'starting'}
+          'worker_error', 'version_mismatch', 'busy', 'starting', 'permission_denied',
+          'resource_unavailable', 'invalid_prediction'}
 
 
 @lru_cache(maxsize=1)
@@ -274,9 +320,147 @@ def _failure(exc):
     return 'worker_error'
 
 
-def _validate_request(_envelope):
-    # Core transport commit is fail-closed until selector policy integration.
-    raise ServiceFailure('request_rejected')
+def _policy(state, pointer_name, *, deadline):
+    from .dataset import read_private_json
+    from .adapter_binding import inference_argv
+    policy = read_private_json(state / 'live-selector.json')
+    if (not isinstance(policy, dict) or set(policy) != {
+            'schema', 'trainerArgv', 'timeoutSeconds', 'maxRssMib'}
+            or policy['schema'] != 'qmd-live-selector-v1'
+            or type(policy['timeoutSeconds']) is not int or not 1 <= policy['timeoutSeconds'] <= 30
+            or type(policy['maxRssMib']) is not int or not 128 <= policy['maxRssMib'] <= 8192):
+        raise ServiceFailure('request_rejected')
+    adapter = Path(__file__).with_name('laya_adapter.py').resolve()
+    normalized = {**policy, 'trainerArgv': inference_argv(policy['trainerArgv'], adapter, deadline=deadline)}
+    if pointer_name == 'experimental-checkpoint.json':
+        active = read_private_json(state / pointer_name)
+        from .laya_adapter import EDIT_INPUT_VIEW
+        if active.get('model_input_view') == EDIT_INPUT_VIEW:
+            from .shared import _policy as shared_policy, inference_argv as shared_argv, trial_eligible
+            shared = shared_policy(state)
+            if shared.get('modelInputView') != EDIT_INPUT_VIEW or not trial_eligible(state, deadline=deadline):
+                raise ServiceFailure('request_rejected')
+            normalized = {**normalized, 'trainerArgv': shared_argv(shared, 'predict'),
+                          'maxRssMib': shared['maxRssMib']}
+    return policy, normalized
+
+
+def _policy_digest(policy):
+    from .store import canonical
+    return hashlib.sha256(canonical(policy).encode()).hexdigest()
+
+
+def _make_envelope(state, request, artifact_sha, deadline, pointer_name):
+    from .dataset import read_private_json
+    now = time.time()
+    left = min(30.0, deadline-time.monotonic())
+    if left <= 0:
+        raise ServiceFailure('deadline_expired')
+    return {'schema': PROTOCOL, 'signature': _signature(),
+            'state_dir': str(state), 'namespace': namespace(state),
+            'pointer_name': pointer_name, 'artifact_sha256': artifact_sha,
+            'policy_sha256': _policy_digest(read_private_json(Path(state)/'live-selector.json')),
+            'request': request, 'queued_at_epoch': now, 'deadline_epoch': now+left}
+
+
+def _validate_request(envelope):
+    from .dataset import read_private_json
+    from .local_cycle import VerifiedLayaTrainer
+    from .laya_adapter import LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
+    if (not isinstance(envelope, dict) or set(envelope) != {
+            'schema', 'signature', 'state_dir', 'namespace', 'pointer_name',
+            'artifact_sha256', 'policy_sha256', 'request', 'queued_at_epoch', 'deadline_epoch'}
+            or envelope['schema'] != PROTOCOL or envelope['signature'] != _signature()
+            or not isinstance(envelope['state_dir'], str)
+            or envelope['pointer_name'] not in ('active-checkpoint.json', 'experimental-checkpoint.json')):
+        raise ServiceFailure('request_rejected')
+    deadline, _ = resident._request_window(envelope, now_epoch=time.time(), now_monotonic=time.monotonic())
+    state = Path(envelope['state_dir'])
+    scope = namespace(state)
+    if envelope['namespace'] != scope:
+        raise ServiceFailure('request_rejected')
+    raw, policy = _policy(state, envelope['pointer_name'], deadline=deadline)
+    if _policy_digest(raw) != envelope['policy_sha256']:
+        raise ServiceFailure('request_changed')
+    deadline = min(deadline, time.monotonic()+policy['timeoutSeconds'])
+    argv = policy['trainerArgv']
+    # Exact venv path, not resolved symlink target: two venvs can share Python.
+    if argv[0] != sys.executable:
+        raise ServiceFailure('model_family_mismatch')
+    request = envelope['request']
+    if (not isinstance(request, dict) or set(request) not in (
+            {'schema_version', 'artifact_path', 'cases'},
+            {'schema_version', 'artifact_path', 'cases', 'model_input_view'})
+            or request['schema_version'] != 1 or not isinstance(request['cases'], list)
+            or len(request['cases']) != 1):
+        raise ServiceFailure('request_rejected')
+    active = read_private_json(state / envelope['pointer_name'])
+    if (not isinstance(active, dict) or active.get('schema_version') != 1
+            or active.get('artifact_sha256') != envelope['artifact_sha256']
+            or active.get('artifact_path') != request.get('artifact_path')
+            or active.get('model_input_view') != request.get('model_input_view')):
+        raise ServiceFailure('request_changed')
+    artifact = resident._safe_file(request['artifact_path'])
+    if resident._hash(artifact) != envelope['artifact_sha256']:
+        raise ServiceFailure('request_changed')
+    case = request['cases'][0]
+    from .contracts import digest
+    from .store import canonical
+    if (not isinstance(case, dict) or set(case) != {'request_id', 'prompt', 'candidates', 'input_sha256'}
+            or not isinstance(case['request_id'], str) or not 1 <= len(case['request_id']) <= 128
+            or not isinstance(case['prompt'], str) or not case['prompt'].strip()
+            or len(case['prompt'].encode()) > 65536
+            or not isinstance(case['candidates'], list) or not 1 <= len(case['candidates']) <= 30
+            or digest(canonical({key: value for key, value in case.items() if key != 'input_sha256'})) != case['input_sha256']):
+        raise ServiceFailure('request_rejected')
+    ids = set()
+    for row in case['candidates']:
+        if (not isinstance(row, dict) or set(row) != {'id','revision_sha256','input_text','input_kind'}
+                or not isinstance(row['id'], str) or not row['id'] or row['id'] in ids
+                or not isinstance(row['input_text'], str) or not isinstance(row['input_kind'], str)
+                or not isinstance(row['revision_sha256'], str) or len(row['revision_sha256']) != 64):
+            raise ServiceFailure('request_rejected')
+        ids.add(row['id'])
+    view = request.get('model_input_view', LEGACY_INPUT_VIEW)
+    if view not in (LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW):
+        raise ServiceFailure('request_rejected')
+    trainer = VerifiedLayaTrainer(argv, max_seconds=policy['timeoutSeconds'],
+        max_rss_mib=policy['maxRssMib'], proof_cache_dir=state, deadline=deadline)
+    verified = trainer.validate_prediction(cwd=state)
+    family = (verified['runtime_identity_sha256'], verified['base_model_sha256'], view)
+    return {'namespace': scope, 'family': family,
+            'generation': (*family, envelope['artifact_sha256']), 'policy': policy,
+            'model_dir': argv[2], 'request': request, 'deadline': deadline}
+
+
+def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json'):
+    """Called after choose's read-only proof admission; worker rechecks scope."""
+    envelope = _make_envelope(state, request, artifact_sha, deadline, pointer_name)
+    root = service_root(create=True)
+    started = time.perf_counter()
+    try:
+        _ensure(root, policy['trainerArgv'][0], deadline)
+        response = _exchange(root, envelope, deadline)
+    except PermissionError as exc:
+        raise ServiceFailure('permission_denied') from exc
+    except socket.timeout as exc:
+        raise ServiceFailure('deadline_expired') from exc
+    except ValueError as exc:
+        if str(exc) == 'resident_handshake_timeout':
+            raise ServiceFailure('deadline_expired') from exc
+        raise
+    if not isinstance(response, dict) or set(response) != {'status', 'prediction', 'timing'}:
+        raise ServiceFailure('worker_error')
+    if response['status'] != 'ok':
+        code = response['status'] if response['status'] in _CODES else 'worker_error'
+        if code == 'inference_attestation_required':
+            raise ValueError('trainer_inference_attestation_required')
+        raise ServiceFailure(code)
+    timing = response['timing']
+    if not isinstance(timing, dict):
+        raise ServiceFailure('worker_error')
+    return response['prediction'], {**timing,
+        'resident_wall_seconds': round(time.perf_counter()-started, 6)}
 
 
 def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
@@ -353,7 +537,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
                             'signature': _signature(), 'queued': pending.qsize(), 'busy': busy.is_set()})
                         continue
                     if envelope == {'command': 'shutdown'}:
-                        if busy.is_set() or not pending.empty():
+                        if pending.unfinished_tasks:
                             respond(conn, {'status': 'busy'})
                         else:
                             stopped.set();respond(conn, {'status': 'stopped'})

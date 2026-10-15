@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-from context_learning import live_select, shared
+from context_learning import live_select, shared, inference_service
 from context_learning.resident import ResidentFailure
 from context_learning.contracts import digest
 from context_learning.laya_adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
@@ -41,6 +41,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
     class StubTrainer:
         def __init__(self, argv, **kwargs):
             assert argv[1] == str(adapter)
+        def validate_prediction(self, *, cwd):
+            return {}
         def call(self, mode, request, output, *, cwd):
             assert mode == 'predict'
             case = request['cases'][0]
@@ -52,6 +54,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
                 'request_id': case['request_id'], 'input_sha256': case['input_sha256'],
                 'selected_ids': selected}]}, {'elapsed_seconds': .1}
     live_select.VerifiedLayaTrainer = StubTrainer
+    def ordinary_service(state, policy, request, artifact_sha, **kwargs):
+        return StubTrainer(policy['trainerArgv']).call('predict', request, None, cwd=state)
+    inference_service.predict = ordinary_service
     for behavior, expected, reason in (
             ('select', ['wiki/card.md'], 'selected'),
             ('zero', [], 'selected'),
@@ -85,7 +90,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
     (multilingual_dir / 'rl_agent_config.json').write_text(json.dumps({
         'encoder': 'jhu-clsp/mmBERT-base', 'max_len': 1024,
         'head_max_len': 256}))
-    def resident_stub(_state, policy, request, artifact_sha, *, deadline):
+    def resident_stub(_state, policy, request, artifact_sha, *, deadline, pointer_name):
+        assert pointer_name=='experimental-checkpoint.json'
         assert policy['trainerArgv'][1] == str(adapter)
         assert policy['trainerArgv'][2] == str(multilingual_dir)
         assert policy['maxRssMib'] == 4096
@@ -99,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
-            'context_learning.resident.predict', side_effect=resident_stub) as resident:
+            'context_learning.inference_service.predict', side_effect=resident_stub) as resident:
         for unapproved in (production_pin, different_pin):
             with patch.object(shared, 'REVIEWED_ADAPTER_SHA256', unapproved):
                 ids, reason, _ = live_select.choose(state, 'Synthetic edit content', rows,
@@ -123,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
                 'modelInputView': EDIT_INPUT_VIEW,
                 'trainerArgv': [sys.executable, historical, str(multilingual_dir)],
                 'maxRssMib': 4096}), patch(
-                'context_learning.resident.predict', side_effect=resident_stub), patch.object(
+                'context_learning.inference_service.predict', side_effect=resident_stub), patch.object(
                 shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
             edit_ids, edit_reason, _ = live_select.choose(
                 state, 'Synthetic edit content', rows,
@@ -134,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
-            'context_learning.resident.predict', side_effect=ResidentFailure(
+            'context_learning.inference_service.predict', side_effect=ResidentFailure(
                 'input_budget_exceeded', {'queue_wait_seconds': .123})), patch.object(
             shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
         missed, reason, metrics = live_select.choose(state,

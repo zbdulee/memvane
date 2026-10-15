@@ -19,7 +19,7 @@ def private(path, value):
 
 def host_checks(root, state):
     sys.path.insert(0, str(root / 'core'))
-    from context_learning import live_select, local_cycle, runtime_setup, laya_adapter
+    from context_learning import live_select, local_cycle, runtime_setup, laya_adapter, inference_service
     from context_learning.contracts import digest
     adapter = root / 'core/context_learning/laya_adapter.py'
     model = state / 'model'; model.mkdir()
@@ -43,7 +43,7 @@ def host_checks(root, state):
     private(proof_path, proof)
     source = '---\ntitle: Synthetic\nstatus: verified\n---\nSynthetic complete body.\n'
     rows = [{'id': 'wiki/synthetic.md', 'revision_sha256': digest(source), 'source_text': source}]
-    phase = ['predict']; metadata = []; smokes = []; modes = []
+    phase = ['predict']; metadata = []; smokes = []; modes = []; service_calls=[]; service_requests=[]
     runtime = {'status': 'metadata_compatible', 'runtime_identity_sha256': 'c'*64, 'mps_available': False}
 
     def probe(*args, **kwargs):
@@ -67,6 +67,11 @@ def host_checks(root, state):
         return {'schema_version': 1, 'predictions': [{'request_id': case['request_id'],
             'input_sha256': case['input_sha256'], 'selected_ids': ['wiki/synthetic.md']}]}, {'elapsed_seconds': .01}
 
+    def shared_transport(state, policy, request, artifact_sha, **kwargs):
+        service_calls.append(str(state))
+        service_requests.append((copy.deepcopy(request),artifact_sha))
+        return transport(None, 'predict', request, None, cwd=state)
+
     def snapshot():
         return {p.name: (p.read_bytes(), p.stat().st_ino, p.stat().st_mode & 0o777)
                 for p in state.iterdir() if p.is_file()}
@@ -89,9 +94,37 @@ def host_checks(root, state):
             runtime_setup, 'attest_runtime', side_effect=attest), patch.object(
             local_cycle.LocalTrainer, 'call', transport), patch.object(
             laya_adapter, 'smoke', side_effect=AssertionError('no actual smoke')), patch.object(
-            laya_adapter, 'train', side_effect=AssertionError('no actual train')):
+            laya_adapter, 'train', side_effect=AssertionError('no actual train')), patch.object(
+            inference_service, 'predict', side_effect=shared_transport, create=True):
         choose(); choose()
+        assert len(service_calls)==2, 'ordinary prediction bypassed shared service'
         assert not smokes
+        request, artifact_sha = service_requests[-1]
+        envelope = inference_service._make_envelope(state, request, artifact_sha,
+            time.monotonic()+5, 'active-checkpoint.json')
+        validated=inference_service._validate_request(envelope)
+        assert validated['namespace']==inference_service.namespace(state)
+        assert validated['generation'][-1]==artifact_sha
+        assert validated['family'][1]==proof['attestation']['base_model_sha256']
+        def reject(env, expected):
+            try:inference_service._validate_request(env)
+            except ValueError as exc:assert str(exc)==expected,(str(exc),expected)
+            else:raise AssertionError('worker accepted changed project/evidence')
+        altered=copy.deepcopy(envelope);altered['namespace']='0'*64
+        reject(altered,'resident_service_request_rejected')
+        altered=copy.deepcopy(envelope);altered['request']['cases'][0]['prompt']='changed unbound input'
+        reject(altered,'resident_service_request_rejected')
+        altered=copy.deepcopy(envelope);altered['policy_sha256']='0'*64
+        reject(altered,'resident_service_request_changed')
+        proof_path.unlink()
+        reject(envelope,'trainer_inference_attestation_required')
+        private(proof_path,proof)
+        # A request admitted earlier cannot execute with a newly changed pointer.
+        pointer=state/'active-checkpoint.json';saved=pointer.read_bytes()
+        changed=json.loads(saved);changed['artifact_sha256']='0'*64
+        private(pointer,changed)
+        reject(envelope,'resident_service_request_changed')
+        pointer.write_bytes(saved)
         broken = copy.deepcopy(proof); broken['verifiedAt'] -= 86401
         private(proof_path, broken)
         choose('inference_attestation_required', no_probe=True)

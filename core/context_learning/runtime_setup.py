@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlparse, unquote
 
 from .store import canonical
@@ -58,20 +59,29 @@ print(json.dumps({'python':sys.version.split()[0],'versions':versions,
  'laya_direct_url':json.loads(direct) if direct else None}))'''
 
 
-def _run_probe(executable, *, temp_dir=None):
+def _remaining_timeout(limit, deadline):
+    if deadline is None:
+        return limit
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise ValueError('runtime_probe_deadline')
+    return min(limit, left)
+
+
+def _run_probe(executable, *, temp_dir=None, deadline=None):
     env={k:os.environ[k] for k in ('PATH','LANG','TMPDIR') if k in os.environ}
     if temp_dir is not None:
         env['TMPDIR']=str(temp_dir)
     env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1',QMD_SANDBOX='1')
     with tempfile.TemporaryDirectory(prefix='qmd-runtime-probe-', dir=temp_dir) as cwd:
         result=subprocess.run([str(executable),'-I','-c',_PROBE],cwd=cwd,env=env,
-            stdin=subprocess.DEVNULL,capture_output=True,timeout=30,check=False)
+            stdin=subprocess.DEVNULL,capture_output=True,timeout=_remaining_timeout(30, deadline),check=False)
     if result.returncode or len(result.stdout)>MAX_PROBE_BYTES or len(result.stderr)>MAX_PROBE_BYTES:
         raise ValueError('runtime_probe_failed')
     return json.loads(result.stdout)
 
 
-def _editable_identity(direct):
+def _editable_identity(direct, *, deadline=None):
     if not isinstance(direct,dict) or direct.get('dir_info',{}).get('editable') is not True:
         return None
     url=direct.get('url')
@@ -82,15 +92,15 @@ def _editable_identity(direct):
     if not root.is_absolute() or not root.is_dir() or root.is_symlink():
         raise ValueError('missing_editable_origin')
     commit=subprocess.run(['git','-C',str(root),'rev-parse','HEAD'],capture_output=True,
-        text=True,timeout=5,check=False)
+        text=True,timeout=_remaining_timeout(5, deadline),check=False)
     dirty=subprocess.run(['git','-C',str(root),'status','--porcelain'],capture_output=True,
-        text=True,timeout=5,check=False)
+        text=True,timeout=_remaining_timeout(5, deadline),check=False)
     if commit.returncode or dirty.returncode or dirty.stdout.strip():
         raise ValueError('editable_origin_dirty_or_unknown')
     return {'path':str(root.resolve()),'commit':commit.stdout.strip()}
 
 
-def probe_runtime(executable, *, managed_root=None, runner=None, temp_dir=None):
+def probe_runtime(executable, *, managed_root=None, runner=None, temp_dir=None, deadline=None):
     path=Path(executable)
     if not path.is_absolute(): return {'status':'invalid_executable_path'}
     resolved=path.resolve()
@@ -104,13 +114,13 @@ def probe_runtime(executable, *, managed_root=None, runner=None, temp_dir=None):
         if root not in resolved.parents:
             return {'status':'external_interpreter_dependency','executable':str(path)}
     try:
-        raw=runner(path) if runner is not None else _run_probe(path, temp_dir=temp_dir)
+        raw=runner(path) if runner is not None else _run_probe(path, temp_dir=temp_dir, deadline=deadline)
         if not isinstance(raw,dict) or set(raw)!={'python','versions','laya_import','torch_import','mps_available','laya_direct_url'}:
             raise ValueError('invalid_probe_output')
         versions=raw['versions']
         if not isinstance(versions,dict) or any(not isinstance(versions.get(k),str) for k in MANAGED_DEPENDENCIES):
             raise ValueError('invalid_probe_versions')
-        editable=_editable_identity(raw['laya_direct_url'])
+        editable=_editable_identity(raw['laya_direct_url'], deadline=deadline)
         if managed_root is not None and editable is not None:
             raise ValueError('managed_runtime_must_not_be_editable')
         if raw['python'] != PYTHON_PIN or versions['laya'] != LAYA_PIN or raw['laya_import'] != LAYA_PIN or raw['torch_import'] != versions['torch']:

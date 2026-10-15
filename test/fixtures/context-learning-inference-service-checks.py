@@ -90,6 +90,17 @@ class GenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):
             self.run_job(job())
 
+    def test_memory_recovers_after_failed_candidate(self):
+        self.run_job(job());rss=[100];self.engine.rss=lambda:rss[0]
+        original=self.engine.load
+        def spike(request):rss[0]=2048;return original(request)
+        self.engine.load=spike
+        with self.assertRaisesRegex(service.ServiceFailure,'replacement_deferred'):
+            self.run_job(job('b'))
+        rss[0]=100
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),2)
+
     def test_different_family_rejected_without_loading(self):
         self.run_job(job())
         with self.assertRaisesRegex(service.ServiceFailure,'model_family_mismatch'):
@@ -121,17 +132,50 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(self.run_job(job())['head'],'a')
 
 
+class ResponseTests(unittest.TestCase):
+    def test_invalid_candidate_response_is_not_a_publishable_generation(self):
+        from context_learning import laya_adapter
+        request={'request':{'cases':[{'request_id':'r','input_sha256':'a',
+                                    'candidates':[{'id':'wiki'}]}]}}
+        with patch.object(laya_adapter,'predict_loaded',return_value={
+                'schema_version':1,'predictions':[{'request_id':'r',
+                'input_sha256':'a','selected_ids':['outside-project']}]}):
+            with self.assertRaisesRegex(service.ServiceFailure,'invalid_prediction'):
+                service._forward((None,None,{}),request,limits={},timing={},cancelled=lambda:False)
+
+
+class MemoryObservationTests(unittest.TestCase):
+    def test_current_rss_is_not_a_historical_peak(self):
+        import resource
+        from types import SimpleNamespace
+        with patch.object(resource,'getrusage',return_value=SimpleNamespace(ru_maxrss=10**18)):
+            current=service._rss_mib()
+        self.assertGreater(current,0)
+        self.assertLess(current,100000,'historical peak poisoned current admission')
+
+
+class ProbeDeadlineTests(unittest.TestCase):
+    def test_metadata_subprocess_uses_remaining_deadline(self):
+        from context_learning import runtime_setup
+        def child(*args,**kwargs):
+            self.assertLessEqual(kwargs['timeout'],.2)
+            raise subprocess.TimeoutExpired(args[0],kwargs['timeout'])
+        with patch.object(runtime_setup.subprocess,'run',side_effect=child):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                runtime_setup._run_probe(sys.executable,deadline=time.monotonic()+.2)
+
+
 class PathTests(unittest.TestCase):
     def test_root_is_shared_under_home_and_private(self):
         with tempfile.TemporaryDirectory(prefix='qmd-svc-path-') as temp:
             home=Path(temp).resolve()
             with patch.object(Path,'home',return_value=home):
-                root=service.service_root(create=True)
-                self.assertEqual(root,service.service_root())
+                root=service.service_root(create=True,home=home)
+                self.assertEqual(root,service.service_root(home=home))
                 self.assertEqual(root.stat().st_mode&0o777,0o700)
                 self.assertIn('qmd-auto-context',str(root))
                 root.chmod(0o755)
-                with self.assertRaises(ValueError):service.service_root()
+                with self.assertRaises(ValueError):service.service_root(home=home)
 
     def test_namespace_is_canonical_and_rejects_symlink(self):
         with tempfile.TemporaryDirectory(prefix='qmd-svc-path-') as temp:
@@ -176,7 +220,7 @@ class ServerTests(unittest.TestCase):
             engine=service.GenerationEngine(load=lambda request:request['generation'][-1],
                 forward=forward,admission=admit,rss=lambda:100)
             thread=threading.Thread(target=service._serve,args=(root,),
-                kwargs={'engine':engine,'validate':fake_validate,'ready':ready,'capacity':1})
+                kwargs={'engine':engine,'validate':fake_validate,'ready':ready,'capacity':1},daemon=True)
             thread.start();self.assertTrue(ready.wait(2))
             first=socket.socket(socket.AF_UNIX);first.settimeout(3);first.connect(str(root/service.SOCKET_NAME))
             service.resident._write(first,envelope(namespace='blocking'))
@@ -187,14 +231,49 @@ class ServerTests(unittest.TestCase):
             while exchange(root,{'command':'version'})['queued']!=1 and time.monotonic()<until:time.sleep(.01)
             self.assertEqual(exchange(root,envelope(namespace='overflow'))['status'],'queue_full')
             self.assertTrue(exchange(root,{'command':'version'})['busy'])
+            self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'busy')
             time.sleep(.12);release.set()
             self.assertEqual(service.resident._read(first)['status'],'ok');first.close()
             self.assertEqual(service.resident._read(waiting)['status'],'deadline_expired');waiting.close()
             self.assertEqual(observed,['blocking'])
             self.assertEqual(exchange(root,envelope(namespace='other'))['prediction']['namespace'],'other')
+            # A disconnected waiting caller cannot consume model work.
+            release.clear();scoring.clear()
+            blocking=socket.socket(socket.AF_UNIX);blocking.settimeout(3);blocking.connect(str(root/service.SOCKET_NAME))
+            service.resident._write(blocking,envelope(namespace='blocking'))
+            self.assertTrue(scoring.wait(2))
+            abandoned=socket.socket(socket.AF_UNIX);abandoned.connect(str(root/service.SOCKET_NAME))
+            service.resident._write(abandoned,envelope(namespace='abandoned'));abandoned.close()
+            until=time.monotonic()+1
+            while exchange(root,{'command':'version'})['queued']!=1 and time.monotonic()<until:time.sleep(.01)
+            release.set();self.assertEqual(service.resident._read(blocking)['status'],'ok');blocking.close()
+            until=time.monotonic()+1
+            while exchange(root,{'command':'version'})['queued'] and time.monotonic()<until:time.sleep(.01)
+            self.assertNotIn('abandoned',observed)
             self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'stopped')
             thread.join(2);self.assertFalse(thread.is_alive())
             self.assertFalse((root/service.SOCKET_NAME).exists())
+
+    def test_invalid_wire_and_peer_failure_do_not_echo_body(self):
+        with tempfile.TemporaryDirectory(prefix='qmd-s-',dir='/tmp') as temp:
+            root=Path(temp).resolve();root.chmod(0o700);ready=threading.Event()
+            def denied(_env):raise ValueError('synthetic-private-secret/body')
+            thread=threading.Thread(target=service._serve,args=(root,),
+                kwargs={'validate':denied,'ready':ready},daemon=True)
+            thread.start();self.assertTrue(ready.wait(2))
+            try:
+                with socket.socket(socket.AF_UNIX) as conn:
+                    conn.settimeout(1);conn.connect(str(root/service.SOCKET_NAME))
+                    conn.sendall(b'invalid-json-private-secret\n')
+                    reply=service.resident._read(conn)
+                    self.assertEqual(reply['status'],'worker_error')
+                    self.assertNotIn('private-secret',json.dumps(reply))
+                self.assertNotIn('synthetic-private-secret',json.dumps(exchange(root,envelope())))
+                with patch.object(service.resident,'_same_owner',return_value=False):
+                    self.assertEqual(exchange(root,envelope())['status'],'request_rejected')
+            finally:
+                exchange(root,{'command':'shutdown'});thread.join(2)
+            self.assertFalse(thread.is_alive())
 
     def test_startup_race_and_crash_recovery_use_one_kernel_lease(self):
         self.assertTrue(hasattr(service,'_ensure'),'singleton_startup_missing')
@@ -209,6 +288,10 @@ class ServerTests(unittest.TestCase):
             def start(_):return service._ensure(root,sys.executable,time.monotonic()+3,spawn=spawn)
             try:
                 with ThreadPoolExecutor(max_workers=6) as pool:list(pool.map(start,range(6)))
+                self.assertEqual(len(children),1)
+                with patch.object(service,'_signature',return_value='0'*64):
+                    with self.assertRaisesRegex(service.ServiceFailure,'version_mismatch'):
+                        start(0)
                 self.assertEqual(len(children),1)
                 self.assertEqual(exchange(root,envelope(namespace='claude'))['prediction']['head'],'a')
                 self.assertEqual(exchange(root,envelope(namespace='codex'))['prediction']['head'],'a')
