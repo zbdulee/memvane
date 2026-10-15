@@ -192,6 +192,20 @@ def exchange(root,envelope,timeout=3):
         return service.resident._read(conn)
 
 
+def shutdown_idle(root):
+    # An RPC response is visible before score() finishes task_done(). Keep
+    # the busy guard and wait only for that real transition, within the same
+    # bounded fixture budget; never widen product deadlines or kill a worker.
+    deadline=time.monotonic()+3
+    while True:
+        left=deadline-time.monotonic()
+        if left<=0:raise AssertionError('owned fixture service did not become idle')
+        answer=exchange(root,{'command':'shutdown'},timeout=left)
+        if answer=={'status':'stopped'}:return answer
+        if answer!={'status':'busy'}:raise AssertionError(answer)
+        time.sleep(min(.005,left))
+
+
 def envelope(head='a',namespace='one',seconds=3):
     now=time.time()
     return {'head':head,'namespace':namespace,'queued_at_epoch':now,'deadline_epoch':now+seconds}
@@ -250,7 +264,7 @@ class ServerTests(unittest.TestCase):
             until=time.monotonic()+1
             while exchange(root,{'command':'version'})['queued'] and time.monotonic()<until:time.sleep(.01)
             self.assertNotIn('abandoned',observed)
-            self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'stopped')
+            self.assertEqual(shutdown_idle(root)['status'],'stopped')
             thread.join(2);self.assertFalse(thread.is_alive())
             self.assertFalse((root/service.SOCKET_NAME).exists())
 
@@ -272,8 +286,37 @@ class ServerTests(unittest.TestCase):
                 with patch.object(service.resident,'_same_owner',return_value=False):
                     self.assertEqual(exchange(root,envelope())['status'],'request_rejected')
             finally:
-                exchange(root,{'command':'shutdown'});thread.join(2)
+                shutdown_idle(root);thread.join(2)
             self.assertFalse(thread.is_alive())
+
+    def test_shutdown_waits_for_response_bookkeeping(self):
+        with tempfile.TemporaryDirectory(prefix='qmd-s-',dir='/tmp') as temp:
+            root=Path(temp).resolve();root.chmod(0o700)
+            ready=threading.Event();bookkeeping=threading.Event();release=threading.Event()
+            original_queue=service.queue.Queue
+            class PausedQueue(original_queue):
+                def task_done(self):
+                    bookkeeping.set();release.wait(2);super().task_done()
+            engine=service.GenerationEngine(load=lambda request:'a',
+                forward=lambda loaded,request,**kw:{'head':loaded},admission=admit,rss=lambda:100)
+            with patch.object(service.queue,'Queue',PausedQueue):
+                thread=threading.Thread(target=service._serve,args=(root,),
+                    kwargs={'engine':engine,'validate':fake_validate,'ready':ready},daemon=True)
+                thread.start();self.assertTrue(ready.wait(2))
+                try:
+                    self.assertEqual(exchange(root,envelope())['status'],'ok')
+                    self.assertTrue(bookkeeping.wait(1))
+                    # A completed response must not bypass in-flight bookkeeping.
+                    self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'busy')
+                    timer=threading.Timer(.05,release.set);timer.start()
+                    self.assertEqual(shutdown_idle(root)['status'],'stopped')
+                    timer.join(1)
+                finally:
+                    release.set()
+                    if thread.is_alive():
+                        try:shutdown_idle(root)
+                        except (FileNotFoundError,ConnectionRefusedError,OSError):pass
+                    thread.join(2)
 
     def test_startup_race_and_crash_recovery_use_one_kernel_lease(self):
         self.assertTrue(hasattr(service,'_ensure'),'singleton_startup_missing')
@@ -301,12 +344,12 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(children[0].wait(timeout=3),75)
                 start(0);self.assertEqual(len(children),2)
                 self.assertEqual(exchange(root,envelope())['status'],'ok')
-                self.assertEqual(exchange(root,{'command':'shutdown'})['status'],'stopped')
+                self.assertEqual(shutdown_idle(root)['status'],'stopped')
                 self.assertEqual(children[-1].wait(timeout=3),0)
             finally:
                 for child in children:
                     if child.poll() is None:
-                        try:exchange(root,{'command':'shutdown'})
+                        try:shutdown_idle(root)
                         except Exception:child.terminate()
                     child.wait(timeout=3)
                     child.stderr.close()
