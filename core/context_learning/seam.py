@@ -23,13 +23,18 @@ def _snapshot(path):
 
 
 def _private_state(config, root, *, create=True):
-    configured = config.get('contextLearning', {}).get('stateRoot')
-    if not isinstance(configured, str):
-        return None
-    parent = Path(configured)
+    options = config.get('contextLearning', {})
+    if 'stateRoot' not in options:
+        from .runtime_setup import default_managed_root
+        parent = default_managed_root().parent.parent / 'live-selection'
+    else:
+        configured = options['stateRoot']
+        if not isinstance(configured, str):
+            return None
+        parent = Path(configured)
     if not parent.is_absolute() or not parent.is_dir():
         return None
-    # Existing explicit root only; reject symlink components and indexed roots.
+    # Existing prepared parent only; reject symlink components and indexed roots.
     if any(p.is_symlink() for p in (parent, *parent.parents)):
         return None
     parent = parent.resolve(strict=True)

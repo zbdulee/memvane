@@ -103,6 +103,32 @@ checkpoint or runtime failure restores the ordinary bounded QMD choice.
 `live-selector.json` and an active local checkpoint are separately required;
 this development checkout does not install either in an operating project.
 
+Shared project settings should omit `contextLearning.stateRoot`. The private
+parent then defaults to the current user's plugin directory:
+`~/Library/Application Support/qmd-auto-context/live-selection` on macOS,
+or `~/.local/share/qmd-auto-context/live-selection` elsewhere, using the same
+home-location rule as the managed runtime. These displayed `~` prefixes mean
+the current user's home; literal `~` strings in `stateRoot` are not expanded.
+Each canonical project root still gets its own SHA-256 namespace beneath that
+parent. Existing state/checkpoint files at this default are reused in place;
+changing the project location changes its namespace, not its search scope.
+An explicit private absolute `stateRoot` remains supported. Explicit invalid
+values do not fall back to the default.
+
+The parent directory must already have been prepared locally with owner-only
+permissions, outside indexed collection roots. Resolving an omitted setting
+does not create that parent, move/copy state, prepare a model/checkpoint, enable
+capture/training, or call a provider. Missing local preparation retains the
+ordinary QMD fallback. Other users need their own local runtime/state setup;
+do not commit a personal absolute home path to shared settings. Before removing
+an existing explicit root, verify the default resolves to the same prepared
+namespace; custom roots require retaining their explicit setting.
+
+The explicit private-to-shared history migration flow still requires an
+explicit `stateRoot` binding in project settings. Omitted-root resolution here
+does not change that migration contract; a migration request without that
+binding is rejected as `project_history_binding_changed`.
+
 ## Optional external teacher
 
 No teacher call occurs during capture, local cycles or the schedule gate.

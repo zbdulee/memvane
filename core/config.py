@@ -1016,6 +1016,10 @@ def normalize_config(input_config):
             'candidateTopK': 15 if live_selection else learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
             'stateRoot': learning.get('stateRoot') if isinstance(learning.get('stateRoot'), str) else None,
         }
+        # Omission selects the per-user plugin default. Keep an explicitly
+        # invalid value distinguishable so it cannot silently select that root.
+        if 'stateRoot' not in learning:
+            config['contextLearning'].pop('stateRoot')
     shared = input_config.get('sharedLearning')
     if isinstance(shared, dict):
         rerank_target = shared.get('rerankTargetSeconds', 1.0)
