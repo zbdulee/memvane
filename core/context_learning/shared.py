@@ -1116,7 +1116,8 @@ def status(root):
         counts = dict(db.execute("SELECT status,COUNT(*) FROM cases GROUP BY status"))
         use_states = dict(db.execute("SELECT use_state,COUNT(*) FROM cases GROUP BY use_state"))
         latest = db.execute("SELECT cycle_id,status,evidence FROM cycles ORDER BY started_at DESC LIMIT 1").fetchone()
-        return {"status": "ok", "cases": counts, "use_states": use_states,
+        learning_jobs = dict(db.execute("SELECT status,COUNT(*) FROM learning_jobs GROUP BY status")) if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='learning_jobs'").fetchone() else {}
+        return {"status": "ok", "cases": counts, "use_states": use_states,"learning_jobs":learning_jobs,
                 "gold_calls_used": _meta(db, "gold_calls_used", 0),
                 "next_batch": _meta(db, "next_batch", None),
                 "holdout_diagnostic": _meta(db, "holdout_diagnostic", None),
@@ -2250,6 +2251,26 @@ def wake_after_index(project):
         return {"status": "ignored"}
 
 
+def run_training_pending(root,project):
+    """Retry local training only, never teacher/observation or enrollment."""
+    import config
+    from .runtime_authorization import require_operation
+    from .resource_coordination import _lock
+    root,project=Path(root),Path(project)
+    cfg=config.find_project_config(str(project))['config']
+    if _safe_root(cfg,project)!=root:return {'status':'disabled'}
+    policy=_policy(root)
+    if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
+    try:require_operation(root,policy,'local_train')
+    except ValueError:return {'status':'runtime_approval_required'}
+    fd=_lock(root/'shared-worker.lock')
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return {'status':'busy'}
+        return train_due(root,policy)
+    finally:os.close(fd)
+
+
 def main(argv):
     if len(argv) != 2 or argv[0] not in ("run", "run-project", "run-project-after-index",
                                           "launch-project", "wake-after-index",
@@ -2273,6 +2294,11 @@ def main(argv):
             else:
                 result = run(root, project=project, sync_config=cfg,
                              wait_for_lock=argv[0] == "run-project-after-index")
+                if (result['status']=='deferred_resource'
+                        and os.environ.get('QMD_SHARED_GOLD_ONLY')!='1'
+                        and _policy(root).get('_runtime_authorization_v2') is True):
+                    from .learning_retry import wait_pending
+                    result={**result,'learning_retry':wait_pending(root,lambda:run_training_pending(root,project))}
         else:
             root = Path(argv[1]).resolve(strict=True)
             result = {"run": run, "status": status, "rollback": rollback}[argv[0]](root)

@@ -5,6 +5,7 @@ MODEL_DIR is an already present local Laya checkpoint. Only the explicit
 artifact and response paths may be written; the base checkpoint is read-only.
 """
 import hashlib
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -321,7 +322,24 @@ def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
     return total_loss
 
 
+def _allocation(torch):
+    from context_learning.inference_service import _rss_mib
+    rss=_rss_mib()
+    driver=(torch.mps.driver_allocated_memory()/(1024*1024)
+            if str(_device(torch))=='mps' else 0)
+    return rss,driver
+
+
+def _training_guard(request):
+    control=request.get('learning_control')
+    if control is None:return None
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from context_learning.resource_coordination import TrainingGuard
+    return TrainingGuard(control)
+
+
 def train(model_dir, request, *, max_updates=None, verification=False):
+    guard = _training_guard(request)
     import torch
     import torch.nn.functional as F
 
@@ -335,7 +353,10 @@ def train(model_dir, request, *, max_updates=None, verification=False):
     input_view = _request_view(request)
     base_sha = model_identity(model_dir)
     limits = _training_limits(request, base_sha, _device(torch))
-    model, tok, cfg = _load(model_dir, input_view=input_view)
+    before=_allocation(torch) if guard is not None else None
+    with guard.step() if guard is not None else nullcontext():
+        model, tok, cfg = _load(model_dir, input_view=input_view)
+    if guard is not None:guard.mark_loaded(before,_allocation(torch))
     _check_mps_budget(torch, limits)
     items = _pairs(request.get('train'), tok, cfg, with_gold=True)
     torch.manual_seed(17)
@@ -351,17 +372,40 @@ def train(model_dir, request, *, max_updates=None, verification=False):
                                        max_size=2)
                     if input_view == EDIT_INPUT_VIEW else
                     [items[start:start+2] for start in range(0, len(items), 2)])
-    for current in train_groups:
-        step_started = time.perf_counter() if record_step_losses else None
-        loss_value = _train_group(torch, F, model, tok, params, optimizer,
-            current, limits['microbatchSize'] if limits is not None else 2,
-            limits=limits)
-        updates += 1
-        if step_losses is not None:
-            step_losses.append({'step': updates, 'pairs': len(current),
-                                'cross_entropy': loss_value,
-                                'wall_seconds': round(time.perf_counter() - step_started, 6)})
-        if max_updates is not None and updates >= max_updates: break
+    if guard is not None:
+        from context_learning.training_cursor import UpdateCursor, run_updates
+        cursor=UpdateCursor(request,train_groups)
+        if cursor.saved is not None:
+            from safetensors.torch import load_file
+            head=_head_path(cursor.head(),base_sha,input_view)
+            with guard.step():model.load_state_dict(load_file(str(head)),strict=False)
+            saved=cursor.saved['rng']
+            torch.set_rng_state(torch.tensor(saved['cpu'],dtype=torch.uint8))
+            if str(_device(torch))=='mps':
+                if saved['mps'] is None:raise ValueError('learning_cursor_changed')
+                torch.mps.set_rng_state(torch.tensor(saved['mps'],dtype=torch.uint8))
+        if optimizer.state:raise ValueError('learning_optimizer_unsupported')
+        def rng():
+            return {'cpu':torch.get_rng_state().tolist(),
+                    'mps':torch.mps.get_rng_state().tolist() if str(_device(torch))=='mps' else None}
+        def update(group,size):
+            return _train_group(torch,F,model,tok,params,optimizer,group,
+                min(size,limits['microbatchSize']) if limits is not None else size,limits=limits)
+        run_updates(cursor,train_groups,guard,update,
+            lambda path:_save_head(path,model,base_sha,input_view),rng)
+        updates=cursor.step
+    else:
+        for current in train_groups:
+            step_started = time.perf_counter() if record_step_losses else None
+            loss_value = _train_group(torch, F, model, tok, params, optimizer,
+                current, limits['microbatchSize'] if limits is not None else 2,
+                limits=limits)
+            updates += 1
+            if step_losses is not None:
+                step_losses.append({'step': updates, 'pairs': len(current),
+                                    'cross_entropy': loss_value,
+                                    'wall_seconds': round(time.perf_counter() - step_started, 6)})
+            if max_updates is not None and updates >= max_updates: break
     if not updates: raise ValueError('empty_train')
     if torch.equal(witness, model.scorer[-1].weight.detach()):
         raise ValueError('head_weights_unchanged')
@@ -374,7 +418,11 @@ def train(model_dir, request, *, max_updates=None, verification=False):
             probe_logits, _ = model(**batch)
         probe = {'candidate_id':item['candidate_id'],
                  'logits':probe_logits[0].detach().cpu().tolist()}
-    _save_head(artifact, model, base_sha, input_view)
+    if guard is not None:
+        with guard.step():_save_head(artifact,model,base_sha,input_view)
+        from context_learning.training_cursor import record_completion
+        record_completion(request)
+    else:_save_head(artifact, model, base_sha, input_view)
     response = {'schema_version':1,'status':'trained'}
     if step_losses is not None:
         response['step_losses'] = step_losses
@@ -409,6 +457,7 @@ def prediction_batches(items, *, max_padded_tokens=8192, max_size=4):
 
 
 def predict(model_dir, request):
+    guard=_training_guard(request)
     if request.get('schema_version') != 1 or not isinstance(request.get('artifact_path'), str):
         raise ValueError('invalid_predict_request')
     input_view = _request_view(request)
@@ -418,13 +467,18 @@ def predict(model_dir, request):
     if request.get('training_limits') is not None:
         import torch
         limits = _training_limits(request, base_sha, _device(torch))
-    model, tok, cfg = _load(model_dir, head_artifact=head, input_view=input_view)
-    return predict_loaded(model, tok, cfg, request, memory_limits=limits)
+    if guard is not None:
+        import torch
+        before=_allocation(torch)
+    with guard.step() if guard is not None else nullcontext():
+        model, tok, cfg = _load(model_dir, head_artifact=head, input_view=input_view)
+    if guard is not None:guard.mark_loaded(before,_allocation(torch))
+    return predict_loaded(model, tok, cfg, request, memory_limits=limits,compute_guard=guard)
 
 
 def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                    max_padded_tokens=None, timing=None, cancelled=None,
-                   memory_limits=None):
+                   memory_limits=None,compute_guard=None):
     """Use an already loaded, pinned head for a bounded selection batch."""
     import torch
     if memory_limits is not None:
@@ -460,37 +514,38 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                       forward_seconds=0.0)
     with torch.no_grad():
         for group in batches:
-            _check_mps_budget(torch, memory_limits)
-            if cancelled is not None and cancelled():
-                raise ValueError('prediction_cancelled')
-            preparing = time.perf_counter()
-            try:
-                batch = _batch(group, tok, next(model.parameters()).device)
-            finally:
-                batch_prepare_seconds += time.perf_counter() - preparing
-                if timing is not None:
-                    timing['batch_prepare_seconds'] = round(batch_prepare_seconds, 6)
-            started = time.perf_counter()
-            try:
-                logits, _ = model(**batch)
-                if logits.shape != (len(group), 2):
-                    raise ValueError('unexpected_laya_logit_shape')
-                # .tolist() synchronizes MPS results. Timing only model(...)
-                # understated the actual scoring cost of every microbatch.
-                probabilities = torch.softmax(logits.float(), -1)[:, 1].tolist()
+            with compute_guard.step() if compute_guard is not None else nullcontext():
                 _check_mps_budget(torch, memory_limits)
-            finally:
-                forward_seconds += time.perf_counter() - started
+                if cancelled is not None and cancelled():
+                    raise ValueError('prediction_cancelled')
+                preparing = time.perf_counter()
+                try:
+                    batch = _batch(group, tok, next(model.parameters()).device)
+                finally:
+                    batch_prepare_seconds += time.perf_counter() - preparing
+                    if timing is not None:
+                        timing['batch_prepare_seconds'] = round(batch_prepare_seconds, 6)
+                started = time.perf_counter()
+                try:
+                    logits, _ = model(**batch)
+                    if logits.shape != (len(group), 2):
+                        raise ValueError('unexpected_laya_logit_shape')
+                    # .tolist() synchronizes MPS results. Timing only model(...)
+                    # understated the actual scoring cost of every microbatch.
+                    probabilities = torch.softmax(logits.float(), -1)[:, 1].tolist()
+                    _check_mps_budget(torch, memory_limits)
+                finally:
+                    forward_seconds += time.perf_counter() - started
+                    if timing is not None:
+                        timing['forward_seconds'] = round(forward_seconds, 6)
                 if timing is not None:
-                    timing['forward_seconds'] = round(forward_seconds, 6)
-            if timing is not None:
-                timing['pairs'] += len(group)
-                timing['batches'] += 1
-            for item, probability in zip(group, probabilities):
-                by_request.setdefault(item['request_id'], []).append(
-                    (item['candidate_id'], probability))
-            if cancelled is not None and cancelled():
-                raise ValueError('prediction_cancelled')
+                    timing['pairs'] += len(group)
+                    timing['batches'] += 1
+                for item, probability in zip(group, probabilities):
+                    by_request.setdefault(item['request_id'], []).append(
+                        (item['candidate_id'], probability))
+                if cancelled is not None and cancelled():
+                    raise ValueError('prediction_cancelled')
     predictions = []
     for case in request['cases']:
         predictions.append({'request_id':case['request_id'],
@@ -624,6 +679,8 @@ def main(argv):
 
 
 _SAFE_ERRORS = {
+    'learning_yield','learning_control_invalid','learning_cursor_changed',
+    'learning_update_budget_exceeded','learning_lease_missing','learning_lease_changed',
     'model_token_budget_exceeded', 'tokenizer_model_limit_exceeded',
     'model_input_view_unsupported', 'invalid_complete_input',
     'invalid_request_file', 'invalid_predict_request',

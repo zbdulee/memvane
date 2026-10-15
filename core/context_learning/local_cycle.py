@@ -141,6 +141,9 @@ class LocalTrainer:
         limits = self._admission(cwd)
         if mode in ('train', 'predict') and limits is not None:
             request = {**request, 'training_limits': limits}
+        control = getattr(self, 'learning_control', None)
+        if control is not None and mode in ('train','predict'):
+            request = {**request, 'learning_control':control}
         request_path = Path(cwd) / (mode+'-request.json')
         _atomic_json(request_path, request)
         result_path = Path(result_path)
@@ -153,9 +156,12 @@ class LocalTrainer:
         env.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_LOCAL_TRAINER='1', PYTHONDONTWRITEBYTECODE='1')
         # Avoid inheriting API keys, HOME, proxy settings and project-wide hooks.
+        inherited = tuple(getattr(self, 'inherited_fds', ()))
+        coordination_fd = getattr(self, 'coordination_fd', None)
+        if coordination_fd is not None:env['QMD_TRAINER_COORD_FD']=str(coordination_fd)
         proc = subprocess.Popen([*self.argv, mode, str(request_path), str(pending)],
             cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True)
+            stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=inherited)
         started = time.monotonic(); peak_kib = 0
         rss_sum = cpu_sum = peak_cpu = samples = 0
         next_pressure_check = started + 2
@@ -223,6 +229,8 @@ class LocalTrainer:
                                 'invalid_edit_offsets', 'invalid_edit_window',
                                 'invalid_edit_overlap', 'edit_segment_limit',
                                 'edit_segment_coverage_failed',
+                                'learning_yield', 'learning_control_invalid', 'learning_cursor_changed',
+                                'learning_update_budget_exceeded', 'learning_lease_missing',
                                 'invalid_training_limits', 'training_memory_profile_changed',
                                 'training_memory_unavailable', 'training_memory_budget'}):
                         # Tokenizer-only segmentation shares the same bounded
@@ -233,7 +241,7 @@ class LocalTrainer:
                 self.last_error_code = code
                 # Keep the historical generic error for child exits without
                 # a validated sidecar; only audited codes gain specificity.
-                if code in {'adapter_memory_error', 'training_memory_budget',
+                if code in {'learning_yield', 'adapter_memory_error', 'training_memory_budget',
                             'training_memory_profile_changed', 'training_memory_unavailable'}:
                     raise ResourceDeferred('trainer_failed:' + code, {'reason': code})
                 raise ValueError('trainer_failed' if code == 'trainer_process_failed'

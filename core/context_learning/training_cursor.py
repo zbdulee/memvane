@@ -23,6 +23,8 @@ def completion(request):
 
 
 def record_completion(request):
+    artifact=_safe_file(request['artifact_path'])
+    with artifact.open('rb') as stream:os.fsync(stream.fileno())
     path=Path(request['artifact_path']).with_suffix('.completed.json')
     _atomic_json(path,{'schema':1,'request_sha256':request_identity(request),
                        'artifact_sha256':_hash(request['artifact_path'])})
@@ -33,6 +35,13 @@ def _sync(folder):
     fd=os.open(folder,os.O_RDONLY|getattr(os,'O_DIRECTORY',0))
     try:os.fsync(fd)
     finally:os.close(fd)
+
+
+def _valid_rng(rng):
+    return (isinstance(rng,dict) and set(rng)=={'cpu','mps'}
+            and isinstance(rng['cpu'],list) and bool(rng['cpu'])
+            and all(v is None or (isinstance(v,list) and 0<len(v)<=65536
+                and all(type(x)is int and 0<=x<=255 for x in v)) for v in rng.values()))
 
 
 class UpdateCursor:
@@ -50,8 +59,8 @@ class UpdateCursor:
         self.path=self.root/'cursor.json'
         self.identity=request_identity(request)
         self.groups_sha=digest(canonical(groups))
-        self.maximum=min(len(groups),128)
-        if not 1<=len(groups)<=128:raise ValueError('learning_update_budget_exceeded')
+        self.maximum=len(groups)
+        if not 1<=len(groups)<=7500:raise ValueError('learning_update_budget_exceeded')
         self.step=0;self.saved=None
         if self.path.exists() or self.path.is_symlink():
             row=read_private_json(self.path)
@@ -60,7 +69,8 @@ class UpdateCursor:
                     or row.get('optimizer')!={'name':'SGD','lr':.01,'momentum':0}
                     or type(row.get('next_group')) is not int
                     or not 1<=row['next_group']<=self.maximum
-                    or row.get('head_slot') not in (0,1)
+                    or row.get('head_slot') not in (0,1) or row['head_slot']!=row['next_group']%2
+                    or not _valid_rng(row.get('rng'))
                     or row.get('head_sha256')!=_hash(self.root/f"head-{row['head_slot']}.artifact")):
                 raise ValueError('learning_cursor_changed')
             self.step=row['next_group'];self.saved=row
@@ -70,12 +80,10 @@ class UpdateCursor:
 
     def commit(self,next_group,save_head,rng):
         if next_group!=self.step+1 or next_group>self.maximum:raise ValueError('learning_cursor_step_conflict')
-        if (not isinstance(rng,dict) or set(rng)!={'cpu','mps'}
-                or any(v is not None and (not isinstance(v,list) or len(v)>65536
-                    or any(type(x)is not int or not 0<=x<=255 for x in v)) for v in rng.values())):
+        if not _valid_rng(rng):
             raise ValueError('learning_rng_invalid')
         slot=next_group%2;head=self.root/f'head-{slot}.artifact';pending=self.root/f'head-{slot}.pending'
-        if pending.exists():_safe_file(pending);pending.unlink()
+        if pending.exists() or pending.is_symlink():_safe_file(pending);pending.unlink()
         save_head(pending)
         _safe_file(pending)
         with pending.open('rb') as stream:os.fsync(stream.fileno())
@@ -86,3 +94,17 @@ class UpdateCursor:
              'optimizer':{'name':'SGD','lr':.01,'momentum':0},'rng':rng}
         _atomic_json(self.path,row);_sync(self.root)
         self.saved=row;self.step=next_group
+
+
+def run_updates(cursor,groups,guard,update,save_head,rng,*,per_run=128):
+    """Only fully committed optimizer groups advance the durable cursor."""
+    losses=[]
+    start=cursor.step
+    for index in range(start,len(groups)):
+        with guard.step() as admission:
+            loss=update(groups[index],admission['microbatch_size'])
+            cursor.commit(index+1,save_head,rng())
+            losses.append(loss)
+        if index+1-start>=per_run and cursor.step<len(groups):
+            raise ValueError('learning_yield')
+    return losses

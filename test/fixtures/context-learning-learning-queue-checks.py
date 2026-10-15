@@ -10,7 +10,10 @@ class Checks(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.root.chmod(0o700)
   @contextmanager
   def connect():
-   with sqlite3.connect(self.root/'fixture.sqlite3',timeout=.1) as db:yield db
+   db=sqlite3.connect(self.root/'fixture.sqlite3',timeout=.1)
+   try:
+    with db:yield db
+   finally:db.close()
   self.q=LearningQueue(self.root,connect=connect)
  def row(self,i,rid=None):
   return ('owner',rid or f'r{i}','input'+str(i),json.dumps({'prompt':{'text':f'question {i}'},'candidates':[{'candidate_id':'card','revision_sha256':str(i)}],'request_id':rid or f'r{i}'}),json.dumps({'card':f'body {i}'}),json.dumps({'selected_ids':['card'],'input_sha256':'changes-with-uuid'}),'train','/synthetic/owner','corpus','[]',None,100,'source')
@@ -38,6 +41,12 @@ class Checks(unittest.TestCase):
   nextjob=self.plan(rows);self.assertNotEqual(nextjob['id'],job['id']);self.assertLessEqual(len(nextjob['members']),4)
   hold=list(self.row(12));hold[6]='holdout'
   with self.assertRaises(ValueError):self.plan([hold,self.row(11)])
+ def test_frozen_cohort_role_overrides_provisional_split(self):
+  rows=[list(self.row(i)) for i in range(2)]
+  for r in rows:r[6]='holdout'
+  job=self.q.plan(rows,approval='a'*64,cohort='c',family='f'*64,minimum=2,maximum=4,roles=['train','train'])
+  self.assertEqual(len(job['members']),2)
+  with self.assertRaises(ValueError):self.q.plan(rows,approval='a'*64,cohort='c',family='f'*64,minimum=2,maximum=4,roles=['holdout','train'])
  def test_abandoned_claim_recovers_same_job_without_new_reservation(self):
   job=self.plan([self.row(1),self.row(2)])
   with self.q.claim(job['id']) as claim:self.assertIsNotNone(claim)
@@ -51,6 +60,23 @@ class Checks(unittest.TestCase):
   with self.q.claim(job['id'],now=100) as claim:self.assertIsNone(claim)
   for _ in range(3):self.q.defer(job['id'],'failed',failure=True,now=100)
   self.assertEqual(self.q.get(job['id'])['status'],'blocked')
+ def test_inherited_child_keeps_abandoned_owner_fenced(self):
+  import subprocess,sys
+  job=self.plan([self.row(1),self.row(2)])
+  with self.q.connect() as db:db.execute("UPDATE learning_jobs SET status='running' WHERE job_id=?",(job['id'],))
+  script="import os,fcntl,subprocess,sys;fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600);fcntl.flock(fd,fcntl.LOCK_EX);subprocess.Popen([sys.executable,'-c',\"import pathlib,time,sys;pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(.3)\",sys.argv[2]],pass_fds=(fd,),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);os._exit(0)"
+  ready=self.root/'child-ready'
+  parent=subprocess.Popen([sys.executable,'-c',script,str(self.root/'learning-claim.lock'),str(ready)])
+  parent.wait(timeout=2)
+  deadline=time.monotonic()+2
+  while not ready.exists() and time.monotonic()<deadline:time.sleep(.005)
+  self.assertTrue(ready.exists())
+  with self.q.claim(job['id']) as claim:self.assertIsNone(claim)
+  while time.monotonic()<deadline:
+   with self.q.claim(job['id']) as claim:
+    if claim is not None:break
+   time.sleep(.01)
+  else:self.fail('inherited lease did not release')
  def test_changed_authorization_cannot_take_old_pinned_job(self):
   job=self.plan([self.row(1),self.row(2)])
   other=self.q.plan([self.row(1),self.row(2)],approval='b'*64,cohort='c',family='f'*64,minimum=2,maximum=4)

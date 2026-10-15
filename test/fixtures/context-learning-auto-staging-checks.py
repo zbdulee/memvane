@@ -1,6 +1,7 @@
 """Disposable normal-scheduler cohort proof; no live models or providers."""
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -9,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from context_learning import (automatic_cohort, automatic_staging, shared,
                               synthetic_teacher, synthetic_scope,
-                              synthetic_experiment)
+                              synthetic_experiment, resource_coordination)
 from context_learning.store import canonical
 from context_learning.contracts import digest
 from context_learning.synthetic_experiment import SHARED_NAME
@@ -51,8 +52,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         '_runtime_authorization_v2': True,
         'modelInputView': 'tool-edit-8192-choice-v1',
         'trainerArgv': ['/fake/python', '/fake/adapter', str(model)],
-        'baseArtifact': str(base), 'batchMin': 5, 'batchMax': 20,
+        'baseArtifact': str(base), 'batchMin': 5, 'batchMax': 120,
         'safetySeconds': 900, 'maxRssMib': 4096}
+    coord=root/'coordination';coord.mkdir(mode=0o700)
     dbpath = root / shared.DATABASE_NAME
     with shared._db_at(dbpath):
         pass
@@ -222,6 +224,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
     class FakeTrainer:
         def call(self, mode, request, result_path, *, cwd):
             assert mode == 'train'
+            assert len(self.inherited_fds)==2
+            assert all(os.fstat(fd).st_nlink==1 for fd in self.inherited_fds)
+            assert request['learning_control']['root']==str(coord)
             calls.append(request)
             Path(request['artifact_path']).write_bytes(b'candidate-' +
                 request['manifest_sha256'].encode())
@@ -238,8 +243,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         return grant
 
     ready = {'ready': True, 'available_mib': 10000,
-             'load_per_cpu': 0.1}
-    with patch.object(shared, '_db', local_db), patch.object(
+             'load_per_cpu': 0.1, 'total_mib':16384}
+    with patch.object(resource_coordination,'default_root',return_value=coord), patch.object(shared, '_db', local_db), patch.object(
             shared, '_case_active',
             side_effect=lambda *_args: runtime_state['source_active']), patch.object(
             shared, 'resource_report', return_value=ready), patch.object(
@@ -321,6 +326,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         assert waiting_for_train['required_train'] == 100
         assert waiting_for_train['validation_families'] == 5
         assert len(calls) == 1
+        # Available historical labels cannot satisfy this head's train gate.
+        with shared._db_at(dbpath) as db:
+            existing_train, existing_validation = automatic_cohort.training_and_validation(db,project,grant)
+        historical=[]
+        for n in range(95):
+            row=list(existing_train[n%len(existing_train)])
+            row[1]='historical-'+str(n);row[10]='older-trained-head'
+            historical.append(tuple(row))
+        with patch.object(automatic_staging,'training_and_validation',return_value=(existing_train+historical,existing_validation)), patch.object(shared,'_predict',side_effect=AssertionError('untrained cohort satisfied quality gate')):
+            bounded=shared.train_due(root,policy,trainer_factory=lambda _:FakeTrainer())
+        assert bounded['status']=='staged_waiting_quality_cohort' and bounded['train']==5,bounded
         for n in range(5, 100):
             insert('train-' + str(n), 'fresh-train-' + str(n),
                    train_prefixes[n % 5] + 'source-' + str(n) + '.md',

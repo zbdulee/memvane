@@ -321,7 +321,7 @@ def _failure(exc):
         return exc.code
     if str(exc) == 'trainer_inference_attestation_required' or str(exc).startswith('inference_identity_'):
         return 'inference_attestation_required'
-    if str(exc) in ('resident_deadline_expired', 'prediction_cancelled'):
+    if str(exc) in ('resident_deadline_expired', 'prediction_cancelled', 'learning_inference_deadline'):
         return 'deadline_expired'
     return 'worker_error'
 
@@ -453,8 +453,10 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
     root = service_root(create=True)
     started = time.perf_counter()
     try:
-        _ensure(root, policy['trainerArgv'][0], deadline)
-        response = _exchange(root, envelope, deadline)
+        from .resource_coordination import Coordinator
+        with Coordinator(root).inference(deadline,envelope['namespace']):
+            _ensure(root, policy['trainerArgv'][0], deadline)
+            response = _exchange(root, envelope, deadline)
     except PermissionError as exc:
         raise ServiceFailure('permission_denied') from exc
     except socket.timeout as exc:
@@ -481,6 +483,8 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
     root = resident._private_state(root)
     engine = engine or GenerationEngine()
     validate = validate or _validate_request
+    from .resource_coordination import Coordinator
+    coordinator=Coordinator(root)
     pending = queue.Queue(maxsize=capacity)
     busy = threading.Event()
     stopped = threading.Event()
@@ -510,17 +514,18 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY):
             try:
                 if resident._cancelled(conn, deadline):
                     raise ServiceFailure('deadline_expired')
-                validation_started = time.perf_counter()
-                job = validate(envelope)
-                initial_validation = time.perf_counter()-validation_started
-                revalidation_seconds = [0.0]
-                def revalidate():
-                    began = time.perf_counter()
-                    try: return validate(envelope)
-                    finally: revalidation_seconds[0] += time.perf_counter()-began
-                result, timing = engine.run(job,
-                    cancelled=lambda: resident._cancelled(conn, deadline),
-                    revalidate=revalidate)
+                with coordinator.inference(deadline,str(envelope.get('namespace',''))), coordinator.inference_compute(deadline):
+                    validation_started = time.perf_counter()
+                    job = validate(envelope)
+                    initial_validation = time.perf_counter()-validation_started
+                    revalidation_seconds = [0.0]
+                    def revalidate():
+                        began = time.perf_counter()
+                        try: return validate(envelope)
+                        finally: revalidation_seconds[0] += time.perf_counter()-began
+                    result, timing = engine.run(job,
+                        cancelled=lambda: resident._cancelled(conn, deadline),
+                        revalidate=revalidate)
                 timing.update(job.get('identity_timing', {}))
                 timing['initial_validation_seconds'] = round(initial_validation,6)
                 timing['revalidation_seconds'] = round(revalidation_seconds[0],6)

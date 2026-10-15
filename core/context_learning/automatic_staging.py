@@ -23,16 +23,22 @@ def _case_evidence(rows):
     return digest(canonical([(r[0], r[1], r[2], r[5]) for r in rows]))
 
 
-def _trainer(policy, factory):
+def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_fd=None):
     if factory is not None:
-        return factory(policy)
+        trainer=factory(policy)
+        trainer.learning_control=control;trainer.inherited_fds=fds;trainer.coordination_fd=coordination_fd
+        return trainer
     adapter = Path(__file__).with_name('laya_adapter.py').resolve()
     if Path(policy['trainerArgv'][1]).resolve() != adapter:
         raise ValueError('invalid_shared_trainer')
     from .shared import resource_report
-    return VerifiedLayaTrainer(policy['trainerArgv'],
+    trainer = VerifiedLayaTrainer(policy['trainerArgv'], proof_cache_dir=root,
         max_seconds=policy['safetySeconds'], max_rss_mib=policy['maxRssMib'],
-        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
+        pressure_probe=lambda: resource_report(policy, detailed=True, admission=False), require_monitor=True)
+    # Automatic training cannot silently renew a compatibility smoke receipt.
+    trainer.validate_prediction(cwd=root)
+    trainer.learning_control=control;trainer.inherited_fds=fds;trainer.coordination_fd=coordination_fd
+    return trainer
 
 
 def _quality_ready(train, validation, cohort):
@@ -50,7 +56,7 @@ def _quality_ready(train, validation, cohort):
     return ready, empty, train_families, validation_families
 
 
-def train_due_staged(root, policy, grant, *, trainer_factory=None):
+def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=None):
     from .shared import _db, _case_active, resource_report
     from .synthetic_experiment import project_for
     from .laya_adapter import EDIT_INPUT_VIEW, model_identity
@@ -72,7 +78,8 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
                             _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
     queue=LearningQueue(root)
     job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
-                   family=family,minimum=policy['batchMin'],maximum=policy['batchMax'])
+                   family=family,minimum=policy['batchMin'],maximum=policy['batchMax'],
+                   roles=['train']*len(cohort_train))
     if job is None:return {'status':'waiting_fresh_batch','threshold':policy['batchMin']}
     try: train=queue.rows(job,cohort_train)
     except ValueError:
@@ -80,7 +87,14 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
     if job['status']=='blocked':
         return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
     if job['status']=='staged':
-        return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,trainer_factory=trainer_factory)
+        # Staged quality evaluation is local ML too: join the same controller.
+        from .resource_coordination import Coordinator
+        coordinator=coordinator or Coordinator()
+        try:
+            with coordinator.training(policy,resource_report(policy,detailed=True)) as lease:
+                return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,
+                    trainer_factory=trainer_factory,coordination=(coordinator,lease))
+        except ResourceDeferred:return {'status':'staged_evaluation_deferred','cycle_id':job['id']}
     report=resource_report(policy,detailed=True)
     if not report['ready']:
         queue.defer(job['id'],'resource')
@@ -88,13 +102,27 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None):
         return {'status':'deferred_resource','resources':report,'cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
     with queue.claim(job['id']) as claim:
         if claim is None:return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
-        return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,trainer_factory=trainer_factory,claim_fd=claim)
+        from .resource_coordination import Coordinator
+        coordinator=coordinator or Coordinator()
+        try:
+            with coordinator.training(policy,report) as lease:
+                return _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,
+                    trainer_factory=trainer_factory,claim_fd=claim,coordination=(coordinator,lease))
+        except ResourceDeferred as exc:
+            queue.defer(job['id'],'inference' if 'inference' in str(exc) else 'resource')
+            record_resource_defer(root,exc.report,reason=str(exc))
+            return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
 
 
-def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None):
+def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None,coordination=None):
     from .shared import _case, _case_active, _db, _predict
     from .synthetic_experiment import project_for,reserve_train
     from .laya_adapter import EDIT_INPUT_VIEW
+    from .resource_coordination import admission_policy
+    controller,(coord_fd,admission)=coordination
+    control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),
+             'namespace':queue.scope,'job_id':job['id']}
+    fds=tuple(fd for fd in (claim_fd,coord_fd) if fd is not None)
     grant_sha=proposal_sha256(grant)
     project=project_for(root)
     new_train=sum(m['fresh'] for m in job['members'])
@@ -146,14 +174,13 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
         try:
             require_operation(root, policy, 'local_train',
                               approval_sha256=grant_sha)
-            trainer = _trainer(policy, trainer_factory)
-            trainer.inherited_fds = (claim_fd,) if claim_fd is not None else ()
+            trainer = _trainer(policy, trainer_factory,root=root,control=control,fds=fds,coordination_fd=coord_fd)
             cases = [_case(row[:6]) for row in train]
             request = {'schema_version': 1,
                 'train': [{k: v for k, v in case.items() if k != 'project_key'}
                           for case in cases],
                 'artifact_path': str(artifact), 'manifest_sha256': train_sha,
-                'model_input_view': EDIT_INPUT_VIEW}
+                'model_input_view': EDIT_INPUT_VIEW,'learning_control':control}
             meta = {'job_id': cycle_id + ':train', 'parent_id': cycle_id,
                     'op': 'laya_train', 'runtime_kind': 'local_trainer',
                     'model_version': 'laya', 'source_version': 'base',
@@ -218,8 +245,13 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             queue.defer(cycle_id,'resource' if deferred else 'trainer_failed',failure=not deferred)
             return {'status': 'deferred_resource' if deferred else 'failed', 'reason': str(exc)[:80],
                     'cycle_id': cycle_id}
+    try:
+        require_operation(root, policy, 'quality_evaluate',
+                          approval_sha256=grant_sha)
+    except ValueError:
+        return {'status': 'staged_authorization_expired', 'cycle_id': cycle_id}
     ready, empty, train_families, validation_families = _quality_ready(
-        cohort_train, validation, grant['cohort'])
+        train, validation, grant['cohort'])
     if not ready:
         return {'status': 'staged_waiting_quality_cohort', 'cycle_id': cycle_id,
             'train': len(train), 'validation': len(validation),
@@ -233,16 +265,11 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                 grant['cohort']['minValidationFamilies'],
             'required_empty': grant['cohort']['minEmptyValidation'],
             'artifact_sha256': stage['artifactSha256']}
-    try:
-        require_operation(root, policy, 'quality_evaluate',
-                          approval_sha256=grant_sha)
-    except ValueError:
-        return {'status': 'staged_authorization_expired', 'cycle_id': cycle_id}
     if any(not _case_active(root, (r[7], r[1], r[3]))
            for r in train + validation):
         return {'status': 'staged_source_revoked', 'cycle_id': cycle_id}
     try:
-        trainer = _trainer(policy, trainer_factory)
+        trainer = _trainer(policy, trainer_factory,root=root,control=control,fds=fds,coordination_fd=coord_fd)
         cases = [_case(row[:6]) for row in validation]
         before, before_resources = _predict(trainer, folder, incumbent, cases,
                                             'staged-incumbent',
@@ -298,7 +325,7 @@ def _train_once(trainer,request,folder):
     _atomic_json(path,intent)
     done=completion(request)
     if done is not None:return {'schema_version':1,'status':'trained'},{'recovered_completion':True}
-    if Path(request['artifact_path']).exists():raise ValueError('learning_completion_uncertain')
+    if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():raise ValueError('learning_completion_uncertain')
     answer,resources=trainer.call('train',request,folder/'train.json',cwd=folder)
     if answer!={'schema_version':1,'status':'trained'}:raise ValueError('invalid_shared_train_result')
     from .training_cursor import record_completion

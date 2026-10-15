@@ -42,9 +42,11 @@ class LearningQueue:
         row=db.execute('SELECT manifest,status,retry_at,attempts,failures,reason FROM learning_jobs WHERE job_id=? AND namespace=?',(job_id,self.scope)).fetchone()
         return {**json.loads(row[0]),'status':row[1],'retry_at':row[2],'attempts':row[3],'failures':row[4],'reason':row[5]} if row else None
 
-    def plan(self, rows, *, approval, cohort, family, minimum, maximum):
+    def plan(self, rows, *, approval, cohort, family, minimum, maximum, roles=None):
         if not 2<=minimum<=maximum<=500:raise ValueError('invalid_learning_batch_bound')
-        if any(r[6]!='train' for r in rows):raise ValueError('holdout_in_training')
+        admitted_roles = [r[6] for r in rows] if roles is None else roles
+        if len(admitted_roles)!=len(rows) or any(role!='train' for role in admitted_roles):
+            raise ValueError('holdout_in_training')
         with self.connect() as db:
             self.schema(db)
             old=db.execute("SELECT job_id FROM learning_jobs WHERE namespace=? AND approval=? AND cohort=? AND family=? AND status IN ('queued','running','deferred','blocked') ORDER BY rowid LIMIT 1",(self.scope,approval,cohort,family)).fetchone()
@@ -81,6 +83,8 @@ class LearningQueue:
     def claim(self, job_id, *, now=None):
         now=time.time() if now is None else now
         fd=resident._private_lock(self.root/'learning-claim.lock')
+        if os.fstat(fd).st_nlink!=1:
+            os.close(fd);raise ValueError('unsafe_learning_claim')
         claimed=False
         try:
             try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
