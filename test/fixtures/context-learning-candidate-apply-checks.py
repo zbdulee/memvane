@@ -184,6 +184,17 @@ class Checks(unittest.TestCase):
   self.assertEqual(self.run_apply()['status'],'apply_deferred');self.assertEqual(self.events,before)
   retry=A.read_journal(self.root)['retry_at']
   with patch.object(A.time,'time',return_value=retry+1):self.assertEqual(self.run_apply()['status'],'applied')
+ def test_staged_fallback_never_dispatches_foreign_namespace_in_shared_history(self):
+  import config
+  self.profile['localTrain']=True
+  other=self.root/'other-namespace';other.mkdir(mode=0o700)
+  foreign=LearningQueue(other).plan(self.train,approval=runtime_authorization.proposal_sha256(self.grant),cohort='test',family='family',minimum=5,maximum=100)
+  with self.db(self.root) as db:
+   db.execute("UPDATE cycles SET status='applied' WHERE cycle_id=?",(self.cycle,))
+   db.execute("INSERT INTO cycles VALUES (?,'staged',?,?,NULL)",(foreign['id'],canonical(self.stage),time.time()+10))
+  cfg={'sharedLearning':{'enabled':True,'root':str(self.root),'profile':learning_profile.SCHEMA}}
+  with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'_policy',return_value={**self.policy,'_runtime_authorization_v2':True}),patch.object(learning_profile,'present',return_value=True),patch.object(automatic_staging,'evaluate_pending',side_effect=AssertionError('foreign stage dispatched')),patch.object(shared,'train_due',return_value={'status':'waiting_fresh_batch'}) as train:
+   self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'waiting_fresh_batch');train.assert_called_once()
  def test_symlinked_cycles_never_creates_a_lock_outside_namespace(self):
   saved=self.root/'saved-cycles';(self.root/'cycles').rename(saved)
   outside=self.root/'outside';outside.mkdir(mode=0o700);(self.root/'cycles').symlink_to(outside,target_is_directory=True)

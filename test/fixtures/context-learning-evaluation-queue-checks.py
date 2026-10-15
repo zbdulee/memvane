@@ -53,6 +53,22 @@ class Checks(unittest.TestCase):
   with self.assertRaises(ValueError):q.ensure('cycle','changed-stage','validation')
   for _ in range(3):q.defer(job['id'],'prediction_failed',failure=True,now=0)
   self.assertEqual(q.get(job['id'])['status'],'blocked');self.assertEqual(q.pending(),[])
+ def test_shared_history_never_dispatches_or_mutates_another_namespace_job(self):
+  other=self.root/'other';other.mkdir(mode=0o700)
+  own=self.queue();foreign=EvaluationQueue(other,connect=self.connect)
+  a=own.ensure('own','stage','validation');b=foreign.ensure('foreign','stage','validation')
+  self.assertEqual([row['id'] for row in own.pending()],[a['id']])
+  self.assertIsNone(own.get(b['id']))
+  own.finish(b['id'],'blocked');own.refresh('foreign')
+  with own.claim(b['id']) as denied:self.assertIsNone(denied)
+  self.assertEqual(foreign.get(b['id'])['status'],'queued')
+  with self.assertRaisesRegex(ValueError,'evaluation_job_scope_invalid'):own.defer(b['id'],'memory')
+ def test_unscoped_predeployment_table_is_preserved_for_explicit_review(self):
+  with self.connect() as db:
+   db.execute('CREATE TABLE learning_evaluations(job_id TEXT PRIMARY KEY, status TEXT)')
+   db.execute("INSERT INTO learning_evaluations VALUES ('old','deferred')")
+  with self.assertRaisesRegex(ValueError,'evaluation_namespace_migration_required'):self.queue().pending()
+  with self.connect() as db:self.assertEqual(db.execute('SELECT * FROM learning_evaluations').fetchall(),[('old','deferred')])
  def test_bounded_waiter_drains_quality_job_without_training_data(self):
   from unittest.mock import patch
   from context_learning.learning_queue import LearningQueue

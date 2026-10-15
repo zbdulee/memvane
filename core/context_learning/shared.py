@@ -2304,7 +2304,7 @@ def run_training_pending(root,project):
                 return _profile_apply(root,policy,profile,result)
             if selected_profile:
                 with _db(root) as db:
-                    stage=db.execute("SELECT c.cycle_id FROM cycles c LEFT JOIN learning_evaluations e ON e.cycle_id=c.cycle_id WHERE c.status IN ('staged','staged_evaluated') AND (e.status IS NULL OR e.status!='blocked') AND (e.retry_at IS NULL OR e.retry_at<=?) ORDER BY c.started_at DESC LIMIT 1",(time.time(),)).fetchone()
+                    stage=db.execute("SELECT c.cycle_id FROM cycles c JOIN learning_jobs j ON j.job_id=c.cycle_id LEFT JOIN learning_evaluations e ON e.cycle_id=c.cycle_id AND e.namespace=j.namespace WHERE j.namespace=? AND c.status IN ('staged','staged_evaluated') AND (e.status IS NULL OR e.status!='blocked') AND (e.retry_at IS NULL OR e.retry_at<=?) ORDER BY c.started_at DESC LIMIT 1",(EvaluationQueue(root).scope,time.time())).fetchone()
                 if stage:
                     result=evaluate_pending(root,policy,stage[0])
                     if (result['status'] not in ('staged_waiting_quality_cohort','already_staged_evaluated')
