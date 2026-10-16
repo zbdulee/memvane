@@ -214,14 +214,18 @@ def resolve_qmd_bin(explicit: str = "") -> str:
     return env_bin or qmd_route.binary_info()['QMD_BIN']
 
 
-def run_cleanup(qmd_bin: str, timeout: float) -> tuple[bool, str]:
+def run_cleanup(qmd_bin: str, timeout: float, *, on_start=None) -> tuple[bool, str]:
+    from runtime_work import qmd_operation
+    from context_learning.local_cycle import ResourceDeferred
+    observed=[]
+    def execute(argv,**options):
+        if on_start is not None:on_start()
+        proc=subprocess.run(argv,capture_output=True,text=True,timeout=timeout,**options)
+        observed.append(proc);return proc
     try:
-        proc = subprocess.run(
-            [qmd_bin, *CLEANUP_ARGV_TAIL],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        qmd_operation([qmd_bin,*CLEANUP_ARGV_TAIL],execute=execute)
+        if not observed:raise ResourceDeferred('cleanup_resource_deferred',{})
+        proc=observed[0]
     except FileNotFoundError:
         return False, "qmd_not_found"
     except subprocess.TimeoutExpired:
@@ -346,8 +350,15 @@ def run(cwd: str, qmd_bin: str = "", timeout: float = 600.0) -> dict:
         return {**result, "action": "skip", "reason": "lock_error"}
 
     try:
-        touch_cooldown()
-        ok, detail = run_cleanup(resolve_qmd_bin(qmd_bin), timeout)
+        from context_learning.local_cycle import ResourceDeferred
+        # Charge a real admitted attempt before VACUUM starts, preserving
+        # crash/reboot cooldown without charging a resource refusal.
+        try:ok, detail = run_cleanup(resolve_qmd_bin(qmd_bin), timeout,on_start=touch_cooldown)
+        except ResourceDeferred:
+            import runtime_work
+            runtime_work.request('cleanup',str(Path(cwd).resolve()))
+            log('deferred: shared compute or resource pressure; pending retained')
+            return {**result,'action':'deferred','reason':'resource_deferred','ok':False}
         result["ok"] = ok
         result["detail"] = detail
         if ok:

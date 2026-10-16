@@ -10,7 +10,7 @@ class Checks(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.root.chmod(0o700);self.c=Coordinator(self.root)
   self.policy={'maxRssMib':4096,'minAvailableMib':512,'maxLoadPerCpu':1}
-  self.report={'ready':True,'total_mib':16384,'available_mib':10000,'load_per_cpu':.1}
+  self.report={'ready':True,'total_mib':16384,'available_mib':10000,'load_per_cpu':.1,'observed_at_mono':time.monotonic(),'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':70,'level':'normal'}}
  def test_queued_inference_defers_and_expired_metadata_cannot_steal_live_lease(self):
   with self.c.inference(time.monotonic()+1,'ns'):
    self.assertTrue(self.c.demand())
@@ -82,13 +82,14 @@ class Checks(unittest.TestCase):
    with self.assertRaises(ResourceDeferred):
     with self.c.training(self.policy,self.report):pass
  def test_adaptive_memory_reduces_microbatch_to_one(self):
+  # Legacy profile retains its configured ratio reserve, with batch1 default.
   policy={**self.policy,'adaptiveMemory':{'device':'mps','fixedMib':1000,'perPairMib':1000,'estimateSource':'fixture','modelIdentitySha256':'a'*64}}
-  report={**self.report,'available_mib':4000,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':50}}
+  report={**self.report,'available_mib':4000,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':50,'level':'normal'}}
   self.assertEqual(decision(policy,report)['microbatch_size'],1)
   self.assertFalse(decision(policy,{**report,'available_mib':3000})['ready'])
  def test_loaded_model_credit_is_measured_and_cannot_spend_os_reserve(self):
   policy={**self.policy,'adaptiveMemory':{'device':'mps','fixedMib':3000,'perPairMib':500,'estimateSource':'fixture','modelIdentitySha256':'a'*64}}
-  before={**self.report,'available_mib':7000,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':50}}
+  before={**self.report,'available_mib':7000,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':50,'level':'normal'}}
   self.assertTrue(decision(policy,before)['ready'])
   after={**before,'available_mib':4000}
   self.assertFalse(decision(policy,after)['ready'])
@@ -182,6 +183,8 @@ class Checks(unittest.TestCase):
   def optimizer(*a,**kw):
    result=helpers.Optimizer(models[-1]);result.state={};optimizers.append(result);return result
   torch=types.ModuleType('torch');torch.__path__=[];torch.long='long';torch.uint8='uint8'
+  torch.set_num_threads=lambda n:None;torch.set_num_interop_threads=lambda n:None
+  torch.get_num_threads=lambda:1;torch.get_num_interop_threads=lambda:1
   torch.manual_seed=lambda _:None;torch.optim=types.SimpleNamespace(SGD=optimizer)
   torch.tensor=lambda values,**kw:values
   torch.isfinite=lambda value:Scalar(math.isfinite(value.value));torch.equal=lambda x,y:x.value==y.value
@@ -200,11 +203,13 @@ class Checks(unittest.TestCase):
   class Guard:
    def __init__(inner,fail=None):inner.calls=0;inner.fail=fail
    def mark_loaded(inner,*a):pass
+   def poll(inner):polls.append(1)
    @contextmanager
    def step(inner):
     inner.calls+=1
     if inner.calls==inner.fail:raise ValueError('learning_yield')
     yield {'microbatch_size':1}
+  polls=[]
   items=[{'x':i+1,'gold_label':i%2,'ids':[1]*10,'candidate_id':str(i)} for i in range(5)]
   request={'schema_version':1,'artifact_path':str(self.root/'candidate.artifact'),
            'model_input_view':adapter.EDIT_INPUT_VIEW,'learning_control':{'synthetic':True},'train':[]}
@@ -219,4 +224,5 @@ class Checks(unittest.TestCase):
   self.assertEqual([o.steps for o in optimizers],[1,2]);self.assertEqual(restored,[[7,8]])
   self.assertEqual([len(m.calls) for m in models],[2,3])
   self.assertIsNotNone(completion(request))
+  self.assertGreaterEqual(len(polls),8)
 if __name__=='__main__':unittest.main()

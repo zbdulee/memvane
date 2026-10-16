@@ -6,6 +6,8 @@ not edit project wiki cards, register hooks, or promote a card to ``verified``.
 """
 from __future__ import annotations
 
+from runtime_admission import provider_call
+
 import copy
 import fcntl
 import hashlib
@@ -137,6 +139,7 @@ def _process_metrics(start: float, before) -> dict:
     }
 
 
+@provider_call
 def _attempt(root: Path, kind: str, payload: dict, argv: list[str], timeout: int, runner,
              attempt_id: str, max_attempts: int, estimated_cost_cents: int,
              max_cost_cents: int, *, selected_engine: str | None = None) -> tuple[object, bool]:

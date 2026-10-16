@@ -60,6 +60,39 @@ class Checks(unittest.TestCase):
   with self.q.claim(job['id'],now=100) as claim:self.assertIsNone(claim)
   for _ in range(3):self.q.defer(job['id'],'failed',failure=True,now=100)
   self.assertEqual(self.q.get(job['id'])['status'],'blocked')
+ def test_cumulative_component_merge_does_not_reconsume_deleted_capture_evidence(self):
+  options=dict(approval='a'*64,cohort='general',family='f'*64,minimum=5,maximum=128,cumulative=True)
+  rows=[self.row(i) for i in range(5)];job=self.q.plan(rows,**options)
+  with self.q.claim(job['id']):self.q.complete(job['id'])
+  recaptured=[]
+  for i in range(5):
+   row=list(self.row(i,f'recaptured-{i}'));row[12]='train/merged-component';recaptured.append(tuple(row))
+  repeated=self.q.plan(recaptured,**options)
+  self.assertEqual(repeated['id'],job['id'])
+  with self.q.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM learning_jobs').fetchone()[0],1)
+ def test_cumulative_query_variants_do_not_inflate_fresh_training(self):
+  variants=['Question 0',' question 0 ','QUESTION 0','question   0','Question\t0']
+  rows=[]
+  for i,prompt in enumerate(variants):
+   row=list(self.row(0,f'variant-{i}'));sample=json.loads(row[3]);sample['prompt']['text']=prompt;row[3]=json.dumps(sample);rows.append(tuple(row))
+  job=self.q.plan(rows,approval='a'*64,cohort='general',family='f'*64,minimum=5,maximum=128,cumulative=True)
+  self.assertIsNone(job)
+ def test_cumulative_manifest_revalidates_the_same_normalized_identity(self):
+  rows=[self.row(i) for i in range(5)]
+  job=self.q.plan(rows,approval='a'*64,cohort='general',family='f'*64,minimum=5,maximum=128,cumulative=True)
+  self.assertEqual(job.get('queryNormalization'),'casefold-whitespace-v1')
+  self.assertEqual(self.q.rows(job,rows),rows)
+ def test_cumulative_project_replay_can_reach_quality_without_100_fresh_at_once(self):
+  options=dict(approval='a'*64,cohort='general',family='f'*64,minimum=5,maximum=128,cumulative=True)
+  rows=[]
+  for start in range(0,100,5):
+   rows.extend(self.row(i) for i in range(start,start+5))
+   job=self.q.plan(rows,**options)
+   self.assertEqual(len(job['members']),len(rows))
+   self.assertEqual(sum(m['fresh'] for m in job['members']),5)
+   with self.q.claim(job['id']):self.q.complete(job['id'])
+  self.assertEqual(len(job['members']),100)
+  self.assertEqual(sum(m['fresh'] for m in job['members']),5)
  def test_inherited_child_keeps_abandoned_owner_fenced(self):
   import subprocess,sys
   job=self.plan([self.row(1),self.row(2)])

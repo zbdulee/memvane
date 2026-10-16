@@ -6,6 +6,8 @@ source markdown in queue/failure records.
 """
 
 from __future__ import annotations
+from context_learning.local_cycle import ResourceDeferred
+
 import argparse
 import fcntl
 import json
@@ -585,7 +587,8 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
         import topical_story_scope
         child_env = (topical_story_scope.provider_env(root)
                      if topical_story_scope.exact_story(root) else None)
-        proc = subprocess.run(
+        from runtime_admission import provider_run
+        proc = provider_run(
             argv,
             input=json.dumps(payload, ensure_ascii=False),
             text=True,
@@ -595,6 +598,8 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
             cwd=str(root),
             env=child_env,
         )
+    except ResourceDeferred:
+        return None, "resource_deferred", 75
     except FileNotFoundError:
         # Binary genuinely absent → 127 sentinel lets the worker try `default`.
         return None, "extractor_failed", 127
@@ -611,6 +616,8 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
             handle.write(proc.stderr[-4000:] + "\n")
         # extractor.log 트림: (1) 감사 원장이 아닌 순수 에러 디버그 로그(한 레코드는 ≤4,000자 유계이나 실패 시 append로 행 수가 무계 누적되어 verify-log.jsonl처럼 비대화), (2) non-JSONL이라 레코드 중간 절단 가능하나 저장소 내 파싱 소비자 0건(인간 독자 전용), (3) stat 1회 선조회로 매 쓰기 호출 비용 경량.
         wc.trim_jsonl(log)
+    if proc.returncode == 75:
+        return None, "resource_deferred", 75
     if proc.returncode != 0:
         return None, "extractor_failed", proc.returncode
     try:
@@ -832,6 +839,8 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     }
     payload["_qmd"]["reasoningEffort"]["capabilityDeclared"] = argv == _builtin_adapter_argv(engine)
     extracted, reason, returncode = run_extractor(argv, payload, timeout, root)
+    if reason == "resource_deferred":
+        return False, True, []  # retain job; no failure cooldown or provider fallback
     freshness, _ = wiki_freshness.compare_revision(src, source_revision)
     if freshness != wiki_freshness.FRESH:
         append_jsonl(cpath, bounded_failure(

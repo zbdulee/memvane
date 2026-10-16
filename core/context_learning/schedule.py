@@ -10,7 +10,7 @@ import time
 
 from .contracts import digest
 from .cycle_policy import next_interval
-from .local_cycle import _atomic_json, _load_state, run_cycle
+from .local_cycle import _atomic_json, _load_state, run_cycle,ResourceDeferred
 from .selection_queue import build_queue
 from .store import canonical, database
 
@@ -48,6 +48,10 @@ def _run_due_cycle_locked(state_dir, cycle_id, version_id, revision_reader, trai
     try:
         result = run_cycle(state_dir, cycle_id, version_id, revision_reader, trainer,
                            incumbent_artifact=incumbent_artifact)
+    except ResourceDeferred:
+        # Keep the same cycle/cadence and its completed phase receipts. A
+        # temporary resource yield is not a failed quality observation.
+        return {'status':'deferred_resource','next_due':now+5}
     except (ValueError, BlockingIOError) as exc:
         # The local trainer may have failed after a queued state was persisted.
         # Preserve it for the next explicit invocation; no retry loop here.

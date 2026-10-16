@@ -889,6 +889,9 @@ def defer_or_drop(
     cooldown 쓰기 실패는 **반드시 표면화한다**: 그 기록이 없으면 다음 run이 같은 후보를 다시
     부르고 degrade가 일어나지 않는다(= MAJOR 1 영구 정지의 재발). 조용히 넘기면 진단 불가다.
     """
+    if reason == 'resource_deferred':
+        log_verdict(log_path,{**base_record(job),**provenance,'result':'deferred','reason':reason})
+        return False, True
     cooled_ok = set_engine_cooldown(root, attempt["key"], int(vcfg.get("cooldownSeconds", 600) or 600))
     terminal = reason in UNUSABLE_OUTPUT_REASONS and not has_more
     row = {

@@ -1,0 +1,344 @@
+"""Real recall/capture/enqueue + real consent/cohort/ledger in a private HOME.
+
+QMD results, OS account-home lookup and signed-in Codex inventory/quota are local external-boundary
+fixtures. The teacher invoke callback stands only for external inference; it
+does not attest native CLI execution or process monitoring. No guard, scope,
+source, installation, or process identity function is patched. Worker kernel
+locks keep ordinary detached recall workers busy while captures commit.
+"""
+import fcntl
+import json
+import os
+import pwd
+from pathlib import Path
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def audit(event, args):
+    if event == 'import' and args[0].split('.')[0] in ('torch', 'transformers', 'laya'):
+        raise AssertionError('model import forbidden in synthetic hook fixture')
+    if event == 'subprocess.Popen':
+        argv = args[1]
+        if '-I' in argv:
+            raise AssertionError('isolated service/model child forbidden in hook fixture')
+        if any(str(x).endswith(('laya_adapter.py', 'laya_inference_worker.py')) for x in argv):
+            raise AssertionError('model execution forbidden in synthetic hook fixture')
+
+
+sys.addaudithook(audit)
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def progress(stage,project=None):
+    print(canonical({'fixtureStage':stage,'project':project.name if project else None}),file=sys.stderr,flush=True)
+
+
+def save(path, value):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(canonical(value)+'\n'); path.chmod(0o600)
+
+
+def rows(namespace, table):
+    path = namespace/('learning.sqlite3' if table == 'samples' else 'shared-learning.sqlite3')
+    if not path.exists(): return []
+    with sqlite3.connect(path) as db:
+        return db.execute('SELECT * FROM '+table).fetchall()
+
+
+def settle_synthetic_inputs(paths):
+    # First access can asynchronously add macOS tracking/hidden flags to new
+    # Documents files. Settle fixture inputs before accepting any grant; never
+    # mask or replace the production before/after metadata checks.
+    if sys.platform=='darwin':
+        if not hasattr(os,'chflags'):raise AssertionError('fixture_mac_flags_unavailable')
+        for path in paths:
+            assert path.is_relative_to(base) and path.stat().st_nlink==1
+            try:os.chflags(path,path.stat().st_flags|stat.UF_HIDDEN)
+            except OSError as error:raise AssertionError('fixture_mac_flags_refused') from error
+    for path in paths:
+        path.read_bytes()
+    if sys.platform!='darwin':return
+    deadline=time.monotonic()+5;stable=time.monotonic()
+    previous=[(p.stat().st_ctime_ns,p.stat().st_flags) for p in paths]
+    while time.monotonic()<deadline:
+        time.sleep(.1)
+        current=[(p.stat().st_ctime_ns,p.stat().st_flags) for p in paths]
+        if current!=previous:previous=current;stable=time.monotonic()
+        elif time.monotonic()-stable>=1:return
+    raise AssertionError('synthetic input metadata did not settle')
+
+
+# Product scope refuses system temp roots. On macOS also avoid synchronized
+# Documents: FileProvider opens these newly created lock/metadata files.
+# Only this disposable fixture moves; the source checkout stays unchanged.
+fixture_parent=Path(pwd.getpwuid(os.getuid()).pw_dir) if sys.platform=='darwin' else REPO
+with tempfile.TemporaryDirectory(prefix='qmd-hook-validation-', dir=fixture_parent) as raw:
+    base = Path(raw).resolve(); home = base/'home'; home.mkdir(mode=0o700)
+    bin_dir = home/'bin'; bin_dir.mkdir(mode=0o700)
+    temporary=base/'tmp';temporary.mkdir(mode=0o700)
+    environment = {k:v for k,v in os.environ.items() if not k.startswith(('QMD_', 'GEMINI_', 'CLAUDE_', 'CODEX_'))}
+    environment.update(HOME=str(home), CODEX_HOME=str(home/'.codex'),
+        TMPDIR=str(temporary),QMD_LOCK_BASE=str(base/'writer-locks'),
+        PATH=str(bin_dir)+os.pathsep+os.environ.get('PATH', os.defpath),
+        PYTHONDONTWRITEBYTECODE='1', QMD_RECALL_LOG='',
+        HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
+    os.environ.clear(); os.environ.update(environment)
+    sys.path.insert(0,str(REPO/'test/helpers'))
+    from uid_home import isolate
+    isolate(home)
+    codex = bin_dir/'codex'
+    codex.write_text('#!'+sys.executable+'\n'+'''import json,sys
+from pathlib import Path
+home=Path.home()
+if sys.argv[1:3]==['plugin','list']:
+ print((home/'inventory.json').read_text())
+elif sys.argv[1]=='app-server':
+ for line in sys.stdin:
+  item=json.loads(line); ident=item.get('id'); method=item.get('method')
+  if ident is None: continue
+  result={} if method=='initialize' else {'account':{'type':'chatgpt'}} if method=='account/read' else {'rateLimits':{'secondary':{'windowDurationMins':10080,'usedPercent':10}}}
+  print(json.dumps({'id':ident,'result':result}),flush=True)
+else:
+ raise SystemExit('unexpected external model command')
+'''); codex.chmod(0o700)
+    version = json.loads((REPO/'package.json').read_text())['version']
+    installs = {}
+    for host in ('claude', 'codex'):
+        target = home/('.'+host)/'plugins/cache/qmd-auto-context-marketplace/qmd-auto-context'/version
+        target.mkdir(parents=True, mode=0o700)
+        for directory in ('core', 'hooks'):
+            shutil.copytree(REPO/directory, target/directory,
+                ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        for relative in ('package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
+            save(target/relative, json.loads((REPO/relative).read_text()))
+        installs[host] = target
+    # Execute the copied installed code, exactly as an enrolled host does;
+    # a source checkout is correctly rejected as an execution target.
+    sys.path.insert(0,str(installs['codex']/'core'))
+    from context_learning import general_teacher, shared, project_scope
+    from context_learning.resource_coordination import Coordinator
+    from runtime_work import WakeQueue
+    assert Coordinator().root.is_relative_to(home)
+    assert WakeQueue().root.is_relative_to(home)
+    scheduler_lock=open(Coordinator().root/'runtime-worker.lock','a')
+    os.chmod(scheduler_lock.name,0o600);fcntl.flock(scheduler_lock,fcntl.LOCK_EX)
+    from context_learning.contracts import digest
+    from context_learning.laya_adapter import MODEL_FILES
+    import project_learning_setup as setup
+    import qmd_shared_store
+    import runtime_update
+    save(home/'.claude/plugins/known_marketplaces.json', {'qmd-auto-context-marketplace':{
+        'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}})
+    save(home/'.claude/plugins/installed_plugins.json', {'plugins':{
+        'qmd-auto-context@qmd-auto-context-marketplace':[{'version':version,'installPath':str(installs['claude'])}]}})
+    save(home/'inventory.json', {'installed':[{'pluginId':'qmd-auto-context@qmd-auto-context-marketplace',
+        'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace',
+        'version':version,'installed':True,'enabled':True,
+        'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}]})
+    model = base/'synthetic-model'; model.mkdir(mode=0o700)
+    for name in MODEL_FILES:
+        file = model/name; file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        file.write_text('synthetic file only, not a model'); file.chmod(0o600)
+    save(model/'rl_agent_config.json', {'encoder':'jhu-clsp/mmBERT-base','max_len':1024,'head_max_len':256})
+    model_files=[model/name for name in MODEL_FILES]
+    initial=[file.read_bytes() for file in model_files]
+    copied_files=[p for root in installs.values() for p in root.rglob('*')
+                  if p.is_file() and p.suffix!='.pyc']
+    settle_synthetic_inputs(model_files+copied_files)
+    assert [file.read_bytes() for file in model_files]==initial
+    artifact = base/'immutable-base.artifact'; artifact.write_text('synthetic artifact'); artifact.chmod(0o600)
+    namespace_parent = home/'Library/Application Support/qmd-auto-context/live-selection'
+    namespace_parent.mkdir(mode=0o700, parents=True)
+    generation = qmd_shared_store.root()/'generations'/('g-'+'1'*32)
+    for directory in (generation, generation/'config', generation/'cache'):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    qmd_shared_store.root().chmod(0o700)
+    (generation.parent).chmod(0o700)
+    index = generation/'index.sqlite'
+    with sqlite3.connect(index) as db:
+        db.execute('CREATE TABLE documents(collection TEXT,path TEXT,hash TEXT,active INTEGER)')
+        db.execute('CREATE TABLE content(hash TEXT,body TEXT)')
+        db.execute('CREATE TABLE content_vectors(hash TEXT,seq INTEGER,model TEXT,embed_fingerprint TEXT)')
+        db.execute('CREATE TABLE store_collections(name TEXT)')
+    index.chmod(0o600)
+    config_file = generation/'config/index.yml'; config_file.write_text('collections: {}\n'); config_file.chmod(0o600)
+    save(generation/'prepared.json', {'schema':qmd_shared_store.SCHEMA,'generation':generation.name,
+        'configSha256':digest(config_file.read_text()),
+        'indexSchemaSha256':runtime_update.inspect_index(index)['schemaSha256']})
+    save(qmd_shared_store.root()/'active.json', {'schema':qmd_shared_store.SCHEMA,'generation':generation.name})
+    projects = []; registry = {}; locks = [scheduler_lock]
+    for label in ('service-engineering', 'rccar'):
+        project = home/'work'/label; wiki = project/'.auto-context/wiki'
+        wiki.mkdir(mode=0o700, parents=True); (project/'docs').mkdir(); (project/'.git').mkdir()
+        collection = label+'-wiki'; source = project/'docs/cobalt.md'; source.write_text('Synthetic Cobalt garden.\n')
+        revision = {'kind':'file','path':'docs/cobalt.md','collection':label+'-docs',
+            'sha256':digest(source.read_text()),'size':source.stat().st_size,'mtimeNs':source.stat().st_mtime_ns}
+        card = wiki/'cobalt.md'
+        card.write_text('---\ntitle: Synthetic Cobalt garden\nstatus: verified\ncreatedBy: qmd-auto-context\nsourceRevisions:\n  - '+json.dumps(revision)+'\n---\nSynthetic Cobalt garden flowers.\n')
+        with sqlite3.connect(index) as db:
+            db.execute('INSERT INTO documents VALUES (?,?,?,1)', (collection,card.name,digest(card.read_text())))
+        cfg = {'indexing':True,'collections':[collection], 'collectionPaths':{collection:'.auto-context/wiki'},
+            'collectionRoles':{collection:'wiki'},'recallStrategy':'wikiOnly','topN':3,'minScore':0,
+            'events':['userPromptSubmit'],'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
+        save(project/'.auto-context/settings.json',cfg)
+        registry[collection] = {'scope':str(project),'path':str(wiki),'indexed':True}
+        namespace = namespace_parent/shared._project_key(project); namespace.mkdir(mode=0o700)
+        save(namespace/'live-selector.json', {'schema':'qmd-live-selector-v1',
+            'trainerArgv':[str(Path(sys.executable).resolve()),str(installs['codex']/'core/context_learning/laya_adapter.py'),str(model)],
+            'timeoutSeconds':30,'maxRssMib':4096})
+        save(namespace/'active-checkpoint.json', {'artifact_path':str(artifact),
+            'artifact_sha256':setup.file_sha(artifact),'cycle_id':'synthetic-base'})
+        fixture = base/(label+'-hits.json'); save(fixture,{'results':[
+            {'file':collection+'/cobalt.md','score':.99,'title':'Synthetic Cobalt','line':1}]})
+        projects.append((project,namespace,fixture))
+    save(qmd_shared_store.root()/'collections.json',registry)
+    # No test-only setup guard, process identity replacement, or selector patch.
+    child = '''import sys
+attempts=[]
+def audit(event,args):
+ if event=='import' and args[0].split('.')[0] in ('torch','transformers','laya'):
+  attempts.append(event)
+  raise AssertionError('model import forbidden')
+ if event=='subprocess.Popen' and any(str(x).endswith(('laya_adapter.py','laya_inference_worker.py')) for x in args[1]):
+  attempts.append(event)
+  raise AssertionError('model subprocess forbidden')
+ if event=='subprocess.Popen' and '-I' in args[1]:
+  raise AssertionError('isolated service/model subprocess forbidden')
+sys.addaudithook(audit)
+sys.path.insert(0,sys.argv[1])
+from pathlib import Path
+import os,pwd
+assert Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()==Path.home().resolve()
+from context_learning.resource_coordination import Coordinator
+from runtime_work import WakeQueue
+assert Coordinator().root.is_relative_to(Path.home())
+assert WakeQueue().root.is_relative_to(Path.home())
+import recall,hook_main
+hook_main.run(recall.main)
+assert not attempts,attempts
+'''
+    def recall(project,fixture,host,prompt):
+        env = {**os.environ,'QMD_QUERY_FIXTURE':str(fixture),'QMD_ENGINE':host,
+            'QMD_RECALL_LOG':str(base/'recall.jsonl')}
+        result = subprocess.run([sys.executable,'-B','-c',child,str(installs[host]/'core')],
+            input=canonical({'cwd':str(project),'prompt':prompt,'hook_event_name':'UserPromptSubmit'}),
+            text=True,capture_output=True,env=env,cwd=project,timeout=20,check=True)
+        assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr,(base/'recall.jsonl').read_text())
+    def wait_busy(namespace,count):
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            log=namespace/'worker.log'
+            if log.exists() and log.read_text().count('"status":"busy"')>=count:return
+            time.sleep(.05)
+        raise AssertionError('direct fixture workers did not finish: '+str(namespace))
+    # Finish both setup transactions before enabled captures start workers.
+    for project,namespace,fixture in projects:
+        recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
+        assert not rows(namespace,'samples') and not rows(namespace,'cases')
+        now = int(time.time()*1000)
+        plan = setup.prepare(project,namespace,expires_at_unix_ms=now+3600000,not_before_unix_ms=now-1000)
+        try:
+            setup.activate(plan,accepted_sha256=setup.proposal_sha256(plan))
+        except Exception as error:
+            if str(error) in ('learning_compute_busy','learning_deferred_inference'):
+                root=Coordinator().root
+                diagnostic=subprocess.run(['lsof','-nP','+d',str(root)],text=True,capture_output=True,timeout=2)
+                print(canonical({'fixturePid':os.getpid(),'project':project.name,'coordinationRoot':str(root),
+                    'holders':diagnostic.stdout}),file=sys.stderr)
+            if str(error)=='project_scope_model_changed':
+                previous=project_scope._MODEL_CACHE.get((str(namespace),str(model)))
+                current=tuple(project_scope._stat_identity(model/name) for name in MODEL_FILES)
+                print(canonical({'modelMetadataBefore':previous[1],
+                    'modelMetadataAfter':current}),file=sys.stderr)
+            raise
+        lock = open(namespace/'project-worker.lock','a'); os.chmod(lock.name,0o600)
+        fcntl.flock(lock,fcntl.LOCK_EX); locks.append(lock)
+        progress('activated',project)
+    for project,namespace,fixture in projects:
+        recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
+        wait_busy(namespace,1)
+        recall(project,fixture,'codex','Which synthetic Cobalt garden flowers are documented?')
+        wait_busy(namespace,2)
+        with sqlite3.connect(namespace/'learning.sqlite3') as db:
+            samples = [json.loads(row[0]) for row in db.execute('SELECT body FROM samples')]
+        assert {row['host'] for row in samples} == {'claude','codex'}, samples
+        assert len(rows(namespace,'cases')) == 2, (namespace, (base/'recall.jsonl').read_text())
+        progress('both_hosts_captured_workers_finished',project)
+    for project,namespace,_ in projects:
+        with shared._db(namespace) as db:
+            assert {r[0] for r in db.execute('SELECT DISTINCT project_root FROM cases')} == {str(project)}
+        pointer = (namespace/'active-checkpoint.json').read_bytes()
+        calls = []
+        def invoke(sample,bodies,*args,**kwargs):
+            kwargs['guard']()
+            assert general_teacher.payload(sample,bodies)['question'] == sample['prompt']['text']
+            calls.append(sample['request_id'])
+            return {'selected_ids':[sample['candidates'][0]['candidate_id']],'usage':{}}
+        try:
+            policy = shared._policy(namespace)
+            result = general_teacher.process_pending(namespace,project,policy,invoke=invoke,max_cases=2)
+        except ValueError as error:
+            if str(error)=='project_scope_model_changed':
+                previous = project_scope._MODEL_CACHE.get((str(namespace),str(model)))
+                current = tuple(project_scope._stat_identity(model/name) for name in MODEL_FILES)
+                print(canonical({'modelMetadataBefore':previous[1], 'modelMetadataAfter':current}), file=sys.stderr)
+            raise
+        if result['outcomes']!=['gold','gold']:
+            previous = project_scope._MODEL_CACHE.get((str(namespace),str(model)))
+            current = tuple(project_scope._stat_identity(model/name) for name in MODEL_FILES)
+            print(canonical({'modelMetadataBefore':previous[1], 'modelMetadataAfter':current,
+                'calls':len(calls),'result':result}),file=sys.stderr)
+        assert result['outcomes']==['gold','gold'], result
+        assert len(calls)==4
+        with shared._db(namespace) as db:
+            assert db.execute("SELECT count(*) FROM project_gold_attempts WHERE stage='committed'").fetchone()==(4,)
+        # A fresh connection/worker reentry cannot spend again on committed gold.
+        again = general_teacher.process_pending(namespace,project,policy,invoke=invoke,max_cases=2)
+        assert again['status']=='drained' and len(calls)==4, again
+        assert (namespace/'active-checkpoint.json').read_bytes()==pointer
+        assert not (namespace/'experimental-checkpoint.json').exists()
+        progress('gold_committed_and_duplicate_wake_drained',project)
+    # Sensitive query is captured locally but never passed to teacher transport.
+    project,namespace,fixture = projects[0]
+    recall(project,fixture,'codex','Find synthetic Cobalt garden password="never-send-this-secret"')
+    wait_busy(namespace,3)
+    result = general_teacher.process_pending(namespace,project,shared._policy(namespace),
+        invoke=lambda *a,**k:(_ for _ in ()).throw(AssertionError('secret crossed transport')))
+    assert result['outcomes']==['excluded_sensitive'], result
+    progress('sensitive_case_excluded',project)
+    for project,namespace,_ in projects:
+        pointer = (namespace/'active-checkpoint.json').read_bytes()
+        try:
+            answer = shared.run_training_pending(namespace,project)
+        except ValueError as error:
+            if str(error)=='project_scope_model_changed':
+                previous = project_scope._MODEL_CACHE.get((str(namespace),str(model)))
+                current = tuple(project_scope._stat_identity(model/name) for name in MODEL_FILES)
+                print(canonical({'modelMetadataBefore':previous[1], 'modelMetadataAfter':current}),file=sys.stderr)
+            raise
+        assert answer['status'] in ('waiting_fresh_train','waiting_train_cohort'), answer
+        assert (namespace/'active-checkpoint.json').read_bytes()==pointer
+        progress('insufficient_training_preserves_checkpoint',project)
+    receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
+    worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
+    assert len(worker_receipts)==5 and all(row['home']==str(home) for row in worker_receipts),worker_receipts
+    for lock in locks: lock.close()
+    from runtime_work import drain
+    drained=drain(WakeQueue(),max_seconds=15,max_runs=8)
+    assert drained['status']=='drained',drained
+    progress('private_retry_queue_drained')
+    assert not any(name in sys.modules for name in ('torch','transformers','laya'))
+    assert not os.environ.get('QMD_SETUP_GUARD_FIXTURE')
+    print(canonical({'disabledNoHistory':True,'bothHostsShareProjectNamespace':True,
+        'projectsRemainIsolated':True,'durableGold':True,'secretExcludedBeforeTransport':True,
+        'insufficientDataDoesNotPromote':True,'noModelImports':True,'noGuardOverrides':True,
+        'modelCalls':0,'externalCalls':0}))

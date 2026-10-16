@@ -576,7 +576,8 @@ def _qmd_runtime(root: Path):
 
 
 def _call(root: Path, runtime: dict, args: list[str]):
-    result = subprocess.run([str(runtime["QMD_BIN"]), *args], cwd=root,
+    from runtime_work import guarded_run
+    result = guarded_run([str(runtime["QMD_BIN"]), *args], cwd=root,
                             capture_output=True, text=True, timeout=900,
                             env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
                                  'INDEX_PATH':str(runtime['INDEX_PATH']),

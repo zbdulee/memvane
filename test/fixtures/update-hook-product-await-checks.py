@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-await-', dir=repository) as 
         'QMD_BIN': str(qmd), 'QMD_BACKEND_MANAGER': str(manager),
         'QMD_UPDATE_HOOK_QUEUE_DIR': str(home / 'queue'),
         'QMD_CACHE_DIR': str(home / 'cache'), 'QMD_LOCK_BASE': str(home / 'locks'),
-        'QMD_SKIP_BACKGROUND_EMBED': '1', 'QMD_SKIP_BACKGROUND_WORKER': '',
+        'QMD_SKIP_BACKGROUND_EMBED': '', 'QMD_SKIP_BACKGROUND_WORKER': '',
         'QMD_SUPPRESS_NOTICE': '1', 'QMD_RECALL_LOG': ''}
     environment.pop('QMD_CORE_UPDATE_SCRIPT', None)
     payload = json.dumps({'cwd': str(story), 'hook_event_name': 'SessionStart'})
@@ -43,12 +43,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-await-', dir=repository) as 
     job = home / 'queue' / (key + '.job.json')
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        if status.is_file() and json.loads(status.read_text()).get('status') == 'lexical_ready' and not job.exists():
+        if status.is_file() and json.loads(status.read_text()).get('status') == 'completed' and not job.exists():
             break
         time.sleep(.025)
     assert status.is_file(), 'no_status'
-    assert json.loads(status.read_text())['status'] == 'lexical_ready', (status.read_text(),
-        (home / 'queue' / (key + '.log')).read_text())
+    assert json.loads(status.read_text())['status'] == 'completed', (status.read_text(),
+        (home / 'queue' / (key + '.log')).read_text(),
+        (home / 'cache/hook.log').read_text() if (home / 'cache/hook.log').exists() else 'no_hook_log',
+        calls.read_text() if calls.exists() else 'no_qmd_calls')
     assert not job.exists()
     assert calls.read_text().splitlines().count('update') == 1, calls.read_text()
+    assert calls.read_text().splitlines().count('embed') == 1, calls.read_text()
     print('awaited-update-ok')

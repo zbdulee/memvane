@@ -52,7 +52,14 @@ def _owned_bytes(path, home, limit):
                 or before.st_uid != os.getuid() or before.st_mode & 0o022
                 or before.st_size > limit):
             raise ValueError('unsupported_adapter')
-        content = source.read(limit + 1)
+        from runtime_admission import preparation_checkpoint
+        parts=[];remaining=limit+1
+        while remaining:
+            preparation_checkpoint()
+            block=source.read(min(1024*1024,remaining))
+            if not block:break
+            parts.append(block);remaining-=len(block)
+        content=b''.join(parts)
         after = os.fstat(source.fileno())
     identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
                               item.st_mtime_ns, item.st_ctime_ns)
@@ -102,6 +109,16 @@ def _installed_current(host, version, root, home, deadline):
                            and item.get('installPath') == str(root) for item in entries)):
             raise ValueError('unsupported_adapter')
         return
+    item = _codex_installed(home, deadline)
+    if not (item.get('name') == 'qmd-auto-context'
+               and item.get('marketplaceName') == MARKETPLACE
+               and item.get('version') == version
+               and item.get('installed') is True and item.get('enabled') is True
+               and _official_source(item.get('source'))):
+        raise ValueError('unsupported_adapter')
+
+
+def _codex_installed(home, deadline):
     codex_home = os.environ.get('CODEX_HOME')
     if codex_home and Path(codex_home) != home / '.codex':
         raise ValueError('unsupported_adapter')
@@ -122,13 +139,132 @@ def _installed_current(host, version, root, home, deadline):
                and item.get('pluginId') == PLUGIN_ID]
     if len(matches) != 1:
         raise ValueError('unsupported_adapter')
-    item = matches[0]
-    if not (item.get('name') == 'qmd-auto-context'
-               and item.get('marketplaceName') == MARKETPLACE
-               and item.get('version') == version
-               and item.get('installed') is True and item.get('enabled') is True
-               and _official_source(item.get('source'))):
+    return matches[0]
+
+
+def _local_catalog(market, host, home):
+    """Accept the one explicit local plugin entry, never a remote URL fallback."""
+    name = '.claude-plugin/marketplace.json' if host == 'claude' else '.agents/plugins/marketplace.json'
+    catalog = _owner_json(market / name, home)
+    if not isinstance(catalog, dict) or catalog.get('name') != MARKETPLACE:
         raise ValueError('unsupported_adapter')
+    rows = catalog.get('plugins')
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError('unsupported_adapter')
+    rows = [row for row in rows if row.get('name') == 'qmd-auto-context']
+    if len(rows) != 1:
+        raise ValueError('unsupported_adapter')
+    row = rows[0]
+    source = row.get('source')
+    expected = './plugins/qmd-auto-context'
+    if host == 'codex':
+        if not isinstance(source, dict) or source != {'source': 'local', 'path': expected}:
+            raise ValueError('unsupported_adapter')
+    elif source != expected:
+        raise ValueError('unsupported_adapter')
+    root = market / 'plugins/qmd-auto-context'
+    version = row.get('version')
+    if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version):
+        raise ValueError('unsupported_adapter')
+    for relative in ('package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
+        metadata = _owner_json(root / relative, home)
+        if not isinstance(metadata, dict) or metadata.get('name') != 'qmd-auto-context' or metadata.get('version') != version:
+            raise ValueError('unsupported_adapter')
+    return root, version
+
+
+def _local_code(root, home):
+    """Compare executable core/hooks, with the same private path/file guards."""
+    rows = []
+    total = 0
+    for directory in ('core', 'hooks'):
+        base = root / directory
+        info = base.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022):
+            raise ValueError('unsupported_adapter')
+        for path in sorted(base.rglob('*')):
+            from runtime_admission import preparation_checkpoint
+            preparation_checkpoint()
+            if '__pycache__' in path.relative_to(root).parts or path.suffix == '.pyc':
+                continue
+            info = path.lstat()
+            if (stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022):
+                raise ValueError('unsupported_adapter')
+            if stat.S_ISDIR(info.st_mode):
+                continue
+            data = _owned_bytes(path, home, 4 * 1024 * 1024)
+            total += len(data)
+            rows.append((str(path.relative_to(root)), hashlib.sha256(data).hexdigest()))
+            if len(rows) > 4096 or total > 32 * 1024 * 1024:
+                raise ValueError('unsupported_adapter')
+    if not any(name == 'core/context_learning/laya_adapter.py' for name, _ in rows):
+        raise ValueError('unsupported_adapter')
+    return tuple(rows)
+
+
+def _local_binding(path, home, deadline, *, execution):
+    """Attest an officially registered directory source and its installed copy.
+
+    Claude executes the registered source directory. Codex executes its cache.
+    An old Claude cache may be a policy anchor, but is never an execution target.
+    """
+    try:
+        host, version, root, adapter_hash = _official_cache(path, home)
+    except ValueError:
+        if (not path.is_absolute() or home not in path.parents
+                or path.parts[-3:] != ('core', 'context_learning', 'laya_adapter.py')):
+            raise ValueError('unsupported_adapter')
+        host = 'claude'
+        root = path.parents[2]
+        version = None
+        adapter_hash = hashlib.sha256(_owned_bytes(path, home, 256 * 1024)).digest()
+        if path != root / 'core/context_learning/laya_adapter.py':
+            raise ValueError('unsupported_adapter')
+    if host == 'claude':
+        base = home / '.claude/plugins'
+        known = _owner_json(base / 'known_marketplaces.json', home)[MARKETPLACE]
+        origin = known['source']
+        if not isinstance(origin, dict) or origin.get('source') != 'directory':
+            raise ValueError('unsupported_adapter')
+        market = Path(origin['path'])
+        if known.get('installLocation') != str(market):
+            raise ValueError('unsupported_adapter')
+        source, current_version = _local_catalog(market, host, home)
+        cache = home / '.claude/plugins/cache' / MARKETPLACE / 'qmd-auto-context' / current_version
+        inventory = _owner_json(base / 'installed_plugins.json', home)
+        entries = inventory['plugins'].get(PLUGIN_ID, [])
+        if not isinstance(entries, list) or not entries or not all(
+                isinstance(item, dict) and item.get('version') == current_version
+                and item.get('installPath') == str(cache) for item in entries):
+            raise ValueError('unsupported_adapter')
+        if root not in (source, cache) or (execution and root != source):
+            raise ValueError('unsupported_adapter')
+    else:
+        item = _codex_installed(home, deadline)
+        origin = item.get('marketplaceSource')
+        if not isinstance(origin, dict) or origin.get('sourceType') != 'local':
+            raise ValueError('unsupported_adapter')
+        market = Path(origin['source'])
+        source, current_version = _local_catalog(market, host, home)
+        cache = home / '.codex/plugins/cache' / MARKETPLACE / 'qmd-auto-context' / current_version
+        if (root != cache or item.get('name') != 'qmd-auto-context'
+                or item.get('marketplaceName') != MARKETPLACE
+                or item.get('version') != current_version
+                or item.get('installed') is not True or item.get('enabled') is not True
+                or item.get('source') != {'source': 'local', 'path': str(source)}):
+            raise ValueError('unsupported_adapter')
+    if not market.is_absolute() or market != market.resolve() or (version is not None and version != current_version):
+        raise ValueError('unsupported_adapter')
+    # Both copies' manifests and every executable core/hook byte must agree.
+    for relative in ('package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
+        if _owned_bytes(source / relative, home, 1024 * 1024) != _owned_bytes(cache / relative, home, 1024 * 1024):
+            raise ValueError('unsupported_adapter')
+    fingerprint = _local_code(source, home)
+    if fingerprint != _local_code(cache, home):
+        raise ValueError('unsupported_adapter')
+    return adapter_hash, fingerprint
 
 
 def inference_argv(argv, adapter, *, deadline=None):
@@ -139,11 +275,17 @@ def inference_argv(argv, adapter, *, deadline=None):
         return list(argv)
     home = Path.home()
     try:
-        source = _official_cache(configured, home)
-        target = _official_cache(current, home)
-        _installed_current(*target[:3], home, deadline)
-        if source[3] != target[3]:
-            raise ValueError('unsupported_adapter')
+        try:
+            source = _official_cache(configured, home)
+            target = _official_cache(current, home)
+            _installed_current(*target[:3], home, deadline)
+            if source[3] != target[3]:
+                raise ValueError('unsupported_adapter')
+        except ValueError:
+            source = _local_binding(configured, home, deadline, execution=False)
+            target = _local_binding(current, home, deadline, execution=True)
+            if source != target:
+                raise ValueError('unsupported_adapter')
     except BindingTimeout:
         raise
     except subprocess.TimeoutExpired as exc:

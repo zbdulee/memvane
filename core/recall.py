@@ -2068,7 +2068,7 @@ def log_shadow_diagnostics(
         pass
 
 
-def main():
+def _main():
     # If QMD_SANDBOX is set or --sandbox option is in sys.argv, exit immediately with no output
     if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
         return 0
@@ -3342,6 +3342,18 @@ def main():
             fallback_fields=fallback_fields,
         )
     return 0
+
+def main():
+    if os.environ.get('QMD_SANDBOX') or '--sandbox' in sys.argv:return 0
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':return _main()
+    from contextlib import ExitStack
+    from runtime_work import foreground
+    with ExitStack() as stack:
+        try:stack.enter_context(foreground(os.getcwd()))
+        except (OSError,ValueError):
+            log_recall_event(os.environ.get('QMD_RECALL_LOG'),'resource_priority_unavailable')
+        return _main()
+
 
 if __name__ == "__main__":
     import hook_main

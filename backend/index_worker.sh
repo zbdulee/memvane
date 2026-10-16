@@ -36,6 +36,16 @@ release_owned_lock() {
   python3 "$_QMD_ROOT/core/worker_lock.py" release-pid "$1" "$$" >>"$LOG" 2>&1 || true
 }
 
+run_qmd() { python3 "$_QMD_ROOT/core/runtime_work.py" qmd "$QMD" "$@"; }
+
+finish_runtime_work() {
+  # All content leases are released before the waiter is scheduled.
+  release_owned_lock "$EMBED_LOCK"
+  release_owned_lock "$WRITER_LOCK"
+  release_owned_lock "$WORKER_LOCK"
+  python3 "$_QMD_ROOT/core/runtime_work.py" index-pending >>"$LOG" 2>&1 || true
+}
+
 ack_claim() {
   python3 "$_QMD_ROOT/core/dirty_queue_claim.py" ack "$QUEUE" || {
     log "dirty queue ack failed — claim retained"
@@ -67,7 +77,7 @@ if ! mkdir "$WORKER_LOCK" 2>/dev/null; then
   mkdir "$WORKER_LOCK" 2>/dev/null || exit 1
 fi
 echo "$$" > "$WORKER_LOCK/pid" 2>/dev/null || true
-trap 'release_owned_lock "$WORKER_LOCK"' EXIT
+trap 'finish_runtime_work' EXIT
 
 # The durable claim contains the exact queue prefix and is fsynced before QMD
 # work. The live queue remains untouched until every stage succeeds.
@@ -90,7 +100,7 @@ if ! mkdir "$WRITER_LOCK" 2>/dev/null; then
   fi
 fi
 echo "$$" > "$WRITER_LOCK/pid" 2>/dev/null || true
-trap 'release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
+trap 'finish_runtime_work' EXIT
 
 # Older workers may have left a successful global embed awaiting daemon
 # handoff. Complete that obligation before changing the claimed prefix; an
@@ -198,7 +208,7 @@ if [ "$has_project_index" = 1 ]; then
     exit 75
   fi
   echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
-  trap 'release_owned_lock "$EMBED_LOCK"; release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
+  trap 'finish_runtime_work' EXIT
   # The existing writer lock is held throughout. Each subshell receives only
   # its own project index environment; no project DB can absorb another queue.
   touched_global=0
@@ -218,13 +228,13 @@ if [ "$has_project_index" = 1 ]; then
         IFS=$'\t' read -r INDEX_PATH QMD_CONFIG_DIR XDG_CACHE_HOME <<< "$route"
         export INDEX_PATH QMD_CONFIG_DIR XDG_CACHE_HOME
       fi
-      add_out="$("$QMD" collection add "$path" --name "$name" 2>&1)" || {
+      add_out="$(run_qmd collection add "$path" --name "$name" 2>&1)" || {
         printf '%s\n' "$add_out" | grep -qi 'already exists' || exit 1
       }
       python3 "$_QMD_ROOT/core/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1 && \
-        "$QMD" update >>"$LOG" 2>&1 && \
+        run_qmd update >>"$LOG" 2>&1 && \
         python3 "$_QMD_ROOT/core/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1 && \
-        "$QMD" embed >>"$LOG" 2>&1
+        run_qmd embed >>"$LOG" 2>&1
     ); then
       log "project-routed update failed — claim retained: $name"
       failed=1
@@ -268,7 +278,7 @@ for e in "${ENTRIES[@]}"; do
   name="${e%%	*}"; path="${e#*	}"
   [ -n "$name" ] && [ -n "$path" ] || continue
   if [ ! -d "$path" ]; then log "skip missing dir: $name -> $path"; continue; fi
-  if out=$("$QMD" collection add "$path" --name "$name" 2>&1); then
+  if out=$(run_qmd collection add "$path" --name "$name" 2>&1); then
     added=1
   elif printf '%s' "$out" | grep -qi "already exists"; then
     added=1
@@ -284,7 +294,7 @@ if [ "$added" = 0 ]; then
   ack_claim; exit $?
 fi
 
-if ! UPDATE_OUT="$("$QMD" update 2>&1)"; then
+if ! UPDATE_OUT="$(run_qmd update 2>&1)"; then
   printf '%s\n' "$UPDATE_OUT" >>"$LOG"; log "update failed — claim retained"; exit 1
 fi
 printf '%s\n' "$UPDATE_OUT" >>"$LOG"
@@ -299,10 +309,10 @@ if ! mkdir "$EMBED_LOCK" 2>/dev/null; then
   exit 75
 fi
 echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
-trap 'release_owned_lock "$EMBED_LOCK"; release_owned_lock "$WRITER_LOCK"; release_owned_lock "$WORKER_LOCK"' EXIT
+trap 'finish_runtime_work' EXIT
 
 # embed (전체 incremental). 출력에서 새 임베딩 수 파싱.
-if ! EMBED_OUT="$("$QMD" embed 2>&1)"; then
+if ! EMBED_OUT="$(run_qmd embed 2>&1)"; then
   printf '%s\n' "$EMBED_OUT" >>"$LOG"
   log "embed failed — claim retained"
   exit 1

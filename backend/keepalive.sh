@@ -36,8 +36,6 @@ curl --noproxy '*' -s -m 1 "${URL}/health" >/dev/null 2>&1 || exit 0
 # 진단/실험 목적으로 명시 opt-in 한 경우에만 사용한다.
 [ "${QMD_KEEPALIVE_VEC_WARM:-0}" = "1" ] || exit 0
 
-# warm 핑 (vec, opt-in). qmd 본체가 server-side timeout을 강제하지 않으므로 curl timeout으로만 제한된다.
-curl --noproxy '*' -s -m 5 -X POST "${URL}/query" \
-  -H 'Content-Type: application/json' \
-  -d '{"searches":[{"type":"vec","query":"keepalive warm ping"}],"limit":1,"rerank":false}' \
-  >/dev/null 2>&1 || true
+# No attested server-side deadline/cancellation: optional warm safely defers.
+# A client timeout cannot prove the daemon stopped its vector work.
+python3 "$(dirname "$0")/../core/runtime_admission.py" warm >/dev/null 2>&1 || true

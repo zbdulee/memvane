@@ -336,6 +336,8 @@ def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
         env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
+        from runtime_cpu import environment
+        env=environment(env)
         bootstrap = ('import sys,runpy;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[1]))
                      + ');sys.argv=["context_learning.inference_service","worker",sys.argv[1]];'
                      + 'runpy.run_module("context_learning.inference_service",run_name="__main__")')
@@ -554,8 +556,9 @@ def _validate_apply(envelope):
         'request':{'schema_version':1,'artifact_path':stage['artifactPath'],'model_input_view':profile['view'],'cases':[case]}}
 
 
-def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,apply_validate=None):
+def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,apply_validate=None,monitor_factory=None):
     root = resident._private_state(root)
+    production_engine=engine is None
     engine = engine or GenerationEngine()
     validate = validate or _validate_request
     from .resource_coordination import Coordinator
@@ -569,6 +572,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
     path = _address(root)
     pid_path = root / PID_NAME
     identity = None
+    monitor=None
 
     def respond(conn, row):
         try:
@@ -640,10 +644,16 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                 json.dump({'pid': os.getpid(), 'socket_dev': identity.st_dev,
                            'socket_ino': identity.st_ino}, target)
             server.listen(CAPACITY);server.settimeout(.1)
+            if monitor_factory is not None:monitor=monitor_factory(root)
+            elif production_engine:
+                from runtime_monitor import Supervisor
+                monitor=Supervisor(root)
+            if monitor is not None:monitor.tick()
             worker.start()
             if ready is not None:
                 ready.set()
             while not stopped.is_set():
+                if monitor is not None:monitor.tick()
                 try:
                     conn, _ = server.accept()
                 except socket.timeout:
@@ -654,7 +664,8 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                     envelope = resident._read(conn, deadline=time.monotonic()+resident.HANDSHAKE_SECONDS)
                     if envelope == {'command': 'version'}:
                         respond(conn, {'status': 'ready', 'protocol': PROTOCOL,
-                            'signature': _signature(), 'queued': pending.qsize(), 'busy': busy.is_set()})
+                            'signature': _signature(), 'queued': pending.qsize(), 'busy': busy.is_set(),
+                            'resource_monitor':monitor.status if monitor is not None else 'not_attached'})
                         continue
                     if envelope == {'command': 'shutdown'}:
                         if pending.unfinished_tasks:
@@ -672,6 +683,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                     respond(conn, {'status': _failure(exc), 'prediction': None, 'timing': {}})
     finally:
         stopped.set()
+        if monitor is not None:monitor.close()
         if worker.is_alive():
             worker.join(timeout=1)
         if identity is not None:
@@ -691,7 +703,8 @@ def main():
     root = service_root()
     if Path(sys.argv[2]) != root:
         raise SystemExit(2)
-    _serve(root)
+    from runtime_cpu import lease
+    with lease(root):_serve(root)
 
 
 if __name__ == '__main__':

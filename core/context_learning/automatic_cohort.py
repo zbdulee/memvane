@@ -6,6 +6,8 @@ authorization names fresh edit-path families, while every captured candidate
 """
 from __future__ import annotations
 
+from runtime_admission import prepared,preparation_checkpoint
+
 import json
 from pathlib import Path
 
@@ -107,6 +109,7 @@ def _rows(db, project, grant, statuses):
                               cutoff, cutoff)).fetchall()
     result = []
     for row in rows:
+        preparation_checkpoint()
         sample = json.loads(row[3])
         family = _family(row[12], cohort)
         if (sample.get('schema_version') != 4
@@ -133,8 +136,13 @@ def _old_exposure(db, grant):
     return set().union(*(_exposure(row) for row in rows))
 
 
+@prepared
 def admitted(db, project, grant, statuses=('queued', 'first_done')):
     """Read-only admission; unsafe rows stay queued for explicit review."""
+    from .project_scope import SCOPE
+    if grant.get('scope') == SCOPE:
+        from .general_cohort import admitted as general_admitted
+        return general_admitted(db, project, grant, statuses=statuses)
     from .synthetic_experiment import story_for
     if (grant.get('projectRoot') != str(Path(project).resolve())
             or grant.get('storyRoot') != str(story_for(project).resolve())):

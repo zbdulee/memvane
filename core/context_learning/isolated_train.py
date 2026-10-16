@@ -327,7 +327,7 @@ def _make_trainer(plan):
             policy['trainerArgv'][2]]
     return VerifiedLayaTrainer(argv, max_seconds=policy['safetySeconds'],
         max_rss_mib=policy['maxRssMib'], proof_cache_dir=plan['output'],
-        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True,
+        pressure_probe=lambda **options: resource_report(policy, admission=False,**options), require_monitor=True,
         isolated_temp_dir=plan['output'])
 
 

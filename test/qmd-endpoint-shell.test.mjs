@@ -17,6 +17,7 @@ function fixture(run) {
   *qmd_endpoint.py' url') echo 'http://[::1]:19485';;
   *qmd_endpoint.py' log') printf '%s\\n' "$TEST_LOG";;
   *qmd_endpoint.py' reload') echo reload >> "$TEST_CALLS"; return "$TEST_RELOAD_RC";;
+  *runtime_admission.py' warm') echo warm-deferred >> "$TEST_CALLS"; return 75;;
   *) return 99;;
  esac
 }
@@ -44,13 +45,13 @@ test('production log rotation calls the proved endpoint coordinator without mana
  assert.equal(readFileSync(calls,'utf8'),'reload\n');assert.ok(existsSync(log+'.1'));
 }));
 
-test('production keepalive pins the selected address family for health and optional query',()=>fixture(({calls,env})=>{
+test('production keepalive pins health address family and defers unbounded warm queries',()=>fixture(({calls,env})=>{
  const p=spawnSync('bash',['backend/keepalive.sh'],{encoding:'utf8',env});
  assert.equal(p.status,0,p.stderr);
  const lines=readFileSync(calls,'utf8').trim().split('\n');
  assert.equal(lines.length,2);assert.match(lines[0],/http:\/\/\[::1\]:19485\/health/);
- assert.match(lines[1],/http:\/\/\[::1\]:19485\/query/);
- assert.ok(lines.every(x=>x.includes('--noproxy *')&&!x.includes('localhost')));
+ assert.equal(lines[1],'warm-deferred');
+ assert.ok(lines[0].includes('--noproxy *')&&!lines[0].includes('localhost'));
 }));
 
 test('daemon directly executes the verified MCP entry at default8584 or the coordinator-selected explicit port',()=>{

@@ -83,7 +83,17 @@ def _numeric_usage(value):
             if k in allowed and type(v) is int and v >= 0}
 
 
-def run_teacher(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
+def run_teacher(sample, *, enabled=False, **options):
+    if enabled is not True:return {'status':'disabled','cli_invocations':0}
+    from runtime_admission import provider
+    from .local_cycle import ResourceDeferred
+    try:
+        with provider():return _run_teacher_admitted(sample,enabled=True,**options)
+    except ResourceDeferred as exc:
+        return {'status':'deferred_resource','reason':str(exc),'cli_invocations':0}
+
+
+def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
                 cancel=None, accept_security_policy=False,
                 optional_hooks_audited=False, disabled_plugin_ids=(), model=None):
     """One bounded CLI start, no fallback/retries. Return labels, never review.
@@ -93,6 +103,7 @@ def run_teacher(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
     Codex retains builtin context; its exec stream is not an empty-catalog proof.
     Caller must not log the returned labels when they contain private excerpts.
     """
+    from runtime_admission import PreSendDeferred
     report = {'status': 'disabled', 'cli_invocations': 0,
               'resolved_model': 'unreported', 'resolved_effort': 'unreported'}
     if enabled is not True:
@@ -145,7 +156,8 @@ def run_teacher(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
             if any((p / '.git').exists() for p in (directory, *directory.parents)):
                 raise TransportFailure('git_ancestor_present')
             deadline = time.monotonic() + timeout
-            process = subprocess.Popen(args, cwd=cwd, env=environment,
+            from runtime_admission import provider_popen
+            process = provider_popen(args, cwd=cwd, env=environment,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, start_new_session=True)
             report['cli_invocations'] = 1
@@ -301,6 +313,8 @@ def run_teacher(sample, *, enabled=False, host=None, timeout=DEFAULT_TIMEOUT,
                 raise TransportFailure('invalid_labels')
             report.update(status='completed', labels=labels, label_status='provisional',
                           schema_result='passed')
+    except PreSendDeferred:
+        report.update(status='deferred_resource',reason='pre_send_resource_deferred')
     except TransportFailure as exc:
         report['reason'] = str(exc)  # Only our fixed reason codes.
     except (ValueError, TypeError, KeyError, AttributeError):

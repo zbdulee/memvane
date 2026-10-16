@@ -111,6 +111,9 @@ def run(project: Path) -> dict:
     elif result["status"] == "failed":
         summary["reason"] = result["reason"]
     _atomic_json(state / RESULT, summary)
+    if summary['status']=='deferred_resource':
+        import runtime_work
+        runtime_work.request('auto',str(project))
     return summary
 
 
@@ -142,6 +145,10 @@ def launch(project: Path, *, data_mode: str | None = None) -> dict:
             env[key] = route[key]
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
+        import runtime_work
+        receipt=runtime_work.request('auto',str(project),start=False)
+        if isinstance(receipt,dict) and receipt['status']=='deferred_queue_capacity':
+            runtime_work.hook_wake();return receipt
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run", str(project)],
                          stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=env,
                          start_new_session=True, close_fds=True)

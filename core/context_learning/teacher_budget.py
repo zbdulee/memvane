@@ -4,6 +4,8 @@ Reservations happen before transport. Unknown provider billing is never claimed
 as exact: configured per-call USD is a conservative reservation, not a bill.
 Each external retry needs a new explicit attempt ID and consumes another slot.
 """
+from runtime_admission import provider_job
+
 import json
 import re
 
@@ -96,6 +98,7 @@ def finish_teacher(state_dir, reservation, status):
     return status
 
 
+@provider_job
 def budgeted_label_request(state_dir, request_id, attempt_id, policy, *, invoke=None, **options):
     """Explicit creation only. Review model is separately budgeted, never auto-gold."""
     with database(state_dir) as db:
@@ -128,6 +131,7 @@ def reserve_review(state_dir, request_id, attempt_id, policy):
     return reserve_teacher(state_dir, request_id, 'review', attempt_id, policy)
 
 
+@provider_job
 def budgeted_review_request(state_dir, request_id, attempt_id, policy, *, invoke=None, **options):
     reservation = reserve_review(state_dir, request_id, attempt_id, policy)
     if invoke is None:

@@ -6,6 +6,7 @@ node_modules/
 __pycache__/
 *.pyc
 .hermes/
+.development-hold.json
 
 # 저장소 루트에 만들어지는 테스트 임시 디렉터리(wiki-compile-notice). 정리는 테스트가 하지만
 # 경합으로 남는 경우가 있어(core/__pycache__와 같은 이유) 실수로 커밋되지 않게 무시한다.

@@ -27,10 +27,8 @@ CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping']
 
 
 def file_sha(path):
-    h = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024*1024), b''): h.update(chunk)
-    return h.hexdigest()
+    from runtime_admission import hash_file
+    return hash_file(path)
 
 
 def _sha(value):
@@ -38,7 +36,7 @@ def _sha(value):
 
 
 def code_identity():
-    return _sha({str(p.relative_to(Path(__file__).parent.parent)): hashlib.sha256(p.read_bytes()).hexdigest()
+    return _sha({str(p.relative_to(Path(__file__).parent.parent)): file_sha(p)
                  for p in sorted(Path(__file__).parent.parent.rglob('*.py'))})
 
 

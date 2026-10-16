@@ -40,6 +40,8 @@ def enqueue_collections(selected, *, project_root=None):
             f.writelines(lines)
             f.flush(); os.fsync(f.fileno())
             install_deadline.flock(f.fileno(), fcntl.LOCK_UN)
+    import runtime_work
+    runtime_work.request('index',start=False)
 
 
 def enqueue_project_collections(project_root, selected):

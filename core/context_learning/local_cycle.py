@@ -5,8 +5,10 @@ predict requests contain no labels. All artifacts stay in an owner-only state
 directory. A promotion changes only that directory's active pointer.
 """
 import fcntl
+import inspect
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -35,11 +37,8 @@ def _safe_file(path, *, max_size=2 * 1024 * 1024 * 1024):
 
 
 def _hash(path):
-    h = hashlib.sha256()
-    with _safe_file(path).open('rb') as source:
-        for block in iter(lambda: source.read(1024 * 1024), b''):
-            h.update(block)
-    return h.hexdigest()
+    from runtime_admission import hash_file
+    return hash_file(_safe_file(path))
 
 
 def _atomic_json(path, value):
@@ -114,9 +113,11 @@ class LocalTrainer:
         self.last_exit_code = None
         self.last_error_code = None
 
-    def _pressure_report(self):
+    def _pressure_report(self,*,deadline=None):
         try:
-            report = self.pressure_probe()
+            parameters=inspect.signature(self.pressure_probe).parameters.values()
+            accepts=any(p.name=='deadline' or p.kind==inspect.Parameter.VAR_KEYWORD for p in parameters)
+            report=self.pressure_probe(deadline=deadline) if deadline is not None and accepts else self.pressure_probe()
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
             report = None
         if not isinstance(report, dict) or type(report.get('ready')) is not bool:
@@ -134,6 +135,21 @@ class LocalTrainer:
         return report.get('training_limits')
 
     def call(self, mode, request, result_path, *, cwd):
+        # Coordinated adapters already acquire compute at checkpoint boundaries.
+        # Legacy explicit adapters have no cursor: their one call is indivisible.
+        if getattr(self,'learning_control',None) is not None or os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':
+            return self._call(mode,request,result_path,cwd=cwd)
+        self._admission(cwd)
+        from .resource_coordination import Coordinator
+        from .shared import resource_report
+        policy={'maxRssMib':self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
+        try:
+            with Coordinator().step(policy,resource_report(policy,detailed=True),with_fd=True) as (_,fd):
+                return self._call(mode,request,result_path,cwd=cwd,boundary_coordinated=True,extra_fds=(fd,))
+        except ResourceDeferred as exc:
+            record_resource_defer(cwd,exc.report,reason=str(exc));raise
+
+    def _call(self, mode, request, result_path, *, cwd, boundary_coordinated=False,extra_fds=()):
         self.last_resources = None
         self.last_exit_code = None
         self.last_error_code = None
@@ -144,6 +160,10 @@ class LocalTrainer:
         control = getattr(self, 'learning_control', None)
         if control is not None and mode in ('train','predict'):
             request = {**request, 'learning_control':control}
+        if control is not None and 'calibration' in control.get('policy',{}):
+            if mode!='train':raise ValueError('calibration_scope_invalid')
+            from .bounded_calibration import reserve_launch
+            reserve_launch(request)
         request_path = Path(cwd) / (mode+'-request.json')
         _atomic_json(request_path, request)
         result_path = Path(result_path)
@@ -155,16 +175,39 @@ class LocalTrainer:
             env['TMPDIR'] = str(self.scratch_dir)
         env.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_LOCAL_TRAINER='1', PYTHONDONTWRITEBYTECODE='1')
+        if control is not None and 'calibration' in control.get('policy',{}):
+            env['QMD_CALIBRATION_ENVELOPE']=os.environ['QMD_CALIBRATION_ENVELOPE']
         # Avoid inheriting API keys, HOME, proxy settings and project-wide hooks.
-        inherited = tuple(getattr(self, 'inherited_fds', ()))
+        inherited = tuple(getattr(self, 'inherited_fds', ()))+extra_fds
         coordination_fd = getattr(self, 'coordination_fd', None)
         if coordination_fd is not None:env['QMD_TRAINER_COORD_FD']=str(coordination_fd)
-        proc = subprocess.Popen([*self.argv, mode, str(request_path), str(pending)],
-            cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=inherited)
+        from .training_watch import Watch,PROBE_INTERVAL,PROBE_BUDGET,STATS_BUDGET,stop_owned
+        from .resource_coordination import Coordinator
+        from runtime_cpu import lease,environment
+        cpu_scope=lease();cpu_budget=cpu_scope.__enter__()
+        env=environment(env);inherited=(*inherited,*cpu_budget.fds)
+        running_watch=(mode=='train' or control is not None and mode=='predict')
+        stop_read=stop_write=None
+        try:
+            if running_watch:
+                stop_read,stop_write=os.pipe();env['QMD_TRAINER_STOP_FD']=str(stop_read)
+                inherited=(*inherited,stop_read)
+            proc = subprocess.Popen([*self.argv, mode, str(request_path), str(pending)],
+                cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=inherited)
+        except BaseException:
+            if stop_write is not None:os.close(stop_write)
+            cpu_scope.__exit__(None,None,None)
+            raise
+        finally:
+            if stop_read is not None:os.close(stop_read)
         started = time.monotonic(); peak_kib = 0
         rss_sum = cpu_sum = peak_cpu = samples = 0
-        next_pressure_check = started + 2
+        next_pressure_check=next_stats_check=started
+        watch=Watch(clock=time.monotonic,max_load=(control or {}).get('policy',{}).get('maxLoadPerCpu',1),
+            min_available_mib=(control or {}).get('policy',{}).get('minAvailableMib',768),
+            policy=(control or {}).get('policy',{})) if running_watch else None
+        report=None;stop_requested=False;cleaned=None;group_cpu=None
         def observed():
             return {'elapsed_seconds': round(time.monotonic()-started, 3),
                     'observed_peak_rss_kib': peak_kib if samples else None,
@@ -172,35 +215,61 @@ class LocalTrainer:
                     'observed_peak_cpu_percent': round(peak_cpu, 2) if samples else None,
                     'observed_avg_cpu_percent': round(cpu_sum / samples, 2) if samples else None,
                     'resource_samples': samples if samples else None,
+                    'configured_cpu_threads':cpu_budget.threads,
+                    'allocated_group_cpu_percent':cpu_budget.threads*100,
                     'rss_monitor': 'sampled-ps-process-group' if samples else 'unavailable'}
         try:
             while proc.poll() is None:
                 if time.monotonic()-started > self.max_seconds:
                     raise ValueError('trainer_timeout')
-                try:
-                    stat_out = subprocess.run(['/bin/ps', '-axo', 'pgid=,%cpu=,rss='],
-                        capture_output=True, text=True, timeout=1, check=False)
-                    if stat_out.returncode != 0:
-                        raise OSError('process_stats_unavailable')
-                    group = [parts for line in stat_out.stdout.splitlines()
-                             if len(parts := line.split()) == 3 and parts[0] == str(proc.pid)]
-                    if group:
-                        rss = sum(int(parts[2]) for parts in group)
-                        cpu = sum(float(parts[1]) for parts in group)
-                        peak_kib = max(peak_kib, rss)
-                        peak_cpu = max(peak_cpu, cpu)
-                        rss_sum += rss; cpu_sum += cpu; samples += 1
-                        if rss > self.max_rss_mib*1024:
-                            raise ResourceDeferred('trainer_memory_budget', {'reason':'process_group_rss_budget'})
-                except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-                    if isinstance(exc, ValueError) and str(exc) == 'trainer_memory_budget': raise
-                    if self.require_monitor:
-                        raise ResourceDeferred('trainer_resource_monitor_unavailable', {'reason':'process_stats_unavailable'}) from exc
-                if self.pressure_probe is not None and time.monotonic() >= next_pressure_check:
-                    report = self._pressure_report()
-                    if not report['ready']:
-                        raise ResourceDeferred('trainer_system_pressure', report)
-                    next_pressure_check = time.monotonic() + 2
+                if time.monotonic()>=next_stats_check:
+                    try:
+                        stat_out = subprocess.run(['/bin/ps', '-axo', 'pgid=,%cpu=,rss='],
+                            capture_output=True, text=True, timeout=STATS_BUDGET, check=False)
+                        if stat_out.returncode != 0:
+                            raise OSError('process_stats_unavailable')
+                        group = [parts for line in stat_out.stdout.splitlines()
+                                 if len(parts := line.split()) == 3 and parts[0] == str(proc.pid)]
+                        if not group and self.require_monitor and proc.poll() is None:
+                            raise OSError('process_stats_unavailable')
+                        if group:
+                            rss = sum(int(parts[2]) for parts in group)
+                            cpu = sum(float(parts[1]) for parts in group)
+                            if not math.isfinite(cpu) or cpu<0:
+                                raise OSError('process_stats_unavailable')
+                            group_cpu=cpu
+                            peak_kib = max(peak_kib, rss)
+                            peak_cpu = max(peak_cpu, cpu)
+                            rss_sum += rss; cpu_sum += cpu; samples += 1
+                            if rss > self.max_rss_mib*1024:
+                                raise ResourceDeferred('trainer_memory_budget', {'reason':'process_group_rss_budget','emergency':True})
+                    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+                        if isinstance(exc,ResourceDeferred):raise
+                        if self.require_monitor:
+                            raise ResourceDeferred('trainer_resource_monitor_unavailable', {'reason':'process_stats_unavailable','emergency':True}) from exc
+                    next_stats_check=time.monotonic()+.5
+                if watch is not None:
+                    if time.monotonic()>=next_pressure_check:
+                        deadline=time.monotonic()+PROBE_BUDGET
+                        if self.pressure_probe is not None:report=self._pressure_report(deadline=deadline)
+                        else:
+                            from .shared import resource_report
+                            policy={'maxRssMib':self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
+                            report=resource_report(policy,detailed=True,admission=False,deadline=deadline)
+                        next_pressure_check=time.monotonic()+PROBE_INTERVAL
+                    decision=watch.observe(report,foreground=Coordinator().demand(),
+                        cpu_percent=group_cpu,cpu_limit=cpu_budget.threads*100)
+                    if decision['action']=='yield' and not stop_requested:
+                        try:os.write(stop_write,b'y');stop_requested=True
+                        except BrokenPipeError:
+                            if proc.poll() is None:raise ResourceDeferred('trainer_stop_pipe_unavailable',{'emergency':True})
+                    if decision['action'] in ('kill','terminate'):
+                        raise ResourceDeferred('trainer_running_'+decision['reason'],
+                            {'reason':decision['reason'],'emergency':decision['action']=='kill'})
+                elif control is None and not boundary_coordinated and self.pressure_probe is not None and time.monotonic()>=next_pressure_check:
+                    report=self._pressure_report()
+                    if not report['ready']:raise ResourceDeferred('trainer_system_pressure',report)
+                    next_pressure_check=time.monotonic()+2
                 time.sleep(.05)
             if proc.returncode != 0:
                 code = 'trainer_process_failed'
@@ -231,6 +300,7 @@ class LocalTrainer:
                                 'edit_segment_coverage_failed',
                                 'learning_yield', 'learning_control_invalid', 'learning_cursor_changed',
                                 'learning_update_budget_exceeded', 'learning_lease_missing',
+                                'cpu_thread_configuration_invalid','cpu_thread_configuration_unavailable',
                                 'invalid_training_limits', 'training_memory_profile_changed',
                                 'training_memory_unavailable', 'training_memory_budget'}):
                         # Tokenizer-only segmentation shares the same bounded
@@ -246,26 +316,28 @@ class LocalTrainer:
                     raise ResourceDeferred('trainer_failed:' + code, {'reason': code})
                 raise ValueError('trainer_failed' if code == 'trainer_process_failed'
                                  else 'trainer_failed:' + code)
+            cleaned=stop_owned(proc)
+            if not cleaned:
+                raise ResourceDeferred('trainer_cleanup_unavailable',{'reason':'owned_child_cleanup_unavailable','completionAck':False})
             response = read_private_json(_safe_file(pending, max_size=MAX_FILE))
             os.replace(pending, result_path)
             return response, observed()
         except BaseException as exc:
-            if proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    try: proc.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(proc.pid, signal.SIGKILL); proc.wait()
-                except OSError:
-                    pass  # Cleanup must not replace the original trainer error.
+            emergency=isinstance(exc,ResourceDeferred) and exc.report.get('emergency') is True
+            if cleaned is None:cleaned=stop_owned(proc,emergency=emergency)
+            if not cleaned:
+                Coordinator().cleanup_unknown(proc.pid)
+                failure=ResourceDeferred('trainer_cleanup_unavailable',{'reason':'owned_child_cleanup_unavailable','completionAck':False})
+                record_resource_defer(cwd,failure.report,reason=str(failure))
+                raise failure from exc
             if isinstance(exc, ResourceDeferred):
                 record_resource_defer(cwd, exc.report, reason=str(exc))
             raise
         finally:
             self.last_exit_code = proc.returncode
             self.last_resources = observed()
-            try: os.killpg(proc.pid, signal.SIGKILL)
-            except OSError: pass
+            if stop_write is not None:os.close(stop_write)
+            cpu_scope.__exit__(None,None,None)
             try: request_path.unlink(missing_ok=True)
             except OSError: pass
 

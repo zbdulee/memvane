@@ -957,7 +957,7 @@ def evaluate_final(root, *, trainer_factory=None):
         if trainer_factory is None:
             trainer = VerifiedLayaTrainer(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                             max_rss_mib=policy["maxRssMib"],
-                            pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
+                            pressure_probe=lambda **options: resource_report(policy, admission=False,**options), require_monitor=True)
         else:
             trainer = trainer_factory(policy)
         cases = [_case(row[:6]) for row in rows]

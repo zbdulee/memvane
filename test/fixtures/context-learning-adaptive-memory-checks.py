@@ -85,6 +85,8 @@ class Accumulation(unittest.TestCase):
             def optimizer(params,**kw):
                 opt=Optimizer(model);optimizers.append(opt);return opt
             torch=types.ModuleType('torch');torch.__path__=[]
+            torch.set_num_threads=lambda n:None;torch.set_num_interop_threads=lambda n:None
+            torch.get_num_threads=lambda:1;torch.get_num_interop_threads=lambda:1
             torch.manual_seed=lambda _:None;torch.long='long'
             torch.optim=types.SimpleNamespace(SGD=optimizer)
             torch.tensor=lambda values,**kw:values
@@ -142,6 +144,8 @@ class Accumulation(unittest.TestCase):
             def __getitem__(self,_):return self
             def tolist(self):return [.9]*self.n
         torch=types.SimpleNamespace(no_grad=nullcontext,
+            set_num_threads=lambda n:None,set_num_interop_threads=lambda n:None,
+            get_num_threads=lambda:1,get_num_interop_threads=lambda:1,
             softmax=lambda values,*_:Probabilities(len(values)))
         with patch.dict(sys.modules,{'torch':torch}), patch.object(
                 laya_adapter,'_pairs',return_value=items), patch.object(
@@ -165,6 +169,8 @@ class Memory(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, str(8*1024**3))
             if argv[-1] == 'vm.swapusage':
                 return subprocess.CompletedProcess(argv, 0, 'used = 10.0M')
+            if argv[-1] == 'kern.memorystatus_vm_pressure_level':
+                return subprocess.CompletedProcess(argv, 0, '1')
             return subprocess.CompletedProcess(argv, rc, pressure)
         policy = {'maxLoadPerCpu': 1.5, 'minAvailableMib': 1024, 'maxRssMib':4096}
         if adaptive is not None: policy['adaptiveMemory'] = adaptive
@@ -183,7 +189,7 @@ class Memory(unittest.TestCase):
         for output in ('System-wide memory free percentage: 44%',
                        'System-wide free percentage: 44%'):
             report = self.report(output)
-            self.assertEqual(report['memory_pressure'], {'system_free_percent':44})
+            self.assertEqual(report['memory_pressure'], {'system_free_percent':44,'level':'normal'})
             self.assertEqual(report['query_status']['memory_pressure'], 'ok')
 
     def test_unknown_and_denied_are_distinct(self):

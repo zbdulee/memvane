@@ -16,7 +16,8 @@ test('keepalive 기본값은 전역 vec warm ping을 보내지 않는 health-onl
   const sh = readFileSync('backend/keepalive.sh', 'utf8');
   assert.match(sh, /QMD_KEEPALIVE_VEC_WARM:-0/, 'vec warm ping은 기본 off 여야 함');
   assert.match(sh, /\[ "\$\{QMD_KEEPALIVE_VEC_WARM:-0\}" = "1" \] \|\| exit 0/, 'opt-in 전에는 /query 전에 종료해야 함');
-  assert.match(sh, /\/query/, '명시 opt-in 용 warm ping 경로는 유지');
+  assert.match(sh, /runtime_admission\.py" warm/, 'opt-in도 공통 admission에서 안전하게 보류');
+  assert.doesNotMatch(sh, /-X POST/, '서버 취소 계약 없이 vector 요청을 보내지 않음');
 });
 
 test('backend manager health timeout invalid 값은 2초 fallback', () => {

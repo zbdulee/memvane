@@ -136,7 +136,12 @@ def locked():
         info=os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077 or info.st_nlink!=1:
             raise ValueError('unsafe_qmd_endpoint_lock')
-        install_deadline.flock(fd,fcntl.LOCK_EX);yield base
+        flags=fcntl.LOCK_EX if install_deadline.active() else fcntl.LOCK_EX|fcntl.LOCK_NB
+        try:install_deadline.flock(fd,flags)
+        except BlockingIOError:
+            from context_learning.local_cycle import ResourceDeferred
+            raise ResourceDeferred('qmd_startup_busy') from None
+        yield base
     finally:os.close(fd)
 
 def publish(base,row):
@@ -152,7 +157,8 @@ def publish(base,row):
     finally:Path(name).unlink(missing_ok=True)
 
 def child_environment(port):
-    env={**os.environ,'QMD_DAEMON_PORT':str(port)}
+    from runtime_cpu import environment
+    env=environment({**os.environ,'QMD_DAEMON_PORT':str(port)})
     # A selected explicit CPU runtime must agree with the daemon's direct Node
     # entry. An auto runtime never installs a global/implicit CPU override.
     import qmd_runtime
@@ -160,9 +166,17 @@ def child_environment(port):
     return env
 
 def spawn(port,log):
-    env=child_environment(port)
-    return subprocess.Popen(['bash',str(ROOT/'backend/daemon.sh')],env=env,
-        cwd=ROOT,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+    from runtime_cpu import lease,environment
+    from context_learning.local_cycle import ResourceDeferred
+    from runtime_admission import PreSendDeferred
+    scope=lease()
+    try:budget=scope.__enter__()
+    except ResourceDeferred as exc:raise PreSendDeferred(str(exc),exc.report) from None
+    try:
+        return subprocess.Popen(['bash',str(ROOT/'backend/daemon.sh')],env=environment(child_environment(port)),
+            cwd=ROOT,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,
+            start_new_session=True,pass_fds=budget.fds)
+    finally:scope.__exit__(None,None,None)
 
 def limits():
     try:
@@ -212,6 +226,12 @@ def ensure_locked(base):
         if not owned(row):raise ValueError('qmd_endpoint_identity_invalid')
         if not healthy(row['port'],row['url']):raise ValueError('qmd_endpoint_unhealthy')
         return row
+    from runtime_admission import startup
+    with startup() as reservation:
+        return _start_locked(base,spec,base_port,attempts,seconds,reservation.deadline)
+
+
+def _start_locked(base,spec,base_port,attempts,seconds,startup_deadline):
     # One managed current log also covers bounded failed attempts. logrotate
     # reads this exact path, rather than leaving random per-start files.
     fd=os.open(log_path(),os.O_RDWR|os.O_CREAT|os.O_APPEND|os.O_NOFOLLOW,0o600)
@@ -220,11 +240,17 @@ def ensure_locked(base):
         os.close(fd);raise ValueError('unsafe_qmd_endpoint_log')
     with os.fdopen(fd,'a+b') as log:
         for port in range(base_port,base_port+attempts):
+            if time.monotonic()>=startup_deadline:raise ValueError('qmd_daemon_bind_health_timeout')
             if port_busy(port):continue
             log.seek(0,2);offset=log.tell()
-            child=spawn(port,log);published=False;collision=False
+            from runtime_admission import startup_pending,startup_settled,PreSendDeferred
+            startup_pending()
+            try:child=spawn(port,log)
+            except (OSError,PreSendDeferred):
+                startup_settled();raise
+            published=False;collision=False
             candidate={'schema':SCHEMA,**spec,'pid':child.pid,'port':port,'url':loopback_url('127.0.0.1',port)}
-            deadline=time.monotonic()+seconds
+            deadline=min(startup_deadline,time.monotonic()+seconds)
             try:
                 while child.poll() is None and time.monotonic()<deadline:
                     hosts=bound(child.pid,port)
@@ -243,7 +269,7 @@ def ensure_locked(base):
                         with os.fdopen(pidfd,'w') as pidout:
                             pidout.write(str(child.pid)+'\n');pidout.flush();os.fsync(pidout.fileno())
                         os.replace(pidname,base/f'daemon-{port}.pid')
-                        published=True;return candidate
+                        published=True;startup_settled();return candidate
                     time.sleep(.05)
                 if collision:continue
                 if child.poll() is None:raise ValueError('qmd_daemon_bind_health_timeout')
@@ -256,6 +282,8 @@ def ensure_locked(base):
                     child.terminate()
                     try:child.wait(timeout=2)
                     except subprocess.TimeoutExpired:child.kill();child.wait(timeout=2)
+                    startup_settled()
+                elif not published:startup_settled()
     raise ValueError('qmd_port_range_exhausted')
 
 def attest_record(row):
@@ -276,21 +304,25 @@ def attest_record(row):
         raise ValueError('qmd_endpoint_previous_proof_invalid')
 
 def reload():
+    from runtime_admission import startup
     inspection_available()
-    with locked() as base:
+    with locked() as base, startup() as reservation:
         expected()  # A missing/invalid new selection never authorizes a stop.
         row=raw()
         if row and alive(row['pid']):
             attest_record(row);owned(row)
+            from runtime_admission import startup_pending,startup_settled
+            startup_pending()
             try:os.kill(row['pid'],15)
             except PermissionError:raise ValueError('qmd_endpoint_identity_unavailable') from None
             except ProcessLookupError:pass
-            deadline=time.monotonic()+limits()[2]
+            deadline=min(reservation.deadline,time.monotonic()+limits()[2])
             while alive(row['pid']) and time.monotonic()<deadline:
                 try:os.waitpid(row['pid'],os.WNOHANG)
                 except ChildProcessError:pass
                 time.sleep(.05)
             if alive(row['pid']):raise ValueError('qmd_endpoint_shutdown_timeout')
+            startup_settled()
         return ensure_locked(base)
 
 def assert_quiescent():
@@ -322,4 +354,5 @@ if __name__=='__main__':
     except (OSError,ValueError,KeyError,IndexError) as error:
         message=str(error)
         if message=='qmd_endpoint_identity_unavailable':message+=': '+INSPECTION_MESSAGE
-        print(message,file=sys.stderr);raise SystemExit(2)
+        from context_learning.local_cycle import ResourceDeferred
+        print(message,file=sys.stderr);raise SystemExit(75 if isinstance(error,ResourceDeferred) else 2)

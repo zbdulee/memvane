@@ -478,6 +478,17 @@ def resolve_bin(name: str, env_override: str) -> str | None:
 
 
 def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
+    # The adapter may be launched directly, without wiki_compile_worker.
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from runtime_admission import provider
+    from context_learning.local_cycle import ResourceDeferred
+    try:
+        with provider():return _run_isolated_admitted(cmd,timeout)
+    except ResourceDeferred:return None,75,"resource_deferred"
+
+
+def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
+    from runtime_admission import provider_popen
     workdir = tempfile.mkdtemp(prefix="qmd-extract-")
     # QMD_SANDBOX=1 neuters any qmd hook the nested CLI might fire (the dispatcher
     # and core scripts honor it with an immediate silent exit), so the headless
@@ -500,7 +511,7 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
     proc = None
     timed_out = False
     try:
-        proc = subprocess.Popen(
+        proc = provider_popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -509,14 +520,16 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
             shell=False,
             cwd=workdir,
             env=child_env,
+            start_new_session=True,
         )
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             # Match subprocess.run's owned-child cleanup; never signal another PID.
             timed_out = True
-            proc.kill()
-            stdout, stderr = proc.communicate()
+            from context_learning.transport import _stop_owned
+            _stop_owned(proc)
+            stdout, stderr = proc.communicate(timeout=2)
         if stderr:
             sys.stderr.write(stderr[-4000:])
             if not stderr.endswith('\n'):
@@ -545,7 +558,8 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
         if proc is not None:
             # Reap only this owned child if communicate itself raised.
             if proc.poll() is None:
-                proc.kill();proc.wait()
+                from context_learning.transport import _stop_owned
+                _stop_owned(proc)
             if proc.stdout is not None: proc.stdout.close()
             if proc.stderr is not None: proc.stderr.close()
         shutil.rmtree(workdir, ignore_errors=True)

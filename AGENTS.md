@@ -10,11 +10,16 @@ qmd 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex · Hermes Ag
 
 ## 명령
 
+로컬 `.development-hold.json`이 true인 동안 일반 검사·백업/해시·모델 작업·운영 활성화를 재개하지 않는다. 해당 보류를 해제하는 사용자 지시가 있어야 재개하며, 실행 허가는 자원 기준이나 소유 프로세스 정리 가드를 우회하는 권한이 아니다. 세션별 승인 기록과 기계 상태는 이 공개 문서 대신 로컬 작업 기록에 남긴다.
+
+테스트·백업·해시 같은 무거운 개발 작업은 사용자 전역 `scripts/development_guard.py` 잠금 1개를 공유한다. 다른 worktree/에이전트의 검사를 동시에 시작하지 않는다. 테스트 파일 병렬도는 1이며, 내부 자식 프로세스까지 합산한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 보호 장치 자체의 작은 합성 단위 검사(`test:guard-unit`)만 bootstrap 예외다. 실제 프로세스·모델 검증은 OS 관측이 가능한 승인된 일반 호스트에서 가드를 통해 실행한다. 샌드박스의 관측 거부는 명시적으로 보고하고 가드를 끄지 않는다. 런타임 조율은 `docs/runtime-resource-coordination.md`, 보호 장치 기준·체크포인트·샘플링 한계는 `docs/development-resource-safety.md`를 읽는다.
+
 ```bash
-npm test                                    # node --test, 전체 단위/회귀 (결정적)
-node --test test/recall.test.mjs            # 단일 파일
-node --test --test-name-pattern "<정규식>"  # 이름으로 특정 테스트만
-QMD_LIVE=1 node --test test/integration.test.mjs   # 실제 데몬 라이브 스모크 (보통은 skip)
+npm run test:guard-unit                    # 작은 합성 보호 장치 단위 검사만 순차 실행
+npm test                                   # guard + 파일 병렬 1
+npm run test:focused -- test/recall.test.mjs # 같은 guard/잠금/병렬 1
+npm run dev:guard -- --kind backup -- <명령> # 테스트와 같은 잠금
+npm run dev:guard -- --kind hash -- <명령>   # 같은 잠금
 
 bash scripts/agy-local-hook-install.sh <프로젝트>  # Gemini(agy): 공식 payload adapter 전까지 stale qmd AGY hook cleanup only
 bash scripts/cleanup-legacy.sh --dry-run    # 기존 글로벌 qmd 훅/managed LaunchAgent cleanup 계획 확인

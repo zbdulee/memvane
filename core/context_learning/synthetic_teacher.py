@@ -8,6 +8,8 @@ for review, not repeated automatically.
 """
 from __future__ import annotations
 
+from runtime_admission import provider_job,provider_call,provider_popen,provider_checkpoint,PreSendDeferred
+
 import hashlib
 import json
 import os
@@ -85,8 +87,9 @@ def _scope_still_active(root, policy, sample, bodies, *, after_call=False,
             raise ValueError("synthetic_batch_revoked_in_flight")
 
 
+@provider_call
 def _invoke_codex(sample, bodies, policy, root, worker_policy, *, before_launch=None,
-                  after_launch=None, launch_failed=None, approval_sha256=None):
+                  after_launch=None, launch_failed=None, approval_sha256=None,defer_launch=None):
     """One tool-disabled, bounded CLI call on captured synthetic text only."""
     # Scope is checked here as well as by the caller, directly before egress.
     _scope_still_active(root, policy, sample, bodies,
@@ -122,13 +125,12 @@ def _invoke_codex(sample, bodies, policy, root, worker_policy, *, before_launch=
             _scope_still_active(root, policy, sample, bodies,
                                 approval_sha256=approval_sha256,
                                 worker_policy=worker_policy)
-            if before_launch is not None:
-                before_launch()
             _scope_still_active(root, policy, sample, bodies,
                                 approval_sha256=approval_sha256,
                                 worker_policy=worker_policy)
             try:
-                process = subprocess.Popen(args, cwd=folder, env=environment,
+                process = provider_popen(args, cwd=folder, env=environment,
+                                           before_launch=before_launch,defer_launch=defer_launch,
                                            stdin=input_file, stdout=output_file,
                                            stderr=subprocess.DEVNULL, start_new_session=True)
             except OSError:
@@ -198,6 +200,7 @@ def _invoke_codex(sample, bodies, policy, root, worker_policy, *, before_launch=
                 "resource_samples": samples}
 
 
+@provider_job
 def process_pending(root, project, worker_policy, *, invoke=None,
                     request_ids=None, automatic_grant=None):
     """Process only cases from the separately authorized synthetic project."""
@@ -268,6 +271,7 @@ def process_pending(root, project, worker_policy, *, invoke=None,
             except ValueError:
                 return {'status': 'runtime_approval_required',
                         'outcomes': outcomes}
+        provider_checkpoint()
         if not resource_report(worker_policy)["ready"]:
             return {"status": "deferred_resource", "outcomes": outcomes}
         with _db(root) as db:
@@ -376,6 +380,7 @@ def process_pending(root, project, worker_policy, *, invoke=None,
                     launch_failed=lambda: receipt_change(
                         ('dispatch_unknown',), 'pre_send_rejected',
                         error_code='local_spawn_failed'),
+                    defer_launch=lambda: receipt_change(('reserved','dispatch_unknown'),'pre_send_rejected',error_code='resource_deferred'),
                     approval_sha256=grant_sha)
             else:
                 answer = invoke(sample, bodies, policy, root, worker_policy)
@@ -444,6 +449,7 @@ def process_pending(root, project, worker_policy, *, invoke=None,
                 if receipt_key is not None:
                     gold_receipt.failure(db, receipt_key, exc)
             outcomes.append("pending_review")
+            if isinstance(exc,PreSendDeferred):return {"status":"deferred_resource","reason":"pre_send_resource_deferred","outcomes":outcomes}
         finally:
             if telemetry_meta:
                 try:

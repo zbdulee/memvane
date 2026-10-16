@@ -197,6 +197,11 @@ def enqueue(raw):
             raise ValueError('unsafe_update_job')
     finally:
         if fd is not None: os.close(fd)
+    # Persist a restart hint before the detached process can be interrupted.
+    import runtime_work
+    receipt=runtime_work.request('update',key,start=False)
+    if isinstance(receipt,dict) and receipt['status']=='deferred_queue_capacity':
+        runtime_work.hook_wake();return
     # Local version/schema/pointer checks only; no registry or model call.
     try: _setup_notice(cwd, queue, guard)
     except (OSError, ValueError, KeyError, TypeError): pass
@@ -217,6 +222,7 @@ def enqueue(raw):
     subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'worker', key],
         cwd=queue, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+    runtime_work.hook_wake()
 
 
 def worker(key):
@@ -287,7 +293,7 @@ def worker(key):
                     # after a fail-closed setup/ownership/lock abort. Its
                     # lexical_ready marker is the minimum proof that QMD
                     # update actually reached the embed handoff.
-                    if phase not in ('lexical_ready', 'completed', 'embed_failed'):
+                    if phase != 'completed':
                         status = 'failed'
                 # The SessionStart output is a notice, not source content.
                 output.write((result.stdout or '')[:2048] + '\n')
@@ -301,6 +307,9 @@ def worker(key):
                         'searchReady': None,
                         'at': time.time()})
                 if status == 'completed': job.unlink()
+                else:
+                    import runtime_work
+                    runtime_work.request('update',key)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 output.write(f'{time.time():.3f} update failed:{type(exc).__name__}\n')
                 _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',

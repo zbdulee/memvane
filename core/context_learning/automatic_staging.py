@@ -23,6 +23,14 @@ def _case_evidence(rows):
     return digest(canonical([(r[0], r[1], r[2], r[5]) for r in rows]))
 
 
+def _project(root, grant):
+    from .project_scope import SCOPE
+    if grant.get('scope') == SCOPE:
+        return Path(grant['projectRoot'])
+    from .synthetic_experiment import project_for
+    return project_for(root)
+
+
 def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_fd=None):
     if factory is not None:
         trainer=factory(policy)
@@ -34,7 +42,7 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
     from .shared import resource_report
     trainer = VerifiedLayaTrainer(policy['trainerArgv'], proof_cache_dir=root,
         max_seconds=policy['safetySeconds'], max_rss_mib=policy['maxRssMib'],
-        pressure_probe=lambda: resource_report(policy, detailed=True, admission=False), require_monitor=True)
+        pressure_probe=lambda **options: resource_report(policy, detailed=True, admission=False,**options), require_monitor=True)
     # Automatic training cannot silently renew a compatibility smoke receipt.
     trainer.validate_prediction(cwd=root)
     trainer.learning_control=control;trainer.inherited_fds=fds;trainer.coordination_fd=coordination_fd
@@ -42,9 +50,14 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
 
 
 def _quality_ready(train, validation, cohort):
-    train_families = sum(any(row[12].startswith(prefix) for row in train)
+    from .project_scope import COHORT_SCHEMA
+    if cohort.get('schema') == COHORT_SCHEMA:
+        train_families = len({row[12] for row in train})
+        validation_families = len({row[12] for row in validation})
+    else:
+        train_families = sum(any(row[12].startswith(prefix) for row in train)
                          for prefix in cohort['trainEditPrefixes'])
-    validation_families = sum(any(row[12].startswith(prefix)
+        validation_families = sum(any(row[12].startswith(prefix)
                                   for row in validation)
                               for prefix in cohort['validationEditPrefixes'])
     empty = sum(not json.loads(row[5])['selected_ids'] for row in validation)
@@ -57,44 +70,15 @@ def _quality_ready(train, validation, cohort):
 
 
 def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=None):
-    from .shared import _db, _case_active, resource_report
-    from .synthetic_experiment import project_for
-    from .laya_adapter import EDIT_INPUT_VIEW, model_identity
-    from .learning_queue import LearningQueue
-    root = Path(root)
-    if policy.get('modelInputView') != EDIT_INPUT_VIEW:
-        return {'status':'multilingual_policy_required'}
-    if (root/'experimental-checkpoint.json').exists():
-        return {'status':'existing_trial_requires_review'}
-    with _db(root) as db:
-        cohort_train, validation = training_and_validation(db, project_for(root), grant)
-    if len(cohort_train)>2000 or len(validation)>2000:
-        return {'status':'cohort_source_revoked'}
-    cohort_train=[r for r in cohort_train if _case_active(root,(r[7],r[1],r[3]))]
-    validation=[r for r in validation if _case_active(root,(r[7],r[1],r[3]))]
-    if len(cohort_train)<grant['cohort']['minTrainCases']:
-        return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
-    family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
-                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
-    from . import learning_profile
-    minimum=policy['batchMin']
-    if learning_profile.present(root):
-        profile=learning_profile.require(root,policy,'local_train')
-        if not profile['localTrain']:return {'status':'disabled'}
-        minimum=profile['minFreshTrainCases']
-    queue=LearningQueue(root)
-    job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
-                   family=family,minimum=minimum,maximum=policy['batchMax'],
-                   roles=['train']*len(cohort_train))
-    if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
-    with _db(root) as db:
-        previous=db.execute('SELECT status FROM cycles WHERE cycle_id=?',(job['id'],)).fetchone()
-    if previous and previous[0]=='applied':return {'status':'already_applied','cycle_id':job['id']}
-    try: train=queue.rows(job,cohort_train)
-    except ValueError:
-        return {'status':'staged_source_revoked','cycle_id':job['id']}
-    if job['status']=='blocked':
-        return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    from runtime_admission import preparation
+    from .shared import resource_report
+    try:
+        with preparation():prepared=_prepare_staged(root,policy,grant)
+    except ResourceDeferred as exc:
+        record_resource_defer(Path(root),exc.report,reason=str(exc))
+        return {'status':'deferred_resource','reason':str(exc)}
+    if isinstance(prepared,dict):return prepared
+    root,queue,job,train,validation,cohort_train=prepared
     if job['status']=='staged':
         return evaluate_pending(root,policy,job['id'],trainer_factory=trainer_factory,coordinator=coordinator)
     report=resource_report(policy,detailed=True)
@@ -116,6 +100,56 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
             return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
 
 
+
+def _prepare_staged(root,policy,grant):
+    from .shared import _db, _case_active
+    from .synthetic_experiment import project_for
+    from .laya_adapter import EDIT_INPUT_VIEW, model_identity
+    from .learning_queue import LearningQueue
+    root = Path(root)
+    if policy.get('modelInputView') != EDIT_INPUT_VIEW:
+        return {'status':'multilingual_policy_required'}
+    if (root/'experimental-checkpoint.json').exists():
+        return {'status':'existing_trial_requires_review'}
+    with _db(root) as db:
+        cohort_train, validation = training_and_validation(db, _project(root, grant), grant)
+    if len(cohort_train)>2000 or len(validation)>2000:
+        return {'status':'cohort_source_revoked'}
+    from runtime_admission import preparation_checkpoint
+    def active(rows):
+        result=[]
+        for r in rows:
+            preparation_checkpoint()
+            if _case_active(root,(r[7],r[1],r[3])):result.append(r)
+        return result
+    cohort_train=active(cohort_train);validation=active(validation)
+    if len(cohort_train)<grant['cohort']['minTrainCases']:
+        return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
+    family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
+                            _hash(policy['baseArtifact']),EDIT_INPUT_VIEW]))
+    from . import learning_profile
+    minimum=policy['batchMin']
+    if learning_profile.present(root):
+        profile=learning_profile.require(root,policy,'local_train')
+        if not profile['localTrain']:return {'status':'disabled'}
+        minimum=profile['minFreshTrainCases']
+    queue=LearningQueue(root)
+    from .project_scope import SCOPE
+    job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
+                   family=family,minimum=minimum,maximum=policy['batchMax'],
+                   roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE)
+    if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
+    with _db(root) as db:
+        previous=db.execute('SELECT status FROM cycles WHERE cycle_id=?',(job['id'],)).fetchone()
+    if previous and previous[0]=='applied':return {'status':'already_applied','cycle_id':job['id']}
+    try: train=queue.rows(job,cohort_train)
+    except ValueError:
+        return {'status':'staged_source_revoked','cycle_id':job['id']}
+    if job['status']=='blocked':
+        return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    return root,queue,job,train,validation,cohort_train
+
+
 def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None,coordination=None):
     from .shared import _case, _case_active, _db, _predict
     from .synthetic_experiment import project_for,reserve_train
@@ -126,7 +160,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
              'namespace':queue.scope,'job_id':job['id']}
     fds=tuple(fd for fd in (claim_fd,coord_fd) if fd is not None)
     grant_sha=proposal_sha256(grant)
-    project=project_for(root)
+    project=_project(root, grant)
     new_train=sum(m['fresh'] for m in job['members'])
     train_sha = _case_evidence(train)
     cycle_id = job['id']
@@ -140,7 +174,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             try:
                 require_operation(root, policy, 'local_train',
                                   approval_sha256=grant_sha)
-                reserve_train(db, root, project, cycle_id)
+                from .project_scope import SCOPE
+                if grant.get('scope') != SCOPE:
+                    reserve_train(db, root, project, cycle_id)
             except ValueError as exc:
                 return {'status': 'experiment_paused', 'reason': str(exc)[:80]}
             db.execute('INSERT INTO cycles VALUES (?,?,?,?,NULL)',
@@ -257,8 +293,9 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     from .synthetic_experiment import project_for
     from .shared import _db,_predict,_case,_case_active
     from .laya_adapter import EDIT_INPUT_VIEW
-    cycle_id=job['id'];project=project_for(root);grant_sha=proposal_sha256(grant)
+    cycle_id=job['id'];project=_project(root, grant);grant_sha=proposal_sha256(grant)
     try:require_operation(root,policy,'quality_evaluate',approval_sha256=grant_sha)
+    except ResourceDeferred as exc:return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
     except ValueError:return {'status':'staged_authorization_expired','cycle_id':cycle_id}
     queue=EvaluationQueue(root)
     pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
@@ -291,7 +328,28 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
 
 def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=None):
     """Quality-only recovery: never reserves or calls a training operation."""
-    from .shared import _db,_case_active,resource_report
+    from runtime_admission import preparation
+    from .shared import resource_report
+    from .resource_coordination import Coordinator
+    try:
+        with preparation():prepared=_prepare_evaluation(root,policy,cycle_id)
+    except ResourceDeferred as exc:
+        return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
+    if isinstance(prepared,dict):return prepared
+    root,grant,queue,job,stage,train,validation,cohort_train,evaluations,evaluation=prepared
+    controller=coordinator or Coordinator()
+    try:
+        with controller.training(policy,resource_report(policy,detailed=True)) as lease:
+            return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
+                trainer_factory=trainer_factory,coordination=(controller,lease))
+    except ResourceDeferred as exc:
+        evaluations.defer(evaluation['id'],'resource')
+        return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
+
+
+
+def _prepare_evaluation(root,policy,cycle_id):
+    from .shared import _db,_case_active
     from .learning_queue import LearningQueue
     from .evaluation_queue import EvaluationQueue
     from .synthetic_experiment import project_for
@@ -302,7 +360,7 @@ def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=Non
     if job is None or job['approval']!=proposal_sha256(grant):return {'status':'staged_authorization_expired','cycle_id':cycle_id}
     with _db(root) as db:
         old=db.execute('SELECT status,evidence FROM cycles WHERE cycle_id=?',(cycle_id,)).fetchone()
-        cohort_train,validation=training_and_validation(db,project_for(root),grant)
+        cohort_train,validation=training_and_validation(db,_project(root, grant),grant)
     if old is None or old[0] not in ('staged','staged_evaluated'):return {'status':'evaluation_stage_unavailable','cycle_id':cycle_id}
     stage=json.loads(old[1]);train=queue.rows(job,cohort_train)
     if (not stage['sourceActiveAtStage'] or stage['artifactSha256']!=_hash(stage['artifactPath'])
@@ -327,14 +385,7 @@ def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=Non
     evaluations=EvaluationQueue(root)
     pin=digest(canonical([stage[k] for k in ('trainEvidenceSha256','artifactSha256','authorizationSha256','baseArtifactSha256','trainCases')]))
     evaluation=evaluations.ensure(cycle_id,pin,_case_evidence(validation))
-    controller=coordinator or Coordinator()
-    try:
-        with controller.training(policy,resource_report(policy,detailed=True)) as lease:
-            return _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,
-                trainer_factory=trainer_factory,coordination=(controller,lease))
-    except ResourceDeferred as exc:
-        evaluations.defer(evaluation['id'],'resource')
-        return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
+    return root,grant,queue,job,stage,train,validation,cohort_train,evaluations,evaluation
 
 
 def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle_id,project,grant_sha,folder,incumbent,trainer_factory,control,fds,coord_fd,quality_epoch):
@@ -352,6 +403,8 @@ def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle
     try:
         require_operation(root, policy, 'quality_evaluate',
                           approval_sha256=grant_sha)
+    except ResourceDeferred as exc:
+        return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
     except ValueError:
         return {'status': 'staged_authorization_expired', 'cycle_id': cycle_id}
     ready, empty, train_families, validation_families = _quality_ready(
@@ -424,7 +477,7 @@ def _train_once(trainer,request,folder):
     """A durable completion is reused; uncertain final artifacts never retrain."""
     from .dataset import read_private_json
     from .local_cycle import _atomic_json
-    from .training_cursor import request_identity, completion
+    from .training_cursor import request_identity, completion,recover_completed
     key=request_identity(request)
     intent={'schema':1,'request_sha256':key}
     path=folder/'train-intent.json'
@@ -433,6 +486,11 @@ def _train_once(trainer,request,folder):
     _atomic_json(path,intent)
     done=completion(request)
     if done is not None:return {'schema_version':1,'status':'trained'},{'recovered_completion':True}
+    from runtime_admission import preparation
+    cursor_path=folder/'resume/cursor.json'
+    if cursor_path.exists() or cursor_path.is_symlink():
+        with preparation():
+            if recover_completed(request):return {'schema_version':1,'status':'trained'},{'recovered_cursor':True}
     if Path(request['artifact_path']).exists() or Path(request['artifact_path']).is_symlink():raise ValueError('learning_completion_uncertain')
     answer,resources=trainer.call('train',request,folder/'train.json',cwd=folder)
     if answer!={'schema_version':1,'status':'trained'}:raise ValueError('invalid_shared_train_result')

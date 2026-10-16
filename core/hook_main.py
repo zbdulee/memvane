@@ -60,6 +60,13 @@ def run(main) -> int:
             _log_exception()
         except BaseException:  # noqa: BLE001 — logging must not resurrect a failure
             pass
+    finally:
+        if not os.environ.get('QMD_SANDBOX') and '--sandbox' not in sys.argv:
+            try:
+                from runtime_work import hook_wake
+                hook_wake()
+            except Exception:
+                pass  # Wake failure must not break host hooks or drop the queue.
     return 0
 
 

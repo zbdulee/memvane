@@ -53,7 +53,7 @@ def _preferences(raw,root,choice):
     shared['autoApply']=apply
     return cfg,enabled,apply
 
-def proposal(project,root,*,choice,mode,expires_at_unix_ms):
+def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False):
     project=Path(project);root=Path(root)
     if (choice not in CHOICES or mode not in ('new','preserve') or not project.is_absolute()
             or any(p.is_symlink() for p in (project,root,*project.parents,*root.parents))):raise ValueError('profile_scope_invalid')
@@ -63,7 +63,14 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms):
         raise ValueError('profile_existing_settings_require_preserve')
     if type(expires_at_unix_ms)is not int or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+14*86400000:
         raise ValueError('profile_expiry_invalid')
-    cfg,train,apply=_preferences(raw,root,choice)
+    from .project_scope import present as general_scope_present
+    if type(enable_learning)is not bool or (enable_learning and not general_scope_present(root)):
+        raise ValueError('profile_explicit_enable_scope_required')
+    preferences=deepcopy(raw)
+    if enable_learning:
+        preferences.setdefault('contextLearning',{}).update(capture=True,autoCycle=True)
+        preferences.setdefault('sharedLearning',{})['enabled']=True
+    cfg,train,apply=_preferences(preferences,root,choice)
     from .shared import _policy,_safe_root
     import config
     # A namespace cannot be a source collection or another project's store.
@@ -76,7 +83,9 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms):
     grant=require_operation(root,policy,'quality_evaluate')
     if train:require_operation(root,policy,'local_train')
     if grant.get('projectRoot')!=str(project):raise ValueError('profile_project_changed')
-    minimum=max(policy['batchMin'],grant['cohort']['minQualityTrainCases']) if apply else policy['batchMin']
+    from .project_scope import SCOPE
+    minimum=(max(policy['batchMin'],grant['cohort']['minTrainCases']) if grant.get('scope')==SCOPE
+             else max(policy['batchMin'],grant['cohort']['minQualityTrainCases']) if apply else policy['batchMin'])
     if apply and policy['batchMax']<minimum:raise ValueError('profile_quality_batch_budget_required')
     return {'schema':SCHEMA,'projectRoot':str(project),'namespaceRoot':str(root),
             'choice':choice,'mode':mode,'localTrain':train,'autoApply':apply,
@@ -127,7 +136,7 @@ def selection_root(cfg,project):
     if root is None or not selection_enabled(root,project):return None
     return root
 
-def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,fault=lambda _:None):
+def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,enable_learning=False,fault=lambda _:None):
     root=resident._private_state(Path(root));project=Path(project).resolve(strict=True)
     # This same project settings lock is used by setup/install writers.
     import install_update
@@ -139,9 +148,9 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,fault
             old=read_private_json(path) if path.exists() or path.is_symlink() else None
             if old and old['acceptedSha256']==accepted_sha256:
                 row=old['proposal']
-                if digest(row)!=accepted_sha256 or (row['choice'],row['mode'],row['expiresAtUnixMs'])!=(choice,mode,expires_at_unix_ms):raise ValueError('profile_acceptance_changed')
+                if digest(row)!=accepted_sha256 or (row['choice'],row['mode'],row['expiresAtUnixMs'])!=(choice,mode,expires_at_unix_ms) or (enable_learning and row['settings']['contextLearning'].get('capture') is not True):raise ValueError('profile_acceptance_changed')
             else:
-                row=proposal(project,root,choice=choice,mode=mode,expires_at_unix_ms=expires_at_unix_ms)
+                row=proposal(project,root,choice=choice,mode=mode,expires_at_unix_ms=expires_at_unix_ms,enable_learning=enable_learning)
                 if accepted_sha256!=digest(row):raise ValueError('profile_acceptance_required')
             from .shared import _policy
             if row['projectRoot']!=str(project) or row['namespaceRoot']!=str(root):raise ValueError('profile_scope_invalid')

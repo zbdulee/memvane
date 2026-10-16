@@ -15,6 +15,9 @@ import sys
 import tempfile
 import time
 
+# LocalTrainer executes this file directly, before any request guard runs.
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+
 ADAPTER_VERSION = 'qmd-laya-selection-v1'
 EXPERIMENT_ADAPTER_VERSION = 'qmd-laya-selection-v2'
 EXPERIMENT_INPUT_VIEW = 'full-candidate-1024-v1'
@@ -34,7 +37,17 @@ MODEL_FILES = ('model.safetensors', 'rl_agent_config.json', 'encoder/config.json
                'tokenizer/tokenizer.json', 'tokenizer/tokenizer_config.json')
 
 
+def _torch():
+    from runtime_cpu import environment,configure_torch
+    os.environ.update(environment({}))
+    import torch
+    configure_torch(torch)
+    return torch
+
+
 def _digest(path):
+    runtime=sys.modules.get('runtime_admission')
+    if runtime is not None:return runtime.hash_file(path)
     h = hashlib.sha256()
     with Path(path).open('rb') as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
@@ -97,7 +110,7 @@ def _request_view(request):
 
 
 def _load(model_dir, *, head_artifact=None, input_view=LEGACY_INPUT_VIEW):
-    import torch
+    torch=_torch()
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
     from transformers.initialization import no_init_weights
@@ -282,24 +295,17 @@ def _training_limits(request, model_sha, device):
 def _check_mps_budget(torch, limits):
     if limits is None or limits['device'] != 'mps':
         return
-    try:
-        used = torch.mps.driver_allocated_memory()
-        recommended = torch.mps.recommended_max_memory()
-        if (type(used) is not int or used < 0 or type(recommended) is not int
-                or recommended <= 0):
-            raise ValueError('training_memory_unavailable')
-    except Exception as exc:
-        raise ValueError('training_memory_unavailable') from exc
-    if used > recommended * (1 - limits['reserveFraction']):
-        raise ValueError('training_memory_budget')
+    from resource_controls import MpsMemoryControl
+    MpsMemoryControl.check(torch,limits)
 
 
 def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
-                 *, limits):
+                 *, limits,checkpoint=None):
     """One effective group/update; all microbatch means weighted by pair count."""
     optimizer.zero_grad(set_to_none=True)
     total_loss = 0.0
     for start in range(0, len(current), microbatch):
+        if checkpoint is not None:checkpoint()
         group = current[start:start+microbatch]
         _check_mps_budget(torch, limits)
         batch = _batch(group, tok, params[0].device)
@@ -317,6 +323,7 @@ def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
         if not all(p.grad is None or torch.isfinite(p.grad).all().item() for p in params):
             raise ValueError('nonfinite_head_gradient')
         _check_mps_budget(torch, limits)
+    if checkpoint is not None:checkpoint()
     optimizer.step()
     _check_mps_budget(torch, limits)
     return total_loss
@@ -339,8 +346,10 @@ def _training_guard(request):
 
 
 def train(model_dir, request, *, max_updates=None, verification=False):
+    from context_learning.bounded_calibration import validate_request
+    validate_request(request)
     guard = _training_guard(request)
-    import torch
+    torch=_torch()
     import torch.nn.functional as F
 
     if request.get('schema_version') != 1 or not isinstance(request.get('artifact_path'), str):
@@ -390,7 +399,7 @@ def train(model_dir, request, *, max_updates=None, verification=False):
                     'mps':torch.mps.get_rng_state().tolist() if str(_device(torch))=='mps' else None}
         def update(group,size):
             return _train_group(torch,F,model,tok,params,optimizer,group,
-                min(size,limits['microbatchSize']) if limits is not None else size,limits=limits)
+                min(size,limits['microbatchSize']) if limits is not None else size,limits=limits,checkpoint=guard.poll)
         run_updates(cursor,train_groups,guard,update,
             lambda path:_save_head(path,model,base_sha,input_view),rng)
         updates=cursor.step
@@ -419,9 +428,9 @@ def train(model_dir, request, *, max_updates=None, verification=False):
         probe = {'candidate_id':item['candidate_id'],
                  'logits':probe_logits[0].detach().cpu().tolist()}
     if guard is not None:
-        with guard.step():_save_head(artifact,model,base_sha,input_view)
-        from context_learning.training_cursor import record_completion
-        record_completion(request)
+        from context_learning.training_cursor import recover_completed
+        with guard.step():
+            if not recover_completed(request):raise ValueError('learning_cursor_changed')
     else:_save_head(artifact, model, base_sha, input_view)
     response = {'schema_version':1,'status':'trained'}
     if step_losses is not None:
@@ -465,10 +474,10 @@ def predict(model_dir, request):
     head = _head_path(request['artifact_path'], base_sha, input_view)
     limits = None
     if request.get('training_limits') is not None:
-        import torch
+        torch=_torch()
         limits = _training_limits(request, base_sha, _device(torch))
     if guard is not None:
-        import torch
+        torch=_torch()
         before=_allocation(torch)
     with guard.step() if guard is not None else nullcontext():
         model, tok, cfg = _load(model_dir, head_artifact=head, input_view=input_view)
@@ -480,7 +489,9 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
                    max_padded_tokens=None, timing=None, cancelled=None,
                    memory_limits=None,compute_guard=None):
     """Use an already loaded, pinned head for a bounded selection batch."""
-    import torch
+    if cancelled is not None and cancelled():
+        raise ValueError('prediction_cancelled')
+    torch=_torch()
     if memory_limits is not None:
         max_batch_size = min(max_batch_size, memory_limits['microbatchSize'])
         _check_mps_budget(torch, memory_limits)
@@ -561,6 +572,7 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
 
 def smoke(model_dir, directory):
     """Actual local synthetic tokenizer, forward, one update, save/reload proof."""
+    _torch()
     from safetensors.torch import load_file
     from transformers import AutoTokenizer
     root = Path(model_dir)
@@ -604,7 +616,7 @@ def smoke(model_dir, directory):
         item = _pair(sample['prompt'], matched, tok, cfg)
         if long_view and not 512 < len(item['ids']) <= EXPERIMENT_INPUT_TOKENS:
             raise ValueError('synthetic_long_view_not_exercised')
-        import torch
+        torch=_torch()
         too_long = dict(matched, input_text='synthetic overflow ' * 700)
         try:
             _pair(sample['prompt'], too_long, tok, cfg)
@@ -644,6 +656,8 @@ def smoke(model_dir, directory):
 
 
 def segment_edit(model_dir, request):
+    from runtime_cpu import environment
+    os.environ.update(environment({}))
     from transformers import AutoTokenizer
     from edit_segments import split_with_offsets
     if (not isinstance(request, dict) or set(request) !=
@@ -666,6 +680,8 @@ def segment_edit(model_dir, request):
 
 def main(argv):
     if len(argv) != 4: raise ValueError('usage: MODEL_DIR MODE REQUEST RESULT')
+    from runtime_cpu import environment
+    os.environ.update(environment({}))
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',
         HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false',
         USE_TF='0',USE_TORCH='1')
@@ -679,6 +695,7 @@ def main(argv):
 
 
 _SAFE_ERRORS = {
+    'cpu_thread_configuration_invalid','cpu_thread_configuration_unavailable',
     'learning_yield','learning_control_invalid','learning_cursor_changed',
     'learning_update_budget_exceeded','learning_lease_missing','learning_lease_changed',
     'model_token_budget_exceeded', 'tokenizer_model_limit_exceeded',

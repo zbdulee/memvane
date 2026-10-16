@@ -210,6 +210,8 @@ def _admission(max_rss_mib, *, already_running, probe=None):
         return None, report
     batch = 1 if available < 2048 else 2 if available < 4096 else 4
     padded = 4096 if available < 4096 else 8192
+    if report.get('load_per_cpu',0)>policy['maxLoadPerCpu']*.75:
+        batch,padded=1,min(padded,4096)
     return {'max_batch_size': batch, 'max_padded_tokens': padded}, report
 
 
@@ -249,6 +251,8 @@ def _launch(state, python, model_dir, artifact, artifact_sha, input_view,
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_SANDBOX='1')
+        from runtime_cpu import environment
+        env=environment(env)
         subprocess.Popen([python, '-m', 'context_learning.resident', 'worker',
                           str(state), model_dir, str(artifact), artifact_sha,
                           input_view], cwd=state, env=env, stdin=subprocess.DEVNULL,
@@ -490,8 +494,9 @@ def _worker(state, model_dir, artifact, artifact_sha, input_view):
 def main():
     if len(sys.argv) != 7 or sys.argv[1] != 'worker':
         raise SystemExit(2)
-    _worker(Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5],
-            sys.argv[6])
+    from runtime_cpu import lease
+    with lease():
+        _worker(Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5],sys.argv[6])
 
 
 if __name__ == '__main__':

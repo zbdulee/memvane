@@ -131,7 +131,9 @@ class Checks(unittest.TestCase):
   with self.db(None) as conn:conn.execute('UPDATE cycles SET evidence=?',(canonical(self.stage),))
   policy={**self.policy,'maxRssMib':4096,'minAvailableMib':512,'maxLoadPerCpu':1}
   score=self.stage['metrics']['candidate']
-  report={'ready':True,'total_mib':16384,'available_mib':10000,'load_per_cpu':.1}
+  report={'ready':True,'total_mib':16384,'available_mib':10000,'load_per_cpu':.1,
+          'observed_at_mono':time.monotonic(),'query_status':{'memory_pressure':'ok'},
+          'memory_pressure':{'level':'normal','system_free_percent':60}}
   coord=self.root/'controller';coord.mkdir(mode=0o700)
   with patch.object(learning_profile,'present',return_value=True),patch.object(shared,'resource_report',return_value=report),patch('context_learning.synthetic_experiment.project_for',return_value=self.project),patch.object(shared,'_predict',return_value=(score,{})),patch.object(automatic_staging,'require_operation',return_value=self.grant):
    result=automatic_staging.evaluate_pending(self.root,policy,self.cycle,trainer_factory=lambda _:SimpleNamespace(),coordinator=Coordinator(coord))

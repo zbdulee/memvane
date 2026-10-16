@@ -40,6 +40,11 @@ class EndpointTests(unittest.TestCase):
   self.env=patch.dict(os.environ,{'HOME':str(self.home),'QMD_BACKEND_STATE_DIR':str(self.root),
       'QMD_DAEMON_PORT_ATTEMPTS':'4','QMD_DAEMON_READY_SECONDS':'3','QMD_SETUP_GUARD_FIXTURE':''})
   self.env.start()
+  sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'helpers'))
+  from uid_home import isolate
+  self.addCleanup(isolate(self.home))
+  os.environ['QMD_LOCK_BASE']=str(self.home/'writer-locks')
+  os.environ['TMPDIR']=str(self.home/'tmp');Path(os.environ['TMPDIR']).mkdir(mode=0o700)
   self.spec={'node':sys.executable,'entry':str(self.server),'runtime':'synthetic-runtime','store':'synthetic-store'}
   self.expected=patch.object(E,'expected',return_value=self.spec);self.expected.start()
   self.children=[];self.sockets=[];self.calls=[]
@@ -122,9 +127,16 @@ class EndpointTests(unittest.TestCase):
   self.assertFalse((self.root/'endpoint.json').exists())
  def test_concurrent_start_reuses_one_owned_healthy_child(self):
   port=self.free_port()
+  from context_learning.local_cycle import ResourceDeferred
+  def start(_):
+   try:return E.ensure()
+   except ResourceDeferred as error:
+    self.assertEqual(str(error),'qmd_startup_busy');return None
   with patch.dict(os.environ,{'QMD_DAEMON_PORT':str(port)}):
-   with concurrent.futures.ThreadPoolExecutor(2) as pool:results=list(pool.map(lambda _:E.ensure(),range(2)))
-  self.assertEqual(results[0]['pid'],results[1]['pid']);self.assertEqual(len(self.calls),1)
+   with concurrent.futures.ThreadPoolExecutor(2) as pool:results=list(pool.map(start,range(2)))
+   results=[row for row in results if row is not None]
+   self.assertTrue(results);self.assertEqual(E.ensure()['pid'],results[0]['pid'])
+  self.assertTrue(all(row['pid']==results[0]['pid'] for row in results));self.assertEqual(len(self.calls),1)
  def test_stale_dead_child_is_replaced_without_changing_data(self):
   port=self.free_port();first=self.start(port)
   child=self.children[0][0];child.terminate();child.wait(timeout=3)

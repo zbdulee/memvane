@@ -26,7 +26,7 @@ SCOPE = 'single-synthetic-story'
 OPERATIONS = ['gold', 'local_train', 'quality_evaluate']
 COHORT_SCHEMA = 'qmd-synthetic-edit-cohort-v1'
 MAX_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000
-REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261013-claude-handoff-v53-rc46-claude-grant-root'
+REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261013-claude-handoff-v53-rc47-general-project-learning'
 UPDATES_DIR = 'runtime-authorization-updates'
 UPDATE_SCHEMA = 'qmd-runtime-authorization-update-v1'
 
@@ -446,6 +446,14 @@ def rebind(root, project, policy, adapter, previous_sha256,
 
 def active(root, policy, adapter, *, reviewed_adapter_sha256):
     """Return only a current exact grant; absent or expired means no grant."""
+    from . import project_scope
+    if project_scope.present(root):
+        value = project_scope.require(root, policy, 'local_train')
+        approved = {Path(r['root']) / 'core/context_learning/laya_adapter.py'
+                    for r in value['binding']['installations']}
+        if Path(adapter).resolve(strict=True) not in approved:
+            raise ValueError('runtime_authorization_adapter_invalid')
+        return value
     path = Path(root) / NAME
     if not path.exists() and not path.is_symlink():
         return None
@@ -474,6 +482,12 @@ def effective_argv(root, policy, adapter, *, reviewed_adapter_sha256):
 
 def require_operation(root, policy, operation, *, approval_sha256=None):
     """Recheck expiry/revocation at dispatch and irreversible boundaries."""
+    from . import project_scope
+    if project_scope.present(root):
+        value = project_scope.require(root, policy, operation, fresh_inventory=True)
+        if approval_sha256 is not None and proposal_sha256(value) != approval_sha256:
+            raise ValueError('runtime_authorization_required')
+        return value
     from .shared import REVIEWED_ADAPTER_SHA256
     adapter = Path(__file__).with_name('laya_adapter.py').resolve(strict=True)
     value = active(root, policy, adapter,

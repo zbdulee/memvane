@@ -27,6 +27,11 @@ class SharedSetup(unittest.TestCase):
         self.home = Path(self.temp.name).resolve()
         self.env = patch.dict(os.environ, {'HOME': str(self.home), 'QMD_LOCK_BASE':str(self.home/'locks'), 'QMD_BACKEND_STATE_DIR':str(self.home/'backend'), 'QMD_SETUP_GUARD_FIXTURE': '', 'QMD_RECALL_LOG': ''})
         self.env.start()
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'helpers'))
+        from uid_home import isolate
+        self.addCleanup(isolate(self.home))
+        os.environ['TMPDIR']=str(self.home/'tmp')
+        Path(os.environ['TMPDIR']).mkdir(mode=0o700)
         self.project = self.home / 'project'; self.project.mkdir()
         auto = self.project / '.auto-context'; auto.mkdir()
         (auto / 'settings.json').write_text('{"indexing": true,"collections": []}')
@@ -101,24 +106,24 @@ db.commit();db.close()
     def test_inspect_without_store_is_read_only(self):
         result=setup_entry.discover(self.project)
         self.assertEqual(result['discovered']['sharedStoreStatus'],'not_prepared')
-        self.assertFalse((self.home/'Library').exists())
+        self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
         update=setup_entry.check_update(self.project)
         self.assertIn('plugin_qmd_store_not_ready',update['reasons'])
-        self.assertFalse((self.home/'Library').exists())
+        self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
 
     def test_unsupported_platform_remains_blocked_without_staging(self):
         with patch('install_update.supported_platform', return_value=False):
             code,result=self.cli('prepare-store')
         self.assertEqual(code,1,result)
         self.assertIn('unsupported_managed_platform',result['blockers'])
-        self.assertFalse((self.home/'Library').exists())
+        self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
         self.assert_preserved()
 
     def test_missing_approval_model_and_invalid_dimension_do_not_stage(self):
         for opts in [self.options[:-1], self.options[:-3]+['--expected-dimension','0','--approve-index-execution']]:
             code,result=self.cli('prepare-store',opts)
             self.assertEqual(code,1);self.assertEqual(result['status'],'blocked')
-            self.assertFalse((self.home/'Library').exists())
+            self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
         self.model.unlink()
         code,result=self.cli('prepare-store');self.assertEqual(code,1)
         self.assertIn('local_embedding_model_required',result['blockers'])
@@ -271,7 +276,7 @@ db.commit();db.close()
         code,result=self.cli('prepare-store',options)
         self.assertEqual(code,1,result)
         self.assertIn('qmd_backend_selection_required',result['blockers'])
-        self.assertFalse((self.home/'Library').exists())
+        self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
 
     def test_auto_backend_prepares_no_build_runtime_and_never_pins_cpu(self):
         options=[v for v in self.options if v!='--qmd-cpu']+['--qmd-backend','auto']

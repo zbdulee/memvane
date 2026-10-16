@@ -14,6 +14,10 @@ _deadline = ContextVar('qmd_explicit_install_deadline', default=None)
 class InstallBusy(TimeoutError):
     pass
 
+def active():
+    """Whether explicit installation supplied a finite nested wait budget."""
+    return _deadline.get() is not None
+
 @contextmanager
 def operation(seconds):
     if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 0 < seconds <= 3600:

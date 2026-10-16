@@ -27,7 +27,7 @@ import job_telemetry
 from .compact_input import derive
 from .contracts import digest, validate_label, validate_request
 from .dataset import read_private_json
-from .local_cycle import LocalTrainer, VerifiedLayaTrainer, _atomic_json, _hash, _safe_file
+from .local_cycle import ResourceDeferred, LocalTrainer, VerifiedLayaTrainer, _atomic_json, _hash, _safe_file
 from .store import canonical
 from .safe_source import snapshot_beneath
 
@@ -208,9 +208,15 @@ def _policy(root):
         raise ValueError("invalid_shared_load")
     argv = value["trainerArgv"]
     adapter = Path(__file__).with_name("laya_adapter.py").resolve()
+    general_grant=None
+    from . import project_scope
+    if project_scope.present(root):
+        from .runtime_authorization import active
+        general_grant=active(root,value,adapter,reviewed_adapter_sha256=REVIEWED_ADAPTER_SHA256)
     if (not isinstance(argv, list) or len(argv) != 3
             or any(not isinstance(x, str) or not Path(x).is_absolute() for x in argv)
             or (Path(argv[1]).resolve() != adapter
+                and not general_grant
                 and not _historical_v45_adapter_reference(argv[1], adapter))):
         raise ValueError("invalid_shared_trainer")
     if 'adaptiveMemory' in value:
@@ -235,7 +241,7 @@ def _policy(root):
     if _READ_ONLY_VALIDATION.get():
         return value
     from .runtime_authorization import active
-    grant = active(root, value, adapter,
+    grant = general_grant or active(root, value, adapter,
                    reviewed_adapter_sha256=REVIEWED_ADAPTER_SHA256)
     if grant is None:
         return value
@@ -1024,77 +1030,28 @@ def activate_edit_case(config, project, sample, *, captured):
     return 'queued'
 
 
-def resource_report(policy, *, detailed=False, admission=True):
-    """OS provenance plus existing floors and optional additive admission."""
+def resource_report(policy, *, detailed=False, admission=True,deadline=None):
+    """OS adapter observations plus explicit configured memory policy."""
+    from resource_platform import adapter_for,normal_pressure,number
+    from .bounded_calibration import pressure_ready,verdict
     from .memory_policy import assess
-    cpus = os.cpu_count() or 1
-    status = {'load': 'ok', 'available': 'unavailable',
-              'total': 'not_requested', 'memory_pressure': 'not_requested'}
-    try:
-        load = os.getloadavg()[0] / cpus
-    except OSError:
-        load = float('inf'); status['load'] = 'failed'
-    available = total = swap_used = pressure = None
-    adaptive = 'adaptiveMemory' in policy
-    if Path('/proc/meminfo').is_file():
-        lines = Path('/proc/meminfo').read_text().splitlines()
-        values = {parts[0].rstrip(':'): int(parts[1]) for line in lines
-                  if len(parts := line.split()) >= 2 and parts[1].isdigit()}
-        if 'MemAvailable' in values:
-            available = values['MemAvailable'] // 1024; status['available'] = 'ok'
-        if 'MemTotal' in values:
-            total = values['MemTotal'] // 1024; status['total'] = 'ok'
-        if detailed and 'SwapTotal' in values and 'SwapFree' in values:
-            swap_used = (values['SwapTotal'] - values['SwapFree']) // 1024
-        if detailed or adaptive:
-            if Path('/proc/pressure/memory').is_file():
-                pressure = Path('/proc/pressure/memory').read_text().strip()[:200]
-            # PSI has different semantics; no macOS-percent fallback is allowed.
-            status['memory_pressure'] = 'unsupported'
-    elif sys.platform == 'darwin':
-        def query(argv):
-            try:
-                result = subprocess.run(argv, capture_output=True, text=True, timeout=2, check=False)
-                return (result.stdout, 'ok') if result.returncode == 0 else ('', 'failed')
-            except (OSError, subprocess.TimeoutExpired):
-                return '', 'failed'
-        raw, state = query(['/usr/bin/vm_stat'])
-        page = re.search(r'page size of (\d+) bytes', raw)
-        counts = dict((name, int(number.replace('.', ''))) for name, number in
-            re.findall(r'Pages (free|inactive|speculative):\s*([0-9.]+)', raw))
-        if page and set(counts) == {'free', 'inactive', 'speculative'}:
-            available = sum(counts.values()) * int(page.group(1)) // (1024 * 1024)
-            status['available'] = 'ok'
-        else:
-            status['available'] = state if state != 'ok' else 'unrecognized'
-        if detailed or adaptive:
-            raw, state = query(['/usr/sbin/sysctl', '-n', 'hw.memsize'])
-            if raw.strip().isdigit() and int(raw) > 0:
-                total = int(raw) // (1024 * 1024); status['total'] = 'ok'
-            else:
-                status['total'] = state if state != 'ok' else 'unrecognized'
-            raw, state = query(['/usr/bin/memory_pressure', '-Q'])
-            match = re.search(r'System-wide (?:memory )?free percentage:\s*(\d+)%', raw)
-            if match and 0 <= int(match.group(1)) <= 100:
-                pressure = {'system_free_percent': int(match.group(1))}
-                status['memory_pressure'] = 'ok'
-            else:
-                status['memory_pressure'] = state if state != 'ok' else 'unrecognized'
-        if detailed:
-            raw, _ = query(['/usr/sbin/sysctl', '-n', 'vm.swapusage'])
-            match = re.search(r'used\s*=\s*([0-9.]+)M', raw)
-            if match: swap_used = float(match.group(1))
-    report = {'load_per_cpu': round(load, 3), 'available_mib': available,
-        'total_mib': total, 'query_status': status,
-        'gpu': 'mps-possible' if sys.platform == 'darwin' else 'unknown',
-        'gpu_usage_percent': None, 'memory_pressure': pressure, 'swap_used_mib': swap_used,
-        'ready': load <= policy['maxLoadPerCpu'] and available is not None
-                 and available >= policy['minAvailableMib']}
-    if adaptive:
-        decision = assess(report, policy, admission=admission)
-        report.update(ready=decision['ready'], memory_admission=decision)
-        if decision['training_limits'] is not None:
-            report['training_limits'] = decision['training_limits']
+    from .resource_coordination import observation_fresh
+    started=time.monotonic()
+    end=min(started+2,deadline) if deadline is not None else started+2
+    report=adapter_for(sys.platform).observe(path_factory=Path,run=subprocess.run,
+        clock=time.monotonic,cpu_count=os.cpu_count,loadavg=getattr(os,'getloadavg',None),
+        deadline=end,detailed=detailed)
+    available,load=report['available_mib'],report['load_per_cpu']
+    report['ready']=(number(load) and load<=policy['maxLoadPerCpu']
+        and number(available) and available>=policy['minAvailableMib']
+        and pressure_ready(report,policy))
+    if 'calibration' in policy:report['calibration_admission']=verdict(report,policy)
+    if 'adaptiveMemory' in policy:
+        result=assess(report,policy,admission=admission)
+        report.update(ready=result['ready'],memory_admission=result)
+        if result['training_limits'] is not None:report['training_limits']=result['training_limits']
+    report['observation_status']='fresh' if observation_fresh(report) else 'stale'
+    report['ready']=report['ready'] and report['observation_status']=='fresh' and time.monotonic()<end
     return report
 
 
@@ -1392,6 +1349,8 @@ def train_due(root, policy, *, trainer_factory=None):
         from .automatic_staging import train_due_staged
         try:
             grant = require_operation(root, policy, 'local_train')
+        except ResourceDeferred as exc:
+            return {'status':'deferred_resource','reason':str(exc)}
         except ValueError:
             return {'status': 'runtime_approval_required'}
         return train_due_staged(root, policy, grant,
@@ -1519,7 +1478,7 @@ def train_due(root, policy, *, trainer_factory=None):
             raise ValueError("invalid_shared_trainer")
         trainer = VerifiedLayaTrainer(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                         max_rss_mib=policy["maxRssMib"],
-                        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
+                        pressure_probe=lambda **options: resource_report(policy, admission=False,**options), require_monitor=True)
     else:
         trainer = trainer_factory(policy)
     try:
@@ -1648,7 +1607,7 @@ def train_due(root, policy, *, trainer_factory=None):
                        (canonical(evaluated), cycle_id))
         return _publish_evaluated(root, cycle_id, evaluated, rows)
     except Exception as exc:
-        from .local_cycle import ResourceDeferred, record_resource_defer
+        from .local_cycle import record_resource_defer
         deferred = isinstance(exc, ResourceDeferred)
         if deferred:
             record_resource_defer(root, exc.report, reason=str(exc))
@@ -1811,7 +1770,7 @@ def observe_trial(root, policy, *, trainer_factory=None):
         klass = VerifiedLayaTrainer if Path(policy["trainerArgv"][1]).resolve() == adapter.resolve() else LocalTrainer
         trainer = klass(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                         max_rss_mib=policy["maxRssMib"],
-                        pressure_probe=lambda: resource_report(policy, admission=False), require_monitor=True)
+                        pressure_probe=lambda **options: resource_report(policy, admission=False,**options), require_monitor=True)
     else:
         trainer = trainer_factory(policy)
     folder = root / "observations" / (current["cycle_id"] + "-" + fingerprint[:16])
@@ -1908,6 +1867,12 @@ class _SelfMeter:
 
 def run(root, *, project=None, sync_config=None, wait_for_lock=False):
     """Meter one detached worker invocation, including any pre-lock work."""
+    from . import project_scope
+    if project_scope.present(root):
+        if os.environ.get('QMD_SHARED_GOLD_ONLY') == '1':
+            return {'status':'project_requires_normal_worker'}
+        from .project_worker import run as run_project_worker
+        return run_project_worker(root,project or project_scope.owner(root),sync_config)
     if os.environ.get('QMD_SHARED_GOLD_ONLY') == '1':
         # The generic sync can reconcile unrelated cases before the worker
         # applies its exact request-ID filter. Gold collection never runs it.
@@ -2134,11 +2099,20 @@ def launch(config, project, *, parent_id=None, episode=None,
     root = _safe_root(config, project)
     if root is None:
         return {"status": "disabled"}
+    from . import project_scope
+    general_project=project_scope.present(root)
+    if general_project:
+        from .project_worker import setup_ready
+        if not setup_ready(root):return {'status':'setup_in_progress'}
+        flags=config.get('contextLearning',{})
+        if flags.get('capture') is not True or flags.get('autoCycle') is not True:
+            return {'status':'disabled'}
+        project_scope.require(root,_policy(root),'local_train')
     # A source/card edit has its own one-use hook tickets. SessionStart also
     # retries admission if the prior index worker died after its QMD ACK.
     from .learning_profile import present,SCHEMA
     selected_profile=present(root) or config.get('sharedLearning',{}).get('profile')==SCHEMA
-    if not selected_profile:_reconcile_source_cards(root, project)
+    if not selected_profile and not general_project:_reconcile_source_cards(root, project)
     policy = _policy(root)
     if _historical_trainer_policy(policy) and os.environ.get("QMD_SHARED_GOLD_ONLY") != "1":
         return {"status": "runtime_approval_required"}
@@ -2179,6 +2153,10 @@ def launch(config, project, *, parent_id=None, episode=None,
                    QMD_JOB_EPISODE=str(episode) if episode is not None else "",
                    QMD_JOB_QUEUED_AT=str(queued_at), QMD_JOB_MODEL_VERSION=version)
         entry = Path(__file__).resolve().parents[1] / "context_learning_shared.py"
+        import runtime_work
+        receipt=runtime_work.request('learning',str(Path(project).resolve()),start=False)
+        if isinstance(receipt,dict) and receipt['status']=='deferred_queue_capacity':
+            runtime_work.hook_wake();return receipt
         try:
             action = "run-project-after-index" if after_index else "run-project"
             subprocess.Popen([sys.executable, str(entry), action, str(Path(project).resolve())],
@@ -2208,6 +2186,12 @@ def wake_after_index(project):
         return {"status": "ignored"}
     try:
         owner = requested.resolve(strict=True)
+        cfg=config.find_project_config(str(owner))['config']
+        enrolled=_safe_root(cfg,owner)
+        from . import project_scope
+        if enrolled is not None and project_scope.present(enrolled):
+            project_scope.require(enrolled,_policy(enrolled),'local_train')
+            return launch(cfg,owner,after_index=True)
         if owner != NOVEL_ROOT.resolve(strict=True):
             return {"status": "ignored"}
         root = shared_for(owner)
@@ -2274,11 +2258,25 @@ def run_training_pending(root,project):
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
+    from . import project_scope
+    if project_scope.present(root):
+        from .project_worker import setup_ready
+        flags=cfg.get('contextLearning',{})
+        if flags.get('capture') is not True or flags.get('autoCycle') is not True:
+            return {'status':'disabled'}
+        if not setup_ready(root):return {'status':'setup_in_progress'}
+        from .general_teacher import read_weekly_quota
+        try:read_weekly_quota()
+        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
+        except ValueError as exc:
+            return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
+                'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable'}
     from . import learning_profile
     selected_profile=learning_profile.present(root) or cfg.get('sharedLearning',{}).get('profile')==learning_profile.SCHEMA
     profile=None
     if selected_profile:
         try:profile=learning_profile.require(root,policy,'quality_evaluate')
+        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
         except (OSError,ValueError,KeyError,TypeError):return {'status':'runtime_approval_required'}
     fd=_lock(root/'shared-worker.lock')
     try:
@@ -2304,6 +2302,8 @@ def run_training_pending(root,project):
                 return _profile_apply(root,policy,profile,result)
             if selected_profile:
                 with _db(root) as db:
+                    from .learning_queue import LearningQueue
+                    LearningQueue(root).schema(db)
                     stage=db.execute("SELECT c.cycle_id FROM cycles c JOIN learning_jobs j ON j.job_id=c.cycle_id LEFT JOIN learning_evaluations e ON e.cycle_id=c.cycle_id AND e.namespace=j.namespace WHERE j.namespace=? AND c.status IN ('staged','staged_evaluated') AND (e.status IS NULL OR e.status!='blocked') AND (e.retry_at IS NULL OR e.retry_at<=?) ORDER BY c.started_at DESC LIMIT 1",(EvaluationQueue(root).scope,time.time())).fetchone()
                 if stage:
                     result=evaluate_pending(root,policy,stage[0])
@@ -2315,6 +2315,7 @@ def run_training_pending(root,project):
         try:
             require_operation(root,policy,'local_train')
             if selected_profile:learning_profile.require(root,policy,'local_train')
+        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
         except ValueError:return {'status':'runtime_approval_required'}
         return _profile_apply(root,policy,profile,train_due(root,policy))
     finally:os.close(fd)
@@ -2361,8 +2362,9 @@ def main(argv):
                 if (result['status'] in ('deferred_resource','staged_evaluation_deferred','apply_deferred')
                         and os.environ.get('QMD_SHARED_GOLD_ONLY')!='1'
                         and _policy(root).get('_runtime_authorization_v2') is True):
-                    from .learning_retry import wait_pending
-                    result={**result,'learning_retry':wait_pending(root,lambda:run_training_pending(root,project))}
+                    import runtime_work
+                    runtime_work.request('learning',str(project))
+                    result={**result,'learning_retry':{'status':'durable_wake_pending'}}
         else:
             root = Path(argv[1]).resolve(strict=True)
             result = {"run": run, "status": status, "rollback": rollback}[argv[0]](root)

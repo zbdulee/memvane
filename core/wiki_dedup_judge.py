@@ -427,6 +427,8 @@ def judge_pair(
     if returncode == 127:
         # 후보 전원 CLI 부재: 이 머신에서는 어떤 judge도 답하지 않는다(과금 0).
         return None, {**provenance, "outcome": OUTCOME_UNAVAILABLE, "reason": "cli_absent"}
+    if reason == 'resource_deferred':
+        return None, {**provenance,'outcome':OUTCOME_TRANSIENT,'reason':reason}
     if reason and reason not in UNUSABLE_OUTPUT_REASONS:
         # timeout·실행 실패 = 진짜 transient(부하·네트워크·일시적 CLI 상태). 판정이 없었으므로
         # 종점 없이 항상 작업을 보존한다 — verify가 같은 사유를 항상 보존하는 것과 같다.

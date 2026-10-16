@@ -389,6 +389,10 @@ retry() {
     if output=$("$@" 2>&1); then
       LAST_OUT="$output"
       return 0
+    else
+      # Resource deferral is not a failed operation to retry while holding
+      # the writer lease. Return to the durable waiter immediately.
+      if [ "$?" -eq 75 ]; then LAST_OUT="$output"; return 75; fi
     fi
     if printf '%s' "$output" | grep -qi "already exists"; then
       LAST_OUT="$output"
@@ -1116,7 +1120,12 @@ run_update() {
   normalize_qmd_path
   local qmd_bin
   qmd_bin="$(resolve_qmd_bin 2>/dev/null)" || exit 0
-  qmd() { "$qmd_bin" "$@"; }
+  qmd() {
+    case "${1:-}" in
+      update|embed|cleanup) python3 "$_QMD_CORE_DIR/runtime_work.py" qmd "$qmd_bin" "$@" ;;
+      *) "$qmd_bin" "$@" ;;
+    esac
+  }
 
   workdir="$1"
   # Config and collection paths belong to the canonical settings root. A
@@ -1299,7 +1308,7 @@ PY
         echo "$$" > "$EMBED_LOCK/pid" 2>/dev/null || true
         trap "python3 \"$CORE_DIR/worker_lock.py\" release-pid \"$EMBED_LOCK\" \"$$\" >>\"$LOG\" 2>&1 || true" EXIT
         if python3 "$CORE_DIR/qmd_route.py" verify-shared-enrollment >/dev/null 2>&1; then
-          out=$("$QMD_BIN_RESOLVED" embed 2>&1); embed_rc=$?
+          out=$(python3 "$CORE_DIR/runtime_work.py" qmd "$QMD_BIN_RESOLVED" embed 2>&1); embed_rc=$?
         else
           out="shared collection enrollment changed before embed"; embed_rc=1
         fi
@@ -1366,8 +1375,13 @@ PY
             fi
           fi
         fi
+        exit "$embed_rc"
       ' >/dev/null 2>&1 &
-      log "EMBED: started in background (pid=$!)"
+      embed_pid=$!
+      log "EMBED: started in background (pid=$embed_pid)"
+      # The durable SessionStart worker cannot ACK before embed reports its
+      # actual result. Manual hook callers retain the existing detached path.
+      if [ "${QMD_UPDATE_HOOK_WAIT:-}" = 1 ]; then wait "$embed_pid" || true; fi
     fi
   else
     write_failure_status "qmd update" "$LAST_OUT"

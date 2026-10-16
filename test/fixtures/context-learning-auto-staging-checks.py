@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
@@ -243,7 +244,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         return grant
 
     ready = {'ready': True, 'available_mib': 10000,
-             'load_per_cpu': 0.1, 'total_mib':16384}
+             'load_per_cpu': 0.1, 'total_mib':16384,'observed_at_mono':time.monotonic(),
+             'query_status':{'memory_pressure':'ok'},
+             'memory_pressure':{'level':'normal','system_free_percent':70}}
     with patch.object(resource_coordination,'default_root',return_value=coord), patch.object(shared, '_db', local_db), patch.object(
             shared, '_case_active',
             side_effect=lambda *_args: runtime_state['source_active']), patch.object(

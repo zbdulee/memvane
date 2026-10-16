@@ -1,12 +1,16 @@
 {
   "name": "qmd-auto-context",
-  "version": "0.35.2-dev.20261013-claude-handoff-v53-rc46-claude-grant-root",
+  "version": "0.35.2-dev.20261013-claude-handoff-v53-rc47-general-project-learning",
   "private": true,
   "type": "module",
   "engines": {
     "node": "^22.0.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
-    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= node --test --test-concurrency=4"
+    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= python3 -B scripts/development_guard.py --kind test -- node --test --test-concurrency=1",
+    "test:focused": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= python3 -B scripts/development_guard.py --kind test -- node --test --test-concurrency=1",
+    "test:guard-unit": "python3 -B -m unittest discover -s test -p development_guard_test.py",
+    "test:runtime-unit": "python3 -B -m unittest discover -s test -p 'runtime_*test.py'",
+    "dev:guard": "python3 -B scripts/development_guard.py"
   }
 }

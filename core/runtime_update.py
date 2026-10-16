@@ -96,6 +96,8 @@ def stage_shadow_index(project_root, *, qmd_bin, config_file, wiki_dir, model_ca
                        runner=subprocess.run, bootstrap_empty=False):
     """Build a fresh index while preserving every existing DB and pointer."""
     if not allow_execution:raise ValueError('migration_execution_not_enabled')
+    from runtime_work import guarded_run
+    def run_stage(command,**options):return guarded_run(command,execute=runner,**options)
     root=Path(project_root).resolve()
     import wiki_topical as topical
     if not topical.opted_in(root):raise ValueError('project_optin_required')
@@ -129,7 +131,7 @@ def stage_shadow_index(project_root, *, qmd_bin, config_file, wiki_dir, model_ca
     env={**os.environ,'INDEX_PATH':str(index),'QMD_CONFIG_DIR':str(stage_config),
          'XDG_CACHE_HOME':str(stage_cache),'HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1'}
     for command in ([str(qmd),'update'],[str(qmd),'embed','--max-docs-per-batch','1','--max-batch-mb','1']):
-        result=runner(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
+        result=run_stage(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
         if result.returncode:raise ValueError('shadow_index_build_failed')
     probe_models=[]
     if bootstrap_empty:
@@ -141,7 +143,7 @@ def stage_shadow_index(project_root, *, qmd_bin, config_file, wiki_dir, model_ca
         try:
             for command in ([str(qmd),'collection','add',str(probe),'--name',name,'--mask','*.md'],
                             [str(qmd),'embed','--max-docs-per-batch','1','--max-batch-mb','1']):
-                result=runner(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
+                result=run_stage(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
                 if result.returncode:raise ValueError('bootstrap_vector_probe_failed')
             verified=inspect_index(index)
             probe_models=verified.get('modelFingerprints',[])
@@ -151,12 +153,12 @@ def stage_shadow_index(project_root, *, qmd_bin, config_file, wiki_dir, model_ca
                     len(probe_models) != 1 or probe_models[0]['model'] != expected_model):
                 raise ValueError('bootstrap_vector_probe_failed')
             for command in ([str(qmd),'collection','remove',name],[str(qmd),'cleanup']):
-                result=runner(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
+                result=run_stage(command,cwd=root,env=env,capture_output=True,text=True,timeout=900,check=False)
                 if result.returncode:raise ValueError('bootstrap_probe_cleanup_failed')
         finally:
             (probe/'probe.md').unlink(missing_ok=True)
             (stage_config/'index.yml').write_bytes(config.read_bytes())
-    search=runner([str(qmd),'vsearch','synthetic compatibility probe','--format','json'],
+    search=run_stage([str(qmd),'vsearch','synthetic compatibility probe','--format','json'],
                   cwd=root,env=env,capture_output=True,text=True,timeout=120,check=False)
     try:
         hits=json.loads(search.stdout)
