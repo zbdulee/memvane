@@ -273,7 +273,11 @@ assert not attempts,attempts
             if log.exists() and log.read_text().count('"status":"busy"')>=count:return
             time.sleep(.05)
         raise AssertionError('direct fixture workers did not finish: '+str(namespace)
-            +' log='+(log.read_text() if log.exists() else 'missing'))
+            +' log='+(log.read_text() if log.exists() else 'missing')
+            +' shared='+((namespace/'shared-last-status.json').read_text()[:2048]
+                if (namespace/'shared-last-status.json').exists() else 'missing')
+            +' captures='+str(len(rows(namespace,'samples')))
+            +' cases='+str(len(rows(namespace,'cases'))))
     # Finish both setup transactions before enabled captures start workers.
     for project,namespace,fixture in projects:
         recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')

@@ -5,6 +5,45 @@ import {mkdtempSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
+test('shared enqueue failure retains safe diagnostics and the private capture', () => {
+ const base = mkdtempSync(join(tmpdir(), 'qmd-shared-failure-'));
+ try {
+ const out = execFileSync('python3', ['-c', `
+import json,sys,sqlite3
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,'core')
+from context_learning.seam import observe
+from context_learning.contracts import digest
+from context_learning.local_cycle import ResourceDeferred
+base=Path(sys.argv[1]).resolve();project=base/'project';private=base/'private'
+(project/'docs').mkdir(parents=True);private.mkdir(mode=0o700)
+(project/'docs/guide.md').write_text('synthetic evidence')
+config={'collectionPaths':{'sample':'docs'},'contextLearning':{'capture':True,'stateRoot':str(private)},'sharedLearning':{'enabled':True}}
+state=private/digest(str(project))
+for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget'),(ValueError('synthetic body /private/path TOKEN=secret'),'enqueue_unavailable')]:
+ with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',side_effect=error),patch('context_learning.shared.launch') as launch:
+  assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
+  launch.assert_not_called()
+ status=json.loads((state/'shared-last-status.json').read_text())
+ assert status['status']=='unavailable'
+ assert status.get('reason')==reason,status
+ assert status['stage']=='enqueue' and status['errorType']==type(error).__name__
+ assert 'TOKEN' not in json.dumps(status) and '/private/path' not in json.dumps(status)
+with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',return_value='queued'),patch('context_learning.shared.launch',side_effect=ResourceDeferred('learning_compute_busy')) as launch:
+ assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
+ launch.assert_called_once()
+status=json.loads((state/'shared-last-status.json').read_text())
+assert status['status']=='unavailable' and status['stage']=='launch'
+assert status['reason']=='learning_compute_busy' and status['errorType']=='ResourceDeferred'
+assert not (state/'shared-learning.sqlite3').exists()
+with sqlite3.connect(state/'learning.sqlite3') as db:assert db.execute('SELECT COUNT(*) FROM samples').fetchone()[0]==3
+print('ok')
+`, base], {encoding:'utf8',timeout:10000,env:{...process.env,QMD_RECALL_LOG:'',PYTHONDONTWRITEBYTECODE:'1'}});
+ assert.equal(out.trim(),'ok');
+ } finally {rmSync(base,{recursive:true,force:true});}
+});
+
 test('offline contracts and storage are isolated, explicit and fail open', () => {
  const dir = mkdtempSync(join(tmpdir(), 'qmd-learning-'));
  try {

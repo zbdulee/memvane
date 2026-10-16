@@ -206,17 +206,27 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
         if status == 'stored' and config.get('sharedLearning', {}).get('enabled') is True:
             # The shared path is a separate, explicitly enrolled local queue.
             # It never runs an external teacher in the prompt hook.
+            failure = {}; stage = 'enqueue'
             try:
                 from .shared import enqueue, launch
                 shared_status = enqueue(config, root, sample, compact_sources)
                 if shared_status == 'queued':
+                    stage = 'launch'
                     launch(config, root)
-            except Exception:
+            except Exception as error:
                 shared_status = 'unavailable'
+                # Fixed codes only: exception messages may contain source text
+                # or private paths. Keep the existing status/return behavior.
+                codes = {'preparation_budget', 'learning_deferred_resource',
+                         'learning_compute_busy', 'learning_deferred_inference',
+                         'project_scope_code_changed', 'project_scope_binding_changed',
+                         'project_scope_model_changed'}
+                failure = {'stage': stage, 'errorType': type(error).__name__[:80],
+                           'reason': str(error) if str(error) in codes else 'enqueue_unavailable'}
             try:
                 from .local_cycle import _atomic_json
                 _atomic_json(state / 'shared-last-status.json',
-                             {'status': shared_status, 'request_id_hash': digest(sample['request_id'])})
+                             {'status': shared_status, 'request_id_hash': digest(sample['request_id']), **failure})
             except Exception:
                 pass
         return status
