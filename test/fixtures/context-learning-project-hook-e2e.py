@@ -1,7 +1,8 @@
 """Real recall/capture/enqueue + real consent/cohort/ledger in a private HOME.
 
-QMD results, OS account-home lookup and signed-in Codex inventory/quota are local external-boundary
-fixtures. The teacher invoke callback stands only for external inference; it
+QMD results, OS account-home/resource observations and signed-in Codex inventory/quota
+are local external-boundary fixtures. Resource verdicts and kernel locks stay real.
+The teacher invoke callback stands only for external inference; it
 does not attest native CLI execution or process monitoring. No guard, scope,
 source, installation, or process identity function is patched. Worker kernel
 locks keep ordinary detached recall workers busy while captures commit.
@@ -20,6 +21,28 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[2]
+
+# Test-only OS observation provider, also installed in sanitized worker children.
+# The product still evaluates freshness, pressure, memory and load itself.
+RESOURCE_OBSERVER = '''
+import resource_platform
+from unittest.mock import patch
+class FixtureObserver:
+    level = 'normal'
+    calls = 0
+    def observe(self, *, clock, **options):
+        self.calls += 1
+        return {'observed_at_mono': clock(), 'load_per_cpu': .1,
+            'available_mib': 12000, 'total_mib': 16384, 'swap_used_mib': 0,
+            'memory_pressure': {'level': self.level, 'system_free_percent': 70},
+            'query_status': {'load': 'ok', 'available': 'ok', 'total': 'ok',
+                'memory_pressure': 'ok'}, 'platform': {'scope': 'synthetic'}}
+resource_observer = FixtureObserver()
+resource_patch = patch.object(resource_platform, 'adapter_for', return_value=resource_observer)
+resource_patch.start()
+'''
+deferred_case = sys.argv[1:] == ['--deferred']
+assert not sys.argv[1:] or deferred_case, 'unexpected fixture arguments'
 
 
 def audit(event, args):
@@ -84,6 +107,10 @@ fixture_parent=Path(pwd.getpwuid(os.getuid()).pw_dir) if sys.platform=='darwin' 
 with tempfile.TemporaryDirectory(prefix='qmd-hook-validation-', dir=fixture_parent) as raw:
     base = Path(raw).resolve(); home = base/'home'; home.mkdir(mode=0o700)
     bin_dir = home/'bin'; bin_dir.mkdir(mode=0o700)
+    # Scope grants bind an owner-controlled runtime, not CI's ambient Python.
+    # No model command may execute in this fixture; keep that identity synthetic.
+    model_python = bin_dir/'synthetic-model-python'
+    model_python.write_text('#!/bin/sh\nexit 97\n'); model_python.chmod(0o700)
     temporary=base/'tmp';temporary.mkdir(mode=0o700)
     environment = {k:v for k,v in os.environ.items() if not k.startswith(('QMD_', 'GEMINI_', 'CLAUDE_', 'CODEX_'))}
     environment.update(HOME=str(home), CODEX_HOME=str(home/'.codex'),
@@ -94,7 +121,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-hook-validation-', dir=fixture_pare
     os.environ.clear(); os.environ.update(environment)
     sys.path.insert(0,str(REPO/'test/helpers'))
     from uid_home import isolate
-    isolate(home)
     codex = bin_dir/'codex'
     codex.write_text('#!'+sys.executable+'\n'+'''import json,sys
 from pathlib import Path
@@ -124,6 +150,10 @@ else:
     # Execute the copied installed code, exactly as an enrolled host does;
     # a source checkout is correctly rejected as an execution target.
     sys.path.insert(0,str(installs['codex']/'core'))
+    isolate(home,observation_bootstrap='\nsys.path.insert(0,'+repr(str(installs['codex']/'core'))+')\n'
+        +RESOURCE_OBSERVER+'\nsys.path.pop(0)\n')
+    import resource_platform
+    resource_observer=resource_platform.adapter_for(sys.platform)
     from context_learning import general_teacher, shared, project_scope
     from context_learning.resource_coordination import Coordinator
     from runtime_work import WakeQueue
@@ -194,7 +224,7 @@ else:
         registry[collection] = {'scope':str(project),'path':str(wiki),'indexed':True}
         namespace = namespace_parent/shared._project_key(project); namespace.mkdir(mode=0o700)
         save(namespace/'live-selector.json', {'schema':'qmd-live-selector-v1',
-            'trainerArgv':[str(Path(sys.executable).resolve()),str(installs['codex']/'core/context_learning/laya_adapter.py'),str(model)],
+            'trainerArgv':[str(model_python),str(installs['codex']/'core/context_learning/laya_adapter.py'),str(model)],
             'timeoutSeconds':30,'maxRssMib':4096})
         save(namespace/'active-checkpoint.json', {'artifact_path':str(artifact),
             'artifact_sha256':setup.file_sha(artifact),'cycle_id':'synthetic-base'})
@@ -202,7 +232,7 @@ else:
             {'file':collection+'/cobalt.md','score':.99,'title':'Synthetic Cobalt','line':1}]})
         projects.append((project,namespace,fixture))
     save(qmd_shared_store.root()/'collections.json',registry)
-    # No test-only setup guard, process identity replacement, or selector patch.
+    # No setup guard, process identity replacement, or selector patch.
     child = '''import sys
 attempts=[]
 def audit(event,args):
@@ -216,6 +246,8 @@ def audit(event,args):
   raise AssertionError('isolated service/model subprocess forbidden')
 sys.addaudithook(audit)
 sys.path.insert(0,sys.argv[1])
+import resource_platform
+assert resource_platform.adapter_for(sys.platform).level=='normal'
 from pathlib import Path
 import os,pwd
 assert Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()==Path.home().resolve()
@@ -240,7 +272,8 @@ assert not attempts,attempts
             log=namespace/'worker.log'
             if log.exists() and log.read_text().count('"status":"busy"')>=count:return
             time.sleep(.05)
-        raise AssertionError('direct fixture workers did not finish: '+str(namespace))
+        raise AssertionError('direct fixture workers did not finish: '+str(namespace)
+            +' log='+(log.read_text() if log.exists() else 'missing'))
     # Finish both setup transactions before enabled captures start workers.
     for project,namespace,fixture in projects:
         recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
@@ -274,6 +307,37 @@ assert not attempts,attempts
         assert {row['host'] for row in samples} == {'claude','codex'}, samples
         assert len(rows(namespace,'cases')) == 2, (namespace, (base/'recall.jsonl').read_text())
         progress('both_hosts_captured_workers_finished',project)
+    if deferred_case:
+        # Keep the real provider/admission path; change only the OS observation.
+        # Fresh fixture HOME/UID roots prevent another test or user lease from
+        # deciding either scenario. Detached workers have already exited busy.
+        policies={str(namespace):shared._policy(namespace) for _,namespace,_ in projects}
+        resource_observer.level = 'warning'
+        from context_learning.resource_coordination import decision
+        import runtime_admission
+        observed = runtime_admission.sample(runtime_admission.POLICY)
+        assert observed['memory_pressure']['level']=='warning' and observed['ready'] is False
+        assert decision(runtime_admission.POLICY,observed)['ready'] is False
+        for project,namespace,_ in projects:
+            before = rows(namespace,'cases')
+            pointer = (namespace/'active-checkpoint.json').read_bytes()
+            settings = (project/'.auto-context/settings.json').read_bytes()
+            def forbidden(*args,**kwargs):
+                raise AssertionError('deferred teacher invoked')
+            result = general_teacher.process_pending(namespace,project,policies[str(namespace)],invoke=forbidden,max_cases=2)
+            assert result['status']=='deferred_resource' and result['reason']=='learning_deferred_resource',result
+            assert result['outcomes']==[] and result['cli_invocations']==0,result
+            assert rows(namespace,'cases')==before and len(before)==2
+            assert (namespace/'active-checkpoint.json').read_bytes()==pointer
+            assert (project/'.auto-context/settings.json').read_bytes()==settings
+            with sqlite3.connect((namespace/'shared-learning.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
+                assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='project_gold_attempts'").fetchone()
+        assert resource_observer.calls>0 and not os.environ.get('QMD_SETUP_GUARD_FIXTURE')
+        for lock in locks:lock.close()
+        print(canonical({'resourceCase':'deferred','resourceObservationsInjected':True,
+            'privateCoordination':True,'deferralPreservesCases':True,'noGuardOverrides':True,
+            'modelCalls':0,'externalCalls':0}))
+        raise SystemExit(0)
     for project,namespace,_ in projects:
         with shared._db(namespace) as db:
             assert {r[0] for r in db.execute('SELECT DISTINCT project_root FROM cases')} == {str(project)}
@@ -339,7 +403,9 @@ assert not attempts,attempts
     progress('private_retry_queue_drained')
     assert not any(name in sys.modules for name in ('torch','transformers','laya'))
     assert not os.environ.get('QMD_SETUP_GUARD_FIXTURE')
+    assert resource_observer.calls>0
     print(canonical({'disabledNoHistory':True,'bothHostsShareProjectNamespace':True,
         'projectsRemainIsolated':True,'durableGold':True,'secretExcludedBeforeTransport':True,
         'insufficientDataDoesNotPromote':True,'noModelImports':True,'noGuardOverrides':True,
+        'resourceCase':'normal','resourceObservationsInjected':True,'privateCoordination':True,
         'modelCalls':0,'externalCalls':0}))

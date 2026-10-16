@@ -28,6 +28,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   q=model/name;q.parent.mkdir(parents=True,exist_ok=True);q.write_text(name)
  save(model/'rl_agent_config.json',{'encoder':'jhu-clsp/mmBERT-base','max_len':1024,'head_max_len':256})
  python=base/'python';python.write_text('runtime');python.chmod(0o700)
+ # The accepted runtime identity must remain owner-controlled and unaliased.
+ assert scope._path(python)==python
+ python.chmod(0o720)
+ expect('unsafe_path',lambda:scope._path(python));python.chmod(0o700)
+ alias=base/'runtime-alias';alias.symlink_to(python)
+ expect('unsafe_path',lambda:scope._path(alias));alias.unlink()
+ os.link(python,alias)
+ expect('unsafe_path',lambda:scope._path(python));alias.unlink()
+ foreign=Path('/usr/bin/true').resolve(strict=True)
+ if foreign.stat().st_uid!=os.getuid():
+  expect('unsafe_path',lambda:scope._path(foreign))
  artifact=base/'base.artifact';artifact.write_text('base')
  installs={}
  version='0.1-test'

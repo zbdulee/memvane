@@ -3,6 +3,8 @@
 HOME alone deliberately cannot move the product's UID-global coordination root.
 These selected integration fixtures supply a private account-home boundary too.
 EUID, owners, process identity, resource verdicts and kernel locks stay real.
+An optional fixture-only observation bootstrap reaches sanitized children too;
+it supplies OS observations without replacing admission or process identity.
 Isolated (-I) or sanitized model children must be forbidden by the caller.
 """
 import os
@@ -15,7 +17,7 @@ import sys
 import textwrap
 
 
-def isolate(home):
+def isolate(home, *, observation_bootstrap=''):
     home=Path(home).resolve(strict=True)
     if home==Path(pwd.getpwuid(os.getuid()).pw_dir).resolve():
         raise ValueError('fixture_requires_private_home')
@@ -58,6 +60,7 @@ with os.fdopen(_fixture_fd,'w') as _fixture_stream:
     json.dump({'pid':os.getpid(),'ppid':os.getppid(),'uid':os.getuid(),
         'argv0':sys.argv[0],'home':_fixture_home},_fixture_stream)
 '''
+    source+=observation_bootstrap
     source=('import pwd\nif getattr(pwd,"_qmd_fixture_home",None)!='+repr(str(home))+':\n'
             +textwrap.indent(source,'    '))
     path=directory/'sitecustomize.py'

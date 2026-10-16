@@ -115,10 +115,12 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     if not isinstance(argv,list) or len(argv)!=3 or any(not isinstance(p,str) or not Path(p).is_absolute() for p in argv):
         raise ValueError('setup_runtime_invalid')
     # A venv executable may be a symlink. Bind its exact link routing and bytes;
-    # policy/config/model paths themselves must never follow links.
+    # policy/config/model paths themselves must never follow links. Match scoped
+    # activation's owner/single-link requirement before any setup writes.
     runtime_path=Path(argv[0]);resolved=runtime_path.resolve(strict=True)
     info=resolved.stat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0,os.getuid()) or info.st_mode&0o022):
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
+        or info.st_nlink!=1 or info.st_mode&0o022):
         raise ValueError('setup_runtime_invalid')
     adapter=_path(argv[1]);model=_path(argv[2],directory=True)
     from context_learning.laya_adapter import MODEL_FILES

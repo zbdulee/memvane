@@ -68,6 +68,32 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  original_settings=(project/'.auto-context/settings.json').read_bytes();original_pointer=(root/'active-checkpoint.json').read_bytes()
  expiry=int(time.time()*1000)+3600000;cutoff=int(time.time()*1000)
  with patch.object(Path,'home',return_value=home),patch('context_learning.history_activation._discover_host_roots',return_value=installs),patch('context_learning.adapter_binding._codex_installed',return_value=codex):
+  # Preparation must reject runtime identities that scoped activation refuses,
+  # before writing a journal, policy, settings or namespace data.
+  live_path=root/'live-selector.json';original_live=live_path.read_bytes()
+  def reject_runtime(runtime):
+   live=json.loads(original_live);live['trainerArgv'][0]=str(runtime);save(live_path,live)
+   before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+   try:
+    expect('setup_runtime_invalid',lambda:setup.prepare(project,root,expires_at_unix_ms=expiry,not_before_unix_ms=cutoff))
+    assert before=={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    assert (project/'.auto-context/settings.json').read_bytes()==original_settings
+   finally:live_path.write_bytes(original_live)
+  foreign=Path('/usr/bin/true').resolve(strict=True)
+  if foreign.stat().st_uid!=os.getuid():reject_runtime(foreign)
+  alias=base/'runtime-hardlink';os.link(python,alias)
+  try:reject_runtime(python)
+  finally:alias.unlink()
+  # A venv-style symlink to a safe owned target remains supported and bound.
+  alias=base/'runtime-symlink';alias.symlink_to(python)
+  live=json.loads(original_live);live['trainerArgv'][0]=str(alias);save(live_path,live)
+  try:
+   before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+   linked=setup.prepare(project,root,expires_at_unix_ms=expiry,not_before_unix_ms=cutoff)
+   assert linked['runtime']['path']==str(alias) and linked['runtime']['resolved']==str(python)
+   assert before=={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+   assert (project/'.auto-context/settings.json').read_bytes()==original_settings
+  finally:live_path.write_bytes(original_live);alias.unlink()
   before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
   plan=setup.prepare(project,root,expires_at_unix_ms=expiry,not_before_unix_ms=cutoff)
   assert before=={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
