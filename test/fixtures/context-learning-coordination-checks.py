@@ -11,6 +11,36 @@ class Checks(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.root.chmod(0o700);self.c=Coordinator(self.root)
   self.policy={'maxRssMib':4096,'minAvailableMib':512,'maxLoadPerCpu':1}
   self.report={'ready':True,'total_mib':16384,'available_mib':10000,'load_per_cpu':.1,'observed_at_mono':time.monotonic(),'query_status':{'memory_pressure':'ok'},'memory_pressure':{'system_free_percent':70,'level':'normal'}}
+ def test_missing_slots_do_not_repeat_metadata_queries_at_every_hash_checkpoint(self):
+  from collections import Counter
+  from unittest.mock import patch
+  probes=[];real_stat=os.stat;real_lstat=os.lstat
+  def probe(fn,path,*args,**kwargs):
+   if Path(path).parent==self.root and Path(path).name.startswith('inference-'):
+    probes.append(str(path))
+   return fn(path,*args,**kwargs)
+  with patch('os.stat',side_effect=lambda *a,**k:probe(real_stat,*a,**k)),patch('os.lstat',side_effect=lambda *a,**k:probe(real_lstat,*a,**k)):
+   self.assertFalse(self.c.demand())
+  self.assertLessEqual(max(Counter(probes).values(),default=0),1)
+ def test_last_slot_lease_is_observed_without_caching_absence(self):
+  import fcntl
+  from context_learning.resource_coordination import SLOTS
+  self.assertFalse(self.c.demand())
+  fd=os.open(self.root/f'inference-{SLOTS-1}.lock',os.O_CREAT|os.O_RDWR,0o600)
+  try:
+   fcntl.flock(fd,fcntl.LOCK_EX);self.assertTrue(self.c.demand())
+  finally:os.close(fd)
+  self.assertFalse(self.c.demand())
+ def test_probe_permission_errors_are_not_absence(self):
+  from unittest.mock import patch
+  with patch('os.stat',side_effect=PermissionError('denied')),patch('os.lstat',side_effect=PermissionError('denied')):
+   with self.assertRaises(PermissionError):self.c.demand()
+ def test_dangling_state_links_still_refuse_admission(self):
+  for name,reason in (('cleanup-reservation.json','qmd_cleanup_recovery_required'),('startup-reservation.json','qmd_startup_recovery_required'),('resource-recovery.json','resource_recovery_unknown')):
+   path=self.root/name;path.symlink_to(self.root/'missing')
+   try:
+    with self.assertRaisesRegex(ResourceDeferred,reason):self.c.check(self.policy,self.report)
+   finally:path.unlink()
  def test_queued_inference_defers_and_expired_metadata_cannot_steal_live_lease(self):
   with self.c.inference(time.monotonic()+1,'ns'):
    self.assertTrue(self.c.demand())

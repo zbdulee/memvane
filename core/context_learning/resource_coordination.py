@@ -29,6 +29,14 @@ def _lock(path):
     return fd
 
 
+def _present(path):
+    # One non-following probe includes dangling links. Only absence is ignored;
+    # permission and other OS errors must still refuse admission.
+    try:os.lstat(path)
+    except FileNotFoundError:return False
+    return True
+
+
 def default_root():
     from .inference_service import service_root
     return service_root(create=True)
@@ -89,10 +97,10 @@ class Coordinator:
 
     def startup_barrier(self):
         cleanup=self.root/'cleanup-reservation.json'
-        if cleanup.exists() or cleanup.is_symlink():
+        if _present(cleanup):
             raise ResourceDeferred('qmd_cleanup_recovery_required')
         path=self.root/'startup-reservation.json'
-        if not path.exists() and not path.is_symlink():return
+        if not _present(path):return
         try:row=read_private_json(path)
         except (OSError,ValueError,TypeError):raise ResourceDeferred('qmd_startup_recovery_required') from None
         owner=_STARTUP_OWNER.get()
@@ -151,7 +159,7 @@ class Coordinator:
         result=decision(policy,report,resident_credit=resident_credit,now=self.clock())
         path=self.root/'resource-recovery.json'
         try:
-            state=read_private_json(path) if path.exists() or path.is_symlink() else {'paused':False}
+            state=read_private_json(path) if _present(path) else {'paused':False}
             if not isinstance(state,dict) or type(state.get('paused')) is not bool:raise ValueError('invalid_recovery_state')
         except (OSError,ValueError,TypeError):raise ResourceDeferred('resource_recovery_unknown',{}) from None
         def save(value):
@@ -209,10 +217,11 @@ class Coordinator:
             os.close(fd)
 
     def demand(self):
+        base=os.fspath(self.root)
         for n in range(SLOTS):
-            path=self.root/f'inference-{n}.lock'
-            if not path.exists() and not path.is_symlink():continue
-            fd=_lock(path)
+            path=os.path.join(base,f'inference-{n}.lock')
+            if not _present(path):continue
+            fd=_lock(Path(path))
             try:
                 try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 except BlockingIOError:return True
