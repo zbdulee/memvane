@@ -20,6 +20,9 @@ establish CPU or memory load as its cause.
 preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
+The complete `npm test` suite has a finite1,800-second budget; focused checks
+keep the wrapper's900-second default. This accommodates the observed sequential
+CI duration without allowing unbounded execution.
 
 Ordinary mock, regression and integration tests (`--kind test`, including CI)
 do not use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load

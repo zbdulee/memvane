@@ -156,7 +156,8 @@ else:
     settle_synthetic_inputs(model_files+copied_files)
     assert [file.read_bytes() for file in model_files]==initial
     artifact = base/'immutable-base.artifact'; artifact.write_text('synthetic artifact'); artifact.chmod(0o600)
-    namespace_parent = home/'Library/Application Support/qmd-auto-context/live-selection'
+    from context_learning.runtime_setup import default_managed_root
+    namespace_parent = default_managed_root(home).parent.parent/'live-selection'
     namespace_parent.mkdir(mode=0o700, parents=True)
     generation = qmd_shared_store.root()/'generations'/('g-'+'1'*32)
     for directory in (generation, generation/'config', generation/'cache'):
