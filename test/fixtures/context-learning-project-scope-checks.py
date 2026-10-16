@@ -1,7 +1,8 @@
 """Disposable general project grants and corpus-independent cohort checks."""
 import importlib.util
 assert importlib.util.find_spec('context_learning.project_scope') is not None, 'general project authorization implementation missing'
-import hashlib,json,os,shutil,sqlite3,tempfile,time
+import hashlib,json,os,shutil,sqlite3,sys,tempfile,time
+from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 from context_learning import project_scope as scope, runtime_authorization as runtime
@@ -59,6 +60,23 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   assert row['scope']=='single-project-local-learning'
   assert row['cohort']['minTrainCases']==5 and row['cohort']['minQualityTrainCases']==100
   assert row['cohort']['minValidationCases']==50 and row['cohort']['minEmptyValidation']==10
+  # Cross-check the unchanged legacy code identity, not only new-code output.
+  assert {entry['codeSha256'] for entry in row['binding']['installations']}=={scope.code_identity()}
+  # Observe real byte reads, without replacing any ownership/hash/admission check.
+  reads=Counter();observing=[True]
+  code_root=Path(scope.__file__).parents[2]
+  bases=[code_root,*[installs[host][0] for host in ('claude','codex')]]
+  def byte_reads(event,args):
+   if observing[0] and event=='open' and isinstance(args[0],str) and args[0].endswith('.py'):
+    for base_path in bases:
+     if args[0].startswith(str(base_path/'core')+os.sep):reads[args[0]]+=1
+  sys.addaudithook(byte_reads)
+  try:
+   assert scope._installed_binding([{'host':host,'root':str(installs[host][0])} for host in ('claude','codex')])==row['binding']['installations']
+  finally:observing[0]=False
+  for path,count in reads.items():
+   limit=2 if path.startswith(str(code_root)+os.sep) or path.endswith('/context_learning/laya_adapter.py') else 1
+   assert count<=limit,('redundant authorization byte reads',path,count,limit)
   expect('acceptance',lambda:scope.activate(project,root,policy,accepted_sha256='0'*64,expires_at_unix_ms=expiry,not_before_unix_ms=cutoff))
   answer=scope.activate(project,root,policy,accepted_sha256=scope.proposal_sha256(row),expires_at_unix_ms=expiry,not_before_unix_ms=cutoff)
   assert scope.owner(root)==project and scope.present(root)
@@ -75,6 +93,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   artifact.write_text('tampered');expect('changed',lambda:scope.require(root,policy,'local_train'));artifact.write_text('base')
   adapter.write_text('tampered');expect('changed',lambda:scope.require(root,policy,'local_train'))
   shutil.copyfile(Path(scope.__file__).with_name('laya_adapter.py'),adapter)
+  hook=installs['claude'][0]/'hooks/run-hook';original_hook=hook.read_bytes()
+  hook.write_bytes(original_hook+b'\n# altered hook\n')
+  expect('changed',lambda:scope.require(root,policy,'local_train'));hook.write_bytes(original_hook)
+  cached_source=installs['codex'][0]/'core/__pycache__/extra.py'
+  cached_source.parent.mkdir(exist_ok=True);cached_source.write_text('extra executable source')
+  expect('changed',lambda:scope.require(root,policy,'local_train'));cached_source.unlink()
   with patch('context_learning.project_scope.time.time',return_value=expiry/1000+1):expect('expired',lambda:scope.require(root,policy,'local_train'))
   expect('operation',lambda:scope.require(root,policy,'apply'))
   # Official enablement changes revoke a grant even if old code remains.

@@ -8,6 +8,11 @@ from .store import capture
 import hashlib
 import stat
 
+_SHARED_FAILURE_CODES = frozenset({'preparation_budget', 'invalid_preparation_budget',
+    'learning_deferred_resource', 'learning_compute_busy', 'learning_deferred_inference',
+    'project_scope_code_changed', 'project_scope_binding_changed', 'project_scope_model_changed',
+    'project_scope_installation_invalid', 'project_scope_installation_changed'})
+
 def _snapshot(path):
     # Bound bytes before decoding or hashing, including concurrent growth.
     fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -217,12 +222,9 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
                 shared_status = 'unavailable'
                 # Fixed codes only: exception messages may contain source text
                 # or private paths. Keep the existing status/return behavior.
-                codes = {'preparation_budget', 'learning_deferred_resource',
-                         'learning_compute_busy', 'learning_deferred_inference',
-                         'project_scope_code_changed', 'project_scope_binding_changed',
-                         'project_scope_model_changed'}
+                code = error.args[0] if error.args and type(error.args[0]) is str else None
                 failure = {'stage': stage, 'errorType': type(error).__name__[:80],
-                           'reason': str(error) if str(error) in codes else 'enqueue_unavailable'}
+                           'reason': code if code in _SHARED_FAILURE_CODES else stage+'_unavailable'}
             try:
                 from .local_cycle import _atomic_json
                 _atomic_json(state / 'shared-last-status.json',

@@ -21,7 +21,9 @@ base=Path(sys.argv[1]).resolve();project=base/'project';private=base/'private'
 (project/'docs/guide.md').write_text('synthetic evidence')
 config={'collectionPaths':{'sample':'docs'},'contextLearning':{'capture':True,'stateRoot':str(private)},'sharedLearning':{'enabled':True}}
 state=private/digest(str(project))
-for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget'),(ValueError('synthetic body /private/path TOKEN=secret'),'enqueue_unavailable')]:
+class Unprintable(ValueError):
+ def __str__(self):raise RuntimeError('diagnostic formatting failed')
+for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget'),(ValueError('synthetic body /private/path TOKEN=secret'),'enqueue_unavailable'),(Unprintable('private message'),'enqueue_unavailable'),(ValueError('project_scope_installation_changed'),'project_scope_installation_changed')]:
  with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',side_effect=error),patch('context_learning.shared.launch') as launch:
   assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
   launch.assert_not_called()
@@ -30,16 +32,46 @@ for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget
  assert status.get('reason')==reason,status
  assert status['stage']=='enqueue' and status['errorType']==type(error).__name__
  assert 'TOKEN' not in json.dumps(status) and '/private/path' not in json.dumps(status)
-with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',return_value='queued'),patch('context_learning.shared.launch',side_effect=ResourceDeferred('learning_compute_busy')) as launch:
- assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
- launch.assert_called_once()
-status=json.loads((state/'shared-last-status.json').read_text())
-assert status['status']=='unavailable' and status['stage']=='launch'
-assert status['reason']=='learning_compute_busy' and status['errorType']=='ResourceDeferred'
+for error,reason in [(ResourceDeferred('learning_compute_busy'),'learning_compute_busy'),(ValueError('private message'),'launch_unavailable')]:
+ with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',return_value='queued'),patch('context_learning.shared.launch',side_effect=error) as launch:
+  assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
+  launch.assert_called_once()
+ status=json.loads((state/'shared-last-status.json').read_text())
+ assert status['status']=='unavailable' and status['stage']=='launch'
+ assert status['reason']==reason and status['errorType']==type(error).__name__
 assert not (state/'shared-learning.sqlite3').exists()
-with sqlite3.connect(state/'learning.sqlite3') as db:assert db.execute('SELECT COUNT(*) FROM samples').fetchone()[0]==3
+with sqlite3.connect(state/'learning.sqlite3') as db:assert db.execute('SELECT COUNT(*) FROM samples').fetchone()[0]==6
 print('ok')
 `, base], {encoding:'utf8',timeout:10000,env:{...process.env,QMD_RECALL_LOG:'',PYTHONDONTWRITEBYTECODE:'1'}});
+ assert.equal(out.trim(),'ok');
+ } finally {rmSync(base,{recursive:true,force:true});}
+});
+
+test('worker diagnostics keep the original failure when a synthetic database is corrupt', () => {
+ const base = mkdtempSync(join(tmpdir(), 'qmd-worker-diagnostic-'));
+ try {
+ const out = execFileSync('python3', ['-c', `
+import ast,json,sqlite3,sys
+from pathlib import Path
+from types import SimpleNamespace
+base=Path(sys.argv[1]).resolve()
+(base/'shared-learning.sqlite3').write_bytes(b'corrupt synthetic database')
+(base/'shared-last-status.json').write_text(json.dumps({'reason':'preparation_budget'}))
+source=ast.parse(Path('test/fixtures/context-learning-project-hook-e2e.py').read_text())
+functions={n.name:n for n in ast.walk(source) if isinstance(n,ast.FunctionDef) and n.name in ('rows','wait_busy')}
+clock=iter([0,0,16]);namespace={'sqlite3':sqlite3,'time':SimpleNamespace(monotonic=lambda:next(clock),sleep=lambda _:None)}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[functions['rows'],functions['wait_busy']],type_ignores=[])),'fixture-diagnostic','exec'),namespace)
+before=(base/'shared-learning.sqlite3').read_bytes()
+try:namespace['wait_busy'](base,1)
+except AssertionError as error:
+ message=str(error)
+ assert 'direct fixture workers did not finish' in message and 'preparation_budget' in message,message
+ assert 'captures=0' in message and 'cases=unavailable' in message,message
+else:raise AssertionError('missing failure')
+assert (base/'shared-learning.sqlite3').read_bytes()==before
+assert not (base/'learning.sqlite3').exists()
+print('ok')
+`, base], {encoding:'utf8',timeout:5000,env:{...process.env,QMD_RECALL_LOG:'',PYTHONDONTWRITEBYTECODE:'1'}});
  assert.equal(out.trim(),'ok');
  } finally {rmSync(base,{recursive:true,force:true});}
 });

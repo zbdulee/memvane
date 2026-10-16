@@ -103,11 +103,28 @@ def _installations():
     return rows
 
 
+def _code_snapshot(root,home):
+    """Fresh owned bytes once per tree; never reuse trust across operations."""
+    from .adapter_binding import _local_code
+    fingerprint=_local_code(root,home)
+    hashes=dict(fingerprint);files={};core=root/'core'
+    for path in sorted(core.rglob('*.py')):
+        preparation_checkpoint()
+        relative=str(path.relative_to(core))
+        value=hashes.get('core/'+relative)
+        # _local_code excludes cache directories, but the existing Python
+        # identity includes any .py source there. Keep that coverage too.
+        files[relative]=file_sha(_path(path)) if value is None else value
+    return files,fingerprint
+
+
 def _installed_binding(rows):
     """Host inventories establish provenance; every operation rechecks bytes."""
     if not isinstance(rows,list) or [r.get('host') for r in rows]!=['claude','codex']:
         raise ValueError('project_scope_installation_invalid')
-    result=[];versions=set();current=code_identity()
+    source=Path(__file__).parents[2]
+    expected,current_fingerprint=_code_snapshot(source,source)
+    result=[];versions=set();current=proposal_sha256(expected)
     for row in rows:
         preparation_checkpoint()
         if set(row)!={'host','root'}:raise ValueError('project_scope_installation_invalid')
@@ -116,14 +133,8 @@ def _installed_binding(rows):
         metadata=json.loads(manifest.read_text())
         if (metadata.get('name')!='qmd-auto-context' or not isinstance(metadata.get('version'),str)):
             raise ValueError('project_scope_installation_invalid')
-        files={str(p.relative_to(base/'core')):file_sha(_path(p))
-               for p in sorted((base/'core').rglob('*.py'))}
-        expected={str(p.relative_to(Path(__file__).parents[1])):file_sha(p)
-                  for p in sorted(Path(__file__).parents[1].rglob('*.py'))}
+        files,fingerprint=_code_snapshot(base,Path.home())
         if files!=expected:raise ValueError('project_scope_code_changed')
-        from .adapter_binding import _local_code
-        fingerprint=_local_code(base,Path.home())
-        current_fingerprint=_local_code(Path(__file__).parents[2],Path(__file__).parents[2])
         if fingerprint!=current_fingerprint:raise ValueError('project_scope_code_changed')
         versions.add(metadata['version'])
         result.append({**row,'manifestSha256':file_sha(manifest),
@@ -131,6 +142,8 @@ def _installed_binding(rows):
                        'version':metadata['version'],'codeSha256':current,
                        'executableSha256':proposal_sha256(fingerprint)})
     if len(versions)!=1:raise ValueError('project_scope_installation_changed')
+    if _code_snapshot(source,source)!=(expected,current_fingerprint):
+        raise ValueError('project_scope_code_changed')
     return result
 
 

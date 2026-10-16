@@ -73,7 +73,7 @@ def save(path, value):
 def rows(namespace, table):
     path = namespace/('learning.sqlite3' if table == 'samples' else 'shared-learning.sqlite3')
     if not path.exists(): return []
-    with sqlite3.connect(path) as db:
+    with sqlite3.connect(path.as_uri()+'?mode=ro',uri=True) as db:
         return db.execute('SELECT * FROM '+table).fetchall()
 
 
@@ -267,17 +267,19 @@ assert not attempts,attempts
             text=True,capture_output=True,env=env,cwd=project,timeout=20,check=True)
         assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr,(base/'recall.jsonl').read_text())
     def wait_busy(namespace,count):
-        deadline=time.monotonic()+15
+        deadline=time.monotonic()+15; log=namespace/'worker.log'
         while time.monotonic()<deadline:
-            log=namespace/'worker.log'
             if log.exists() and log.read_text().count('"status":"busy"')>=count:return
             time.sleep(.05)
+        def diagnostic(read):
+            try:return read()
+            except Exception as error:return 'unavailable:'+type(error).__name__
         raise AssertionError('direct fixture workers did not finish: '+str(namespace)
-            +' log='+(log.read_text() if log.exists() else 'missing')
-            +' shared='+((namespace/'shared-last-status.json').read_text()[:2048]
+            +' log='+diagnostic(lambda:log.read_text() if log.exists() else 'missing')
+            +' shared='+diagnostic(lambda:(namespace/'shared-last-status.json').read_text()[:2048]
                 if (namespace/'shared-last-status.json').exists() else 'missing')
-            +' captures='+str(len(rows(namespace,'samples')))
-            +' cases='+str(len(rows(namespace,'cases'))))
+            +' captures='+str(diagnostic(lambda:len(rows(namespace,'samples'))))
+            +' cases='+str(diagnostic(lambda:len(rows(namespace,'cases')))))
     # Finish both setup transactions before enabled captures start workers.
     for project,namespace,fixture in projects:
         recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
