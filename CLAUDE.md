@@ -20,6 +20,7 @@ npm test                                   # guard + 파일 병렬 1
 npm run test:focused -- test/recall.test.mjs # 같은 guard/잠금/병렬 1
 npm run dev:guard -- --kind backup -- <명령> # 테스트와 같은 잠금
 npm run dev:guard -- --kind hash -- <명령>   # 같은 잠금
+npm run dev:guard -- --kind model-test -- node --test <실제 모델 시험> # 학습용 자원 제한 유지
 
 bash scripts/agy-local-hook-install.sh <프로젝트>  # Gemini(agy): 공식 payload adapter 전까지 stale qmd AGY hook cleanup only
 bash scripts/cleanup-legacy.sh --dry-run    # 기존 글로벌 qmd 훅/managed LaunchAgent cleanup 계획 확인
@@ -39,6 +40,8 @@ bash core/update.sh --init-wiki [<경로>]              # .auto-context/wiki sca
 bash core/update.sh --enable-compile [<경로>]         # wiki scaffold + compile 설정 한 번에 (recommended 온보딩에서 기본 활성화)
 bash core/update.sh --skip [<경로>]                   # 이 프로젝트 임시 gate 통과 마커 (TTL 2h, cwd 단위)
 ```
+
+일반 모의·회귀·통합 검사(`--kind test`, CI 포함)는 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 파일 병렬도 1, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사는 `--kind model-test`로 명시해 기존 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
 
 테스트/설치를 격리 검증할 때 쓰는 env 가드 (테스트 코드가 이걸로 부작용을 막는다):
 - `QMD_FAKE_PLATFORMS=claude,codex,gemini` — 실제 감지 대신 플랫폼 목록 강제 (`none`도 가능)

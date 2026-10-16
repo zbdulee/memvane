@@ -32,6 +32,7 @@ class GuardError(Exception):pass
 
 class Policy:
     # Initial conservative proposals, not measured safe limits for this Mac.
+    resource_limits=True
     min_available_percent=35
     max_tree_rss_fraction=.15
     max_tree_cpu_fraction=MAX_CPU_FRACTION
@@ -176,6 +177,10 @@ class OwnedTree:
 
 
 def violation(policy,sample,rows,baseline_swap,*,calibration_policy=None,report=None):
+    if len(rows)>policy.max_processes:return 'tree_process_count'
+    # Mock/regression tests keep ownership, serialization and wall-time cleanup,
+    # but do not inherit admission budgets intended for actual model work.
+    if not policy.resource_limits:return None
     keys=('total_bytes','available_percent','swap_bytes','load_per_cpu','cpu_count')
     if any(type(sample.get(k)) not in (int,float) or not math.isfinite(sample[k]) for k in keys):return 'monitor_unavailable'
     if sample['total_bytes']<=0 or sample['cpu_count']<=0 or not 0<=sample['available_percent']<=100:return 'monitor_unavailable'
@@ -190,7 +195,6 @@ def violation(policy,sample,rows,baseline_swap,*,calibration_policy=None,report=
         if not scoped['ready']:return scoped['reason']
     if sample['swap_bytes']-baseline_swap>sample['total_bytes']*policy.max_swap_growth_fraction:return 'swap_growth'
     if sample['load_per_cpu']>policy.max_load_per_cpu:return 'system_load'
-    if len(rows)>policy.max_processes:return 'tree_process_count'
     if sum(p['rss_bytes'] for p in rows)>sample['total_bytes']*policy.max_tree_rss_fraction:return 'tree_rss'
     if sum(p['cpu_percent'] for p in rows)>sample['cpu_count']*100*policy.max_tree_cpu_fraction:return 'tree_cpu'
     return None
@@ -208,7 +212,7 @@ def signal_owned(tree,rows,sig,send=os.kill):
 
 def command_for(kind,argv):
     if not argv:raise GuardError('missing_command')
-    if kind!='test':return argv
+    if kind not in ('test','model-test'):return argv
     if Path(argv[0]).name!='node' or '--test' not in argv:raise GuardError('test_requires_direct_node_test')
     result=list(argv)
     for i,arg in enumerate(result):
@@ -272,14 +276,17 @@ def run_job(args,root):
         calibration=None;calibration_policy=None
         if getattr(args,'calibration_envelope',None):
             from context_learning.bounded_calibration import load
-            if args.kind!='test' or args.max_seconds>30:raise GuardError('calibration_requires_short_test')
+            if args.kind not in ('test','model-test') or args.max_seconds>30:raise GuardError('calibration_requires_short_test')
             calibration=load(args.calibration_envelope,command)
             calibration_policy={**calibration['policy'],'calibration':calibration}
+        policy=Policy()
+        policy.resource_limits=args.kind!='test' or calibration is not None
         active=root/'active.json'
         if active.exists() and not json.loads(active.read_text()).get('settled',False):
             raise GuardError('previous_job_unsettled_review_checkpoint')
         run=private_dir(root/'runs'/uuid.uuid4().hex)
-        state={'status':'preflight','completed':False,'settled':False,'kind':args.kind,'run':str(run)}
+        state={'status':'preflight','completed':False,'settled':False,'kind':args.kind,
+               'resourceLimits':policy.resource_limits,'run':str(run)}
         if calibration is not None:state['calibrationRunId']=calibration['runId']
         def save():checkpoint(run,state);put(active,state)
         save();child=None;tree=None;interrupted=[];calibration_fd=None
@@ -310,7 +317,7 @@ def run_job(args,root):
                 from context_learning.shared import resource_report
                 return resource_report(calibration_policy,detailed=True,admission=admission)
             report=scoped_report(admission=True)
-            reason=violation(Policy(),baseline,[],baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
+            reason=violation(policy,baseline,[],baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
             if report is not None:
                 baseline['calibration_available_mib']=report['available_mib']
                 if report['ready'] is not True:reason=reason or 'calibration_admission_budget'
@@ -326,7 +333,7 @@ def run_job(args,root):
                 report=scoped_report()
                 if report is not None:sample['calibration_available_mib']=report['available_mib']
                 observe_log(run,sample,owned,elapsed)
-                reason=violation(Policy(),sample,list(owned.values()),baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
+                reason=violation(policy,sample,list(owned.values()),baseline['swap_bytes'],calibration_policy=calibration_policy,report=report)
                 if interrupted:reason='interrupted'
                 elif elapsed>=args.max_seconds:reason='wall_time_budget'
                 if reason:
@@ -358,7 +365,7 @@ def run_job(args,root):
 def main():
     global PROBE_DEADLINE
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind',choices=('test','backup','hash'),default='test')
+    parser.add_argument('--kind',choices=('test','model-test','backup','hash'),default='test')
     parser.add_argument('--sample-only',action='store_true')
     parser.add_argument('--sample-seconds',type=float,default=5)
     parser.add_argument('--max-seconds',type=float,default=900)

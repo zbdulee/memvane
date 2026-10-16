@@ -81,6 +81,40 @@ class GuardChecks(unittest.TestCase):
                 ({'swap_bytes':101},'swap_growth'),({'load_per_cpu':2},'system_load')]:
             self.assertEqual(guard.violation(policy,{**sample,**changes},[],0),reason)
 
+    def test_ordinary_regression_does_not_use_model_resource_limits(self):
+        policy=guard.Policy();policy.resource_limits=False
+        sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',
+                'swap_bytes':200,'load_per_cpu':2,'cpu_count':2}
+        rows=[proc(500,1,500,rss=2000,cpu=100)]
+        self.assertIsNone(guard.violation(policy,sample,rows,0))
+        self.assertEqual(guard.violation(policy,sample,
+            [proc(i,0,i) for i in range(33)],0),'tree_process_count')
+
+    def test_actual_model_test_keeps_resource_limits_and_sequential_launcher(self):
+        sample={'total_bytes':10000,'available_percent':70,'pressure':'warning',
+                'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
+        self.assertEqual(guard.violation(guard.Policy(),sample,[],0),'os_memory_pressure')
+        sample['pressure']='normal'
+        self.assertEqual(guard.violation(guard.Policy(),sample,[proc(500,1,500,cpu=150)],0),'tree_cpu')
+        self.assertEqual(guard.command_for('model-test',['node','--test','one.test.mjs']),
+            ['node','--test','--test-concurrency=1','one.test.mjs'])
+
+    def test_warning_allows_mock_job_but_refuses_actual_model_before_launch(self):
+        from types import SimpleNamespace
+        sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',
+                'swap_bytes':200,'load_per_cpu':2,'cpu_count':2}
+        for kind,code in [('test',0),('model-test',75)]:
+            with tempfile.TemporaryDirectory() as folder:
+                child=SimpleNamespace(pid=500,poll=lambda:0)
+                args=SimpleNamespace(kind=kind,command=['node','--test'],max_seconds=60,sample_seconds=2)
+                with patch.object(guard,'execution_hold',return_value=False), \
+                     patch.object(guard,'system_sample',return_value=sample), \
+                     patch.object(guard,'processes',side_effect=[[],[proc(500,1,500,cpu=150)],[]]), \
+                     patch.object(guard.subprocess,'Popen',return_value=child) as launch, \
+                     patch.object(guard.time,'sleep'):
+                    self.assertEqual(guard.run_job(args,Path(folder)),code)
+                    self.assertEqual(launch.call_count,1 if kind=='test' else 0)
+
     def test_test_launcher_forces_one_file_at_a_time(self):
         self.assertEqual(guard.command_for('test',['node','--test','test/one.test.mjs']),
                          ['node','--test','--test-concurrency=1','test/one.test.mjs'])

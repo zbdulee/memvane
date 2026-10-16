@@ -21,6 +21,14 @@ preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
 
+Ordinary mock, regression and integration tests (`--kind test`, including CI)
+do not use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load
+admission limits. They retain one global lease, file concurrency1, finite wall
+time, a process-count limit, verified ownership and abnormal-child cleanup.
+Actual model-loading/training tests must use `--kind model-test`; an explicit
+calibration envelope also always retains resource limits. This development-test
+distinction does not change any installed runtime learning admission.
+
 All kinds and all worktrees share `~/Library/Logs/qmd-development-guard/heavy.lock`
 on macOS (`~/.local/state/qmd-development-guard/heavy.lock` on Linux). The home
 comes from the OS UID database, so an isolated `HOME` variable cannot create a
@@ -31,7 +39,7 @@ commands and older checkouts are not automatically intercepted: agents must use
 the wrapper. `npm run test:guard-unit` is the narrow bootstrap exception for the
 small Python-only safety tests, which perform no real host probes or model work.
 
-## Initial policy, not measured safe thresholds
+## Resource-limited work policy, not measured safe thresholds
 
 The 35% available-memory proposal is conservative and uncalibrated. On a 24 GiB
 machine that is approximately 8.4 GiB, but macOS `memory_pressure -Q` measures a
@@ -87,8 +95,8 @@ resumed. Missing process identity makes cleanup unsettled rather than justifying
 signals against user processes. Sudden OS failure can interrupt checkpoint
 writes; an existing interrupted run must be inspected, never relabeled passed.
 
-A resource stop requires fresh acceptable OS observations before another guarded
-job. An authorization hold additionally requires explicit permission to resume.
+A resource stop requires fresh acceptable OS observations before another
+resource-limited job. An authorization hold additionally requires explicit permission to resume.
 Use a finite sampler when necessary; do not create background polling by default.
 Keep existing user sessions and automation running unless their interruption is
 separately authorized. Record the current checks and blockers in local evidence.
