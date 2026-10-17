@@ -1,6 +1,8 @@
 """Select a fully proved synthetic QMD CLI under an isolated test HOME."""
 import json
+import os
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import sys
@@ -46,7 +48,17 @@ if (result.status === 0 && args[0] === 'collection' && args[1] === 'remove' && p
 process.exit(result.status == null ? 1 : result.status);
 ''')
 binary.chmod(0o700)
-node = Path(shutil.which('node')).resolve()
+# Hosted CI Node binaries may be group-writable. The runtime intentionally
+# refuses those paths, so probe an owner-private launcher in this synthetic
+# HOME. This fixture does not test acceptance of the host Node binary itself.
+host = shutil.which('node')
+if host is None:
+    raise SystemExit('node not found for synthetic qmd runtime')
+host_node = Path(host).resolve()
+node = home / 'synthetic-node'
+fd = os.open(node, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+with os.fdopen(fd, 'w') as stream:
+    stream.write('#!/bin/sh\nexec ' + shlex.quote(str(host_node)) + ' "$@"\n')
 root = qmd_runtime.managed_root(home)
 stage = qmd_runtime.prepare_existing(root, binary, node)
 qmd_runtime.activate(root, stage['generation'], require_unselected=True)
