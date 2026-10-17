@@ -22,6 +22,7 @@ import qmd_route
 import setup_guard
 import sqlite_read
 import sync
+import wiki_compile_enqueue as compile_enqueue
 
 FOLDER = '.auto-context/file-changes'
 MAX_STATE_BYTES = 8 * 1024 * 1024
@@ -224,8 +225,9 @@ def worker(root):
                 if _context(str(root)) != context: raise ValueError('file_change_scope_changed')
                 if changed: dirty_queue.enqueue_project_collections(root,changed)
                 snapshot = {'collections':current}
-                compiled = sync.enqueue_compile_sources(str(root),cfg,files,snapshot,{'collections':old},
+                compiled = compile_enqueue.enqueue_changed_sources(str(root),cfg,files,
                     session_start=job['origin']=='reconcile')
+                sync.defer_snapshot_entries(snapshot, {'collections':old}, compiled['deferredFiles'])
                 _write(folder/'snapshot.json',{'schema':'qmd-file-change-snapshot-v1','scope':scope,
                     'collections':snapshot['collections']})
                 # Persist enqueue/snapshot before ACK; retain a concurrent newer event.

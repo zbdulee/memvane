@@ -6,6 +6,54 @@ import { join } from 'node:path';
 import { removeTemp, repoTemp, tempCacheDir } from './helpers/temp.mjs';
 import { waitUntil, waitUntilAsync } from './helpers/timing.mjs';
 
+function prepareTestStore(home) {
+  mkdirSync(home, { recursive: true });
+  execFileSync('python3', ['test/fixtures/prepare-shared-qmd-store.py', home], {
+    env: { ...process.env, HOME: home, PYTHONDONTWRITEBYTECODE: '1' },
+  });
+  execFileSync('python3', ['test/fixtures/prepare-synthetic-qmd-runtime.py', home], {
+    env: { ...process.env, HOME: home, PYTHONDONTWRITEBYTECODE: '1' },
+  });
+}
+
+function seedMissingCollection(home, work, name = 'gone', relative = 'missing') {
+  execFileSync('python3', ['test/fixtures/seed-missing-qmd-collection.py',
+    home, work, name, relative], {
+    env: { ...process.env, HOME: home, PYTHONDONTWRITEBYTECODE: '1' },
+  });
+}
+
+function readIfExists(path) {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '';
+}
+
+// 진단 로그는 단정이 실패할 때만, 그리고 있을 때만 읽는다(성공 경로에서 ENOENT 금지).
+function withLog(logPath, check) {
+  try {
+    check();
+  } catch (error) {
+    error.message += `\n--- ${logPath} ---\n${readIfExists(logPath) || '(absent)'}`;
+    throw error;
+  }
+}
+
+// 제품 게이트 함수를 격리 HOME 에서 직접 불러 차단 이유를 얻는다(CLI 는 exit 1 만 준다).
+// npm test 가 물려주는 QMD_SETUP_GUARD_FIXTURE 는 비워 실제 게이트를 검증한다.
+function gateResult(home, code, args = []) {
+  const py = `import json, sys
+sys.path.insert(0, "core")
+${code}`;
+  return JSON.parse(execFileSync('python3', ['-c', py, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, PYTHONDONTWRITEBYTECODE: '1', QMD_SETUP_GUARD_FIXTURE: '' },
+  }));
+}
+
+function sharedRegistry(home) {
+  const raw = readIfExists(join(home, 'Library/Application Support/qmd-auto-context/shared-qmd/collections.json'));
+  return raw ? JSON.parse(raw) : {};
+}
+
 // 생성기는 delta-only다(기본값과 같은 키는 쓰지 않는다). 따라서 "writer가 설정을 켰는가"는
 // emit된 키가 아니라 **effective config**(= normalize_config 통과 결과)로 봐야 한다.
 // emit을 단정하면 "의도된 축소"와 "우발적 동작 변경"이 구분되지 않는다
@@ -151,6 +199,7 @@ test('update core: missing settings collection root is pruned before qmd update'
   const work = repoTemp('qmd-update-prune-missing');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   const lockBase = join(work, 'locks');
   try {
@@ -164,6 +213,7 @@ test('update core: missing settings collection root is pruned before qmd update'
       collectionPaths: { docs: 'docs', gone: 'missing' },
       collectionRoles: { docs: 'raw', gone: 'wiki' },
     }));
+    seedMissingCollection(fakeHome, work);
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -183,7 +233,7 @@ test('update core: missing settings collection root is pruned before qmd update'
     });
 
     const cfg = JSON.parse(readFileSync(join(work, '.auto-context', 'settings.json'), 'utf8'));
-    assert.deepEqual(cfg.collections, ['docs']);
+    withLog(join(CACHE_DIR, 'hook.log'), () => assert.deepEqual(cfg.collections, ['docs']));
     assert.deepEqual(cfg.collectionPaths, { docs: 'docs' });
     assert.deepEqual(cfg.collectionRoles, { docs: 'raw' });
     const log = readFileSync(qmdLog, 'utf8');
@@ -199,6 +249,7 @@ test('update core: failed qmd collection remove keeps settings collection for re
   const work = repoTemp('qmd-update-prune-remove-fail');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   const lockBase = join(work, 'locks');
   try {
@@ -212,6 +263,7 @@ test('update core: failed qmd collection remove keeps settings collection for re
       collectionPaths: { docs: 'docs', gone: 'missing' },
       collectionRoles: { docs: 'raw', gone: 'wiki' },
     }));
+    seedMissingCollection(fakeHome, work);
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -247,6 +299,7 @@ test('update core: pruning the last settings collection writes indexing false', 
   const work = repoTemp('qmd-update-prune-last');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   const lockBase = join(work, 'locks');
   try {
@@ -259,6 +312,7 @@ test('update core: pruning the last settings collection writes indexing false', 
       collectionPaths: { gone: 'missing' },
       collectionRoles: { gone: 'wiki' },
     }));
+    seedMissingCollection(fakeHome, work);
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -288,11 +342,13 @@ test('update core: pruning the last settings collection writes indexing false', 
   }
 });
 
-test('update core: worker migration does not immediately prune missing legacy collection', () => {
+test('update core: worker migration keeps missing legacy collection without an approved removal', () => {
   const work = repoTemp('qmd-update-prune-legacy-migrated');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
+  const hookLog = join(work, 'hook.log');
   const lockBase = join(work, 'locks');
   try {
     mkdirSync(bin, { recursive: true });
@@ -317,13 +373,27 @@ test('update core: worker migration does not immediately prune missing legacy co
         HOME: fakeHome,
         QMD_CACHE_DIR: CACHE_DIR,
         QMD_LOCK_BASE: lockBase,
+        QMD_HOOK_LOG: hookLog,
+        QMD_SETUP_GUARD_FIXTURE: '',
       },
     });
 
     const cfg = JSON.parse(readFileSync(join(work, '.auto-context', 'settings.json'), 'utf8'));
     assert.deepEqual(cfg.collections, ['gone']);
     assert.deepEqual(cfg.collectionPaths, { gone: 'missing' });
-    assert.doesNotMatch(readFileSync(qmdLog, 'utf8'), /collection remove gone/);
+    // The migration run skips prune; ownership registration is the gate that stops it.
+    withLog(hookLog, () => {
+      const hook = readFileSync(hookLog, 'utf8');
+      assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
+      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+    });
+    const register = spawnSync('python3', ['core/qmd_route.py', 'register-config', work], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: fakeHome, PYTHONDONTWRITEBYTECODE: '1', QMD_SETUP_GUARD_FIXTURE: '' },
+    });
+    assert.equal(register.status, 1, 'unregistered missing root must be rejected by register-config');
+    assert.equal('gone' in sharedRegistry(fakeHome), false, 'rejected name must not be reserved');
+    assert.equal(existsSync(qmdLog), false, 'unregistered missing collection blocks QMD writes');
   } finally {
     removeTemp(work);
   }
@@ -334,7 +404,9 @@ test('update core: missing root prune refuses symlinked .auto-context directory'
   const outside = repoTemp('qmd-update-prune-symlink-outside');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
+  const hookLog = join(work, 'hook.log');
   const lockBase = join(work, 'locks');
   try {
     mkdirSync(bin, { recursive: true });
@@ -360,12 +432,24 @@ test('update core: missing root prune refuses symlinked .auto-context directory'
         HOME: fakeHome,
         QMD_CACHE_DIR: CACHE_DIR,
         QMD_LOCK_BASE: lockBase,
+        QMD_HOOK_LOG: hookLog,
+        QMD_SETUP_GUARD_FIXTURE: '',
       },
     });
 
     const cfg = JSON.parse(readFileSync(join(outside, 'settings.json'), 'utf8'));
     assert.deepEqual(cfg.collections, ['gone']);
-    assert.doesNotMatch(readFileSync(qmdLog, 'utf8'), /collection remove gone/);
+    // The settings-dir gate classifies the symlink as unsafe setup state.
+    assert.deepEqual(gateResult(fakeHome, `import config
+print(json.dumps(list(config._safe_project_settings_dir(sys.argv[1]))))`, [work]),
+    [null, 'unsafe_settings_dir']);
+    // Prune never touches the symlinked settings, and registration still blocks the missing root.
+    withLog(hookLog, () => {
+      const hook = readFileSync(hookLog, 'utf8');
+      assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
+      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+    });
+    assert.equal(existsSync(qmdLog), false, 'symlinked settings block QMD writes');
   } finally {
     removeTemp(work);
     removeTemp(outside);
@@ -376,6 +460,7 @@ test('update core: settings write failure after remove aborts stale update', () 
   const work = repoTemp('qmd-update-prune-write-fail');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   const lockBase = join(work, 'locks');
   try {
@@ -388,6 +473,7 @@ test('update core: settings write failure after remove aborts stale update', () 
       collections: ['docs', 'gone'],
       collectionPaths: { docs: 'docs', gone: 'missing' },
     }));
+    seedMissingCollection(fakeHome, work);
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -682,6 +768,7 @@ test('update core: worker migrates .auto-context.json before loading config', ()
   const work = repoTemp('qmd-worker-migrate');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   try {
     mkdirSync(bin, { recursive: true });
@@ -754,6 +841,7 @@ test('update core: collection add already-exists exit 1도 update 실행 (BUG-2)
   const work = repoTemp('qmd-update-already-exists');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
   const lockBase = join(work, 'locks');
   try {
@@ -797,11 +885,13 @@ test('update core: collection add already-exists exit 1도 update 실행 (BUG-2)
   }
 });
 
-test('update core: QMD_BIN override may point to a non-qmd filename', () => {
+test('update core: unmanaged QMD_BIN override cannot replace the selected wrapper', () => {
   const work = repoTemp('qmd-update-qmd-bin');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const qmdLog = join(work, 'qmd.log');
+  const hookLog = join(work, 'hook.log');
   const lockBase = join(work, 'locks');
   const qmdBin = join(bin, 'qmd-custom');
   try {
@@ -833,11 +923,26 @@ test('update core: QMD_BIN override may point to a non-qmd filename', () => {
         QMD_BIN: qmdBin,
         QMD_CACHE_DIR: CACHE_DIR,
         QMD_LOCK_BASE: lockBase,
+        QMD_HOOK_LOG: hookLog,
+        QMD_SETUP_GUARD_FIXTURE: '',
       },
     });
 
-    const log = readFileSync(qmdLog, 'utf8');
-    assert.ok(log.includes('update'), `QMD_BIN override가 호출돼야 하는데 qmd.log 내용: ${log}`);
+    // Strict managed selection: the same HOME resolves its wrapper, the override is refused.
+    const resolveBin = `import qmd_route
+try:
+    info = qmd_route.binary_info(json.loads(sys.argv[1]))
+    print(json.dumps({"bin": info["QMD_BIN"], "managed": info["managed"]}))
+except ValueError as error:
+    print(json.dumps({"error": str(error)}))`;
+    const managed = gateResult(fakeHome, resolveBin, [JSON.stringify({ HOME: fakeHome })]);
+    assert.equal(managed.managed, true);
+    assert.notEqual(managed.bin, qmdBin);
+    assert.deepEqual(gateResult(fakeHome, resolveBin, [JSON.stringify({ HOME: fakeHome, QMD_BIN: qmdBin })]),
+      { error: 'managed_qmd_not_selected' });
+    // resolve_qmd_bin fails before run_update logs START.
+    assert.doesNotMatch(readIfExists(hookLog), /START:/);
+    assert.equal(existsSync(qmdLog), false, 'unmanaged binary must not be invoked');
   } finally {
     removeTemp(work);
   }
@@ -935,6 +1040,7 @@ test('update core: dedup queue surfaces a user-facing notice (count + skill trig
   const work = repoTemp('qmd-dedup-notice');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'home');
+  prepareTestStore(fakeHome);
   try {
     mkdirSync(join(work, '.auto-context', 'compile'), { recursive: true });
     mkdirSync(bin, { recursive: true });
@@ -981,6 +1087,7 @@ test('update core: notice_once는 미래 mtime marker에 영구 침묵하지 않
   const cacheDir = tempCacheDir('notice-future-mtime');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'home');
+  prepareTestStore(fakeHome);
   try {
     mkdirSync(join(work, '.auto-context', 'compile'), { recursive: true });
     mkdirSync(bin, { recursive: true });
@@ -1047,6 +1154,7 @@ test('update core: dedup scanner actually runs inside the embed subshell at runt
   const work = repoTemp('qmd-dedup-scanner-runtime');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const dedupLog = join(work, 'dedup.log');
   try {
     mkdirSync(join(work, '.auto-context'), { recursive: true });
@@ -1095,6 +1203,7 @@ test('synthetic SessionStart kick releases its embed lock without deleting the s
   const work = repoTemp('qmd-synthetic-kick-lock');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   const lock = join(work, 'embed.lock');
   const managerLog = join(work, 'manager.log');
   const hookLog = join(work, 'hook.log');
@@ -1201,6 +1310,7 @@ function writeQmdStub(path, body) {
 function runWorker(work, extraEnv = {}) {
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'fakehome');
+  prepareTestStore(fakeHome);
   return execFileSync('bash', [join(process.cwd(), 'core', 'update.sh'), '--worker', work], {
     encoding: 'utf8',
     env: {
@@ -1422,6 +1532,7 @@ test('SessionStart: 손상된 원문 갱신 원장을 격리하고 그 사실을
   const work = repoTemp('qmd-pending-quarantine');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'home');
+  prepareTestStore(fakeHome);
   try {
     mkdirSync(bin, { recursive: true });
     mkdirSync(fakeHome, { recursive: true });
@@ -1492,6 +1603,7 @@ test('update core: source-missing 알림은 지시형이고, 자율 적용은 �
   const work = repoTemp('qmd-source-missing-notice');
   const bin = join(work, 'bin');
   const fakeHome = join(work, 'home');
+  prepareTestStore(fakeHome);
   const cacheDir = tempCacheDir('source-missing-notice');
   try {
     mkdirSync(join(work, '.auto-context', 'compile'), { recursive: true });

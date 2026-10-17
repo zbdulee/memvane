@@ -93,6 +93,8 @@ DEFAULT_CONFIG = {
     # 기본값 근거는 docs/settings.md 참고(849장 전수: median 1 / p95 1 / max 4).
     "injectSourcePathsPerCard": 3,
     "events": ["sessionStart", "userPromptSubmit", "postToolUse"],
+    # 파일 스냅샷 감지/인덱스 큐잉만 제어한다. 위키 컴파일 동의와 독립이다.
+    "sessionStartSync": True,
     "indexing": None,
     "collectionRoles": {},
     "recallStrategy": "hierarchical",
@@ -297,7 +299,7 @@ COMPILE_TRIGGERS = {
     # 수동 sync(core/sync.py)가 스냅샷 diff로 찾아낸 소스 변경. git pull·rebase·외부
     # 편집은 PostToolUse 훅을 타지 않으므로 `post_tool_source`로는 잡히지 않는다.
     "post_sync_source",
-    # 별도 동의가 있을 때만 clone/pull 이후 SessionStart가 새 소스를 감지한다.
+    # 별도 동의가 있을 때만 SessionStart가 새 소스를 위키 컴파일 큐에 넣는다.
     "session_start_source",
     "repeated_recall",
     "cross_file_conclusion",
@@ -1001,8 +1003,17 @@ def deprecated_key_notice(input_config):
     )
 
 
+def invalid_session_start_sync(input_config):
+    """A present non-boolean opt-out is invalid and must not become default-on."""
+    return (isinstance(input_config, dict) and "sessionStartSync" in input_config
+            and not isinstance(input_config["sessionStartSync"], bool))
+
+
 def normalize_config(input_config):
     config = dict(DEFAULT_CONFIG)
+    # Missing remains on; explicit bool stays intact; an unreadable value is off.
+    raw_sync = input_config.get("sessionStartSync", DEFAULT_CONFIG["sessionStartSync"])
+    config["sessionStartSync"] = raw_sync if isinstance(raw_sync, bool) else False
     learning = input_config.get('contextLearning')
     if isinstance(learning, dict):
         live_selection = learning.get('liveSelection') is True

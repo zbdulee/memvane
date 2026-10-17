@@ -1326,8 +1326,8 @@ PY
           phase=embed_failed; [ "$embed_rc" -eq 0 ] && phase=completed
           python3 "$CORE_DIR/update_hook_queue.py" readiness "$QMD_UPDATE_HOOK_KEY" "$phase" "$QMD_UPDATE_HOOK_RUN_ID" >> "$LOG" 2>&1 || true
         fi
-        # A clone/pull has no edit-hook event. This separate persistent scan
-        # runs only under an explicit session_start_source compile trigger.
+        # A clone/pull has no edit-hook event. The default-on file snapshot
+        # records CUD independently of the explicit wiki compile trigger.
         if [ "$embed_rc" -eq 0 ]; then
           sync_result=$(python3 "$CORE_DIR/sync.py" --session-start --cwd "$WORKDIR" --json 2>>"$LOG" || true)
           printf "%s\n" "$sync_result" >> "$LOG"
@@ -1664,14 +1664,17 @@ if not isinstance(cfg, dict):
 collections = [c for c in (cfg.get("collections") or []) if isinstance(c, str)]
 print("ROLES:" + ", ".join(qmd_config.invalid_role_collections(cfg.get("collectionRoles"), collections)))
 print("FLAGS:" + ", ".join(qmd_config.invalid_compile_flags(cfg.get("compile"))))
+print("SYNC:" + ("invalid" if qmd_config.invalid_session_start_sync(cfg) else ""))
 PY
 )
   invalid_roles=""
   invalid_compile_flags=""
+  invalid_session_sync=""
   while IFS= read -r _line; do
     case "$_line" in
       ROLES:*) invalid_roles="${_line#ROLES:}" ;;
       FLAGS:*) invalid_compile_flags="${_line#FLAGS:}" ;;
+      SYNC:*) invalid_session_sync="${_line#SYNC:}" ;;
     esac
   done <<EOF
 $config_flags
@@ -1691,6 +1694,12 @@ EOF
     notice_once compile-flag-invalid "$workdir" "[qmd] compile 설정 값을 읽을 수 없어 기본값을 썼습니다: ${invalid_compile_flags}. true 또는 false로 적으십시오 — 지금은 소스 소실 스캔이 계속 돕니다."
   else
     notice_clear compile-flag-invalid "$workdir"
+  fi
+
+  if [ -n "$invalid_session_sync" ]; then
+    notice_once session-sync-invalid "$workdir" "[qmd] sessionStartSync 값이 true/false가 아니어서 SessionStart 파일 감지를 껐습니다. 따옴표 없이 true 또는 false로 적으십시오."
+  else
+    notice_clear session-sync-invalid "$workdir"
   fi
 
   # 제거된 설정 키 알림. 스키마 정리로 사라진 키는 normalize_config()가 **조용히**
