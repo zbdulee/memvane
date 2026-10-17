@@ -13,8 +13,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
 import config
+import dirty_queue
 import qmd_route
 import resolve_paths
+import runtime_work
 import sync
 import compile_paths
 import update_hook_queue
@@ -39,8 +41,19 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
         'test/fixtures/prepare-shared-qmd-store.py', str(home)],
         cwd=Path.cwd(), capture_output=True, text=True, check=False)
     assert prepared.returncode == 0, prepared.stderr
+    # runtime_work intentionally uses the OS UID home, not HOME. Keep the
+    # selected-store/setup path real while suppressing only test child wake
+    # writes, which would otherwise reach the user's live runtime-wakes DB.
+    isolation = home / 'python-isolation'
+    isolation.mkdir()
+    (isolation / 'sitecustomize.py').write_text(
+        'import runtime_work\n'
+        'runtime_work.request = lambda *args, **kwargs: {"status": "queued"}\n'
+        'runtime_work.hook_wake = lambda: None\n')
     environment = {**os.environ, 'HOME': str(home), 'QMD_SETUP_GUARD_FIXTURE': '',
                    'QMD_RECALL_LOG': '',
+                   'PYTHONPATH': str(isolation) + os.pathsep + str(Path.cwd() / 'core'),
+                   'PYTHONDONTWRITEBYTECODE': '1',
                    'QMD_DAEMON_PORT': '0',
                    'QMD_UPDATE_HOOK_QUEUE_DIR': str(home / 'queue')}
     calls = home / 'update-calls.txt'
@@ -127,12 +140,21 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
     before_queue = stories[0] / compile_paths.rel(compile_paths.SOURCE_QUEUE)
     old_env = os.environ.copy()
     original_risky = resolve_paths.is_risky_path
+    dirty = []
+    dirty_patch = mock.patch.object(dirty_queue, 'enqueue_project_collections',
+                                    side_effect=lambda root, changed: dirty.append(sorted(changed)))
+    request_patch = mock.patch.object(runtime_work, 'request', return_value={'status': 'queued'})
+    wake_patch = mock.patch.object(runtime_work, 'hook_wake', return_value=None)
     try:
+        dirty_patch.start()
+        request_patch.start()
+        wake_patch.start()
         os.environ.update(environment)
         resolve_paths.is_risky_path = lambda _path: False
         assert sync.run(str(stories[0]), session_start=True, json_output=True) == 0
         rows = [json.loads(line) for line in before_queue.read_text().splitlines()]
         assert len(rows) == 1 and rows[0]['trigger'] == 'session_start_source'
+        assert dirty == [], dirty
         assert sync.run(str(stories[0]), session_start=True) == 0
         assert len(before_queue.read_text().splitlines()) == 1
         old_stat = source.stat()
@@ -147,6 +169,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
         assert sync.run(str(stories[0]), session_start=True) == 0
         assert len(before_queue.read_text().splitlines()) == 2
     finally:
+        wake_patch.stop()
+        request_patch.stop()
+        dirty_patch.stop()
         resolve_paths.is_risky_path = original_risky
         os.environ.clear(); os.environ.update(old_env)
     # The actual update script exits zero for hook safety when its managed

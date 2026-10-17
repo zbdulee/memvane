@@ -69,10 +69,11 @@
 | `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
 | `injectSourcePathsPerCard` | `3` | 카드 1장당 주입할 원문 경로(`sources[].path`) 수입니다. `0`=끔, 10으로 클램프 → [원문 경로 주입](#원문-경로-주입) |
 | `events` | `["sessionStart","userPromptSubmit","postToolUse"]` | 자동 동작을 켤 이벤트 목록입니다 → [Events](#events) |
+| `sessionStartSync` | `true` | SessionStart에서 허용된 collection의 생성·수정·삭제를 스냅샷과 비교해 인덱스 큐에 반영합니다. 키를 생략하면 `true`, 명시한 `false`는 그대로 유지합니다. bool이 아닌 값은 OFF로 처리하고 `session_start_sync_invalid`로 알립니다. OFF이면 `session_start_source` 동의가 있어도 이 경로의 위키 큐 등록은 실행되지 않습니다. ON이어도 위키 큐 등록에는 `compile.mode`와 `session_start_source` 동의가 따로 필요하며 학습 동의는 바꾸지 않습니다. → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
 | `wikiPath` | `".auto-context/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
-| `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. 새 clone/pull의 SessionStart 자동 감지는 별도 `session_start_source` 동의가 있어야 합니다. |
+| `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. SessionStart가 감지한 파일의 위키 생성에는 별도 `session_start_source` 동의가 필요합니다. |
 | `compile.defaultStatus` | `"generated"` | 새 카드의 status입니다. `generated`·`tentative`만 허용합니다(`verified`를 넣으면 검수를 우회합니다). |
 | `compile.recallVerifiedOnly` | `true` | `true`면 미검수(`generated`·`tentative`) 카드를 recall에 아예 내지 않습니다. |
 | `compile.excludeStatusesFromRecall` | `["discarded","contested"]` | recall에서 제외할 wiki status입니다. |
@@ -934,8 +935,12 @@ jq -c 'select(.event=="qmd_recall_shadow" and .verdict.selected_empty_raw_nonemp
 `triggers`의 `post_sync_source`는 수동 sync가 스냅샷 diff로 찾아낸 변경(`git pull`·
 rebase·외부 편집 — PostToolUse 훅을 타지 않는 경로)을 compile 큐에 넣게 합니다.
 하위호환으로 `post_tool_source`만 있어도 sync 경유 enqueue는 허용됩니다.
-`session_start_source`는 별도 opt-in입니다. 지정하면 SessionStart의 비동기 worker가
-QMD update/embed 후 소스 snapshot을 비교하여 변경된 Markdown을 compile 큐에 넣습니다.
+SessionStart 파일 감지는 `sessionStartSync`로 기본 활성화됩니다. 설정을 생략한
+신규·기존 프로젝트는 이전 스냅샷이 없으면 완료된 QMD update/embed 뒤 기준점을
+기록하고, 다음 변경부터 인덱스 큐에 반영합니다. 명시적 `false`는 보존합니다.
+`session_start_source`는 **위키 컴파일에만** 별도 opt-in입니다. 지정하면
+SessionStart의 비동기 worker가 QMD update/embed 후 소스 snapshot을 비교하여
+변경된 Markdown을 compile 큐에 넣습니다.
 한 차례에 최대 50개를 큐에 넣고 나머지는 다음 SessionStart에 미루며, 변경이 없는
 반복 실행은 다시 큐에 넣지 않습니다. 이 설정은 host CLI를 통한 wiki 생성과 검수를
 자동으로 시작할 수 있으므로 프로젝트에서 명시적으로 켜야 합니다.

@@ -1,5 +1,5 @@
 name: qmd-auto-context
-version: "0.35.2-dev.20261013-claude-handoff-v53-rc47-general-project-learning"
+version: "0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning"
 description: "qmd-based automatic context injection for Hermes Agent sessions"
 author: "zbdulee"
 kind: standalone

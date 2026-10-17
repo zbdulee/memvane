@@ -3,21 +3,34 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { removeTemp } from './helpers/temp.mjs';
 
 const BUILTINS = ["claude", "codex", "hermes"];
+// runtime_work's wake queue follows the OS account home, not HOME.
+const WAKE_STUB = join(process.cwd(), "test", "helpers", "runtime-wake-stub");
 
 function makeEnv(extra = {}) {
-  const base = mkdtempSync(join(tmpdir(), "qmd-sync-compile-env-"));
+  const cache = join(homedir(), ".cache");
+  mkdirSync(cache, { recursive: true });
+  const base = mkdtempSync(join(cache, "qmd-sync-compile-env-"));
+  // Exercise the ordinary ready route with an isolated prepared shared store.
+  execFileSync("python3", ["test/fixtures/prepare-shared-qmd-store.py", base], {
+    env: { ...process.env, HOME: base, PYTHONDONTWRITEBYTECODE: "1" },
+  });
   return {
     base,
     queue: join(base, "queue"),
     env: {
       ...process.env,
+      HOME: base,
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONPATH: [WAKE_STUB, join(process.cwd(), "core")].join(delimiter),
+      QMD_TEST_RUNTIME_WAKE_LOG: join(base, "wakes.jsonl"),
       QMD_SYNC_STATE_DIR: join(base, "state"),
       QMD_DIRTY_QUEUE: join(base, "queue"),
       QMD_SYNC_LOCKDIR: join(base, "lock.d"),
+      QMD_SETUP_GUARD_FIXTURE: "",
       // engine resolution must be deterministic regardless of which host CLI is on PATH.
       QMD_ENGINE: "codex",
       ...extra,
@@ -25,11 +38,9 @@ function makeEnv(extra = {}) {
   };
 }
 
-function makeProject() {
+function makeProject(envInfo) {
   // config discovery walks up to the HOME boundary, so projects must live under HOME.
-  const base = join(homedir(), ".cache");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, "qmd-test-sync-compile-proj-"));
+  return mkdtempSync(join(envInfo.base, "project-"));
 }
 
 function writeSettings(dir, overrides = {}) {
@@ -88,7 +99,7 @@ function cleanup(envInfo, dir) {
 
 test("changed markdown is enqueued to the compile source queue with the sync trigger", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs", "sub"), { recursive: true });
   writeSettings(dir);
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -123,7 +134,7 @@ test("changed markdown is enqueued to the compile source queue with the sync tri
 
 test("updates are enqueued but deletions are not", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   const keep = join(dir, "docs", "keep.md");
@@ -148,7 +159,7 @@ test("updates are enqueued but deletions are not", () => {
 
 test("wiki role collection changes are never enqueued for compile", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, ".auto-context", "wiki"), { recursive: true });
   writeSettings(dir, {
     collections: ["proj-wiki"],
@@ -170,7 +181,7 @@ test("wiki role collection changes are never enqueued for compile", () => {
 
 test("non-markdown files are not enqueued for compile", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   writeFileSync(join(dir, "docs", "notes.txt"), "text\n");
@@ -189,7 +200,7 @@ test("non-markdown files are not enqueued for compile", () => {
 
 test("dot-prefix policy: registered dot root is exempt, dot segments below it are not", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, ".nova", "sessions"), { recursive: true });
   mkdirSync(join(dir, ".nova", ".draft"), { recursive: true });
   writeSettings(dir, {
@@ -213,7 +224,7 @@ test("dot-prefix policy: registered dot root is exempt, dot segments below it ar
 
 test("DENIED_SOURCE_SEGMENTS are blocked even when registered as a raw collection root", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, ".auto-context", "wiki"), { recursive: true });
   writeSettings(dir, {
     collections: ["meta"],
@@ -233,7 +244,7 @@ test("DENIED_SOURCE_SEGMENTS are blocked even when registered as a raw collectio
 
 test('collectionPaths "." keeps the dot check on the whole relative path', () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   mkdirSync(join(dir, ".claude"), { recursive: true });
   writeSettings(dir, {
@@ -260,7 +271,7 @@ test("compile.enabled false and absent trigger both skip compile enqueue", () =>
     ["empty triggers", { triggers: [] }],
   ]) {
     const envInfo = makeEnv();
-    const dir = makeProject();
+    const dir = makeProject(envInfo);
     mkdirSync(join(dir, "docs"), { recursive: true });
     writeSettings(dir, { compile });
     writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -279,7 +290,7 @@ test("compile.enabled false and absent trigger both skip compile enqueue", () =>
 
 test("post_tool_source alone still grants sync-path compile enqueue (backward compat)", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir, { compile: { triggers: ["post_tool_source", "manual"] } });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -295,7 +306,7 @@ test("post_tool_source alone still grants sync-path compile enqueue (backward co
 test("dry-run and baseline-only never write the compile queue", () => {
   for (const flag of ["--dry-run", "--baseline-only"]) {
     const envInfo = makeEnv();
-    const dir = makeProject();
+    const dir = makeProject(envInfo);
     mkdirSync(join(dir, "docs"), { recursive: true });
     writeSettings(dir);
     writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -312,7 +323,7 @@ test("dry-run and baseline-only never write the compile queue", () => {
 
 test("per-sync cap defers overflow without advancing its snapshot entries", () => {
   const envInfo = makeEnv({ QMD_SYNC_COMPILE_MAX: "2" });
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   for (const name of ["a.md", "b.md", "c.md", "d.md", "e.md"]) {
@@ -349,7 +360,7 @@ test("per-sync cap defers overflow without advancing its snapshot entries", () =
 
 test("dirty-queue enqueue stays collection-level with compile enabled", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   mkdirSync(join(dir, "notes"), { recursive: true });
   writeSettings(dir, {
@@ -366,9 +377,12 @@ test("dirty-queue enqueue stays collection-level with compile enabled", () => {
     assert.deepEqual(result.collectionsQueued, ["docs-src", "notes-src"]);
     // One dirty-queue line per changed collection, not per file.
     assert.deepEqual(dirtyQueueLines(envInfo), [
-      `docs-src\t${join(dir, "docs")}`,
-      `notes-src\t${join(dir, "notes")}`,
+      `docs-src\t${join(dir, "docs")}\t${dir}`,
+      `notes-src\t${join(dir, "notes")}\t${dir}`,
     ]);
+    // One index wake per enqueue, recorded only in the test stub's private log.
+    assert.deepEqual(readFileSync(join(envInfo.base, "wakes.jsonl"), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line)), [{ kind: "index", target: "", start: false }]);
     // Compile is per file, and the session role qualifies alongside raw.
     assert.equal(result.compileQueued, 3);
     assert.deepEqual(queuedSourcePaths(dir), ["docs/a.md", "docs/b.md", "notes/c.md"]);
@@ -379,7 +393,7 @@ test("dirty-queue enqueue stays collection-level with compile enabled", () => {
 
 test("--json keeps every pre-existing field alongside the new compile fields", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -404,7 +418,7 @@ test("--json keeps every pre-existing field alongside the new compile fields", (
 test("engine falls back to a configured builtin when QMD_ENGINE is unset", () => {
   const envInfo = makeEnv();
   delete envInfo.env.QMD_ENGINE;
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -425,7 +439,7 @@ test("engine resolves from extractor.backends when builtins is empty", () => {
   // happened to work.
   const envInfo = makeEnv();
   delete envInfo.env.QMD_ENGINE;
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir, {
     compile: {
@@ -449,7 +463,7 @@ test("engine resolves from extractor.backends when builtins is empty", () => {
 
 test("sync never runs the compile worker or an extractor", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeSettings(dir);
   writeFileSync(join(dir, "docs", "a.md"), "a\n");

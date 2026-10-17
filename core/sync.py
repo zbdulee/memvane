@@ -3,13 +3,12 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
+import stat
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import compile_paths as cp
 import config as qmd_config
 import cooldown as qmd_cooldown
 import dirty_queue
@@ -19,29 +18,13 @@ import wiki_compile_enqueue as compile_enqueue
 
 SKIP_DIRS = {".git", ".qmd", "node_modules", "__pycache__"}
 
-# sync 경유 compile enqueue의 trigger 라벨. 편집 훅이 아니라 스냅샷 diff가 출처이므로
-# `post_tool_source`로 기록하면 감사 로그에서 출처가 왜곡된다.
-COMPILE_TRIGGER = "post_sync_source"
-# `post_tool_source`만 켜 둔 기존 프로젝트에서도 git pull 구멍이 닫히도록 동등 grant로
-# 인정한다. 그 trigger가 이미 표현하는 동의는 "소스 .md가 바뀌면 컴파일한다"이고, sync는
-# 같은 사건을 다른 방법으로 탐지할 뿐이다(게다가 sync는 사용자가 직접 호출한다).
-# 반대로 두 라벨 모두 없는 프로젝트(예: triggers=["manual"])는 그대로 skip된다.
-COMPILE_ACCEPTED_TRIGGERS = (COMPILE_TRIGGER, compile_enqueue.POST_TOOL_TRIGGER)
-# 한 번의 sync가 compile 큐에 넣을 수 있는 소스 파일 수 상한. compile worker에는 per-run
-# 상한이 없어(`batch.maxItems`는 처리 시작 조건) 큐에 든 만큼 host CLI를 연속 spawn하고
-# 그 토큰 비용은 사용자 계정으로 청구된다. 수백 파일 pull 뒤의 sync 한 번이 수 시간짜리
-# 백그라운드 CLI 실행으로 번지지 않게 막는다. 상한을 넘긴 파일은 스냅샷을 진전시키지 않아
-# 다음 sync가 다시 집어 간다(조용히 유실되지 않는다).
-DEFAULT_COMPILE_MAX_FILES = 50
-
-
 def emit_json(enabled, payload):
     if enabled:
         print(json.dumps(payload, ensure_ascii=False))
 
 
-def state_dir():
-    return Path(os.environ.get(
+def state_dir(explicit=None):
+    return Path(explicit) if explicit is not None else Path(os.environ.get(
         "QMD_SYNC_STATE_DIR",
         str(Path.home() / ".config" / "qmd" / "sync-state"),
     ))
@@ -52,8 +35,8 @@ def project_key(project_root, config_path):
     return hashlib.sha256(raw).hexdigest()
 
 
-def state_path(project_root, config_path):
-    return state_dir() / f"{project_key(project_root, config_path)}.json"
+def state_path(project_root, config_path, *, state_root=None):
+    return state_dir(state_root) / f"{project_key(project_root, config_path)}.json"
 
 
 def read_state(path):
@@ -63,6 +46,48 @@ def read_state(path):
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+EXIT_STATE_UNREADABLE = 3
+
+
+class StateUnreadable(Exception):
+    """An existing snapshot cannot safely serve as prior state or a baseline."""
+
+
+def load_state(path):
+    """Distinguish a missing snapshot from unreadable or malformed state.
+
+    Other scan cursors use read_state's older empty-dict fallback. Sync must
+    fail closed so a damaged cursor cannot requeue every source as created.
+    """
+    if path.is_symlink():
+        raise StateUnreadable('symlink')
+    try:
+        with open(path, 'rb') as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise StateUnreadable('dangling_link') from None
+        return None
+    except OSError as error:
+        raise StateUnreadable(f'read_error:{type(error).__name__}') from None
+    try:
+        data = json.loads(raw.decode('utf-8'))
+    except UnicodeDecodeError:
+        raise StateUnreadable('not_utf8') from None
+    except ValueError:
+        raise StateUnreadable('invalid_json') from None
+    if not isinstance(data, dict):
+        raise StateUnreadable('not_object')
+    collections = data.get('collections')
+    if not isinstance(collections, dict):
+        raise StateUnreadable('bad_collections')
+    for entry in collections.values():
+        files = entry.get('files') if isinstance(entry, dict) else None
+        if not isinstance(files, dict) or not all(isinstance(meta, dict) for meta in files.values()):
+            raise StateUnreadable('bad_collection_entry')
+    return data
 
 
 def write_state_atomic(path, snapshot):
@@ -83,8 +108,8 @@ def write_state_atomic(path, snapshot):
     os.replace(tmp, path)
 
 
-def lock_path():
-    return Path(os.environ.get("QMD_SYNC_LOCKDIR", "/tmp/qmd-sync.lock.d"))
+def lock_path(explicit=None):
+    return Path(explicit) if explicit is not None else Path(os.environ.get("QMD_SYNC_LOCKDIR", "/tmp/qmd-sync.lock.d"))
 
 
 def stale_lock_seconds():
@@ -126,8 +151,8 @@ def lock_is_stale(lock):
     return not pid_is_running(pid)
 
 
-def acquire_lock():
-    lock = lock_path()
+def acquire_lock(lock_dir=None):
+    lock = lock_path(lock_dir)
     try:
         os.mkdir(lock)
     except FileExistsError:
@@ -180,34 +205,53 @@ def resolve_collection_roots(project_root, config):
     return entries, None
 
 
-def scan_files(root, *, hash_markdown=False):
+def scan_files(root, *, hash_markdown=False, return_unknown=False):
     files = {}
-    if not root.is_dir():
+    unknown = set()
+    try:
+        root_info = root.stat()
+    except FileNotFoundError:
         return None
-    for dirpath, dirnames, filenames in os.walk(root):
+    if not stat.S_ISDIR(root_info.st_mode):
+        return None
+    def walk_error(error):
+        path = Path(error.filename) if error.filename else root
+        if path == root:
+            raise error
+        if not isinstance(error, FileNotFoundError):
+            unknown.add(path.relative_to(root).as_posix())
+    for dirpath, dirnames, filenames in os.walk(root, onerror=walk_error):
         dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
         current = Path(dirpath)
         for filename in filenames:
             path = current / filename
-            if not path.is_file() or path.is_symlink():
-                continue
+            rel = path.relative_to(root).as_posix()
             try:
-                stat = path.stat()
-                rel = path.relative_to(root).as_posix()
-            except OSError:
+                info = path.lstat()
+            except FileNotFoundError:
                 continue
-            meta = {"mtimeNs": stat.st_mtime_ns, "size": stat.st_size}
+            except OSError:
+                unknown.add(rel)
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            meta = {"mtimeNs": info.st_mtime_ns, "size": info.st_size}
             if hash_markdown and path.suffix.lower() == '.md':
                 digest = hashlib.sha256()
                 try:
                     with path.open('rb') as handle:
                         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
                             digest.update(chunk)
+                except FileNotFoundError:
+                    continue
                 except OSError:
+                    unknown.add(rel)
                     continue
                 meta['sha256'] = digest.hexdigest()
             files[rel] = meta
-    return files
+    if not return_unknown and unknown:
+        raise OSError('incomplete_collection_scan')
+    return (files, unknown) if return_unknown else files
 
 
 def compare_collection(previous_files, current_files):
@@ -241,13 +285,20 @@ def build_snapshot(project_root, config_path, roots, previous, *, hash_markdown=
     previous_collections = (previous or {}).get("collections", {})
 
     for name, root in sorted(roots):
-        files = scan_files(root, hash_markdown=hash_markdown)
-        if files is None:
+        scan = scan_files(root, hash_markdown=hash_markdown, return_unknown=True)
+        if scan is None:
             warnings.append({"collection": name, "reason": "missing_root"})
             if name in previous_collections:
                 collections[name] = previous_collections[name]
             continue
         previous_files = previous_collections.get(name, {}).get("files", {})
+        files, unknown = scan
+        if unknown:
+            warnings.append({"collection": name, "reason": "unreadable_paths",
+                             "count": len(unknown)})
+            for rel, meta in previous_files.items():
+                if any(rel == path or rel.startswith(path + '/') for path in unknown):
+                    files[rel] = meta
         created, updated, deleted = compare_collection(previous_files, files)
         totals["created"] += len(created)
         totals["updated"] += len(updated)
@@ -271,73 +322,6 @@ def build_snapshot(project_root, config_path, roots, previous, *, hash_markdown=
     return snapshot, totals, changed, changed_files, warnings
 
 
-def compile_max_files():
-    try:
-        value = int(os.environ.get("QMD_SYNC_COMPILE_MAX", str(DEFAULT_COMPILE_MAX_FILES)))
-    except ValueError:
-        return DEFAULT_COMPILE_MAX_FILES
-    return max(0, value)
-
-
-def compile_engine(compile_cfg):
-    """compile 레코드에 남길 engine 라벨.
-
-    worker는 engine으로 extractor adapter를 고르므로(`resolve_extractor_argv`),
-    QMD_ENGINE이 없는 수동 sync에서도 해석 가능한 값을 남겨야 한다 — 아니면 job이
-    `missing_extractor`로 실패한다. builtin adapter가 호출하는 host CLI 바이너리 이름이
-    engine 이름과 같아서(claude/codex/hermes) 설정에 적힌 builtins 순서대로 PATH를 훑는다.
-
-    **`backends`만 설정한 프로젝트도 해석해야 한다.** builtins가 비고 backends에 명시 argv만
-    적은 설정(라이브 service-engineering이 그 형태다)에서 예전에는 `unknown`을 돌려줬고,
-    worker의 `resolve_extractor_argv`는 `backends["unknown"]`을 찾지 못해 그 프로젝트의
-    수동 enqueue가 전부 `missing_extractor`로 죽었다 — QMD_ENGINE을 넣어 주는 hook 경로에서만
-    우연히 살아 있던 분기다. backends 키도 같은 규칙(엔진 이름 == host CLI 이름)으로 훑는다.
-    """
-    extractor = compile_cfg.get("extractor") if isinstance(compile_cfg.get("extractor"), dict) else {}
-    raw_builtins = extractor.get("builtins")
-    builtins = [e for e in raw_builtins if isinstance(e, str)] if isinstance(raw_builtins, list) else []
-    raw_backends = extractor.get("backends") if isinstance(extractor.get("backends"), dict) else {}
-    backends = [e for e in raw_backends if isinstance(e, str)]
-    env_engine = os.environ.get("QMD_ENGINE")
-    if isinstance(env_engine, str) and (env_engine in builtins or env_engine in backends):
-        return env_engine
-    # builtins를 먼저 본다(기존 우선순위 유지). 그 다음이 명시 backends다.
-    for engine in list(builtins) + [e for e in backends if e not in builtins]:
-        if shutil.which(engine):
-            return engine
-    if builtins:
-        return builtins[0]
-    if backends:
-        return backends[0]
-    return env_engine if isinstance(env_engine, str) and env_engine else qmd_config.UNKNOWN_ENGINE
-
-
-def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER):
-    """변경 파일 중 compile source가 될 수 있는 것만 (컬렉션, 상대경로, 레코드)로 추린다.
-
-    per-file 게이팅(.md 확장자 / raw·session role / dot-prefix / DENIED_SOURCE_SEGMENTS)은
-    `wiki_compile_enqueue._source_record`를 그대로 재사용한다. 삭제된 파일은 읽을 소스가
-    없으므로 제외한다(카드 정리는 compile 경로의 책임이 아니다).
-    """
-    engine = compile_engine(compile_cfg)
-    candidates = []
-    for name in sorted(changed_files):
-        entry = changed_files[name]
-        root = Path(entry["root"])
-        for rel in sorted(set(entry["created"]) | set(entry["updated"])):
-            record = compile_enqueue._source_record(
-                str(root / rel),
-                project_root,
-                project_root,
-                config,
-                engine,
-                trigger=trigger,
-            )
-            if record is not None:
-                candidates.append((name, rel, record))
-    return candidates
-
-
 def defer_snapshot_entries(snapshot, previous, deferred):
     """상한으로 미룬 파일은 스냅샷을 진전시키지 않아 다음 sync가 다시 집는다."""
     previous_collections = (previous or {}).get("collections", {})
@@ -352,38 +336,18 @@ def defer_snapshot_entries(snapshot, previous, deferred):
             files.pop(rel, None)
 
 
-def enqueue_compile_sources(project_root, config, changed_files, snapshot, previous,
-                            *, session_start=False):
-    """sync가 감지한 변경 .md를 compile source-queue에도 넣는다.
-
-    git pull·rebase·외부 도구 편집은 PostToolUse 훅을 타지 않아 wiki 카드가 조용히 낡는다.
-    dirty-queue enqueue(컬렉션 단위)는 qmd 인덱스만 최신으로 만들 뿐이므로 이 경로가 없으면
-    `wikiOnly` 프로젝트에서 낡은 카드가 유일한 recall 소스로 남는다.
-
-    LLM은 호출하지 않는다 — 메타데이터만 append하고 실제 compile은 기존 backend manager
-    kick 경로(편집 훅의 kick-wiki-compile, SessionStart의 --flush)가 처리한다.
-    """
-    accepted = ('session_start_source',) if session_start else COMPILE_ACCEPTED_TRIGGERS
-    compile_cfg = compile_enqueue.compile_gate(config, accepted)
-    if compile_cfg is None:
-        return {"queued": 0, "deferred": 0, "reason": "compile_disabled"}
-    queue_path = compile_enqueue._safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
-    if queue_path is None:
-        return {"queued": 0, "deferred": 0, "reason": "queue_path_rejected"}
-    candidates = compile_candidates(project_root, config, compile_cfg, changed_files,
-        trigger='session_start_source' if session_start else COMPILE_TRIGGER)
-    if not candidates:
-        return {"queued": 0, "deferred": 0, "reason": "no_sources"}
-    cap = compile_max_files()
-    picked = candidates[:cap]
-    deferred = [(name, rel) for name, rel, _ in candidates[cap:]]
-    compile_enqueue._append_jsonl(queue_path, [record for _, _, record in picked])
-    defer_snapshot_entries(snapshot, previous, deferred)
-    return {
-        "queued": len(picked),
-        "deferred": len(deferred),
-        "reason": "capped" if deferred else "queued",
-    }
+def session_start_sync_off_reason(found):
+    """Distinguish a deliberate false from an invalid value normalized off."""
+    path = found.get('configPath')
+    if not path:
+        return 'session_start_sync_disabled'
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return 'session_start_sync_disabled'
+    return ('session_start_sync_invalid' if qmd_config.invalid_session_start_sync(raw)
+            else 'session_start_sync_disabled')
 
 
 def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
@@ -395,21 +359,28 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
         emit_json(json_output, {'ok': False, 'reason': 'setup_required'})
         return 1
 
+    state_root = lock_dir = None
     if session_start:
         found = qmd_config.find_project_config(cwd)
-        if compile_enqueue.compile_gate(found['config'], ('session_start_source',)) is None:
-            emit_json(json_output, {'ok': True, 'reason': 'session_start_compile_disabled',
-                                    'compileQueued': 0})
+        if not found['config']['sessionStartSync']:
+            reason = session_start_sync_off_reason(found)
+            if reason == 'session_start_sync_invalid':
+                print('[qmd] sessionStartSync 값이 true/false가 아니어서 SessionStart sync를 건너뜁니다',
+                      file=sys.stderr)
+            emit_json(json_output, {'ok': reason == 'session_start_sync_disabled',
+                                    'reason': reason, 'compileQueued': 0})
             return 0
         import qmd_shared_store
+        # select validates the existing pointer and prepared generation without
+        # creating or switching either; sync only owns its own snapshot path.
         qmd_shared_store.select(os.environ.get('HOME'))
         shared = qmd_shared_store.root(os.environ.get('HOME'))
-        os.environ['QMD_SYNC_STATE_DIR'] = str(shared / 'session-sync')
-        os.environ['QMD_SYNC_LOCKDIR'] = str(shared / '.session-sync.lock.d')
+        state_root = shared / 'session-sync'
+        lock_dir = shared / '.session-sync.lock.d'
 
-    lock = acquire_lock()
+    lock = acquire_lock(lock_dir)
     if lock is None:
-        emit_json(json_output, {"ok": True, "reason": "sync_busy", "lockPath": str(lock_path())})
+        emit_json(json_output, {"ok": True, "reason": "sync_busy", "lockPath": str(lock_path(lock_dir))})
         return 0
 
     try:
@@ -417,7 +388,7 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
         config = info["config"]
         project_root = info["projectRoot"]
         config_path = info["configPath"]
-        out_state = state_path(project_root, config_path)
+        out_state = state_path(project_root, config_path, state_root=state_root)
 
         roots, refused_reason = resolve_collection_roots(project_root, config)
         if refused_reason or not roots:
@@ -433,7 +404,25 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
             })
             return 0
 
-        previous = read_state(out_state)
+        try:
+            previous = load_state(out_state)
+        except StateUnreadable as error:
+            print(f'[qmd] sync state unreadable ({error}): {out_state}', file=sys.stderr)
+            emit_json(json_output, {
+                'ok': False,
+                'reason': 'state_unreadable',
+                'stateError': str(error),
+                'projectRoot': project_root,
+                'created': 0,
+                'updated': 0,
+                'deleted': 0,
+                'collectionsQueued': [],
+                'compileQueued': 0,
+                'compileDeferred': 0,
+                'compileReason': 'not_attempted',
+                'statePath': str(out_state),
+            })
+            return EXIT_STATE_UNREADABLE
         snapshot, totals, changed, changed_files, warnings = build_snapshot(
             project_root, config_path, roots, previous, hash_markdown=session_start
         )
@@ -449,7 +438,14 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
         queued = sorted(indexed_changed)
         compile_result = {"queued": 0, "deferred": 0, "reason": "not_attempted"}
 
-        if baseline_only:
+        # New default-on installs have no snapshot yet. QMD update/embed has
+        # already completed before this call, so record a baseline without
+        # dirtying every existing indexed file. Explicit SessionStart compile
+        # consent retains its former first-run source behavior.
+        had_state = previous is not None
+        first_sync_baseline = (session_start and not had_state and
+            compile_enqueue.compile_gate(config, ('session_start_source',)) is None)
+        if baseline_only or first_sync_baseline:
             write_state_atomic(out_state, snapshot)
             reason = "baseline"
             queued = []
@@ -460,14 +456,14 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
                 # role `source`만 바뀐 sync는 dirty 큐에 넣을 것이 없다. 그래도 compile
                 # enqueue와 스냅샷 전진은 해야 한다 — 안 하면 그 변경이 매 sync마다
                 # 재검출되고 compile이 같은 파일을 반복 큐잉한다(유료 호출 반복).
-                if indexed_changed and not session_start:
+                if indexed_changed and (not session_start or had_state):
                     dirty_queue.enqueue_project_collections(project_root, indexed_changed)
                 # compile enqueue를 스냅샷 기록 "전"에 한다: 상한으로 미룬 파일의 스냅샷
                 # 엔트리를 되돌려 다음 sync가 다시 집게 하기 때문이다.
-                compile_result = enqueue_compile_sources(
-                    project_root, config, changed_files, snapshot, previous,
-                    session_start=session_start
+                compile_result = compile_enqueue.enqueue_changed_sources(
+                    project_root, config, changed_files, session_start=session_start
                 )
+                defer_snapshot_entries(snapshot, previous, compile_result["deferredFiles"])
                 # 스냅샷 전진 실패는 예외로 나간다(위 docstring). 그 경우 다음 sync가
                 # 같은 변경을 다시 감지해 재enqueue하고, worker가 이미 컴파일한 뒤라면
                 # 그 소스에 대한 유료 호출이 한 번 더 든다 — 재처리 방향이므로 유실은
@@ -476,7 +472,7 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
                 reason = "synced"
             else:
                 reason = "unchanged"
-                if not out_state.exists():
+                if previous is None:
                     write_state_atomic(out_state, snapshot)
 
         emit_json(json_output, {

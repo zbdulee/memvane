@@ -96,6 +96,20 @@ test('기존 novel 스키마 무수정 동작 (신규 필드 부재 → 기본�
   assert.equal(cfg.topN, 3);                       // 기본값
   assert.deepEqual(cfg.lexicalPatterns, ['ep']);   // legacy novel collection names auto-enable EP exact search
   assert.deepEqual(cfg.events, ['sessionStart', 'userPromptSubmit', 'postToolUse']);
+  assert.equal(cfg.sessionStartSync, true);
+});
+
+test('SessionStart file sync defaults on without changing explicit off or compile consent', () => {
+  const enabled = loadConfig(JSON.stringify({compile: {mode: 'off'}}));
+  const disabled = loadConfig(JSON.stringify({sessionStartSync: false, compile: {mode: 'off'}}));
+  assert.equal(enabled.sessionStartSync, true);
+  assert.equal(disabled.sessionStartSync, false);
+  assert.equal(enabled.compile.mode, 'off');
+  assert.deepEqual(enabled.compile.triggers, []);
+  for (const value of ['false', 'true', 0, 1, null, [], {}]) {
+    assert.equal(loadConfig(JSON.stringify({sessionStartSync: value})).sessionStartSync, false,
+      JSON.stringify(value));
+  }
 });
 
 test('신규 필드 파싱', () => {

@@ -128,6 +128,7 @@ Claude·Codex는 marketplace plugin install이 제품 경로다. 제품용 `inst
 - `.codex-plugin/plugin.json` — Codex plugin metadata
 - `.claude-plugin/marketplace.json` — Claude marketplace entry
 - `.agents/plugins/marketplace.json` — Codex marketplace entry
+- `core/context_learning/runtime_authorization.py` — reviewed adapter version identity; a bump does not carry an old learning grant forward
 - `test/probe-manifest.test.mjs` — marketplace/root manifest version asserts
 
 과거 계획 문서(`docs/plans/...`) 안의 버전 문자열은 historical record이므로 릴리스 노트 정리 목적이 아니면 보통 수정하지 않는다. 버전 변경 후 최소 `node --test test/probe-manifest.test.mjs`를 실행하고, 릴리스 전에는 `npm test`를 실행한다.

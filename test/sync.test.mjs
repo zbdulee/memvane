@@ -12,31 +12,44 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+
+// runtime_work's wake queue follows the OS account home, not HOME.
+const WAKE_STUB = join(process.cwd(), "test", "helpers", "runtime-wake-stub");
 
 function makeEnv() {
-  const base = mkdtempSync(join(tmpdir(), "qmd-sync-env-"));
+  const cache = join(homedir(), ".cache");
+  mkdirSync(cache, { recursive: true });
+  const base = mkdtempSync(join(cache, "qmd-sync-env-"));
+  // Exercise the ordinary ready route with an isolated prepared shared store.
+  execFileSync("python3", ["test/fixtures/prepare-shared-qmd-store.py", base], {
+    env: { ...process.env, HOME: base, PYTHONDONTWRITEBYTECODE: "1" },
+  });
   return {
     base,
     state: join(base, "state"),
     queue: join(base, "queue"),
     env: {
       ...process.env,
+      HOME: base,
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONPATH: [WAKE_STUB, join(process.cwd(), "core")].join(delimiter),
+      QMD_TEST_RUNTIME_WAKE_LOG: join(base, "wakes.jsonl"),
       QMD_SYNC_STATE_DIR: join(base, "state"),
       QMD_DIRTY_QUEUE: join(base, "queue"),
       QMD_SYNC_LOCKDIR: join(base, "lock.d"),
+      QMD_SETUP_GUARD_FIXTURE: "",
     },
   };
 }
 
-function makeProject() {
-  const base = join(homedir(), ".cache");
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, "qmd-test-sync-proj-"));
+function makeProject(envInfo) {
+  return mkdtempSync(join(envInfo.base, "project-"));
 }
 
 function writeConfig(dir, collections, collectionPaths = {}) {
-  writeFileSync(join(dir, ".auto-context.json"), JSON.stringify({
+  mkdirSync(join(dir, ".auto-context"), { recursive: true });
+  writeFileSync(join(dir, ".auto-context", "settings.json"), JSON.stringify({
     indexing: true,
     collections,
     collectionPaths,
@@ -58,7 +71,7 @@ function queueLines(envInfo) {
 
 test("no config exits with no_collections and no queue", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   try {
     const result = runSync(dir, envInfo);
     assert.equal(result.ok, true);
@@ -73,7 +86,7 @@ test("no config exits with no_collections and no queue", () => {
 
 test("first run creates snapshot and queues collection once; second run is unchanged", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["sync-smoke"], { "sync-smoke": "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "one\n");
@@ -84,13 +97,16 @@ test("first run creates snapshot and queues collection once; second run is uncha
     assert.equal(first.updated, 0);
     assert.equal(first.deleted, 0);
     assert.deepEqual(first.collectionsQueued, ["sync-smoke"]);
-    assert.deepEqual(queueLines(envInfo), [`sync-smoke\t${join(dir, "docs")}`]);
+    assert.deepEqual(queueLines(envInfo), [`sync-smoke\t${join(dir, "docs")}\t${dir}`]);
+    // The index wake is requested, but only into the test stub's log.
+    assert.deepEqual(readFileSync(join(envInfo.base, "wakes.jsonl"), "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line)), [{ kind: "index", target: "", start: false }]);
 
     const second = runSync(dir, envInfo);
     assert.equal(second.reason, "unchanged");
     assert.equal(second.created, 0);
     assert.deepEqual(second.collectionsQueued, []);
-    assert.deepEqual(queueLines(envInfo), [`sync-smoke\t${join(dir, "docs")}`]);
+    assert.deepEqual(queueLines(envInfo), [`sync-smoke\t${join(dir, "docs")}\t${dir}`]);
   } finally {
     removeTemp(envInfo.base);
     removeTemp(dir);
@@ -99,7 +115,7 @@ test("first run creates snapshot and queues collection once; second run is uncha
 
 test("baseline-only records state without queue, then update and delete enqueue collection", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   const file = join(dir, "docs", "a.md");
@@ -119,8 +135,8 @@ test("baseline-only records state without queue, then update and delete enqueue 
     assert.equal(deleted.deleted, 1);
     assert.deepEqual(deleted.collectionsQueued, ["story"]);
     assert.deepEqual(queueLines(envInfo), [
-      `story\t${join(dir, "docs")}`,
-      `story\t${join(dir, "docs")}`,
+      `story\t${join(dir, "docs")}\t${dir}`,
+      `story\t${join(dir, "docs")}\t${dir}`,
     ]);
   } finally {
     removeTemp(envInfo.base);
@@ -130,7 +146,7 @@ test("baseline-only records state without queue, then update and delete enqueue 
 
 test("multiple changed files in same collection enqueue one line", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   try {
@@ -139,7 +155,7 @@ test("multiple changed files in same collection enqueue one line", () => {
     const result = runSync(dir, envInfo);
     assert.equal(result.created, 2);
     assert.deepEqual(result.collectionsQueued, ["story"]);
-    assert.deepEqual(queueLines(envInfo), [`story\t${join(dir, "docs")}`]);
+    assert.deepEqual(queueLines(envInfo), [`story\t${join(dir, "docs")}\t${dir}`]);
   } finally {
     removeTemp(envInfo.base);
     removeTemp(dir);
@@ -148,7 +164,7 @@ test("multiple changed files in same collection enqueue one line", () => {
 
 test("two changed collections enqueue two sorted lines", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "a"), { recursive: true });
   mkdirSync(join(dir, "z"), { recursive: true });
   writeConfig(dir, ["zeta", "alpha"], { alpha: "a", zeta: "z" });
@@ -159,8 +175,8 @@ test("two changed collections enqueue two sorted lines", () => {
     assert.equal(result.created, 2);
     assert.deepEqual(result.collectionsQueued, ["alpha", "zeta"]);
     assert.deepEqual(queueLines(envInfo), [
-      `alpha\t${join(dir, "a")}`,
-      `zeta\t${join(dir, "z")}`,
+      `alpha\t${join(dir, "a")}\t${dir}`,
+      `zeta\t${join(dir, "z")}\t${dir}`,
     ]);
   } finally {
     removeTemp(envInfo.base);
@@ -170,7 +186,7 @@ test("two changed collections enqueue two sorted lines", () => {
 
 test("dry-run reports changes without queue or snapshot", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -188,7 +204,7 @@ test("dry-run reports changes without queue or snapshot", () => {
 
 test("missing collection root is reported and not queued", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   writeConfig(dir, ["missing"], { missing: "docs" });
   try {
     const result = runSync(dir, envInfo);
@@ -203,7 +219,7 @@ test("missing collection root is reported and not queued", () => {
 
 test("QMD_SANDBOX exits with no output and no side effects", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -223,7 +239,7 @@ test("QMD_SANDBOX exits with no output and no side effects", () => {
 
 test("active lock reports sync_busy without removing lock", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -243,7 +259,7 @@ test("active lock reports sync_busy without removing lock", () => {
 
 test("stale lock from dead pid is removed and sync proceeds", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -253,7 +269,7 @@ test("stale lock from dead pid is removed and sync proceeds", () => {
     const result = runSync(dir, envInfo);
     assert.equal(result.reason, "synced");
     assert.deepEqual(result.collectionsQueued, ["story"]);
-    assert.deepEqual(queueLines(envInfo), [`story\t${join(dir, "docs")}`]);
+    assert.deepEqual(queueLines(envInfo), [`story\t${join(dir, "docs")}\t${dir}`]);
     assert.equal(existsSync(join(envInfo.base, "lock.d")), false);
   } finally {
     removeTemp(envInfo.base);
@@ -263,7 +279,7 @@ test("stale lock from dead pid is removed and sync proceeds", () => {
 
 test("stale lock with unexpected content is not recursively deleted", () => {
   const envInfo = makeEnv();
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
@@ -288,7 +304,7 @@ test("stale lock with unexpected content is not recursively deleted", () => {
 test("pid-less fresh lock stays busy, but old pid-less lock is recovered", () => {
   const envInfo = makeEnv();
   envInfo.env.QMD_SYNC_LOCK_STALE_SECONDS = "1";
-  const dir = makeProject();
+  const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");

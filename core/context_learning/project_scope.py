@@ -138,7 +138,7 @@ def _installed_binding(rows):
         if fingerprint!=current_fingerprint:raise ValueError('project_scope_code_changed')
         versions.add(metadata['version'])
         result.append({**row,'manifestSha256':file_sha(manifest),
-                       'adapterSha256':file_sha(base/'core/context_learning/laya_adapter.py'),
+                       'adapterSha256':files['context_learning/laya_adapter.py'],
                        'version':metadata['version'],'codeSha256':current,
                        'executableSha256':proposal_sha256(fingerprint)})
     if len(versions)!=1:raise ValueError('project_scope_installation_changed')

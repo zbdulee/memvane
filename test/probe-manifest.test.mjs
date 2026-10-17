@@ -15,7 +15,7 @@ test('codex marketplace.json: qmd-auto-context plugin 항목', () => {
   assert.ok(Array.isArray(m.plugins), 'plugins 배열 존재');
   const p = m.plugins.find(x => x.name === 'qmd-auto-context');
   assert.ok(p, 'qmd-auto-context plugin 항목');
-  assert.equal(p.version, '0.35.2-dev.20261013-claude-handoff-v53-rc47-general-project-learning', 'codex marketplace version');
+  assert.equal(p.version, '0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning', 'codex marketplace version');
 });
 
 test('runtime authorization pins the installed plugin version', () => {
@@ -24,6 +24,16 @@ test('runtime authorization pins the installed plugin version', () => {
   const pinned = source.match(/^REVIEWED_PLUGIN_VERSION = '([^']+)'$/m);
   assert.ok(pinned, 'runtime authorization version pin');
   assert.equal(pinned[1], version);
+  for (const file of ['plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).version, version, file);
+  }
+  for (const file of ['.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json']) {
+    const marketplace = JSON.parse(readFileSync(file, 'utf8'));
+    const plugin = marketplace.plugins.find(item => item.name === 'qmd-auto-context');
+    assert.equal(plugin?.version, version, file);
+  }
+  const yamlVersion = readFileSync('plugin.yaml', 'utf8').match(/^version: "([^"]+)"$/m);
+  assert.equal(yamlVersion?.[1], version, 'plugin.yaml');
 });
 
 // codex manifest는 단순 source:"./"가 아니라 git 배포용 source 객체 + policy + category를
@@ -44,7 +54,7 @@ test('codex marketplace.json: git source 객체 + policy + category 스키마', 
 test('agy 루트 plugin.json: name qmd-auto-context', () => {
   const p = JSON.parse(readFileSync('plugin.json', 'utf8'));
   assert.equal(p.name, 'qmd-auto-context');
-  assert.equal(p.version, '0.35.2-dev.20261013-claude-handoff-v53-rc47-general-project-learning');
+  assert.equal(p.version, '0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning');
   assert.doesNotMatch(p.description, /Task \d|install\.sh|uninstall\.sh/);
 });
 
