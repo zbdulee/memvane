@@ -21,6 +21,8 @@ import sys
 import time
 
 from .local_cycle import _safe_file
+# Re-exported: the same objects as the neutral runtime_lease primitives.
+from runtime_lease import private_lock as _private_lock, private_state as _private_state
 
 MAX_WIRE_BYTES = 1024 * 1024
 IDLE_SECONDS = 90
@@ -43,25 +45,6 @@ def _hash(path):
         for chunk in iter(lambda: source.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _private_state(state):
-    state = Path(state)
-    if not state.is_absolute() or state.is_symlink() or not state.is_dir():
-        raise ValueError('resident_state_unsafe')
-    info = state.stat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ValueError('resident_state_unsafe')
-    return state
-
-
-def _private_lock(path):
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        os.close(fd)
-        raise ValueError('resident_lock_unsafe')
-    return fd
 
 
 def _read(conn, *, deadline=None):

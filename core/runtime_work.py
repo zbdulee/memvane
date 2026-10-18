@@ -15,10 +15,9 @@ import subprocess
 import sys
 import time
 
-from context_learning.resource_coordination import Coordinator,default_root,_lock
 from resource_deferred import ResourceDeferred
-from context_learning.local_cycle import _atomic_json
-from context_learning import resident
+# Neutral lease primitives: importing this module never loads context_learning.
+from runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 import runtime_wake_policy as wake_policy
 # Re-exported: drain's default executor and external callers keep this object.
 from runtime_handlers import dispatch
@@ -29,6 +28,18 @@ POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
 KINDS=wake_policy.KINDS
 RETRY=wake_policy.RETRY
 MAX_WAKES=wake_policy.MAX_WAKES
+
+
+def Coordinator(*args,**kwargs):
+    # Call-time shim: the real coordinator and its root stay in context_learning.
+    # Module attribute, so tests can keep patching runtime_work.Coordinator.
+    from context_learning.resource_coordination import Coordinator as coordinator
+    return coordinator(*args,**kwargs)
+
+
+def default_root():
+    from context_learning.resource_coordination import default_root as root
+    return root()
 
 
 def sample():
@@ -68,7 +79,7 @@ def qmd_operation(argv,*,coordinator=None,execute=None):
 
 class WakeQueue:
     def __init__(self,root=None):
-        self.root=resident._private_state(Path(root) if root is not None else default_root())
+        self.root=_private_state(Path(root) if root is not None else default_root())
         self.path=self.root/'runtime-wakes.sqlite3'
 
     @contextmanager
