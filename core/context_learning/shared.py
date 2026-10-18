@@ -1064,14 +1064,38 @@ def _put_meta(db, key, value):
     db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, canonical(value)))
 
 
+def _queue_summary(db, table, namespace):
+    """Namespace-scoped aggregates without opening captures or creating tables."""
+    if table not in ('learning_jobs', 'learning_evaluations'):
+        raise ValueError('queue_summary_table_invalid')
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+        return {}
+    columns={row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+    if not {'namespace','status','reason','retry_at'} <= columns:
+        return {'migration_required':True}
+    counts=dict(db.execute(f'SELECT status,COUNT(*) FROM {table} WHERE namespace=? GROUP BY status',
+                           (namespace,)))
+    reasons=[{'status':state,'reason':reason,'count':count} for state,reason,count in db.execute(
+        f"SELECT status,reason,COUNT(*) FROM {table} WHERE namespace=? "
+        "AND status NOT IN ('staged','completed') GROUP BY status,reason ORDER BY status,reason",
+        (namespace,))]
+    next_retry=db.execute(f"SELECT MIN(retry_at) FROM {table} WHERE namespace=? "
+                          "AND status='deferred' AND retry_at>0",(namespace,)).fetchone()[0]
+    return {'counts':counts,'reasons':reasons,'next_retry':next_retry}
+
+
 def status(root):
     """Read durable counts without opening any captured body."""
     with _db(root) as db:
         counts = dict(db.execute("SELECT status,COUNT(*) FROM cases GROUP BY status"))
         use_states = dict(db.execute("SELECT use_state,COUNT(*) FROM cases GROUP BY use_state"))
         latest = db.execute("SELECT cycle_id,status,evidence FROM cycles ORDER BY started_at DESC LIMIT 1").fetchone()
-        learning_jobs = dict(db.execute("SELECT status,COUNT(*) FROM learning_jobs GROUP BY status")) if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='learning_jobs'").fetchone() else {}
+        namespace=digest(str(Path(root).resolve()))
+        learning_queue=_queue_summary(db,'learning_jobs',namespace)
+        quality_queue=_queue_summary(db,'learning_evaluations',namespace)
+        learning_jobs=learning_queue.get('counts',{})
         return {"status": "ok", "cases": counts, "use_states": use_states,"learning_jobs":learning_jobs,
+                "learning_queue":learning_queue,"quality_queue":quality_queue,
                 "gold_calls_used": _meta(db, "gold_calls_used", 0),
                 "next_batch": _meta(db, "next_batch", None),
                 "holdout_diagnostic": _meta(db, "holdout_diagnostic", None),
@@ -2130,6 +2154,14 @@ def launch(config, project, *, parent_id=None, episode=None,
             check_disk(root, control)
         except ValueError as exc:
             return {"status": "experiment_paused", "reason": str(exc)[:80]}
+    # A selected profile's normal worker is training/evaluation only. Let the
+    # durable wake own its start, admission and retries instead of spawning a
+    # competing detached trainer directly from the hook. General project and
+    # legacy source workers still need their capture/teacher phase below.
+    if selected_profile and not general_project:
+        import runtime_work
+        receipt=runtime_work.request('learning',str(Path(project).resolve()))
+        return receipt or {'status':'deferred_resource'}
     log_path = root / "worker.log"
     fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:

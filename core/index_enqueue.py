@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
+import change_owner
 import config as qmd_config
 import dirty_queue
 import posttool
@@ -66,10 +67,6 @@ def main():
     from context_learning.synthetic_scope import invocation_in_generated_story
     if not invocation_in_generated_story(found, payload.get("cwd"), paths):
         return 0
-    if not config.get("collections"):
-        return 0
-    if not qmd_config.event_enabled(config, "postToolUse"):
-        return 0
     # Host edit paths are relative to the tool's cwd, while collectionPaths
     # belong to the discovered project root. Resolve edits first and keep the
     # canonical root for collection ownership and the durable queue key.
@@ -78,9 +75,43 @@ def main():
         absolute_paths = [str((edit_cwd / path).resolve()) for path in paths]
     except (OSError, ValueError, TypeError):
         return 0
-    selected = select_collections(absolute_paths, project_root, config)
+    owned, raw_of = {}, {}
+    if config.get("collections"):
+        for raw, absolute in zip(paths, absolute_paths):
+            picked = select_collections([absolute], project_root, config)
+            if picked:
+                owned[absolute] = picked
+                raw_of.setdefault(absolute, raw)
+    _enqueue_cwd_owned(owned, project_root, config, raw_of, edit_cwd)
+    # A path outside this cwd's own collections may belong to another, already
+    # approved project. That routes its indexing only; recall scope is unchanged.
+    # A missing path (deletion / old side of a move) routes only on a prior
+    # observation still bound to the same registration (stage B2a).
+    foreign = [raw for raw, absolute in zip(paths, absolute_paths) if absolute not in owned]
+    if foreign:
+        try:
+            routed, _refused = change_owner.route_changes(foreign, edit_cwd)
+            change_owner.enqueue_routed(routed, edit_cwd)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            pass
+    return 0
+
+
+def _enqueue_cwd_owned(owned, project_root, config, raw_of=None, edit_cwd=None):
+    if not owned or not qmd_config.event_enabled(config, "postToolUse"):
+        return
+    # Keep cwd behavior, but fail closed for a path that another approved
+    # project also registers. Without a scoped store there is no such claim.
+    # A missing cwd path keeps this legacy route; stage B2a does not cover it.
+    snapshot, _reason = change_owner.registry_snapshot()
+    selected, accepted = {}, []
+    for absolute, picked in owned.items():
+        if snapshot and change_owner.conflicting_owner_claims(absolute, project_root, snapshot):
+            continue
+        selected.update(picked)
+        accepted.append((raw_of or {}).get(absolute, absolute))
     if not selected:
-        return 0
+        return
     # dirty 큐는 **인덱싱 큐**다. role `source`는 qmd에 등록되지 않으므로 넣으면
     # index_worker가 `collection add`로 도로 등록해 role을 무력화한다 — 즉 여기서
     # 거르지 않으면 update.sh의 unregister와 매 편집마다 싸운다.
@@ -92,15 +123,21 @@ def main():
         if qmd_config.is_indexed_collection(roles, name)
     }
     if not selected:
-        return 0
+        return
     try:
         enqueue(selected, project_root=project_root)
         _synthetic_receipt(project_root, selected)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         # Do not emit a two-column queue item when this project's selected
         # pointer is damaged; that could route its external collection globally.
-        return 0
-    return 0
+        return
+    # Evidence for a later same-session delete/move of these files. Only fully
+    # proved present regular files are recorded; failure records nothing.
+    if snapshot and edit_cwd is not None:
+        try:
+            change_owner.observe_present(accepted, edit_cwd, snapshot=snapshot)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            pass
 
 
 if __name__ == "__main__":

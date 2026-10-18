@@ -278,8 +278,41 @@ if __name__=='__main__':
   'test_completed_resume_reindexes_source_changed_without_hook_event',
   'test_source_changed_then_restored_during_drain_is_reindexed',
   'test_continuously_changing_source_defers_and_retains_queue_for_resume'}
- group=sys.argv[1] if len(sys.argv)>1 else 'all'
- if group not in ('all','baseline','sources'):raise SystemExit('unknown fixture group')
- suite=unittest.TestSuite(Install(n) for n in Install.__dict__ if n.startswith('test_') and
-  (group=='all' or (n in source_cases)==(group=='sources')))
- result=unittest.TextTestRunner(verbosity=2).run(suite);raise SystemExit(not result.wasSuccessful())
+ names=[n for n in Install.__dict__ if n.startswith('test_')]
+ def grouped(group):
+  if group not in ('all','baseline','sources'):raise SystemExit('unknown fixture group')
+  return [n for n in names if group=='all' or (n in source_cases)==(group=='sources')]
+ # Stable per-case CLI: `--list [group]` prints one case name per line and runs
+ # nothing; `--case NAME` runs exactly one case in this process. The positional
+ # group form is unchanged.
+ if sys.argv[1:2]==['--list']:
+  if len(sys.argv)>3:raise SystemExit('usage: --list [all|baseline|sources]')
+  print('\n'.join(grouped(sys.argv[2] if len(sys.argv)>2 else 'all')));raise SystemExit(0)
+ if sys.argv[1:2]==['--case']:
+  if len(sys.argv)!=3 or sys.argv[2] not in names:raise SystemExit('unknown fixture case')
+  selected=[sys.argv[2]]
+ else:selected=grouped(sys.argv[1] if len(sys.argv)>1 else 'all')
+ suite=unittest.TestSuite(Install(n) for n in selected)
+ # Bounded diagnostics: case name and monotonic milliseconds only. A wrapper
+ # timeout then names the active case and the cumulative cost before it.
+ import signal,time
+ began=time.monotonic_ns();active=[None,0]
+ def ms(ns):return ns//1_000_000
+ def diag(line):sys.stderr.flush();os.write(2,(line+'\n').encode())
+ class TimedResult(unittest.TextTestResult):
+  def startTest(self,test):
+   now=time.monotonic_ns();active[:]=[test._testMethodName,now]
+   diag(f'shared-install-case start {active[0]} total={ms(now-began)}ms');super().startTest(test)
+  def stopTest(self,test):
+   super().stopTest(test);now=time.monotonic_ns();name,start=active;active[:]=[None,0]
+   diag(f'shared-install-case finish {name} {ms(now-start)}ms total={ms(now-began)}ms')
+ def interrupted(signum,frame):
+  # Record only, then terminate exactly as the default SIGTERM did. Detached
+  # product children are not owned here and are never signalled.
+  now=time.monotonic_ns();name,start=active
+  case=f'{name} {ms(now-start)}ms' if name else 'none'
+  os.write(2,f'\nshared-install-case interrupted {case} total={ms(now-began)}ms\n'.encode())
+  signal.signal(signum,signal.SIG_DFL);os.kill(os.getpid(),signum)
+ signal.signal(signal.SIGTERM,interrupted)
+ result=unittest.TextTestRunner(verbosity=2,resultclass=TimedResult).run(suite)
+ diag(f'shared-install-suite finish {ms(time.monotonic_ns()-began)}ms');raise SystemExit(not result.wasSuccessful())

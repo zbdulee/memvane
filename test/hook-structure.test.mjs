@@ -26,6 +26,7 @@ test('Claude Bash changes use a dedicated deferred detector, never blanket index
   assert.ok(bash, 'successful Bash changes need a PostToolUse detector');
   assert.equal(bash.hooks.length, 1);
   assert.ok(bash.hooks[0].command.includes('file-change-event claude'));
+  assert.equal(bash.hooks[0].timeout, 5);
   assert.ok(!bash.hooks[0].command.includes(' index '));
   assert.ok(!bash.hooks[0].command.includes(' compile '));
 });

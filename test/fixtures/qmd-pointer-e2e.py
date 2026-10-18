@@ -1,4 +1,5 @@
 """Synthetic cutover: local recall and dirty update hit only the selected DB."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,14 +42,17 @@ if sys.argv[1]=='query':
  'snippet':'Synthetic amber compass points north.'}]))
 ''')
     qmd.chmod(0o700)
+    # Selected-index recall verifies the returned file's current SHA-256
+    # against documents.hash, as real QMD rows carry it.
+    note_hash=hashlib.sha256((docs/'note.md').read_bytes()).hexdigest()
     def make_index(path):
         with sqlite3.connect(path) as db:
-            db.executescript('CREATE TABLE documents(collection TEXT,path TEXT,active INTEGER);'
+            db.executescript('CREATE TABLE documents(collection TEXT,path TEXT,active INTEGER,hash TEXT);'
                 'CREATE TABLE content(hash TEXT);'
                 'CREATE TABLE content_vectors(hash TEXT,seq INTEGER,model TEXT,embed_fingerprint TEXT);'
                 'CREATE TABLE store_collections(name TEXT);'
                 'CREATE TABLE vectors_vec(embedding "float[768] distance_metric=cosine");')
-            db.execute('INSERT INTO documents VALUES (?,?,1)',('synthetic','note.md'))
+            db.execute('INSERT INTO documents VALUES (?,?,1,?)',('synthetic','note.md',note_hash))
             db.execute('INSERT INTO content_vectors VALUES (?,?,?,?)',('x',0,'synthetic-model','f1'))
     old=root/'original.sqlite';make_index(old);original=old.read_bytes()
     def runner(command,*,env,**kwargs):
@@ -67,7 +71,8 @@ if sys.argv[1]=='query':
     recall=subprocess.run([sys.executable,'core/recall.py'],input=json.dumps({
         'prompt':'Where does the synthetic amber compass point?', 'cwd':str(docs)}),
         text=True,capture_output=True,env=env,timeout=15,check=True)
-    assert 'note.md - Synthetic note' in recall.stdout,recall.stdout
+    # The QMD title is untrusted; the verified hit carries its path stem.
+    assert 'note.md - note' in recall.stdout,recall.stdout
     env.update(QMD_CACHE_DIR=str(root/'update-cache'),QMD_LOCK_BASE=str(root/'update-locks'),
         QMD_SKIP_BACKGROUND_WORKER='1',QMD_SKIP_BACKGROUND_EMBED='1')
     update_result=subprocess.run(['bash',str(Path.cwd()/'core/update.sh'),'--worker',str(root)],
@@ -127,7 +132,7 @@ if sys.argv[1]=='query':
         assert all(row['index']==staged['index'] for row in external_calls),external_calls
         assert queue.read_text()==''
     with sqlite3.connect(staged['index']) as db:
-        db.execute('INSERT INTO documents VALUES (?,?,1)',('synthetic','new.md'))
+        db.execute('INSERT INTO documents(collection,path,active) VALUES (?,?,1)',('synthetic','new.md'))
     assert runtime_update.select_runtime(root)['INDEX_PATH']==staged['index']
     # The model fingerprint comes from vector rows. QMD cleanup removes the
     # last such row after all documents retire, but a live document without
@@ -144,7 +149,7 @@ if sys.argv[1]=='query':
         db.execute('DELETE FROM documents')
     assert runtime_update.select_runtime(root)['INDEX_PATH']==staged['index']
     with sqlite3.connect(staged['index']) as db:
-        db.execute('INSERT INTO documents VALUES (?,?,1)',('synthetic','rogue.md'))
+        db.execute('INSERT INTO documents(collection,path,active) VALUES (?,?,1)',('synthetic','rogue.md'))
         db.execute('INSERT INTO content_vectors VALUES (?,?,?,?)',('rogue',0,'other-model','f2'))
     try:
         runtime_update.select_runtime(root)

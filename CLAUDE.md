@@ -8,6 +8,8 @@ qmd 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex · Hermes Ag
 
 개발 시에는 **Claude Code · Codex · Hermes Agent** 세 host의 동작성을 모두 고려한다. 공통 로직은 `core/`에 두고, host별 adapter/hook 차이(Claude/Codex command hook, Hermes Python plugin 및 observer-only `post_tool_call`)가 깨지지 않는지 함께 확인한다.
 
+개발 협업의 공통 규칙은 루트 `AGENTS.md`의 「개발 협업 방식과 Claude 활용」 절을 작업 시작 전에 읽고 적용한다. 이 문서의 host별 세부 지침과 기존 권한·자원 규칙도 함께 유지한다.
+
 ## 명령
 
 로컬 `.development-hold.json`이 true인 동안 일반 검사·백업/해시·모델 작업·운영 활성화를 재개하지 않는다. 해당 보류를 해제하는 사용자 지시가 있어야 재개하며, 실행 허가는 자원 기준이나 소유 프로세스 정리 가드를 우회하는 권한이 아니다. 세션별 승인 기록과 기계 상태는 이 공개 문서 대신 로컬 작업 기록에 남긴다.

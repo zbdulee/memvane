@@ -60,6 +60,49 @@ class Checks(unittest.TestCase):
   with self.q.claim(job['id'],now=100) as claim:self.assertIsNone(claim)
   for _ in range(3):self.q.defer(job['id'],'failed',failure=True,now=100)
   self.assertEqual(self.q.get(job['id'])['status'],'blocked')
+ def test_terminal_completion_survives_stale_defer_and_duplicate_complete(self):
+  job=self.plan([self.row(1),self.row(2)])
+  with self.q.claim(job['id'],now=100) as claim:
+   self.assertIsNotNone(claim);self.q.complete(job['id'])
+  self.assertEqual(self.q.complete(job['id'])['status'],'staged')
+  self.q.defer(job['id'],'memory_reserve',now=100)
+  self.q.defer(job['id'],'trainer_failed',failure=True,now=100)
+  after=self.q.get(job['id'])
+  self.assertEqual((after['status'],after['reason'],after['failures'],after['retry_at']),('staged',None,0,0))
+  with self.q.connect() as db:
+   self.assertEqual(db.execute('SELECT COUNT(*) FROM learning_consumption WHERE job_id=?',(job['id'],)).fetchone()[0],2)
+  self.assertEqual(self.q.pending(now=float('inf')),[])
+ def test_blocked_job_never_restarts_or_consumes_evidence(self):
+  job=self.plan([self.row(1),self.row(2)])
+  for _ in range(3):self.q.defer(job['id'],'failed',failure=True,now=100)
+  self.q.defer(job['id'],'memory_reserve',now=100)
+  with self.assertRaisesRegex(ValueError,'learning_job_terminal'):self.q.complete(job['id'])
+  blocked=self.q.get(job['id'])
+  self.assertEqual((blocked['status'],blocked['failures'],blocked['reason']),('blocked',3,'failed'))
+  with self.q.connect() as db:
+   self.assertEqual(db.execute('SELECT COUNT(*) FROM learning_consumption').fetchone()[0],0)
+  with self.q.claim(job['id'],now=10**6) as claim:self.assertIsNone(claim)
+  with self.assertRaisesRegex(ValueError,'learning_job_scope_invalid'):self.q.defer('missing','memory')
+ def test_pressure_deferral_is_retryable_after_reopen(self):
+  job=self.plan([self.row(1),self.row(2)])
+  self.q.defer(job['id'],'memory_reserve',now=100)
+  reopened=LearningQueue(self.root,connect=self.q.connect)
+  deferred=reopened.get(job['id'])
+  self.assertEqual((deferred['status'],deferred['reason'],deferred['failures'],deferred['retry_at']),('deferred','memory_reserve',0,130))
+  self.assertEqual(reopened.pending(now=129),[])
+  self.assertEqual([item['id'] for item in reopened.pending(now=130)],[job['id']])
+  with reopened.claim(job['id'],now=130) as claim:
+   self.assertIsNotNone(claim);reopened.complete(job['id'])
+  self.assertEqual(reopened.get(job['id'])['status'],'staged')
+ def test_interrupted_running_owner_is_reclaimed_once(self):
+  job=self.plan([self.row(1),self.row(2)])
+  with self.q.connect() as db:
+   self.q.schema(db)
+   db.execute("UPDATE learning_jobs SET status='running',owner='dead',attempts=1 WHERE job_id=?",(job['id'],))
+  with self.q.claim(job['id'],now=100) as claim:
+   self.assertIsNotNone(claim);self.q.complete(job['id']);self.q.complete(job['id'])
+  done=self.q.get(job['id'])
+  self.assertEqual((done['status'],done['attempts']),('staged',2))
  def test_cumulative_component_merge_does_not_reconsume_deleted_capture_evidence(self):
   options=dict(approval='a'*64,cohort='general',family='f'*64,minimum=5,maximum=128,cumulative=True)
   rows=[self.row(i) for i in range(5)];job=self.q.plan(rows,**options)

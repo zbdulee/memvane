@@ -12,8 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
 import cooldown as qmd_cooldown
 import dirty_queue
+import file_change_plan
 import resolve_paths as qmd_resolve_paths
 import wiki_compile_enqueue as compile_enqueue
+
+# Pure planning moved to file_change_plan; these names stay for existing callers.
+compare_collection = file_change_plan.compare_collection
+plan_collection = file_change_plan.plan_collection
+defer_snapshot_entries = file_change_plan.defer_snapshot_entries
 
 
 SKIP_DIRS = {".git", ".qmd", "node_modules", "__pycache__"}
@@ -254,36 +260,14 @@ def scan_files(root, *, hash_markdown=False, return_unknown=False):
     return (files, unknown) if return_unknown else files
 
 
-def compare_collection(previous_files, current_files):
-    """변경을 컬렉션 루트 기준 상대경로 **목록**으로 반환한다.
-
-    예전에는 카운트만 반환했지만 compile source-queue enqueue가 파일 단위 diff를
-    필요로 한다(dirty-queue는 여전히 컬렉션 단위). 호출부는 len()으로 카운트를 얻는다.
-    """
-    created, updated, deleted = [], [], []
-    previous_files = previous_files or {}
-    current_files = current_files or {}
-    for rel, meta in current_files.items():
-        old = previous_files.get(rel)
-        if old is None:
-            created.append(rel)
-        elif (old.get("mtimeNs") != meta.get("mtimeNs") or old.get("size") != meta.get("size")
-              or old.get('sha256') != meta.get('sha256')):
-            updated.append(rel)
-    for rel in previous_files:
-        if rel not in current_files:
-            deleted.append(rel)
-    return sorted(created), sorted(updated), sorted(deleted)
-
-
 def build_snapshot(project_root, config_path, roots, previous, *, hash_markdown=False):
     collections = {}
     warnings = []
-    totals = {"created": 0, "updated": 0, "deleted": 0}
-    changed = {}
-    changed_files = {}
+    entries = []
     previous_collections = (previous or {}).get("collections", {})
 
+    # Scanning adapter: I/O and missing-root handling stay here; the change
+    # set itself is computed by file_change_plan from these values alone.
     for name, root in sorted(roots):
         scan = scan_files(root, hash_markdown=hash_markdown, return_unknown=True)
         if scan is None:
@@ -292,48 +276,23 @@ def build_snapshot(project_root, config_path, roots, previous, *, hash_markdown=
                 collections[name] = previous_collections[name]
             continue
         previous_files = previous_collections.get(name, {}).get("files", {})
-        files, unknown = scan
+        scanned_files, unknown = scan
         if unknown:
             warnings.append({"collection": name, "reason": "unreadable_paths",
                              "count": len(unknown)})
-            for rel, meta in previous_files.items():
-                if any(rel == path or rel.startswith(path + '/') for path in unknown):
-                    files[rel] = meta
-        created, updated, deleted = compare_collection(previous_files, files)
-        totals["created"] += len(created)
-        totals["updated"] += len(updated)
-        totals["deleted"] += len(deleted)
-        if created or updated or deleted:
-            changed[name] = str(root)
-            changed_files[name] = {
-                "root": str(root),
-                "created": created,
-                "updated": updated,
-                "deleted": deleted,
-            }
-        collections[name] = {"root": str(root), "files": files}
+        entries.append((name, str(root), previous_files, scanned_files, unknown))
 
+    # No role filter here: `changed` keeps every changed collection and run()
+    # narrows it to indexed roles, as before.
+    plan = file_change_plan.plan_change_set(entries)
+    collections.update(plan["collections"])
     snapshot = {
         "version": 1,
         "projectRoot": project_root,
         "configPath": config_path,
         "collections": collections,
     }
-    return snapshot, totals, changed, changed_files, warnings
-
-
-def defer_snapshot_entries(snapshot, previous, deferred):
-    """상한으로 미룬 파일은 스냅샷을 진전시키지 않아 다음 sync가 다시 집는다."""
-    previous_collections = (previous or {}).get("collections", {})
-    for name, rel in deferred:
-        files = snapshot.get("collections", {}).get(name, {}).get("files")
-        if not isinstance(files, dict):
-            continue
-        old = previous_collections.get(name, {}).get("files", {}).get(rel)
-        if isinstance(old, dict):
-            files[rel] = old
-        else:
-            files.pop(rel, None)
+    return snapshot, plan["totals"], plan["indexTargets"], plan["changedFiles"], warnings
 
 
 def session_start_sync_off_reason(found):
@@ -456,19 +415,22 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
                 # role `source`만 바뀐 sync는 dirty 큐에 넣을 것이 없다. 그래도 compile
                 # enqueue와 스냅샷 전진은 해야 한다 — 안 하면 그 변경이 매 sync마다
                 # 재검출되고 compile이 같은 파일을 반복 큐잉한다(유료 호출 반복).
-                if indexed_changed and (not session_start or had_state):
-                    dirty_queue.enqueue_project_collections(project_root, indexed_changed)
                 # compile enqueue를 스냅샷 기록 "전"에 한다: 상한으로 미룬 파일의 스냅샷
-                # 엔트리를 되돌려 다음 sync가 다시 집게 하기 때문이다.
-                compile_result = compile_enqueue.enqueue_changed_sources(
-                    project_root, config, changed_files, session_start=session_start
-                )
-                defer_snapshot_entries(snapshot, previous, compile_result["deferredFiles"])
-                # 스냅샷 전진 실패는 예외로 나간다(위 docstring). 그 경우 다음 sync가
-                # 같은 변경을 다시 감지해 재enqueue하고, worker가 이미 컴파일한 뒤라면
-                # 그 소스에 대한 유료 호출이 한 번 더 든다 — 재처리 방향이므로 유실은
-                # 없지만 공짜도 아니라는 뜻이다(실패가 조용하지 않아야 하는 이유).
-                write_state_atomic(out_state, snapshot)
+                # 엔트리를 되돌려 다음 sync가 다시 집게 하기 때문이다. 순서는
+                # file_change_plan.apply_change_set 한 곳이 소유한다.
+                # 스냅샷 전진 실패는 예외로 나간다(write_state_atomic docstring). 그 경우
+                # 다음 sync가 같은 변경을 다시 감지해 재enqueue하고, worker가 이미 컴파일한
+                # 뒤라면 그 소스에 대한 유료 호출이 한 번 더 든다 — 재처리 방향이므로
+                # 유실은 없지만 공짜도 아니라는 뜻이다(실패가 조용하지 않아야 하는 이유).
+                skip_index = session_start and not had_state
+                compile_result = file_change_plan.apply_change_set(
+                    indexed_changed, changed_files, snapshot, previous,
+                    enqueue_index=None if skip_index else (
+                        lambda targets: dirty_queue.enqueue_project_collections(
+                            project_root, targets)),
+                    enqueue_wiki=lambda files: compile_enqueue.enqueue_changed_sources(
+                        project_root, config, files, session_start=session_start),
+                    persist=lambda value: write_state_atomic(out_state, value))
                 reason = "synced"
             else:
                 reason = "unchanged"

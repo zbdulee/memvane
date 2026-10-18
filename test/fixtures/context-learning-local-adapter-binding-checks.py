@@ -111,6 +111,41 @@ class LocalBinding(unittest.TestCase):
         (self.cache['codex']/'core/unreviewed.py').write_text('extra = 1\n');self.denied()
     def test_rogue_identical_source_denied(self):
         rogue=self.home/'rogue/plugins/qmd-auto-context';rogue.parent.mkdir(parents=True);shutil.copytree(self.source,rogue);self.denied(rogue,self.cache['codex'])
+    def many_files(self,count=150):
+        for n in range(count):(self.source/f'core/generated_{n}.py').write_text(f'value = {n}\n')
+        return count+4
+    def test_inventory_admission_checkpoints_are_batched(self):
+        # Per-read checkpoints made a full inventory exceed the 1s foreground
+        # preparation budget; the count path must stay bounded, start to end.
+        import runtime_admission
+        files=self.many_files();calls=[]
+        with patch.object(binding,'_PACE_SECONDS',float('inf')),\
+                patch.object(runtime_admission,'preparation_checkpoint',side_effect=lambda:calls.append(1)):
+            rows=binding._local_code(self.source,self.home)
+        self.assertEqual(len(rows),files)
+        self.assertGreaterEqual(len(calls),2)
+        self.assertLessEqual(len(calls),2+(4*files)//binding._PACE_STEPS)
+    def test_inventory_time_bound_forces_checkpoints(self):
+        import runtime_admission
+        files=self.many_files(20);calls=[]
+        with patch.object(binding,'_PACE_SECONDS',0),\
+                patch.object(runtime_admission,'preparation_checkpoint',side_effect=lambda:calls.append(1)):
+            binding._local_code(self.source,self.home)
+        self.assertGreater(len(calls),files)
+    def test_inventory_resource_stop_interrupts_reads(self):
+        import runtime_admission
+        from context_learning.local_cycle import ResourceDeferred
+        files=self.many_files();calls=[]
+        def checkpoint():
+            calls.append(1)
+            if len(calls)==3:raise ResourceDeferred('preparation_budget')
+        reads=patch.object(binding,'_owned_bytes',wraps=binding._owned_bytes)
+        with patch.object(binding,'_PACE_STEPS',4),patch.object(binding,'_PACE_SECONDS',float('inf')),\
+                patch.object(runtime_admission,'preparation_checkpoint',side_effect=checkpoint),reads as spy:
+            with self.assertRaisesRegex(ResourceDeferred,'preparation_budget'):
+                binding._local_code(self.source,self.home)
+        self.assertEqual(len(calls),3)
+        self.assertLess(spy.call_count,files)
 
 if __name__=='__main__':
     suite=unittest.defaultTestLoader.loadTestsFromTestCase(LocalBinding)

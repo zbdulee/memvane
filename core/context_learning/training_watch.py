@@ -19,8 +19,9 @@ STOP_WAIT=.5
 class Watch:
     def __init__(self,*,clock=time.monotonic,max_load=1,min_available_mib=768,policy=None):
         self.clock=clock;self.max_load=max_load;self.min_available_mib=min_available_mib;self.yielded_at=None
+        self.urgent_reason=None;self.urgent_since=None
         self.policy=policy or {}
-    def observe(self,report,*,foreground=False,cpu_percent=None,cpu_limit=None):
+    def observe(self,report,*,foreground=False,priority_work=False,cpu_percent=None,cpu_limit=None):
         now=self.clock()
         if not observation_fresh(report,now=now):return {'action':'kill','reason':'monitor_unavailable'}
         total,available,load=(report.get(k) for k in ('total_mib','available_mib','load_per_cpu'))
@@ -52,12 +53,20 @@ class Watch:
             return {'action':'kill','reason':'monitor_unavailable'}
         reserve=max(reserve,budget_reserve)
         cpu_pressure=(cpu_percent is not None and cpu_limit is not None and cpu_percent>cpu_limit)
-        routine=(foreground or cpu_pressure or pressure['level']=='warning' and not calibrated or available<reserve
-                 or load>self.max_load or report.get('ready') is not True)
+        urgent=(foreground or cpu_pressure or pressure['level']=='warning' and not calibrated or available<reserve
+                or load>self.max_load or report.get('ready') is not True)
+        routine=priority_work or urgent
         if routine and self.yielded_at is None:self.yielded_at=now
+        if urgent:
+            if self.urgent_since is None:self.urgent_since=now
+            self.urgent_reason=('foreground_demand' if foreground else
+                                'process_group_cpu_budget' if cpu_pressure else
+                                'running_resource_pressure')
         if self.yielded_at is not None:
-            return {'action':'terminate' if now-self.yielded_at>=YIELD_GRACE else 'yield',
-                    'reason':'foreground_demand' if foreground else 'process_group_cpu_budget' if cpu_pressure else 'running_resource_pressure'}
+            # A queued index/update/Laya sync is a cooperative checkpoint request. It
+            # must not kill an optimizer group before the head/cursor commit.
+            return {'action':'terminate' if self.urgent_since is not None and now-self.urgent_since>=YIELD_GRACE else 'yield',
+                    'reason':self.urgent_reason or 'priority_index_work'}
         return {'action':'continue','reason':'running_ready'}
 
 

@@ -16,8 +16,11 @@ SKIP_TTL_SECONDS = 2 * 60 * 60  # 2시간
 
 
 def is_sandbox():
+    # CODEX_SANDBOX is deliberately absent: ordinary Codex workspace-write runs
+    # set it, and pending-project edits must still be denied there. Nested
+    # extractor isolation is marked by QMD_SANDBOX (core/extractors/lib.py).
     return bool(os.environ.get("QMD_SANDBOX") or os.environ.get("GEMINI_SANDBOX")
-                or os.environ.get("CODEX_SANDBOX") or os.environ.get("CLAUDE_HEADLESS") == "1")
+                or os.environ.get("CLAUDE_HEADLESS") == "1")
 
 
 def has_skip_marker(cwd):

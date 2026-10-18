@@ -115,6 +115,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-gold-only-') as name:
             patch('context_learning.shared.job_telemetry.emit'):
         assert launch({}, project) == {'status': 'launched'}
         assert 'QMD_SHARED_GOLD_ONLY' not in child.call_args.kwargs['env']
+    # A selected profile has no capture/teacher phase in its normal worker.
+    # Only its durable training wake may start that worker.
+    with patch.dict(os.environ, {'QMD_SHARED_GOLD_ONLY': ''}), \
+            patch('context_learning.shared._safe_root', return_value=root), \
+            patch('context_learning.shared._policy', return_value=current_policy), \
+            patch('context_learning.learning_profile.present', return_value=True), \
+            patch('context_learning.shared.subprocess.Popen') as child, \
+            patch('runtime_work.request', return_value={'status':'queued'}) as wake:
+        assert launch({}, project) == {'status':'queued'}
+        wake.assert_called_once_with('learning',str(project.resolve()))
+        child.assert_not_called()
     with patch.dict(os.environ, {'QMD_SHARED_GOLD_ONLY': ''}), \
             patch('context_learning.shared._safe_root', return_value=root), \
             patch('context_learning.shared._policy', return_value=historical_policy), \

@@ -79,6 +79,19 @@ test('Codex apply_patch(patch, file_path 없음) + pending → deny (경로 무�
   } finally { removeTemp(home); }
 });
 
+test('CODEX_SANDBOX(workspace-write) 단독 + pending apply_patch → 여전히 deny', () => {
+  // 일반 Codex workspace-write 실행도 CODEX_SANDBOX 를 켠다. 그것만으로 gate 가 꺼지면
+  // pending 프로젝트 편집 차단이 Codex 에서 통째로 사라진다. 중첩 격리 표식은 QMD_SANDBOX 다.
+  const { home, dir, env } = makeTmpDir();
+  try {
+    const out = gate(
+      { tool_name: 'apply_patch', tool_input: { patch: '*** Begin Patch\n*** End Patch' }, cwd: dir, session_id: 's1' },
+      env({ CODEX_SANDBOX: 'seatbelt', QMD_SANDBOX: '', GEMINI_SANDBOX: '', CLAUDE_HEADLESS: '' }),
+    );
+    assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny');
+  } finally { removeTemp(home); }
+});
+
 // --- Task 7: --skip 마커 테스트 ---
 
 // skip 마커 파일 경로를 JS에서 계산 (core/preflight_gate.py와 동일 알고리즘: sha256(realpath(cwd))).

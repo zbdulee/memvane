@@ -52,6 +52,60 @@ class RunningTraining(unittest.TestCase):
         self.clock[0]=2.1
         self.assertEqual(w.observe({**self.report,'observed_at_mono':2.1},foreground=True)['action'],'terminate')
 
+    def test_index_update_request_uses_cooperative_yield_path(self):
+        w=self.watch().Watch(clock=lambda:self.clock[0])
+        self.assertEqual(w.observe(self.report,priority_work=True),
+                         {'action':'yield','reason':'priority_index_work'})
+        self.clock[0]=2.1
+        self.assertEqual(w.observe({**self.report,'observed_at_mono':2.1},priority_work=True)['action'],'yield')
+
+    def test_pressure_after_priority_request_retains_bounded_stop(self):
+        w=self.watch().Watch(clock=lambda:self.clock[0])
+        self.assertEqual(w.observe(self.report,priority_work=True)['action'],'yield')
+        self.clock[0]=.5
+        self.assertEqual(w.observe({**self.report,'load_per_cpu':1.5,'observed_at_mono':.5},
+                                   priority_work=True)['action'],'yield')
+        self.clock[0]=2.5
+        self.assertEqual(w.observe({**self.report,'observed_at_mono':2.5},
+                                   priority_work=True)['action'],'terminate')
+
+    def test_late_pressure_gets_its_own_grace_after_priority_yield(self):
+        w=self.watch().Watch(clock=lambda:self.clock[0])
+        self.assertEqual(w.observe(self.report,priority_work=True)['action'],'yield')
+        self.clock[0]=3.
+        stressed={**self.report,'load_per_cpu':1.5,'observed_at_mono':3.}
+        self.assertEqual(w.observe(stressed,priority_work=True)['action'],'yield')
+        self.clock[0]=5.1
+        self.assertEqual(w.observe({**self.report,'observed_at_mono':5.1},
+                                   priority_work=True)['action'],'terminate')
+
+    def test_due_index_wake_is_visible_without_mutating_the_queue(self):
+        import runtime_work
+        queue=runtime_work.WakeQueue(self.root)
+        controller=Coordinator(self.root)
+        self.assertFalse(controller.priority_work())
+        queue.put('learning',str(self.root/'project'),now=0)
+        self.assertFalse(controller.priority_work())
+        key=queue.put('index','',now=time.time()+60)
+        self.assertFalse(controller.priority_work())
+        with queue.connect() as db:db.execute('UPDATE wakes SET due=? WHERE id=?',(time.time()-1,key))
+        self.assertTrue(controller.priority_work())
+        policy={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1}
+        with self.assertRaisesRegex(ResourceDeferred,'learning_deferred_priority_work'):
+            with Coordinator(self.root,clock=lambda:0).training(policy,self.report):
+                self.fail('training admitted before due index')
+        self.assertEqual(len(queue.pending()),2)
+        with queue.connect() as db:db.execute('DELETE FROM wakes WHERE id=?',(key,))
+        self.assertFalse(controller.priority_work())
+        key=queue.put('laya-sync',str(self.root/'project'),now=time.time()-1)
+        self.assertTrue(controller.priority_work())
+        with queue.connect() as db:db.execute('DELETE FROM wakes WHERE id=?',(key,))
+        self.assertFalse(controller.priority_work())
+
+    def test_unsafe_wake_database_defers_training(self):
+        path=self.root/'runtime-wakes.sqlite3';path.symlink_to(self.root/'missing')
+        self.assertTrue(Coordinator(self.root).priority_work())
+
     def test_critical_and_unknown_pressure_do_not_wait_for_checkpoint(self):
         for report in (None,{**self.report,'observed_at_mono':-10},
                 {**self.report,'memory_pressure':{'level':'critical','system_free_percent':2}},
@@ -178,6 +232,16 @@ class RunningTraining(unittest.TestCase):
                 guard.poll();os.write(write,b'y')
                 with self.assertRaisesRegex(ValueError,'learning_yield'):guard.poll()
         finally:os.close(read);os.close(write)
+
+    def test_training_guard_yields_before_next_group_for_due_update(self):
+        import runtime_work
+        from context_learning import resource_coordination as coordination
+        controller=Coordinator(self.root)
+        with controller._gate('trainer.lock') as fd,patch.object(coordination,'default_root',return_value=self.root),patch.dict(os.environ,{'QMD_TRAINER_COORD_FD':str(fd),'QMD_TRAINER_STOP_FD':''}):
+            guard=coordination.TrainingGuard({'schema':1,'root':str(self.root),'policy':{},'namespace':'synthetic','job_id':'job'})
+            guard.poll()
+            runtime_work.WakeQueue(self.root).put('update','a'*32,now=time.time()-1)
+            with self.assertRaisesRegex(ValueError,'learning_yield'):guard.poll()
 
     def test_final_head_can_recover_from_completed_cursor_without_another_train(self):
         self.watch()

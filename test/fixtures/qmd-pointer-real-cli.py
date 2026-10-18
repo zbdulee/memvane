@@ -1,6 +1,10 @@
 """Offline QMD 2.5.3 typed-query contract against disposable synthetic data."""
 import json
 import os
+
+if os.environ.get('QMD_REAL_MODEL_TESTS') != '1':
+    print(json.dumps({'skipped': 'real model tests require explicit QMD_REAL_MODEL_TESTS=1'}))
+    raise SystemExit(0)
 from pathlib import Path
 import shutil
 import subprocess

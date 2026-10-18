@@ -26,6 +26,7 @@ import qmd_project_query
 import qmd_scope
 import qmd_shared_store
 import qmd_endpoint
+import request_view_pin
 
 DEFAULT_HEALTH_TIMEOUT = 2.0
 QUERY_TIMEOUT = 5.0
@@ -2250,6 +2251,21 @@ def _main():
         return 0
     project_index = qmd_paths if qmd_paths['selected'] else None
     shared_index = qmd_paths.get('shared') is True
+    # A live request keeps the route/endpoint/scope it began with. This only
+    # rejects an identity change during the request; the active QMD DB is still
+    # updated in place and this is not an atomic published-index guarantee.
+    request_pin = None
+    if not fixture_path and qmd_paths['selected']:
+        try:
+            request_pin = request_view_pin.capture(
+                qmd_paths, qmd_endpoint.raw() if shared_index else None,
+                found_config['projectRoot'], config)
+            if shared_index:
+                daemon_url = request_pin.require_url(daemon_url)
+            project_index = request_pin.index_paths()
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            log_recall_event(log_path, 'request_view_unavailable')
+            return 0
     if shared_index:
         try:
             owned = qmd_shared_store.owned_collections(
@@ -2260,6 +2276,38 @@ def _main():
         if not set(collections).issubset(owned):
             log_recall_event(log_path, 'collection_scope_unavailable')
             return 0
+
+    # Result-level freshness guard (stage A of the same-session plan). Every
+    # live index route re-checks each *returned* hit against this payload's
+    # project scope and the current file's SHA-256 versus the indexed row, so
+    # a same-session edit, delete, pull, checkout, or worktree switch the index
+    # has not seen yet is dropped instead of injected. Only returned rows are
+    # read: no project scan, no Git, no queue or index write, and no SessionStart
+    # snapshot dependency (sessionStartSync:false keeps fresh raw recall).
+    # A synthetic QMD_QUERY_FIXTURE result is not from the selected index, so it
+    # is checked only against an explicit test index (QMD_QUERY_FIXTURE_INDEX),
+    # never against an operating QMD DB it does not describe.
+    fixture_index = os.environ.get("QMD_QUERY_FIXTURE_INDEX") if fixture_path else None
+    if fixture_index:
+        index_guard, index_guard_path = "fixture", fixture_index
+    elif shared_index:
+        index_guard, index_guard_path = "shared", qmd_paths['INDEX_PATH']
+    elif project_index and not fixture_path:
+        index_guard, index_guard_path = "project_local", project_index['INDEX_PATH']
+    else:
+        index_guard, index_guard_path = "none", None
+    index_guard_checked = 0
+    index_guard_drops: dict[str, int] = {}
+
+    def guard_hits(rows, guarded_collections):
+        nonlocal index_guard_checked
+        if index_guard_path is None:
+            return rows
+        if isinstance(rows, list):
+            index_guard_checked += min(len(rows), qmd_scope.MAX_CHECKED_ROWS)
+        return qmd_scope.scoped_hits(rows, found_config.get('projectRoot') or cwd,
+                                     config, set(guarded_collections),
+                                     index_guard_path, drops=index_guard_drops)
 
     if fixture_path:
         results = load_fixture(fixture_path)
@@ -2286,7 +2334,7 @@ def _main():
                     budget = float(config.get("queryTimeout", QUERY_TIMEOUT))
                     if limit != primary_limit:
                         budget = min(1.0, budget)
-                    return qmd_project_query.query(project_index,
+                    return qmd_project_query.query(request_pin.index_paths(),
                         list(lex_searches) + [{"type":"vec","query":vector_query}],
                         query_collections,limit,timeout=hook_budget.remaining(budget))
                 except (OSError, ValueError, hook_budget.HookDeadlineExceeded):
@@ -2365,10 +2413,7 @@ def _main():
             log_recall_event(log_path, "query_failed", daemon=daemon_url)
             return 0
 
-    if shared_index:
-        results = qmd_scope.scoped_hits(results, found_config['projectRoot'],
-                                       config, set(queried_collections),
-                                       qmd_paths['INDEX_PATH'])
+    results = guard_hits(results, queried_collections)
 
     # The daemon's requested limit is not a trust boundary.  Enforce the
     # primary phase bound locally before any wiki card annotation or hashing.
@@ -2770,10 +2815,7 @@ def _main():
             if raw_results is None:
                 log_recall_event(log_path, "query_failed", daemon=daemon_url)
                 return 0
-        if shared_index:
-            raw_results = qmd_scope.scoped_hits(raw_results, found_config['projectRoot'],
-                                                config, set(raw_collections),
-                                                qmd_paths['INDEX_PATH'])
+        raw_results = guard_hits(raw_results, raw_collections)
         # Raw backfill is a separate phase with its own local daemon bound.  It
         # is never source-hashed, but an over-return must not expand injection.
         learning_raw_unbounded = raw_results if fixture_path or len(raw_results) >= 30 else None
@@ -2843,6 +2885,7 @@ def _main():
             from context_learning.corpus import snapshot as corpus_snapshot
             from context_learning.live_select import choose
             from context_learning.seam import _private_state, _snapshot
+            from context_learning import selection_port
             state = _private_state(config, card_roots[0])
             shared_state = None
             if shared_trial:
@@ -2855,36 +2898,23 @@ def _main():
                         shared_state=selection_root(config,card_roots[0])
                     elif _current_config(shared_state, card_roots[0]) is None:shared_state = None
             current_corpus = corpus_snapshot(card_roots[0], config, qmd_paths=qmd_paths)
-            indexed_hashes = ({(collection, relative): revision
-                for collection, relative, revision in current_corpus['material']['activeDocuments']}
-                if current_corpus else {})
+            indexed_hashes = selection_port.indexed_revisions(current_corpus)
             if shared_trial and live_plan['requested'] == 0:
                 live_reason = live_plan['reason']
             elif shared_trial and shared_state is None:
                 live_reason = 'shared_state_unavailable'
             elif state is None and shared_state is None:
                 live_reason = 'private_state_unavailable'
-            elif not filtered_results:
-                live_reason = 'no_candidates'
-            elif any(not qmd_config.is_wiki_collection(roles, r.get('_collection', ''))
-                     for r in filtered_results[:primary_limit]):
-                live_reason = 'non_wiki_pool'
+            elif (pool_reason := selection_port.pool_rejection(
+                    filtered_results, primary_limit,
+                    lambda collection: qmd_config.is_wiki_collection(roles, collection))) is not None:
+                live_reason = pool_reason
             else:
-                model_rows = []
-                for hit in filtered_results[:primary_limit]:
-                    path = resolve_wiki_result_path(hit, config, cwd, card_roots)
-                    if path is None:
-                        raise ValueError('candidate_path_unavailable')
-                    snapped = _snapshot(path)
-                    if snapped is None:
-                        raise ValueError('candidate_snapshot_unavailable')
-                    revision, content = snapped
-                    collection, separator, relative = hit['file'].removeprefix('qmd://').partition('/')
-                    if not separator or indexed_hashes.get((collection, relative)) != revision['sha256']:
-                        raise ValueError('candidate_index_stale')
-                    model_rows.append({'id': hit['file'].removeprefix('qmd://'),
-                                       'revision_sha256': revision['sha256'],
-                                       'source_text': content.decode('utf8')})
+                # Read-only port: all-or-nothing rows from the bounded pool.
+                model_rows = selection_port.candidate_rows(
+                    filtered_results, primary_limit,
+                    resolve_path=lambda hit: resolve_wiki_result_path(hit, config, cwd, card_roots),
+                    snapshot=_snapshot, indexed=indexed_hashes)
                 if shared_trial:
                     from context_learning.adaptive_pool import actual_work
                     from context_learning.compact_input import derive
@@ -2916,9 +2946,8 @@ def _main():
                     shared_state if shared_state is not None else state,
                     prompt, model_rows, **selection_kwargs)
                 if selected_ids is not None:
-                    by_id = {r['file'].removeprefix('qmd://'): r
-                             for r in filtered_results[:primary_limit]}
-                    final_results = [by_id[cid] for cid in selected_ids]
+                    final_results = selection_port.apply_selection(
+                        filtered_results, primary_limit, selected_ids)
                     live_chose_zero = not selected_ids
         except (OSError, ValueError, UnicodeError, KeyError, TypeError) as exc:
             live_reason = (str(exc) if str(exc) in
@@ -3194,6 +3223,14 @@ def _main():
         dropped_stale=counters["stale"],
         freshness_unknown=counters["freshness_unknown"],
         freshness_checked=counters["freshness_checked"],
+        # Result-level index guard: route (shared|project_local|fixture|none),
+        # returned rows checked, and objective drop reasons (modified, missing,
+        # not_indexed, out_of_scope, index_unavailable, ...). `none` means the
+        # route had no index to verify against, not that every hit was fresh.
+        index_guard=index_guard,
+        index_guard_checked=index_guard_checked,
+        index_guard_dropped=sum(index_guard_drops.values()),
+        index_guard_drop_reasons=index_guard_drops,
         dropped_top_n=dropped_top_n,
         selected=len(final_results),
         min_score=active_min_score,
@@ -3201,6 +3238,21 @@ def _main():
         max_score=max((r.get("score", 0) for r in results), default=0),
         **fallback_fields,
     )
+
+    if request_pin is not None:
+        try:
+            current_route = qmd_route.project_paths(found_config['projectRoot'])
+            current_config = qmd_config.find_project_config(cwd)
+            current_matches = request_view_pin.same_view(
+                request_pin,
+                current_route, qmd_endpoint.raw() if shared_index else None,
+                current_config['projectRoot'], current_config['config'])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            log_recall_event(log_path, 'request_view_unavailable')
+            return 0
+        if not current_matches:
+            log_recall_event(log_path, 'request_view_changed')
+            return 0
 
     # Output formatted JSON. shadow 진단보다 "먼저" 출력해, 진단이 어떤 이유로 지연·
     # 실패하더라도 본 recall 결과가 구조적으로 영향받지 않게 한다.

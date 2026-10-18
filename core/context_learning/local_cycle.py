@@ -257,7 +257,9 @@ class LocalTrainer:
                             policy={'maxRssMib':self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
                             report=resource_report(policy,detailed=True,admission=False,deadline=deadline)
                         next_pressure_check=time.monotonic()+PROBE_INTERVAL
-                    decision=watch.observe(report,foreground=Coordinator().demand(),
+                    controller=Coordinator()
+                    decision=watch.observe(report,foreground=controller.demand(),
+                        priority_work=controller.priority_work(),
                         cpu_percent=group_cpu,cpu_limit=cpu_budget.threads*100)
                     if decision['action']=='yield' and not stop_requested:
                         try:os.write(stop_write,b'y');stop_requested=True
