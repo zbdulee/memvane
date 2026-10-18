@@ -274,18 +274,13 @@ L1 설치본 QA, 운영 runtime·endpoint·설치 QA, 원래 기능의 end-to-en
 Stage 1–6 완료는 경계 분리의 완료이며 원래 기능의 end-to-end 완료가 아니다. stale→sync
 wake, cwd와 독립된 소유권, 위키 cross-trigger·claim 뒤 비용 dedup·출처 최신성, 200 파일/5 MB
 초과 성장의 네 간극은 [원래 기능 간극 정리 계획](2026-10-18-original-function-gap-closure.md)이
-다룬다. 2026-10-18 현재(문서 커밋 `5912328` 뒤 후속 구현 배치)는 좁은 일부만 구현됐다: 간극 1의
-선택 v2 seal 불일치 → proof 재확인 `laya-sync` wake와 queued/unavailable 진단(집중 가드
-`laya-host-response` 통과), 간극 3의 pending refresh 없는 같은 revision의 유료 추출 전 검증 카드
-skip(집중 가드 `wiki-compile-worker` Node 63 통과). G1→G2 E2E, pull/branch/worktree fixture,
-간극 2(proof 계약 차단), 간극 3의 raw→위키 queue·줄 span, 간극 4는 남아 있고 설치·모델·운영
-QA는 미실행이다. 상세는 그 계획의 7.1절.
+다룬다.
 
 | 영역 | 이미 분리된 모듈 | 남은 작업 |
 |---|---|---|
 | 검색·컨텍스트 | `index_snapshot`, `published_view`, `shadow_index`, `request_view_pin`(recall 연결), `context_learning/selection_port` | Stage 6b v2 product sync worker 연결의 L1 설치본·운영 QA(집중 가드 회귀와 PR #13 head `077f8186` CI는 통과), recall의 학습 지연 import 축소. 비선택 QMD 프로젝트의 `backend/index_worker.sh`·`update.sh`·공유 pointer/endpoint는 그대로다 |
 | 학습 데이터·평가·학습 | `selection_port`(읽기 전용 판단), `resource_deferred`(Stage 1, 비학습 소비자의 공용 예외) | `runtime_work`의 학습 coordinator·handler 직접 import, capture·trainer 경계 |
-| 위키·출처 | `wiki_source_intent`(`revision_key`, Stage 3), `wiki_compile_enqueue.enqueue_changed_sources` | 이미 claim·처리된 행과의 멱등성(선택 Laya는 pending refresh가 없을 때 검증 카드 proof로 유료 추출 전 skip, 2026-10-18 후속 구현 배치. legacy QMD·pending refresh 경로는 남음), revision 없는 PostToolUse·수동 sync 병합, 삭제·rename 카드 provenance |
+| 위키·출처 | `wiki_source_intent`(`revision_key`, Stage 3), `wiki_compile_enqueue.enqueue_changed_sources` | 이미 claim·처리된 행과의 멱등성, revision 없는 PostToolUse·수동 sync 병합, 삭제·rename 카드 provenance |
 | 파일·프로젝트 동기화 | `file_change_plan`(순수 계획·효과 순서, hash 스캔의 `revisions`) | scope revision 부여. enqueue 뒤 persist 실패의 재시도는 행이 live 큐에 남아 있을 때만 중복 enqueue를 피한다 |
 | 설치·마이그레이션 | `install_evidence`(Stage 5에서 source identity·벡터 결함 판정 추가, 집중 가드 회귀 31/31 통과) | 반복 검색 게시 경로는 없으며 Stage 6 게시 연결과 함께 다룬다. 증거 수집 IO·벡터 복구·endpoint 준비 순서는 의도적으로 `shared_install`에 남긴다 |
 | 런타임 큐·자원·모델 실행 | `runtime_wake_policy`, `resource_deferred`(Stage 1), `runtime_handlers`(Stage 2, 집중 가드 회귀 통과), `runtime_lease`(Stage 2b, 소스 완료·집중 가드 회귀 통과) | 실제 `Coordinator`·`default_root`·`decision`·`TrainingGuard`·`sample`·CPU budget·`service_root`는 학습 패키지에 남아 호출 시 적재된다 |
