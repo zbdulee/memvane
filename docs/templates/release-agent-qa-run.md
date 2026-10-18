@@ -54,7 +54,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | `identity-diff-<host>.txt` empty? | | |
 | Host-metadata allowlist (path + justification) | | |
 | Matches `artifactManifestSha256`? | | |
-| Hook trust confirmed (Codex official UI / Claude) | | |
+| Hook trust confirmed (Codex official UI / Claude); exact scope in section 4 preflight | | |
 | Loaded hook path and unique log marker per fresh session | | |
 
 ## 4. Environment
@@ -78,6 +78,30 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Selected store generation | |
 | Network state (online / restricted) | |
 | Forbidden test env vars absent (`QMD_SKIP_BACKGROUND_WORKER`, `QMD_FORCE_DEAD_PIDS`, `QMD_QUERY_FIXTURE`, `QMD_FAKE_PLATFORMS`) | yes / no |
+
+### Preflight (spec section 3, before functional QA)
+
+Item result is `ready`, `not ready` or `NOT RUN`; an unperformed check stays
+`NOT RUN`. Class (if not `ready`): environment unready / approval pending /
+host unsupported / product defect.
+
+| Item | Claude Code | Codex | Evidence | Class + retest rule applied |
+|---|---|---|---|---|
+| PF-ID exact candidate commit, version, installed byte identity | NOT RUN | NOT RUN | | |
+| PF-FOLDER project folder access (exact folder approved where prompted) | NOT RUN | NOT RUN | | |
+| PF-TRUST installed hook map and reviewed exact commands; per-hook UI approval where required | NOT RUN | NOT RUN | | |
+| PF-FRESH fresh session after install/trust/reload, SessionStart trace; new prompt log path | NOT RUN | NOT RUN | | |
+| PF-HOST surface (CLI/app), sandbox mode/env, required event support; delivery checked in scenarios | NOT RUN | NOT RUN | | |
+| PF-RUNTIME OS build/arch, hook `python3`, Node, Git, hash tools | NOT RUN | NOT RUN | | |
+| PF-NET online / offline policy / sandbox-denied / DNS failure / remote outage | NOT RUN | NOT RUN | | |
+| **Preflight result** (`READY` only if every item `ready`) | NOT RUN | NOT RUN | | |
+
+Exact trust scope (one row per host; no wildcard or "trust all"):
+
+| Host | Surface | Approved folder (exact, or no prompt) | Reviewed hook commands (full list, from installed hook map) | Host approval route (official UI if required) / time | Hook map SHA-256 matches candidate? |
+|---|---|---|---|---|---|
+| Claude Code | | | | | |
+| Codex | | | | | |
 
 ## 5. Scenario results
 

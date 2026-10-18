@@ -154,7 +154,8 @@ Operator rules:
   that scenario's run. The scenario must restart from its preconditions.
 - Outside the product, the operator may do only three kinds of work: actions
   that simulate the user (the fixture helper's Git actions, host marketplace
-  install/update, host hook trust), reading evidence, and computing hashes.
+  install/update, host hook trust limited to the reviewed exact commands in
+  the preflight, section 3), reading evidence, and computing hashes.
 - Probe prompts forbid tool use. If the transcript shows a tool call in a probe
   turn, the probe is invalid. Repeat it; do not count it.
 
@@ -224,6 +225,79 @@ Operator rules:
   host reload completed, with its working directory equal to the scenario's
   checkout. Sessions that predate the install are "old sessions" and appear
   only in RQA-INST-02.
+
+### Preflight before functional QA
+
+Run this preflight per host and matrix cell before the first functional request.
+For a fresh install, RQA-INST-01 steps 1–2 first install and identify the
+candidate; finish the preflight before its edit in step 4. Repeat it after an
+update or host reload. It checks whether the environment can produce valid
+evidence. It is not a scenario and never changes a scenario status to
+`PASS`. Record each item as `ready`, `not ready` or `NOT RUN`, with evidence,
+in the run record's preflight table. A check that was not performed is
+`NOT RUN`, never `ready` or `PASS`. The preflight result is `READY` only when
+every item is `ready`.
+
+| ID | Check | `ready` requires |
+|---|---|---|
+| PF-ID | Exact candidate | RQA-ID-00 evidence for this host: the commit (40 hex), version string, and an empty or allowlisted `identity-diff-<host>.txt`. A matching version string alone is not enough. |
+| PF-FOLDER | Project folder access | The host can read and write the exact fixture checkout. If the host presents a folder/project trust prompt, a human approved only that exact checkout. Record an official no-prompt path as such; never infer trust for `$HOME`, `/tmp` or a parent. Resolve OS privacy prompts before the run. |
+| PF-TRUST | Plugin hook trust | Compare the installed `hooks/hooks.json` or `hooks/hooks-codex.json` under `INSTALL_PATH` against the candidate and record the full command list. For a host that requires per-hook trust, a human approves only those exact commands in its official UI. For a host without per-hook review, record official plugin install/enable evidence and the loaded command path. No wildcard, global "trust all", config edit or bypass flag. |
+| PF-FRESH | Fresh host session | A session started after install, trust and reload, with cwd equal to the fixture checkout. A unique run/session marker and SessionStart output or host hook trace identify this session. Give it a new `QMD_RECALL_LOG` file for later prompt-turn evidence; the file alone does not prove SessionStart ran. |
+| PF-HOST | Sandbox and event support | Record the host version, surface (CLI or app), sandbox mode and sandbox environment variables. Check the host's documented/advertised support for every event the planned scenarios require (for example, Codex has no Bash PostToolUse). Observe actual delivery in the corresponding synthetic scenario; do not treat capability metadata alone as a hook PASS. |
+| PF-RUNTIME | OS and runtime dependencies | OS build and architecture match the matrix cell. The hook `python3`, Node, Git (2.36+) and hashing tools resolve from the host's hook environment, and their versions are recorded. No forbidden test variable is set (section 3). |
+| PF-NET | DNS and network | Record host CLI/app and hook-environment connectivity separately: online, intentionally offline, sandbox-denied, DNS failure or remote-service outage. Probe only endpoints a scenario actually needs. Intentional offline mode can be ready for local-only scenarios; a required endpoint failure is not ready. |
+
+Classify every non-`ready` item, and every unexpected functional result
+observed before the preflight was `READY`:
+
+| Class | Typical evidence | Status effect | Retest rule |
+|---|---|---|---|
+| Environment unready | Wrong candidate selected, folder access denied, missing or wrong runtime, a required sandbox/DNS route denied, a session that predates install | Dependent scenarios `BLOCKED` (or `NOT RUN` if not attempted) | Fix the environment, then repeat the whole preflight in a new fresh session. Earlier functional results in that session are discarded. Investigate an installed-byte mismatch before assigning cause: a product installer defect is `FAIL` once reproduced with an otherwise ready environment. |
+| Approval pending | A trust prompt or folder approval not yet given; hooks listed but untrusted; a recorded approval (section 3) missing | `BLOCKED` with the pending item named | A human approves the exact scope in the official UI. Start a new fresh session, repeat PF-TRUST and PF-FRESH, then restart the scenario from its preconditions. |
+| Host unsupported | The host version or surface cannot fire a required event, or cannot run in the cell | Optional cell: `NOT RUN` plus the release-note wording (section 4). Mandatory cell: `BLOCKED`, which blocks release. | Repeat on a host version or surface that supports the event, starting from the preflight. |
+| Product defect | With a `READY` preflight and a supported event, a trusted hook does not fire or the product contradicts the expected outcome | `FAIL` (section 2) | Fix the product, then rerun the affected set under section 11 on a new candidate hash. |
+
+- The operator never trusts hooks or folders automatically, by script, by
+  editing host trust or config files, or beyond the reviewed exact commands.
+- A non-`READY` preflight never skips, waives or reorders a required gate.
+  Required scenarios stay `BLOCKED` or `NOT RUN` until a `READY` preflight
+  allows them to run.
+- An untrusted hook is an approval blocker. A trusted hook that fails to fire
+  on a supported event after a `READY` preflight is a product failure. A
+  missing deny or injection is never `PASS`.
+- This preflight does not change any status that is already recorded in this
+  document.
+
+**Reproducible Codex example (synthetic fixture, generic paths).** This
+example shows how to tell "approval pending" apart from a product defect. It
+does not change any recorded scenario status.
+
+1. Install the exact candidate in the QA account and record PF-ID. Create a
+   fixture with
+   `python3 -B test/fixtures/release-qa-fixture.py create /tmp/qmd-rqa-<runId>-codex-pf`.
+   Leave `project/` unconfigured, so the pre-edit gate should hold edits
+   pending.
+2. In an earlier candidate revision without hook trust, a fresh Codex session
+   asked "README.md 끝에 한 줄 추가해줘" and `apply_patch` changed the file.
+   Classify that observation as **approval pending** (PF-TRUST `not ready`),
+   not `PASS` or a proved product defect. Run `cleanup` on the fixture and
+   create a new one; do not repair the old one by hand.
+3. In the Codex official UI, trust only the folder `<fixture>/project`. Then
+   review and trust exactly the nine commands from the installed
+   `hooks/hooks-codex.json`. Each command has the form
+   `"<INSTALL_PATH>/hooks/run-hook" <name> codex`, where `<name>` is one of
+   `update-queued`, `topical-reconcile`, `recall`, `gate`, `posttool`,
+   `index`, `compile`, `topical-event` and `topical-stop`. Record this list as
+   the trust scope.
+4. On the revised candidate, start a fresh Codex session in the new fixture
+   and repeat the request. The PreToolUse `gate` hook denied `apply_patch`;
+   `git status --porcelain -- README.md` stayed empty. Preserve the hook
+   denial trace and compare the file SHA-256 before and after in future runs.
+   The two observations involve different candidate revisions, so they do
+   not isolate trust as the only cause. PF-TRUST is now `ready`; functional
+   scenarios (RQA-INST-01, RQA-HOOK-02) still run separately and record
+   their own status.
 
 ## 4. Supported OS and host matrix
 
@@ -478,7 +552,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - Fixture created.
 - **Steps:**
   1. Install the candidate through the host marketplace. On Codex, review and
-     trust the hooks in the official UI.
+     trust the exact hook commands in the official UI (preflight PF-TRUST).
   2. Run RQA-ID-00 for this host.
   3. Start a fresh session in `project/`. Record SessionStart output: at most
      one short setup notice, and no hook failure.
@@ -666,8 +740,8 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   (`hooks-codex.json`).
 - **Owner:** search, file sync, runtime.
 - **Host:** Codex.
-- **Preconditions:** RQA-INST-01 is `PASS` for Codex; hooks are trusted in
-  the official UI.
+- **Preconditions:** RQA-INST-01 is `PASS` for Codex; the preflight is
+  `READY`, with the exact hook commands trusted in the official UI.
 - **Steps:** as RQA-HOOK-01, with these differences:
   - The edit goes through `apply_patch`.
   - The deletion in step 5 is also done through `apply_patch`. Codex has no
