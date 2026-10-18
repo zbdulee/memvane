@@ -60,6 +60,67 @@ def row(path="docs/a.md", body="alpha\n# quoted heading", **changes):
     return result
 
 
+V2_PROOF = {"productRouteAllowed": True, "selectionEpoch": 3,
+            "vectorProfile": VECTOR_PROFILE,
+            "providerManifest": {"approvedProviderId": "synthetic-provider"}}
+V2_BUILT = {"generalTerms": ["alpha", "beta", "gamma"], "epTerms": [], "identifiers": []}
+
+
+def v2_decision(project="/synthetic/project"):
+    settings = {"topN": 3, "lexicalPatterns": [], "recallStrategy": "hierarchical",
+                "minScore": 0, "rawFallbackMinScore": 0, "skipPaths": []}
+    roots = {"raw": project + "/docs", "wiki": project + "/wiki"}
+    return {**DECISION,
+            "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+            "projectRoot": project, "dbPath": "/synthetic/index.sqlite",
+            "queuePath": "/synthetic/queue.sqlite", "dbIncarnation": "a" * 32,
+            "vectorProfile": VECTOR_PROFILE, "collectionRoots": roots,
+            "collections": [{"name": name, "role": name, "sourceRoot": root}
+                            for name, root in roots.items()],
+            "recallSettings": settings}
+
+
+def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
+                    provider_calls=None):
+    """Run selected v2 recall with fake journal/runtime/source; return the failure."""
+    from contextlib import ExitStack, nullcontext
+    import config
+    import keywords
+    import laya_install_journal
+    import laya_index_runtime
+    import laya_local_embed_provider
+    import laya_index_source_port as source_port
+    import runtime_work
+    calls = [] if provider_calls is None else provider_calls
+
+    def provider(*args):
+        calls.append(args)
+        raise AssertionError("provider must not run on a stale view")
+
+    runtime = SimpleNamespace(index=index or FakeIndex(), scope=SCOPE, source_root=ROOT)
+    with ExitStack() as stack:
+        enter = stack.enter_context
+        journal = enter(patch.object(laya_install_journal, "verify_selected_route",
+                                     side_effect=verify))
+        enter(patch.object(laya_index_runtime, "LayaIndexRuntime",
+                           return_value=nullcontext(runtime)))
+        enter(patch.object(laya_local_embed_provider, "ReviewedLocalQmdProvider",
+                           return_value=provider))
+        enter(patch.object(config, "load_project_config",
+                           return_value=dict(decision["recallSettings"])))
+        enter(patch.object(keywords, "build_lexical_terms", return_value=V2_BUILT))
+        enter(patch.object(source_port, "_seal",
+                           return_value=(SCOPE, "generation-7", "sealed-manifest")))
+        enter(patch.object(source_port, "scan_collections", side_effect=scan))
+        requested = (enter(patch.object(runtime_work, "request", side_effect=request))
+                     if request is not None else None)
+        try:
+            response.serve_selected("recall", "claude", decision, {"prompt": "find alpha"})
+        except Exception as exc:
+            return exc, requested, journal, runtime.index
+    raise AssertionError("stale recall returned a host payload")
+
+
 class ResponseChecks(unittest.TestCase):
     def assert_rejected(self, code, rows, decision=DECISION):
         with self.assertRaises(response.HostResponseError) as caught:
@@ -535,6 +596,195 @@ class ResponseChecks(unittest.TestCase):
             with self.assertRaisesRegex(IndexContractError, '^fts_deadline_exceeded$'):
                 response._v2_phase(runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE,
                                    lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+
+    def test_only_completed_scan_vs_seal_mismatch_is_wakeable_stale(self):
+        import laya_index_source_port as source_port
+        from laya_index_a import IndexContractError
+        runtime = SimpleNamespace(index=FakeIndex())
+        with patch.object(source_port, '_seal',
+                          return_value=(SCOPE, 'generation-7', 'sealed-manifest')), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='live-manifest')):
+            with self.assertRaises(IndexContractError) as caught:
+                response._v2_phase(runtime, 'token', 'alpha', VECTOR_PROFILE,
+                                   lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+        # The outward contract stays index_stale; only the cause is marked.
+        self.assertEqual(str(caught.exception), 'index_stale')
+        self.assertTrue(response._is_sealed_manifest_stale(caught.exception))
+        others = []
+        for detail in ('too many files', 'oversize: raw/a.md',
+                       'changed during read: raw/a.md', 'malformed view seal',
+                       'search row does not match source',
+                       'collection manifest differs from view seal'):
+            try:
+                source_port._raise_stale(detail)
+            except IndexContractError as exc:
+                others.append((detail, exc))
+        others += [('no cause', IndexContractError('index_stale')),
+                   ('fts', IndexContractError('fts_deadline_exceeded')),
+                   ('host', response.HostResponseError('index_stale'))]
+        for name, exc in others:
+            with self.subTest(case=name):
+                self.assertFalse(response._is_sealed_manifest_stale(exc))
+
+    def test_v2_stale_recall_queues_sync_without_rows_or_provider(self):
+        decision = v2_decision()
+        provider_calls = []
+        exc, requested, journal, index = serve_v2_recall(
+            decision, verify=lambda _d: V2_PROOF,
+            scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'),
+            request=lambda *_a: {'status': 'queued'}, provider_calls=provider_calls)
+        self.assertIsInstance(exc, response.HostResponseError)
+        self.assertEqual(str(exc), 'index_stale_sync_queued')
+        requested.assert_called_once_with('laya-sync', '/synthetic/project')
+        # Initial proof, recheck before the wake, recheck after it.
+        self.assertEqual(journal.call_count, 3)
+        self.assertEqual(provider_calls, [])
+        self.assertTrue(index.released)
+        # A running owner may advance the journal epoch before request returns.
+        advanced = {**V2_PROOF, 'selectionEpoch': 4}
+        exc, requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, V2_PROOF, advanced],
+            scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'),
+            request=lambda *_a: {'status': 'busy'})
+        self.assertEqual(str(exc), 'index_stale_sync_queued')
+
+    def test_v2_stale_recall_reports_unavailable_wake_and_rechecks_proof(self):
+        decision = v2_decision()
+        live = lambda *_a, **_k: SimpleNamespace(manifest='live-manifest')
+        # None is runtime_work.request's fixture/sandbox no-op return.
+        for name, request in (('fixture', lambda *_a: None),
+                              ('raised', OSError('synthetic queue failure')),
+                              ('capacity', lambda *_a: {'status': 'deferred_queue_capacity'})):
+            with self.subTest(case=name):
+                exc, requested, _journal, _index = serve_v2_recall(
+                    decision, verify=lambda _d: V2_PROOF, scan=live, request=request)
+                self.assertIsInstance(exc, response.HostResponseError)
+                self.assertEqual(str(exc), 'index_stale_sync_unavailable')
+                requested.assert_called_once_with('laya-sync', '/synthetic/project')
+        changed = {**V2_PROOF, 'productRouteAllowed': False}
+        exc, requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, changed], scan=live,
+            request=lambda *_a: {'status': 'queued'})
+        self.assertEqual(str(exc), 'selected_proof_changed')
+        requested.assert_not_called()
+        regressed = {**V2_PROOF, 'selectionEpoch': 2}
+        exc, _requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, V2_PROOF, regressed], scan=live,
+            request=lambda *_a: {'status': 'queued'})
+        self.assertEqual(str(exc), 'selected_proof_changed')
+
+    def test_v2_budget_row_corruption_and_legacy_stale_do_not_wake(self):
+        import laya_index_source_port as source_port
+        from laya_index_a import IndexContractError
+        decision = v2_decision()
+
+        def budget(*_a, **_k):
+            source_port._raise_stale('too many files')
+
+        class CorruptRowIndex(FakeIndex):
+            def search_many(self, token, queries, limit, **kwargs):
+                return [[{'scope': SCOPE, 'generation': 'generation-7',
+                          'path': 'wiki/a.md', 'hash': '0' * 64, 'score': 0.1}]
+                        for _ in queries]
+
+        cases = {'budget': (budget, None),
+                 'row': (lambda *_a, **_k: SimpleNamespace(manifest='sealed-manifest',
+                                                           by_path={}),
+                         CorruptRowIndex())}
+        for name, (scan, index) in cases.items():
+            with self.subTest(case=name):
+                exc, requested, journal, used = serve_v2_recall(
+                    decision, verify=lambda _d: V2_PROOF, scan=scan, index=index,
+                    request=lambda *_a: {'status': 'queued'})
+                # Unchanged generic failure: main maps it to
+                # selected_proof_or_query_failed, never to a sync diagnostic.
+                self.assertIs(type(exc), IndexContractError)
+                self.assertEqual(str(exc), 'index_stale')
+                requested.assert_not_called()
+                self.assertEqual(journal.call_count, 1)
+                self.assertTrue(used.released)
+        # Legacy v1 keeps its behavior even for a marked cause.
+        import laya_install_journal
+        import laya_index_runtime
+        import laya_local_embed_provider
+        import config
+        import runtime_work
+        from contextlib import nullcontext
+        try:
+            raise IndexContractError('index_stale') from response._SealedManifestMismatch('x')
+        except IndexContractError as marked:
+            legacy_stale = marked
+        legacy = {key: value for key, value in decision.items()
+                  if key not in ('collections', 'collectionRoots', 'recallSettings')}
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=V2_PROOF), \
+             patch.object(laya_index_runtime, 'LayaIndexRuntime',
+                          return_value=nullcontext(runtime)), \
+             patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider'), \
+             patch.object(config, 'load_project_config',
+                          return_value={'topN': 3, 'lexicalPatterns': []}), \
+             patch.object(response, 'query_selected_hybrid', side_effect=legacy_stale), \
+             patch.object(runtime_work, 'request') as requested:
+            with self.assertRaises(IndexContractError):
+                response.serve_selected('recall', 'claude', legacy, {'prompt': 'find alpha'})
+        requested.assert_not_called()
+
+    def test_repeated_stale_recall_coalesces_in_existing_wake_queue(self):
+        import os
+        import runtime_work
+        decision = v2_decision()
+        real_queue = runtime_work.WakeQueue
+        with tempfile.TemporaryDirectory(prefix='laya-stale-wake-') as temp:
+            state = Path(temp).resolve()
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('QMD_SETUP_GUARD_FIXTURE', 'QMD_SANDBOX')}
+            env['QMD_RUNTIME_DISPATCH'] = '1'
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(runtime_work, 'WakeQueue',
+                              lambda root=None: real_queue(state)), \
+                 patch.object(runtime_work, 'wake') as spawned:
+                for _ in range(5):
+                    exc, _requested, _journal, index = serve_v2_recall(
+                        decision, verify=lambda _d: V2_PROOF,
+                        scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'))
+                    self.assertEqual(str(exc), 'index_stale_sync_queued')
+                    self.assertTrue(index.released)
+                spawned.assert_not_called()
+            wakes = real_queue(state).pending()
+        self.assertEqual([(item['kind'], item['target'], item['status'])
+                          for item in wakes],
+                         [('laya-sync', '/synthetic/project', 'pending')])
+        self.assertEqual(wakes[0]['revision'], 5)
+
+    def test_main_reports_stale_sync_codes_with_exit_3_and_no_fallback(self):
+        import contextlib
+        import io
+        from laya_index_a import IndexContractError
+        selection = {'state': 'candidate'}
+        with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
+            payload = Path(temp) / 'payload.json'
+            payload.write_text(json.dumps({'prompt': 'find alpha', 'cwd': temp}),
+                               encoding='utf-8')
+            for raised, code in (
+                    (response.HostResponseError('index_stale_sync_queued'),
+                     'index_stale_sync_queued'),
+                    (response.HostResponseError('index_stale_sync_unavailable'),
+                     'index_stale_sync_unavailable'),
+                    (IndexContractError('index_stale'), 'selected_proof_or_query_failed')):
+                with self.subTest(code=code):
+                    out, err = io.StringIO(), io.StringIO()
+                    with patch.object(response, 'select_hook_route', return_value=selection), \
+                         patch.object(response, 'select_route', return_value=selection), \
+                         patch.object(response, 'serve_selected', side_effect=raised), \
+                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        status = response.main(['serve-hook', 'recall', 'claude',
+                                                str(payload), temp])
+                    self.assertEqual(status, 3)
+                    self.assertEqual(out.getvalue(), '')
+                    self.assertEqual(err.getvalue(),
+                                     f'[laya-index] {code}; QMD fallback refused\n')
 
 
 if __name__ == "__main__":

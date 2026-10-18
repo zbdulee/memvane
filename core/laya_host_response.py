@@ -49,6 +49,20 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
+class _SealedManifestMismatch(Exception):
+    """Cause marker: a completed live scan differs from the pinned seal.
+
+    Only this cause may wake the sync owner. Scan budget, unreadable source,
+    row/seal corruption and query errors keep their existing failure.
+    """
+
+
+def _is_sealed_manifest_stale(exc: BaseException) -> bool:
+    from laya_index_a import IndexContractError
+    return (type(exc) is IndexContractError and str(exc) == 'index_stale'
+            and type(exc.__cause__) is _SealedManifestMismatch)
+
+
 def _successful_bash(payload: dict) -> bool:
     """Same acceptance as file_change_queue; the selected path imports no QMD module."""
     response = payload.get("tool_response")
@@ -416,12 +430,14 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     """One collection-scoped QMD-style phase over the same sealed pin."""
     from keywords import (build_lexical_terms, select_general_terms_explained,
                           GENERAL_LEX_TERM_CAP)
-    from laya_index_source_port import (_raise_stale, _seal, _verify_row,
+    from laya_index_a import IndexContractError
+    from laya_index_source_port import (STALE, _raise_stale, _seal, _verify_row,
                                         scan_collections)
     sealed = _seal(runtime.index, token)
     source = scan_collections(roots, sealed[0], runtime.index)
     if source.manifest != sealed[2]:
-        _raise_stale('collection manifest differs from view seal')
+        raise IndexContractError(STALE) from _SealedManifestMismatch(
+            'collection manifest differs from view seal')
     prefixes = tuple(name + '/' for name in names)
 
     def verified_batch(queries, limit, *, deadline_seconds):
@@ -454,7 +470,6 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     probe_terms = [(term, _fts_atom(term)) for term in general[:6]]
     active = [(term, atom) for term, atom in probe_terms if atom]
     if active and time.monotonic() < deadline:
-        from laya_index_a import IndexContractError
         try:
             probe_rows = verified_batch([atom for _term, atom in active], 1,
                                         deadline_seconds=max(0.000001,
@@ -643,6 +658,31 @@ def _verified_edit(decision: dict, payload: dict, action: str) -> None:
             _fail("edit_outside_project")
 
 
+def _request_stale_sync(decision: dict, proof: dict):
+    """Record one durable full-scan wake for a stale view; always raises.
+
+    The wake key coalesces repeated recalls. The hook never waits for the
+    owner and never serves the stale generation's rows.
+    """
+    from laya_install_journal import verify_selected_route
+    if verify_selected_route(decision) != proof:
+        _fail("selected_proof_changed")
+    try:
+        import runtime_work
+        result = runtime_work.request("laya-sync", decision["projectRoot"])
+    except Exception:
+        result = None
+    refreshed = verify_selected_route(decision)
+    stable = lambda row: {key: value for key, value in row.items()
+                          if key != "selectionEpoch"}
+    if (stable(refreshed) != stable(proof)
+            or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
+        _fail("selected_proof_changed")
+    if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
+        _fail("index_stale_sync_unavailable")
+    _fail("index_stale_sync_queued")
+
+
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Prove the installed route before opening A-int; unsupported actions fail."""
     if action not in ({"recall", "gate", "posttool", "compile", "update", "update-queued", "index",
@@ -768,19 +808,26 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("selected_recall_settings_unsupported")
     source_root = (next(iter(decision['collectionRoots'].values())) if v2
                    else decision['sourceRoot'])
-    with LayaIndexRuntime(source_root=source_root,
-                          scope=decision["scopeId"], db_path=decision["dbPath"],
-                          queue_path=decision["queuePath"],
-                          db_incarnation=decision["dbIncarnation"]) as runtime:
-        if v2:
-            rows, title_only = query_selected_v2(
-                runtime, prompt, decision["vectorProfile"],
-                proof["vectorProfile"], provider, decision)
-        else:
-            rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
-                                         proof["vectorProfile"], provider,
-                                         lexical_patterns=tuple(patterns))
-            title_only = frozenset()
+    try:
+        with LayaIndexRuntime(source_root=source_root,
+                              scope=decision["scopeId"], db_path=decision["dbPath"],
+                              queue_path=decision["queuePath"],
+                              db_incarnation=decision["dbIncarnation"]) as runtime:
+            if v2:
+                rows, title_only = query_selected_v2(
+                    runtime, prompt, decision["vectorProfile"],
+                    proof["vectorProfile"], provider, decision)
+            else:
+                rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
+                                             proof["vectorProfile"], provider,
+                                             lexical_patterns=tuple(patterns))
+                title_only = frozenset()
+    except Exception as exc:
+        # A pull/checkout outside any hook is first seen here. Wake the owner
+        # only for a verified content mismatch; every other failure is unchanged.
+        if not v2 or not _is_sealed_manifest_stale(exc):
+            raise
+        _request_stale_sync(decision, proof)
     if verify_selected_route(decision) != proof:
         _fail("selected_proof_changed")
     chosen = rows[:top_n]

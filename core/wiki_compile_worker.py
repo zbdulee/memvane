@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import itertools
 import json
 import math
 import os
+import stat
 import subprocess
 import sys
 import traceback
@@ -391,6 +393,126 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
         import wiki_verify_worker
         path = wiki_verify_worker.verify_skipped_path(root, vcfg)
         return wiki_verify_worker.load_verify_suppressions(path).get(rel)
+    except Exception:
+        return None
+
+
+# Same bounded envelope as wiki_selected_laya.wiki_matches (selected v2 capacity).
+SELECTED_PROOF_MAX_CARDS = 200
+SELECTED_PROOF_MAX_BYTES = 5_000_000
+_SELECTED_PROOF_READ_CHUNK = 64 * 1024
+_SELECTED_PROOF_READ_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                              | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
+                              | getattr(os, "O_CLOEXEC", 0))
+
+
+def _read_proof_card_bounded(path: Path, limit: int) -> bytes | None:
+    """No-follow read of one regular card holding at most `limit` bytes.
+
+    The size is judged from fstat BEFORE any allocation and the read itself never
+    asks for more than one byte past `limit`, so a giant or concurrently growing
+    card cannot balloon the worker. None when the card is oversized, not a regular
+    file, unreadable, or changed (identity/size/mtime) while it was read.
+    """
+    if limit <= 0:
+        return None
+    try:
+        fd = os.open(path, _SELECTED_PROOF_READ_FLAGS)
+    except OSError:
+        return None
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            return None
+        chunks = []
+        got = 0
+        while True:
+            chunk = os.read(fd, min(_SELECTED_PROOF_READ_CHUNK, limit + 1 - got))
+            if not chunk:
+                break
+            got += len(chunk)
+            if got > limit:
+                return None
+            chunks.append(chunk)
+        after = os.fstat(fd)
+        named = os.lstat(path)
+        if (got != before.st_size
+                or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                or (named.st_dev, named.st_ino) != (before.st_dev, before.st_ino)):
+            return None
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def selected_compiled_revision_card(root: Path, bound, source_revision: dict) -> str | None:
+    """Wiki-relative card that proves this exact source revision is already
+    compiled and currently trusted on the selected Laya route, else None.
+
+    Checked BEFORE any extractor spawn so one content revision is paid for once
+    across triggers and after a claim/replay. The proof is the durable card
+    itself (no new ledger), judged by the selected recall contract
+    (`laya_host_response._verified_wiki_row`: qmd-created, verified, body digest,
+    raw-collection revisions whose sha256/size/mtimeNs match the file now) — a
+    skipped source is exactly one that recall would serve.
+
+    Unlike verify_suppression_hash this guard fails CLOSED to the existing paid
+    path: a wrong skip silently leaves the wiki without the revision. Unreadable,
+    oversized, symlinked or malformed evidence, and any matching card that is not
+    trusted, return None. An unresolved pending refresh for the source also
+    returns None: card frontmatter does not record which refresh event it
+    fulfilled, so existing code cannot prove the card settles that event.
+    """
+    if bound is None:
+        return None
+    try:
+        import laya_host_response
+        import recall
+        decision = bound[0]
+        pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
+        if pending is None:
+            return None
+        pending_sources = frozenset(item["sourcePath"] for item in pending)
+        if source_revision.get("path") in pending_sources:
+            return None
+        wiki_root = Path(next(item["sourceRoot"] for item in decision["collections"]
+                              if item["role"] == "wiki"))
+        if wiki_root.is_symlink() or wiki_root.resolve(strict=True) != wiki_root:
+            return None
+        files = sorted(itertools.islice(wiki_root.rglob("*.md"), SELECTED_PROOF_MAX_CARDS + 1))
+        if len(files) > SELECTED_PROOF_MAX_CARDS:
+            return None
+        total_bytes = 0
+        proof = None
+        for path in files:
+            rel_card = path.relative_to(wiki_root)
+            if (any(part.startswith(".") for part in rel_card.parts)
+                    or rel_card.name in ("index.md", "log.md")):
+                continue
+            if path.is_symlink() or path.resolve(strict=True) != path or not path.is_file():
+                return None
+            # Per-card and remaining aggregate budget are enforced before allocation.
+            data = _read_proof_card_bounded(path, SELECTED_PROOF_MAX_BYTES - total_bytes)
+            if data is None:
+                return None
+            total_bytes += len(data)
+            body = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            end = body.find("\n---\n", 4) if body.startswith("---\n") else -1
+            if end < 0:
+                continue
+            block = body[4:end]
+            revisions = recall.frontmatter_source_revisions(block)
+            if not revisions and source_revision["path"] in block:
+                return None  # names this source but its provenance is unreadable
+            if not any(wiki_freshness.same_revision(item, source_revision) for item in revisions):
+                continue
+            if not laya_host_response._verified_wiki_row({"body": body}, decision, pending_sources):
+                return None
+            proof = proof or rel_card.as_posix()
+        return proof
     except Exception:
         return None
 
@@ -812,6 +934,18 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     if verify_suppression_hash(root, compile_cfg, rel) == wc.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
+    # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
+    # card already proves this exact revision, whichever trigger or replayed claim
+    # brought the job back. Legacy QMD keeps its existing path.
+    if selected_route is not None and bound_pending is None:
+        proof_card = selected_compiled_revision_card(root, selected_route, source_revision)
+        if proof_card is not None:
+            wiki_selected_laya.recheck(selected_route)
+            append_jsonl(cpath, {
+                **bounded_failure("skipped", job, "already_compiled_revision"),
+                "card": proof_card,
+            })
+            return True, False, []
 
     extractor = compile_cfg.get("extractor") if isinstance(compile_cfg.get("extractor"), dict) else {}
     # 폴백은 qmd_config.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]와 같아야 한다.
