@@ -37,8 +37,7 @@ _ROW_KEYS = frozenset({"scope", "generation", "path", "hash", "body", "score"})
 _PROVIDER_RESULT_KEYS = frozenset({"profileId", "approvedProviderId",
                                    "providerArtifactSha256", "vector"})
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"})
-_PROVED_NOOP_ACTIONS = frozenset({"file-change-event", "topical-event",
-                                  "topical-stop", "topical-reconcile"})
+_PROVED_NOOP_ACTIONS = frozenset({"topical-event", "topical-stop", "topical-reconcile"})
 _PATCH_PATH = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$")
 
 
@@ -48,6 +47,25 @@ class HostResponseError(ValueError):
 
 def _fail(code: str):
     raise HostResponseError(code)
+
+
+def _successful_bash(payload: dict) -> bool:
+    """Same acceptance as file_change_queue; the selected path imports no QMD module."""
+    response = payload.get("tool_response")
+    if (payload.get("hook_event_name") != "PostToolUse" or payload.get("tool_name") != "Bash"
+            or not isinstance(response, dict)):
+        return False
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict) and tool_input.get("run_in_background"):
+        return False
+    if any(response.get(key) for key in ("is_error", "error", "interrupted",
+                                         "backgroundTaskId", "background_task_id")):
+        return False
+    codes = [response[key] for key in ("exit_code", "exitCode", "returncode") if key in response]
+    if codes:
+        return all(type(code) is int and code == 0 for code in codes)
+    return (response.get("interrupted") is False and isinstance(response.get("stdout"), str)
+            and isinstance(response.get("stderr"), str))
 
 
 def _relative_path(raw: object, root: str) -> str:
@@ -627,8 +645,8 @@ def _verified_edit(decision: dict, payload: dict, action: str) -> None:
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Prove the installed route before opening A-int; unsupported actions fail."""
-    if action not in ({"recall", "gate", "posttool", "compile", "update", "update-queued", "index"}
-                      | _PROVED_NOOP_ACTIONS):
+    if action not in ({"recall", "gate", "posttool", "compile", "update", "update-queued", "index",
+                       "file-change-event"} | _PROVED_NOOP_ACTIONS):
         _fail("selected_action_unsupported")
     if host not in ("claude", "codex", "hermes"):
         _fail("unsupported_host")
@@ -641,10 +659,10 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     proof = verify_selected_route(decision)
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
-    if action in _PROVED_NOOP_ACTIONS:
+    if action in _PROVED_NOOP_ACTIONS or (
+            action == "file-change-event" and not _successful_bash(payload)):
         # The selector excludes automatic compile and topical pilot markers.
-        # These host events still fire. A Bash change is caught by the next
-        # full scan; recall meanwhile rejects a stale source manifest.
+        # These host events still fire, as does a failed or background Bash.
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         return {}
@@ -676,10 +694,12 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                            "permissionDecision": "allow"}}
         return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
-    if action in ("update", "update-queued", "index"):
+    if action in ("update", "update-queued", "index", "file-change-event"):
+        # A successful agent Bash (git switch/pull, rm, mv) may change any
+        # source file, so it wakes the same full-scan owner as an edit.
         if action == "index":
             _verified_edit(decision, payload, "index")
-        elif payload.get("hook_event_name") != "SessionStart":
+        elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")
         # A host hook records only a durable wake. The owner worker performs
         # resource admission, document embedding and the journal-fenced sync.
@@ -689,7 +709,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         result = runtime_work.request("laya-sync", decision["projectRoot"])
-        if 'collections' in decision and action != 'index':
+        if 'collections' in decision and action not in ('index', 'file-change-event'):
             import compile_paths
             import wiki_freshness
             root = Path(decision['projectRoot'])
@@ -716,7 +736,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             _fail("selected_proof_changed")
         if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
             _fail("selected_sync_enqueue_failed")
-        if action == "index":
+        if action in ("index", "file-change-event"):
             return {}
         notice = "[laya-index] selected source update queued; recall requires a fresh published view."
         if host == "hermes":

@@ -220,7 +220,9 @@ Operator rules:
   to a file only; it never writes to model context. Do not set test-only
   variables such as `QMD_SKIP_BACKGROUND_WORKER`, `QMD_FORCE_DEAD_PIDS`,
   `QMD_QUERY_FIXTURE` or `QMD_FAKE_PLATFORMS`. If any is present, the run is
-  invalid.
+  invalid. `LAYA_QA_SYNC_BARRIER` is allowed only in the RQA-RACE-01 Part B
+  session, with that part's arm file. In any other scenario it invalidates
+  the run.
 - **Fresh session.** A host process started after the candidate install and
   host reload completed, with its working directory equal to the scenario's
   checkout. Sessions that predate the install are "old sessions" and appear
@@ -878,28 +880,101 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 3. Expected: `ALPHA_MAIN` is not injected as current. Either S-feature
    content, an empty result, or a marked stale result.
 
-**Part B: late worker flip-flop.**
+**Part B: late worker flip-flop (selected Laya Index engine).**
 
-1. In the isolated QA account, establish a bounded, observable barrier after
-   the feature revision is accepted by the file-sync worker but before that
-   worker publishes it. Record the barrier mechanism, worker identity and
-   both Git HEADs. It must be a documented QA-only facility; do not edit a
-   production queue, database, journal or pointer by hand.
-2. Ask the agent to switch to `qa/feature`, wait for the old worker at the
-   barrier, then switch back to `main` and let the new revision publish.
-3. Release the old worker and prove from its log/receipt that it completed
-   after the main revision. Probe Q-alpha and Q-feature immediately and again
-   at T_LATE.
-4. Expected: S-main at both times; `FEATURE_ONLY` and `ALPHA_FEATURE` are
-   never injected after the second switch. A fast flip-flop with no proof of
-   completion order does not exercise this race and cannot be `PASS`.
+Laya Index owns search and indexing in this release. Part B therefore runs on
+a fixture whose route was selected by the installer (LI-MIG in the same
+fixture), not on the legacy QMD writer.
 
-The repository has a synthetic CAS race with an explicit barrier, but does not
-yet provide this QA-only barrier in the operating QMD worker or an inactive DB
-publication path. Until those are implemented and reviewed, Part B is
-`BLOCKED` and so is formal release. The concrete QMD 2.5.3 adapter options
-and isolated implementation sequence are in
-[the published view investigation](plans/2026-10-17-qmd-published-view-options.md).
+How the selected engine enforces the invariant, and why the order differs
+from the old wording:
+
+- One runtime dispatcher per OS UID runs `laya-sync` wakes
+  (`core/runtime_work.py` `drain`, `runtime-worker.lock`). A wake re-put while
+  a sync runs bumps its revision and survives the revision-scoped ACK. A held
+  old attempt therefore **delays** the newer revision. The newer revision
+  cannot publish first; a second selected writer would be deferred
+  (`owner_busy`) by the queue owner lock (`core/laya_index_sync.py`
+  `_owner_lock`).
+- When the old attempt resumes, `sync_full` rescans the source. A vector
+  batch for another manifest is refused before any queue/index write
+  (`vector_batch_stale`).
+- A retained old claim is replanned against the current source.
+  `publish` checks the sealed manifest, base head and revocation epoch in one
+  transaction (`index_stale`/`stale`).
+- Every recall rescans the source against the pinned seal, so a stale head
+  fails closed rather than being injected.
+- The source test is in `test/fixtures/laya-index-sync-checks.py`
+  (`test_late_feature_attempt_after_switch_back_never_publishes`,
+  `test_dead_feature_worker_claim_and_generation_cannot_follow_newer_publish`).
+  It is L0 only.
+
+QA-only barrier (`core/laya_product_sync_worker.py`):
+
+- **Default.** Without `LAYA_QA_SYNC_BARRIER`, no file is read and nothing
+  waits.
+- **Variable value.** With the variable set, it must name
+  `<fixture>/.qa-laya-sync-barrier.json`. `<fixture>` is the resolved
+  `root` from the fixture `MANIFEST.json`, for example `/private/tmp/...` on
+  macOS.
+- **Arm file contents.** The arm file is mode 0600 and must match the
+  fixture owner marker. It names the exact selected project
+  (`paths.project`), `scopeId`, `dbIncarnation` (from the installer
+  `status`), a fresh 32-hex `nonce` and `timeoutSeconds` (1–600).
+- **Validation.** A project outside that fixture is untouched. A malformed or
+  unsafe arm, or the right project with a different scope or DB, fails that
+  sync with `qa_sync_barrier_invalid` before the model starts.
+- **Hold.** The first matching attempt holds after its complete vector batch
+  is built and before anything is enqueued. It writes `.qa-laya-sync-barrier-<nonce>.held`
+  (source manifest, pid, time).
+- **Release.** It waits for a regular file `.qa-laya-sync-barrier-<nonce>.release`
+  that the operator creates.
+- **Outcome record.** It then writes `.done` (release time, finish time,
+  state/generation or refusal reason). A timeout writes `.done` with
+  `laya_qa_barrier_timeout` and leaves the wake pending.
+- **Later attempts.** Later attempts with the same nonce never wait.
+- **Scope of the variable.** The variable is valid only in the Part B host
+  session. It invalidates every other scenario (section 3).
+
+1. Preconditions: Claude Code; selected fixture at S-main, indexed; no
+   runtime dispatcher process alive for the QA UID. Start the fresh host
+   session with the variable naming the as-yet-absent arm path. Wait until
+   its SessionStart `laya-sync` wake has finished and S-main remains current.
+   Only then write the arm file. A missing arm file is ignored, so this
+   SessionStart attempt cannot consume the nonce.
+2. Ask "git switch qa/feature 실행해줘". The successful Bash PostToolUse wakes
+   `laya-sync`. Wait for `.held`; record its source manifest, pid and both
+   Git HEADs (fixture `stage` events or `git rev-parse`).
+3. Ask "git switch main 실행해줘". Read-only, confirm the `laya-sync` wake
+   revision advanced. Probe Q-alpha and Q-feature while the old attempt is
+   still held.
+4. Create the release file. Wait for `.done`, then for the retained wake to
+   settle. Probe Q-alpha and Q-feature immediately and again at T_LATE.
+5. Copy the barrier records into `$EVID` before fixture cleanup. End the
+   session and confirm that no process of the QA UID still carries the
+   variable before the next scenario.
+6. Expected:
+   - `.held` `sourceManifest` is the S-feature manifest. An S-main hold is
+     `BLOCKED`, even if the later probes appear correct.
+   - `.done` `finishedAt` is later than the switch-main event and `releasedAt`.
+   - The old attempt reports a refusal (`vector_batch_stale`, `index_stale`
+     or a replan) and never `indexed` with the held feature manifest.
+     `laya_sync_yield_priority` is inconclusive: repeat with a new nonce.
+   - The installer `status` head ends at a generation whose manifest is S-main.
+   - S-main is current at every probe after the second switch. `FEATURE_ONLY`
+     and `ALPHA_FEATURE` are never injected.
+   - A missing `.held` (for example, a dispatcher without the variable)
+     means the race did not run: `BLOCKED`, repeat with a new nonce. A fast
+     flip-flop without the records cannot be `PASS`.
+
+**Legacy QMD route limitation.** A project that has not been migrated still
+uses the preserved QMD writer, which has no QA barrier or inactive DB
+publication path
+([published view investigation](plans/2026-10-17-qmd-published-view-options.md)).
+That historical document does not decide the Laya engine, and this release
+does not build a QMD A-copy. Late-worker safety is not claimed for the legacy
+QMD route. Release notes must say "late-worker race verified only on the
+selected Laya Index engine" until a separate decision changes that.
 
 **Part C: I/O retry.**
 
@@ -1194,6 +1269,6 @@ Two rules apply:
 | Scenario | Status | Note |
 |---|---|---|
 | RQA-ID-00, RQA-INST-01..04, RQA-HOOK-01..02, RQA-SYNC-01, RQA-GIT-01..03, RQA-WIKI-01..03, RQA-RES-01, RQA-PLAT-01 | `NOT RUN` | Specification only. No installed host, QMD, hook, install, model or network execution in this pass. The synthetic fixture helper was tested separately at L0. |
-| RQA-RACE-01 | `BLOCKED` | A synthetic CAS race passed; the operating QMD worker has no late-worker barrier or inactive DB publication path. The host scenario has not run. |
+| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected Laya Index engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. The legacy QMD writer has no barrier and its late-worker safety is not claimed (release-note limitation). |
 | RQA-RES-02 | `BLOCKED` | Needs separate learning approval, safe synthetic installed-candidate resources, and observed OS-pressure stop/resume. L0 queue tests do not satisfy this row. |
 | LI-INST, LI-MIG, LI-SCOPE, LI-RECOVER, LI-COEXIST, LI-VECTOR, LI-RECALL | `NOT RUN` | Exact marketplace install and fresh-host scenarios have not run. Production provider approval, migration cutover, and retrieval parity remain unresolved. |

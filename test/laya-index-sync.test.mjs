@@ -9,5 +9,5 @@ test('selected Laya Index full scan, owner recovery, and receipt ACK use disposa
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 26 tests/);
+  assert.match(result.stderr, /Ran 28 tests/);
 });

@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 from laya_index_runtime import LayaIndexRuntime
-from laya_index_source_port import publish_from_source, scan, stage_from_source
+from laya_index_source_port import (publish_from_source, scan, search_verified,
+                                    stage_from_source)
 from laya_index_sync import _owner_lock, prepare_candidate_batch_off_hook, sync_full
 from laya_index_vector import (LayaVectorIndex, qmd_markdown_title,
                                search_vector_verified)
@@ -504,6 +505,103 @@ with LayaIndexRuntime(source_root=source,scope=scope,db_path=db,
             self.assertEqual(runtime.queue.active_for_scope(SCOPE), [])
             self.assertEqual(runtime.index.db.execute(
                 'SELECT COUNT(*) FROM generations').fetchone()[0], 0)
+
+    # RQA-RACE-01 Part B on the selected engine: an old attempt that accepted
+    # the feature revision finishes only after main is back on disk.
+    def checkout(self, revision):
+        (self.source / 'chapter.md').unlink(missing_ok=True)
+        (self.source / 'alpha.md').write_text(
+            'alpha qzalphafeature' if revision == 'feature' else 'alpha qzalphamain',
+            encoding='utf-8')
+        feature = self.source / 'feature-only.md'
+        if revision == 'feature':
+            feature.write_text('marker qzfeatureonly', encoding='utf-8')
+        else:
+            feature.unlink(missing_ok=True)
+        if revision == 'main-newer':
+            (self.source / 'beta.md').write_text('beta qzbetav2', encoding='utf-8')
+
+    def assert_serves_only(self, runtime, batch, paths):
+        token, _ = runtime.index.pin(runtime.scope)
+        try:
+            for term in ('qzalphafeature', 'qzfeatureonly'):
+                self.assertEqual(search_verified(runtime.index, runtime.source_root,
+                                                 token, term, 5), [])
+            found = search_vector_verified(runtime.index, runtime.source_root, token,
+                                           [1.0, 0.0], model_id=batch['model_id'],
+                                           embedding_fingerprint=batch['embedding_fingerprint'],
+                                           dimension=batch['dimension'], limit=5)
+            self.assertEqual(sorted(row['path'] for row in found), paths)
+        finally:
+            runtime.index.release(token)
+
+    def test_late_feature_attempt_after_switch_back_never_publishes(self):
+        self.checkout('main')
+        with self.runtime() as runtime:
+            first = sync_full(runtime, before_publish=lambda: None,
+                              vector_batch=self.vector_batch(runtime))
+            self.assertEqual(first['state'], 'indexed')
+            self.checkout('feature')
+            old_batch = prepare_candidate_batch_off_hook(runtime, self.FakeChunkProvider())
+            # The old worker holds here; the user switches back to main.
+            self.checkout('main')
+            marks = []
+            with self.assertRaisesRegex(IndexContractError, 'vector_batch_stale'):
+                sync_full(runtime, before_publish=lambda: marks.append('old'),
+                          vector_batch=old_batch)
+            self.assertEqual(marks, [])
+            self.assertEqual(runtime.queue.active_for_scope(SCOPE), [])
+            self.assertEqual(runtime.index.db.execute(
+                'SELECT COUNT(*) FROM generations').fetchone()[0], 1)
+            fresh = self.vector_batch(runtime)
+            self.assertEqual(sync_full(runtime, before_publish=lambda: None,
+                                       vector_batch=fresh),
+                             {'state': 'unchanged', 'generation': first['generation'],
+                              'claim': None})
+            self.assert_serves_only(runtime, fresh, ['alpha.md'])
+
+    def test_dead_feature_worker_claim_and_generation_cannot_follow_newer_publish(self):
+        self.checkout('main')
+        with self.runtime() as runtime:
+            first = sync_full(runtime, before_publish=lambda: None,
+                              vector_batch=self.vector_batch(runtime))
+            self.checkout('feature')
+            source = scan(runtime.source_root, runtime.scope, runtime.index)
+            old = runtime.queue.enqueue_next(runtime.scope, 'g-old-feature',
+                                             source.manifest, first['generation'])
+            leased = runtime.queue.lease(old['claim'])
+            runtime.index.stage(old['gen'], runtime.scope, source.documents(),
+                                base=first['generation'], source_manifest=source.manifest,
+                                claim_digest=leased['claim_digest'],
+                                claim_epoch=leased['claim_epoch'])
+            # The old owner dies holding its lease; a newer revision lands.
+            self.checkout('main-newer')
+            fresh = self.vector_batch(runtime)
+            newer = sync_full(runtime, before_publish=lambda: None, vector_batch=fresh)
+            self.assertEqual(newer['state'], 'indexed')
+            self.assertNotEqual(newer['generation'], old['gen'])
+            self.assertEqual(runtime.queue.get(old['claim'])['state'], 'replan')
+            self.assertIsNone(runtime.index.db.execute(
+                'SELECT 1 FROM receipts WHERE claim=?', (old['claim'],)).fetchone())
+            args = dict(claim_digest=leased['claim_digest'],
+                        claim_epoch=leased['claim_epoch'])
+            # Late completion against the newer source, or against a restored
+            # feature tree with an outdated base, never moves the head.
+            self.assertEqual(publish_from_source(runtime.index, runtime.source_root,
+                                                 runtime.scope, first['generation'],
+                                                 old['gen'], old['claim'], **args),
+                             'index_stale')
+            self.checkout('feature')
+            (self.source / 'beta.md').unlink()
+            self.assertEqual(publish_from_source(runtime.index, runtime.source_root,
+                                                 runtime.scope, first['generation'],
+                                                 old['gen'], old['claim'], **args),
+                             'stale')
+            self.checkout('main-newer')
+            self.assertEqual(runtime.index.db.execute(
+                'SELECT gen FROM head WHERE scope=?', (SCOPE,)).fetchone()[0],
+                newer['generation'])
+            self.assert_serves_only(runtime, fresh, ['alpha.md', 'beta.md'])
 
     def test_precomputed_batch_must_match_sealed_profile_on_noop(self):
         with self.runtime() as runtime:

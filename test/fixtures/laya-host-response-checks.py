@@ -163,6 +163,31 @@ class ResponseChecks(unittest.TestCase):
         request.assert_called_once_with("laya-sync", decision["projectRoot"])
         self.assertIn("update queued", payload["hookSpecificOutput"]["additionalContext"])
 
+    def test_selected_successful_bash_wakes_full_scan_owner_only(self):
+        import laya_install_journal
+        import runtime_work
+        decision = {**DECISION,
+                    "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+                    "projectRoot": "/synthetic/project", "collections": []}
+        proof = {"productRouteAllowed": True, "selectionEpoch": 2}
+        bash = {"hook_event_name": "PostToolUse", "tool_name": "Bash",
+                "tool_input": {"command": "git switch qa/feature"}}
+        cases = {"ok": ({"exit_code": 0}, ["laya-sync"]),
+                 "official": ({"stdout": "", "stderr": "", "interrupted": False}, ["laya-sync"]),
+                 "failed": ({"exit_code": 1}, []),
+                 "interrupted": ({"interrupted": True, "stdout": "", "stderr": ""}, []),
+                 "background": ({"exit_code": 0, "backgroundTaskId": "b1"}, [])}
+        for name, (tool_response, expected) in cases.items():
+            with self.subTest(case=name), \
+                 patch.object(laya_install_journal, "verify_selected_route", return_value=proof), \
+                 patch.object(runtime_work, "request",
+                              return_value={"status": "queued"}) as request:
+                self.assertEqual(response.serve_selected(
+                    "file-change-event", "claude", decision,
+                    {**bash, "tool_response": tool_response}), {})
+                self.assertEqual([call.args for call in request.call_args_list],
+                                 [(kind, decision["projectRoot"]) for kind in expected])
+
     def test_selected_compile_passes_proved_edit_to_durable_enqueue(self):
         import laya_install_journal
         import wiki_compile_enqueue
