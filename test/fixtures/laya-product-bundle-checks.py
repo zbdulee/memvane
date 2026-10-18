@@ -548,7 +548,20 @@ print(json.dumps(result))'''
                              'qmd': str(package / 'bin/qmd'),
                              'node': str(self.node)},
                    'generation': 'synthetic-runtime'}
-        with mock.patch('qmd_runtime.select', return_value=runtime):
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Linux'),
+              mock.patch('platform.machine', return_value='x86_64')):
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'reviewed_native_platform_unsupported'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1,
+                    model_path=str(model), dimension=3)
+        # The reviewed closure is mac-arm64-metal; pin the host so the positive
+        # path is deterministic on Linux CI without loosening the real gate.
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Darwin'),
+              mock.patch('platform.machine', return_value='arm64')):
             first = product_install.review_local_provider(
                 source_root=self.source, plugin_root=proof['pluginRoot'],
                 state_root=self.install, commit_id=self.commit1,
