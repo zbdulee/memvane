@@ -242,9 +242,9 @@ PyYAML은 테스트 전용 venv의 site-packages만 시스템 Python의 `PYTHONP
 | 우선 | 남은 결합과 완료 기준 | 현재 상태 |
 |---|---|---|
 | 1. 색인·검색 게시 | 승인된 store/worktree revision의 비활성 후보만 QMD writer가 쓰고, 후보 daemon 준비·요청 세대 pin·late worker 거절·queue ACK 복구가 한 게시 계약으로 연결돼야 한다. | C2b에서 private 후보 설정·SQLite 게시·ACK callback·이전 게시 DB source 연속성을 검증했다. C2c에서는 게시 전 receipt를 받는 source callback, 불확실 ACK의 순수 판정, recall의 선택 route/URL pin을 추가했다. `backend/index_worker.sh`·`update.sh`와 공유 pointer/endpoint는 그대로여서 운영 경계는 미완료. [C2 옵션](2026-10-17-qmd-published-view-options.md)의 A/B 저장 구조 선택·전환 승인 필요. |
-| 2. 파일 동기화 → 위키 비용 경계 | change set이 content/scope revision을 위키에 넘기고, 같은 원문 revision의 수동 sync·SessionStart·PostToolUse enqueue가 하나의 유료 작업으로 합쳐져야 한다. | `file_change_plan`과 `wiki_source_intent`의 순수 순서·상한 분리는 완료. 현재 `changedFiles`는 경로만 가져 cross-run 멱등성과 ACK 복구는 미완료. |
-| 3. 런타임 → 학습 실행 | wake kind별 handler가 실행 직전 승인·scope를 재확인하고 공통 queue는 lease·재시도·revision ACK만 소유해야 한다. | `runtime_wake_policy` 결정 추출과 recall의 읽기 전용 `selection_port`는 완료. `runtime_work.dispatch`와 `recall`의 학습 상태·실행 import 결합은 남아 있다. |
-| 4. 설치와 검색 준비 | 설치 journal은 증명된 후보·scope 결과만 받아야 하며 반복 검색 게시와 최초 빈 store 활성화는 별도 계약이어야 한다. | `install_evidence` 판정 추출은 완료. `shared_install`의 증거 수집·벡터 복구·endpoint 준비 순서와 반복 게시 연결은 남아 있다. |
+| 2. 파일 동기화 → 위키 비용 경계 | change set이 content/scope revision을 위키에 넘기고, 같은 원문 revision의 수동 sync·SessionStart·PostToolUse enqueue가 하나의 유료 작업으로 합쳐져야 한다. | `file_change_plan`과 `wiki_source_intent`의 순수 순서·상한 분리는 완료. Stage 3(집중 가드 회귀 통과)에서 hash 스캔 경로만 content revision을 넘기고, live 큐에 남은 같은 `(collection, path, revision, trigger)` 행만 건너뛴다. 처리된 행과의 cross-run 멱등성, PostToolUse·수동 sync 병합, scope revision은 미완료. |
+| 3. 런타임 → 학습 실행 | wake kind별 handler가 실행 직전 승인·scope를 재확인하고 공통 queue는 lease·재시도·revision ACK만 소유해야 한다. | `runtime_wake_policy` 결정 추출과 recall의 읽기 전용 `selection_port`는 완료. kind별 handler는 Stage 2에서 `runtime_handlers`로 분리했다(집중 가드 회귀 통과). `runtime_work` 모듈 상단의 학습 패키지 import(Stage 2b)와 `recall`의 학습 상태·실행 import 결합은 남아 있다. |
+| 4. 설치와 검색 준비 | 설치 journal은 증명된 후보·scope 결과만 받아야 하며 반복 검색 게시와 최초 빈 store 활성화는 별도 계약이어야 한다. | `install_evidence` 판정 추출은 완료(Stage 5에서 남은 source identity·벡터 결함 판정까지 이동, 집중 가드 회귀 31/31 통과). 증거 수집 IO·벡터 복구·endpoint 준비는 `shared_install`에 남는다. 반복 검색 게시 경로는 설치에 없으며 연결은 남아 있다. |
 
 1순위의 소스 단계로 `qmd_candidate_config`, `shadow_publish_flow`,
 `shadow_qmd_adapter`를 추가했다. 새·기존 C1/C2a 집중 회귀 5/5 통과,
@@ -265,16 +265,21 @@ daemon cutover는 아직 구현하지 않았다.
 위 기록을 대체하지 않고 현재 코드 기준으로 요약한다. "분리됨"은 해당 모듈이
 존재하고 호출자가 쓰고 있다는 뜻이며 운영 경계 완료를 뜻하지 않는다.
 
+CI 기준: PR #13 CI(Node 22/24/26) 통과는 Stage 1만 담은 구 head `4279feb`에만 해당한다.
+Stage 2–6을 합친 새 head의 PR CI와 전체 `npm test`는 대기 중이다. 아래 단계별 "집중 가드"
+수치는 개발 가드의 집중 회귀 결과이며 그 대체가 아니다. 운영 runtime·endpoint·설치 QA는
+어느 단계에서도 실행하지 않았다.
+
 | 영역 | 이미 분리된 모듈 | 남은 작업 |
 |---|---|---|
 | 검색·컨텍스트 | `index_snapshot`, `published_view`, `shadow_index`, `request_view_pin`(recall 연결), `context_learning/selection_port` | `backend/index_worker.sh`·`update.sh` writer의 후보 세대 연결, 공유 pointer/endpoint cutover, recall의 학습 지연 import 축소 |
 | 학습 데이터·평가·학습 | `selection_port`(읽기 전용 판단), `resource_deferred`(Stage 1, 비학습 소비자의 공용 예외) | `runtime_work`의 학습 coordinator·handler 직접 import, capture·trainer 경계 |
-| 위키·출처 | `wiki_source_intent`, `wiki_compile_enqueue.enqueue_changed_sources` | content revision 기반 cross-run 멱등 키, 삭제·rename 카드 provenance |
-| 파일·프로젝트 동기화 | `file_change_plan`(순수 계획·효과 순서) | change set에 content/scope revision 부여, enqueue 뒤 persist 실패 시 중복 enqueue |
-| 설치·마이그레이션 | `install_evidence` | `shared_install`의 증거 수집·벡터 복구·endpoint 준비 순서, 반복 게시와 최초 활성화 계약 분리 |
-| 런타임 큐·자원·모델 실행 | `runtime_wake_policy`, `resource_deferred`(Stage 1) | `runtime_work.dispatch`의 kind별 handler 분리, `runtime_work`가 모듈 상단에서 가져오는 `context_learning.{resource_coordination,local_cycle,resident}` |
+| 위키·출처 | `wiki_source_intent`(`revision_key`, Stage 3), `wiki_compile_enqueue.enqueue_changed_sources` | 이미 claim·처리된 행과의 멱등성, revision 없는 PostToolUse·수동 sync 병합, 삭제·rename 카드 provenance |
+| 파일·프로젝트 동기화 | `file_change_plan`(순수 계획·효과 순서, hash 스캔의 `revisions`) | scope revision 부여. enqueue 뒤 persist 실패의 재시도는 행이 live 큐에 남아 있을 때만 중복 enqueue를 피한다 |
+| 설치·마이그레이션 | `install_evidence`(Stage 5에서 source identity·벡터 결함 판정 추가, 집중 가드 회귀 31/31 통과) | 반복 검색 게시 경로는 없으며 Stage 6 게시 연결과 함께 다룬다. 증거 수집 IO·벡터 복구·endpoint 준비 순서는 의도적으로 `shared_install`에 남긴다 |
+| 런타임 큐·자원·모델 실행 | `runtime_wake_policy`, `resource_deferred`(Stage 1), `runtime_handlers`(Stage 2, 집중 가드 회귀 통과) | `runtime_work`가 모듈 상단에서 가져오는 `context_learning.{resource_coordination,local_cycle,resident}`(Stage 2b) |
 
-**Stage 1 (상태: 소스 변경 완료, 집중 가드 회귀 통과, 전체 PR CI 대기):** `ResourceDeferred`만
+**Stage 1 (상태: 소스 변경 완료, 집중 가드 회귀 통과, 구 head `4279feb`의 PR #13 CI 통과):** `ResourceDeferred`만
 `core/context_learning/local_cycle.py`에서 새 `core/resource_deferred.py`로 옮긴다.
 생성자 `(reason, report=None)`, `ValueError` 하위 클래스, `report` 기본값 `{}` 의미는
 그대로 두고 `local_cycle`은 같은 클래스 객체를 다시 노출한다. 비학습 소비자
@@ -301,10 +306,171 @@ runtime-wake-policy, qmd-endpoint, wiki-compile-worker, laya-product-sync-worker
 orphan-reclaim, context-learning 7개 파일)은 Node 93/93과 Python 117건, B 묶음
 (resource-policy, shared-install, wiki-extractors, extractor-dispatch-guard,
 laya-product-bundle 5개 파일)은 Node 56/56과 Python 그룹 19·25·20을 통과했다. 두 가드
-checkpoint 모두 completed/settled/passed, 종료 코드 0이었다. 전체 `npm test`와 PR CI는
-아직 결과가 없으므로 통과로 표기하지 않는다. 운영 runtime·endpoint·설치 QA는 실행하지 않았다.
+checkpoint 모두 completed/settled/passed, 종료 코드 0이었다. 이후 Stage 1 커밋 `4279feb`를
+head로 한 PR #13의 CI(Node 22/24/26)가 모두 통과했다.
 
-#### 이후 단계 (Stage 2–6, 미착수)
+**Stage 2 (상태: 소스 변경 완료, 집중 가드 회귀 통과 Node 35/35·Python 묶음 통과):** `runtime_work.dispatch`의 kind별
+본문을 새 `core/runtime_handlers.py`의 함수(`index`, `update`, `laya_sync`,
+`laya_compile`, `learning`, `auto`, `cleanup`)로 옮기고 고정 `HANDLERS` 표로 고른다.
+본문은 그대로 옮겼다. 같은 `core/` 디렉터리라 `index_worker.sh`·`orphan_reclaim.py`
+경로가 같고, 함수 안 지연 import, 실행 직전 `setup_guard` 재확인(learning은
+`worker_lease` 안에서 한 번 더), 자식 env(`QMD_RUNTIME_DISPATCH=1`, cleanup의 route
+키), 반환 boolean과 `invalid_runtime_handler` 예외도 같다. `runtime_work`는 같은
+`dispatch` 객체를 다시 노출하므로 `drain(execute=dispatch)` 기본값과
+`runtime_work.dispatch` 외부 호출자는 그대로다. learning/auto만 compute admission을
+기다리는 kind 판정은 순수 함수 `runtime_wake_policy.needs_compute_admission`으로
+옮겼고, 표본 수집·`Coordinator.check`는 `drain`에 남았다. 쓰지 않던 `decision`
+import만 지웠다. `runtime_handlers` import는 `context_learning`을 적재하지 않으며
+새 `test/runtime_handlers_test.py`가 별도 인터프리터에서 이를 고정한다.
+
+이 단계는 원래 표의 "모듈 상단 `context_learning` import를 handler 안쪽으로 좁힌다"를
+완료하지 않는다. `Coordinator`·`default_root`·`_lock`은 `foreground`·`guarded_run`·
+`drain`·`wake`가, `resident._private_state`는 `WakeQueue`가, `_atomic_json`은 queue
+capacity 기록이 쓰며, 테스트가 `runtime_work.Coordinator`·`default_root`를 patch한다.
+따라서 `runtime_work` import 시점의 학습 패키지 적재 해소는 **Stage 2b**로 미룬다.
+Stage 2b는 이 공용 queue/lease 도구를 비학습 모듈로 옮기면서 기존 patch seam을
+호환해야 한다. 집중 회귀(runtime-resources, runtime-wake-policy, resource-policy,
+context-learning, qmd-endpoint, orphan-reclaim, laya-product-sync-worker)는 개발
+가드로 통과했다(Node 35/35, 해당 Python 묶음 통과). Stage 2b(중립 lease 도구 이동)는
+착수하지 않았다.
+
+**Stage 3 (상태: 소스 변경 완료, 최초 집중 가드 112/112, 리뷰 후속 수정 뒤 집중 가드 37/37 통과):** 원래 표의 "cross-run 중복을 합친다"보다
+좁다. 합치는 대상은 **아직 live source queue에 남아 있는 행**뿐이다.
+
+- `file_change_plan.plan_change_set`은 hash 스캔(SessionStart sync, file-change worker)에서
+  created/updated 파일의 `sha256`이 있을 때만 그 컬렉션의 메모리 `changedFiles`에
+  `revisions`(`{rel: sha256}`)를 붙인다. snapshot은 `collections`에서 저장되므로
+  snapshot·status·pending.json 형식은 그대로이고, hash가 없는 수동 sync의 change set과
+  큐 bytes는 이전과 같다. scope revision은 넣지 않았다.
+- `wiki_compile_enqueue.compile_candidates`는 revision이 있는 행에만 `contentRevision`을
+  기록한다. `wiki_source_intent.revision_key`는 `(collection, path, contentRevision,
+  trigger)`다. 큐 파일이 이미 프로젝트 소유이므로 owner 경로·scope hash는 키에 없다.
+- `enqueue_changed_sources`는 키가 있는 후보가 있을 때만 기존 queue lock 안에서 live 큐를
+  읽어 같은 키 행을 제외한 뒤 상한 분할·append를 한다. 제외된 후보는 queued·deferred
+  어느 쪽에도 세지 않지만 **상한 칸은 쓴다**(같은 wake가 그 행을 compile한다). 새 후보는
+  `cap - 제외 수`까지만 append하고 나머지는 deferred로 남겨 snapshot rollback으로 다음
+  회차가 다시 집는다. 그래서 hash 소스 60개·상한 50에서 첫 회차가 50개를 넣은 뒤
+  snapshot 저장이 실패해도, 재시도는 50개를 건너뛰고 나머지 10개를 미루며 한 wake의
+  live 행은 50개를 넘지 않는다. 전부 제외되면 공개 reason은 기존 `no_sources`다. 동의
+  gate와 `apply_change_set`의 효과·ACK 순서는 바뀌지 않았다.
+- lock 안의 live 큐 읽기는 `QUEUE_SCAN_MAX_BYTES`(8 MiB)+1 바이트까지만 한다. 큐가 그보다
+  크면(worker가 오래 멈춘 경우) 키를 찾지 않고 같은 lock 안에서 기존처럼 상한 분할·append만
+  한다. 이때는 중복 유료 작업이 가능하지만 기존 행을 고치거나 잃지 않고, 무제한 읽기도 없다.
+- 제외된 후보는 아직 live 큐에 남은 작업이므로, 하나라도 제외되면 결과 dict에 내부 신호
+  `wakePending: True`가 붙는다(제외가 없으면 키 자체가 없다). queued·deferred·상한에는
+  들어가지 않고 sync 출력의 `compileQueued`·status.json·pending.json에도 기록되지 않는다.
+  `file_change_queue.worker`는 `queued` 또는 `wakePending`이면 기존대로 즉시
+  `kick-wiki-compile`을 하고, selected Laya route의 `request_compile`도 같은 조건으로
+  요청된다. 따라서 enqueue 뒤 snapshot 저장이 실패한 재시도는 행을 다시 넣지 않으면서
+  (`compileQueued`=0) 그 회차에 compile worker를 깨운다.
+- `sync.py`(수동·SessionStart)는 결과에 `wakePending`이 있을 때만 JSON에 내부 필드
+  `compileWakePending: true`를 덧붙인다. 없으면 키 자체가 없어 평소 출력은 그대로이고,
+  `compileQueued`는 실제 append 수 그대로다. `update.sh`의 SessionStart 단계는
+  `compileQueued > 0` 또는 `compileWakePending`이면 기존 `kick-wiki-compile --flush`를
+  한 번 한다. 동의가 없거나 오류·baseline·unchanged인 sync는 이 필드를 내지 않으므로
+  kick도 추가되지 않는다.
+
+남은 한계: worker가 이미 claim(`*.claimed.*`)했거나 처리해 큐에서 빠진 행은 보지 않으므로
+처리 완료 뒤의 중복 유료 작업은 막지 못한다. trigger가 키에 있으므로 같은 revision이라도
+SessionStart·file-change 이벤트(`post_sync_source`)·수동 sync는 서로 합쳐지지 않고,
+PostToolUse·수동 sync·pending 복구 행은 revision이 없어 그대로 중복될 수 있다(worker의
+`(path, collection)` 병합은 기존대로). 수동 `sync` CLI는 `compileWakePending`을 출력할
+뿐 스스로 kick하지 않는다(원래 수동 sync는 compile worker를 돌리지 않는다). 삭제·rename 카드
+출처는 이 단계 범위가 아니다. 합성 회귀(`file-change-plan-checks.py`,
+`wiki-source-intent-checks.py`, `file-change-queue.py`의 `compile-cap` 재시도 kick 확인,
+`sessionstart-sync-checks.py`의 enqueue 뒤 snapshot 저장 실패 → SessionStart 재시도
+(`compileQueued`=0, `compileWakePending`, 큐 bytes 불변)와 `sessionstart-sync.test.mjs`가
+그 실제 재시도 출력을 `update.sh --worker`의 sync 결과로 재생해 `kick-wiki-compile --flush`
+1회, 신호 없는 queued=0의 무kick, queued>0의 기존 kick을 확인하는 사례)를 포함한 집중
+회귀는 상한 수정 **전** 개발 가드로 통과했다(Node 112/112, 가드 체크포인트 통과).
+`update.sh` 사례는 sync.py 호출을 stub으로 바꿔 재생하므로 같은 프로세스 안의 실제 저장
+실패를 거치지는 않는다.
+
+Stage 3 리뷰 후속(M1·L1): Stage 2–4 읽기 전용 집중 리뷰가 제외된 live 행을 상한에서 빼지
+않아 한 wake의 live 행이 상한을 넘을 수 있는 회귀(M1)를 찾았다. 제외된 행이 상한 칸을 쓰도록
+바꾸고 live 큐 읽기에 8 MiB 상한을 두었다. `wiki-source-intent-checks.py`에 60개·상한 50 저장
+실패 재시도(live 50행 유지, 꼬리 10개 deferred·snapshot 미진전, drain 뒤 다음 회차가 꼬리만
+queue)와 8 MiB 초과 큐의 plain append 사례를 추가했고, 기존 "제외 행은 상한 칸을 쓰지
+않는다" 사례는 새 계약으로 고쳤다. 수정 뒤 집중 가드 회귀 37/37이 통과했다.
+
+**Stage 4 (상태: 소스 변경 완료, 집중 가드 회귀 통과 42/42):** recall의 live selection 블록 하나만
+새 조정자 `context_learning/selection_read.select(...)`로 옮겼다. `selection_port`는 순수
+함수로 남고(docstring만 갱신), 상태 해석·공유/profile 동의 확인·corpus snapshot·작업량
+추정·`live_select.choose` 호출은 `selection_read`가 기존 순서 그대로 한다.
+
+- recall에 남은 것: `adaptive_pool.plan`(질의 전 pool 계획), `qmd_laya_selection`을 포함한
+  모든 recall 로그, `request_view_pin` 확인, capture·observe·write 경로, 공개 출력 순서.
+  recall은 여전히 함수 안에서 `context_learning`을 가져온다(`selection_read`, plan,
+  capture 등). 학습 패키지 import가 recall에서 사라진 것은 아니다.
+- 보존한 계약: 검사·예외 순서, non-profile(trial grant)과 profile(`readable`) 동의 분리,
+  `no_candidates`·`non_wiki_pool`·`private_state_unavailable`·`shared_state_unavailable`·
+  plan reason, 오래된 corpus·오류의 `candidate_unavailable` 대응과 두 통과 reason
+  (`input_window_unavailable`·`responsiveness_deferred`), 실패 전까지 얻은
+  work_estimate·corpus·model_rows·resources 유지, 기본 top-3과 trial fallback top_n,
+  `HookDeadlineExceeded` 전파, corpus에 원래 `qmd_paths` 전달, 잡는 예외 tuple
+  `(OSError, ValueError, UnicodeError, KeyError, TypeError)`. 학습 이름은 호출마다 함수
+  안에서 import하므로 테스트의 모듈 attribute patch(`live_select.choose`,
+  `shared._policy` 등)가 그대로 적용된다. deadline은 기존처럼 사용 시점마다
+  `hook_budget.deadline`을 호출한다.
+- 쿼리 중 `_private_state(create=True)` 디렉터리 생성은 그대로이며 별도 변경으로 남긴다.
+- `learning-selection-port-checks.py`에 recall 구조 단정 갱신과, 이전 inline 블록 사본과
+  `select`를 같은 patch 아래 돌려 결과·예외·학습 호출 순서를 비교하는 동등성 사례를
+  추가했다. 집중 회귀는 개발 가드로 42/42 통과했다.
+
+**Stage 5 (상태: 소스 변경 완료, 집중 가드 회귀 통과 31/31):** 대부분의 분리(색인 대상, 파일
+identity, source queue 이름, 단일 모델 fingerprint, scoped search hit)는 이미
+`install_evidence`에 있었다. 이번에는 `shared_install`에 남아 있던 순수 판정만 옮겼다.
+
+- 옮긴 것: source 파일의 해시 전 stat과 이후 stat의 identity 비교
+  (`same_source_identity`, ctime만 달라도 불일치), snapshot 항목 dict
+  `{'sha256','identity'}`(`source_entry`), 벡터 감사 결함 여부(`vectors_complete`),
+  호출자별 reason의 `ValueError`(`require_complete_vectors`: `physical_vectors_still_incomplete`·
+  `physical_vectors_incomplete`·`physical_vectors_changed_during_readiness`), 복구 journal의
+  `vectorRepair` intent dict(`vector_repair_intent`). `install_evidence`는 계속 import가 없다.
+- `shared_install`에 남은 것: 파일·DB·프로세스 IO, deadline, journal 저장, 설정·store 준비,
+  `UnstableSourceSnapshot` 발생 위치. 첫 번째(fd `fstat`)와 두 번째(path `stat`) 확인은 기존
+  순서와 단락 평가를 그대로 유지해 첫 확인이 실패하면 path `stat`을 호출하지 않는다.
+  bootstrap proof는 `_vector_scope` 호출마다 다시 읽고, `_save`·`dirty_queue`·`S.root`·
+  `S._private_file`·`_readiness` 등 patch seam과 활성화 순서는 바꾸지 않았다.
+- 바꾸지 않은 것: journal 형식은 새로 만들지 않았고(dict 내용·키 순서 동일), 반복 게시 경로는
+  추가하지 않았다. `shared_install`은 `qmd_shared_store.stage_empty/activate_empty`를 호출하지
+  않으므로 그 계약은 이 단계의 보존·검증 대상이 아니다(최초 store 준비·활성화는 기존대로
+  `shared_qmd_setup.prepare/activate`).
+- `install-evidence-checks.py`에 ctime만 다른 identity 불일치, snapshot 항목의 정확한 형태,
+  결함 판정·repair intent dict, reason별 `ValueError`, 그리고 합성 임시 collection에서
+  `_source_snapshot`의 항목 형태와 두 번째 `fstat`의 ctime만 바뀐 경우의
+  `source_changed_while_hashing`을 추가했다(13→18건). 집중 회귀는 개발 가드로 31/31
+  통과했다. Stage 5/ACK 읽기 전용 집중 리뷰는 Critical/High/Medium 문제를 찾지 않았다.
+
+**Stage 6 (상태: writer 연결 BLOCKED·미완료, 조건부 ACK 선행 seam만 구현·집중 가드 22/22 통과):** writer 연결은
+A/B source·pointer 구조, `scopeRevision`/`incarnation` 정의, 게시 전 durable receipt,
+live read·embed 경로의 모순이 결정되지 않아 BLOCKED다. `backend/index_worker.sh`·
+`update.sh`·live 검색 writer·공유 `active.json`·endpoint·운영 DB는 바꾸지 않았다. 이번에
+추가한 것은 Stage 6 완료가 아니라 그 **선행 조건**인 조건부 ACK seam 하나다.
+
+- `dirty_queue_claim.claim_identity(queue)`: `queue_lock` 안에서 claim을 읽기만 하고
+  `shadow_ack_policy`가 받는 `{id, digest}`(`id`=`qmd-dirty-claim-v1:<queue inode>:<size>`,
+  `digest`=claim의 검증된 `sha256`)를 돌려준다. claim이 없으면 `None`이고, claim도 lock도
+  없으면 lock sidecar를 만들지 않는다. identity는 processing→done과 `reloadRequired` 재기록에
+  변하지 않는다.
+- `ack(queue, expect=None)`: `expect`가 없으면 기존 동작·CLI(`ack <queue>`)와 같다.
+  `expect`가 있으면 모양을 lock 전에 검사하고, 같은 lock 보유 안에서 claim을 한 번 읽어
+  기존 `dirty_queue_claim_missing`→`dirty_queue_reload_required` 순서 다음에 identity를
+  비교한다. 불일치(`dirty_queue_claim_identity_mismatch`)는 phase 기록·파일 변경 전에 거절한다.
+- 크기 상한: 조건부 경로만 claim 파일을 `MAX_IDENTITY_CLAIM_BYTES`(8 MiB)까지 읽고, 넘으면
+  `dirty_queue_claim_too_large`로 무변경 거절한다(부분 파싱 없음). 기존 ACK의 읽기는 그대로다.
+  일치한 뒤의 queue 접두 비교·교체 읽기는 기존 ACK와 같아 상한이 없다.
+- 남은 한계: claim 파일에 nonce가 없어(추가하면 기존 claim bytes가 바뀐다) inode가 재사용되고
+  같은 bytes가 다시 claim되면 이전 identity와 구분되지 않는다. durable receipt 결정과 함께 다룬다.
+- `shadow_publish_flow`의 ACK callback 주입은 그대로다. 새 합성 검사
+  `dirty-queue-claim-identity-checks.py`를 포함한 이 선행 seam의 집중 가드 회귀는 22/22
+  통과했다. 실제 후보 writer 연결은 여전히 BLOCKED이며 Stage 6은 완료가 아니다.
+- 8 MiB 제한: 실제 claim이 8 MiB를 넘으면 조건부 ACK는 항상 `dirty_queue_claim_too_large`로
+  거절한다. 이 claim은 이후 재시도해도 같은 이유로 거절되므로, 미래 소비자(게시 flow의 ACK
+  callback)는 이 결과를 **DEFER**(ACK 보류·불확실 상태 유지, 다음 결정까지 대기)로 다뤄야 하며
+  즉시 재시도 루프에 넣으면 안 된다. `expect` 없는 기존 ACK 경로는 이 제한의 영향을 받지 않는다.
+
+#### 이후 단계 (Stage 2b–6)
 
 전체 아키텍처 분리 작업은 승인돼 있으므로 단계마다 따로 승인을 받지 않는다. 다만 각
 단계는 하나의 경계만 옮기고, 아래 집중 회귀를 개발 가드로 통과한 뒤 이 절의 상태를
@@ -315,11 +481,12 @@ Stage 1에서 바로 이어지는 런타임 결합을 먼저 풀고, 운영 구�
 
 | 단계 | 대상 모듈 | 보존할 계약 | 집중 회귀 |
 |---|---|---|---|
-| Stage 2 런타임 handler | `runtime_work.dispatch`의 index/update/cleanup/learning/auto handler를 소유 기능의 작은 함수로 분리하고, 모듈 상단의 `context_learning.{resource_coordination,local_cycle,resident}` import를 learning/auto handler 안쪽으로 좁힌다. `runtime_wake_policy`는 그대로 결정만 소유한다. | `WakeQueue` SQLite schema, revision ACK, lease·재시도, `ResourceDeferred` 반환 의미, `MAX_WAKES` override, 실행 직전 승인·scope 재확인 위치 | runtime-resources, runtime-wake-policy, resource-policy, context-learning, qmd-endpoint, orphan-reclaim |
-| Stage 3 파일 변경 → 위키 revision | `file_change_plan.plan_change_set`의 `changedFiles`에 content/scope revision 값을 덧붙이고, `wiki_source_intent`·`wiki_compile_enqueue.enqueue_changed_sources`가 `(owner, collection, relative path, content revision, trigger)` 키로 cross-run 중복을 합친다. | snapshot·status·pending.json 형식, `apply_change_set`의 효과·ACK 순서, 스캔 실패 ≠ 삭제, `state_unreadable`(3), 동의 gate·상한, 기존 카드 출처 | `test/file-change-plan.test.mjs`, 기존 file-change·SessionStart·sync/compile 회귀, wiki-compile-worker. 동일 revision의 수동 sync·SessionStart·PostToolUse 중복과 enqueue 뒤 persist 실패를 합성 사례로 추가한다. extractor는 호출하지 않는다. |
-| Stage 4 recall 학습 읽기 포트 | `recall.py`가 함수 안에서 가져오는 `context_learning.{live_select,corpus,shared,adaptive_pool,…}` 읽기 경로를 `selection_port` 뒤의 얇은 선택 함수 하나로 묶는다. `posttool`·`edit_context`·`topical_hook_queue`의 capture 호출은 옮기지 않는다. | raw 검색 결과·진단·fallback, `request_view_pin`의 route/URL pin, 미동의·후보 없음·오래된 corpus 동작. 쿼리 중 `_private_state(create=True)` 디렉터리 생성은 별도 변경으로 다룬다. | recall 집중 회귀(C2c의 57건 묶음), context-learning, selection_port fixture |
-| Stage 5 설치 증거 수집 | `shared_install._source_snapshot`·`_vector_report`의 수집 결과를 `install_evidence`가 판정하는 좁은 값으로 만들어 `_install` journal 판정에 넘긴다. `setup_entry`·`setup_guard`는 호출 위치만 유지한다. | journal intent→enqueue→ACK 순서, `qmd_shared_store.stage_empty/activate_empty`, `setup_guard` 상태 코드, 승인 scope·deadline·중단 후 재개, 기존 store 무변경, 최초 활성화와 반복 게시의 계약 분리 | shared-install, laya-product-bundle, install_evidence fixture. 실제 설치·업데이트 QA는 이 단계에서 수행하지 않는다. |
-| Stage 6 검색 게시 writer 연결(격리) | `backend/index_worker.sh`·`update.sh` writer가 `qmd_candidate_config`·`shadow_publish_flow`·`shadow_qmd_adapter`를 통해 비활성 후보 세대에만 쓰는 경로를 private pointer에서 연결한다. 저장 구조는 [C2 옵션](2026-10-17-qmd-published-view-options.md)과 [Laya Index 계획](2026-10-17-embedded-sqlite-search-engine.md)의 결정을 따른다. | 공유 `active.json`·endpoint 무변경, `published_view`의 요청 identity·CAS, `shadow_ack_policy`의 불확실 ACK 판정, 게시 전 receipt, late worker 거절 | published-view·shadow publish·ACK fixture(C1/C2a/C2b/C2c 묶음), recall 집중 회귀. 운영 cutover와 RQA-RACE-01은 BLOCKED 상태를 유지한다. |
+| Stage 2 런타임 handler (소스 완료, 집중 가드 회귀 통과 Node 35/35·Python 묶음) | `runtime_work.dispatch`의 index/update/laya-sync/laya-compile/learning/auto/cleanup 본문을 `runtime_handlers`의 고정 `HANDLERS` 표로 분리하고 `runtime_work`는 같은 `dispatch`를 재노출한다. compute admission 대상 kind 판정은 `runtime_wake_policy`로 옮긴다. 모듈 상단 `context_learning` import는 queue·lease·drain·wake가 쓰므로 유지한다. | `WakeQueue` SQLite schema, revision ACK, lease·재시도, `ResourceDeferred` 반환 의미, `MAX_WAKES` override, 실행 직전 승인·scope 재확인 위치, `runtime_work.dispatch`·patch seam | runtime-resources(새 `runtime_handlers_test.py` 포함), runtime-wake-policy, resource-policy, context-learning, qmd-endpoint, orphan-reclaim, laya-product-sync-worker |
+| Stage 2b `runtime_work` import 분리 (미착수) | `Coordinator`·`default_root`·`_lock`·`resident._private_state`·`_atomic_json` 등 queue/lease 공용 도구를 비학습 모듈로 옮겨 `runtime_work` import가 `context_learning`을 적재하지 않게 한다. | Stage 2 계약 전부, `runtime_work.Coordinator`·`default_root`·`sample`·`wake` patch seam, lock 파일 경로·권한 | Stage 2 묶음과 같음 |
+| Stage 3 파일 변경 → 위키 revision (소스 완료, 집중 가드 회귀 통과: 원래 Node 112/112, 상한 수정 뒤 37/37) | hash 스캔의 `changedFiles`에만 content revision(`revisions`)을 덧붙이고, `wiki_source_intent.revision_key`의 `(collection, relative path, content revision, trigger)` 키로 **아직 live 큐에 남은** 같은 행만 queue lock 안에서 건너뛴다. scope revision·owner 경로는 키에 없다. claim·처리된 행과의 중복, PostToolUse·수동 sync(revision 없음)의 중복은 합치지 않는다. 건너뛴 행이 있으면 내부 `wakePending` 신호로 file-change worker의 즉시 compile kick을 유지하고, sync JSON의 내부 `compileWakePending`으로 SessionStart `update.sh` kick도 유지한다. | snapshot·status·pending.json 형식, 수동 sync 큐 bytes, `apply_change_set`의 효과·ACK 순서, 스캔 실패 ≠ 삭제, `state_unreadable`(3), 동의 gate·상한(리뷰 수정 뒤: 건너뛴 live 행도 상한 칸을 쓰며, live 큐 스캔은 8 MiB까지), 공개 reason `no_sources`·`compileQueued`, trigger 구분, file-change worker의 즉시 kick | `test/file-change-plan.test.mjs`·`test/wiki-source-intent.test.mjs`·`test/file-change-queue.test.mjs`(`compile-cap`), 기존 SessionStart·sync/compile 회귀, wiki-compile-worker. 같은 키 skip, 다른/없는 revision, 상한·deferred, enqueue 뒤 snapshot 실패 재시도(`wakePending`과 실제 `kick-wiki-compile`), 수동 sync bytes 불변, claim된 행 미병합을 합성 사례로 고정한다. extractor는 호출하지 않는다. |
+| Stage 4 recall 학습 읽기 포트 (소스 완료, 집중 가드 회귀 통과 42/42) | `recall.py`의 live selection 블록(`live_select`·`corpus`·`seam`·`shared`·`learning_profile`·`adaptive_pool.actual_work`·`compact_input`·`candidate_apply` 읽기)을 새 `selection_read.select` 하나로 옮기고, 그 조정자가 순수 `selection_port`를 호출한다. `adaptive_pool.plan`·로그·`request_view_pin`·capture는 recall에 남는다. `posttool`·`edit_context`·`topical_hook_queue`의 capture 호출은 옮기지 않는다. | raw 검색 결과·진단·fallback, `request_view_pin`의 route/URL pin, 미동의·후보 없음·오래된 corpus 동작. 쿼리 중 `_private_state(create=True)` 디렉터리 생성은 별도 변경으로 다룬다. | recall 집중 회귀(C2c의 57건 묶음), context-learning, selection_port fixture |
+| Stage 5 설치 증거 판정 (소스 완료, 집중 가드 회귀 통과 31/31) | `shared_install._source_snapshot`·`_ensure_vectors`·`_readiness`에 남은 순수 판정(source identity 비교·snapshot 항목, 벡터 결함·reason별 `ValueError`·repair intent dict)만 `install_evidence`로 옮긴다. 수집 IO·journal 저장·`UnstableSourceSnapshot` 발생은 `shared_install`에 남는다. 새 journal 형식이나 반복 게시 경로는 만들지 않는다. | journal intent→enqueue→ACK 순서와 기존 dict 형태, fd/path 두 stat 확인의 순서·단락, 오류 reason, bootstrap proof 반복 읽기, patch seam, 활성화 순서(`shared_qmd_setup.prepare/activate`), `setup_guard` 상태 코드, 승인 scope·deadline·중단 후 재개, 기존 store 무변경. `qmd_shared_store.stage_empty`는 `shared_install`이 호출하지 않으므로 대상이 아니다. | `shared-install`, `shared-install-resilience`(vector-resume·abrupt-resume fixture), `install-evidence`. 실제 설치·업데이트 QA는 이 단계에서 수행하지 않는다. |
+| Stage 6 검색 게시 writer 연결(격리) (BLOCKED: A/B source·pointer, `scopeRevision`/`incarnation`, durable receipt, live read·embed 모순 미결정. 선행 조건인 조건부 ACK seam만 구현, 집중 가드 22/22 통과. writer 연결은 미완료) | `backend/index_worker.sh`·`update.sh` writer가 `qmd_candidate_config`·`shadow_publish_flow`·`shadow_qmd_adapter`를 통해 비활성 후보 세대에만 쓰는 경로를 private pointer에서 연결한다. 저장 구조는 [C2 옵션](2026-10-17-qmd-published-view-options.md)과 [Laya Index 계획](2026-10-17-embedded-sqlite-search-engine.md)의 결정을 따른다. | 공유 `active.json`·endpoint 무변경, `published_view`의 요청 identity·CAS, `shadow_ack_policy`의 불확실 ACK 판정, 게시 전 receipt, late worker 거절 | published-view·shadow publish·ACK fixture(C1/C2a/C2b/C2c 묶음), recall 집중 회귀. 운영 cutover와 RQA-RACE-01은 BLOCKED 상태를 유지한다. |
 
 ## Claude 설계 검토 후속 기록
 
