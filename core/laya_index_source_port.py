@@ -1,4 +1,4 @@
-"""Source-only product port for LayaIndexA (synthetic prototype).
+"""Source-only product port for LayaIndexA.
 
 The port binds an index generation to the exact bytes of an explicitly
 approved source root. Every operation does a full scan of that root and then
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -49,6 +50,7 @@ _READ_CHUNK = 64 * 1024
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | _CLOEXEC
+_COLLECTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
 class SourceStale(Exception):
@@ -83,6 +85,18 @@ class SourceScan:
 
     def documents(self) -> list[tuple[str, str, bool]]:
         # Excluded bytes remain retained under the current no-physical-GC policy.
+        return [(f.path, f.text, f.eligible) for f in self.files]
+
+
+@dataclass(frozen=True)
+class CollectionSourceScan:
+    roots: Mapping[str, str]
+    scope: str
+    files: tuple[SourceFile, ...]
+    manifest: str
+    by_path: Mapping[str, SourceFile]
+
+    def documents(self) -> list[tuple[str, str, bool]]:
         return [(f.path, f.text, f.eligible) for f in self.files]
 
 
@@ -284,6 +298,83 @@ def scan(root: str, scope: str, index: Any,
     )
 
 
+def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
+                     max_files: int = 200,
+                     max_bytes: int = 5_000_000) -> CollectionSourceScan:
+    """Scan explicit disjoint roots into one namespaced A-int generation.
+
+    The route/cutover proof binds the physical roots. A-int's source manifest
+    binds their sorted ``collection/relative.md`` members under one scope.
+    No project-root traversal is used: a hidden wiki root is entered only when
+    it was explicitly approved as a collection root.
+    """
+    if (not isinstance(roots, Mapping) or not 1 <= len(roots) <= 16
+            or not isinstance(scope, str) or not scope):
+        raise ValueError("invalid collection roots")
+    if any(not isinstance(name, str) or not _COLLECTION.fullmatch(name)
+           for name in roots):
+        raise ValueError("invalid collection name")
+    ordered: dict[str, str] = {}
+    for name, root in sorted(roots.items()):
+        ordered[name] = _check_root(root)
+    root_values = tuple(ordered.values())
+    if len(set(root_values)) != len(root_values) or any(
+            left.startswith(right + "/") or right.startswith(left + "/")
+            for i, left in enumerate(root_values) for right in root_values[i + 1:]):
+        _raise_stale("collection roots overlap")
+    budget = _Budget(_positive_int("max_files", max_files),
+                     _positive_int("max_bytes", max_bytes))
+    _require_platform()
+    excluded_paths, excluded_hashes = _load_exclusions(index, scope)
+    raw: list[tuple[str, str, bytes]] = []
+    for name, root in ordered.items():
+        try:
+            root_fd = _open_root_fd(root)
+        except OSError as exc:
+            _raise_stale("collection root unavailable", exc)
+        try:
+            root_st = os.fstat(root_fd)
+            _walk(root_fd, root_st, name + "/", 0, root_st.st_dev,
+                  budget, raw)
+        except OSError as exc:
+            _raise_stale("collection source unreadable", exc)
+        finally:
+            os.close(root_fd)
+    raw.sort(key=lambda item: item[0])
+    files = tuple(SourceFile(path, digest,
+                             path not in excluded_paths and digest not in excluded_hashes,
+                             data) for path, digest, data in raw)
+    return CollectionSourceScan(
+        roots=MappingProxyType(ordered), scope=scope, files=files,
+        manifest=_digest(scope, [(f.path, f.sha256, int(f.eligible)) for f in files]),
+        by_path=MappingProxyType({f.path: f for f in files}),
+    )
+
+
+def stage_collections_from_source(index: Any, roots: Mapping[str, str],
+                                  scope: str, gen: Any, *, base: Any,
+                                  claim_digest: Any, claim_epoch: Any,
+                                  max_files: int = 200,
+                                  max_bytes: int = 5_000_000) -> Any:
+    source = scan_collections(roots, scope, index, max_files, max_bytes)
+    return index.stage(gen, scope, source.documents(), base=base,
+                       source_manifest=source.manifest,
+                       claim_digest=claim_digest, claim_epoch=claim_epoch)
+
+
+def publish_collections_from_source(index: Any, roots: Mapping[str, str],
+                                    scope: str, expected: Any, gen: Any,
+                                    claim: Any, *, claim_digest: Any,
+                                    claim_epoch: Any, require_vector: bool = False,
+                                    max_files: int = 200,
+                                    max_bytes: int = 5_000_000) -> Any:
+    source = scan_collections(roots, scope, index, max_files, max_bytes)
+    return index.publish(expected, gen, claim,
+                         source_manifest=source.manifest,
+                         claim_digest=claim_digest, claim_epoch=claim_epoch,
+                         require_vector=require_vector)
+
+
 def stage_from_source(index: Any, root: str, scope: str, gen: Any, *, base: Any,
                       claim_digest: Any, claim_epoch: Any,
                       max_files: int = 200, max_bytes: int = 5_000_000) -> Any:
@@ -357,4 +448,44 @@ def search_verified(index: Any, root: str, token: Any, fts_query: str, limit: in
         _raise_stale("malformed search rows", exc)
     if _seal(index, token) != seal:
         _raise_stale("view seal changed during search")
+    return verified
+
+
+def search_collections_verified(index: Any, roots: Mapping[str, str], token: Any,
+                                fts_query: str, limit: int, *,
+                                collection_names: tuple[str, ...] | None = None,
+                                max_files: int = 200,
+                                max_bytes: int = 5_000_000) -> list[dict[str, Any]]:
+    """Apply collection scope in SQL before LIMIT, then verify one pinned view."""
+    limit = _positive_int("limit", limit)
+    if collection_names is None:
+        names = tuple(sorted(roots))
+    else:
+        if (not isinstance(collection_names, tuple) or not collection_names
+                or any(not isinstance(name, str) or name not in roots
+                       for name in collection_names)
+                or len(set(collection_names)) != len(collection_names)):
+            raise ValueError("invalid collection selection")
+        names = collection_names
+    seal = _seal(index, token)
+    scope, gen, sealed_manifest, _ = seal
+    source = scan_collections(roots, scope, index, max_files, max_bytes)
+    if sealed_manifest != source.manifest:
+        _raise_stale("collection manifest differs from view seal")
+    rows = index.search(token, fts_query, limit,
+                        path_prefixes=tuple(name + "/" for name in names))
+    try:
+        rows = list(rows)
+        if len(rows) > limit:
+            raise ValueError("too many rows")
+        verified = [_verify_row(row, scope, gen, source) for row in rows]
+        if any(not any(row["path"].startswith(name + "/") for name in names)
+               for row in verified):
+            raise ValueError("out of selected collection")
+    except IndexContractError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        _raise_stale("malformed collection search rows", exc)
+    if _seal(index, token) != seal:
+        _raise_stale("view seal changed during collection search")
     return verified

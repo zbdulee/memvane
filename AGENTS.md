@@ -1,12 +1,26 @@
 # AGENTS.md
 
-This file provides guidance to Codex and other coding agents when working with code in this repository. (Claude Code reads `CLAUDE.md`, which carries the same content.)
+This file provides guidance to Codex and other coding agents when working with code in this repository. (Claude Code reads `CLAUDE.md`; shared collaboration rules live here, while host-specific details may differ.)
 
 qmd 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex · Hermes Agent · Antigravity(Gemini)** 에서 동작시키는 플러그인. 사용자 안내는 `README.md` 참고. 이 문서는 코드 작업 시 알아야 할 구조·명령·함정에 집중한다.
 
 사용자용 문서와 응답에서는 설치 후 운영 인터페이스를 **자연어 요청 또는 노출된 skill 호출** 중심으로 안내한다. `core/`·`skills/`의 shell command는 유지보수/디버깅 인터페이스이므로, 사용자가 명시적으로 요청한 경우나 개발자 문서가 아닌 이상 README 같은 public docs에 직접 실행 흐름으로 노출하지 않는다.
 
 개발 시에는 **Claude Code · Codex · Hermes Agent** 세 host의 동작성을 모두 고려한다. 공통 로직은 `core/`에 두고, host별 adapter/hook 차이(Claude/Codex command hook, Hermes Python plugin 및 observer-only `post_tool_call`)가 깨지지 않는지 함께 확인한다.
+
+## 개발 협업 방식과 Claude 활용
+
+이 절은 프로젝트 개발 작업의 협업 방식이다. 기존 권한·보안·자원 규칙을 완화하지 않으며, 사용자 승인 범위를 넘는 실행은 별도로 확인한다. 현재 사용자의 다른 에이전트 토큰 예산이 부족하므로 Claude를 우선 활용한다.
+
+- 구현, 결함 수정, 테스트 작성, 문서 정리, 근본 원인 분석, 설계·코드 리뷰는 대부분 Claude Opus에 우선 맡긴다. 단순한 한 파일 수정에 과도한 위임을 만들지 않는다.
+- 주 에이전트는 작업 범위와 의존성을 정하고 각 Claude 호출에 맡길 범위를 배정한다. 결과의 조율·통합·검토, 필수 저장소 가드 검증, 릴리스 관리, 사용자 보고는 주 에이전트가 직접 책임진다.
+- 새 서브에이전트 생성이나 자동 에이전트 분산을 권장하지 않는다. 이미 진행 중인 작업은 결과와 변경을 안전하게 회수하고 파일 충돌 없이 정리한다.
+- 각 Claude 호출에는 변경 가능한 파일·모듈, 기대 입력·출력, 완료 조건과 금지 범위를 명시한다. Claude는 위임받은 정확한 범위와 저장소 가드·기존 파일시스템·네트워크·보안 승인 안에서만 파일을 수정하거나 명령을 실행한다. 주 에이전트에게 거부된 접근이나 권한을 Claude를 통해 우회하지 않는다.
+- 좁은 Claude 호출은 서로 다른 파일을 다룰 때만 병행한다. 같은 파일을 동시에 수정하지 않는다. 공용 가드 테스트·백업·해시·실제 모델 작업은 위 공용 개발 가드와 자원 규칙에 따라 순차 실행한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 같은 대상에 대한 중복 리뷰, 이미 끝난 기초 리뷰의 반복, 토큰 소진 자체를 목표로 한 호출은 피한다.
+- Claude 호출 전 해당 실행 환경의 도구가 지원하는 모델과 옵션을 확인한다(`claude --help` 또는 제공된 모델 목록). 확인되지 않은 모델 이름을 추정하지 않는다. 실제 응답의 `modelUsage`와 실행 결과를 작업 기록에 남긴다. 긴 호출은 코드·질문 범위를 줄이고 유한 timeout을 둔다. timeout이나 불명확한 종료 뒤에는 기존 실행 상태·산출물을 확인하고 중복 호출을 피한다.
+- 로그인·인증 실패와 샌드박스 DNS·네트워크 관측 실패를 구분한다. 승인된 정상 실행 경로만 사용하고 권한 거부나 개발 가드를 우회하지 않는다. Claude가 불가능하면 정확한 사유와 대안을 보고하며 사용한 척하지 않는다.
+- 외부 모델에는 작업에 필요한 코드와 합성 자료만 전달한다. 비밀·인증 정보·원고·운영 DB 내용은 보내지 않는다. Claude 결과는 그대로 채택하지 않고 코드와 계약을 직접 검토하며, 구체적 지적은 재현한 뒤 최종 코드에 맞는 가드 검사를 수행한다.
+- 구현 상태, 검증 근거, 실패한 검사와 그 출력, 남은 차단 항목을 구분해 정직하게 보고한다.
 
 ## 명령
 

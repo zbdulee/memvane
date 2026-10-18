@@ -9,6 +9,6 @@ test('QMD 2.5.3 and pinned fork migration adapter uses disposable fixtures', () 
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 31 tests/);
+  assert.match(result.stderr, /Ran 32 tests/);
   assert.doesNotMatch(result.stderr, /skipped=/);
 });

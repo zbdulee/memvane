@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import sqlite3
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
@@ -19,14 +21,55 @@ from laya_index_a import LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 import laya_index_host_route as host
 import laya_install_journal as journal
+import laya_product_install as product_install
 import laya_product_bundle as bundle
 from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
+from laya_index_vector import qmd_markdown_title
+from laya_qmd_migration import QMD_253
 
 
 def _git(root, *args):
     return subprocess.run(('git', '-C', str(root), *args), check=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           encoding='utf-8').stdout.strip()
+
+
+def _qmd_two_collection_source(path, roots, files):
+    """Synthetic QMD 2.5.3 logical schema; no user or operating DB."""
+    with sqlite3.connect(path) as db:
+        db.executescript('''
+            CREATE TABLE content(hash TEXT PRIMARY KEY,doc TEXT NOT NULL,created_at TEXT NOT NULL);
+            CREATE TABLE documents(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection TEXT NOT NULL,path TEXT NOT NULL,title TEXT NOT NULL,
+                hash TEXT NOT NULL,created_at TEXT NOT NULL,modified_at TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(hash) REFERENCES content(hash) ON DELETE CASCADE,
+                UNIQUE(collection,path));
+            CREATE TABLE content_vectors(hash TEXT NOT NULL,seq INTEGER NOT NULL DEFAULT 0,
+                pos INTEGER NOT NULL DEFAULT 0,model TEXT NOT NULL,
+                embed_fingerprint TEXT NOT NULL DEFAULT '',
+                total_chunks INTEGER NOT NULL DEFAULT 1,embedded_at TEXT NOT NULL,
+                PRIMARY KEY(hash,seq));
+            CREATE TABLE store_collections(name TEXT PRIMARY KEY,path TEXT NOT NULL,
+                pattern TEXT NOT NULL DEFAULT '**/*.md',ignore_patterns TEXT,
+                include_by_default INTEGER DEFAULT 1,update_command TEXT,context TEXT);
+            CREATE TABLE store_config(key TEXT PRIMARY KEY,value TEXT);
+            CREATE VIRTUAL TABLE documents_fts USING fts5(filepath,title,body,
+                tokenize='porter unicode61');
+            CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN SELECT 1; END;
+            CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN SELECT 1; END;
+            CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN SELECT 1; END;
+        ''')
+        db.executemany('INSERT INTO store_collections(name,path) VALUES(?,?)',
+                       sorted(roots.items()))
+        for collection, rel, body in files:
+            digest = hashlib.sha256(body.encode()).hexdigest()
+            db.execute('INSERT OR IGNORE INTO content VALUES(?,?,?)',
+                       (digest, body, '2026-01-01'))
+            db.execute('''INSERT INTO documents(collection,path,title,hash,
+                created_at,modified_at,active) VALUES(?,?,?,?,?,?,1)''',
+                (collection, rel, qmd_markdown_title(body, rel), digest,
+                 '2026-01-01', '2026-01-01'))
 
 
 class ProductBundleChecks(unittest.TestCase):
@@ -51,7 +94,8 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_index_sync.py',
                  'laya_package.py', 'laya_install_binding.py',
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
-                 'laya_install_journal.py', 'laya_host_response.py')
+                 'laya_install_journal.py', 'laya_product_install.py',
+                 'laya_host_response.py')
         (self.source / 'core').mkdir()
         for name in names:
             shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)
@@ -217,34 +261,8 @@ print(json.dumps(result))'''
                               encoding='utf-8', timeout=15)
         return done
 
-    def test_exact_commit_full_closure_and_no_clobber(self):
-        proof = self.candidate('plugin-v1', self.commit1)
-        self.assertIn('hooks/run-hook', proof['includedFiles'])
-        self.assertIn('hermes_adapter/core_bridge.py', proof['includedFiles'])
-        self.assertIn('core/laya_index_runtime.py', proof['includedFiles'])
-        self.assertIn('core/laya_local_embed_service.py', proof['includedFiles'])
-        self.assertIn('core/laya_product_sync_worker.py', proof['includedFiles'])
-        self.assertIn('core/laya_qmd_cutover.py', proof['includedFiles'])
-        self.assertIn('LICENSE', proof['includedFiles'])
-        self.assertIn('README.md', proof['includedFiles'])
-        self.assertIn('locks/qmd-2.5.3/package-lock.json', proof['includedFiles'])
-        self.assertIn('docs/committed-note.md', proof['includedFiles'])
-        self.assertFalse(proof['productRouteAllowed'])
-        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'invalid_bundle_request'):
-            self.candidate('plugin-v1', self.commit1)
-        script = self.source / 'core' / 'laya_index_flow.py'
-        script.write_text(script.read_text() + '\n# dirty\n')
-        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'source_not_exact_commit'):
-            self.candidate('plugin-dirty', self.commit1)
-        installed = Path(proof['pluginRoot']) / 'hooks' / 'run-hook'
-        installed.write_text(installed.read_text() + '\n# tampered\n')
-        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'bundle_file_identity_changed'):
-            bundle.inspect_full_plugin_candidate(proof['pluginRoot'])
-        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
-
-    def test_production_attestation_needs_journal_bound_review_digest(self):
-        proof = self.candidate('plugin-v1', self.commit1)
-        manifest = {
+    def provider_manifest(self, proof):
+        return {
             'approvedProviderId': self.vector_profile['approvedProviderId'],
             'providerArtifactSha256': self.provider_sha,
             'providerRelativePath': self.vector_profile['providerRelativePath'],
@@ -264,11 +282,299 @@ print(json.dumps(result))'''
             'dependencyClosureApproved': True,
             'dependencyClosureSha256': self.closure_digest,
             'serviceSocketPath': str(self.install / 'runtime' / 'laya-embed.sock')}
+
+    def test_exact_commit_full_closure_and_no_clobber(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        self.assertIn('hooks/run-hook', proof['includedFiles'])
+        self.assertIn('hermes_adapter/core_bridge.py', proof['includedFiles'])
+        self.assertIn('core/laya_index_runtime.py', proof['includedFiles'])
+        self.assertIn('core/laya_local_embed_service.py', proof['includedFiles'])
+        self.assertIn('core/laya_product_sync_worker.py', proof['includedFiles'])
+        self.assertIn('core/laya_product_install.py', proof['includedFiles'])
+        self.assertIn('core/laya_qmd_cutover.py', proof['includedFiles'])
+        self.assertIn('LICENSE', proof['includedFiles'])
+        self.assertIn('README.md', proof['includedFiles'])
+        self.assertIn('locks/qmd-2.5.3/package-lock.json', proof['includedFiles'])
+        self.assertIn('docs/committed-note.md', proof['includedFiles'])
+        self.assertFalse(proof['productRouteAllowed'])
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'invalid_bundle_request'):
+            self.candidate('plugin-v1', self.commit1)
+        script = self.source / 'core' / 'laya_index_flow.py'
+        script.write_text(script.read_text() + '\n# dirty\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'source_not_exact_commit'):
+            self.candidate('plugin-dirty', self.commit1)
+        installed = Path(proof['pluginRoot']) / 'hooks' / 'run-hook'
+        installed.write_text(installed.read_text() + '\n# tampered\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(proof['pluginRoot'])
+        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
+
+    def test_host_installed_commit_stages_private_journal_without_route(self):
+        host_cache = self.root / 'host-cache'
+        host_cache.mkdir(mode=0o755)
+        installed = host_cache / 'plugin'
+        shutil.copytree(self.source, installed,
+                        ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(installed):
+            Path(directory).chmod(0o755)
+        (installed / '.git').mkdir(mode=0o755)
+        (installed / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')
+        proof = bundle.adopt_host_loaded_plugin(
+            self.source, installed, commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        (self.auto / 'wiki').mkdir()
+        settings = {
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}
+        self.settings.write_text(json.dumps(settings))
+        route = self.route(proof, 'g-' + '4' * 32)
+        route['schema'] = host.SCHEMA_V2
+        del route['collectionName']
+        del route['sourceRoot']
+        route['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project / 'docs')},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
+        raw = self.raw(route)
+        review = {'vectorProfile': self.vector_profile,
+                  'providerManifest': self.provider_manifest(proof),
+                  'dependencyClosure': self.closure}
+        staged = product_install.stage_host_loaded_candidate(
+            source_root=self.source, plugin_root=installed, state_root=self.install,
+            commit_id=self.commit1,
+            route_bytes=raw, reviewed_provider=review,
+            user_qmd_roots=[self.user_qmd])
+        self.assertEqual(staged['status'], 'candidate_ready')
+        self.assertEqual(journal.inspect_journal(self.journal_path)['state'],
+                         'candidate_ready')
+        self.assertFalse(self.route_path.exists())
+        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
+        repeated = product_install.stage_host_loaded_candidate(
+            source_root=self.source, plugin_root=installed, state_root=self.install,
+            commit_id=self.commit1,
+            route_bytes=raw, reviewed_provider=review,
+            user_qmd_roots=[self.user_qmd])
+        self.assertEqual(repeated, staged)
+        self.model.write_bytes(b'GGUFchanged after review')
+        with self.assertRaisesRegex(journal.JournalEvidenceError,
+                                    'production_attestation_invalid'):
+            product_install.stage_host_loaded_candidate(
+                source_root=self.source, plugin_root=installed,
+                state_root=self.install,
+                commit_id=self.commit1, route_bytes=raw,
+                reviewed_provider=review, user_qmd_roots=[self.user_qmd])
+
+    def test_host_adoption_rejects_extra_files_and_nonprivate_cache(self):
+        installed = self.install / 'host-plugin'
+        shutil.copytree(self.source, installed,
+                        ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(installed):
+            Path(directory).chmod(0o700)
+        extra = installed / 'core' / 'unexpected.py'
+        extra.write_text('print("unexpected")\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'installed_file_set_not_exact_commit'):
+            bundle.adopt_host_loaded_plugin(
+                self.source, installed, commit_id=self.commit1,
+                vector_profile=self.vector_profile)
+        extra.unlink()
+        installed.chmod(0o775)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_bundle_owner'):
+            bundle.adopt_host_loaded_plugin(
+                self.source, installed, commit_id=self.commit1,
+                vector_profile=self.vector_profile)
+
+    def test_owned_origin_plan_binds_both_qmd_collections_without_model(self):
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        raw = self.project / 'docs' / 'chapter.md'
+        raw.write_text('# First chapter\nOne line.\n', encoding='utf-8')
+        note = wiki / 'summary.md'
+        note.write_text('# Summary\nOne fact.\n', encoding='utf-8')
+        settings = {
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}
+        self.settings.write_text(json.dumps(settings))
+        documents = []
+        for path, file in (('docs/chapter.md', raw), ('wiki/summary.md', note)):
+            body = file.read_text(encoding='utf-8')
+            documents.append((path, qmd_markdown_title(body, path),
+                              hashlib.sha256(body.encode()).hexdigest(), 1, body))
+        inventory = {'collection_config': {'docs': (str(raw.parent),),
+                                            'wiki': (str(wiki),)},
+                     'documents': documents, 'digest': 'a' * 64}
+        runtime = {'managed': True, 'QMD_PACKAGE_BIN': '/synthetic/qmd'}
+        selection = {'selected': True, 'INDEX_PATH': str(self.root / 'owned-qmd.sqlite'),
+                     'generation': 'synthetic'}
+        with (mock.patch('qmd_route.binary_info', return_value=runtime),
+              mock.patch('qmd_route.project_paths', return_value=selection),
+              mock.patch('laya_qmd_migration.inspect_qmd_collections',
+                         return_value=inventory)):
+            plan = product_install.plan_qmd_origin(self.project)
+            self.assertEqual(plan['status'], 'review_required')
+            self.assertEqual(plan['sourceFiles'],
+                             [['docs/chapter.md', documents[0][2]],
+                              ['wiki/summary.md', documents[1][2]]])
+            self.assertFalse(self.route_path.exists())
+            self.assertFalse(self.journal_path.exists())
+            self.settings.write_text(json.dumps({**settings,
+                'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}}))
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'unsupported_selected_compile_settings'):
+                product_install.plan_qmd_origin(self.project)
+            self.settings.write_text(json.dumps(settings))
+            raw.write_text('# First chapter\nChanged.\n', encoding='utf-8')
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'qmd_current_source_changed'):
+                product_install.plan_qmd_origin(self.project)
+
+    def test_owned_origin_prepares_backup_vector_candidate_and_retries_without_model(self):
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        raw = self.project / 'docs' / 'chapter.md'
+        body_raw, body_wiki = '# Chapter\nOriginal.\n', '# Summary\nVerified.\n'
+        raw.write_text(body_raw, encoding='utf-8')
+        (wiki / 'summary.md').write_text(body_wiki, encoding='utf-8')
+        self.settings.write_text(json.dumps({
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}))
+        source_db = self.root / 'owned-qmd.sqlite'
+        _qmd_two_collection_source(source_db,
+            {'docs': str(raw.parent), 'wiki': str(wiki)},
+            [('docs', 'chapter.md', body_raw),
+             ('wiki', 'summary.md', body_wiki)])
+        proof = self.candidate('plugin-v1', self.commit1)
+        review = {'vectorProfile': self.vector_profile,
+                  'providerManifest': self.provider_manifest(proof),
+                  'dependencyClosure': self.closure}
+        selection = {'selected': True, 'INDEX_PATH': str(source_db),
+                     'generation': 'synthetic'}
+        runtime = {'managed': True, 'QMD_PACKAGE_BIN': '/synthetic/qmd'}
+        calls = []
+
+        class Controller:
+            @contextmanager
+            def activity(self, *_args):
+                yield None
+            def check(self, *_args):
+                return {'ready': True}
+
+        class Provider:
+            def __init__(self, manifest):
+                calls.append('provider')
+                self.profile = {'profile_id': self_ref.vector_profile['profileId'],
+                                'model_id': self_ref.vector_profile['modelId'],
+                                'embedding_fingerprint':
+                                self_ref.vector_profile['embeddingFingerprint'],
+                                'dimension': 3}
+            def embed_document_chunks(self, body, path):
+                calls.append(('embed', path))
+                self_ref.assertTrue(backup.is_file(), 'backup before embedding')
+                return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0, 0.0]}]
+
+        class Service:
+            def stop(self):
+                calls.append('stop')
+
+        self_ref = self
+        backup = self.install / 'qmd-origin-backup.sqlite'
+        kwargs = {'project_root': self.project, 'source_root': self.source,
+                  'plugin_root': proof['pluginRoot'], 'state_root': self.install,
+                  'commit_id': self.commit1, 'install_id': '3' * 32,
+                  'accepted_provider_sha256': 'b' * 64,
+                  'user_qmd_roots': [self.user_qmd],
+                  'coordinator': Controller(),
+                  'start_service': lambda *_args, **_kw: Service(),
+                  'provider_factory': Provider}
+        with (mock.patch('qmd_route.binary_info', return_value=runtime),
+              mock.patch('qmd_route.project_paths', return_value=selection),
+              mock.patch('laya_product_install.review_local_provider',
+                         return_value={'proposalSha256': 'b' * 64,
+                                       'reviewedProvider': review}),
+              mock.patch('context_learning.shared.resource_report',
+                         return_value={'synthetic': True})):
+            plan = product_install.plan_qmd_origin(self.project)
+            kwargs['expected_proposal_sha256'] = plan['proposalSha256']
+            raw.write_text('# Chapter\nChanged.\n', encoding='utf-8')
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'qmd_current_source_changed'):
+                product_install.prepare_owned_qmd_origin(**kwargs)
+            self.assertFalse(backup.exists())
+            raw.write_text(body_raw, encoding='utf-8')
+            with mock.patch('laya_qmd_cutover.bind_qmd_origin',
+                            side_effect=RuntimeError('synthetic pre-bind interruption')):
+                with self.assertRaisesRegex(RuntimeError,
+                                            'synthetic pre-bind interruption'):
+                    product_install.prepare_owned_qmd_origin(**kwargs)
+            self.assertTrue(backup.is_file())
+            self.assertFalse(self.route_path.exists())
+            prior = list(calls)
+            prepared = product_install.prepare_owned_qmd_origin(**kwargs)
+        self.assertEqual(prepared['status'], 'cutover_prepared')
+        self.assertEqual(prepared['cutoverPhase'], 'prepared')
+        self.assertEqual(calls, prior, 'sealed retry must not rerun model')
+        self.assertTrue((self.install / 'laya-candidate.sqlite').is_file())
+        self.assertTrue((self.install / 'laya-claims.sqlite').is_file())
+        self.assertTrue((self.install / 'reviewed-route.json').is_file())
+        self.assertTrue((self.install / 'qmd-cutover.json').is_file())
+        self.assertFalse(self.route_path.exists())
+        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
+
+    def test_local_provider_review_is_deterministic_and_requires_new_digest_on_change(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        package = self.root / 'qmd-package'
+        (package / 'bin').mkdir(parents=True)
+        (package / 'bin/qmd').write_text('synthetic executable')
+        (package / 'package.json').write_text('{"version":"2.5.3"}')
+        module_pkg = package / 'node_modules/node-llama-cpp'
+        (module_pkg / 'dist').mkdir(parents=True)
+        (module_pkg / 'package.json').write_text('{"version":"3.18.1"}')
+        (module_pkg / 'dist/index.js').write_text('export const synthetic = true;')
+        native_pkg = package / 'node_modules/@node-llama-cpp/mac-arm64-metal'
+        (native_pkg / 'bins').mkdir(parents=True)
+        (native_pkg / 'package.json').write_text('{"version":"3.18.1"}')
+        native = native_pkg / 'bins/llama-addon.node'
+        native.write_bytes(b'synthetic native')
+        (native_pkg / 'bins/libllama.dylib').write_bytes(b'synthetic dylib')
+        model = self.root / 'embeddinggemma-300M-Q8_0.gguf'
+        model.write_bytes(b'GGUFsynthetic model')
+        runtime = {'proof': {'version': '2.5.3',
+                             'qmd': str(package / 'bin/qmd'),
+                             'node': str(self.node)},
+                   'generation': 'synthetic-runtime'}
+        with mock.patch('qmd_runtime.select', return_value=runtime):
+            first = product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(model), dimension=3)
+            second = product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(model), dimension=3)
+            self.assertEqual(first, second)
+            self.assertEqual(len(first['reviewedProvider']['dependencyClosure']), 2)
+            native.write_bytes(b'changed synthetic native')
+            changed = product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(model), dimension=3)
+            self.assertNotEqual(changed['proposalSha256'], first['proposalSha256'])
+
+    def test_production_attestation_needs_journal_bound_review_digest(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        manifest = self.provider_manifest(proof)
         attestation = {
             'schema': bundle.PRODUCTION_ATTESTATION_SCHEMA,
             'sourceCommit': proof['sourceCommit'],
             'bundleManifestSha256': proof['bundleManifestSha256'],
             'ownershipManifestSha256': proof['ownershipManifestSha256'],
+            'journalPath': str(self.journal_path),
             'vectorProfile': proof['vectorProfile'],
             'providerManifest': manifest,
             'dependencyClosure': self.closure}

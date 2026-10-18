@@ -22,6 +22,7 @@ import unicodedata
 import config
 
 SCHEMA = "laya-index-route-v1"
+SCHEMA_V2 = "laya-index-route-v2"
 RECORD = "laya-index-route.json"
 QMD_SELECTION_MARKER = "laya-index-selection.json"
 MAX_RECORD_BYTES = 8192
@@ -31,6 +32,8 @@ FIELDS = frozenset({"schema", "status", "projectRoot", "settingsSha256",
                     "sourceRoot", "pluginRoot", "journalPath", "installId",
                     "generation", "bundleManifestSha256",
                     "ownershipManifestSha256", "vectorProfile"})
+FIELDS_V2 = (FIELDS - {"collectionName", "sourceRoot"}) | {"collections"}
+COLLECTION_FIELDS = frozenset({"name", "role", "sourceRoot"})
 VECTOR_PROFILE_FIELDS = frozenset({"profileId", "modelId", "embeddingFingerprint",
                                    "dimension", "metric", "approvedProviderId",
                                    "providerArtifactSha256", "providerRelativePath"})
@@ -136,6 +139,75 @@ def _selected_settings_supported(raw: dict, cfg: dict, collection: str) -> bool:
     return type(top_n) is int and 1 <= top_n <= 5 and cfg.get('topN') == top_n
 
 
+def _multi_settings_supported(raw: dict, cfg: dict, names: tuple[str, ...]) -> bool:
+    """Current multi-source policy: one raw + one wiki, zero score cutoffs."""
+    roles = raw.get('collectionRoles')
+    if (not isinstance(roles, dict) or set(roles) != set(names)
+            or sorted(roles.values()) != ['raw', 'wiki']
+            or raw.get('recallStrategy', 'hierarchical') != 'hierarchical'
+            or cfg.get('recallStrategy') != 'hierarchical'
+            or raw.get('skipPaths', []) != [] or cfg.get('skipPaths') != []
+            or raw.get('allowRoots', []) != [] or cfg.get('allowRoots') != []
+            or raw.get('lexicalPatterns', []) not in ([], ['ep'])
+            or cfg.get('lexicalPatterns') not in ([], ['ep'])):
+        return False
+    for key in ('minScore', 'rawFallbackMinScore'):
+        value = raw.get(key, 0)
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or value != 0 or cfg.get(key) != 0):
+            return False
+    top_n = raw.get('topN', 3)
+    return type(top_n) is int and 1 <= top_n <= 5 and cfg.get('topN') == top_n
+
+
+def _multi_compile_supported(raw: dict, cfg: dict, root: Path,
+                             wiki_root: str) -> bool:
+    raw_compile = raw.get('compile', {})
+    compile_cfg = cfg.get('compile')
+    if (not isinstance(raw_compile, dict) or not isinstance(compile_cfg, dict)
+            or 'enabled' in raw_compile or 'autoWrite' in raw_compile):
+        return False
+    mode = raw_compile.get('mode', 'off')
+    if mode == 'off':
+        return not config.compile_active(compile_cfg)
+    if mode != 'auto-wiki' or compile_cfg.get('mode') != 'auto-wiki':
+        return False
+    triggers = raw_compile.get('triggers')
+    if (not isinstance(triggers, list) or triggers != compile_cfg.get('triggers')
+            or not set(triggers) & {'post_tool_source', 'post_sync_source'}
+            or any(trigger not in ('post_tool_source', 'post_sync_source', 'manual')
+                   for trigger in triggers)
+            or compile_cfg.get('recallVerifiedOnly') is not True
+            or compile_cfg.get('verify', {}).get('enabled') is not True):
+        return False
+    extractor = compile_cfg.get('extractor', {})
+    if (not isinstance(extractor, dict) or
+            not (extractor.get('builtins') or extractor.get('backends'))):
+        return False
+    wiki_path = cfg.get('wikiPath')
+    if not isinstance(wiki_path, str) or not wiki_path:
+        return False
+    try:
+        return _source_for_collection(root, wiki_path) == wiki_root
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _source_for_collection(root: Path, relative: object) -> str:
+    if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
+            or ".." in Path(relative).parts):
+        raise ValueError("invalid_collection_path")
+    source = root / relative
+    if (source.is_symlink() or not source.is_dir()
+            or any(parent.is_symlink() for parent in (source, *source.parents)
+                   if parent != root and root in parent.parents)):
+        raise ValueError("unsafe_collection_source")
+    canonical = source.resolve(strict=True)
+    if root != canonical and root not in canonical.parents:
+        raise ValueError("collection_source_outside_project")
+    return str(canonical)
+
+
 def _candidate_paths(cwd: Path):
     # Search all ancestors for a *blocking* marker. Ordinary QMD config search
     # stops at HOME (or cwd outside HOME), but a nested cwd outside HOME must
@@ -214,9 +286,11 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
             raise ValueError("unsafe_route_settings")
         raw = _read_regular(path, MAX_RECORD_BYTES)
         record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
-        if not isinstance(record, dict) or set(record) != FIELDS:
+        if (not isinstance(record, dict) or
+                (record.get('schema'), set(record)) not in
+                ((SCHEMA, FIELDS), (SCHEMA_V2, FIELDS_V2))):
             raise ValueError("invalid_route_fields")
-        if record["schema"] != SCHEMA or record["status"] != "active":
+        if record["status"] != "active":
             raise ValueError("route_not_active")
         if record["projectRoot"] != str(root) or not root.is_absolute():
             raise ValueError("route_project_mismatch")
@@ -236,9 +310,19 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
         if not _canonical_absolute(plugin_root):
             raise ValueError("invalid_plugin_root")
         journal_path = record["journalPath"]
-        if (not _canonical_absolute(journal_path)
-                or journal_path != str(Path(plugin_root).parent / "install-journal.sqlite")):
+        if not _canonical_absolute(journal_path):
             raise ValueError("invalid_journal_path")
+        if record['schema'] == SCHEMA:
+            if journal_path != str(Path(plugin_root).parent / "install-journal.sqlite"):
+                raise ValueError("invalid_journal_path")
+        else:
+            private = Path(journal_path).parent
+            info = private.lstat()
+            if (Path(journal_path).name != 'install-journal.sqlite' or
+                    private.is_symlink() or not private.is_dir() or
+                    info.st_uid != os.getuid() or
+                    stat.S_IMODE(info.st_mode) & 0o077):
+                raise ValueError('unsafe_private_journal_root')
         db_path = record["dbPath"]
         queue_path = record["queuePath"]
         if not _canonical_absolute(db_path) or Path(db_path) == root:
@@ -256,45 +340,66 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
         if cfg.get("indexing") is not True:
             raise ValueError("route_indexing_not_selected")
         raw_compile = raw_settings.get("compile", {})
-        if (not isinstance(raw_compile, dict)
+        if record['schema'] == SCHEMA and (not isinstance(raw_compile, dict)
                 or raw_compile.get("mode", "off") != "off"
                 or raw_compile.get("enabled") is True
                 or raw_compile.get("autoWrite") is True
                 or config.compile_active(cfg.get("compile"))):
             raise ValueError("selected_compile_unsupported")
-        # The first product candidate has exactly one explicit indexed source
-        # collection. Neither a branch name nor a wildcard mapping is allowed
-        # to choose its scope or source directory implicitly.
         names = cfg.get("collections")
-        if not isinstance(names, list) or len(names) != 1 or not isinstance(names[0], str):
-            raise ValueError("single_collection_required")
-        name = names[0]
-        if not COLLECTION_NAME.fullmatch(name):
-            raise ValueError("unsupported_collection_name")
-        if not _selected_settings_supported(raw_settings, cfg, name):
-            raise ValueError("selected_recall_settings_unsupported")
-        if record["collectionName"] != name or not config.is_indexed_collection(config.role_map(cfg), name):
-            raise ValueError("route_collection_mismatch")
+        if (not isinstance(names, list) or not names or
+                any(not isinstance(name, str) or not COLLECTION_NAME.fullmatch(name)
+                    for name in names) or len(set(names)) != len(names)):
+            raise ValueError("unsupported_collection_names")
         mappings = cfg.get("collectionPaths")
-        if not isinstance(mappings, dict) or set(mappings) != {name}:
+        if not isinstance(mappings, dict) or set(mappings) != set(names):
             raise ValueError("explicit_collection_path_required")
-        relative = mappings[name]
-        if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
-                or ".." in Path(relative).parts):
-            raise ValueError("invalid_collection_path")
-        source = root / relative
-        if (source.is_symlink() or not source.is_dir()
-                or any(parent.is_symlink() for parent in (source, *source.parents) if parent != root and root in parent.parents)):
-            raise ValueError("unsafe_collection_source")
-        canonical_source = source.resolve(strict=True)
-        if root != canonical_source and root not in canonical_source.parents:
-            raise ValueError("collection_source_outside_project")
-        if record["sourceRoot"] != str(canonical_source):
-            raise ValueError("route_source_root_mismatch")
+        selected_collections = []
+        if record['schema'] == SCHEMA:
+            if len(names) != 1:
+                raise ValueError("single_collection_required")
+            name = names[0]
+            if not _selected_settings_supported(raw_settings, cfg, name):
+                raise ValueError("selected_recall_settings_unsupported")
+            if (record["collectionName"] != name or
+                    not config.is_indexed_collection(config.role_map(cfg), name)):
+                raise ValueError("route_collection_mismatch")
+            canonical_source = _source_for_collection(root, mappings[name])
+            if record["sourceRoot"] != canonical_source:
+                raise ValueError("route_source_root_mismatch")
+            selected_collections = [{'name': name, 'role': 'raw',
+                                     'sourceRoot': canonical_source}]
+        else:
+            ordered = tuple(sorted(names))
+            if (len(ordered) != 2 or
+                    not _multi_settings_supported(raw_settings, cfg, ordered)):
+                raise ValueError('selected_recall_settings_unsupported')
+            declared = record['collections']
+            if (not isinstance(declared, list) or len(declared) != 2 or
+                    any(not isinstance(item, dict) or set(item) != COLLECTION_FIELDS
+                        for item in declared)):
+                raise ValueError('route_collections_invalid')
+            roles = config.role_map(cfg)
+            for name, item in zip(ordered, declared):
+                source = _source_for_collection(root, mappings[name])
+                if (item != {'name': name, 'role': roles.get(name),
+                             'sourceRoot': source} or
+                        item['role'] not in ('raw', 'wiki')):
+                    raise ValueError('route_collection_mismatch')
+                selected_collections.append(item)
+            roots = [item['sourceRoot'] for item in selected_collections]
+            if (len(set(roots)) != len(roots) or
+                    any(left.startswith(right + '/') or right.startswith(left + '/')
+                        for left, right in ((roots[0], roots[1]),))):
+                raise ValueError('route_collection_roots_overlap')
+            wiki_root = next(item['sourceRoot'] for item in selected_collections
+                             if item['role'] == 'wiki')
+            if not _multi_compile_supported(raw_settings, cfg, root, wiki_root):
+                raise ValueError('selected_compile_unsupported')
         # The first selected route has no topical compiler/derived-card lane.
         # Host topical hooks still fire, but become proved no-ops only when no
         # project or source topical pilot is present.
-        for base in (root, canonical_source):
+        for base in (root, *(Path(item['sourceRoot']) for item in selected_collections)):
             for marker in (".qmd-topical-sandbox", ".qmd-topical-v2-project",
                            ".topical-reconcile-hook.json"):
                 candidate = base / marker
@@ -303,17 +408,27 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
         if not isinstance(record["scopeId"], str) or not INCARNATION.fullmatch(record["scopeId"]):
             raise ValueError("invalid_scope_id")
         vector_profile = _vector_profile(record["vectorProfile"])
-        return _decision("candidate", "route_record_valid", projectRoot=str(root),
+        details = dict(projectRoot=str(root),
                          dbPath=db_path, queuePath=queue_path,
                          dbIncarnation=record["dbIncarnation"],
-                         scopeId=record["scopeId"], collectionName=name,
-                         sourceRoot=str(canonical_source),
+                         scopeId=record["scopeId"],
                          pluginRoot=plugin_root, journalPath=journal_path,
                          installId=record["installId"],
                          generation=record["generation"],
                          bundleManifestSha256=record["bundleManifestSha256"],
                          ownershipManifestSha256=record["ownershipManifestSha256"],
                          vectorProfile=vector_profile)
+        if record['schema'] == SCHEMA:
+            details.update(collectionName=name, sourceRoot=canonical_source)
+        else:
+            details.update(
+                collections=selected_collections,
+                collectionRoots={item['name']: item['sourceRoot']
+                                 for item in selected_collections},
+                recallSettings={key: cfg[key] for key in
+                                ('recallStrategy', 'minScore', 'rawFallbackMinScore',
+                                 'topN', 'skipPaths', 'lexicalPatterns')})
+        return _decision("candidate", "route_record_valid", **details)
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError) as exc:
         return _decision("blocked", str(exc) or "invalid_route_record")
 

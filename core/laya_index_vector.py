@@ -1,4 +1,4 @@
-"""Precomputed, exact cosine vectors in an A-int v5 database.
+"""Precomputed, exact cosine vectors in an A-int v6 database.
 
 The caller supplies vectors and an approved provider identity. This module never
 loads a model, and the hashes here prove row consistency, not model provenance.
@@ -13,7 +13,7 @@ import struct
 import time
 import unicodedata
 
-from laya_index_a import IndexContractError, _NOT_EXCLUDED
+from laya_index_a import IndexContractError, _NOT_EXCLUDED, _path_predicate
 
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -464,7 +464,8 @@ class LayaVectorIndex:
 
     def search_exact(self, token, query_vector, *, model_id, embedding_fingerprint,
                      dimension, limit, max_candidates=MAX_CANDIDATES,
-                     max_float_work=MAX_FLOAT_WORK, deadline_seconds=None):
+                     max_float_work=MAX_FLOAT_WORK, deadline_seconds=None,
+                     path_prefixes=None):
         if (type(limit) is not int or not 1 <= limit <= 100
                 or type(max_candidates) is not int or not 1 <= max_candidates <= MAX_CANDIDATES
                 or type(max_float_work) is not int or not 1 <= max_float_work <= MAX_FLOAT_WORK
@@ -473,6 +474,7 @@ class LayaVectorIndex:
                      or not math.isfinite(deadline_seconds) or deadline_seconds <= 0))):
             raise IndexContractError('invalid_vector_query')
         profile_id = profile_identity(model_id, embedding_fingerprint, dimension)
+        prefix_sql, prefix_params = _path_predicate(path_prefixes)
         query_blob, query = _blob(query_vector, dimension)
         del query_blob
         qnorm = math.sqrt(math.fsum(v * v for v in query))
@@ -496,8 +498,8 @@ class LayaVectorIndex:
                                     AND v.profile_id=r.profile_id AND v.seq=r.seq
                 JOIN content c ON c.hash=m.hash
                 WHERE r.gen=? AND r.scope=? AND r.profile_id=? AND m.eligible=1
-                  AND ''' + _NOT_EXCLUDED
-            params = (gen, scope, profile_id)
+                  AND ''' + _NOT_EXCLUDED + prefix_sql
+            params = (gen, scope, profile_id, *prefix_params)
             count = db.execute('SELECT COUNT(*) ' + predicate, params).fetchone()[0]
             if count > max_candidates or count * dimension > max_float_work:
                 raise IndexContractError('vector_budget_exceeded')
@@ -526,18 +528,22 @@ class LayaVectorIndex:
 
 def search_vector_verified(index, root, token, query_vector, *, model_id,
                            embedding_fingerprint, dimension, limit,
-                           max_files=200, max_bytes=5_000_000, **budget):
+                           max_files=200, max_bytes=5_000_000,
+                           path_prefixes=None, **budget):
     """Apply the source port's live manifest and row checks to vector hits."""
-    from laya_index_source_port import SourceStale, scan
+    from collections.abc import Mapping
+    from laya_index_source_port import SourceStale, scan, scan_collections
     before = index.view_seal(token)
     scope, gen, manifest = before['scope'], before['gen'], before['source_manifest']
-    source = scan(root, scope, index, max_files, max_bytes)
+    source = (scan_collections(root, scope, index, max_files, max_bytes)
+              if isinstance(root, Mapping) else
+              scan(root, scope, index, max_files, max_bytes))
     if source.manifest != manifest:
         raise SourceStale('source manifest differs from view seal')
     rows = LayaVectorIndex(index).search_exact(
         token, query_vector, model_id=model_id,
         embedding_fingerprint=embedding_fingerprint, dimension=dimension,
-        limit=limit, **budget)
+        limit=limit, path_prefixes=path_prefixes, **budget)
     verified = []
     for row in rows:
         f = source.by_path.get(row['path'])

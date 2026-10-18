@@ -45,12 +45,14 @@ class PolicyPurity(unittest.TestCase):
 class PolicyDecisions(unittest.TestCase):
     def test_fixed_kinds_and_priority_classes(self):
         self.assertEqual(policy.KINDS, {'index': 0, 'update': 1, 'cleanup': 2,
-                                        'laya-sync': 2, 'learning': 3, 'auto': 3})
+                                        'laya-sync': 2, 'laya-compile': 2,
+                                        'learning': 3, 'auto': 3})
 
     def test_validate_accepts_only_fixed_shapes(self):
         for kind, target in (('index', ''), ('update', HEX), ('learning', '/synthetic/a'),
                              ('auto', '/synthetic/a'), ('cleanup', '/synthetic/a'),
-                             ('laya-sync', '/synthetic/a')):
+                             ('laya-sync', '/synthetic/a'),
+                             ('laya-compile', '/synthetic/a')):
             policy.validate_wake(kind, target)
         bad = (('unknown', ''), ('index', 'x'), ('index', None), ('update', HEX[:31]),
                ('update', HEX.upper()), ('learning', 'relative'), ('learning', ''),
@@ -67,7 +69,7 @@ class PolicyDecisions(unittest.TestCase):
 
     def test_capacity_reserves_one_slot_for_index(self):
         self.assertEqual(policy.capacity_limit('index'), 256)
-        for kind in ('update', 'cleanup', 'laya-sync', 'learning', 'auto'):
+        for kind in ('update', 'cleanup', 'laya-sync', 'laya-compile', 'learning', 'auto'):
             self.assertEqual(policy.capacity_limit(kind), 255)
 
     def test_backoff_table_is_unchanged(self):
@@ -246,6 +248,23 @@ class DrainThroughSeam(unittest.TestCase):
         self.drain(lambda row: calls.append(row['kind']) or True, max_runs=2)
         self.assertEqual(calls, ['index', 'learning'])
         self.assertEqual(self.rows(), [])
+
+    def test_bounded_worker_rewakes_retained_rows_even_after_failure(self):
+        self.queue.put('learning', '/synthetic/a', now=0)
+        for outcome in ({'status': 'pending', 'runs': 8}, RuntimeError('worker failed')):
+            with self.subTest(outcome=type(outcome).__name__):
+                side_effect = outcome if isinstance(outcome, Exception) else None
+                with patch.object(runtime, 'drain', side_effect=side_effect,
+                                  return_value=outcome) as draining:
+                    with patch.object(runtime, 'wake') as rewake:
+                        if isinstance(outcome, Exception):
+                            with self.assertRaises(RuntimeError):
+                                runtime._drain_and_rewake(self.queue, 123)
+                        else:
+                            self.assertEqual(runtime._drain_and_rewake(self.queue, 123), outcome)
+                        draining.assert_called_once_with(self.queue, lease_fd=123)
+                        rewake.assert_called_once_with()
+            self.assertEqual(len(self.rows()), 1)
 
 
 if __name__ == '__main__':

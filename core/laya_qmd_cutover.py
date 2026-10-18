@@ -20,13 +20,18 @@ import tempfile
 
 from laya_index_a import LayaIndexA
 from laya_index_claim_queue import ClaimQueue
-from laya_index_source_port import publish_from_source, scan
+from laya_index_source_port import (publish_collections_from_source,
+                                    publish_from_source, scan,
+                                    scan_collections)
 from laya_index_vector import verify_generation_seal
-from laya_qmd_migration import inspect_qmd, verify_restore
+from laya_qmd_migration import (QmdMigrationBlocked, inspect_qmd,
+                                inspect_qmd_collections,
+                                verify_restore, verify_restore_collections)
 from laya_install_journal import (cas_activate, cas_restore_qmd, inspect_journal,
                                   preflight_product_candidate)
 
 SCHEMA = 'laya-qmd-product-cutover-v1'
+SCHEMA_V2 = 'laya-qmd-product-cutover-v2'
 MARKER_SCHEMA = 'laya-qmd-selection-marker-v1'
 LEDGER = 'qmd-cutover.json'
 MARKER = 'laya-index-selection.json'
@@ -146,18 +151,27 @@ def _paths(project_root, journal_path):
 
 def _ledger(ledger_path):
     row = _read_json(ledger_path)
-    required = {'schema','epoch','phase','projectRoot','journalPath','routeSha256',
+    common = {'schema','epoch','phase','projectRoot','journalPath','routeSha256',
                 'sourceDb','backupDb','sourceFormat','collection','sourceDigest',
                 'sourceRoot','candidateDb','queueDb','scope','indexGeneration',
                 'sourceManifest','vectorProfileId','claim','candidateIncarnation',
                 'attestationSha256','providerFileIdentitySha256',
                 'sourceIdentity','backupIdentity','candidateIdentity','queueIdentity'}
-    if (not isinstance(row, dict) or set(row) != required or row['schema'] != SCHEMA
+    if not isinstance(row, dict):
+        _fail('cutover_ledger_invalid')
+    if row.get('schema') == SCHEMA:
+        required = common
+    elif row.get('schema') == SCHEMA_V2:
+        required = (common - {'collection','sourceRoot'}) | {'collections'}
+    else:
+        _fail('cutover_ledger_invalid')
+    scalar = required - {'epoch','phase','sourceIdentity','backupIdentity',
+                         'candidateIdentity','queueIdentity','collections'}
+    if (set(row) != required
             or type(row['epoch']) is not int or row['epoch'] < 1
             or row['phase'] not in ('prepared','switching','active','restoring','restored')
             or any(not isinstance(row[k], str) or not row[k] for k in
-                   required - {'epoch','phase','sourceIdentity','backupIdentity',
-                               'candidateIdentity','queueIdentity'})
+                   scalar)
             or any(not isinstance(row[k], list) or len(row[k]) != 2 or
                    any(type(v) is not int or v < 0 for v in row[k]) for k in
                    ('sourceIdentity','backupIdentity','candidateIdentity','queueIdentity'))
@@ -167,9 +181,135 @@ def _ledger(ledger_path):
             or not SHA.fullmatch(row['attestationSha256'])
             or not SHA.fullmatch(row['providerFileIdentitySha256'])):
         _fail('cutover_ledger_invalid')
+    if row['schema'] == SCHEMA_V2:
+        try:
+            from laya_qmd_migration import _collection_names
+            collections = row['collections']
+            names = _collection_names([item['name'] for item in collections])
+            if (not isinstance(collections, list) or len(collections) != 2
+                    or [item['name'] for item in collections] != list(names)
+                    or any(not isinstance(item, dict) or set(item) !=
+                           {'name','role','sourceRoot'} or item['role'] not in
+                           ('raw','wiki') or not isinstance(item['sourceRoot'], str)
+                           for item in collections)
+                    or sorted(item['role'] for item in collections) != ['raw','wiki']):
+                _fail('cutover_ledger_invalid')
+        except (TypeError, KeyError, ValueError, QmdMigrationBlocked):
+            _fail('cutover_ledger_invalid')
     if Path(row['journalPath']).parent / LEDGER != Path(ledger_path):
         _fail('cutover_ledger_path_mismatch')
     return row
+
+
+def _source_binding(row):
+    if row['schema'] == SCHEMA:
+        return (row['collection'],), row['sourceRoot']
+    collections = row['collections']
+    return tuple(item['name'] for item in collections), {
+        item['name']: item['sourceRoot'] for item in collections}
+
+
+def _qmd_digest(source_db, source_format, names, multi):
+    return (inspect_qmd_collections(source_db, source_format, names)['digest']
+            if multi else inspect_qmd(source_db, source_format, names[0])['digest'])
+
+
+def _restore_verified(backup_db, source_format, names, digest, multi):
+    if multi:
+        return verify_restore_collections(backup_db, source_format, names, digest)
+    return verify_restore(backup_db, source_format, names[0], digest)
+
+
+def _source_manifest(index, roots, scope, multi):
+    return (scan_collections(roots, scope, index).manifest if multi
+            else scan(roots, scope, index).manifest)
+
+
+def _preflight_multi_settings(route, project_root):
+    """Refuse a route the selected host cannot serve before publication."""
+    import config
+    from laya_index_host_route import (_multi_compile_supported,
+                                       _multi_settings_supported, _pairs,
+                                       _read_regular, _source_for_collection)
+    settings = Path(project_root) / '.auto-context' / 'settings.json'
+    if settings.is_symlink():
+        _fail('cutover_settings_unsafe')
+    raw = _read_regular(settings, 2 * 1024 * 1024)
+    if _sha(raw) != route['settingsSha256']:
+        _fail('cutover_settings_changed')
+    parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+    if not isinstance(parsed, dict):
+        _fail('cutover_settings_unsupported')
+    cfg = config.normalize_config(parsed)
+    declared = route['collections']
+    names = tuple(item['name'] for item in declared)
+    roles = config.role_map(cfg)
+    if (cfg.get('indexing') is not True or
+            sorted(cfg.get('collections', [])) != list(names) or
+            not _multi_settings_supported(parsed, cfg, names) or
+            set(cfg.get('collectionPaths', {})) != set(names)):
+        _fail('cutover_settings_unsupported')
+    wiki_root = next((item['sourceRoot'] for item in declared
+                      if item['role'] == 'wiki'), None)
+    if (wiki_root is None or not _multi_compile_supported(
+            parsed, cfg, Path(project_root), wiki_root)):
+        _fail('cutover_settings_unsupported')
+    for item in declared:
+        name = item['name']
+        if (item['role'] != roles.get(name) or
+                item['sourceRoot'] != _source_for_collection(
+                    Path(project_root), cfg['collectionPaths'][name])):
+            _fail('cutover_settings_mismatch')
+
+
+def _preflight_single_settings(route, project_root):
+    import config
+    from laya_index_host_route import (_pairs, _read_regular,
+                                       _selected_settings_supported,
+                                       _source_for_collection)
+    settings = Path(project_root) / '.auto-context' / 'settings.json'
+    if settings.is_symlink():
+        _fail('cutover_settings_unsafe')
+    raw = _read_regular(settings, 2 * 1024 * 1024)
+    if _sha(raw) != route['settingsSha256']:
+        _fail('cutover_settings_changed')
+    parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+    if not isinstance(parsed, dict):
+        _fail('cutover_settings_unsupported')
+    cfg = config.normalize_config(parsed)
+    name = route['collectionName']
+    raw_compile = parsed.get('compile', {})
+    if (cfg.get('indexing') is not True or
+            cfg.get('collections') != [name] or
+            set(cfg.get('collectionPaths', {})) != {name} or
+            not _selected_settings_supported(parsed, cfg, name) or
+            not isinstance(raw_compile, dict) or
+            raw_compile.get('mode', 'off') != 'off' or
+            raw_compile.get('enabled') is True or
+            raw_compile.get('autoWrite') is True or
+            config.compile_active(cfg.get('compile')) or
+            route['sourceRoot'] != _source_for_collection(
+                Path(project_root), cfg['collectionPaths'][name])):
+        _fail('cutover_settings_unsupported')
+
+
+def _preflight_bound_settings(row, route_bytes):
+    from laya_install_journal import _route
+    from laya_index_host_route import SCHEMA as ROUTE_V1, SCHEMA_V2 as ROUTE_V2
+    route, digest = _route(route_bytes, Path(row['journalPath']))
+    if digest != row['routeSha256']:
+        _fail('cutover_route_mismatch')
+    if row['schema'] == SCHEMA_V2:
+        if (route['schema'] != ROUTE_V2 or
+                route['collections'] != row['collections']):
+            _fail('cutover_route_mismatch')
+        _preflight_multi_settings(route, row['projectRoot'])
+    else:
+        if (route['schema'] != ROUTE_V1 or
+                route['collectionName'] != row['collection'] or
+                route['sourceRoot'] != row['sourceRoot']):
+            _fail('cutover_route_mismatch')
+        _preflight_single_settings(route, row['projectRoot'])
 
 
 def _identity(path):
@@ -188,9 +328,12 @@ def _check_evidence(row):
                         ('candidateDb','candidateIdentity'), ('queueDb','queueIdentity')):
         if _identity(row[name]) != row[field]:
             _fail('cutover_bound_file_replaced')
-    if inspect_qmd(row['sourceDb'], row['sourceFormat'], row['collection'])['digest'] != row['sourceDigest']:
+    names, roots = _source_binding(row)
+    multi = row['schema'] == SCHEMA_V2
+    if _qmd_digest(row['sourceDb'], row['sourceFormat'], names, multi) != row['sourceDigest']:
         _fail('cutover_source_changed')
-    verify_restore(row['backupDb'], row['sourceFormat'], row['collection'], row['sourceDigest'])
+    _restore_verified(row['backupDb'], row['sourceFormat'], names,
+                      row['sourceDigest'], multi)
     with closing(LayaIndexA(row['candidateDb'])) as index:
         if index.incarnation() != row['candidateIncarnation']:
             _fail('cutover_candidate_changed')
@@ -211,7 +354,7 @@ def _check_evidence(row):
                 receipt != (row['scope'],row['indexGeneration'],row['sourceManifest'],row['sourceDigest'],0) or
                 vector['profile_id'] != row['vectorProfileId']):
             _fail('cutover_candidate_evidence_mismatch')
-        if scan(row['sourceRoot'], row['scope'], index).manifest != row['sourceManifest']:
+        if _source_manifest(index, roots, row['scope'], multi) != row['sourceManifest']:
             _fail('cutover_source_manifest_changed')
     with closing(ClaimQueue.open(row['queueDb'])) as queue:
         if queue.binding() != row['candidateIncarnation']:
@@ -227,6 +370,28 @@ def _marker(row):
 def _check_marker(row, marker_path):
     if _read_json(marker_path) != _marker(row):
         _fail('cutover_marker_changed')
+
+
+def _recover_missing_marker(row, marker_path, route_path, route_bytes):
+    """Finish the prepared ledger's interrupted marker publication only."""
+    if (row['phase'] != 'prepared' or marker_path.exists() or marker_path.is_symlink()
+            or route_path.exists() or route_path.is_symlink()):
+        _fail('cutover_marker_changed')
+    if not isinstance(route_bytes, bytes) or _sha(route_bytes) != row['routeSha256']:
+        _fail('cutover_route_mismatch')
+    journal = inspect_journal(row['journalPath'])
+    if (journal['state'] != 'candidate_ready' or journal['pending'] is None or
+            journal['pendingRouteSha256'] != row['routeSha256']):
+        _fail('cutover_journal_not_ready')
+    _preflight_bound_settings(row, route_bytes)
+    _check_evidence(row)
+    approval = preflight_product_candidate(row['journalPath'])
+    if (approval['pendingRouteSha256'] != row['routeSha256'] or
+            approval['attestationSha256'] != row['attestationSha256'] or
+            approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+        _fail('cutover_attestation_changed')
+    _write(marker_path, _marker(row), replace=False)
+    _check_marker(row, marker_path)
 
 
 def _change(ledger_path, expected_epoch, expected_phase, next_phase):
@@ -277,16 +442,32 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
     approval = preflight_product_candidate(journal_path)
     if approval['pendingRouteSha256'] != route_sha:
         _fail('cutover_attested_route_mismatch')
-    if inspect_qmd(source_db, source_format, collection)['digest'] != source_digest:
+    from laya_index_host_route import SCHEMA_V2 as ROUTE_V2
+    multi = route['schema'] == ROUTE_V2
+    if multi:
+        from laya_qmd_migration import _collection_names
+        names = _collection_names(collection)
+        if (not isinstance(source_root, dict) or
+                route['collections'] != [
+                    {'name': name, 'role': item['role'],
+                     'sourceRoot': source_root.get(name)}
+                    for name, item in zip(names, route['collections'])] or
+                [item['name'] for item in route['collections']] != list(names)):
+            _fail('cutover_source_root_mismatch')
+        _preflight_multi_settings(route, project_root)
+    else:
+        names = (collection,)
+        _preflight_single_settings(route, project_root)
+    if _qmd_digest(source_db, source_format, names, multi) != source_digest:
         _fail('cutover_source_changed')
-    verify_restore(backup_db, source_format, collection, source_digest)
-    if (route['sourceRoot'] != str(source_root) or
-            route['collectionName'] != collection or
+    _restore_verified(backup_db, source_format, names, source_digest, multi)
+    if ((not multi and (route['sourceRoot'] != str(source_root) or
+                       route['collectionName'] != collection)) or
             route['vectorProfile']['profileId'] != vector_profile_id or
             len({str(Path(p)) for p in (source_db, backup_db, candidate_db, queue_db)}) != 4):
         _fail('cutover_source_root_mismatch')
     with closing(LayaIndexA(candidate_db)) as index:
-        if scan(source_root, scope, index).manifest != source_manifest:
+        if _source_manifest(index, source_root, scope, multi) != source_manifest:
             _fail('cutover_source_manifest_changed')
         index.db.execute('BEGIN')
         try:
@@ -297,24 +478,30 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
             raise
         if vector['profile_id'] != vector_profile_id:
             _fail('cutover_vector_profile_mismatch')
-        result = publish_from_source(index, source_root, scope, None, index_generation,
-                                     claim, claim_digest=source_digest, claim_epoch=0,
-                                     require_vector=True)
+        if multi:
+            result = publish_collections_from_source(
+                index, source_root, scope, None, index_generation, claim,
+                claim_digest=source_digest, claim_epoch=0, require_vector=True)
+        else:
+            result = publish_from_source(
+                index, source_root, scope, None, index_generation, claim,
+                claim_digest=source_digest, claim_epoch=0, require_vector=True)
         if result not in ('published','replayed'):
             _fail('cutover_publish_unavailable')
         incarnation = index.incarnation()
         if route['dbIncarnation'] != incarnation:
             _fail('cutover_candidate_incarnation_mismatch')
-    if inspect_qmd(source_db, source_format, collection)['digest'] != source_digest:
+    if _qmd_digest(source_db, source_format, names, multi) != source_digest:
         _fail('cutover_source_changed')
     with closing(ClaimQueue.open(queue_db)) as queue:
         if queue.binding() != incarnation:
             _fail('cutover_queue_binding_mismatch')
-    row = {'schema':SCHEMA,'epoch':1,'phase':'prepared','projectRoot':str(project_root),
+    row = {'schema':SCHEMA_V2 if multi else SCHEMA,
+           'epoch':1,'phase':'prepared','projectRoot':str(project_root),
            'journalPath':str(journal_path),'routeSha256':route_sha,
            'sourceDb':str(source_db),'backupDb':str(backup_db),
-           'sourceFormat':source_format,'collection':collection,'sourceDigest':source_digest,
-           'sourceRoot':str(source_root),'candidateDb':str(candidate_db),
+           'sourceFormat':source_format,'sourceDigest':source_digest,
+           'candidateDb':str(candidate_db),
            'queueDb':str(queue_db),'scope':scope,'indexGeneration':index_generation,
            'sourceManifest':source_manifest,'vectorProfileId':vector_profile_id,
            'claim':claim,'candidateIncarnation':incarnation,
@@ -322,6 +509,11 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
            'providerFileIdentitySha256':approval['providerFileIdentitySha256'],
            'sourceIdentity':_identity(source_db),'backupIdentity':_identity(backup_db),
            'candidateIdentity':_identity(candidate_db),'queueIdentity':_identity(queue_db)}
+    if multi:
+        row['collections'] = route['collections']
+    else:
+        row['collection'] = collection
+        row['sourceRoot'] = str(source_root)
     _check_evidence(row)
     _write(ledger_path, row, replace=False)
     _write(marker_path, _marker(row), replace=False)
@@ -354,7 +546,10 @@ def classify_marker(project_root, marker_path, route_path):
                     journal['providerFileIdentitySha256'] == row['providerFileIdentitySha256']):
                 return 'candidate'
             return 'blocked'
-        if row['phase'] == 'prepared' and journal['state'] == 'candidate_ready':
+        if (row['phase'] == 'prepared' and journal['state'] == 'candidate_ready'
+                and journal['pending'] is not None and
+                journal['pendingRouteSha256'] == row['routeSha256'] and
+                not journal['newWriteSeen']):
             return 'legacy'
         if row['phase'] == 'restored' and journal['state'] == 'restored_qmd':
             return 'legacy'
@@ -369,6 +564,7 @@ def activate_qmd_origin(project_root, journal_path, route_bytes):
     _check_marker(row, marker_path)
     if row['phase'] != 'prepared' or _sha(route_bytes) != row['routeSha256']:
         _fail('cutover_not_prepared')
+    _preflight_bound_settings(row, route_bytes)
     _check_evidence(row)
     journal = inspect_journal(journal_path)
     if journal['state'] != 'candidate_ready':
@@ -417,31 +613,82 @@ def recover_qmd_origin(project_root, journal_path, route_bytes):
     """Settle interrupted selection without deleting either source database."""
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)
     row = _ledger(ledger_path)
-    _check_marker(row, marker_path)
     if not isinstance(route_bytes, bytes) or _sha(route_bytes) != row['routeSha256']:
         _fail('cutover_route_mismatch')
+    if not marker_path.exists() and not marker_path.is_symlink():
+        _recover_missing_marker(row, marker_path, route_path, route_bytes)
+    _check_marker(row, marker_path)
     journal = inspect_journal(journal_path)
     present = route_path.exists() or route_path.is_symlink()
     if row['phase'] == 'switching':
-        _check_evidence(row)
         if journal['state'] == 'candidate_ready':
-            approval = preflight_product_candidate(journal_path)
-            if (approval['attestationSha256'] != row['attestationSha256'] or
-                    approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
-                _fail('cutover_attestation_changed')
-        if not present and journal['state'] == 'candidate_ready':
-            return _change(ledger_path, row['epoch'], 'switching', 'prepared')
-        if not present or route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:
-            _fail('cutover_route_uncertain')
-        if journal['state'] == 'candidate_ready':
+            if (journal['pending'] is None or
+                    journal['pendingRouteSha256'] != row['routeSha256'] or
+                    journal['newWriteSeen']):
+                _fail('cutover_journal_uncertain')
+            if present and (route_path.is_symlink() or
+                            _private_file(route_path, 8192) != route_bytes):
+                _fail('cutover_route_uncertain')
+            try:
+                _preflight_bound_settings(row, route_bytes)
+                _check_evidence(row)
+                approval = preflight_product_candidate(journal_path)
+                if (approval['pendingRouteSha256'] != row['routeSha256'] or
+                        approval['attestationSha256'] != row['attestationSha256'] or
+                        approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+                    _fail('cutover_attestation_changed')
+            except Exception:
+                # No journal commit or selected write occurred. Withdraw only
+                # the exact route owned by this prepared ledger; preserve both
+                # databases and let the installer replan changed evidence.
+                latest = inspect_journal(journal_path)
+                if (latest['state'] != 'candidate_ready' or
+                        latest['epoch'] != journal['epoch'] or
+                        latest['pendingRouteSha256'] != row['routeSha256'] or
+                        latest['newWriteSeen']):
+                    _fail('cutover_journal_uncertain')
+                if present:
+                    route_path.unlink()
+                    _fsync_dir(route_path.parent)
+                return _change(ledger_path, row['epoch'], 'switching', 'prepared')
+            if not present:
+                return _change(ledger_path, row['epoch'], 'switching', 'prepared')
             journal = cas_activate(journal_path, journal['epoch'], route_bytes)
+        elif journal['state'] == 'active' and not present:
+            if (journal['selectedRouteSha256'] != row['routeSha256'] or
+                    journal['providerAttestationSha256'] != row['attestationSha256'] or
+                    journal['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+                _fail('cutover_journal_uncertain')
+            _write(route_path, route_bytes, replace=False)
+        if (not route_path.is_file() or route_path.is_symlink() or
+                _private_file(route_path, 8192) != route_bytes):
+            _fail('cutover_route_uncertain')
         if (journal['state'] != 'active' or
+                journal['selectedRouteSha256'] != row['routeSha256'] or
                 journal['providerAttestationSha256'] != row['attestationSha256'] or
                 journal['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
             _fail('cutover_journal_uncertain')
         return _change(ledger_path, row['epoch'], 'switching', 'active')
+    if row['phase'] == 'prepared' and journal['state'] == 'active':
+        # A racing journal commit can land after an interrupted switching
+        # rollback. The committed route is forward-only, even when its file
+        # was withdrawn before the journal transaction became visible.
+        if (journal['selectedRouteSha256'] != row['routeSha256'] or
+                journal['providerAttestationSha256'] != row['attestationSha256'] or
+                journal['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+            _fail('cutover_journal_uncertain')
+        if not present:
+            _write(route_path, route_bytes, replace=False)
+        elif route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:
+            _fail('cutover_route_uncertain')
+        return _change(ledger_path, row['epoch'], 'prepared', 'active')
     if row['phase'] == 'restoring':
         if journal['newWriteSeen']:
+            if (journal['state'] != 'active' or
+                    journal['selectedRouteSha256'] != row['routeSha256'] or
+                    journal['providerAttestationSha256'] != row['attestationSha256'] or
+                    journal['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+                _fail('cutover_journal_uncertain')
             if not present:
                 _write(route_path, route_bytes, replace=False)
             elif route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:

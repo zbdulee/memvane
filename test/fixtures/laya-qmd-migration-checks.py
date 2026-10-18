@@ -13,7 +13,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from laya_qmd_migration import (QMD_253, FORK_F463, QmdMigrationBlocked,
                                 inspect_qmd, backup_qmd, verify_restore,
-                                prepare_qmd_candidate)
+                                inspect_qmd_collections, backup_qmd_collections,
+                                verify_restore_collections, prepare_qmd_candidate)
 from laya_index_a import LayaIndexA
 import laya_index_a
 import laya_qmd_migration
@@ -73,6 +74,7 @@ def make_source(path, kind, *, documents=None, vectors=()):
             ''')
         db.executemany('INSERT INTO store_collections(name,path) VALUES(?,?)',
                        [('docs', '/synthetic/worktree-a'),
+                        ('wiki', '/synthetic/wiki'),
                         ('other', '/synthetic/worktree-b')])
         for collection, rel, body, active in documents:
             hash_ = digest(body)
@@ -136,6 +138,53 @@ class QmdFormatTests(unittest.TestCase):
         inv = inspect_qmd(self.source(FORK_F463), FORK_F463, 'docs')
         self.assertEqual(inv['source_format'], FORK_F463)
         self.assertEqual(inv['active_count'], 1)
+
+    def test_multi_collection_backup_and_candidate_share_one_generation(self):
+        raw = 'astral manuscript'
+        wiki = '# Card\nverified synthetic summary'
+        source = self.source(documents=[('docs', 'live.md', raw, 1),
+                                        ('wiki', 'card.md', wiki, 1),
+                                        ('other', 'unrelated.md', 'untouched', 1)])
+        backup = self.root / 'backup.sqlite'
+        names = ('docs', 'wiki')
+        proof = backup_qmd_collections(source, QMD_253, names, backup)
+        inventory = inspect_qmd_collections(backup, QMD_253, names)
+        self.assertEqual(proof['source_digest'], inventory['digest'])
+        self.assertTrue(verify_restore_collections(
+            backup, QMD_253, names, inventory['digest'])['verified'])
+        files = {'docs/live.md': raw, 'wiki/card.md': wiki}
+        manifest = laya_index_a._digest('scope-a', [
+            (path, digest(body), 1) for path, body in sorted(files.items())])
+        chunks = [{'hash': digest(body),
+                   'title': qmd_markdown_title(body, path),
+                   'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}
+                  for path, body in sorted(files.items())]
+        result = prepare_qmd_candidate(
+            backup, QMD_253, names, files, self.root / 'candidate.sqlite',
+            'scope-a', 'gen-1', migration_allowed=True,
+            expected_collection_root={'docs': '/synthetic/worktree-a',
+                                      'wiki': '/synthetic/wiki'},
+            expected_source_digest=inventory['digest'], provider_approved=True,
+            current_source_db=source, scope_collections=names,
+            vector_batch={'scope': 'scope-a', 'source_manifest': manifest,
+                          'qmd_source_digest': inventory['digest'],
+                          'model_id': 'synthetic-approved',
+                          'embedding_fingerprint': 'a' * 64,
+                          'dimension': 2, 'chunks': chunks})
+        index = LayaIndexA(result['candidate'])
+        try:
+            self.assertEqual(index.db.execute(
+                'SELECT path FROM membership WHERE gen=? ORDER BY path',
+                ('gen-1',)).fetchall(),
+                [('docs/live.md',), ('wiki/card.md',)])
+            self.assertEqual(verify_generation_seal(index, 'gen-1')['rows_count'], 2)
+        finally:
+            index.close()
+        with sqlite3.connect(source) as db:
+            db.execute("UPDATE documents SET title='changed wiki title' "
+                       "WHERE collection='wiki' AND path='card.md'")
+        self.assertNotEqual(inspect_qmd_collections(
+            source, QMD_253, names)['digest'], inventory['digest'])
 
     def test_wrong_format_refused_both_directions(self):
         with self.assertRaises(QmdMigrationBlocked):

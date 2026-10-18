@@ -280,6 +280,36 @@ assert not attempts,attempts
                 if (namespace/'shared-last-status.json').exists() else 'missing')
             +' captures='+str(diagnostic(lambda:len(rows(namespace,'samples'))))
             +' cases='+str(diagnostic(lambda:len(rows(namespace,'cases')))))
+    def recall_until_enqueued(project, namespace, fixture, host, prompt, case_count, busy_count):
+        """Retry only a captured hook whose admission timed out before enqueue.
+
+        Each retry is a new prompt event. It is safe only when the prior event
+        has a durable local sample and no shared case; a committed case must
+        never be retried because that would create another paid teacher case.
+        The real preparation deadline and OS observations remain in force.
+        """
+        for attempt in range(3):
+            before = {row[0] for row in rows(namespace, 'samples')}
+            assert len(rows(namespace, 'cases')) == case_count
+            recall(project, fixture, host, prompt)
+            captured = rows(namespace, 'samples')
+            new_ids = {row[0] for row in captured} - before
+            assert len(new_ids) == 1, (project, host, 'capture_not_unique', len(new_ids))
+            status_path = namespace / 'shared-last-status.json'
+            assert status_path.is_file(), (project, host, 'shared_status_missing')
+            status = json.loads(status_path.read_text())
+            assert status.get('request_id_hash') == digest(next(iter(new_ids))), status
+            if status.get('status') == 'queued':
+                assert len(rows(namespace, 'cases')) == case_count + 1, status
+                wait_busy(namespace, busy_count)
+                return
+            assert (status.get('status'), status.get('stage'), status.get('reason')) == (
+                'unavailable', 'enqueue', 'preparation_budget'), status
+            assert len(rows(namespace, 'cases')) == case_count, status
+            if attempt < 2:
+                time.sleep(.25)
+        raise AssertionError('bounded preparation admission retries exhausted: '
+            + canonical({'project':project.name, 'host':host, 'status':status}))
     # Finish both setup transactions before enabled captures start workers.
     for project,namespace,fixture in projects:
         recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
@@ -304,10 +334,10 @@ assert not attempts,attempts
         fcntl.flock(lock,fcntl.LOCK_EX); locks.append(lock)
         progress('activated',project)
     for project,namespace,fixture in projects:
-        recall(project,fixture,'claude','Where do synthetic Cobalt garden flowers grow?')
-        wait_busy(namespace,1)
-        recall(project,fixture,'codex','Which synthetic Cobalt garden flowers are documented?')
-        wait_busy(namespace,2)
+        recall_until_enqueued(project,namespace,fixture,'claude',
+            'Where do synthetic Cobalt garden flowers grow?',0,1)
+        recall_until_enqueued(project,namespace,fixture,'codex',
+            'Which synthetic Cobalt garden flowers are documented?',1,2)
         with sqlite3.connect(namespace/'learning.sqlite3') as db:
             samples = [json.loads(row[0]) for row in db.execute('SELECT body FROM samples')]
         assert {row['host'] for row in samples} == {'claude','codex'}, samples
@@ -380,8 +410,8 @@ assert not attempts,attempts
         progress('gold_committed_and_duplicate_wake_drained',project)
     # Sensitive query is captured locally but never passed to teacher transport.
     project,namespace,fixture = projects[0]
-    recall(project,fixture,'codex','Find synthetic Cobalt garden password="never-send-this-secret"')
-    wait_busy(namespace,3)
+    recall_until_enqueued(project,namespace,fixture,'codex',
+        'Find synthetic Cobalt garden password="never-send-this-secret"',2,3)
     result = general_teacher.process_pending(namespace,project,shared._policy(namespace),
         invoke=lambda *a,**k:(_ for _ in ()).throw(AssertionError('secret crossed transport')))
     assert result['outcomes']==['excluded_sensitive'], result

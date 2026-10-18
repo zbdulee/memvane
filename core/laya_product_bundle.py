@@ -53,10 +53,10 @@ PROVIDER_ID = re.compile(r'[a-z0-9][a-z0-9._-]{0,127}\Z')
 VECTOR_FIELDS = frozenset(('profileId', 'modelId', 'embeddingFingerprint',
                            'dimension', 'metric', 'approvedProviderId',
                            'providerArtifactSha256', 'providerRelativePath'))
-PRODUCTION_ATTESTATION_SCHEMA = 'laya-production-provider-attestation-v1'
+PRODUCTION_ATTESTATION_SCHEMA = 'laya-production-provider-attestation-v2'
 PRODUCTION_ATTESTATION_FIELDS = frozenset((
     'schema', 'sourceCommit', 'bundleManifestSha256',
-    'ownershipManifestSha256', 'vectorProfile', 'providerManifest',
+    'ownershipManifestSha256', 'journalPath', 'vectorProfile', 'providerManifest',
     'dependencyClosure'))
 PROVIDER_MANIFEST_FIELDS = frozenset((
     'approvedProviderId', 'providerArtifactSha256', 'providerRelativePath',
@@ -207,7 +207,21 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             provider['dimension'] != profile['dimension'] or
             provider['dependencyClosureApproved'] is not True):
         _fail('production_provider_profile_mismatch')
-    runtime_dir = root.parent / 'runtime'
+    journal_path = Path(attestation['journalPath']) if type(attestation['journalPath']) is str else Path('.')
+    if (not journal_path.is_absolute() or journal_path.name != 'install-journal.sqlite' or
+            journal_path.is_symlink() or
+            str(journal_path.resolve(strict=False)) != str(journal_path)):
+        _fail('production_journal_path_invalid')
+    state_dir = journal_path.parent
+    try:
+        state_info = state_dir.lstat()
+        if (not stat.S_ISDIR(state_info.st_mode) or
+                state_info.st_uid != os.getuid() or
+                stat.S_IMODE(state_info.st_mode) & 0o077):
+            _fail('production_journal_owner_invalid')
+    except OSError as exc:
+        raise BundleEvidenceError('production_journal_owner_invalid') from exc
+    runtime_dir = state_dir / 'runtime'
     socket_path = str(runtime_dir / 'laya-embed.sock')
     try:
         runtime_info = runtime_dir.lstat()
@@ -345,7 +359,7 @@ def _private(root):
         for directory in (canonical, canonical / 'core'):
             info = directory.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
-                    stat.S_IMODE(info.st_mode) & 0o077):
+                    stat.S_IMODE(info.st_mode) & 0o022):
                 _fail('unsafe_bundle_owner')
         return canonical
     except (OSError, RuntimeError, TypeError) as exc:
@@ -487,6 +501,7 @@ def _plugin_paths(source, commit_id):
                  'core/laya_qmd_cutover.py', 'core/laya_qmd_migration.py',
                  'core/laya_product_sync_worker.py',
                  'core/laya_index_sync.py',
+                 'core/laya_product_install.py',
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
                  'hermes_adapter/core_bridge.py', 'plugin.yaml',
                  'LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
@@ -494,6 +509,88 @@ def _plugin_paths(source, commit_id):
                  '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(selected)):
         _fail('incomplete_plugin_commit')
     return {name: paths[name] for name in selected}
+
+
+def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
+                             vector_profile=None):
+    """Seal an already installed, exact-commit host plugin in place.
+
+    This only adopts a private, owner-controlled host cache. It does not copy
+    executable files, change modes, register a host plugin, or select a route.
+    The caller must separately observe that the host loaded ``plugin_root``.
+    Existing metadata and any unexpected installed file fail closed.
+    """
+    source, installed = Path(source_root), Path(plugin_root)
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir() or
+            type(commit_id) is not str or not COMMIT.fullmatch(commit_id) or
+            not installed.is_absolute() or installed.is_symlink() or
+            not installed.is_dir() or installed == source):
+        _fail('invalid_installed_candidate_request')
+    source = source.resolve(strict=True)
+    installed = _private(installed)
+    metadata = installed / '.laya-product'
+    if metadata.exists() or metadata.is_symlink():
+        proof = inspect_full_plugin_candidate(installed)
+        if (proof['sourceCommit'] != commit_id or
+                proof['vectorProfile'] != vector_profile):
+            _fail('installed_candidate_already_owned')
+        return proof
+    if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
+            _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
+        _fail('source_commit_mismatch')
+    selected = _plugin_paths(source, commit_id)
+    object_format = _git(source, 'rev-parse', '--show-object-format').decode().strip()
+    actual = set()
+    for directory, dirs, files in os.walk(installed, followlinks=False):
+        current = Path(directory)
+        info = current.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o022 or
+                any((current / child).is_symlink() for child in dirs)):
+            _fail('unsafe_installed_directory')
+        if current == installed and '.git' in dirs:
+            dirs.remove('.git')  # Host marketplace clones may retain Git metadata.
+        for name in files:
+            actual.add(str((current / name).relative_to(installed)))
+    if actual != set(selected):
+        _fail('installed_file_set_not_exact_commit')
+    entries = {}
+    for name, committed in selected.items():
+        source_raw, source_info = _read(source / name, MAX_FILE)
+        installed_raw, installed_info = _read(installed / name, MAX_FILE)
+        if (source_info['mode'] & 0o111 != (0o111 if committed['mode'] == 0o700 else 0) or
+                _git_blob_oid(source_raw, object_format) != committed['oid']):
+            _fail('source_not_exact_commit')
+        if (installed_info['dev'] != installed.stat().st_dev or
+                (installed_info['mode'] & 0o111) !=
+                (0o111 if committed['mode'] == 0o700 else 0) or
+                installed_info['mode'] & 0o022 or
+                installed_raw != source_raw or
+                (installed / name).stat().st_uid != os.getuid()):
+            _fail('installed_blob_not_exact_commit')
+        entries[name] = installed_info
+    artifacts = {name: {'sha256': row['sha256'], 'bytes': row['bytes'],
+                        'mode': row['mode']} for name, row in entries.items()}
+    profile = validate_vector_profile(vector_profile, artifacts)
+    os.mkdir(metadata, 0o700)
+    manifest = {'schema': FULL_SCHEMA, 'kind': 'exact_commit_full_plugin_candidate',
+                'sourceCommit': commit_id, 'exactCommitVerifiedAtPackaging': True,
+                'artifacts': artifacts, 'vectorProfile': profile}
+    _write(metadata / 'manifest.json', _canonical(manifest))
+    owner = {'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(installed),
+             'bundleManifestSha256': _sha(_canonical(manifest)), 'entries': entries}
+    _write(metadata / 'ownership-manifest.json', _canonical(owner))
+    fd = os.open(metadata, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fd = os.open(installed, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return inspect_full_plugin_candidate(installed)
 
 
 def prepare_full_plugin_candidate(source_root, plugin_root, *, commit_id,
@@ -599,6 +696,7 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_qmd_cutover.py', 'core/laya_qmd_migration.py',
              'core/laya_product_sync_worker.py',
              'core/laya_index_sync.py',
+             'core/laya_product_install.py',
              'core/laya_product_bundle.py', 'core/laya_install_journal.py',
              'hermes_adapter/core_bridge.py', 'plugin.yaml',
              'LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
@@ -613,11 +711,13 @@ def inspect_full_plugin_candidate(plugin_root):
         current = Path(directory)
         info = current.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
-                stat.S_IMODE(info.st_mode) & 0o077):
+                stat.S_IMODE(info.st_mode) & 0o022):
             _fail('unsafe_bundle_directory')
         for dirname in dirs:
             if (current / dirname).is_symlink():
                 _fail('unsafe_bundle_directory')
+        if current == root and '.git' in dirs:
+            dirs.remove('.git')
         for filename in files:
             relative = str((current / filename).relative_to(root))
             if not relative.startswith('.laya-product/'):

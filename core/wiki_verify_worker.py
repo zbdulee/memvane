@@ -413,7 +413,12 @@ def record_verify_suppression(
 def reindex_wiki(root: Path, config: dict) -> None:
     collection, collection_path = wc.find_wiki_collection(config)
     if collection and collection_path:
-        enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
+        import wiki_selected_laya
+        selected = wiki_selected_laya.selected(root)
+        if selected is None:
+            enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
+        else:
+            wiki_selected_laya.request_sync(root, selected)
 
 
 def card_state(target: Path) -> tuple[str | None, dict, str, str]:
@@ -675,6 +680,8 @@ def process_verify_job(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(root)
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
@@ -847,6 +854,7 @@ def process_verify_job(
         # (lib 우회)도 여기서 함께 덮인다.
         return defer_or_drop(root, vcfg, job, attempt, has_more, provenance, "invalid_verdict", log_path)
 
+    wiki_selected_laya.recheck(selected_route)
     try:
         with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
             return apply_verify_verdict_locked(
@@ -1026,6 +1034,12 @@ def run(
     """
     result = {"processed": 0, "remaining": 0}
     vcfg = verify_cfg_of(compile_cfg)
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(root)
+    if selected_route is not None:
+        # Selected Laya keeps wiki bytes for recovery. The legacy default
+        # machine-delete verdict is never inherited by an installed route.
+        vcfg = {**vcfg, 'onFail': 'none', 'onInconclusive': 'none'}
     if not vcfg.get("enabled", True):
         return result
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
@@ -1084,6 +1098,7 @@ def run(
     try:
         for idx, (raw_line, job) in enumerate(to_process):
             try:
+                wiki_selected_laya.recheck(selected_route)
                 processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path)
             except Exception:
                 remaining.append(raw_line)

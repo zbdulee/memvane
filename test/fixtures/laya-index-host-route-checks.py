@@ -99,6 +99,74 @@ class HostRouteChecks(unittest.TestCase):
         self.record()
         self.assertEqual(self.state(), "blocked")
 
+    def test_v2_two_collections_return_one_scope_and_explicit_roles(self):
+        (self.auto / 'wiki').mkdir()
+        private = Path(self.temp.name).resolve() / 'private-state'
+        private.mkdir(mode=0o700)
+        settings = {'collections': ['docs', 'wiki'], 'indexing': True,
+                    'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+                    'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+                    'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}
+        self.settings.write_text(json.dumps(settings))
+        record = self.record(schema=route.SCHEMA_V2,
+                             journalPath=str(private / 'install-journal.sqlite'))
+        del record['collectionName'], record['sourceRoot']
+        record['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
+        self.path.write_text(json.dumps(record))
+        decision = route.select_route(str(self.root))
+        self.assertEqual(decision['state'], 'candidate', decision)
+        self.assertEqual(decision['scopeId'], '6' * 32)
+        self.assertEqual(decision['journalPath'],
+                         str(private / 'install-journal.sqlite'))
+        self.assertEqual(decision['collectionRoots'],
+                         {'docs': str(self.root / 'docs'),
+                          'wiki': str(self.auto / 'wiki')})
+        self.assertEqual(decision['recallSettings']['recallStrategy'],
+                         'hierarchical')
+
+    def test_v2_current_auto_wiki_compile_remains_blocked(self):
+        (self.auto / 'wiki').mkdir()
+        self.settings.write_text(json.dumps({
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'compile': {'mode': 'auto-wiki'}}))
+        record = self.record(schema=route.SCHEMA_V2)
+        del record['collectionName'], record['sourceRoot']
+        record['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
+        self.path.write_text(json.dumps(record))
+        self.assertEqual(route.select_route(str(self.root))['reason'],
+                         'selected_compile_unsupported')
+
+    def test_v2_auto_wiki_requires_verified_local_compile_contract(self):
+        (self.auto / 'wiki').mkdir()
+        self.settings.write_text(json.dumps({
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'compile': {'mode': 'auto-wiki',
+                        'triggers': ['post_tool_source', 'post_sync_source', 'manual'],
+                        'extractor': {'builtins': ['claude', 'codex', 'hermes']}}}))
+        record = self.record(schema=route.SCHEMA_V2)
+        del record['collectionName'], record['sourceRoot']
+        record['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
+        self.path.write_text(json.dumps(record))
+        self.assertEqual(route.select_route(str(self.root))['state'], 'candidate')
+        changed = json.loads(self.settings.read_text())
+        changed['compile']['recallVerifiedOnly'] = False
+        self.settings.write_text(json.dumps(changed))
+        record['settingsSha256'] = hashlib.sha256(
+            self.settings.read_bytes()).hexdigest()
+        self.path.write_text(json.dumps(record))
+        self.assertEqual(route.select_route(str(self.root))['reason'],
+                         'selected_compile_unsupported')
+
     def test_unsupported_recall_settings_block_selected_route(self):
         original = json.loads(self.settings.read_text())
         for change in ({'recallStrategy': 'hierarchical'},

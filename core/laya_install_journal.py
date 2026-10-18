@@ -19,11 +19,13 @@ import sys
 
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
-from laya_index_host_route import (FIELDS as ROUTE_FIELDS, RECORD as ROUTE_FILE,
-                                   SCHEMA as ROUTE_SCHEMA, select_route)
+from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
+                                   RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
+                                   SCHEMA_V2 as ROUTE_SCHEMA_V2, select_route)
 from laya_package import _user_qmd_inventory
 from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
                                  inspect_full_plugin_candidate,
+                                 PRODUCTION_ATTESTATION_SCHEMA,
                                  production_provider_approved,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
@@ -102,9 +104,63 @@ def _attestation(path):
                             parse_constant=_nonfinite)
         if not isinstance(parsed, dict) or raw != _canon(parsed).encode('utf-8'):
             _fail('production_attestation_noncanonical')
+        if parsed.get('journalPath') != str(Path(path)):
+            _fail('production_attestation_journal_mismatch')
         return parsed, hashlib.sha256(raw).hexdigest()
     except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('production_attestation_unavailable') from exc
+
+
+def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
+                                 dependency_closure):
+    """No-clobber installer record, validated before journal CAS can bind it.
+
+    Repeating an identical, complete staging operation is safe. A partial or
+    different file is retained for explicit recovery instead of overwritten.
+    """
+    journal = _private_parent(journal_path)
+    proof = inspect_full_plugin_candidate(bundle_proof.get('pluginRoot'))
+    if proof != bundle_proof:
+        _fail('production_bundle_changed')
+    record = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
+              'sourceCommit': proof['sourceCommit'],
+              'bundleManifestSha256': proof['bundleManifestSha256'],
+              'ownershipManifestSha256': proof['ownershipManifestSha256'],
+              'journalPath': str(journal),
+              'vectorProfile': proof['vectorProfile'],
+              'providerManifest': provider_manifest,
+              'dependencyClosure': dependency_closure}
+    try:
+        validate_production_provider_attestation(proof['vectorProfile'], proof, record)
+    except BundleEvidenceError as exc:
+        raise JournalEvidenceError('production_attestation_invalid') from exc
+    raw = _canon(record).encode('utf-8')
+    if len(raw) > 1024 * 1024:
+        _fail('production_attestation_too_large')
+    target = journal.parent / PRODUCTION_ATTESTATION
+    if target.exists() or target.is_symlink():
+        existing, digest = _attestation(journal)
+        if existing != record:
+            _fail('production_attestation_already_owned')
+        return {'attestationPath': str(target), 'attestationSha256': digest}
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(raw)
+            out.flush()
+            os.fsync(out.fileno())
+        parent_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except OSError as exc:
+        raise JournalEvidenceError('production_attestation_stage_incomplete') from exc
+    existing, digest = _attestation(journal)
+    if existing != record:
+        _fail('production_attestation_changed')
+    return {'attestationPath': str(target), 'attestationSha256': digest}
 
 
 def _provider_file_identity(attestation):
@@ -150,8 +206,11 @@ def _route(raw, journal_path):
                            parse_constant=_nonfinite)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('invalid_route_bytes') from exc
-    if (not isinstance(route, dict) or set(route) != ROUTE_FIELDS or
-            route.get('schema') != ROUTE_SCHEMA or route.get('status') != 'active' or
+    schema = route.get('schema') if isinstance(route, dict) else None
+    expected_fields = (ROUTE_FIELDS if schema == ROUTE_SCHEMA else
+                       ROUTE_FIELDS_V2 if schema == ROUTE_SCHEMA_V2 else None)
+    if (not isinstance(route, dict) or expected_fields is None or
+            set(route) != expected_fields or route.get('status') != 'active' or
             route.get('journalPath') != str(journal_path)):
         _fail('route_contract_mismatch')
     _strict_vector_profile(route.get('vectorProfile'))
@@ -186,7 +245,8 @@ def _identity(proof, route, journal_path):
     if live != proof:
         _fail('bundle_proof_changed')
     root = live['pluginRoot'] if full else live['engineRoot']
-    if (Path(root).parent != journal_path.parent or
+    if ((route['schema'] == ROUTE_SCHEMA and
+         Path(root).parent != journal_path.parent) or
             route.get('pluginRoot') != root or
             type(route.get('installId')) is not str or not ID.fullmatch(route['installId']) or
             type(route.get('generation')) is not str or not GEN.fullmatch(route['generation']) or
@@ -647,10 +707,11 @@ def verify_selected_route(decision):
         _fail('unselected_host_route')
     journal = _private_parent(decision.get('journalPath'))
     engine = Path(decision.get('pluginRoot'))
-    if (engine.parent != journal.parent or journal != engine.parent / 'install-journal.sqlite'):
-        _fail('journal_engine_root_mismatch')
     raw = _observed_route({'project_root': decision.get('projectRoot')}, None)
     route, digest = _route(raw, journal)
+    if (journal != journal.parent / 'install-journal.sqlite' or
+            (route['schema'] == ROUTE_SCHEMA and engine.parent != journal.parent)):
+        _fail('journal_engine_root_mismatch')
     fresh = select_route(route['projectRoot'], action='recall')
     if fresh.get('state') != 'candidate' or fresh != decision:
         _fail('host_route_unverified')

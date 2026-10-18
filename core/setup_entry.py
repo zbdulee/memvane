@@ -376,7 +376,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
                                           'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store','plan-install','install',
-                                          'plan-learning-profile','activate-learning-profile'))
+                                          'plan-learning-profile','activate-learning-profile',
+                                          'plan-index-origin','review-index-provider',
+                                          'prepare-index-origin','index-origin-status',
+                                          'activate-index-origin','recover-index-origin'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -409,9 +412,61 @@ def main(argv=None):
     parser.add_argument('--learning-migration',choices=('new','preserve'),default='preserve')
     parser.add_argument('--learning-expires-at-unix-ms',type=int)
     parser.add_argument('--accepted-learning-profile')
+    parser.add_argument('--source-root')
+    parser.add_argument('--commit')
+    parser.add_argument('--state-root')
+    parser.add_argument('--install-id')
+    parser.add_argument('--accepted-origin-sha256')
+    parser.add_argument('--accepted-provider-sha256')
+    parser.add_argument('--provider-model-file')
+    parser.add_argument('--provider-dimension', type=int)
+    parser.add_argument('--user-qmd-root', action='append')
+    parser.add_argument('--approve-index-origin-activation', action='store_true')
     args = parser.parse_args(argv)
     try:
-        if args.action=='plan-learning-profile':result=learning_plan(args)
+        if args.action in ('plan-index-origin','review-index-provider',
+                           'prepare-index-origin','index-origin-status',
+                           'activate-index-origin','recover-index-origin'):
+            import laya_product_install as product
+            installed = Path(__file__).resolve(strict=True).parent.parent
+            if args.action == 'plan-index-origin':
+                result = product.plan_qmd_origin(args.project)
+            elif args.action == 'review-index-provider':
+                result = product.review_local_provider(
+                    source_root=args.source_root, plugin_root=installed,
+                    state_root=args.state_root, commit_id=args.commit,
+                    model_path=args.provider_model_file,
+                    dimension=args.provider_dimension)
+            elif args.action == 'prepare-index-origin':
+                result = product.prepare_owned_qmd_origin(
+                    project_root=args.project, source_root=args.source_root,
+                    plugin_root=installed, state_root=args.state_root,
+                    commit_id=args.commit,
+                    expected_proposal_sha256=args.accepted_origin_sha256,
+                    accepted_provider_sha256=args.accepted_provider_sha256,
+                    install_id=args.install_id,
+                    user_qmd_roots=args.user_qmd_root,
+                    model_path=args.provider_model_file,
+                    dimension=args.provider_dimension)
+            else:
+                state = product._private_parent(args.state_root)
+                journal = state / 'install-journal.sqlite'
+                if args.action == 'index-origin-status':
+                    from laya_install_journal import inspect_journal
+                    result = {'status': 'inspected', 'journal': inspect_journal(journal),
+                              'routeFile': str(state / 'reviewed-route.json')}
+                else:
+                    route = product._read_private(state / 'reviewed-route.json', 8192)
+                    with product._install_lock(state):
+                        if args.action == 'activate-index-origin':
+                            if not args.approve_index_origin_activation:
+                                raise ValueError('index_origin_activation_approval_required')
+                            result = product.activate_qmd_origin(
+                                Path(args.project), journal, route)
+                        else:
+                            result = product.recover_qmd_origin(
+                                Path(args.project), journal, route)
+        elif args.action=='plan-learning-profile':result=learning_plan(args)
         elif args.action=='activate-learning-profile':result=select_learning(args)
         elif args.action in ('install','plan-install'):
             selected=learning_plan(args) if args.learning_choice!='preserve' else None
@@ -440,7 +495,12 @@ def main(argv=None):
                   'activate': lambda: coordinator.activate(args.project),
                       'rollback': lambda: coordinator.rollback(args.project)}[args.action]()
     except Exception as exc:
-        result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
+        from context_learning.local_cycle import ResourceDeferred
+        if isinstance(exc, ResourceDeferred):
+            result = {'status': 'deferred', 'reason': str(exc),
+                      'changesApplied': 0}
+        else:
+            result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing',

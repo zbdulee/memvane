@@ -16,7 +16,7 @@ test('Laya host route selector keeps absent QMD and blocks stale or invalid sele
         QMD_SKIP_BACKGROUND_WORKER: '1', PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 14 tests/);
+    assert.match(result.stderr, /Ran 17 tests/);
   } finally { removeTemp(home); }
 });
 

@@ -6,6 +6,7 @@ This is not the historical A-copy design that clones a whole QMD database.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from contextlib import closing
 
 import hashlib
@@ -15,6 +16,7 @@ import os
 import re
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 
 
@@ -34,6 +36,116 @@ def _digest(scope, entries):
 def _gen_fts(ordinal):
     # Only an integer allocated by SQLite becomes an SQL identifier.
     return f'gen_fts_{int(ordinal)}'
+
+
+def _gen_fts_ddl(table):
+    return (f'CREATE VIRTUAL TABLE {table} USING '
+            "fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')")
+
+
+def _qmd_title(body, path):
+    match = re.search(r'^##?\s+(.+)$', body, re.MULTILINE)
+    if match:
+        title = match.group(1).strip()
+        if title in ('📝 Notes', 'Notes'):
+            next_title = re.search(r'^##\s+(.+)$', body, re.MULTILINE)
+            if next_title:
+                return next_title.group(1).strip()
+        return title
+    name = path.rsplit('/', 1)[-1]
+    return name.rsplit('.', 1)[0] or name
+
+
+# Expanded from QMD's four JavaScript ``\p{Script=...}`` properties under the
+# selected Node 24.21.0 / Unicode 17.0 runtime. Unicode blocks include gaps
+# and omit supplementary Script members, so broad block ranges are incorrect.
+_QMD_CJK_SCRIPT_RANGES = (
+    (0x2e80, 0x2e99), (0x2e9b, 0x2ef3), (0x2f00, 0x2fd5),
+    (0x3005, 0x3005), (0x3007, 0x3007), (0x3021, 0x3029),
+    (0x3038, 0x303b), (0x3400, 0x4dbf), (0x4e00, 0x9fff),
+    (0xf900, 0xfa6d), (0xfa70, 0xfad9), (0x16fe2, 0x16fe3),
+    (0x16ff0, 0x16ff6), (0x20000, 0x2a6df), (0x2a700, 0x2b81d),
+    (0x2b820, 0x2cead), (0x2ceb0, 0x2ebe0), (0x2ebf0, 0x2ee5d),
+    (0x2f800, 0x2fa1d), (0x30000, 0x3134a), (0x31350, 0x33479),
+    (0x3041, 0x3096), (0x309d, 0x309f), (0x1b001, 0x1b11f),
+    (0x1b132, 0x1b132), (0x1b150, 0x1b152), (0x1f200, 0x1f200),
+    (0x30a1, 0x30fa), (0x30fd, 0x30ff), (0x31f0, 0x31ff),
+    (0x32d0, 0x32fe), (0x3300, 0x3357), (0xff66, 0xff6f),
+    (0xff71, 0xff9d), (0x1aff0, 0x1aff3), (0x1aff5, 0x1affb),
+    (0x1affd, 0x1affe), (0x1b000, 0x1b000), (0x1b120, 0x1b122),
+    (0x1b155, 0x1b155), (0x1b164, 0x1b167),
+    (0x1100, 0x11ff), (0x302e, 0x302f), (0x3131, 0x318e),
+    (0x3200, 0x321e), (0x3260, 0x327e), (0xa960, 0xa97c),
+    (0xac00, 0xd7a3), (0xd7b0, 0xd7c6), (0xd7cb, 0xd7fb),
+    (0xffa0, 0xffbe), (0xffc2, 0xffc7), (0xffca, 0xffcf),
+    (0xffd2, 0xffd7), (0xffda, 0xffdc),
+)
+_QMD_CJK_SCRIPT_RANGES = tuple(sorted(_QMD_CJK_SCRIPT_RANGES))
+_QMD_CJK_SCRIPT_STARTS = tuple(start for start, _end in _QMD_CJK_SCRIPT_RANGES)
+
+
+def _cjk(ch):
+    code = ord(ch)
+    if code < 0x1100:
+        return False
+    offset = bisect_right(_QMD_CJK_SCRIPT_STARTS, code) - 1
+    return offset >= 0 and code <= _QMD_CJK_SCRIPT_RANGES[offset][1]
+
+
+def _qmd_fts_text(text, *, deadline=None):
+    """Space CJK runs by code point, as QMD's normalizeCjkForFTS does."""
+    out = []
+    in_run = False
+    for offset, ch in enumerate(text):
+        if (deadline is not None and offset % 4096 == 0
+                and time.monotonic() >= deadline):
+            raise IndexContractError('fts_deadline_exceeded')
+        if _cjk(ch):
+            out.append(' ')
+            out.append(ch)
+            in_run = True
+        else:
+            if in_run:
+                out.append(' ')
+                in_run = False
+            out.append(ch)
+    if in_run:
+        out.append(' ')
+    return ''.join(out)
+
+
+def _generation_fts_rows_match(db, gen, table, *, deadline=None):
+    expected = []
+    for path, body in db.execute(
+            'SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
+            'WHERE m.gen=? AND m.eligible=1', (gen,)):
+        expected.append((path, _qmd_fts_text(path, deadline=deadline),
+                         _qmd_fts_text(_qmd_title(body, path), deadline=deadline),
+                         _qmd_fts_text(body, deadline=deadline)))
+    actual = db.execute(
+        f'SELECT path_key,filepath,title,body FROM {table}').fetchall()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    expected.sort()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    actual.sort()
+    if deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    return expected == actual
+
+
+def _path_predicate(prefixes):
+    if prefixes is None:
+        return '', ()
+    if (not isinstance(prefixes, tuple) or not 1 <= len(prefixes) <= 16
+            or any(not isinstance(p, str) or not p.endswith('/')
+                   or not _valid_relative_path(p[:-1]) for p in prefixes)
+            or len(set(prefixes)) != len(prefixes)):
+        raise IndexContractError('invalid_collection_filter')
+    clauses = ['substr(m.path,1,length(?))=?' for _ in prefixes]
+    return ' AND (' + ' OR '.join(clauses) + ')', tuple(
+        value for prefix in prefixes for value in (prefix, prefix))
 
 
 def _valid_relative_path(path):
@@ -56,7 +168,7 @@ _NOT_EXCLUDED = '''
                   WHERE x.scope=m.scope AND x.kind='hash' AND x.value=m.hash)'''
 
 
-_SCHEMA_V5 = '''
+_SCHEMA_V6 = '''
 BEGIN IMMEDIATE;
           CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS content(hash TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -307,7 +419,7 @@ BEGIN IMMEDIATE;
           BEGIN SELECT RAISE(ABORT,'pin_immutable'); END;
 
 PRAGMA application_id=1280917809;
-PRAGMA user_version=5;
+PRAGMA user_version=6;
         '''
 
 
@@ -319,7 +431,7 @@ class LayaIndexA:
     """
 
     APP_ID = 0x4c594131  # LYA1; distinct from QMD database identity
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
     REQUIRED_TABLES = frozenset(('schema_meta','content','content_fts','generations','membership',
         'head','receipts','pins','gen_index','exclusions','candidate_seals',
         'vector_profiles','vector_chunks','vector_chunk_sets',
@@ -377,8 +489,7 @@ class LayaIndexA:
             definition = db.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()
-            if definition is None or definition[0] != (
-                    f'CREATE VIRTUAL TABLE {table} USING fts5(path UNINDEXED, body)'):
+            if definition is None or definition[0] != _gen_fts_ddl(table):
                 raise IndexContractError('schema_manifest_mismatch')
 
     @staticmethod
@@ -409,7 +520,7 @@ class LayaIndexA:
                 if str(db.execute('PRAGMA journal_mode=DELETE').fetchone()[0]).lower() != 'delete':
                     raise IndexContractError('creation_journal_unavailable')
                 db.execute('PRAGMA synchronous=FULL')
-                db.executescript(_SCHEMA_V5)
+                db.executescript(_SCHEMA_V6)
                 db.execute("INSERT INTO schema_meta VALUES('static_manifest',?)",
                            (cls._static_schema_digest(db),))
                 db.execute("INSERT INTO schema_meta VALUES('incarnation',?)",
@@ -510,7 +621,7 @@ class LayaIndexA:
             self.db.rollback()
             raise
 
-    def _generation_fts_matches(self, gen):
+    def _generation_fts_matches(self, gen, *, deadline=None):
         row = self.db.execute('SELECT ord FROM gen_index WHERE gen=?', (gen,)).fetchone()
         if row is None:
             return False
@@ -518,15 +629,8 @@ class LayaIndexA:
         if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                            (table,)).fetchone() is None:
             return False
-        want = ('SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
-                'WHERE m.gen=? AND m.eligible=1')
-        return (self.db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-                == self.db.execute('SELECT COUNT(*) FROM membership WHERE gen=? AND eligible=1',
-                                   (gen,)).fetchone()[0]
-                and self.db.execute(f'SELECT path,body FROM {table} EXCEPT {want}',
-                                    (gen,)).fetchone() is None
-                and self.db.execute(f'{want} EXCEPT SELECT path,body FROM {table}',
-                                    (gen,)).fetchone() is None)
+        return _generation_fts_rows_match(self.db, gen, table,
+                                          deadline=deadline)
 
     def _rollback(self):
         try:
@@ -595,7 +699,7 @@ class LayaIndexA:
                     (gen,scope,base,source_manifest,claim_digest,claim_epoch,digest))
             ordinal = self.db.execute('INSERT INTO gen_index(gen) VALUES(?)', (gen,)).lastrowid
             table = _gen_fts(ordinal)
-            self.db.execute(f'CREATE VIRTUAL TABLE {table} USING fts5(path UNINDEXED, body)')
+            self.db.execute(_gen_fts_ddl(table))
             for n, (path, hash_, flag, body) in enumerate(rows, 1):
                 if flag and self.db.execute('''SELECT 1 FROM exclusions
                     WHERE scope=? AND ((kind='path' AND value=?) OR
@@ -613,8 +717,11 @@ class LayaIndexA:
                 self.db.execute('INSERT INTO membership VALUES(?,?,?,?,?)',
                                 (gen, scope, path, hash_, flag))
                 if flag:
-                    self.db.execute(f'INSERT INTO {table}(path,body) VALUES(?,?)',
-                                    (path, body))
+                    self.db.execute(
+                        f'INSERT INTO {table}(filepath,title,body,path_key) VALUES(?,?,?,?)',
+                        (_qmd_fts_text(path),
+                         _qmd_fts_text(_qmd_title(body, path)),
+                         _qmd_fts_text(body), path))
                 if fault_after == n:
                     raise InjectedFault('stage_after_member')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
@@ -773,34 +880,68 @@ class LayaIndexA:
             raise IndexContractError('index_stale')
         return scope, gen, ordinal
 
-    def search(self, token, fts_query, limit):
+    def search(self, token, fts_query, limit, *, path_prefixes=None):
         """Use only this pinned generation's FTS statistics and eligible rows."""
-        if not isinstance(fts_query, str) or not fts_query or type(limit) is not int or not 1 <= limit <= 100:
+        return self.search_many(token, (fts_query,), limit,
+                                path_prefixes=path_prefixes)[0]
+
+    def search_many(self, token, fts_queries, limit, *, path_prefixes=None,
+                    deadline_seconds=None):
+        """Run at most eight searches after one sealed-generation FTS check."""
+        if (not isinstance(fts_queries, tuple) or not 1 <= len(fts_queries) <= 8
+                or any(not isinstance(query, str) or not query for query in fts_queries)
+                or type(limit) is not int or not 1 <= limit <= 100
+                or (deadline_seconds is not None and
+                    (type(deadline_seconds) not in (int, float)
+                     or not math.isfinite(deadline_seconds)
+                     or not 0 < deadline_seconds <= 30))):
             raise IndexContractError('invalid_query')
-        self.db.execute('BEGIN')
+        prefix_sql, prefix_params = _path_predicate(path_prefixes)
+        deadline = (None if deadline_seconds is None else
+                    time.monotonic() + deadline_seconds)
+        if deadline is not None:
+            self.db.set_progress_handler(
+                lambda: int(time.monotonic() >= deadline), 1000)
         try:
+            self.db.execute('BEGIN')
             self._check_header(self.db)
             scope, gen, ordinal = self._pinned(token)
             if ordinal is None:
                 raise IndexContractError('generation_unindexed')
-            if not self._generation_fts_matches(gen):
+            if not self._generation_fts_matches(gen, deadline=deadline):
                 raise IndexContractError('fts_generation_mismatch')
             table = _gen_fts(ordinal)
-            results = self.db.execute(f"""
-              SELECT m.path,m.hash,c.body,bm25({table}) AS rank
-              FROM {table}
-              JOIN membership m ON m.gen=? AND m.path={table}.path
-              JOIN content c ON c.hash=m.hash
-              WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
-              ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
-            """, (gen, fts_query, scope, limit)).fetchall()
+            answer = []
+            for fts_query in fts_queries:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise IndexContractError('fts_deadline_exceeded')
+                results = self.db.execute(f"""
+                  SELECT m.path,m.hash,c.body,bm25({table},1.5,4.0,1.0,0.0) AS rank
+                  FROM {table}
+                  JOIN membership m ON m.gen=? AND m.path={table}.path_key
+                  JOIN content c ON c.hash=m.hash
+                  WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
+                  {prefix_sql}
+                  ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
+                """, (gen, fts_query, scope, *prefix_params, limit)).fetchall()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise IndexContractError('fts_deadline_exceeded')
+                answer.append([{'generation': gen, 'scope': scope, 'path': path,
+                                'hash': hash_, 'body': body, 'score': rank}
+                               for path, hash_, body, rank in results])
             self.db.commit()
-            return [{'generation': gen, 'scope': scope, 'path': path,
-                     'hash': hash_, 'body': body, 'score': rank}
-                    for path, hash_, body, rank in results]
+            return answer
+        except sqlite3.OperationalError as exc:
+            self._rollback()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise IndexContractError('fts_deadline_exceeded') from exc
+            raise
         except BaseException:
             self._rollback()
             raise
+        finally:
+            if deadline is not None:
+                self.db.set_progress_handler(None, 0)
 
     def search_scored(self, token, distances, limit):
         """Expand supplied hash scores to scoped documents before top-K.
@@ -984,16 +1125,9 @@ class LayaIndexA:
                 ).fetchone()
                 if definition is None:
                     raise IndexContractError('generation_fts_missing')
-                if definition[0] != f'CREATE VIRTUAL TABLE {table} USING fts5(path UNINDEXED, body)':
+                if definition[0] != _gen_fts_ddl(table):
                     raise IndexContractError('generation_fts_definition')
-                live = f'SELECT path,body FROM {table}'
-                want = ('SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
-                        'WHERE m.gen=? AND m.eligible=1')
-                if (self.db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-                        != self.db.execute('SELECT COUNT(*) FROM membership WHERE gen=? AND eligible=1',
-                                           (gen,)).fetchone()[0]
-                        or self.db.execute(f'{live} EXCEPT {want}', (gen,)).fetchone() is not None
-                        or self.db.execute(f'{want} EXCEPT {live}', (gen,)).fetchone() is not None):
+                if not _generation_fts_rows_match(self.db, gen, table):
                     raise IndexContractError('generation_fts_mismatch')
             for gen,scope,digest,base,manifest,claim_digest,claim_epoch,entries_digest in self.db.execute(
                     '''SELECT g.gen,g.scope,g.digest,s.base_gen,s.source_manifest,s.claim_digest,

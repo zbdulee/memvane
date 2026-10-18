@@ -1,4 +1,4 @@
-"""Read-only QMD source adapter for preparing an A-int v4 candidate.
+"""Read-only QMD source adapter for preparing a title-bound A-int candidate.
 
 No installed QMD, hook, model or product route imports this module. The caller
 must attest the source release and supply a current, approved collection file
@@ -29,6 +29,7 @@ from laya_index_a import LayaIndexA, _valid_relative_path
 QMD_253 = 'qmd-2.5.3'
 FORK_F463 = 'qmd-fork-f4633f9'
 FORMATS = frozenset((QMD_253, FORK_F463))
+_COLLECTION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z')
 
 
 class QmdMigrationBlocked(RuntimeError):
@@ -194,6 +195,48 @@ def _inventory(db, source_format, collection):
             'needs_reembed': sorted({h for _, _, h, active, _ in documents if active})}
 
 
+def _collection_names(collections):
+    if (not isinstance(collections, (tuple, list)) or
+            not 1 <= len(collections) <= 16 or
+            any(not isinstance(name, str) or not _COLLECTION.fullmatch(name)
+                for name in collections) or
+            len(set(collections)) != len(collections)):
+        raise QmdMigrationBlocked('invalid_collection_set')
+    return tuple(sorted(collections))
+
+
+def _inventory_collections(db, source_format, collections):
+    names = _collection_names(collections)
+    members = {name: _inventory(db, source_format, name) for name in names}
+    documents = [(name + '/' + path, title, hash_, active, body)
+                 for name in names
+                 for path, title, hash_, active, body in members[name]['documents']]
+    # One transaction and one digest bind the complete selected logical set.
+    # The backup remains the whole SQLite DB, including unrelated collections.
+    return {'source_format': source_format, 'collections': names,
+            'collection_config': {name: members[name]['collection_config']
+                                  for name in names},
+            'documents': documents,
+            'digest': _digest([source_format, [(name, members[name]['digest'])
+                                               for name in names]]),
+            'active_count': sum(member['active_count'] for member in members.values()),
+            'tombstone_count': sum(member['tombstone_count'] for member in members.values()),
+            'needs_reembed': sorted({hash_ for member in members.values()
+                                    for hash_ in member['needs_reembed']})}
+
+
+def inspect_qmd_collections(source_db, source_format, collections):
+    """Inventory every selected collection in one read-only SQLite snapshot."""
+    with closing(_source(source_db)) as db:
+        try:
+            db.execute('BEGIN')
+            result = _inventory_collections(db, source_format, collections)
+            db.rollback()
+            return result
+        except sqlite3.Error as exc:
+            raise QmdMigrationBlocked('source_read_failed') from exc
+
+
 def inspect_qmd(source_db, source_format, collection):
     """Inventory a single collection from a read-only SQLite transaction."""
     with closing(_source(source_db)) as db:
@@ -256,6 +299,52 @@ def backup_qmd(source_db, source_format, collection, backup_path):
             Path(str(temp) + suffix).unlink(missing_ok=True)
 
 
+def backup_qmd_collections(source_db, source_format, collections, backup_path):
+    """No-clobber whole-DB backup with one digest for selected collections."""
+    names = _collection_names(collections)
+    target = Path(backup_path)
+    if target.exists() or target.is_symlink() or not target.parent.is_dir():
+        raise QmdMigrationBlocked('backup_target_unavailable')
+    fd, raw = tempfile.mkstemp(prefix='.qmd-backup-', dir=target.parent)
+    os.close(fd)
+    temp = Path(raw)
+    try:
+        with closing(_source(source_db)) as old, closing(sqlite3.connect(temp)) as new:
+            old.execute('BEGIN')
+            before = _inventory_collections(old, source_format, names)
+            _bounded_backup(old, new)
+            old.rollback()
+            new.commit()
+            mode = new.execute('PRAGMA journal_mode=DELETE').fetchone()
+            if mode is None or mode[0].lower() != 'delete':
+                raise QmdMigrationBlocked('backup_journal_unavailable')
+        after = inspect_qmd_collections(temp, source_format, names)
+        if before != after:
+            raise QmdMigrationBlocked('backup_snapshot_mismatch')
+        _seal_single_file(temp, lambda db:
+                          _inventory_collections(db, source_format, names) == before)
+        if any(Path(str(temp) + suffix).exists()
+               for suffix in ('-wal', '-shm', '-journal')):
+            raise QmdMigrationBlocked('backup_not_self_contained')
+        with temp.open('rb') as stream:
+            os.fsync(stream.fileno())
+        try:
+            os.link(temp, target)
+        except FileExistsError as exc:
+            raise QmdMigrationBlocked('backup_target_unavailable') from exc
+        directory = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return {'backup': str(target), 'source_digest': after['digest'],
+                'source_format': source_format, 'collections': names}
+    finally:
+        temp.unlink(missing_ok=True)
+        for suffix in ('-wal', '-shm', '-journal'):
+            Path(str(temp) + suffix).unlink(missing_ok=True)
+
+
 def verify_restore(backup_path, source_format, collection, expected_digest):
     """Restore to a disposable file and compare selected logical inventory."""
     with tempfile.TemporaryDirectory(prefix='qmd-restore-') as directory:
@@ -267,6 +356,23 @@ def verify_restore(backup_path, source_format, collection, expected_digest):
             if mode is None or mode[0].lower() != 'delete':
                 raise QmdMigrationBlocked('restore_journal_unavailable')
         got = inspect_qmd(restored, source_format, collection)
+        if got['digest'] != expected_digest:
+            raise QmdMigrationBlocked('restore_digest_mismatch')
+        return {'restored_digest': got['digest'], 'verified': True}
+
+
+def verify_restore_collections(backup_path, source_format, collections,
+                               expected_digest):
+    names = _collection_names(collections)
+    with tempfile.TemporaryDirectory(prefix='qmd-restore-') as directory:
+        restored = Path(directory) / 'restored.sqlite'
+        with closing(_source(backup_path)) as old, closing(sqlite3.connect(restored)) as new:
+            _bounded_backup(old, new)
+            new.commit()
+            mode = new.execute('PRAGMA journal_mode=DELETE').fetchone()
+            if mode is None or mode[0].lower() != 'delete':
+                raise QmdMigrationBlocked('restore_journal_unavailable')
+        got = inspect_qmd_collections(restored, source_format, names)
         if got['digest'] != expected_digest:
             raise QmdMigrationBlocked('restore_digest_mismatch')
         return {'restored_digest': got['digest'], 'verified': True}
@@ -288,7 +394,7 @@ def prepare_qmd_candidate(backup_path, source_format, collection, current_files,
     """
     if (migration_allowed is not True or not isinstance(current_files, dict)
             or not isinstance(scope, str) or not scope
-            or not isinstance(expected_collection_root, str)
+            or not isinstance(expected_collection_root, (str, dict))
             or not expected_collection_root
             or not isinstance(expected_source_digest, str)
             or not re.fullmatch('[0-9a-f]{64}', expected_source_digest)):
@@ -296,12 +402,34 @@ def prepare_qmd_candidate(backup_path, source_format, collection, current_files,
     candidate = Path(candidate_path)
     if candidate.exists() or candidate.is_symlink() or not candidate.parent.is_dir():
         raise QmdMigrationBlocked('candidate_exists')
-    inventory = inspect_qmd(backup_path, source_format, collection)
-    if inventory['collection_config'][0] != expected_collection_root:
-        raise QmdMigrationBlocked('collection_root_mismatch')
+    multi = isinstance(collection, (tuple, list))
+    if multi:
+        names = _collection_names(collection)
+        if (not isinstance(expected_collection_root, dict)
+                or set(expected_collection_root) != set(names)
+                or any(not isinstance(root, str) or not root
+                       for root in expected_collection_root.values())):
+            raise QmdMigrationBlocked('collection_root_mismatch')
+        inventory = inspect_qmd_collections(backup_path, source_format, names)
+        if any(inventory['collection_config'][name][0] != expected_collection_root[name]
+               for name in names):
+            raise QmdMigrationBlocked('collection_root_mismatch')
+        inspect_current = lambda: inspect_qmd_collections(current_source_db,
+                                                           source_format, names)
+        verify_backup = lambda: verify_restore_collections(
+            backup_path, source_format, names, expected_source_digest)
+    else:
+        names = (collection,)
+        inventory = inspect_qmd(backup_path, source_format, collection)
+        if inventory['collection_config'][0] != expected_collection_root:
+            raise QmdMigrationBlocked('collection_root_mismatch')
+        inspect_current = lambda: inspect_qmd(current_source_db,
+                                              source_format, collection)
+        verify_backup = lambda: verify_restore(
+            backup_path, source_format, collection, expected_source_digest)
     if inventory['digest'] != expected_source_digest:
         raise QmdMigrationBlocked('backup_digest_mismatch')
-    verify_restore(backup_path, source_format, collection, expected_source_digest)
+    verify_backup()
     active = {p: (title, h, body) for p, title, h, flag, body in
               inventory['documents'] if flag}
     if (any(not _valid_relative_path(p) or not isinstance(body, str)
@@ -330,7 +458,7 @@ def prepare_qmd_candidate(backup_path, source_format, collection, current_files,
         from laya_index_sync import _source_evidence
         from laya_index_vector import MAX_CANDIDATES, _blob, profile_identity
         if (provider_approved is not True or current_source_db is None
-                or scope_collections != (collection,)
+                or scope_collections != names
                 or not isinstance(vector_batch, dict)
                 or set(vector_batch) != {'scope', 'source_manifest', 'qmd_source_digest',
                                        'model_id', 'embedding_fingerprint', 'dimension',
@@ -341,7 +469,7 @@ def prepare_qmd_candidate(backup_path, source_format, collection, current_files,
                 or not isinstance(vector_batch['chunks'], list)
                 or len(vector_batch['chunks']) > MAX_CANDIDATES):
             raise QmdMigrationBlocked('vector_provider_or_scope_unapproved')
-        if inspect_qmd(current_source_db, source_format, collection)['digest'] != expected_source_digest:
+        if inspect_current()['digest'] != expected_source_digest:
             raise QmdMigrationBlocked('source_changed_since_backup')
         profile_id = profile_identity(vector_batch['model_id'],
                                       vector_batch['embedding_fingerprint'],
@@ -409,8 +537,7 @@ def prepare_qmd_candidate(backup_path, source_format, collection, current_files,
                     raise QmdMigrationBlocked('vector_seal_mismatch')
             if not index._generation_fts_matches(generation):
                 raise QmdMigrationBlocked('candidate_fts_mismatch')
-            if chunks is not None and inspect_qmd(current_source_db, source_format,
-                                                  collection)['digest'] != expected_source_digest:
+            if chunks is not None and inspect_current()['digest'] != expected_source_digest:
                 raise QmdMigrationBlocked('source_changed_since_backup')
             mode = index.db.execute('PRAGMA journal_mode=DELETE').fetchone()
             if mode is None or mode[0].lower() != 'delete':

@@ -14,6 +14,7 @@ from pathlib import PurePath
 # Lower value runs first. learning and auto share a class on purpose: both are
 # best-effort background work that must never starve index/update/cleanup.
 KINDS = {'index': 0, 'update': 1, 'cleanup': 2, 'laya-sync': 2,
+         'laya-compile': 2,
          'learning': 3, 'auto': 3}
 # Handler statuses meaning "not done yet, keep the wake and back off".
 RETRY = {'busy', 'deferred_resource', 'deferred_quota', 'staged_evaluation_deferred', 'apply_deferred',

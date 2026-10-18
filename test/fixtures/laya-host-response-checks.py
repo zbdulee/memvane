@@ -163,6 +163,48 @@ class ResponseChecks(unittest.TestCase):
         request.assert_called_once_with("laya-sync", decision["projectRoot"])
         self.assertIn("update queued", payload["hookSpecificOutput"]["additionalContext"])
 
+    def test_selected_compile_passes_proved_edit_to_durable_enqueue(self):
+        import laya_install_journal
+        import wiki_compile_enqueue
+        with tempfile.TemporaryDirectory(prefix='laya-host-compile-') as temp:
+            root = str(Path(temp).resolve())
+            decision = {**DECISION,
+                        'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                        'projectRoot': root}
+            event = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
+                     'tool_input': {'file_path': 'docs/a.md'}, 'cwd': root}
+            proof = {'productRouteAllowed': True, 'selectionEpoch': 1}
+            with patch.object(laya_install_journal, 'verify_selected_route',
+                              return_value=proof), patch.object(
+                              wiki_compile_enqueue, 'enqueue_payload',
+                              return_value={'queued': 1, 'reason': 'queued'}) as enqueue:
+                self.assertEqual(response.serve_selected('compile', 'codex',
+                                                         decision, event), {})
+            enqueue.assert_called_once_with(event)
+
+    def test_selected_session_start_wakes_pending_compile_queue(self):
+        import compile_paths
+        import laya_install_journal
+        import runtime_work
+        import wiki_freshness
+        with tempfile.TemporaryDirectory(prefix='laya-host-wake-') as temp:
+            root = Path(temp).resolve()
+            decision = {**DECISION,
+                        'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                        'projectRoot': str(root), 'collections': []}
+            proof = {'productRouteAllowed': True, 'selectionEpoch': 1}
+            with patch.object(laya_install_journal, 'verify_selected_route',
+                              return_value=proof), patch.object(
+                              wiki_freshness, 'unresolved_pending_refreshes_strict',
+                              return_value=[{'sourcePath': 'docs/a.md'}]), patch.object(
+                              compile_paths, 'ledger', return_value=root / 'queue'), \
+                 patch.object(runtime_work, 'request',
+                              return_value={'status': 'queued'}) as request:
+                response.serve_selected('update', 'codex', decision,
+                                        {'hook_event_name': 'SessionStart'})
+            self.assertEqual([call.args[0] for call in request.call_args_list],
+                             ['laya-sync', 'laya-compile'])
+
     def test_edit_gate_accepts_only_scoped_edit_paths(self):
         with tempfile.TemporaryDirectory(prefix="laya-host-edit-") as temp:
             project = Path(temp).resolve()
@@ -285,7 +327,7 @@ class ResponseChecks(unittest.TestCase):
 
         def lexical(_index, _root, token, query, _limit):
             seen.append((token, query))
-            if query in ('"EP012"*', '"EP12"*'):
+            if query in ('"ep012"*', '"ep12"*'):
                 return [row(path="EP12.md", body="chapter 12", score=-1.0)]
             return []
 
@@ -301,8 +343,8 @@ class ResponseChecks(unittest.TestCase):
                             "providerArtifactSha256": VECTOR_PROFILE["providerArtifactSha256"],
                             "vector": [1.0, 0.0, 0.0]}, lexical_patterns=("ep",))
         self.assertEqual(found[0]["path"], "EP12.md")
-        self.assertIn(("synthetic-token", '"EP012"*'), seen)
-        self.assertIn(("synthetic-token", '"EP12"*'), seen)
+        self.assertIn(("synthetic-token", '"ep012"*'), seen)
+        self.assertIn(("synthetic-token", '"ep12"*'), seen)
         self.assertTrue(index.released)
         text = response.render_context(DECISION, found, ranking="hybrid_rrf")
         self.assertIn("higher hybrid rank score ranks first", text)
@@ -333,6 +375,141 @@ class ResponseChecks(unittest.TestCase):
             [row(path="a-seen-later.md", body="a")]])
         self.assertEqual([item["path"] for item in found],
                          ["x-double.md", "z-seen-first.md", "a-seen-later.md"])
+
+    def test_v2_wiki_provenance_and_source_revision_are_required(self):
+        import yaml_scalars
+        with tempfile.TemporaryDirectory(prefix='laya-wiki-policy-') as temp:
+            project = Path(temp).resolve()
+            raw = project / 'docs'
+            wiki = project / 'wiki'
+            raw.mkdir()
+            wiki.mkdir()
+            source = raw / 'a.md'
+            source.write_text('original source', encoding='utf-8')
+            revision = {'kind': 'file', 'path': 'docs/a.md', 'collection': 'raw',
+                        'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                        'size': source.stat().st_size,
+                        'mtimeNs': source.stat().st_mtime_ns}
+            decision = {'projectRoot': str(project),
+                        'collectionRoots': {'raw': str(raw), 'wiki': str(wiki)},
+                        'collections': [{'name': 'raw', 'role': 'raw',
+                                         'sourceRoot': str(raw)},
+                                        {'name': 'wiki', 'role': 'wiki',
+                                         'sourceRoot': str(wiki)}]}
+            frontmatter = ('---\ntitle: Synthetic card\nstatus: verified\n'
+                           'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                           + json.dumps(revision) + '\nverifiedBodyHash: {digest}\n'
+                           '---\n## Summary\nSource fact.\n')
+            digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
+            body = frontmatter.replace('{digest}', digest)
+            card = row(path='wiki/card.md', body=body)
+            self.assertTrue(response._verified_wiki_row(card, decision))
+            self.assertFalse(response._verified_wiki_row(
+                row(path='wiki/card.md', body=body.replace('Source fact.', 'Forged fact.')),
+                decision))
+            source.write_text('new source', encoding='utf-8')
+            self.assertFalse(response._verified_wiki_row(card, decision))
+
+    def test_v2_hierarchy_backfills_raw_when_wiki_unverified(self):
+        index = FakeIndex()
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
+        decision = {'projectRoot': '/synthetic/project',
+                    'collectionRoots': {'raw': ROOT, 'wiki': '/synthetic/wiki'},
+                    'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': ROOT},
+                                    {'name': 'wiki', 'role': 'wiki',
+                                     'sourceRoot': '/synthetic/wiki'}],
+                    'recallSettings': {'recallStrategy': 'hierarchical',
+                                       'lexicalPatterns': [], 'minScore': 0,
+                                       'rawFallbackMinScore': 0,
+                                       'skipPaths': []}}
+        import wiki_freshness
+        with patch.object(response, '_v2_phase', side_effect=[
+                ([row(path='wiki/card.md')], True),
+                ([row(path='raw/chapter.md')], True)]) as phase, \
+             patch.object(response, '_verified_wiki_row', return_value=False), \
+             patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
+                          return_value=[]):
+            found, title_only = response.query_selected_v2(
+                runtime, 'find chapter', VECTOR_PROFILE, VECTOR_PROFILE,
+                lambda *_: None, decision)
+        self.assertEqual([item['path'] for item in found], ['raw/chapter.md'])
+        self.assertEqual(title_only, frozenset())
+        self.assertEqual([call.args[6] for call in phase.call_args_list],
+                         [('wiki',), ('raw',)])
+        self.assertTrue(index.released)
+
+    def test_fts_atom_matches_qmd_compound_and_cjk_policy(self):
+        self.assertEqual(response._fts_atom('PIO-1384'), '"pio 1384"')
+        self.assertEqual(response._fts_atom('한국어'), '"한 국 어"')
+        self.assertEqual(response._fts_atom('target'), '"target"*')
+
+    def test_v2_df_probes_share_one_batch_and_source_scan(self):
+        import keywords
+        import laya_index_source_port as source_port
+
+        class BatchedIndex:
+            calls = []
+
+            def search_many(self, token, queries, limit, **kwargs):
+                self.calls.append((queries, limit, kwargs))
+                return [[] for _ in queries]
+
+        index = BatchedIndex()
+        runtime = SimpleNamespace(index=index)
+        seal = (SCOPE, 'generation-7', 'manifest')
+        built = {'generalTerms': ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'],
+                 'epTerms': [], 'identifiers': []}
+        with patch.object(source_port, '_seal', return_value=seal), \
+                patch.object(source_port, 'scan_collections',
+                             return_value=SimpleNamespace(manifest='manifest')) as scan, \
+                patch.object(keywords, 'build_lexical_terms', return_value=built), \
+                patch.object(response, '_pinned_vector', return_value=[]):
+            rows, evidence = response._v2_phase(
+                runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE,
+                lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+        self.assertEqual((rows, evidence), ([], False))
+        self.assertEqual(scan.call_count, 1)
+        self.assertEqual(len(index.calls), 2)
+        self.assertEqual(len(index.calls[0][0]), 6)
+        self.assertEqual(index.calls[0][1], 1)
+        self.assertEqual(index.calls[0][2]['path_prefixes'], ('raw/',))
+        self.assertLessEqual(index.calls[0][2]['deadline_seconds'], 1)
+        self.assertEqual(index.calls[1][2]['deadline_seconds'], 2.0)
+
+    def test_v2_df_timeout_discards_probe_batch_and_primary_timeout_fails(self):
+        import keywords
+        import laya_index_source_port as source_port
+        from laya_index_a import IndexContractError
+
+        class TimedIndex:
+            calls = []
+            fail_primary = False
+
+            def search_many(self, token, queries, limit, **kwargs):
+                self.calls.append(queries)
+                if len(self.calls) == 1 or self.fail_primary:
+                    raise IndexContractError('fts_deadline_exceeded')
+                return [[] for _ in queries]
+
+        index = TimedIndex()
+        runtime = SimpleNamespace(index=index)
+        built = {'generalTerms': ['alpha', 'beta', 'gamma', 'delta'],
+                 'epTerms': [], 'identifiers': []}
+        with patch.object(source_port, '_seal', return_value=(SCOPE, 'generation-7', 'manifest')), \
+                patch.object(source_port, 'scan_collections',
+                             return_value=SimpleNamespace(manifest='manifest')), \
+                patch.object(keywords, 'build_lexical_terms', return_value=built), \
+                patch.object(response, '_pinned_vector', return_value=[]):
+            response._v2_phase(runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE,
+                               lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+            # keywords.select_general_terms_explained(None) is the same
+            # positional fallback used by legacy QMD recall on DF failure.
+            self.assertEqual(index.calls[1], ('"alpha"* AND "beta"* AND "gamma"*',))
+            index.calls.clear()
+            index.fail_primary = True
+            with self.assertRaisesRegex(IndexContractError, '^fts_deadline_exceeded$'):
+                response._v2_phase(runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE,
+                                   lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
 
 
 if __name__ == "__main__":

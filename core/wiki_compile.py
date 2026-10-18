@@ -1297,6 +1297,11 @@ def query_wiki_similar(daemon_url: str, collection: str, text: str, top_k: int, 
 
 
 def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:
+    import wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        return any(item['name'] == collection and item['role'] == 'wiki'
+                   for item in selected[0]['collections'])
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
         return True
     try:
@@ -1330,6 +1335,14 @@ def query_wiki_candidates(
     text = f"{candidate.get('title') or ''} {summary}".strip()
     if not text:
         return []
+    import wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        return [(path, score) for path, score, _ in
+                wiki_selected_laya.wiki_matches(root, wiki_root, text,
+                    qmd_config.DEDUP_TOP_K,
+                    qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
+                if score >= min_score]
     import qmd_endpoint
     daemon_url = qmd_endpoint.optional_url()
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
@@ -1478,6 +1491,8 @@ def main() -> int:
 
 def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                     wiki_root: Path, candidate: dict, regenerate: bool) -> int:
+    import wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
 
     suggested_type = candidate.get("suggestedType") if candidate.get("suggestedType") in ALLOWED_TYPES else "concept"
     identity_index = build_identity_index(wiki_root)
@@ -1682,6 +1697,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지
     # 알 수 없다) verify는 반쪽 카드를 원문과 대조한다. 다음 회차 덮어쓰기에 의존하면
     # 그 사이 세션이 잘린 카드를 캐논으로 본다. 실패는 아래 write_failure로 표면화한다.
+    wiki_selected_laya.recheck(selected)
     write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
                 else write_text_atomic(target, page))
     if not write_ok:
@@ -1705,7 +1721,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     collection, collection_path = find_wiki_collection(config)
     if collection and collection_path:
-        enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
+        if selected is None:
+            enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
+        else:
+            wiki_selected_laya.request_sync(root, selected)
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.

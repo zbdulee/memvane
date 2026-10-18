@@ -9,6 +9,6 @@ test('Laya Index A-only immutable-generation contract uses disposable SQLite', (
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 52 tests/);
+  assert.match(result.stderr, /Ran 55 tests/);
   assert.doesNotMatch(result.stderr, /skipped=/);
 });

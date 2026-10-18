@@ -318,6 +318,14 @@ def gather_similar_pages(
     collection, _ = wc.find_wiki_collection(config)
     if not collection or not wc.shared_collection_owned(root, config, collection):
         return None
+    import wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        rows = wiki_selected_laya.wiki_matches(root, wiki_root, content,
+                                               top_k, cap_chars, bound=selected)
+        return [{"path": path.relative_to(root).as_posix(),
+                 "score": score, "content": body}
+                for path, score, body in rows] or None
     import qmd_endpoint
     daemon_url = qmd_endpoint.optional_url()
     timeout = float(config.get("queryTimeout", 5.0) or 5.0)
@@ -734,7 +742,18 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     just a count — to the piggybacked verify pass, because the pass must verify
     *these* cards rather than spend the enlarged budget on the oldest backlog.
     """
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(root)
     cpath = candidate_path(root, compile_cfg)
+    if selected_route is not None:
+        if job.get('selectedRoute') != wiki_selected_laya.route_identity(selected_route):
+            append_jsonl(cpath, bounded_failure('skipped', job,
+                                               'selected_route_identity_changed'))
+            return False, True, []
+    elif 'selectedRoute' in job:
+        append_jsonl(cpath, bounded_failure('skipped', job,
+                                           'selected_route_unavailable'))
+        return False, True, []
     raw_source = job.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     rel = source.get("path")
@@ -839,6 +858,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     }
     payload["_qmd"]["reasoningEffort"]["capabilityDeclared"] = argv == _builtin_adapter_argv(engine)
     extracted, reason, returncode = run_extractor(argv, payload, timeout, root)
+    wiki_selected_laya.recheck(selected_route)
     if reason == "resource_deferred":
         return False, True, []  # retain job; no failure cooldown or provider fallback
     freshness, _ = wiki_freshness.compare_revision(src, source_revision)
@@ -935,6 +955,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                 capability_declared=payload["_qmd"]["reasoningEffort"].get("capabilityDeclared") is True,
             )
         }
+        wiki_selected_laya.recheck(selected_route)
         result = compile_candidate(root, candidate)
         if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
             failed_compile = True
@@ -1043,6 +1064,8 @@ def main():
         return 0
     found = qmd_config.find_project_config(args.cwd)
     root = Path(found["projectRoot"]).resolve()
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(root)
     config = found["config"]
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
@@ -1055,12 +1078,18 @@ def main():
 
     claimed = claim_queue(queue)
     if claimed is None:
+        if selected_route is not None:
+            _run_verify_pass(root, config, compile_cfg)
+            if args.json:
+                print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
     rows = read_queue(claimed)
     if not rows:
         claimed.unlink(missing_ok=True)
         queue.touch(exist_ok=True)
         _run_verify_pass(root, config, compile_cfg)
+        if args.json:
+            print(json.dumps({"processed": 0, "remaining": 0}, ensure_ascii=False))
         return 0
 
     batch_cfg = compile_cfg.get("batch") if isinstance(compile_cfg.get("batch"), dict) else {}

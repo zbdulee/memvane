@@ -225,6 +225,14 @@ class ReviewedLocalQmdProvider:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
                 conn.settimeout(budget)
                 conn.connect(socket_path)
+                # Refuse a path replaced between the owner/mode check and
+                # connect. The private installer state parent is the owner
+                # boundary; hooks never select a socket from project data.
+                connected = os.lstat(socket_path)
+                if (not stat.S_ISSOCK(connected.st_mode)
+                        or (connected.st_dev, connected.st_ino) !=
+                        (info.st_dev, info.st_ino)):
+                    _fail('provider_socket_changed')
                 conn.sendall(payload + b'\n')
                 conn.shutdown(socket.SHUT_WR)
                 output = bytearray()

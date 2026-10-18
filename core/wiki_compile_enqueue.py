@@ -139,6 +139,10 @@ def enqueue_changed_sources(project_root, config, changed_files,
     # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
     plan = intent.plan_enqueue(candidates, compile_max_files())
     _append_jsonl(queue_path, plan["records"])
+    if plan["records"]:
+        import wiki_selected_laya
+        wiki_selected_laya.request_compile(Path(project_root),
+            wiki_selected_laya.selected(Path(project_root)))
     return plan["result"]
 
 
@@ -270,7 +274,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         inner_rel = rel_path
     if _is_hidden_source_path(inner_rel):
         return None
-    return {
+    record = {
         "ts": _utc_now(),
         "trigger": trigger,
         "engine": engine,
@@ -281,20 +285,19 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
             "collection": collection,
         },
     }
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(Path(project_root))
+    if selected_route is not None:
+        record['selectedRoute'] = wiki_selected_laya.route_identity(selected_route)
+    return record
 
 
-def main():
-    if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
-        return 0
-    raw = sys.stdin.read().strip()
-    if not raw:
-        return 0
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return 0
+def enqueue_payload(payload):
+    """Hook payload entry for hosts that already parsed and proved the event."""
+    if not isinstance(payload, dict):
+        return {"queued": 0, "reason": "invalid_payload"}
     if payload.get("hook_event_name") not in (None, "PostToolUse", "AfterTool"):
-        return 0
+        return {"queued": 0, "reason": "invalid_event"}
 
     cwd = payload.get("cwd") or os.getcwd()
     found = qmd_config.find_project_config(cwd)
@@ -303,16 +306,16 @@ def main():
     paths = posttool.edited_paths(payload)
     from context_learning.synthetic_scope import invocation_in_generated_story
     if not invocation_in_generated_story(found, payload.get("cwd"), paths):
-        return 0
+        return {"queued": 0, "reason": "outside_scope"}
     if not qmd_config.event_enabled(config, "postToolUse"):
-        return 0
+        return {"queued": 0, "reason": "event_disabled"}
     compile_cfg = compile_gate(config, (POST_TOOL_TRIGGER,))
     if compile_cfg is None:
-        return 0
+        return {"queued": 0, "reason": "compile_disabled"}
 
     queue_path = _safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
     if queue_path is None:
-        return 0
+        return {"queued": 0, "reason": "queue_path_rejected"}
 
     records = []
     seen = set()
@@ -341,6 +344,24 @@ def main():
         }
         queued.append(record)
     _append_jsonl(queue_path, queued)
+    if queued:
+        import wiki_selected_laya
+        wiki_selected_laya.request_compile(Path(project_root),
+            wiki_selected_laya.selected(Path(project_root)))
+    return {"queued": len(queued), "reason": "queued" if queued else "no_sources"}
+
+
+def main():
+    if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
+        return 0
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return 0
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    enqueue_payload(payload)
     return 0
 
 

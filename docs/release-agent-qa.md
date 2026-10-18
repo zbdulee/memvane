@@ -55,11 +55,20 @@ cache read 1,960 token, cache create 23,131 token이었다(guard
 계약 누락은 각각 집중 가드 `1cb5df21e4ee45db8193faab97a0f21f`와
 `b78ecfa76cb64a3cb4143bb4d3b8f11a`에서 수정 후 통과했다.
 
-현재 제품 범위는 단일 raw 컬렉션·flat recall·compile off에 한정된다. 실제
-프로젝트의 raw+wiki 두 컬렉션과 hierarchical recall은 선택할 수 없다. 설치된
-모델/native closure attestation, 실제 marketplace 로드 위치의 journal·worker
-준비, QMD의 title/path/CJK FTS 및 wiki/EP/DF/점수 정책과의 동등성은 완료되지
-않았다. 따라서 이 체크포인트를 제품 활성화나 v2 출시 증거로 쓰지 않는다.
+후속 L0 통합에서는 두 QMD 컬렉션(raw·wiki)의 read-only inventory·백업·후보
+봉인·전환 복구, selected wiki compile, QMD 형식 FTS 및 계층 recall, 짧은 소유
+상태 경로의 설치·worker 준비를 합성 fixture로 연결했다. 모델/native closure 검토
+자료 생성기도 구현했지만 실제 설치·선택·모델 실행 증거를 대신하지 않는다. 전체
+회귀는 1,621건 중 1,612 PASS·9 SKIP·0 FAIL, guard
+`95a30e34baed4d6abe090ad0f52bd06f` `passed/settled:true`였다. 이 결과는
+L0 소스 검사이며 최종 후보의 L1 행은 여전히 모두 `NOT RUN`이다.
+QMD 전환 복구만 대상으로 한 Opus 소스 리뷰는 guard
+`ead1e6624d634cadbed8b47fcafbc4ec`에서 `passed/settled:true`였고
+`claude-opus-5-5`의 실제 `modelUsage`는 output 6,614, cache read 1,960,
+cache create 4,779 token이었다. 설정 변경 뒤 switching 고착, pending route digest
+재확인 등 지적을 합성 사례로 수정했고 전환·설치 집중 3/3은 guard
+`9be9f9657a674b5aa6402e8c66fc487a`에서 통과했다. 실제 QMD 데이터와
+모델은 이 리뷰에 제공하지 않았으며 L1 상태를 바꾸지 않는다.
 
 Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. 실제 설치 후보의 provider 승인과 선택은 아직 수행되지 않았다. 아래 행은 모두 `NOT RUN`이며 L0 통과로 대체할 수 없다.
 
@@ -80,9 +89,11 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 
 | 행 | 현재 경계와 필요한 증거 |
 |---|---|
-| LI-INST/LI-VECTOR | 자기참조 없는 attestation과 질의/문서 worker 연결은 합성 구현됐다. 하지만 정확한 최종 commit의 실제 marketplace 로드 위치에 journal·모델/native closure·짧은 private socket을 준비하는 installer가 없고, 모델 tokenizer/청킹 및 자원 실측과 새 host 증거가 없다. 개발 전용 승인 파일과 기존 2회 기능 smoke는 이 증거가 아니다. |
-| LI-MIG/LI-RECOVER | `core/laya_qmd_cutover.py`가 단일 raw 컬렉션의 준비·게시·전환·첫 쓰기 전 복구를 합성 구현했다. raw+wiki 다중 컬렉션의 봉인과 wiki provenance, 실제 설치 후보에서 원본 변경·중단점 재시작·전진 복구는 검증하지 않았다. |
-| LI-RECALL | 제품 hook이 journal에 묶인 warm provider를 호출하는 경로는 있다. 그러나 현재 범위는 단일 raw/flat이고 QMD의 FTS 대상·토크나이저, EP/DF 승격, wiki/raw 계층, minScore와 순위 해석이 완전히 같지 않다. 동일 corpus의 fresh Claude/Codex 결과를 비교해야 한다. |
+| LI-INST/LI-VECTOR | 자기참조 없는 attestation, 실제 설치 cache의 0755 파일 검증, 소유 journal·private socket, 모델/native closure 검토 자료 생성은 합성 구현됐다. 정확한 최종 commit을 실제 marketplace가 로드한 위치에서 검토·승인하고, 선택된 모델의 tokenizer/청킹·자원 동작을 확인해야 한다. 기존 2회 기능 smoke는 소진됐으며 이 행의 L1 증거가 아니다. |
+| LI-MIG/LI-RECOVER | raw+wiki 두 컬렉션의 inventory, 백업·복원 비교, 후보 봉인, route/journal 중단점 복구를 합성 구현했다. 실제 QMD 소유 데이터의 read-only 범위·일관성 검토와 설치 후보에서 변경·중단점 재시작·전진 복구가 필요하다. 원본과 백업은 보존한다. |
+| LI-RECALL | 선택된 hook의 warm provider, QMD 형식 FTS, 위키 계층·EP·DF 정책은 소스 및 합성 fixture에 연결됐다. 희귀 CJK Script 경계와 반복 DF 탐색의 시간 제한·부분 결과 폐기는 합성으로 확인했다. 실제 최대 규모 corpus의 훅 지연과 같은 corpus의 fresh Claude/Codex 검색 결과는 측정하지 않았다. |
+| RQA-RES-02 | durable learning queue의 중복 방지·재시작·부하 대기/재시도는 합성 검사했다. 실제 설치 후보에서 OS 압력 증가 시 중지·회복 후 재개는 별도 안전 범위의 실제 head 학습 검증이 필요하다. |
+
 
 독립 Opus QA 후속 확인 대상 (2026-10-18, 제품 출시 전 해결 또는 실측 필요):
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable v5 vector contracts; all embeddings are fixture-supplied floats."""
+"""Disposable v6 vector contracts; all embeddings are fixture-supplied floats."""
 import hashlib
 import sqlite3
 import sys
@@ -81,6 +81,20 @@ class VectorChecks(unittest.TestCase):
         rows = self.query(pin)
         self.assertEqual([r['path'] for r in rows], [f'a-{i:03}.md' for i in range(5)])
         self.assertTrue(all(r['generation'] == 'alpha-0' and r['scope'] == 'alpha' for r in rows))
+
+    def test_collection_filter_precedes_vector_budget_and_top_k(self):
+        docs = [(f'raw/a-{i}.md', f'raw {i}', True) for i in range(8)]
+        docs += [('wiki/target.md', '# Target\nwiki', True)]
+        self.stage('g0', 'alpha', docs)
+        for path, body, _ in docs:
+            self.chunk(body, (1.0, 0.0) if path.startswith('raw/') else (0.0, 1.0))
+        self.vectors.seal_generation('g0', self.profile)
+        self.index.publish(None, 'g0', 'claim', require_vector=True)
+        pin = self.index.pin('alpha')[0]
+        rows = self.query(pin, max_candidates=1, path_prefixes=('wiki/',))
+        self.assertEqual([r['path'] for r in rows], ['wiki/target.md'])
+        with self.assertRaisesRegex(IndexContractError, 'invalid_collection_filter'):
+            self.query(pin, path_prefixes=('../',))
 
     def test_model_fingerprint_dimension_and_chunk_input_are_exact(self):
         self.seal_publish('g0', 'alpha', [('a.md', 'body one', True)], 'c0',

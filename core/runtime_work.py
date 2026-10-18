@@ -120,6 +120,10 @@ def dispatch(row):
         from laya_product_sync_worker import run
         result=run(Path(row['target']))
         return result['state'] in ('indexed','unchanged')
+    if row['kind']=='laya-compile':
+        from wiki_selected_laya import run
+        result=run(Path(row['target']))
+        return result['state']=='drained'
     if row['kind']=='learning':
         import config
         import setup_guard
@@ -222,6 +226,18 @@ def request(kind,target='',*,start=True):
     return {'status':'queued' if key is not None else 'deferred_queue_capacity'}
 
 
+def _drain_and_rewake(queue,fd):
+    """Keep a pending durable wake live after this bounded owner exits.
+
+    drain closes its passed lease before returning. The successor is spawned
+    only if the queue still has rows and the same kernel lock can be acquired;
+    another owner or a concurrent request can win safely. Checking even after
+    a drained result closes the enqueue-versus-last-read race.
+    """
+    try:return drain(queue,lease_fd=fd)
+    finally:wake()
+
+
 def hook_wake():
     if os.environ.get('QMD_SANDBOX') or os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':return
     wake()
@@ -238,7 +254,7 @@ def main(argv):
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')
-        drain(queue,lease_fd=fd);return 0
+        _drain_and_rewake(queue,fd);return 0
     return 2
 
 

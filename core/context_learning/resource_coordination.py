@@ -245,7 +245,7 @@ class Coordinator:
                 or info.st_mode&0o077 or info.st_nlink!=1):return True
         try:
             with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1)) as db:
-                return db.execute("SELECT 1 FROM wakes WHERE kind IN ('index','update','laya-sync') "
+                return db.execute("SELECT 1 FROM wakes WHERE kind IN ('index','update','laya-sync','laya-compile') "
                                   "AND status IN ('pending','running') AND due<=? LIMIT 1",
                                   (time.time(),)).fetchone() is not None
         except (OSError,sqlite3.Error):return True

@@ -17,7 +17,7 @@ from unittest import mock
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
-from laya_index_a import InjectedFault, IndexContractError, LayaIndexA, _digest
+from laya_index_a import InjectedFault, IndexContractError, LayaIndexA, _digest, _cjk, _qmd_fts_text
 import laya_index_a as laya_index_module
 import laya_index_source_port as source_port
 import laya_index_flow as flow
@@ -954,7 +954,7 @@ class LayaIndexASlice(unittest.TestCase):
         self.assertEqual(self.index.receipt('claim-0'), ('alpha', 'g0'))
         self.index.release(token)
 
-    def test_explicit_v5_create_refuses_unknown_existing_db_without_mutation(self):
+    def test_explicit_v6_create_refuses_unknown_existing_db_without_mutation(self):
         missing = self.root / 'absent.sqlite'
         with self.assertRaisesRegex(IndexContractError, 'database_missing'):
             LayaIndexA(missing)
@@ -973,7 +973,7 @@ class LayaIndexASlice(unittest.TestCase):
             LayaIndexA(self.db_path, create=True)
         self.assertEqual(self.index.db.execute('PRAGMA application_id').fetchone()[0],
                          LayaIndexA.APP_ID)
-        self.assertEqual(self.index.db.execute('PRAGMA user_version').fetchone()[0], 5)
+        self.assertEqual(self.index.db.execute('PRAGMA user_version').fetchone()[0], 6)
 
     def test_v4_header_is_refused_without_automatic_upgrade(self):
         other = sqlite3.connect(self.db_path, isolation_level=None)
@@ -998,7 +998,7 @@ class LayaIndexASlice(unittest.TestCase):
         with self.assertRaisesRegex(IndexContractError, 'vector_generation_unsealed'):
             self.index.publish(None, 'g0', 'claim-0', require_vector=True)
 
-    def test_v5_vector_direct_sql_insert_and_immutable_seals(self):
+    def test_v6_vector_direct_sql_insert_and_immutable_seals(self):
         self.assertEqual(self.index.stage('g0', 'alpha', [('one', 'target one', True)]),
                          'prepared')
         db = self.index.db
@@ -1149,7 +1149,7 @@ class LayaIndexASlice(unittest.TestCase):
         self.assertEqual(ClaimQueue.decide(self.index, job), ACK)
         other = sqlite3.connect(self.db_path, timeout=2, isolation_level=None)
         try:
-            other.execute('PRAGMA user_version=6')
+            other.execute('PRAGMA user_version=7')
         finally:
             other.close()
         self.assertEqual(ClaimQueue.decide(self.index, job), DEFER)
@@ -1203,7 +1203,7 @@ class LayaIndexASlice(unittest.TestCase):
                               'BEGIN SELECT 1; END')
         with self.assertRaisesRegex(IndexContractError, 'schema_manifest_mismatch'):
             LayaIndexA(self.db_path)
-        self.assertEqual(self.index.db.execute('PRAGMA user_version').fetchone()[0], 5)
+        self.assertEqual(self.index.db.execute('PRAGMA user_version').fetchone()[0], 6)
 
     def test_dynamic_named_trigger_is_not_ignored_by_schema_manifest(self):
         self.index.db.execute('CREATE TRIGGER gen_fts_7 BEFORE INSERT ON receipts '
@@ -1324,6 +1324,72 @@ class LayaIndexASlice(unittest.TestCase):
         self.assertEqual([(r['path'], r['score']) for r in self.index.search(token, 'target', 5)],
                          baseline)
         self.index.release(token)
+
+    def test_v6_qmd_fts_title_path_cjk_and_collection_filter_before_limit(self):
+        docs = [('raw/early.md', 'neutral content', True),
+                ('raw/target.md', 'ordinary target body', True),
+                ('wiki/target.md', '# Target\nplain body', True),
+                ('wiki/한국어.md', '# 이야기\n한국어 본문', True)]
+        self.assertEqual(self.index.stage('g0', 'alpha', docs), 'prepared')
+        self.assertEqual(self.index.publish(None, 'g0', 'claim'), 'published')
+        token, _ = self.index.pin('alpha')
+        try:
+            ordinal = self.index.db.execute(
+                "SELECT ord FROM gen_index WHERE gen='g0'").fetchone()[0]
+            table = f'gen_fts_{ordinal}'
+            sql = self.index.db.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+            self.assertIn("fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')", sql)
+            self.assertEqual([r['path'] for r in self.index.search(
+                token, '"한 국 어"', 5)], ['wiki/한국어.md'])
+            self.assertEqual([r['path'] for r in self.index.search(
+                token, '"target"*', 1, path_prefixes=('wiki/',))],
+                ['wiki/target.md'])
+            self.assertEqual([r['path'] for r in self.index.search(
+                token, '"target"*', 1, path_prefixes=('raw/',))],
+                ['raw/target.md'])
+            with self.assertRaisesRegex(IndexContractError, 'invalid_collection_filter'):
+                self.index.search(token, 'target', 1, path_prefixes=('../',))
+        finally:
+            self.index.release(token)
+
+    def test_qmd_script_members_and_block_gaps_are_distinct(self):
+        # QMD uses Unicode Script, whose supplementary members and block gaps
+        # differ from broad CJK block checks.
+        for ch in ('\U00031350', '\U0001b132', '\U0001aff0', '\u302e'):
+            self.assertTrue(_cjk(ch), hex(ord(ch)))
+            self.assertEqual(_qmd_fts_text('A' + ch + 'B'), 'A ' + ch + ' B')
+        for ch in ('\u3001', '\ufa6e', '\ud7a4'):
+            self.assertFalse(_cjk(ch), hex(ord(ch)))
+            self.assertEqual(_qmd_fts_text('A' + ch + 'B'), 'A' + ch + 'B')
+
+    def test_search_many_one_fts_check_and_explicit_deadline_failure(self):
+        self.assertEqual(self.index.stage('g0', 'alpha', [
+            ('raw/a.md', 'target alpha', True),
+            ('wiki/b.md', 'other beta', True)]), 'prepared')
+        self.assertEqual(self.index.publish(None, 'g0', 'claim'), 'published')
+        token, _ = self.index.pin('alpha')
+        try:
+            with mock.patch.object(self.index, '_generation_fts_matches',
+                                   wraps=self.index._generation_fts_matches) as check:
+                batches = self.index.search_many(
+                    token, ('target', 'other'), 5, path_prefixes=('raw/',))
+            self.assertEqual(check.call_count, 1)
+            self.assertEqual([[item['path'] for item in rows] for rows in batches],
+                             [['raw/a.md'], []])
+            with mock.patch.object(laya_index_module.time, 'monotonic',
+                                   side_effect=iter([0, 1, 2, 3])):
+                with self.assertRaisesRegex(IndexContractError,
+                                            '^fts_deadline_exceeded$'):
+                    self.index.search_many(token, ('target', 'other'), 5,
+                                           deadline_seconds=0.5)
+            # Timeout rolls back and unregisters SQLite's progress handler.
+            self.assertEqual([item['path'] for item in
+                              self.index.search(token, 'target', 5)], ['raw/a.md'])
+            with self.assertRaisesRegex(IndexContractError, 'invalid_query'):
+                self.index.search_many(token, tuple('q' for _ in range(9)), 1)
+        finally:
+            self.index.release(token)
 
     def test_exclusion_blocks_old_pin_and_rank_until_new_eligible_generation(self):
         self.assertEqual(self.index.stage('g0', 'alpha', [
