@@ -116,9 +116,25 @@ class PurePlanning(unittest.TestCase):
                   'source': {'kind': 'file', 'path': 'docs/a.md', 'collection': 'docs'}}
         self.assertEqual(I.intent_identity(record), ('/p', 'docs/a.md', 'docs'))
 
+    def test_revision_key_keeps_trigger_and_ignores_the_owner_path(self):
+        def row(cwd, trigger, **extra):
+            return dict({'cwd': cwd, 'trigger': trigger, 'engine': 'e', 'ts': 'now',
+                         'source': {'kind': 'file', 'path': 'docs/a.md', 'collection': 'docs'}},
+                        **extra)
+        revised = {'contentRevision': 'r1'}
+        # The queue is project-owned; a respelled root must not split one intent.
+        self.assertEqual(I.revision_key(row('/p', 'session_start_source', **revised)),
+                         I.revision_key(row('/private/p', 'session_start_source', **revised)))
+        self.assertNotEqual(I.revision_key(row('/p', 'session_start_source', **revised)),
+                            I.revision_key(row('/p', 'post_sync_source', **revised)))
+        # PostToolUse, manual sync and recovery rows have no revision, hence no key.
+        self.assertIsNone(I.revision_key(row('/p', 'post_tool_source')))
+        self.assertIsNone(I.revision_key(row('/p', 'session_start_source', contentRevision='')))
+        self.assertIsNone(I.revision_key(['not', 'a', 'row']))
 
-class EnqueueThroughSeam(unittest.TestCase):
-    """New `enqueue_changed_sources` must equal the legacy oracle byte for byte."""
+
+class ProjectFixture(unittest.TestCase):
+    """A disposable project with raw/source/wiki collections and a fixed clock."""
 
     def setUp(self):
         base = Path(tempfile.mkdtemp(prefix='qmd-wiki-source-intent-',
@@ -168,6 +184,13 @@ class EnqueueThroughSeam(unittest.TestCase):
             self.queue.unlink()
         return data
 
+    def rows(self, data):
+        return [json.loads(line) for line in data.decode('utf-8').splitlines()]
+
+
+class EnqueueThroughSeam(ProjectFixture):
+    """New `enqueue_changed_sources` must equal the legacy oracle byte for byte."""
+
     def compare(self, config=None, *, session_start=False, cap=None):
         config = config or self.config
         env = {} if cap is None else {'QMD_SYNC_COMPILE_MAX': str(cap)}
@@ -185,9 +208,6 @@ class EnqueueThroughSeam(unittest.TestCase):
         self.assertEqual(changed, self.changed, 'the change set is not mutated')
         self.assertEqual(self.source_digest(), sources, 'source files are never written')
         return current, current_bytes
-
-    def rows(self, data):
-        return [json.loads(line) for line in data.decode('utf-8').splitlines()]
 
     def test_sync_queues_eligible_markdown_in_cap_order(self):
         result, data = self.compare()
@@ -287,9 +307,203 @@ class EnqueueThroughSeam(unittest.TestCase):
         self.assertEqual(len(self.rows(self.queue.read_bytes())), 1)
 
 
+class RevisionCoalescing(ProjectFixture):
+    """A hashed row identical to one still in the live queue is not appended."""
+
+    NO_SOURCES = {'queued': 0, 'deferred': 0, 'deferredFiles': [], 'reason': 'no_sources'}
+    # Skipped rows are still live: the internal wake signal, never a count.
+    SKIPPED_ALL = {**NO_SOURCES, 'wakePending': True}
+
+    def hashed(self, revision='r1', changed=None):
+        changed = copy.deepcopy(changed or self.changed)
+        for entry in changed.values():
+            entry['revisions'] = {rel: f'{revision}:{rel}'
+                                  for rel in entry['created'] + entry['updated']}
+        return changed
+
+    def enqueue(self, changed, *, session_start=True, cap=None):
+        env = {} if cap is None else {'QMD_SYNC_COMPILE_MAX': str(cap)}
+        with mock.patch.dict(os.environ, env):
+            return E.enqueue_changed_sources(str(self.project), self.config, changed,
+                                             session_start=session_start)
+
+    def test_same_key_still_queued_is_skipped_as_no_sources(self):
+        self.queue.parent.mkdir(parents=True, exist_ok=True)
+        foreign = b'not json\n{"prior": true}\n'
+        self.queue.write_bytes(foreign)
+        first = self.enqueue(self.hashed())
+        self.assertEqual(first['queued'], 4)
+        self.assertNotIn('wakePending', first, 'nothing skipped, nothing extra to wake')
+        before = self.queue.read_bytes()
+        self.assertEqual(self.enqueue(self.hashed()), self.SKIPPED_ALL)
+        self.assertEqual(self.queue.read_bytes(), before)
+        self.assertTrue(before.startswith(foreign), 'unrelated queue lines are left alone')
+
+    def test_new_revision_other_trigger_or_no_revision_still_appends(self):
+        self.enqueue(self.hashed('r1'))
+        self.assertEqual(self.enqueue(self.hashed('r2'))['queued'], 4)
+        # The file-change event path hashes too but records post_sync_source.
+        self.assertEqual(self.enqueue(self.hashed('r2'), session_start=False)['queued'], 4)
+        # Manual sync has no revision: it is never coalesced, even with itself.
+        for _ in range(2):
+            self.assertEqual(self.enqueue(copy.deepcopy(self.changed), session_start=False)['queued'], 4)
+        rows = self.rows(self.queue.read_bytes())
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(sum('contentRevision' not in r for r in rows), 8)
+
+    def test_skipped_rows_use_cap_slots_but_are_not_deferred(self):
+        only_a = {'docs': {'root': str(self.project / 'docs'), 'created': [],
+                           'updated': ['a.md'], 'deleted': []}}
+        self.enqueue(self.hashed(changed=only_a))
+        # a.md is still live and takes one of the two slots, so only b.md is appended.
+        self.assertEqual(self.enqueue(self.hashed(), cap=2), {
+            'queued': 1, 'deferred': 2, 'deferredFiles': [('docs', 'c.md'), ('src', 's.md')],
+            'reason': 'capped', 'wakePending': True})
+        before = self.queue.read_bytes()
+        self.assertEqual([r['source']['path'] for r in self.rows(before)],
+                         ['docs/a.md', 'docs/b.md'])
+        # Skipped rows fill the cap: fresh files are held back, skipped ones never are.
+        self.assertEqual(self.enqueue(self.hashed(), cap=2), {
+            'queued': 0, 'deferred': 2, 'deferredFiles': [('docs', 'c.md'), ('src', 's.md')],
+            'reason': 'capped', 'wakePending': True})
+        self.assertEqual(self.queue.read_bytes(), before)
+
+    def test_retry_after_snapshot_failure_keeps_the_per_wake_cap(self):
+        docs = self.project / 'docs'
+        total, cap = 60, 50
+        for i in range(total):
+            (docs / f'n{i:02d}.md').write_text(f'# n{i}\n', encoding='utf-8')
+        scanned = {f'n{i:02d}.md': {'mtimeNs': 1, 'size': 1, 'sha256': hashlib.sha256(
+                       (docs / f'n{i:02d}.md').read_bytes()).hexdigest()}
+                   for i in range(total)}
+        names = sorted(scanned)
+
+        def run(previous, persist, acked):
+            plan = file_change_plan.plan_change_set([('docs', str(docs), previous, scanned, ())])
+            with mock.patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': str(cap)}):
+                return file_change_plan.apply_change_set(
+                    {}, plan['changedFiles'], {'collections': plan['collections']},
+                    {'collections': {'docs': {'root': str(docs), 'files': previous}}},
+                    enqueue_index=None,
+                    enqueue_wiki=lambda files: E.enqueue_changed_sources(
+                        str(self.project), self.config, files, session_start=True),
+                    persist=persist, ack=acked.append)
+
+        def failing(_snapshot):
+            raise OSError('synthetic snapshot failure')
+        acked = []
+        with self.assertRaises(OSError):
+            run({}, failing, acked)
+        first = self.queue.read_bytes()
+        self.assertEqual([r['source']['path'] for r in self.rows(first)],
+                         [f'docs/{n}' for n in names[:cap]])
+        # The retry sees all 60 again; the 50 live rows fill the cap, the tail stays deferred.
+        persisted = []
+        compiled = run({}, persisted.append, acked)
+        self.assertEqual(self.queue.read_bytes(), first, 'one wake must not compile more than cap')
+        self.assertEqual(len({r['source']['path'] for r in self.rows(first)}), cap)
+        self.assertEqual(compiled, {'queued': 0, 'deferred': total - cap, 'reason': 'capped',
+                                    'deferredFiles': [('docs', n) for n in names[cap:]],
+                                    'wakePending': True})
+        files = persisted[0]['collections']['docs']['files']
+        self.assertEqual(sorted(files), names[:cap], 'the deferred tail keeps no snapshot entry')
+        self.assertEqual(acked, [compiled])
+        # The wake drains the live queue; the next run picks up exactly the tail.
+        self.drain()
+        persisted.clear()
+        later = run(files, persisted.append, acked)
+        self.assertEqual(later, {'queued': total - cap, 'deferred': 0, 'deferredFiles': [],
+                                 'reason': 'queued'})
+        self.assertEqual([r['source']['path'] for r in self.rows(self.queue.read_bytes())],
+                         [f'docs/{n}' for n in names[cap:]])
+        self.assertEqual(persisted[0]['collections']['docs']['files'], scanned)
+
+    def test_oversized_live_queue_falls_back_to_plain_append(self):
+        self.assertEqual(E.QUEUE_SCAN_MAX_BYTES, 8 * 1024 * 1024)
+        self.enqueue(self.hashed())
+        live = self.queue.read_bytes()
+        keys = E._queued_revision_keys(self.queue, limit=len(live))
+        self.assertEqual(len(keys), 4)
+        # One byte over the bound: no keys, nothing parsed.
+        self.assertEqual(E._queued_revision_keys(self.queue, limit=len(live) - 1), set())
+        pad = json.dumps({'pad': 'x' * E.QUEUE_SCAN_MAX_BYTES}).encode('utf-8') + b'\n'
+        with open(self.queue, 'ab') as handle:
+            handle.write(pad)
+        oversized = self.queue.read_bytes()
+        self.assertGreater(len(oversized), E.QUEUE_SCAN_MAX_BYTES)
+        # Same keys are still live, but the scan is skipped: legacy append, no wake signal.
+        self.assertEqual(self.enqueue(self.hashed()),
+                         {'queued': 4, 'deferred': 0, 'deferredFiles': [], 'reason': 'queued'})
+        data = self.queue.read_bytes()
+        self.assertTrue(data.startswith(oversized), 'existing rows are never rewritten or lost')
+        self.assertEqual(data[len(oversized):], live, 'the appended rows match the first run')
+
+    def test_retry_after_enqueue_then_snapshot_failure_queues_once_and_acks(self):
+        docs = self.project / 'docs'
+        scanned = {rel: {'mtimeNs': 1, 'size': 1,
+                         'sha256': hashlib.sha256((docs / rel).read_bytes()).hexdigest()}
+                   for rel in ('a.md', 'b.md')}
+
+        def run(persist, acked):
+            plan = file_change_plan.plan_change_set([('docs', str(docs), {}, scanned, ())])
+            return file_change_plan.apply_change_set(
+                {}, plan['changedFiles'], {'collections': plan['collections']},
+                {'collections': {}}, enqueue_index=None,
+                enqueue_wiki=lambda files: E.enqueue_changed_sources(
+                    str(self.project), self.config, files, session_start=True),
+                persist=persist, ack=acked.append)
+
+        def failing(_snapshot):
+            raise OSError('synthetic snapshot failure')
+        acked = []
+        with self.assertRaises(OSError):
+            run(failing, acked)
+        self.assertEqual(acked, [])
+        first = self.queue.read_bytes()
+        self.assertEqual([r['contentRevision'] for r in self.rows(first)],
+                         [scanned['a.md']['sha256'], scanned['b.md']['sha256']])
+        persisted = []
+        compiled = run(persisted.append, acked)
+        self.assertEqual(self.queue.read_bytes(), first, 'the retry must not queue a second paid job')
+        # Not counted as queued or deferred, but the still-queued rows must be woken.
+        self.assertEqual(compiled, self.SKIPPED_ALL)
+        self.assertTrue(compiled['queued'] or compiled.get('wakePending'),
+                        'the retry must still request the compile kick')
+        # Nothing deferred, so the snapshot advances and the caller may ACK.
+        self.assertEqual(persisted[0]['collections']['docs']['files'], scanned)
+        self.assertEqual(acked, [compiled])
+
+    def test_rows_the_worker_already_claimed_are_not_coalesced(self):
+        self.enqueue(self.hashed())
+        claimed = self.queue.with_name(self.queue.name + '.claimed.synthetic')
+        os.replace(self.queue, claimed)
+        before = claimed.read_bytes()
+        # Only rows still in the live queue are visible; this is not processed dedup.
+        self.assertEqual(self.enqueue(self.hashed())['queued'], 4)
+        self.assertEqual(claimed.read_bytes(), before)
+
+    def test_hashed_rows_differ_from_legacy_only_by_revision(self):
+        legacy_enqueue(str(self.project), self.config, copy.deepcopy(self.changed),
+                       session_start=True)
+        legacy = self.rows(self.drain())
+        self.enqueue(self.hashed())
+        current = self.rows(self.drain())
+        self.assertEqual([r.pop('contentRevision') for r in current],
+                         [f"r1:{r['source']['path'].split('/', 1)[1]}" for r in legacy])
+        self.assertEqual(current, legacy)
+
+    def test_unhashed_bytes_match_legacy_across_repeated_runs(self):
+        for _ in range(2):
+            legacy_enqueue(str(self.project), self.config, copy.deepcopy(self.changed))
+        legacy = self.drain()
+        for _ in range(2):
+            E.enqueue_changed_sources(str(self.project), self.config, copy.deepcopy(self.changed))
+        self.assertEqual(self.drain(), legacy)
+
+
 if __name__ == '__main__':
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite(loader.loadTestsFromTestCase(case)
-                               for case in (PurePlanning, EnqueueThroughSeam))
+                               for case in (PurePlanning, EnqueueThroughSeam, RevisionCoalescing))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(not result.wasSuccessful())

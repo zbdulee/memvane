@@ -239,7 +239,10 @@ def worker(root):
                 _write(folder/'status.json',{'schema':'qmd-file-change-status-v1',**totals,
                     'collectionsQueued':sorted(changed),'compileQueued':compiled['queued'],
                     'compileDeferred':compiled['deferred']})
-                if changed or compiled['queued']: _kick(root,compiled['queued'])
+                # A same-revision row skipped as still queued (retry after a failed
+                # snapshot write) is live work too: wake for it, but never count it.
+                wake = bool(compiled['queued'] or compiled.get('wakePending'))
+                if changed or wake: _kick(root,wake)
                 # Preserve the event grant across the next wake. A per-wake cap,
                 # including zero, must not become an unlimited automatic loop.
                 if compiled['deferred']: processed = False;break

@@ -48,6 +48,9 @@ COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
 # 백그라운드 CLI 실행으로 번지지 않게 막는다. 상한을 넘긴 파일은 스냅샷을 진전시키지 않아
 # 다음 sync가 다시 집어 간다(조용히 유실되지 않는다).
 DEFAULT_COMPILE_MAX_FILES = 50
+# queue lock 안에서 revision 키를 찾으려고 live 큐를 읽는 상한. worker가 오래 멈춰 큐가
+# 이보다 커지면 키를 찾지 않고 기존처럼 append만 한다(중복은 가능, 유실은 없음).
+QUEUE_SCAN_MAX_BYTES = 8 * 1024 * 1024
 
 
 def compile_max_files():
@@ -109,8 +112,13 @@ def compile_candidates(project_root, config, compile_cfg, changed_files, *, trig
             engine,
             trigger=trigger,
         )
-        if record is not None:
-            candidates.append((name, rel, record))
+        if record is None:
+            continue
+        # hash 스캔(SessionStart·file-change)만 revision을 준다. 없는 행은 기존 bytes 그대로다.
+        revision = intent.source_revision(changed_files, name, rel)
+        if revision is not None:
+            record[intent.REVISION_FIELD] = revision
+        candidates.append((name, rel, record))
     return candidates
 
 
@@ -137,9 +145,13 @@ def enqueue_changed_sources(project_root, config, changed_files,
     if not candidates:
         return intent.enqueue_result("no_sources")
     # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
-    plan = intent.plan_enqueue(candidates, compile_max_files())
-    _append_jsonl(queue_path, plan["records"])
-    if plan["records"]:
+    # revision 없는 행(수동 sync)은 합칠 키가 없으므로 큐를 읽지 않는 기존 경로 그대로다.
+    if any(intent.revision_key(record) for _, _, record in candidates):
+        plan = _append_unqueued(queue_path, candidates, compile_max_files())
+    else:
+        plan = intent.plan_enqueue(candidates, compile_max_files())
+        _append_jsonl(queue_path, plan["records"])
+    if plan["records"] or plan["result"].get("wakePending"):
         import wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
             wiki_selected_laya.selected(Path(project_root)))
@@ -200,6 +212,12 @@ def _queue_lock_path(path):
     return path.with_name(f"{path.name}.lock")
 
 
+def _write_jsonl(path, records):
+    with open(path, "a", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def _append_jsonl(path, records):
     if not records:
         return
@@ -208,11 +226,68 @@ def _append_jsonl(path, records):
     with open(lock_path, "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            with open(path, "a", encoding="utf-8") as handle:
-                for record in records:
-                    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            _write_jsonl(path, records)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _queued_revision_keys(path, limit=None):
+    """Revision keys of rows still in the live queue (not claimed/drained ones).
+
+    An unreadable queue, or one larger than `limit` bytes
+    (`QUEUE_SCAN_MAX_BYTES`), yields no keys: at most `limit + 1` bytes are
+    read, and the rows are appended as before the scan existed, so the failure
+    mode is a duplicate, never a lost intent or an unbounded read under the lock.
+    """
+    limit = QUEUE_SCAN_MAX_BYTES if limit is None else limit
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return set()
+    if len(data) > limit:
+        return set()
+    keys = set()
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        try:
+            key = intent.revision_key(json.loads(line))
+        except ValueError:
+            continue
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
+def _append_unqueued(path, candidates, cap):
+    """Skip rows still queued under the same revision key, then cap and append.
+
+    Everything happens under the one queue lock the worker's claim/requeue
+    also takes, so a skip decision and the append see the same queue. Skipped
+    candidates are neither queued nor deferred, and when all are skipped the
+    result is the usual `no_sources`. They still use cap slots: they will be
+    compiled by the same wake, so only `cap - skipped` fresh rows are appended
+    and the rest is deferred (its snapshot entries stay behind for the next
+    run). Otherwise a retry after a snapshot failure would add the tail and
+    one wake would compile more than `cap` paid sources.
+
+    A skipped row is still live work (e.g. a retry after the snapshot write
+    failed), so the result gains internal `wakePending: True` and the caller
+    can still kick the compile worker. It is absent when nothing was skipped
+    and is not part of any status/sync output.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            fresh = intent.without_queued(candidates, _queued_revision_keys(path))
+            plan = intent.plan_enqueue(fresh, max(0, cap - (len(candidates) - len(fresh))))
+            if plan["records"]:
+                _write_jsonl(path, plan["records"])
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    if len(fresh) < len(candidates):
+        plan["result"]["wakePending"] = True
+    return plan
 
 
 def compile_gate(config, accepted_triggers):

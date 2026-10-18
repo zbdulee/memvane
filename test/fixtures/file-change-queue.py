@@ -176,6 +176,25 @@ elif sys.argv[1]=='embed': print('Embedded 1 chunks from 1 documents in 0s')
         Q.worker(project)
         assert len(source_queue.read_text().splitlines())==2,'SessionStart must retain event compile grant for deferred sources'
         assert not (auto/'file-changes/pending.json').exists()
+        # Enqueue succeeds, snapshot write fails: the retry skips the still-queued
+        # same-revision row but must still kick the compile worker immediately.
+        (docs/'d.md').write_text('Synthetic delta.\n');Q.handle('event',payload)
+        original_write=Q._write
+        def failing(path,value):
+            if path.name=='snapshot.json':raise OSError('synthetic snapshot failure')
+            return original_write(path,value)
+        log=home/'manager.log';log.unlink(missing_ok=True)
+        with patch.object(Q,'_write',side_effect=failing):Q.worker(project)
+        assert len(source_queue.read_text().splitlines())==3
+        assert (auto/'file-changes/pending.json').exists(),'failed snapshot write must keep the job'
+        assert not log.exists(),'the failed run raised before any kick'
+        Q.worker(project)
+        assert len(source_queue.read_text().splitlines())==3,'retry must not queue a second paid job'
+        status=json.loads((auto/'file-changes/status.json').read_text())
+        assert (status['compileQueued'],status['compileDeferred'])==(0,0),status
+        assert 'wakePending' not in status
+        assert 'kick-wiki-compile '+str(project) in log.read_text().splitlines(),'skipped live row must still be woken'
+        assert not (auto/'file-changes/pending.json').exists()
     elif scenario=='guards':
         a.unlink();before=(auto/'file-changes/snapshot.json').read_bytes()
         env['QMD_SANDBOX']='1';invoke('file-change-event',payload)

@@ -1331,8 +1331,10 @@ PY
         if [ "$embed_rc" -eq 0 ]; then
           sync_result=$(python3 "$CORE_DIR/sync.py" --session-start --cwd "$WORKDIR" --json 2>>"$LOG" || true)
           printf "%s\n" "$sync_result" >> "$LOG"
-          queued=$(printf "%s" "$sync_result" | python3 -c "import json,sys; print(int(json.load(sys.stdin).get(\"compileQueued\") or 0))" 2>/dev/null || echo 0)
-          if [ "$queued" -gt 0 ] && [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
+          # compileQueued=0이어도 compileWakePending(같은 revision 행이 live 큐에 남은
+          # 재시도)이면 깨운다. 동의 없는 sync는 둘 다 내지 않으므로 kick도 없다.
+          compile_kick=$(printf "%s" "$sync_result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(1 if int(d.get(\"compileQueued\") or 0) > 0 or d.get(\"compileWakePending\") is True else 0)" 2>/dev/null || echo 0)
+          if [ "$compile_kick" = 1 ] && [ -n "${QMD_BACKEND_MANAGER:-}" ] && [ -x "$QMD_BACKEND_MANAGER" ]; then
             bash "$QMD_BACKEND_MANAGER" kick-wiki-compile "$WORKDIR" --flush >> "$LOG" 2>&1 || true
           fi
         fi
