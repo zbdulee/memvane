@@ -22,7 +22,9 @@ case " $* " in *" --sandbox "*) _qmd_sandbox=1 ;; esac
 [ -n "${QMD_SANDBOX:-}" ] && _qmd_sandbox=1
 case "$ENGINE" in
   claude) { [ "${CLAUDE_HEADLESS:-}" = "1" ] || [ -n "${CLAUDE_SANDBOX:-}" ]; } && _qmd_sandbox=1 ;;
-  codex)  [ -n "${CODEX_SANDBOX:-}" ] && _qmd_sandbox=1 ;;
+  # Normal Codex workspace-write runs set CODEX_SANDBOX; the pending-project
+  # edit gate must still deny there. Nested extractor isolation is QMD_SANDBOX.
+  codex)  [ -n "${CODEX_SANDBOX:-}" ] && [ "$ACTION" != "gate" ] && _qmd_sandbox=1 ;;
   gemini) [ -n "${GEMINI_SANDBOX:-}" ] && _qmd_sandbox=1 ;;
 esac
 if [ "$_qmd_sandbox" = 1 ]; then

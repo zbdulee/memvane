@@ -239,6 +239,26 @@ test('run-hook gate claude → pending 프로젝트에서 gated tool 차단', ()
   } finally { removeTemp(home); }
 });
 
+test('CODEX_SANDBOX 는 codex recall 은 끄지만 pending gate 는 끄지 않는다', () => {
+  // 일반 Codex workspace-write 실행이 CODEX_SANDBOX 를 켜므로 gate 만은 그것으로 건너뛰면
+  // 안 된다. 같은 pending fixture 에서 recall(무출력)과 gate(deny)를 함께 고정한다.
+  const home = mkdtempSync(join(process.cwd(), 'qmd-test-gate-home-'));
+  const dir = mkdtempSync(join(home, 'project-'));
+  mkdirSync(join(dir, '.agents'), { recursive: true });
+  writeFileSync(join(dir, '.agents', 'qmd-recall.json'), JSON.stringify({ collections: [] }));
+  const env = { HOME: home, CODEX_SANDBOX: 'seatbelt', QMD_SANDBOX: '', GEMINI_SANDBOX: '', CLAUDE_HEADLESS: '' };
+  try {
+    assert.equal(dispatchGuard(['recall', 'codex'], { prompt: PROMPT, cwd: dir }, env), '');
+    const payload = { hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { patch: '*** Begin Patch\n*** End Patch' }, cwd: dir };
+    const out = execFileSync('bash', ['hooks/run-hook', 'gate', 'codex'], {
+      input: JSON.stringify(payload), encoding: 'utf8',
+      env: { ...process.env, ...fixtureEnv, ...env },
+    }).trim();
+    assert.ok(out, 'CODEX_SANDBOX 단독으로는 pending gate 응답이 사라지면 안 됨');
+    assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny');
+  } finally { removeTemp(home); }
+});
+
 test('run-hook gate --sandbox → 무출력', () => {
   const out = dispatchGuard(['gate', 'claude', '--sandbox'], {});
   assert.equal(out, '');

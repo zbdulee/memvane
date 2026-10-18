@@ -10,6 +10,30 @@ scenario captures objective evidence. Record each run with
 
 ## Status of this document
 
+**2026-10-18 설치 후보 중간 기록:** draft PR #12의 `c18067edcc02057efe26956aa5ea8a210a646c7e`를
+전체 Git tree 862개 파일 그대로 별도 Claude/Codex 로컬 marketplace에 설치했다.
+두 설치 cache와 commit의 blob/mode가 862/862 일치했고, manifest SHA256은
+`670f6fc8c6d514287964003308b7449ad2854f996c0f9c57f22f5643f18bf1e0`이다.
+새 Claude 세션은 HOME 하위 합성 pending 프로젝트에서 Edit를 거부했다
+(`1de3da85dab74392a047852c010a09dc`, passed/settled). 같은 조건의
+Codex `exec -s workspace-write` 세션은 `apply_patch`를 실행해 합성 README를
+바꿨으므로 **RQA-HOOK-02 실패**다. 직접 호출한 제품 gate는 deny를 반환했고,
+후보의 Codex hook trust 기록은 없었다. 이후 `CODEX_SANDBOX`가 gate까지
+조기 종료시키던 코드도 수정해 합성 gate 회귀 30/30을 통과했다
+(`710dfa04a08649c1bfe2f893ddc45466`). 이 수정은 `c18067e`에 포함되지
+않으므로 새 후보의 실제 Codex hook 실행 및 신뢰 확인이 필요하다. 신규 hook
+신뢰를 우회하거나 승인하지 않았다.
+
+같은 설치 후보에서 기존 로컬 328,576,992바이트 모델과 QMD 2.5.3/
+node-llama-cpp 3.18.1의 native closure 7개를 **추론 없이** 검토해
+`review_required` 제안 digest
+`30faa6d37df0eee1bbb6aa4d456a39ff522abd31316517b38885237f5f63ed05`를
+생성했다(guard `c7d7a6d4b8544cc79f0b01b54a537aaa`, passed/settled).
+이것은 provider 승인·선택·최종 후보의 모델 QA가 아니다. 현 L1 상태는
+**부분 실행·미완료**이며, 실제 QMD 이관/복구, 선택된 검색, 학습 중
+압력 증가와 재개, 최종 exact 후보의 Claude/Codex 실행이 남았다.
+따라서 main merge와 Mini 설치는 보류한다.
+
 This spec was written on 2026-10-17 on the local, unpushed branch
 `feat/same-session-worktree-freshness`. The synthetic fixture helper passed
 its L0 guarded test, which ran Git only inside disposable test directories.

@@ -32,7 +32,35 @@ def _inventory_timeout(deadline):
     return min(2, remaining)
 
 
-def _owned_bytes(path, home, limit):
+# Each admission checkpoint closes/reopens the shared compute gate and may
+# sample the OS. A per-read checkpoint over a whole core/hooks inventory
+# (four trees per project_scope binding check) spent the 1s foreground
+# preparation budget on admission alone on Linux CI. Inventories instead pace
+# checkpoints: one at start and end, and between them at most _PACE_STEPS
+# entries/reads or _PACE_SECONDS, whichever comes first, so a resource stop or
+# expired deadline is still observed within a bounded gap.
+_PACE_STEPS = 64
+_PACE_SECONDS = .05
+
+
+class _Pacer:
+    def __init__(self):
+        from runtime_admission import preparation_checkpoint
+        self._checkpoint = preparation_checkpoint
+        self.checkpoint()
+
+    def checkpoint(self):
+        self._checkpoint()
+        self.steps = 0
+        self.since = time.monotonic()
+
+    def __call__(self):
+        self.steps += 1
+        if self.steps >= _PACE_STEPS or time.monotonic() - self.since >= _PACE_SECONDS:
+            self.checkpoint()
+
+
+def _owned_bytes(path, home, limit, *, pace=None):
     path = Path(path)
     if not path.is_absolute() or home not in path.parents:
         raise ValueError('unsupported_adapter')
@@ -52,10 +80,11 @@ def _owned_bytes(path, home, limit):
                 or before.st_uid != os.getuid() or before.st_mode & 0o022
                 or before.st_size > limit):
             raise ValueError('unsupported_adapter')
-        from runtime_admission import preparation_checkpoint
+        if pace is None:
+            from runtime_admission import preparation_checkpoint as pace
         parts=[];remaining=limit+1
         while remaining:
-            preparation_checkpoint()
+            pace()
             block=source.read(min(1024*1024,remaining))
             if not block:break
             parts.append(block);remaining-=len(block)
@@ -177,6 +206,7 @@ def _local_code(root, home):
     """Compare executable core/hooks, with the same private path/file guards."""
     rows = []
     total = 0
+    pace = _Pacer()
     for directory in ('core', 'hooks'):
         base = root / directory
         info = base.lstat()
@@ -184,8 +214,7 @@ def _local_code(root, home):
                 or info.st_mode & 0o022):
             raise ValueError('unsupported_adapter')
         for path in sorted(base.rglob('*')):
-            from runtime_admission import preparation_checkpoint
-            preparation_checkpoint()
+            pace()
             if '__pycache__' in path.relative_to(root).parts or path.suffix == '.pyc':
                 continue
             info = path.lstat()
@@ -194,11 +223,12 @@ def _local_code(root, home):
                 raise ValueError('unsupported_adapter')
             if stat.S_ISDIR(info.st_mode):
                 continue
-            data = _owned_bytes(path, home, 4 * 1024 * 1024)
+            data = _owned_bytes(path, home, 4 * 1024 * 1024, pace=pace)
             total += len(data)
             rows.append((str(path.relative_to(root)), hashlib.sha256(data).hexdigest()))
             if len(rows) > 4096 or total > 32 * 1024 * 1024:
                 raise ValueError('unsupported_adapter')
+    pace.checkpoint()
     if not any(name == 'core/context_learning/laya_adapter.py' for name, _ in rows):
         raise ValueError('unsupported_adapter')
     return tuple(rows)
