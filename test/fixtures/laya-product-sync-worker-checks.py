@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Selected worker wiring only; no model, QMD, socket or host is started."""
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import json
 import os
 from pathlib import Path
@@ -15,7 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_product_sync_worker as worker
 import runtime_work
 from context_learning.local_cycle import ResourceDeferred
-from laya_index_a import IndexContractError
+from laya_index_a import IndexContractError, LayaIndexA
+from laya_index_claim_queue import ClaimQueue
+from laya_index_runtime import LayaIndexRuntime
+from laya_index_sync import prepare_candidate_batch_off_hook
+from laya_index_vector import qmd_markdown_title
+import laya_index_sync
 
 
 class Coordinator:
@@ -245,6 +250,260 @@ class WorkerChecks(unittest.TestCase):
         with ExitStack() as stack:
             for item in patches:stack.enter_context(item)
             yield
+
+
+# Stage 6b: the real runtime/batch/sync_full pipeline over a disposable A-int
+# DB/queue and two disjoint roots. Route proof, journal CAS, provider and
+# service are synthetic; no model, QMD, socket or host is started.
+SCOPE='a'*32
+PROFILE={'profileId':'c'*64,'modelId':'synthetic-worker','embeddingFingerprint':'d'*64,
+         'dimension':2}
+
+
+class V2WorkerChecks(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix='laya-worker-v2-');self.addCleanup(self.temp.cleanup)
+        self.home=Path(self.temp.name).resolve();self.home.chmod(0o700)
+        self.alpha=self.home/'alpha';self.beta=self.home/'beta'
+        for root,name,body in ((self.alpha,'one.md','silver otter'),(self.beta,'two.md','purple finch')):
+            root.mkdir();(root/name).write_text(body,encoding='utf-8')
+        self.index_path=self.home/'index.sqlite3';self.queue_path=self.home/'queue.sqlite3'
+        with closing(LayaIndexA(self.index_path,create=True)) as index:
+            self.incarnation=index.incarnation()
+        ClaimQueue.create(self.queue_path,index_incarnation=self.incarnation).close()
+        self.decision={'projectRoot':str(self.home),'scopeId':SCOPE,
+            'dbPath':str(self.index_path),'queuePath':str(self.queue_path),
+            'dbIncarnation':self.incarnation,'journalPath':str(self.home/'install-journal.sqlite'),
+            'collections':[{'name':'alpha','role':'raw','sourceRoot':str(self.alpha)},
+                           {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}],
+            'collectionRoots':{'alpha':str(self.alpha),'beta':str(self.beta)}}
+        self.epoch=7;self.marks=[];self.embedded=[];self.batches=[];self.services=[]
+
+    def proof(self):
+        return {'productRouteAllowed':True,'selectionEpoch':self.epoch,
+                'providerManifest':{'synthetic':True},'vectorProfile':PROFILE}
+
+    def provider_class(self):
+        test=self
+        class Provider:
+            profile={'profile_id':PROFILE['profileId'],'model_id':PROFILE['modelId'],
+                     'embedding_fingerprint':PROFILE['embeddingFingerprint'],
+                     'dimension':PROFILE['dimension']}
+            manifest={'recipeId':'qmd-regex-token-chunks-candidate-v1'}
+            def __init__(self,manifest):test.assertEqual(manifest,{'synthetic':True})
+            def embed_document_chunks(self,body,path):
+                test.embedded.append(path)
+                return [{'seq':0,'pos':0,'vector':[1.0,0.0]}]
+        return Provider
+
+    def run_worker(self,decision=None):
+        decision=decision or self.decision
+        def verify(seen):
+            self.assertIs(seen,decision)
+            return self.proof()
+        def cas(path,expected):
+            self.assertEqual((path,expected),(decision['journalPath'],self.epoch))
+            self.epoch+=1;self.marks.append(self.epoch)
+            return {'epoch':self.epoch,'newWriteSeen':True}
+        def start(manifest,*,admit):
+            self.assertTrue(admit())
+            service=Mock();self.services.append(service)
+            return service
+        def batch(runtime,provider):
+            result=prepare_candidate_batch_off_hook(runtime,provider)
+            self.batches.append(result)
+            return result
+        controller=Coordinator();controller.root=self.home
+        patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
+            patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
+            patch.object(worker,'resource_report',return_value={'ready':True}),
+            patch.object(worker,'verify_worker_attestation',return_value={'synthetic':True}),
+            patch.object(worker,'verify_selected_route',side_effect=verify),
+            patch.object(worker,'cas_mark_new_write',side_effect=cas),
+            patch.object(worker,'prepare_candidate_batch_off_hook',side_effect=batch)]
+        with WorkerChecks._patches(patches):
+            result=worker.run(self.home,coordinator=controller,start_service=start)
+        self.services[-1].stop.assert_called_once_with()
+        return result
+
+    def members(self,gen):
+        with closing(LayaIndexA(self.index_path)) as index:
+            return [row[0] for row in index.db.execute(
+                'SELECT path FROM membership WHERE gen=? ORDER BY path',(gen,))]
+
+    def claim_state(self,claim):
+        with closing(ClaimQueue.open(self.queue_path)) as queue:
+            return queue.get(claim)['state']
+
+    def identities(self,batch):
+        return {(chunk['hash'],chunk['title']) for chunk in batch['chunks']}
+
+    def test_v2_two_roots_origin_then_unchanged(self):
+        first=self.run_worker()
+        self.assertEqual(first['state'],'indexed')
+        self.assertEqual(self.marks,[8])
+        self.assertEqual(self.claim_state(first['claim']),'acked')
+        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
+        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.run_worker(),
+                         {'state':'unchanged','generation':first['generation'],'claim':None})
+        # No second fence or inference: sealed chunk sets are reused.
+        self.assertEqual(self.marks,[8])
+        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.batches[0]['source_manifest'],self.batches[1]['source_manifest'])
+        self.assertEqual(len(self.services),2)
+
+    def test_v2_one_root_edit_publishes_full_membership_with_stable_identity(self):
+        first=self.run_worker()
+        (self.beta/'two.md').write_text('green heron',encoding='utf-8')
+        changed=self.run_worker()
+        self.assertEqual(changed['state'],'indexed')
+        self.assertNotEqual(changed['generation'],first['generation'])
+        self.assertEqual(self.marks,[8,9])
+        self.assertEqual(self.claim_state(changed['claim']),'acked')
+        self.assertEqual(self.members(changed['generation']),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
+        # Only the edited document is embedded again; the untouched root keeps
+        # its namespaced (content hash, title) vector identity.
+        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md','beta/two.md'])
+        alpha={(h,t) for h,t in self.identities(self.batches[0])
+               if t==qmd_markdown_title('silver otter','alpha/one.md')}
+        self.assertEqual(len(alpha),1)
+        self.assertLessEqual(alpha,self.identities(self.batches[1]))
+        with closing(LayaIndexA(self.index_path)) as index:
+            self.assertEqual(index.db.execute('SELECT COUNT(*) FROM content').fetchone()[0],3)
+        self.assertEqual(self.run_worker()['state'],'unchanged')
+        self.assertEqual(self.marks,[8,9])
+
+    def test_v2_cutover_origin_first_sync_is_unchanged_without_fence_or_inference(self):
+        # Origin = installer staging (prepare_qmd_candidate over a synthetic
+        # QMD-format DB) + the exact seal check/publish call of bind_qmd_origin.
+        # Journal, attestation, route bytes and the cutover ledger/marker are
+        # not exercised here; laya-qmd-cutover-checks.py covers those.
+        import hashlib,runpy,sqlite3
+        from laya_index_source_port import publish_collections_from_source,scan_collections
+        from laya_index_vector import profile_identity,verify_generation_seal
+        from laya_qmd_migration import (QMD_253,backup_qmd_collections,
+                                        inspect_qmd_collections,prepare_qmd_candidate)
+        make_source=runpy.run_path(str(Path(__file__).with_name(
+            'laya-qmd-migration-checks.py')))['make_source']
+        names=('alpha','beta');roots=dict(self.decision['collectionRoots'])
+        files={'alpha/one.md':'silver otter','beta/two.md':'purple finch'}
+        source,backup=self.home/'qmd.sqlite',self.home/'qmd-backup.sqlite'
+        make_source(source,QMD_253,documents=[('alpha','one.md','silver otter',1),
+                                              ('beta','two.md','purple finch',1)])
+        with closing(sqlite3.connect(source)) as db,db:
+            db.executemany('INSERT INTO store_collections(name,path) VALUES(?,?)',
+                           sorted(roots.items()))
+        backup_qmd_collections(source,QMD_253,names,backup)
+        digest=inspect_qmd_collections(source,QMD_253,names)['digest']
+        with closing(LayaIndexA(self.index_path)) as scratch:
+            manifest=scan_collections(roots,SCOPE,scratch).manifest
+        keys={path:(hashlib.sha256(body.encode('utf-8')).hexdigest(),
+                    qmd_markdown_title(body,path)) for path,body in files.items()}
+        profile_id=profile_identity(PROFILE['modelId'],PROFILE['embeddingFingerprint'],
+                                    PROFILE['dimension'])
+        candidate,queue=self.home/'candidate.sqlite',self.home/'candidate-queue.sqlite'
+        gen='gen-cutover'
+        prepared=prepare_qmd_candidate(backup,QMD_253,names,files,candidate,SCOPE,gen,
+            migration_allowed=True,expected_collection_root=roots,
+            expected_source_digest=digest,vector_batch={
+                'scope':SCOPE,'source_manifest':manifest,'qmd_source_digest':digest,
+                'model_id':PROFILE['modelId'],
+                'embedding_fingerprint':PROFILE['embeddingFingerprint'],
+                'dimension':PROFILE['dimension'],
+                'chunks':[{'hash':h,'title':t,'seq':0,'pos':0,'vector':[1.0,0.0]}
+                          for h,t in sorted(keys.values())]},
+            provider_approved=True,current_source_db=source,scope_collections=names)
+        self.assertEqual(prepared['vector_profile_id'],profile_id)
+        with closing(LayaIndexA(candidate)) as index:
+            index.db.execute('BEGIN')
+            try:self.assertEqual(verify_generation_seal(index,gen)['profile_id'],profile_id)
+            finally:index.db.rollback()
+            self.assertEqual(publish_collections_from_source(
+                index,roots,SCOPE,None,gen,'qmd-migration',
+                claim_digest=digest,claim_epoch=0,require_vector=True),'published')
+            incarnation=index.incarnation()
+        ClaimQueue.create(queue,index_incarnation=incarnation).close()
+        self.index_path,self.queue_path=candidate,queue
+        self.decision.update(dbPath=str(candidate),queuePath=str(queue),
+                             dbIncarnation=incarnation)
+        def sealed():
+            with closing(LayaIndexA(candidate)) as index:
+                rows=set(index.db.execute('SELECT path,hash,title,profile_id '
+                                          'FROM gen_vector_rows WHERE gen=?',(gen,)))
+                sets=index.db.execute('SELECT COUNT(*) FROM vector_chunk_sets').fetchone()[0]
+                head=index.db.execute('SELECT gen FROM head WHERE scope=?',
+                                      (SCOPE,)).fetchone()[0]
+            return rows,sets,head
+        expected={(path,h,t,profile_id) for path,(h,t) in keys.items()}
+        self.assertEqual(sealed(),(expected,2,gen))
+        self.assertEqual(self.run_worker(),{'state':'unchanged','generation':gen,'claim':None})
+        # No journal CAS fence and no inference: the worker reuses the sealed
+        # namespaced (hash,title,profile) sets the cutover origin published.
+        self.assertEqual(self.marks,[])
+        self.assertEqual(self.embedded,[])
+        self.assertEqual(self.members(gen),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.identities(self.batches[0]),set(keys.values()))
+        self.assertEqual(self.batches[0]['source_manifest'],manifest)
+        self.assertEqual(sealed(),(expected,2,gen))
+        with closing(ClaimQueue.open(queue)) as claims:
+            self.assertEqual(claims.active_for_scope(SCOPE),[])
+
+    def test_v1_source_root_is_passed_unchanged(self):
+        decision={key:value for key,value in self.decision.items()
+                  if key not in ('collections','collectionRoots')}
+        decision.update(collectionName='alpha',sourceRoot=str(self.alpha))
+        seen=[]
+        def spy(**kwargs):
+            seen.append(kwargs['source_root'])
+            return LayaIndexRuntime(**kwargs)
+        def refuse(*_args,**_kwargs):raise AssertionError('collection helper called for v1')
+        with patch.object(worker,'LayaIndexRuntime',side_effect=spy),\
+                patch.object(laya_index_sync,'scan_collections',refuse):
+            first=self.run_worker(decision)
+            self.assertEqual(self.run_worker(decision)['state'],'unchanged')
+        self.assertEqual(first['state'],'indexed')
+        self.assertIs(seen[0],decision['sourceRoot'])
+        self.assertEqual(self.members(first['generation']),['one.md'])
+        self.assertEqual(self.embedded,['one.md'])
+
+    def test_malformed_v2_source_fails_before_provider_start_without_writes(self):
+        (self.alpha/'nested').mkdir()
+        def snapshot():
+            return (sorted(str(p.relative_to(self.home)) for p in self.home.rglob('*')),
+                    self.index_path.read_bytes(),self.queue_path.read_bytes())
+        before=snapshot()
+        roots=self.decision['collectionRoots']
+        cases={'missing':({'collectionRoots':None},'selected_collection_roots_invalid'),
+            'not_mapping':({'collectionRoots':[str(self.alpha)]},'selected_collection_roots_invalid'),
+            'empty':({'collectionRoots':{}},'selected_collection_roots_invalid'),
+            'relative':({'collectionRoots':{**roots,'alpha':'alpha'}},'selected_collection_roots_invalid'),
+            'nested':({'collectionRoots':{**roots,'beta':str(self.alpha/'nested')}},
+                      'selected_collection_roots_invalid'),
+            'absent_dir':({'collectionRoots':{**roots,'beta':str(self.home/'gone')}},
+                          'selected_collection_roots_invalid'),
+            'mismatch':({'collections':[self.decision['collections'][0]]},
+                        'selected_collection_roots_mismatch'),
+            'ambiguous':({'sourceRoot':str(self.alpha)},'selected_route_source_ambiguous')}
+        for case,(override,reason) in cases.items():
+            with self.subTest(case=case):
+                decision={**self.decision,**override}
+                if override.get('collectionRoots',0) is None:del decision['collectionRoots']
+                controller=Coordinator();controller.root=self.home
+                start=Mock()
+                with patch.object(worker,'_selected',return_value=(decision,self.proof())),\
+                        patch.object(worker,'ReviewedLocalQmdProvider',
+                                     side_effect=AssertionError('provider')),\
+                        patch.object(worker,'verify_worker_attestation',
+                                     side_effect=AssertionError('attestation')),\
+                        patch.dict(os.environ,{},clear=False):
+                    os.environ.pop(worker.QA_BARRIER_ENV,None)
+                    with self.assertRaisesRegex(IndexContractError,reason):
+                        worker.run(self.home,coordinator=controller,start_service=start)
+                start.assert_not_called()
+                self.assertEqual(controller.lanes,[])
+                self.assertEqual(snapshot(),before)
 
 
 if __name__=='__main__':unittest.main()

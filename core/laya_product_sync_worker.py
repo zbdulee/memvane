@@ -6,6 +6,7 @@ failed or deferred attempt leaves the wake for the runtime dispatcher to retry.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
 from laya_index_host_route import select_route
-from laya_index_runtime import LayaIndexRuntime
+from laya_index_runtime import LayaIndexRuntime, _collection_roots
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full
 from laya_install_journal import (cas_mark_new_write, verify_selected_route,
                                   verify_worker_attestation)
@@ -209,9 +210,38 @@ def _selected(project):
     return decision, proof
 
 
+def _route_source(decision):
+    """Choose the runtime source binding before any provider or model start.
+
+    v1 passes ``sourceRoot`` unchanged. v2 passes ``collectionRoots`` only
+    after the runtime's own disjoint-root check and a match against the
+    route's declared collections. LayaIndexRuntime checks the roots again.
+    """
+    v2 = 'collections' in decision or 'collectionRoots' in decision
+    if v2 and 'sourceRoot' in decision:
+        raise IndexContractError('selected_route_source_ambiguous')
+    if not v2:
+        if 'sourceRoot' not in decision:
+            raise IndexContractError('selected_route_source_missing')
+        return decision['sourceRoot']
+    roots = decision.get('collectionRoots')
+    bound = _collection_roots(roots) if isinstance(roots, Mapping) else None
+    if bound is None:
+        raise IndexContractError('selected_collection_roots_invalid')
+    declared = decision.get('collections')
+    if (not isinstance(declared, list) or len(declared) != len(bound)
+            or any(not isinstance(item, dict) or not isinstance(item.get('name'), str)
+                   for item in declared)
+            or {item['name']: item.get('sourceRoot') for item in declared} != dict(bound)):
+        raise IndexContractError('selected_collection_roots_mismatch')
+    return bound
+
+
 def run(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     """Run one selected sync; call only from the durable runtime wake worker."""
     decision, proof = _selected(project)
+    # A malformed route source fails before any model start or index write.
+    source_root = _route_source(decision)
     # A mis-armed QA barrier fails before any model start or index write.
     qa = qa_sync_barrier(decision)
     provider = ReviewedLocalQmdProvider(proof['providerManifest'])
@@ -249,7 +279,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise ResourceDeferred('laya_sync_yield_priority')
                         return provider.embed_document_chunks(body, path)
 
-                with LayaIndexRuntime(source_root=decision['sourceRoot'],
+                with LayaIndexRuntime(source_root=source_root,
                                       scope=decision['scopeId'], db_path=decision['dbPath'],
                                       queue_path=decision['queuePath'],
                                       db_incarnation=decision['dbIncarnation']) as runtime:
