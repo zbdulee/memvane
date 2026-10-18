@@ -14,7 +14,7 @@ _TORCH_CONFIGURED=None
 
 
 def _defer(reason):
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     return ResourceDeferred(reason)
 
 

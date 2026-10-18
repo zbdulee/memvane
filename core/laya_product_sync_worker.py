@@ -14,7 +14,7 @@ import sqlite3
 import stat
 import time
 
-from context_learning.local_cycle import ResourceDeferred
+from resource_deferred import ResourceDeferred
 from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_index_a import IndexContractError

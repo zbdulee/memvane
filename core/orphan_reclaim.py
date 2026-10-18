@@ -216,7 +216,7 @@ def resolve_qmd_bin(explicit: str = "") -> str:
 
 def run_cleanup(qmd_bin: str, timeout: float, *, on_start=None) -> tuple[bool, str]:
     from runtime_work import qmd_operation
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     observed=[]
     def execute(argv,**options):
         if on_start is not None:on_start()
@@ -350,7 +350,7 @@ def run(cwd: str, qmd_bin: str = "", timeout: float = 600.0) -> dict:
         return {**result, "action": "skip", "reason": "lock_error"}
 
     try:
-        from context_learning.local_cycle import ResourceDeferred
+        from resource_deferred import ResourceDeferred
         # Charge a real admitted attempt before VACUUM starts, preserving
         # crash/reboot cooldown without charging a resource refusal.
         try:ok, detail = run_cleanup(resolve_qmd_bin(qmd_bin), timeout,on_start=touch_cooldown)

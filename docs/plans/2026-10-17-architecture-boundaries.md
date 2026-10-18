@@ -260,6 +260,67 @@ C2c에서 `request_view_pin`을 `recall.py`의 실제 선택 경로에 연결했
 운영 queue claim의 조건부 ACK와 요청 전체에 immutable DB를 제공하는
 daemon cutover는 아직 구현하지 않았다.
 
+### 2026-10-18 단계별 TODO·상태
+
+위 기록을 대체하지 않고 현재 코드 기준으로 요약한다. "분리됨"은 해당 모듈이
+존재하고 호출자가 쓰고 있다는 뜻이며 운영 경계 완료를 뜻하지 않는다.
+
+| 영역 | 이미 분리된 모듈 | 남은 작업 |
+|---|---|---|
+| 검색·컨텍스트 | `index_snapshot`, `published_view`, `shadow_index`, `request_view_pin`(recall 연결), `context_learning/selection_port` | `backend/index_worker.sh`·`update.sh` writer의 후보 세대 연결, 공유 pointer/endpoint cutover, recall의 학습 지연 import 축소 |
+| 학습 데이터·평가·학습 | `selection_port`(읽기 전용 판단), `resource_deferred`(Stage 1, 비학습 소비자의 공용 예외) | `runtime_work`의 학습 coordinator·handler 직접 import, capture·trainer 경계 |
+| 위키·출처 | `wiki_source_intent`, `wiki_compile_enqueue.enqueue_changed_sources` | content revision 기반 cross-run 멱등 키, 삭제·rename 카드 provenance |
+| 파일·프로젝트 동기화 | `file_change_plan`(순수 계획·효과 순서) | change set에 content/scope revision 부여, enqueue 뒤 persist 실패 시 중복 enqueue |
+| 설치·마이그레이션 | `install_evidence` | `shared_install`의 증거 수집·벡터 복구·endpoint 준비 순서, 반복 게시와 최초 활성화 계약 분리 |
+| 런타임 큐·자원·모델 실행 | `runtime_wake_policy`, `resource_deferred`(Stage 1) | `runtime_work.dispatch`의 kind별 handler 분리, `runtime_work`가 모듈 상단에서 가져오는 `context_learning.{resource_coordination,local_cycle,resident}` |
+
+**Stage 1 (상태: 소스 변경 완료, 집중 가드 회귀 통과, 전체 PR CI 대기):** `ResourceDeferred`만
+`core/context_learning/local_cycle.py`에서 새 `core/resource_deferred.py`로 옮긴다.
+생성자 `(reason, report=None)`, `ValueError` 하위 클래스, `report` 기본값 `{}` 의미는
+그대로 두고 `local_cycle`은 같은 클래스 객체를 다시 노출한다. 비학습 소비자
+(`runtime_work`, `runtime_admission`, `runtime_monitor`, `runtime_cpu`, `qmd_endpoint`,
+`orphan_reclaim`, `wiki_compile_worker`, `extractors/lib`, `setup_entry`,
+`laya_product_install`, `laya_product_sync_worker`)만 새 모듈에서 import하고, 지연
+import 위치는 유지한다. `context_learning/*` 내부 import와 `_atomic_json` 등 다른
+`local_cycle` import는 바꾸지 않는다. 종료 코드·예외 의미는 바뀌지 않는다.
+
+구현 기록: `local_cycle`은 `from resource_deferred import ResourceDeferred`로 같은
+클래스를 노출하므로 기존 `local_cycle.ResourceDeferred` 사용과 `isinstance`/`except`
+판정은 동일하다. 클래스 `__module__`만 `resource_deferred`로 바뀌며 core에서 이를
+읽는 코드는 없다. 모듈 상단 import 5곳(`runtime_work`, `runtime_admission`,
+`runtime_monitor`, `wiki_compile_worker`, `laya_product_sync_worker`)과
+함수 안 지연 import(`runtime_cpu`, `qmd_endpoint` 3곳, `orphan_reclaim` 2곳,
+`extractors/lib`, `setup_entry`, `laya_product_install`)를 위치 그대로 바꿨다.
+`runtime_work`·`runtime_admission`의 `_atomic_json` import와 학습 내부 10개 모듈의
+`ResourceDeferred` 사용은 그대로다. `wiki_compile_worker`는 이제 import 시
+`context_learning`을 적재하지 않는다. 테스트 파일은 여전히 `local_cycle`에서
+import하며 재노출로 호환된다.
+
+검증 기록: Claude가 개발 가드로 집중 회귀 두 묶음을 실행했다. A 묶음(runtime-resources,
+runtime-wake-policy, qmd-endpoint, wiki-compile-worker, laya-product-sync-worker,
+orphan-reclaim, context-learning 7개 파일)은 Node 93/93과 Python 117건, B 묶음
+(resource-policy, shared-install, wiki-extractors, extractor-dispatch-guard,
+laya-product-bundle 5개 파일)은 Node 56/56과 Python 그룹 19·25·20을 통과했다. 두 가드
+checkpoint 모두 completed/settled/passed, 종료 코드 0이었다. 전체 `npm test`와 PR CI는
+아직 결과가 없으므로 통과로 표기하지 않는다. 운영 runtime·endpoint·설치 QA는 실행하지 않았다.
+
+#### 이후 단계 (Stage 2–6, 미착수)
+
+전체 아키텍처 분리 작업은 승인돼 있으므로 단계마다 따로 승인을 받지 않는다. 다만 각
+단계는 하나의 경계만 옮기고, 아래 집중 회귀를 개발 가드로 통과한 뒤 이 절의 상태를
+갱신한다. 운영 pointer·endpoint 전환, 실제 설치 QA, 유료 extractor·학습 실행은 어느
+단계의 완료 조건에도 포함하지 않으며 해당 작업은 별도 릴리즈 단계로 남긴다. 순서는
+Stage 1에서 바로 이어지는 런타임 결합을 먼저 풀고, 운영 구조 선택이 필요한 검색 게시를
+마지막에 둔다.
+
+| 단계 | 대상 모듈 | 보존할 계약 | 집중 회귀 |
+|---|---|---|---|
+| Stage 2 런타임 handler | `runtime_work.dispatch`의 index/update/cleanup/learning/auto handler를 소유 기능의 작은 함수로 분리하고, 모듈 상단의 `context_learning.{resource_coordination,local_cycle,resident}` import를 learning/auto handler 안쪽으로 좁힌다. `runtime_wake_policy`는 그대로 결정만 소유한다. | `WakeQueue` SQLite schema, revision ACK, lease·재시도, `ResourceDeferred` 반환 의미, `MAX_WAKES` override, 실행 직전 승인·scope 재확인 위치 | runtime-resources, runtime-wake-policy, resource-policy, context-learning, qmd-endpoint, orphan-reclaim |
+| Stage 3 파일 변경 → 위키 revision | `file_change_plan.plan_change_set`의 `changedFiles`에 content/scope revision 값을 덧붙이고, `wiki_source_intent`·`wiki_compile_enqueue.enqueue_changed_sources`가 `(owner, collection, relative path, content revision, trigger)` 키로 cross-run 중복을 합친다. | snapshot·status·pending.json 형식, `apply_change_set`의 효과·ACK 순서, 스캔 실패 ≠ 삭제, `state_unreadable`(3), 동의 gate·상한, 기존 카드 출처 | `test/file-change-plan.test.mjs`, 기존 file-change·SessionStart·sync/compile 회귀, wiki-compile-worker. 동일 revision의 수동 sync·SessionStart·PostToolUse 중복과 enqueue 뒤 persist 실패를 합성 사례로 추가한다. extractor는 호출하지 않는다. |
+| Stage 4 recall 학습 읽기 포트 | `recall.py`가 함수 안에서 가져오는 `context_learning.{live_select,corpus,shared,adaptive_pool,…}` 읽기 경로를 `selection_port` 뒤의 얇은 선택 함수 하나로 묶는다. `posttool`·`edit_context`·`topical_hook_queue`의 capture 호출은 옮기지 않는다. | raw 검색 결과·진단·fallback, `request_view_pin`의 route/URL pin, 미동의·후보 없음·오래된 corpus 동작. 쿼리 중 `_private_state(create=True)` 디렉터리 생성은 별도 변경으로 다룬다. | recall 집중 회귀(C2c의 57건 묶음), context-learning, selection_port fixture |
+| Stage 5 설치 증거 수집 | `shared_install._source_snapshot`·`_vector_report`의 수집 결과를 `install_evidence`가 판정하는 좁은 값으로 만들어 `_install` journal 판정에 넘긴다. `setup_entry`·`setup_guard`는 호출 위치만 유지한다. | journal intent→enqueue→ACK 순서, `qmd_shared_store.stage_empty/activate_empty`, `setup_guard` 상태 코드, 승인 scope·deadline·중단 후 재개, 기존 store 무변경, 최초 활성화와 반복 게시의 계약 분리 | shared-install, laya-product-bundle, install_evidence fixture. 실제 설치·업데이트 QA는 이 단계에서 수행하지 않는다. |
+| Stage 6 검색 게시 writer 연결(격리) | `backend/index_worker.sh`·`update.sh` writer가 `qmd_candidate_config`·`shadow_publish_flow`·`shadow_qmd_adapter`를 통해 비활성 후보 세대에만 쓰는 경로를 private pointer에서 연결한다. 저장 구조는 [C2 옵션](2026-10-17-qmd-published-view-options.md)과 [Laya Index 계획](2026-10-17-embedded-sqlite-search-engine.md)의 결정을 따른다. | 공유 `active.json`·endpoint 무변경, `published_view`의 요청 identity·CAS, `shadow_ack_policy`의 불확실 ACK 판정, 게시 전 receipt, late worker 거절 | published-view·shadow publish·ACK fixture(C1/C2a/C2b/C2c 묶음), recall 집중 회귀. 운영 cutover와 RQA-RACE-01은 BLOCKED 상태를 유지한다. |
+
 ## Claude 설계 검토 후속 기록
 
 초기 읽기 전용 검토는 첫 실행의 명시적 위키 동의, enqueue와 snapshot

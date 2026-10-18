@@ -473,7 +473,7 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
     reused; inconsistent partial state is retained for explicit recovery.
     """
     from contextlib import closing
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
     from laya_index_a import LayaIndexA

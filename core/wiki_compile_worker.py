@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-from context_learning.local_cycle import ResourceDeferred
+from resource_deferred import ResourceDeferred
 import compile_paths as cp
 import config as qmd_config
 import cooldown as qmd_cooldown

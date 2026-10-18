@@ -16,7 +16,7 @@ import sys
 import time
 
 from context_learning.resource_coordination import Coordinator,default_root,_lock,decision
-from context_learning.local_cycle import ResourceDeferred
+from resource_deferred import ResourceDeferred
 from context_learning.local_cycle import _atomic_json
 from context_learning import resident
 import runtime_wake_policy as wake_policy

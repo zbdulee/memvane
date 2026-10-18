@@ -139,7 +139,7 @@ def locked():
         flags=fcntl.LOCK_EX if install_deadline.active() else fcntl.LOCK_EX|fcntl.LOCK_NB
         try:install_deadline.flock(fd,flags)
         except BlockingIOError:
-            from context_learning.local_cycle import ResourceDeferred
+            from resource_deferred import ResourceDeferred
             raise ResourceDeferred('qmd_startup_busy') from None
         yield base
     finally:os.close(fd)
@@ -167,7 +167,7 @@ def child_environment(port):
 
 def spawn(port,log):
     from runtime_cpu import lease,environment
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     from runtime_admission import PreSendDeferred
     scope=lease()
     try:budget=scope.__enter__()
@@ -354,5 +354,5 @@ if __name__=='__main__':
     except (OSError,ValueError,KeyError,IndexError) as error:
         message=str(error)
         if message=='qmd_endpoint_identity_unavailable':message+=': '+INSPECTION_MESSAGE
-        from context_learning.local_cycle import ResourceDeferred
+        from resource_deferred import ResourceDeferred
         print(message,file=sys.stderr);raise SystemExit(75 if isinstance(error,ResourceDeferred) else 2)

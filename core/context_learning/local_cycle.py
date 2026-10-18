@@ -22,6 +22,7 @@ from .cycle_policy import promotion_decision, selection_score
 from .dataset import read_private_json
 from .selection_queue import build_queue
 from .store import canonical, database
+from resource_deferred import ResourceDeferred  # re-exported for existing callers
 
 MAX_QUESTIONS = 2000
 MAX_FILE = 16 * 1024 * 1024
@@ -57,12 +58,6 @@ def _atomic_json(path, value):
 
 def _load_state(path):
     return read_private_json(path) if Path(path).exists() else None
-
-
-class ResourceDeferred(ValueError):
-    def __init__(self, reason, report=None):
-        super().__init__(reason)
-        self.report = report or {}
 
 
 def record_resource_defer(root, report, *, reason='trainer_system_pressure'):
