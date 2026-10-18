@@ -1,5 +1,8 @@
 """Selected Laya Index full-scan writer for one explicitly bound source scope.
 
+The source is one v1 root string or a runtime-validated Mapping of disjoint
+collection roots; either way each publish is one full-membership generation.
+
 The caller first verifies the installer-owned selected route and rechecks it
 after this call. This module never selects a project, migrates QMD, invokes a
 model, or deletes index data. Separate index/queue DBs offer receipt-first
@@ -7,6 +10,7 @@ redelivery, not a power-loss atomic transaction.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 import fcntl
 import os
@@ -17,10 +21,17 @@ import uuid
 from laya_index_a import IndexContractError
 from laya_index_flow import process_one
 from laya_index_runtime import LayaIndexRuntime
-from laya_index_source_port import scan
+from laya_index_source_port import scan, scan_collections
 from laya_index_vector import (qmd_markdown_title as _qmd_markdown_title,
                                source_evidence as _source_evidence,
                                profile_identity, LayaVectorIndex)
+
+
+def _scan(root, scope, index):
+    """v1 string roots keep the original scan; Mapping roots are runtime-validated."""
+    if isinstance(root, Mapping):
+        return scan_collections(root, scope, index)
+    return scan(root, scope, index)
 
 
 def prepare_candidate_batch_off_hook(runtime, provider):
@@ -37,7 +48,7 @@ def prepare_candidate_batch_off_hook(runtime, provider):
             or getattr(provider, 'manifest', {}).get('recipeId')
                != 'qmd-regex-token-chunks-candidate-v1'):
         raise IndexContractError('candidate_provider_required')
-    source = scan(runtime.source_root, runtime.scope, runtime.index)
+    source = _scan(runtime.source_root, runtime.scope, runtime.index)
     unique = {}
     for file in source.files:
         if not file.eligible:
@@ -63,7 +74,7 @@ def prepare_candidate_batch_off_hook(runtime, provider):
             if not isinstance(row, dict) or set(row) != {'seq', 'pos', 'vector'}:
                 raise IndexContractError('invalid_vector_batch')
             chunks.append({'hash': hash_, 'title': title, **row})
-    if scan(runtime.source_root, runtime.scope, runtime.index).manifest != source.manifest:
+    if _scan(runtime.source_root, runtime.scope, runtime.index).manifest != source.manifest:
         raise IndexContractError('index_stale')
     batch = {'scope': runtime.scope, 'source_manifest': source.manifest,
              'model_id': profile['model_id'],
@@ -254,7 +265,7 @@ def sync_full(runtime: LayaIndexRuntime, *, before_publish,
         if runtime.queue.binding() != runtime.index.incarnation():
             raise IndexContractError('queue_index_binding_mismatch')
         if require_vector:
-            _validated_batch(scan(runtime.source_root, runtime.scope, runtime.index),
+            _validated_batch(_scan(runtime.source_root, runtime.scope, runtime.index),
                              vector_batch)
         active = runtime.queue.active_for_scope(runtime.scope)
         backlog = len(active) > 64
@@ -283,7 +294,7 @@ def sync_full(runtime: LayaIndexRuntime, *, before_publish,
         if backlog:
             return _result('deferred', completed['gen'] if completed else None,
                            completed['claim'] if completed else None, 'claim_backlog')
-        source = scan(runtime.source_root, runtime.scope, runtime.index)
+        source = _scan(runtime.source_root, runtime.scope, runtime.index)
         profile_id = None
         if require_vector:
             profile_id, _ = _validated_batch(source, vector_batch)

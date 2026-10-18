@@ -2,14 +2,24 @@
 
 The selected sync service owns the journal/owner fence before calling here.
 Separate stores have no shared transaction or power-loss exactly-once guarantee.
+A string root is the v1 single source. A Mapping root is a runtime-validated
+set of disjoint collection roots published as one full-membership generation.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import sqlite3
 
 from laya_index_a import IndexContractError
 from laya_index_claim_queue import ACK, REPROCESS, DEFER, LEASE_LOST
 import laya_index_source_port as source_port
+
+
+def scan_source(root, scope, index):
+    """Dispatch one full scan; v1 string roots keep the original call."""
+    if isinstance(root, Mapping):
+        return source_port.scan_collections(root, scope, index)
+    return source_port.scan(root, scope, index)
 
 
 def _settle_unpublishable(index, queue, job, token, reason):
@@ -47,7 +57,7 @@ def _run_leased(index, queue, root, job, token, *,
         return 'deferred'
     if decision != REPROCESS:
         return 'deferred'
-    source = source_port.scan(root, job['scope'], index)
+    source = scan_source(root, job['scope'], index)
     if source.manifest != job['source_manifest']:
         return ('replan' if queue.mark_replan(job, token, 'index_stale')
                 else LEASE_LOST)
@@ -60,7 +70,9 @@ def _run_leased(index, queue, root, job, token, *,
             if not callable(prepare_vector):
                 return 'deferred'
             prepare_vector(index, source, job)
-        published = source_port.publish_from_source(
+        publish = (source_port.publish_collections_from_source
+                   if isinstance(root, Mapping) else source_port.publish_from_source)
+        published = publish(
             index, root, job['scope'], job['base_gen'], job['gen'], job['claim'],
             claim_digest=job['claim_digest'], claim_epoch=job['claim_epoch'],
             require_vector=require_vector)
