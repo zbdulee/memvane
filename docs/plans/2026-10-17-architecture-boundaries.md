@@ -241,7 +241,7 @@ PyYAML은 테스트 전용 venv의 site-packages만 시스템 Python의 `PYTHONP
 
 | 우선 | 남은 결합과 완료 기준 | 현재 상태 |
 |---|---|---|
-| 1. 색인·검색 게시 | 승인된 store/worktree revision의 비활성 후보만 QMD writer가 쓰고, 후보 daemon 준비·요청 세대 pin·late worker 거절·queue ACK 복구가 한 게시 계약으로 연결돼야 한다. | C2b에서 private 후보 설정·SQLite 게시·ACK callback·이전 게시 DB source 연속성을 검증했다. C2c에서는 게시 전 receipt를 받는 source callback, 불확실 ACK의 순수 판정, recall의 선택 route/URL pin을 추가했다. `backend/index_worker.sh`·`update.sh`와 공유 pointer/endpoint는 그대로여서 운영 경계는 미완료. [C2 옵션](2026-10-17-qmd-published-view-options.md)의 A/B 저장 구조 선택·전환 승인 필요. 이후 선택 경로의 저장 구조는 A-int 단일 SQLite로 확정됐고 Stage 6은 QMD 후보 writer 대신 A-int producer 위에서 진행한다(6a 소스 완료·집중 가드 회귀 6/6 통과, 6b 소스 완료·집중 가드 회귀 Node 6/6 통과, 둘 다 PR CI 미실행; 아래 Stage 6 절). |
+| 1. 색인·검색 게시 | 승인된 store/worktree revision의 비활성 후보만 QMD writer가 쓰고, 후보 daemon 준비·요청 세대 pin·late worker 거절·queue ACK 복구가 한 게시 계약으로 연결돼야 한다. | C2b에서 private 후보 설정·SQLite 게시·ACK callback·이전 게시 DB source 연속성을 검증했다. C2c에서는 게시 전 receipt를 받는 source callback, 불확실 ACK의 순수 판정, recall의 선택 route/URL pin을 추가했다. `backend/index_worker.sh`·`update.sh`와 공유 pointer/endpoint는 그대로여서 운영 경계는 미완료. [C2 옵션](2026-10-17-qmd-published-view-options.md)의 A/B 저장 구조 선택·전환 승인 필요. 이후 선택 경로의 저장 구조는 A-int 단일 SQLite로 확정됐고 Stage 6은 QMD 후보 writer 대신 A-int producer 위에서 진행한다(6a 소스 완료·집중 가드 회귀 6/6 통과, 6b 소스 완료·집중 가드 회귀 Node 6/6 통과, 둘 다 PR #13 head `077f8186` CI(Node 22/24/26) 통과, L1 설치본·운영 QA 미실행; 아래 Stage 6 절). |
 | 2. 파일 동기화 → 위키 비용 경계 | change set이 content/scope revision을 위키에 넘기고, 같은 원문 revision의 수동 sync·SessionStart·PostToolUse enqueue가 하나의 유료 작업으로 합쳐져야 한다. | `file_change_plan`과 `wiki_source_intent`의 순수 순서·상한 분리는 완료. Stage 3(집중 가드 회귀 통과)에서 hash 스캔 경로만 content revision을 넘기고, live 큐에 남은 같은 `(collection, path, revision, trigger)` 행만 건너뛴다. 처리된 행과의 cross-run 멱등성, PostToolUse·수동 sync 병합, scope revision은 미완료. |
 | 3. 런타임 → 학습 실행 | wake kind별 handler가 실행 직전 승인·scope를 재확인하고 공통 queue는 lease·재시도·revision ACK만 소유해야 한다. | `runtime_wake_policy` 결정 추출과 recall의 읽기 전용 `selection_port`는 완료. kind별 handler는 Stage 2에서 `runtime_handlers`로 분리했다(집중 가드 회귀 통과). Stage 2b(소스 변경 완료, 집중 가드 회귀 통과 Node 35/35·중첩 Python 묶음)에서 `runtime_work` 모듈 상단의 학습 패키지 import를 중립 `runtime_lease`로 바꿨다. 실제 `Coordinator`·`default_root`·`sample`은 여전히 호출 시 학습 패키지를 적재하고, `recall`의 학습 상태·실행 import 결합도 남아 있다. |
 | 4. 설치와 검색 준비 | 설치 journal은 증명된 후보·scope 결과만 받아야 하며 반복 검색 게시와 최초 빈 store 활성화는 별도 계약이어야 한다. | `install_evidence` 판정 추출은 완료(Stage 5에서 남은 source identity·벡터 결함 판정까지 이동, 집중 가드 회귀 31/31 통과). 증거 수집 IO·벡터 복구·endpoint 준비는 `shared_install`에 남는다. 반복 검색 게시 경로는 설치에 없으며 연결은 남아 있다. |
@@ -265,14 +265,20 @@ daemon cutover는 아직 구현하지 않았다.
 위 기록을 대체하지 않고 현재 코드 기준으로 요약한다. "분리됨"은 해당 모듈이
 존재하고 호출자가 쓰고 있다는 뜻이며 운영 경계 완료를 뜻하지 않는다.
 
-CI 기준: PR #13 CI(Node 22/24/26) 통과는 Stage 1만 담은 구 head `4279feb`에만 해당한다.
-Stage 2–6을 합친 새 head의 PR CI와 전체 `npm test`는 대기 중이다. 아래 단계별 "집중 가드"
-수치는 개발 가드의 집중 회귀 결과이며 그 대체가 아니다. 운영 runtime·endpoint·설치 QA는
-어느 단계에서도 실행하지 않았다.
+CI 기준(2026-10-18 정정): Stage 1–6을 포함한 정확한 head `077f8186`에서 PR #13 CI
+(Node 22/24/26)가 통과했다. 아래 Stage 2b·6a·6b 상태의 CI 표기는 이 결과를 반영한다.
+단계별 "집중 가드" 수치는 개발 가드의 집중 회귀 결과다. CI 통과는 합성 회귀의 통과이며
+L1 설치본 QA, 운영 runtime·endpoint·설치 QA, 원래 기능의 end-to-end 동작은 여전히
+실행·검증하지 않았다.
+
+Stage 1–6 완료는 경계 분리의 완료이며 원래 기능의 end-to-end 완료가 아니다. stale→sync
+wake, cwd와 독립된 소유권, 위키 cross-trigger·claim 뒤 비용 dedup·출처 최신성, 200 파일/5 MB
+초과 성장의 네 간극은 [원래 기능 간극 정리 계획](2026-10-18-original-function-gap-closure.md)이
+다룬다.
 
 | 영역 | 이미 분리된 모듈 | 남은 작업 |
 |---|---|---|
-| 검색·컨텍스트 | `index_snapshot`, `published_view`, `shadow_index`, `request_view_pin`(recall 연결), `context_learning/selection_port` | Stage 6b v2 product sync worker 연결의 PR CI(집중 가드 회귀는 통과), recall의 학습 지연 import 축소. 비선택 QMD 프로젝트의 `backend/index_worker.sh`·`update.sh`·공유 pointer/endpoint는 그대로다 |
+| 검색·컨텍스트 | `index_snapshot`, `published_view`, `shadow_index`, `request_view_pin`(recall 연결), `context_learning/selection_port` | Stage 6b v2 product sync worker 연결의 L1 설치본·운영 QA(집중 가드 회귀와 PR #13 head `077f8186` CI는 통과), recall의 학습 지연 import 축소. 비선택 QMD 프로젝트의 `backend/index_worker.sh`·`update.sh`·공유 pointer/endpoint는 그대로다 |
 | 학습 데이터·평가·학습 | `selection_port`(읽기 전용 판단), `resource_deferred`(Stage 1, 비학습 소비자의 공용 예외) | `runtime_work`의 학습 coordinator·handler 직접 import, capture·trainer 경계 |
 | 위키·출처 | `wiki_source_intent`(`revision_key`, Stage 3), `wiki_compile_enqueue.enqueue_changed_sources` | 이미 claim·처리된 행과의 멱등성, revision 없는 PostToolUse·수동 sync 병합, 삭제·rename 카드 provenance |
 | 파일·프로젝트 동기화 | `file_change_plan`(순수 계획·효과 순서, hash 스캔의 `revisions`) | scope revision 부여. enqueue 뒤 persist 실패의 재시도는 행이 live 큐에 남아 있을 때만 중복 enqueue를 피한다 |
@@ -334,7 +340,7 @@ context-learning, qmd-endpoint, orphan-reclaim, laya-product-sync-worker)는 개
 가드로 통과했다(Node 35/35, 해당 Python 묶음 통과). Stage 2b(중립 lease 도구 이동)는
 아래에 따로 기록한다.
 
-**Stage 2b (상태: 소스 변경 완료, 집중 가드 회귀 통과 Node 35/35·중첩 Python 묶음 — PR CI 미실행):** stdlib만 쓰는 새
+**Stage 2b (상태: 소스 변경 완료, 집중 가드 회귀 통과 Node 35/35·중첩 Python 묶음, PR #13 head `077f8186` CI 통과):** stdlib만 쓰는 새
 `core/runtime_lease.py`에 네 primitive를 동작 그대로 옮겼다. `private_state`(절대·비symlink·
 디렉터리·소유자·`0o077` 검사, `resident_state_unsafe`), `private_lock`(`O_CREAT|O_RDWR|O_NOFOLLOW`,
 `0o600`, 정규 파일·소유자·모드 검사, `resident_lock_unsafe`), `coordination_lock`(위 lock에
@@ -364,7 +370,8 @@ context-learning, qmd-endpoint, orphan-reclaim, laya-product-sync-worker)는 개
   `runtime_*test.py` discover 대상): 새 인터프리터 import 경계, alias 동일성, shim의 실제
   coordinator·root 위임, unsafe state/lock 거절(공유 모드·symlink·hard link), 정확한 bytes·
   `0o600`·oversize 무변경. 이 검사를 포함한 Stage 2 집중 묶음은 개발 가드로 통과했다
-  (Node 35/35, 각 Node 파일이 실행하는 중첩 Python 묶음 통과). PR CI는 아직이다.
+  (Node 35/35, 각 Node 파일이 실행하는 중첩 Python 묶음 통과). 이후 PR #13 head `077f8186`
+  CI(Node 22/24/26)도 통과했다.
   실제 모델·runtime·설치 검증은 이 단계의 범위가 아니며 수행하지 않았다.
 
 **Stage 3 (상태: 소스 변경 완료, 최초 집중 가드 112/112, 리뷰 후속 수정 뒤 집중 가드 37/37 통과):** 원래 표의 "cross-run 중복을 합친다"보다
@@ -475,7 +482,7 @@ identity, source queue 이름, 단일 모델 fingerprint, scoped search hit)는 
   `source_changed_while_hashing`을 추가했다(13→18건). 집중 회귀는 개발 가드로 31/31
   통과했다. Stage 5/ACK 읽기 전용 집중 리뷰는 Critical/High/Medium 문제를 찾지 않았다.
 
-**Stage 6 (상태: 6a A-int multi-root source 경계 소스 완료·집중 가드 회귀 통과, 6b v2 product worker 연결 소스 완료·집중 가드 회귀 통과, PR CI 미실행):**
+**Stage 6 (상태: 6a A-int multi-root source 경계 소스 완료·집중 가드 회귀 통과, 6b v2 product worker 연결 소스 완료·집중 가드 회귀 통과, PR #13 head `077f8186` CI 통과, L1 설치본·운영 QA 미실행):**
 이전의 "A/B source·pointer, `scopeRevision`/`incarnation`, durable receipt, live read·embed
 모순 미결정" BLOCKED 기록은 QMD shadow/A-copy 원형 기준이었다. 상위 결정으로 저장 구조는
 A-int **단일 SQLite**(`LayaIndexA`)로 확정됐다: immutable generation, generation마다 full
@@ -495,7 +502,7 @@ A-int producer map(현재 코드):
 | 반복 selected sync | hook(`laya_host_response`의 index·SessionStart·file-change-event) → `runtime_work.request('laya-sync')` → `runtime_handlers.laya_sync` → `laya_product_sync_worker.run` → `LayaIndexRuntime` + `prepare_candidate_batch_off_hook` + `laya_index_sync.sync_full` → `laya_index_flow.process_one` | 둘 다(6b): v1은 `decision['sourceRoot']` 그대로, v2는 provider 시작 전 검증한 `decision['collectionRoots']` | queue 옆 owner lock → `before_publish` journal CAS fence → lease → stage → 새 full scan 재대조 → head CAS publish(+receipt 같은 트랜잭션) → 정확한 receipt 재확인 뒤 조건부 ACK. 64개 초과 backlog는 `claim_backlog` deferred |
 | 검색(소비) | `laya_host_response`: v1 `query_selected_hybrid`(`search_verified`·vector), v2 `query_selected_v2`(`scan_collections` + 한 pin의 collection prefix 검색) | 둘 다 | pin한 generation의 seal manifest와 live full scan 일치, 행별 hash 검증 |
 
-**Stage 6a (상태: 소스 변경 완료, 집중 가드 회귀 Node 6/6 통과(run `e86eb2dce21a4a7491dbe17ae4fbc9fa`), PR CI 미실행):** v1 동작을 바꾸지 않는
+**Stage 6a (상태: 소스 변경 완료, 집중 가드 회귀 Node 6/6 통과(run `e86eb2dce21a4a7491dbe17ae4fbc9fa`), PR #13 head `077f8186` CI 통과):** v1 동작을 바꾸지 않는
 multi-root source 경계만 추가했다.
 
 - `LayaIndexRuntime(source_root=...)`는 기존 `str`(검사 그대로) 또는 collection 이름 →
@@ -523,7 +530,7 @@ multi-root source 경계만 추가했다.
   bytes·디렉터리 항목·lock 무변경, 동결 사본과 collection manifest enqueue·stale 거절을
   추가했다. 위 집중 가드 회귀로 통과했다.
 
-**Stage 6b (상태: 소스·합성 검사 작성 완료, 집중 가드 회귀 Node 6/6 통과(run `9a37e5287b5e4e3a9bc0dfca85d54465`), PR CI 미실행):**
+**Stage 6b (상태: 소스·합성 검사 작성 완료, 집중 가드 회귀 Node 6/6 통과(run `9a37e5287b5e4e3a9bc0dfca85d54465`), PR #13 head `077f8186` CI 통과):**
 `laya_product_sync_worker`만 바꿨다.
 
 - `run`은 `_selected` 직후, QA barrier·provider 생성·attestation·resource admission·service
@@ -569,7 +576,8 @@ multi-root source 경계만 추가했다.
   test/laya-index-runtime.test.mjs test/laya-multi-source.test.mjs test/laya-index-vector.test.mjs
   test/laya-host-response.test.mjs`를 실행해 Node 6/6, `laya-product-sync-worker` fixture 16건이
   통과했다(공유 가드 run `9a37e5287b5e4e3a9bc0dfca85d54465`, settled/completed true, passed,
-  종료 코드 0). 이 새 코드에 대한 PR CI는 아직 실행되지 않았다.
+  종료 코드 0). 이후 이 코드를 포함한 PR #13 head `077f8186` CI(Node 22/24/26)가 통과했다.
+  실제 설치기·운영 route·L1 설치본 QA는 여전히 실행하지 않았다.
 
 이전 QMD 원형 기준으로 추가한 조건부 ACK seam 기록(A-int에는 연결하지 않음):
 
@@ -611,7 +619,7 @@ Stage 1에서 바로 이어지는 런타임 결합을 먼저 풀고, 운영 구�
 | Stage 3 파일 변경 → 위키 revision (소스 완료, 집중 가드 회귀 통과: 원래 Node 112/112, 상한 수정 뒤 37/37) | hash 스캔의 `changedFiles`에만 content revision(`revisions`)을 덧붙이고, `wiki_source_intent.revision_key`의 `(collection, relative path, content revision, trigger)` 키로 **아직 live 큐에 남은** 같은 행만 queue lock 안에서 건너뛴다. scope revision·owner 경로는 키에 없다. claim·처리된 행과의 중복, PostToolUse·수동 sync(revision 없음)의 중복은 합치지 않는다. 건너뛴 행이 있으면 내부 `wakePending` 신호로 file-change worker의 즉시 compile kick을 유지하고, sync JSON의 내부 `compileWakePending`으로 SessionStart `update.sh` kick도 유지한다. | snapshot·status·pending.json 형식, 수동 sync 큐 bytes, `apply_change_set`의 효과·ACK 순서, 스캔 실패 ≠ 삭제, `state_unreadable`(3), 동의 gate·상한(리뷰 수정 뒤: 건너뛴 live 행도 상한 칸을 쓰며, live 큐 스캔은 8 MiB까지), 공개 reason `no_sources`·`compileQueued`, trigger 구분, file-change worker의 즉시 kick | `test/file-change-plan.test.mjs`·`test/wiki-source-intent.test.mjs`·`test/file-change-queue.test.mjs`(`compile-cap`), 기존 SessionStart·sync/compile 회귀, wiki-compile-worker. 같은 키 skip, 다른/없는 revision, 상한·deferred, enqueue 뒤 snapshot 실패 재시도(`wakePending`과 실제 `kick-wiki-compile`), 수동 sync bytes 불변, claim된 행 미병합을 합성 사례로 고정한다. extractor는 호출하지 않는다. |
 | Stage 4 recall 학습 읽기 포트 (소스 완료, 집중 가드 회귀 통과 42/42) | `recall.py`의 live selection 블록(`live_select`·`corpus`·`seam`·`shared`·`learning_profile`·`adaptive_pool.actual_work`·`compact_input`·`candidate_apply` 읽기)을 새 `selection_read.select` 하나로 옮기고, 그 조정자가 순수 `selection_port`를 호출한다. `adaptive_pool.plan`·로그·`request_view_pin`·capture는 recall에 남는다. `posttool`·`edit_context`·`topical_hook_queue`의 capture 호출은 옮기지 않는다. | raw 검색 결과·진단·fallback, `request_view_pin`의 route/URL pin, 미동의·후보 없음·오래된 corpus 동작. 쿼리 중 `_private_state(create=True)` 디렉터리 생성은 별도 변경으로 다룬다. | recall 집중 회귀(C2c의 57건 묶음), context-learning, selection_port fixture |
 | Stage 5 설치 증거 판정 (소스 완료, 집중 가드 회귀 통과 31/31) | `shared_install._source_snapshot`·`_ensure_vectors`·`_readiness`에 남은 순수 판정(source identity 비교·snapshot 항목, 벡터 결함·reason별 `ValueError`·repair intent dict)만 `install_evidence`로 옮긴다. 수집 IO·journal 저장·`UnstableSourceSnapshot` 발생은 `shared_install`에 남는다. 새 journal 형식이나 반복 게시 경로는 만들지 않는다. | journal intent→enqueue→ACK 순서와 기존 dict 형태, fd/path 두 stat 확인의 순서·단락, 오류 reason, bootstrap proof 반복 읽기, patch seam, 활성화 순서(`shared_qmd_setup.prepare/activate`), `setup_guard` 상태 코드, 승인 scope·deadline·중단 후 재개, 기존 store 무변경. `qmd_shared_store.stage_empty`는 `shared_install`이 호출하지 않으므로 대상이 아니다. | `shared-install`, `shared-install-resilience`(vector-resume·abrupt-resume fixture), `install-evidence`. 실제 설치·업데이트 QA는 이 단계에서 수행하지 않는다. |
-| Stage 6 A-int 검색 게시 writer (6a multi-root source 경계: 소스 완료·집중 가드 회귀 6/6 통과. 6b v2 product worker 연결: 소스 완료·집중 가드 회귀 6/6 통과, PR CI 미실행. QMD shadow/A-copy 원형은 연결하지 않음) | 6a: `LayaIndexRuntime`이 문자열 또는 검증된 disjoint collection root Mapping을 받고, `laya_index_flow`·`laya_index_sync`가 Mapping일 때만 `scan_collections`·`publish_collections_from_source`로 보낸다. 6b: `laya_product_sync_worker`가 v2 `collectionRoots`로 같은 `sync_full`을 호출한다. 저장 구조는 A-int 단일 SQLite([Laya Index 계획](2026-10-17-embedded-sqlite-search-engine.md))다. | v1 문자열 root의 manifest·호출 순서·owner lock·`before_publish` fence·lease·head CAS·같은 트랜잭션 receipt·조건부 ACK, generation마다 full membership, 변경 전 fail-closed 검증, 잘못된 v2 source는 provider 시작 전 명시 reason·무쓰기 | `laya-index-sync-checks.py`·`laya-index-runtime-checks.py`(새 multi-root 사례 포함), `laya-multi-source-checks.py`, `laya-index-a`·`laya-index-vector`, `laya-product-sync-worker`, `laya-host-response`. 운영 cutover·설치 QA는 범위 밖이다. |
+| Stage 6 A-int 검색 게시 writer (6a multi-root source 경계: 소스 완료·집중 가드 회귀 6/6 통과. 6b v2 product worker 연결: 소스 완료·집중 가드 회귀 6/6 통과. 둘 다 PR #13 head `077f8186` CI 통과, 설치 QA 미실행. QMD shadow/A-copy 원형은 연결하지 않음) | 6a: `LayaIndexRuntime`이 문자열 또는 검증된 disjoint collection root Mapping을 받고, `laya_index_flow`·`laya_index_sync`가 Mapping일 때만 `scan_collections`·`publish_collections_from_source`로 보낸다. 6b: `laya_product_sync_worker`가 v2 `collectionRoots`로 같은 `sync_full`을 호출한다. 저장 구조는 A-int 단일 SQLite([Laya Index 계획](2026-10-17-embedded-sqlite-search-engine.md))다. | v1 문자열 root의 manifest·호출 순서·owner lock·`before_publish` fence·lease·head CAS·같은 트랜잭션 receipt·조건부 ACK, generation마다 full membership, 변경 전 fail-closed 검증, 잘못된 v2 source는 provider 시작 전 명시 reason·무쓰기 | `laya-index-sync-checks.py`·`laya-index-runtime-checks.py`(새 multi-root 사례 포함), `laya-multi-source-checks.py`, `laya-index-a`·`laya-index-vector`, `laya-product-sync-worker`, `laya-host-response`. 운영 cutover·설치 QA는 범위 밖이다. |
 
 ## Claude 설계 검토 후속 기록
 
