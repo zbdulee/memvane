@@ -36,12 +36,12 @@ class EvaluationQueue:
     def finish(self,job_id,status):
         if status not in ('completed','waiting_quality','blocked'):raise ValueError('evaluation_status_invalid')
         with self.connect() as db:
-            self.schema(db);db.execute('UPDATE learning_evaluations SET status=?,retry_at=0 WHERE job_id=? AND namespace=?',(status,job_id,self.scope))
+            self.schema(db);db.execute("UPDATE learning_evaluations SET status=?,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status NOT IN ('completed','blocked')",(status,job_id,self.scope))
 
     def refresh(self,cycle_id):
         with self.connect() as db:
             self.schema(db)
-            db.execute("UPDATE learning_evaluations SET status='queued',retry_at=0 WHERE cycle_id=? AND namespace=? AND status IN ('completed','waiting_quality')",(cycle_id,self.scope))
+            db.execute("UPDATE learning_evaluations SET status='queued',retry_at=0,reason=NULL WHERE cycle_id=? AND namespace=? AND status IN ('completed','waiting_quality')",(cycle_id,self.scope))
 
     def defer(self,job_id,reason,*,failure=False,now=None):
         now=time.time() if now is None else now
@@ -49,8 +49,9 @@ class EvaluationQueue:
             old=self.get(job_id,db=db)
             if old is None:raise ValueError('evaluation_job_scope_invalid')
             failures=old['failures']+int(failure)
-            db.execute('UPDATE learning_evaluations SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=?',
+            db.execute("UPDATE learning_evaluations SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",
                 ('blocked' if failures>=3 else 'deferred',failures,now+min(300,30*2**min(old['attempts'],4)),reason,job_id,self.scope))
+            return self.get(job_id,db=db)
 
     @contextmanager
     def claim(self,job_id,*,now=None):
@@ -63,7 +64,7 @@ class EvaluationQueue:
                 job=self.get(job_id,db=db)
                 if job is None or job['status'] not in ('queued','running','deferred') or job['retry_at']>now:lease=None
                 else:
-                    db.execute("UPDATE learning_evaluations SET status='running',attempts=attempts+1 WHERE job_id=? AND namespace=?",(job_id,self.scope));claimed=True;lease=fd
+                    db.execute("UPDATE learning_evaluations SET status='running',attempts=attempts+1,retry_at=0,reason=NULL WHERE job_id=? AND namespace=?",(job_id,self.scope));claimed=True;lease=fd
             yield lease
         finally:
             if claimed:

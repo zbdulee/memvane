@@ -18,9 +18,9 @@ import uuid
 
 import config
 import dirty_queue
-import qmd_route
+import file_change_plan
+import index_snapshot
 import setup_guard
-import sqlite_read
 import sync
 import wiki_compile_enqueue as compile_enqueue
 
@@ -160,21 +160,18 @@ def _snapshot(root, roots):
 def _first_baseline(root, current, cfg, *, event):
     """Compare active QMD paths/hashes, including a first-event create/update."""
     baseline = {name:{'root':row['root'],'files':{}} for name,row in current.items()}
-    route = qmd_route.project_paths(root,isolated=True,reject_conflicts=True,
-        fixture_env=os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1')
     roles = config.role_map(cfg)
-    with sqlite_read.connect(route['INDEX_PATH']) as db:
-        for name, collection in baseline.items():
-            if not config.is_indexed_collection(roles,name):
-                if not event: collection['files'] = current[name]['files'].copy()
-                continue
-            for rel, digest in db.execute('SELECT path,hash FROM documents WHERE collection=? AND active=1',(name,)):
-                if (not isinstance(rel,str) or Path(rel).is_absolute() or '..' in Path(rel).parts
-                        or str(rel).startswith('.auto-context/file-changes/')): continue
-                meta = current[name]['files'].get(rel)
-                if meta is None: collection['files'][rel] = {'indexedMissing':True}
-                elif meta.get('sha256') == digest: collection['files'][rel] = meta.copy()
-                else: collection['files'][rel] = {'sha256':digest}
+    indexed = [name for name in baseline if config.is_indexed_collection(roles,name)]
+    hashes = index_snapshot.active_document_hashes(root, indexed)
+    for name, collection in baseline.items():
+        if name not in indexed:
+            if not event: collection['files'] = current[name]['files'].copy()
+            continue
+        for rel, digest in hashes[name]:
+            meta = current[name]['files'].get(rel)
+            if meta is None: collection['files'][rel] = {'indexedMissing':True}
+            elif meta.get('sha256') == digest: collection['files'][rel] = meta.copy()
+            else: collection['files'][rel] = {'sha256':digest}
     return baseline
 
 
@@ -212,28 +209,33 @@ def worker(root):
                     if previous.get('schema') != 'qmd-file-change-snapshot-v1' or not isinstance(previous.get('collections'),dict):
                         raise ValueError('invalid_file_change_snapshot')
                     old = previous['collections']
-                changed = {};files = {};totals = {'created':0,'updated':0,'deleted':0}
                 roles = config.role_map(cfg)
-                for name, row in current.items():
+
+                def prior(name, row):
+                    # A moved collection root has no comparable prior files.
                     before = old.get(name,{})
-                    if before.get('root') != row['root']: before = {}
-                    created, updated, deleted = sync.compare_collection(before.get('files',{}),row['files'])
-                    for key, values in (('created',created),('updated',updated),('deleted',deleted)): totals[key] += len(values)
-                    if created or updated or deleted:
-                        files[name] = {'root':row['root'],'created':created,'updated':updated,'deleted':deleted}
-                        if config.is_indexed_collection(roles,name): changed[name] = row['root']
+                    return before.get('files',{}) if before.get('root') == row['root'] else {}
+                plan = file_change_plan.plan_change_set(
+                    [(name,row['root'],prior(name,row),row['files'],()) for name, row in current.items()],
+                    lambda name: config.is_indexed_collection(roles,name))
+                changed = plan['indexTargets'];totals = plan['totals']
                 if _context(str(root)) != context: raise ValueError('file_change_scope_changed')
-                if changed: dirty_queue.enqueue_project_collections(root,changed)
-                snapshot = {'collections':current}
-                compiled = compile_enqueue.enqueue_changed_sources(str(root),cfg,files,
-                    session_start=job['origin']=='reconcile')
-                sync.defer_snapshot_entries(snapshot, {'collections':old}, compiled['deferredFiles'])
-                _write(folder/'snapshot.json',{'schema':'qmd-file-change-snapshot-v1','scope':scope,
-                    'collections':snapshot['collections']})
-                # Persist enqueue/snapshot before ACK; retain a concurrent newer event.
-                with _lock(folder,'.state.lock'):
-                    if not compiled['deferred'] and _read(folder/'pending.json') == job:
-                        (folder/'pending.json').unlink();finished = True
+
+                def ack(compiled):
+                    # Retain a concurrent newer event; only this exact job is ACKed.
+                    nonlocal finished
+                    with _lock(folder,'.state.lock'):
+                        if not compiled['deferred'] and _read(folder/'pending.json') == job:
+                            (folder/'pending.json').unlink();finished = True
+                compiled = file_change_plan.apply_change_set(
+                    changed,plan['changedFiles'],{'collections':plan['collections']},{'collections':old},
+                    enqueue_index=lambda targets: dirty_queue.enqueue_project_collections(root,targets),
+                    enqueue_wiki=lambda files: compile_enqueue.enqueue_changed_sources(str(root),cfg,files,
+                        session_start=job['origin']=='reconcile'),
+                    persist=lambda snapshot: _write(folder/'snapshot.json',{
+                        'schema':'qmd-file-change-snapshot-v1','scope':scope,
+                        'collections':snapshot['collections']}),
+                    ack=ack)
                 _write(folder/'status.json',{'schema':'qmd-file-change-status-v1',**totals,
                     'collectionsQueued':sorted(changed),'compileQueued':compiled['queued'],
                     'compileDeferred':compiled['deferred']})

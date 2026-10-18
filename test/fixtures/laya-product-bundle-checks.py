@@ -1,0 +1,447 @@
+"""Disposable exact-commit plugin bundle and installer journal checks."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / 'core'))
+from laya_index_a import LayaIndexA
+from laya_index_claim_queue import ClaimQueue
+import laya_index_host_route as host
+import laya_install_journal as journal
+import laya_product_bundle as bundle
+from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
+
+
+def _git(root, *args):
+    return subprocess.run(('git', '-C', str(root), *args), check=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          encoding='utf-8').stdout.strip()
+
+
+class ProductBundleChecks(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='laya-product-synthetic-',
+                                                dir='/tmp')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.previous_home = os.environ.get('HOME')
+        self.addCleanup(self._restore_home)
+        os.environ['HOME'] = str(self.root)
+        self.source = self.root / 'committed-plugin-source'
+        self.source.mkdir()
+        names = ('config.py', 'laya_index_a.py', 'laya_index_vector.py',
+                 'laya_local_embed_provider.py',
+                 'laya_local_embed_service.py',
+                 'laya_index_source_port.py',
+                 'laya_index_claim_queue.py', 'laya_index_flow.py',
+                 'laya_index_runtime.py', 'laya_index_host_route.py',
+                 'laya_qmd_cutover.py', 'laya_qmd_migration.py',
+                 'laya_product_sync_worker.py',
+                 'laya_index_sync.py',
+                 'laya_package.py', 'laya_install_binding.py',
+                 'laya_backup_preflight.py', 'laya_product_bundle.py',
+                 'laya_install_journal.py', 'laya_host_response.py')
+        (self.source / 'core').mkdir()
+        for name in names:
+            shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)
+        shutil.copy2(REPO / 'core' / 'laya_local_embed_worker.mjs',
+                     self.source / 'core' / 'laya_local_embed_worker.mjs')
+        self.worker_sha = hashlib.sha256(
+            (self.source / 'core' / 'laya_local_embed_worker.mjs').read_bytes()).hexdigest()
+        shutil.copy2(REPO / 'core' / 'laya_qmd_chunking.mjs',
+                     self.source / 'core' / 'laya_qmd_chunking.mjs')
+        provider_path = self.source / 'core' / 'laya_test_query_provider.py'
+        provider_path.write_text('# synthetic inert provider artifact\n', encoding='utf-8')
+        for name in ('LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
+                     'locks/qmd-2.5.3/package-lock.json'):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / name, target)
+        (self.source / 'docs').mkdir()
+        (self.source / 'docs' / 'committed-note.md').write_text(
+            'Synthetic committed QA note.\n', encoding='utf-8')
+        self.node = self.root / 'synthetic-node'
+        self.module = self.root / 'synthetic-module.mjs'
+        self.model = self.root / 'synthetic-model.gguf'
+        self.native = self.root / 'synthetic-native.node'
+        for path, content in ((self.node, b'synthetic node executable'),
+                              (self.module, b'export const synthetic = true;'),
+                              (self.model, b'GGUFsynthetic model'),
+                              (self.native, b'synthetic native dependency')):
+            path.write_bytes(content)
+        self.closure = [{'path': str(self.native),
+                         'sha256': hashlib.sha256(self.native.read_bytes()).hexdigest(),
+                         'bytes': self.native.stat().st_size}]
+        self.closure_digest = hashlib.sha256(bundle._canonical(self.closure)).hexdigest()
+        self.provider_sha = hashlib.sha256(provider_path.read_bytes()).hexdigest()
+        self.node_sha = hashlib.sha256(self.node.read_bytes()).hexdigest()
+        self.module_sha = hashlib.sha256(self.module.read_bytes()).hexdigest()
+        self.model_sha = hashlib.sha256(self.model.read_bytes()).hexdigest()
+        self.fingerprint = recipe_fingerprint(
+            model_id=DEFAULT_EMBED_MODEL_URI, model_sha256=self.model_sha,
+            runtime_id='qmd-2.5.3-node-llama-cpp-3.18.1',
+            recipe_id='qmd-regex-token-chunks-candidate-v1',
+            provider_sha256=self.provider_sha, node_sha256=self.node_sha,
+            worker_sha256=self.worker_sha,
+            module_entry_sha256=self.module_sha,
+            closure_sha256=self.closure_digest)
+        self.vector_profile = {
+            'modelId': DEFAULT_EMBED_MODEL_URI,
+            'embeddingFingerprint': self.fingerprint,
+            'dimension': 3, 'metric': 'cosine',
+            'approvedProviderId': 'fixture-provider-v1',
+            'providerArtifactSha256': self.provider_sha,
+            'providerRelativePath': 'core/laya_test_query_provider.py'}
+        profile_identity = [self.vector_profile[key] for key in
+                            ('modelId', 'embeddingFingerprint', 'dimension', 'metric')]
+        self.vector_profile['profileId'] = hashlib.sha256(json.dumps(
+            profile_identity, sort_keys=True, ensure_ascii=False,
+            separators=(',', ':')).encode('utf-8')).hexdigest()
+        for name in ('hooks/run-hook', 'hermes_adapter/core_bridge.py',
+                     '.claude-plugin/plugin.json', '.codex-plugin/plugin.json',
+                     'plugin.yaml'):
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            source = REPO / name
+            if source.exists():
+                shutil.copy2(source, path)
+            else:
+                path.write_text('# synthetic ' + name + '\n')
+        _git(self.source, 'init', '-q')
+        _git(self.source, 'add', '.')
+        _git(self.source, '-c', 'user.name=Synthetic Fixture',
+             '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'v1')
+        self.commit1 = _git(self.source, 'rev-parse', 'HEAD')
+        self.install = self.root / 'private-install'
+        self.install.mkdir(mode=0o700)
+        (self.install / 'runtime').mkdir(mode=0o700)
+        self.journal_path = self.install / 'install-journal.sqlite'
+        self.project = self.root / 'project'
+        self.auto = self.project / '.auto-context'
+        self.auto.mkdir(parents=True)
+        self.settings = self.auto / 'settings.json'
+        self.settings.write_text(json.dumps({'collections': ['docs'], 'indexing': True,
+                                             'collectionPaths': {'docs': 'docs'},
+                                             'recallStrategy': 'flat'}))
+        (self.project / 'docs').mkdir()
+        self.route_path = self.auto / host.RECORD
+        self.user_qmd = self.root / 'separate-user-qmd'
+        self.user_qmd.mkdir()
+        (self.user_qmd / 'preserve-me').write_text('user-owned')
+        self.db_path = self.project / 'index.sqlite'
+        self.queue_path = self.project / 'queue.sqlite'
+        db = LayaIndexA(self.db_path, create=True)
+        self.incarnation = db.incarnation()
+        db.close()
+        queue = ClaimQueue.create(self.queue_path, index_incarnation=self.incarnation)
+        queue.close()
+
+    def _restore_home(self):
+        if self.previous_home is None:
+            os.environ.pop('HOME', None)
+        else:
+            os.environ['HOME'] = self.previous_home
+
+    def candidate(self, name, commit):
+        return bundle.prepare_full_plugin_candidate(self.source, self.install / name,
+                                                    commit_id=commit,
+                                                    vector_profile=self.vector_profile)
+
+    def route(self, proof, generation):
+        return {'schema': host.SCHEMA, 'status': 'active',
+                'projectRoot': str(self.project),
+                'settingsSha256': hashlib.sha256(self.settings.read_bytes()).hexdigest(),
+                'dbPath': str(self.db_path), 'queuePath': str(self.queue_path),
+                'dbIncarnation': self.incarnation, 'scopeId': '6' * 32,
+                'collectionName': 'docs', 'sourceRoot': str(self.project / 'docs'),
+                'pluginRoot': proof['pluginRoot'], 'journalPath': str(self.journal_path),
+                'installId': '3' * 32, 'generation': generation,
+                'bundleManifestSha256': proof['bundleManifestSha256'],
+                'ownershipManifestSha256': proof['ownershipManifestSha256'],
+                'vectorProfile': proof['vectorProfile']}
+
+    def raw(self, route):
+        return json.dumps(route, sort_keys=True).encode('utf-8')
+
+    def initial(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        route = self.route(proof, 'g-' + '4' * 32)
+        raw = self.raw(route)
+        created = journal.create_journal(self.journal_path, proof, raw,
+                                         user_qmd_roots=[self.user_qmd])
+        self.assertEqual(created['state'], 'candidate_ready')
+        self.route_path.write_bytes(raw)
+        active = journal.cas_activate(self.journal_path, 1, raw)
+        self.assertEqual(active['state'], 'active')
+        self.assertEqual(active['epoch'], 2)
+        return proof, route, raw
+
+    def stage_v2_source(self):
+        changed = self.source / 'core' / 'laya_index_flow.py'
+        changed.write_text(changed.read_text() + '\n# v2 synthetic\n')
+        _git(self.source, 'add', '.')
+        _git(self.source, '-c', 'user.name=Synthetic Fixture',
+             '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'v2')
+        second = self.candidate('plugin-v2', _git(self.source, 'rev-parse', 'HEAD'))
+        new_route = self.route(second, 'g-' + '5' * 32)
+        return second, new_route, self.raw(new_route)
+
+    def prove_in_candidate_process(self, proof, approval=None):
+        script = '''import json,sys
+sys.path.insert(0,sys.argv[1])
+from laya_index_host_route import select_route
+from laya_install_journal import verify_selected_route,verify_development_vector_approval
+decision=select_route(sys.argv[2])
+result=(verify_development_vector_approval(decision,sys.argv[3]) if len(sys.argv)>3
+        else verify_selected_route(decision))
+print(json.dumps(result))'''
+        env = {**os.environ, 'HOME': str(self.root), 'QMD_RECALL_LOG': '',
+               'PYTHONDONTWRITEBYTECODE': '1'}
+        args = (sys.executable, '-B', '-c', script,
+                str(Path(proof['pluginRoot']) / 'core'), str(self.project))
+        if approval is not None:
+            args += (str(approval),)
+        done = subprocess.run(args,
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              encoding='utf-8', timeout=15)
+        return done
+
+    def test_exact_commit_full_closure_and_no_clobber(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        self.assertIn('hooks/run-hook', proof['includedFiles'])
+        self.assertIn('hermes_adapter/core_bridge.py', proof['includedFiles'])
+        self.assertIn('core/laya_index_runtime.py', proof['includedFiles'])
+        self.assertIn('core/laya_local_embed_service.py', proof['includedFiles'])
+        self.assertIn('core/laya_product_sync_worker.py', proof['includedFiles'])
+        self.assertIn('core/laya_qmd_cutover.py', proof['includedFiles'])
+        self.assertIn('LICENSE', proof['includedFiles'])
+        self.assertIn('README.md', proof['includedFiles'])
+        self.assertIn('locks/qmd-2.5.3/package-lock.json', proof['includedFiles'])
+        self.assertIn('docs/committed-note.md', proof['includedFiles'])
+        self.assertFalse(proof['productRouteAllowed'])
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'invalid_bundle_request'):
+            self.candidate('plugin-v1', self.commit1)
+        script = self.source / 'core' / 'laya_index_flow.py'
+        script.write_text(script.read_text() + '\n# dirty\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'source_not_exact_commit'):
+            self.candidate('plugin-dirty', self.commit1)
+        installed = Path(proof['pluginRoot']) / 'hooks' / 'run-hook'
+        installed.write_text(installed.read_text() + '\n# tampered\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(proof['pluginRoot'])
+        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
+
+    def test_production_attestation_needs_journal_bound_review_digest(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        manifest = {
+            'approvedProviderId': self.vector_profile['approvedProviderId'],
+            'providerArtifactSha256': self.provider_sha,
+            'providerRelativePath': self.vector_profile['providerRelativePath'],
+            'providerPath': str(Path(proof['pluginRoot']) /
+                                self.vector_profile['providerRelativePath']),
+            'workerPath': str(Path(proof['pluginRoot']) /
+                              'core/laya_local_embed_worker.mjs'),
+            'workerSha256': self.worker_sha,
+            'nodePath': str(self.node), 'nodeSha256': self.node_sha,
+            'moduleEntryPath': str(self.module),
+            'moduleEntrySha256': self.module_sha,
+            'modelPath': str(self.model), 'modelSha256': self.model_sha,
+            'runtimeId': 'qmd-2.5.3-node-llama-cpp-3.18.1',
+            'modelId': DEFAULT_EMBED_MODEL_URI,
+            'embeddingFingerprint': self.fingerprint,
+            'dimension': 3, 'recipeId': 'qmd-regex-token-chunks-candidate-v1',
+            'dependencyClosureApproved': True,
+            'dependencyClosureSha256': self.closure_digest,
+            'serviceSocketPath': str(self.install / 'runtime' / 'laya-embed.sock')}
+        attestation = {
+            'schema': bundle.PRODUCTION_ATTESTATION_SCHEMA,
+            'sourceCommit': proof['sourceCommit'],
+            'bundleManifestSha256': proof['bundleManifestSha256'],
+            'ownershipManifestSha256': proof['ownershipManifestSha256'],
+            'vectorProfile': proof['vectorProfile'],
+            'providerManifest': manifest,
+            'dependencyClosure': self.closure}
+        self.assertEqual(bundle.validate_production_provider_attestation(
+            self.vector_profile, proof, attestation), manifest)
+        digest = hashlib.sha256(bundle._canonical(attestation)).hexdigest()
+        self.assertFalse(bundle.production_provider_approved(
+            self.vector_profile, proof, attestation))
+        self.assertFalse(bundle.production_provider_approved(
+            self.vector_profile, proof, attestation,
+            journal_attestation_sha256='0' * 64))
+        # This positive case represents an installer-reviewed record sealed in
+        # a journal. The fixture does not approve a real model or host runtime.
+        self.assertTrue(bundle.production_provider_approved(
+            self.vector_profile, proof, attestation,
+            journal_attestation_sha256=digest))
+        self.model.write_bytes(b'GGUFchanged after review')
+        self.assertFalse(bundle.production_provider_approved(
+            self.vector_profile, proof, attestation,
+            journal_attestation_sha256=digest))
+
+    def test_active_journal_and_candidate_loaded_code(self):
+        proof, route, raw = self.initial()
+        self.assertEqual(host.select_route(str(self.project))['state'], 'candidate')
+        done = self.prove_in_candidate_process(proof)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        checked = json.loads(done.stdout)
+        self.assertFalse(checked['productRouteAllowed'])
+        self.assertEqual(checked['status'], 'production_attestation_unbound')
+        self.assertEqual(checked['sourceCommit'], self.commit1)
+        approval_path = self.install / 'development-vector-approval.json'
+        approval = {'schema': journal.DEVELOPMENT_APPROVAL_SCHEMA,
+                    'testOwned': True, 'pluginRoot': proof['pluginRoot'],
+                    'sourceCommit': proof['sourceCommit'],
+                    'bundleManifestSha256': proof['bundleManifestSha256'],
+                    'ownershipManifestSha256': proof['ownershipManifestSha256'],
+                    'vectorProfile': dict(proof['vectorProfile'])}
+        approval_path.write_text(json.dumps(approval), encoding='utf-8')
+        approval_path.chmod(0o600)
+        development = self.prove_in_candidate_process(proof, approval_path)
+        self.assertEqual(development.returncode, 0, development.stderr)
+        checked_development = json.loads(development.stdout)
+        self.assertTrue(checked_development['developmentOnlyRouteAllowed'])
+        self.assertFalse(checked_development['productRouteAllowed'])
+        approval['vectorProfile']['providerArtifactSha256'] = '0' * 64
+        approval_path.write_text(json.dumps(approval), encoding='utf-8')
+        self.assertNotEqual(self.prove_in_candidate_process(proof, approval_path).returncode, 0)
+        self.route_path.write_bytes(raw.replace(b'"active"', b'"broken"'))
+        self.assertEqual(host.select_route(str(self.project))['state'], 'blocked')
+        done = self.prove_in_candidate_process(proof)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
+
+    def test_provider_profile_requires_exact_committed_artifact(self):
+        invalid = {**self.vector_profile, 'providerArtifactSha256': '0' * 64}
+        target = self.install / 'invalid-provider'
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'provider_artifact_mismatch'):
+            bundle.prepare_full_plugin_candidate(self.source, target,
+                                                 commit_id=self.commit1,
+                                                 vector_profile=invalid)
+        self.assertFalse(target.exists())
+        proof = self.candidate('plugin-v1', self.commit1)
+        provider = Path(proof['pluginRoot']) / self.vector_profile['providerRelativePath']
+        provider.write_text(provider.read_text() + '# tampered\n', encoding='utf-8')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(proof['pluginRoot'])
+
+    def test_route_cannot_self_approve_different_provider(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        claimed = self.route(proof, 'g-' + '4' * 32)
+        claimed['vectorProfile'] = {**claimed['vectorProfile'],
+                                    'approvedProviderId': 'unreviewed-provider'}
+        with self.assertRaisesRegex(journal.JournalEvidenceError, 'route_bundle_mismatch'):
+            journal.create_journal(self.journal_path, proof, self.raw(claimed),
+                                   user_qmd_roots=[self.user_qmd])
+        self.assertFalse(self.journal_path.exists())
+
+    def test_update_rollback_and_new_write_block(self):
+        first, old_route, old_raw = self.initial()
+        second, new_route, new_raw = self.stage_v2_source()
+        pending = journal.cas_stage_update(self.journal_path, 2, second, new_raw)
+        self.assertEqual(pending['state'], 'pending')
+        with self.assertRaisesRegex(journal.JournalEvidenceError, 'stale_journal_cas'):
+            journal.cas_stage_update(self.journal_path, 2, second, new_raw)
+        # Old route observed after crash: retain old selection.
+        recovered = journal.cas_recover(self.journal_path, 3, old_raw)
+        self.assertEqual(recovered['state'], 'restored_old')
+        self.assertEqual(recovered['selected']['pluginRoot'], first['pluginRoot'])
+        pending = journal.cas_stage_update(self.journal_path, 4, second, new_raw)
+        self.route_path.write_bytes(new_raw)
+        active = journal.cas_recover(self.journal_path, 5, new_raw)
+        self.assertEqual(active['state'], 'active')
+        self.assertEqual(active['selected']['pluginRoot'], second['pluginRoot'])
+        # A reversible route switch requires publishing old bytes before CAS.
+        self.route_path.write_bytes(old_raw)
+        restored = journal.cas_restore(self.journal_path, 6, old_raw)
+        self.assertEqual(restored['state'], 'restored_old')
+        pending = journal.cas_stage_update(self.journal_path, 7, second, new_raw)
+        self.route_path.write_bytes(new_raw)
+        active = journal.cas_activate(self.journal_path, 8, new_raw)
+        marked = journal.cas_mark_new_write(self.journal_path, 9)
+        self.assertTrue(marked['newWriteSeen'])
+        # Simulate process failure after durable intent and before index publish.
+        with self.assertRaisesRegex(RuntimeError, 'synthetic_pre_publish_exit'):
+            raise RuntimeError('synthetic_pre_publish_exit')
+        with sqlite3.connect(self.db_path.as_uri() + '?mode=ro', uri=True) as check:
+            self.assertEqual(check.execute('SELECT count(*) FROM head').fetchone()[0], 0)
+        self.route_path.write_bytes(old_raw)
+        with self.assertRaisesRegex(journal.JournalEvidenceError, 'rollback_not_authorized'):
+            journal.cas_restore(self.journal_path, 10, old_raw)
+        self.assertEqual(journal.inspect_journal(self.journal_path)['state'], 'active')
+
+    def test_two_processes_contest_one_journal_epoch(self):
+        self.initial()
+        second, _route, raw = self.stage_v2_source()
+        args = self.root / 'race-args.json'
+        args.write_text(json.dumps({'journal': str(self.journal_path), 'proof': second,
+                                    'raw': raw.decode('utf-8')}), encoding='utf-8')
+        barrier = self.root / 'race-go'
+        script = '''import json,sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import laya_install_journal as journal
+args=json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+go=Path(sys.argv[3]); deadline=time.monotonic()+10
+while not go.exists():
+    if time.monotonic()>deadline: raise SystemExit(3)
+    time.sleep(0.002)
+try:
+    result=journal.cas_stage_update(Path(args['journal']),2,args['proof'],args['raw'].encode())
+    print(json.dumps({'ok':True,'epoch':result['epoch']}))
+except journal.JournalEvidenceError as exc:
+    print(json.dumps({'ok':False,'error':str(exc)}))'''
+        env = {**os.environ, 'HOME': str(self.root), 'QMD_RECALL_LOG': '',
+               'PYTHONDONTWRITEBYTECODE': '1'}
+        procs = [subprocess.Popen((sys.executable, '-B', '-c', script,
+                                   str(REPO / 'core'), str(args), str(barrier)),
+                                  env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  encoding='utf-8') for _ in range(2)]
+        barrier.write_bytes(b'')
+        results = []
+        for proc in procs:
+            out, err = proc.communicate(timeout=20)
+            self.assertEqual(proc.returncode, 0, err)
+            results.append(json.loads(out))
+        self.assertEqual(sum(row['ok'] for row in results), 1, results)
+        self.assertEqual({row['error'] for row in results if not row['ok']},
+                         {'stale_journal_cas'})
+        self.assertEqual(journal.inspect_journal(self.journal_path)['epoch'], 3)
+
+    def test_executable_mode_change_breaks_owner_manifest(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+        target = Path(proof['pluginRoot']) / 'hooks' / 'run-hook'
+        os.chmod(target, stat.S_IMODE(target.stat().st_mode) ^ stat.S_IXUSR)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(proof['pluginRoot'])
+
+    def test_uncertain_route_recovery_retains_pending_and_epoch(self):
+        _first, old_route, old_raw = self.initial()
+        second, _new_route, new_raw = self.stage_v2_source()
+        journal.cas_stage_update(self.journal_path, 2, second, new_raw)
+        self.route_path.write_bytes(new_raw)
+        with self.assertRaisesRegex(journal.JournalEvidenceError, 'observed_route_mismatch'):
+            journal.cas_recover(self.journal_path, 3, old_raw)
+        self.assertEqual(journal.inspect_journal(self.journal_path)['state'], 'pending')
+        foreign = self.raw({**old_route, 'generation': 'g-' + '6' * 32})
+        self.route_path.write_bytes(foreign)
+        with self.assertRaisesRegex(journal.JournalEvidenceError, 'uncertain_route_recovery'):
+            journal.cas_recover(self.journal_path, 3, foreign)
+        self.assertEqual(journal.inspect_journal(self.journal_path)['epoch'], 3)
+        self.route_path.write_bytes(new_raw)
+        self.assertEqual(journal.cas_recover(self.journal_path, 3, new_raw)['state'], 'active')
+
+
+if __name__ == '__main__':
+    unittest.main()

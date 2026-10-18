@@ -18,13 +18,15 @@ import compile_paths as cp
 import config as qmd_config
 import posttool
 import wiki_freshness
+import wiki_source_intent as intent
 from collection_match import select_collections
 
 
 DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
 
 # 편집 훅 경로의 trigger 라벨. 수동 sync 경로는 `post_sync_source`를 쓴다(core/sync.py).
-POST_TOOL_TRIGGER = "post_tool_source"
+# 라벨 리터럴의 SSOT는 wiki_source_intent다(이 모듈의 이름은 기존 import 호환용 별칭).
+POST_TOOL_TRIGGER = intent.POST_TOOL_TRIGGER
 
 # compile source가 절대 될 수 없는 segment. `.auto-context`는 이 플러그인의 관리 영역
 # (wiki 카드·큐·로그)이라 소스로 승격하면 카드가 자기 자신을 재컴파일해 증식한다.
@@ -34,12 +36,12 @@ DENIED_SOURCE_SEGMENTS = frozenset({".auto-context", ".git", ".hg", ".svn", "nod
 
 # sync 경유 compile enqueue의 trigger 라벨. 편집 훅이 아니라 스냅샷 diff가 출처이므로
 # `post_tool_source`로 기록하면 감사 로그에서 출처가 왜곡된다.
-COMPILE_TRIGGER = "post_sync_source"
+COMPILE_TRIGGER = intent.SYNC_TRIGGER
 # `post_tool_source`만 켜 둔 기존 프로젝트에서도 git pull 구멍이 닫히도록 동등 grant로
 # 인정한다. 그 trigger가 이미 표현하는 동의는 "소스 .md가 바뀌면 컴파일한다"이고, sync는
 # 같은 사건을 다른 방법으로 탐지할 뿐이다(게다가 sync는 사용자가 직접 호출한다).
 # 반대로 두 라벨 모두 없는 프로젝트(예: triggers=["manual"])는 그대로 skip된다.
-COMPILE_ACCEPTED_TRIGGERS = (COMPILE_TRIGGER, POST_TOOL_TRIGGER)
+COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
 # 한 번의 sync가 compile 큐에 넣을 수 있는 소스 파일 수 상한. compile worker에는 per-run
 # 상한이 없어(`batch.maxItems`는 처리 시작 조건) 큐에 든 만큼 host CLI를 연속 spawn하고
 # 그 토큰 비용은 사용자 계정으로 청구된다. 수백 파일 pull 뒤의 sync 한 번이 수 시간짜리
@@ -98,20 +100,17 @@ def compile_candidates(project_root, config, compile_cfg, changed_files, *, trig
     """
     engine = compile_engine(compile_cfg)
     candidates = []
-    for name in sorted(changed_files):
-        entry = changed_files[name]
-        root = Path(entry["root"])
-        for rel in sorted(set(entry["created"]) | set(entry["updated"])):
-            record = _source_record(
-                str(root / rel),
-                project_root,
-                project_root,
-                config,
-                engine,
-                trigger=trigger,
-            )
-            if record is not None:
-                candidates.append((name, rel, record))
+    for name, root, rel in intent.changed_source_paths(changed_files):
+        record = _source_record(
+            str(Path(root) / rel),
+            project_root,
+            project_root,
+            config,
+            engine,
+            trigger=trigger,
+        )
+        if record is not None:
+            candidates.append((name, rel, record))
     return candidates
 
 
@@ -126,27 +125,21 @@ def enqueue_changed_sources(project_root, config, changed_files,
     LLM은 호출하지 않는다 — 메타데이터만 append하고 실제 compile은 기존 backend manager
     kick 경로(편집 훅의 kick-wiki-compile, SessionStart의 --flush)가 처리한다.
     """
-    accepted = ('session_start_source',) if session_start else COMPILE_ACCEPTED_TRIGGERS
+    accepted, trigger = intent.trigger_policy(session_start)
     compile_cfg = compile_gate(config, accepted)
     if compile_cfg is None:
-        return {"queued": 0, "deferred": 0, "deferredFiles": [], "reason": "compile_disabled"}
+        return intent.enqueue_result("compile_disabled")
     queue_path = _safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
     if queue_path is None:
-        return {"queued": 0, "deferred": 0, "deferredFiles": [], "reason": "queue_path_rejected"}
+        return intent.enqueue_result("queue_path_rejected")
     candidates = compile_candidates(project_root, config, compile_cfg, changed_files,
-        trigger='session_start_source' if session_start else COMPILE_TRIGGER)
+        trigger=trigger)
     if not candidates:
-        return {"queued": 0, "deferred": 0, "deferredFiles": [], "reason": "no_sources"}
-    cap = compile_max_files()
-    picked = candidates[:cap]
-    deferred = [(name, rel) for name, rel, _ in candidates[cap:]]
-    _append_jsonl(queue_path, [record for _, _, record in picked])
-    return {
-        "queued": len(picked),
-        "deferred": len(deferred),
-        "deferredFiles": deferred,
-        "reason": "capped" if deferred else "queued",
-    }
+        return intent.enqueue_result("no_sources")
+    # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
+    plan = intent.plan_enqueue(candidates, compile_max_files())
+    _append_jsonl(queue_path, plan["records"])
+    return plan["result"]
 
 
 
@@ -329,7 +322,7 @@ def main():
         record = _source_record(edited_path, cwd, project_root, config, _engine(payload))
         if record is None:
             continue
-        key = (record["cwd"], record["source"]["path"], record["source"]["collection"])
+        key = intent.intent_identity(record)
         if key in seen:
             continue
         seen.add(key)

@@ -37,6 +37,45 @@ if [ -z "$ROOT" ]; then
 fi
 _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 
+# A route record is sticky. Check the event's cwd before QMD setup/backend;
+# selected recall enters only the installer-verified A-int service. Other
+# selected actions explicitly fail until they have engine equivalents.
+case "$ACTION" in
+  recall|update|update-queued|gate|posttool|index|compile|file-change-event|topical-event|topical-stop|topical-reconcile)
+    _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[laya-index] route lookup unavailable' >&2; exit 3; }
+    trap 'rm -f "$_laya_route_payload"' EXIT
+    cat >"$_laya_route_payload" || { echo '[laya-index] route payload unavailable' >&2; exit 3; }
+    _laya_route_fallback="$PWD"
+    case "$ACTION" in
+      topical-*) _laya_route_fallback="${QMD_TOPICAL_PROJECT_ROOT:-${QMD_TOPICAL_SANDBOX_ROOT:-$PWD}}" ;;
+    esac
+    _laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
+    case "$_laya_route_state" in
+      legacy)
+        exec <"$_laya_route_payload"
+        rm -f "$_laya_route_payload"
+        trap - EXIT
+        ;;
+      candidate)
+        # Replace this shell with the synchronous writer/query process. A host
+        # timeout then kills the work itself, not a waiting shell with an
+        # orphaned Python child. The open stdin fd survives unlinking.
+        exec <"$_laya_route_payload"
+        rm -f "$_laya_route_payload" || { echo '[laya-index] route payload cleanup failed' >&2; exit 3; }
+        trap - EXIT
+        exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
+          "$ACTION" "$ENGINE" "$_laya_route_fallback"
+        ;;
+      blocked)
+        echo '[laya-index] selected route unavailable; QMD fallback refused' >&2
+        [ "$ACTION" = "topical-stop" ] && printf '{}\n'
+        exit 3
+        ;;
+      *) echo '[laya-index] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
+    esac
+    ;;
+esac
+
 # A fresh installed SessionStart may acknowledge an owner-requested history
 # cutover. It never selects history or touches project content.
 if [ "$ACTION" = "update-queued" ]; then

@@ -107,7 +107,7 @@ class LearningQueue:
                     if any(m['fresh'] and m['key'] in consumed for m in job['members']):
                         db.execute("UPDATE learning_jobs SET status='blocked',reason='already_consumed' WHERE job_id=?",(job_id,));claim=None
                     else:
-                        db.execute("UPDATE learning_jobs SET status='running',owner=?,attempts=attempts+1 WHERE job_id=?",(secrets.token_hex(16),job_id))
+                        db.execute("UPDATE learning_jobs SET status='running',owner=?,attempts=attempts+1,retry_at=0,reason=NULL WHERE job_id=? AND namespace=?",(secrets.token_hex(16),job_id,self.scope))
                         claimed=True;claim=fd
             yield claim
         finally:
@@ -121,19 +121,25 @@ class LearningQueue:
         now=time.time() if now is None else now
         with self.connect() as db:
             job=self.get(job_id,db=db)
+            if job is None:raise ValueError('learning_job_scope_invalid')
             failures=job['failures']+int(failure)
             retry=now+min(300,30*2**min(job['attempts'],4))
-            db.execute('UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=?',('blocked' if failures>=3 else 'deferred',failures,retry,reason,job_id,self.scope))
+            db.execute("UPDATE learning_jobs SET status=?,failures=?,retry_at=?,reason=? WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",('blocked' if failures>=3 else 'deferred',failures,retry,reason,job_id,self.scope))
+            return self.get(job_id,db=db)
 
     def complete(self, job_id, *, db=None):
         if db is None:
             with self.connect() as db:return self.complete(job_id,db=db)
         job=self.get(job_id,db=db)
+        if job is None:raise ValueError('learning_job_scope_invalid')
+        if job['status']=='staged':return job
+        if job['status']=='blocked':raise ValueError('learning_job_terminal')
         for member in job['members']:
             old=db.execute('SELECT job_id FROM learning_consumption WHERE namespace=? AND evidence_key=?',(self.scope,member['key'])).fetchone()
             if old and old[0]!=job_id and member['fresh']:raise ValueError('learning_evidence_already_consumed')
             db.execute('INSERT OR IGNORE INTO learning_consumption VALUES (?,?,?)',(self.scope,member['key'],job_id))
-        db.execute("UPDATE learning_jobs SET status='staged',owner=NULL,retry_at=0,reason=NULL WHERE job_id=? AND namespace=?",(job_id,self.scope))
+        db.execute("UPDATE learning_jobs SET status='staged',owner=NULL,retry_at=0,reason=NULL WHERE job_id=? AND namespace=? AND status IN ('queued','running','deferred')",(job_id,self.scope))
+        return self.get(job_id,db=db)
 
     def pending(self, *, now=None):
         now=time.time() if now is None else now

@@ -97,6 +97,21 @@ def _scope_allowed(action: str, payload: dict, raw_cwd: Any) -> bool:
         return False
 
 
+def _laya_route_state(action: str, cwd: str) -> str:
+    """Read the installed adapter's own selector before any QMD side effect."""
+    selector = Path(__file__).resolve().parent.parent / "core" / "laya_index_host_route.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(selector), "classify", action, cwd],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=2.0, env=_env(), check=False,
+        )
+        state = result.stdout.strip()
+        return state if result.returncode == 0 and state in {"legacy", "candidate", "blocked"} else "blocked"
+    except (OSError, subprocess.TimeoutExpired):
+        return "blocked"
+
+
 def _manager_path() -> str:
     return os.environ.get("QMD_BACKEND_MANAGER") or str(_core_path("core", "backend_manager.sh"))
 
@@ -216,10 +231,29 @@ def recall_context(
     **kwargs: Any,
 ) -> Optional[Dict[str, str]]:
     """Hermes pre_llm_call hook: inject qmd recall context into this turn."""
+    selected_route = False
     try:
         if _is_noop_env():
             return None
         prompt = user_message or kwargs.get("message") or ""
+        route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
+        if route_state == "candidate":
+            selected_route = True
+            # The installed core rechecks the route and the installer-owned
+            # journal before opening the selected DB. Never start QMD here.
+            core = Path(__file__).resolve().parent.parent / "core"
+            if str(core) not in sys.path:
+                sys.path.insert(0, str(core))
+            from laya_index_host_route import select_route
+            from laya_host_response import serve_selected
+            selected_cwd = _cwd(cwd, **kwargs)
+            decision = select_route(selected_cwd, action="recall")
+            if decision.get("state") != "candidate":
+                return {"context": "[laya-index] selected route changed; QMD fallback refused"}
+            return serve_selected("recall", "hermes", decision,
+                                  {"prompt": prompt, "cwd": selected_cwd})
+        if route_state != "legacy":
+            return {"context": "[laya-index] selected route unavailable; QMD fallback refused"}
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         if not _setup_allowed(_cwd(cwd, **kwargs)):
@@ -244,6 +278,10 @@ def recall_context(
             return {"context": context}
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context recall hook failed: %s", exc)
+        # A selected route must make proof or search failure visible to the host.
+        # Rechecking is read-only; even if the marker changes, no QMD path ran.
+        if selected_route:
+            return {"context": "[laya-index] selected proof or query failed; QMD fallback refused"}
     return None
 
 
@@ -255,8 +293,25 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
     notice 출력·marker 기록을 모두 생략해, Hermes 실행이 TTL marker를 선점해서
     이후 Claude/Codex 세션의 이상 상태 알림을 삼키는 것을 방지한다.
     """
+    selected_route = False
     try:
         if _is_noop_env():
+            return None
+        route_state = _laya_route_state("update", _cwd(cwd, **kwargs))
+        if route_state == "candidate":
+            selected_route = True
+            core = Path(__file__).resolve().parent.parent / "core"
+            if str(core) not in sys.path:
+                sys.path.insert(0, str(core))
+            from laya_index_host_route import select_route
+            from laya_host_response import serve_selected
+            selected_cwd = _cwd(cwd, **kwargs)
+            serve_selected("update-queued", "hermes",
+                           select_route(selected_cwd, action="update-queued"),
+                           {"hook_event_name": "SessionStart", "cwd": selected_cwd})
+            return None
+        if route_state != "legacy":
+            logger.warning("laya-index selected route unavailable; QMD fallback refused")
             return None
         if not _setup_allowed(_cwd(cwd, **kwargs)):
             return None
@@ -275,6 +330,8 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
         )
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context session update failed: %s", exc)
+        if selected_route:
+            logger.warning("laya-index selected session sync failed; QMD fallback refused")
 
 
 def pre_edit_gate(
@@ -284,12 +341,32 @@ def pre_edit_gate(
     **kwargs: Any,
 ) -> Optional[Dict[str, str]]:
     """Hermes pre_tool_call hook: translate qmd pending-project gate to block."""
+    selected_route = False
     try:
         if _is_noop_env():
             return None
         mapped = _map_edit_tool(tool_name, args)
         if mapped is None:
             return None
+        route_state = _laya_route_state("gate", _cwd(cwd, **kwargs))
+        if route_state == "candidate":
+            selected_route = True
+            core = Path(__file__).resolve().parent.parent / "core"
+            if str(core) not in sys.path:
+                sys.path.insert(0, str(core))
+            from laya_index_host_route import select_route
+            from laya_host_response import serve_selected
+            selected_cwd = _cwd(cwd, **kwargs)
+            core_tool, tool_input = mapped
+            decision = select_route(selected_cwd, action="gate")
+            answer = serve_selected("gate", "hermes", decision, {
+                "hook_event_name": "PreToolUse", "tool_name": core_tool,
+                "tool_input": tool_input, "cwd": selected_cwd})
+            if answer.get("action") == "continue":
+                return None
+            return {"action": "block", "message": "Laya Index gate failed; QMD fallback refused"}
+        if route_state != "legacy":
+            return {"action": "block", "message": "Laya Index route unavailable; QMD fallback refused"}
         if not _setup_allowed(_cwd(cwd, **kwargs)):
             return None
         core_tool, tool_input = mapped
@@ -311,6 +388,8 @@ def pre_edit_gate(
             return {"action": "block", "message": str(reason)}
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context pre-edit gate failed: %s", exc)
+        if selected_route:
+            return {"action": "block", "message": "Laya Index gate failed; QMD fallback refused"}
     return None
 
 
@@ -329,12 +408,35 @@ def post_edit_sync(
     still performed via core/index_enqueue.py. Automatic wiki compile source
     queueing is observer-only as well and delegates to core/wiki_compile_enqueue.py.
     """
+    selected_route = False
     try:
         if _is_noop_env():
             return None
         mapped = _map_edit_tool(tool_name, args)
         if mapped is None or _result_has_error(result, status):
             return
+        route_state = _laya_route_state("posttool", _cwd(cwd, **kwargs))
+        if route_state == "candidate":
+            selected_route = True
+            core = Path(__file__).resolve().parent.parent / "core"
+            if str(core) not in sys.path:
+                sys.path.insert(0, str(core))
+            from laya_index_host_route import select_route
+            from laya_host_response import serve_selected
+            selected_cwd = _cwd(cwd, **kwargs)
+            core_tool, tool_input = mapped
+            serve_selected("posttool", "hermes",
+                           select_route(selected_cwd, action="posttool"),
+                           {"hook_event_name": "PostToolUse", "tool_name": core_tool,
+                            "tool_input": tool_input, "cwd": selected_cwd})
+            serve_selected("index", "hermes",
+                           select_route(selected_cwd, action="index"),
+                           {"hook_event_name": "PostToolUse", "tool_name": core_tool,
+                            "tool_input": tool_input, "cwd": selected_cwd})
+            return None
+        if route_state != "legacy":
+            logger.warning("laya-index selected route unavailable; QMD fallback refused")
+            return None
         if not _setup_allowed(_cwd(cwd, **kwargs)):
             return None
         core_tool, tool_input = mapped
@@ -356,3 +458,5 @@ def post_edit_sync(
         _run_quiet(["bash", manager, "kick-wiki-compile", str(payload_cwd)])
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context post-edit sync failed: %s", exc)
+        if selected_route:
+            logger.warning("laya-index selected post-edit action failed; QMD fallback refused")

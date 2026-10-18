@@ -2,12 +2,14 @@
 
 No PID signaling, TTL lease stealing, model selection or service registration.
 """
-from contextlib import contextmanager
+from contextlib import closing,contextmanager
 from contextvars import ContextVar
 import fcntl
 import math
 import os
 from pathlib import Path
+import sqlite3
+import stat
 import time
 from . import resident
 from .local_cycle import ResourceDeferred, _atomic_json
@@ -228,6 +230,26 @@ class Coordinator:
             finally:os.close(fd)
         return False
 
+    def priority_work(self):
+        """A due index/update/Laya sync asks training to yield at its next group.
+
+        Read only: the runtime dispatcher owns ACK and the QMD command keeps
+        its own resource admission. An unreadable/unsafe queue is uncertainty,
+        never evidence that training may continue.
+        """
+        path=self.root/'runtime-wakes.sqlite3'
+        try:info=path.lstat()
+        except FileNotFoundError:return False
+        except OSError:return True
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
+                or info.st_mode&0o077 or info.st_nlink!=1):return True
+        try:
+            with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1)) as db:
+                return db.execute("SELECT 1 FROM wakes WHERE kind IN ('index','update','laya-sync') "
+                                  "AND status IN ('pending','running') AND due<=? LIMIT 1",
+                                  (time.time(),)).fetchone() is not None
+        except (OSError,sqlite3.Error):return True
+
     @contextmanager
     def inference(self,deadline,namespace):
         fd=None;token=None
@@ -272,6 +294,7 @@ class Coordinator:
                 with self._gate('control.lock'):
                     self.startup_barrier()
                     if self.demand():raise ResourceDeferred('learning_deferred_inference')
+                    if self.priority_work():raise ResourceDeferred('learning_deferred_priority_work')
                     report=self._admit(policy,report)
                     if not report['ready']:raise ResourceDeferred('learning_deferred_resource',report)
                 yield fd,report
@@ -336,6 +359,7 @@ class TrainingGuard:
         from .training_watch import poll_stop
         poll_stop(self.stop_fd)
         if self.controller.demand():raise ValueError('learning_yield')
+        if self.controller.priority_work():raise ValueError('learning_yield')
 
     def mark_loaded(self,before,after):
         if any(type(x)not in(int,float) or not math.isfinite(x) or x<0 for x in (*before,*after)):

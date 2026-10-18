@@ -5,7 +5,6 @@ dispatch lease while sleeping, never a writer, trainer or compute lease.
 """
 from contextlib import contextmanager
 import fcntl
-import hashlib
 import json
 import math
 import os
@@ -20,12 +19,14 @@ from context_learning.resource_coordination import Coordinator,default_root,_loc
 from context_learning.local_cycle import ResourceDeferred
 from context_learning.local_cycle import _atomic_json
 from context_learning import resident
+import runtime_wake_policy as wake_policy
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
         'targetHeadroomFraction':.35}
-KINDS={'index':0,'update':1,'cleanup':2,'learning':3,'auto':3}
-RETRY={'busy','deferred_resource','staged_evaluation_deferred','apply_deferred','setup_required','setup_in_progress'}
-MAX_WAKES=256
+# Re-exported names; the decision SSOT is runtime_wake_policy.
+KINDS=wake_policy.KINDS
+RETRY=wake_policy.RETRY
+MAX_WAKES=wake_policy.MAX_WAKES
 
 
 def sample():
@@ -84,18 +85,13 @@ class WakeQueue:
         finally:db.close()
 
     def put(self,kind,target,*,now=None):
-        if kind not in KINDS or not isinstance(target,str) or len(target.encode())>4096:raise ValueError('invalid_runtime_wake')
-        if kind=='index':
-            if target:raise ValueError('invalid_runtime_wake')
-        elif kind=='update':
-            if len(target)!=32 or any(c not in '0123456789abcdef' for c in target):raise ValueError('invalid_runtime_wake')
-        elif not Path(target).is_absolute() or '\x00' in target:raise ValueError('invalid_runtime_wake')
-        key=hashlib.sha256((kind+'\0'+target).encode()).hexdigest()
+        wake_policy.validate_wake(kind,target)
+        key=wake_policy.wake_key(kind,target)
         now=time.time() if now is None else now
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(key,)).fetchone()
-            limit=MAX_WAKES if kind=='index' else MAX_WAKES-1
+            limit=wake_policy.capacity_limit(kind,MAX_WAKES)
             if not exists and db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]>=limit:
                 _atomic_json(self.root/'runtime-wake-overflow.json',{'status':'deferred_queue_capacity',
                     'kind':kind,'key':key,'at':now,'limit':MAX_WAKES})
@@ -120,6 +116,10 @@ def dispatch(row):
         import update_hook_queue
         update_hook_queue.worker(row['target'])
         return not (update_hook_queue._private_queue()/(row['target']+'.job.json')).exists()
+    if row['kind']=='laya-sync':
+        from laya_product_sync_worker import run
+        result=run(Path(row['target']))
+        return result['state'] in ('indexed','unchanged')
     if row['kind']=='learning':
         import config
         import setup_guard
@@ -134,11 +134,11 @@ def dispatch(row):
         with worker_lease():
             if setup_guard.status(project)['status']!='ready':return False
             result=shared.run_training_pending(root,project)
-        return result['status'] not in RETRY
+        return wake_policy.handler_done(result['status'])
     if row['kind']=='auto':
         import context_learning_auto
         result=context_learning_auto.run(Path(row['target']))
-        return result['status'] not in RETRY
+        return wake_policy.handler_done(result['status'])
     if row['kind']=='cleanup':
         import setup_guard,qmd_route
         project=Path(row['target'])
@@ -149,8 +149,7 @@ def dispatch(row):
             '--cwd',str(project),'--json'],stdin=subprocess.DEVNULL,capture_output=True,text=True,
             env={**os.environ,**{key:route[key] for key in qmd_route.PATH_KEYS},'QMD_RUNTIME_DISPATCH':'1'},check=False)
         if result.returncode:return False
-        answer=json.loads(result.stdout)
-        return answer.get('reason')!='resource_deferred'
+        return wake_policy.cleanup_done(json.loads(result.stdout))
     raise ValueError('invalid_runtime_handler')
 
 
@@ -163,33 +162,39 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
         except BlockingIOError:return {'status':'busy','runs':0}
         with queue.connect() as db:db.execute("UPDATE wakes SET status='pending' WHERE status='running'")
         controller=Coordinator(queue.root);deadline=clock()+max_seconds;runs=0
-        def admitted():
+        def admitted(row):
+            # The wake is only a dispatch hint. Index/update/cleanup have their
+            # own admission and retained content queues in their handlers.
+            # A training-sized memory reserve must not hold those wakes here.
+            if row['kind'] not in ('learning','auto'):
+                return True
             try:report=sample()
             except (OSError,ValueError,TypeError,KeyError):report=None
             return controller.check(POLICY,report)['ready']
-        ready=ready or admitted
+        injected_ready=ready
         while runs<max_runs and clock()<deadline:
             rows=queue.pending()
             if not rows:return {'status':'drained','runs':runs}
-            due=[r for r in rows if r['due']<=wall()]
-            try:can_run=bool(due) and ready()
+            due=wake_policy.due_rows(rows,wall())
+            row=wake_policy.next_row(due) if due else None
+            try:can_run=row is not None and (injected_ready() if injected_ready is not None else admitted(row))
             except (OSError,ValueError,TypeError,KeyError,ResourceDeferred):can_run=False
             if not can_run:
-                sleep(min(5,max(0,deadline-clock())));continue
-            row=min(due,key=lambda r:(KINDS[r['kind']],r['due'],r['id']))
+                sleep(wake_policy.idle_wait(deadline-clock()));continue
             with queue.connect() as db:
                 changed=db.execute("UPDATE wakes SET status='running' WHERE id=? AND revision=? AND status='pending'",(row['id'],row['revision'])).rowcount
             if not changed:continue
-            try:done=execute(row);reason='pending'
-            except Exception as exc:done=False;reason=type(exc).__name__
+            try:done=execute(row);error=None
+            except Exception as exc:done=False;error=exc
             runs+=1
             with queue.connect() as db:
-                if done:
+                step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall())
+                if step['ack']:
+                    # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
-                    db.execute("UPDATE wakes SET status='pending',due=? WHERE id=?",(wall(),row['id']))
+                    db.execute("UPDATE wakes SET status='pending',due=? WHERE id=?",(step['due'],row['id']))
                 else:
-                    delay=min(300,5*2**min(row['attempts'],6))
-                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=attempts+1,reason=? WHERE id=?",(wall()+delay,reason,row['id']))
+                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=attempts+1,reason=? WHERE id=?",(step['due'],step['reason'],row['id']))
         return {'status':'pending' if queue.pending() else 'drained','runs':runs}
     finally:os.close(fd)
 

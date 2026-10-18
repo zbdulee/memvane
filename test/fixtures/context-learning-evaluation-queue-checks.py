@@ -78,6 +78,44 @@ class Checks(unittest.TestCase):
   with patch('context_learning.learning_retry.LearningQueue',return_value=LearningQueue(self.root,connect=self.connect)):
    result=wait_pending(self.root,evaluate)
   self.assertEqual(calls,['quality-only']);self.assertEqual(result['status'],'drained')
+ def test_terminal_quality_job_ignores_stale_defer_and_finish(self):
+  q=self.queue();job=q.ensure('cycle','stage','validation')
+  with q.claim(job['id'],now=100) as fd:
+   self.assertIsInstance(fd,int);q.finish(job['id'],'completed')
+  q.defer(job['id'],'memory_reserve',now=100)
+  q.finish(job['id'],'waiting_quality');q.finish(job['id'],'blocked')
+  self.assertEqual(q.get(job['id'])['status'],'completed')
+  self.assertEqual(q.pending(now=float('inf')),[])
+  q.refresh('cycle');self.assertEqual(q.get(job['id'])['status'],'queued')
+  poisoned=q.ensure('poison','stage','validation')
+  for _ in range(3):q.defer(poisoned['id'],'prediction_failed',failure=True,now=0)
+  q.defer(poisoned['id'],'memory_reserve',now=0);q.finish(poisoned['id'],'completed')
+  row=q.get(poisoned['id'])
+  self.assertEqual((row['status'],row['failures'],row['reason']),('blocked',3,'prediction_failed'))
+ def test_quality_pressure_defer_survives_restart_and_waiting_quality(self):
+  q=self.queue();job=q.ensure('cycle','stage','validation')
+  q.defer(job['id'],'memory_reserve',now=100)
+  reopened=self.queue();row=reopened.get(job['id'])
+  self.assertEqual((row['status'],row['reason'],row['failures'],row['retry_at']),('deferred','memory_reserve',0,130))
+  self.assertEqual(reopened.pending(now=129),[])
+  self.assertEqual(len(reopened.pending(now=130)),1)
+  reopened.finish(job['id'],'waiting_quality');reopened.defer(job['id'],'interrupted',now=200)
+  self.assertEqual(reopened.get(job['id'])['status'],'waiting_quality')
+ def test_queue_summary_is_read_only_scoped_and_exposes_retry_reason(self):
+  from context_learning.shared import _queue_summary
+  from context_learning.learning_queue import LearningQueue
+  own=self.queue();job=own.ensure('cycle','stage','validation');own.defer(job['id'],'memory_reserve',now=100)
+  foreign=self.root/'foreign';foreign.mkdir(mode=0o700)
+  other=EvaluationQueue(foreign,connect=self.connect)
+  other_job=other.ensure('other','stage','validation');other.defer(other_job['id'],'cpu_pressure',now=100)
+  db=sqlite3.connect((self.root/'fixture.sqlite3').as_uri()+'?mode=ro',uri=True)
+  try:
+   before=db.execute('SELECT name FROM sqlite_master ORDER BY name').fetchall()
+   quality=_queue_summary(db,'learning_evaluations',own.scope)
+   self.assertEqual(quality,{'counts':{'deferred':1},'reasons':[{'status':'deferred','reason':'memory_reserve','count':1}],'next_retry':130})
+   self.assertEqual(_queue_summary(db,'learning_jobs',own.scope),{})
+   self.assertEqual(db.execute('SELECT name FROM sqlite_master ORDER BY name').fetchall(),before)
+  finally:db.close()
  def test_read_only_apply_validation_reads_selected_history_not_legacy_copy(self):
   from unittest.mock import patch
   from context_learning import shared,history_activation

@@ -17,6 +17,7 @@ import re
 import sqlite3
 import tempfile
 import subprocess
+import time
 import uuid
 
 
@@ -36,16 +37,57 @@ def _scope_policy(generation,prepared):
         raise ValueError('plugin_qmd_scope_policy_changed')
     return value['projects']
 
+def _assert_activated(selected,home=None):
+    journal=json.loads(_private_file(_unlinked_root(home)/'bootstrap-journal.json').read_text())
+    if journal.get('phase')!='activated' or journal.get('generation')!=selected['generation']:
+        raise ValueError('project_shared_store_transition_pending')
+
+
 def check_project(scope,selected=None,*,home=None):
     selected=selected or select(home)
     approved=selected.get('approvedProjects')
     if approved is None:return  # Compatibility for already reviewed stores.
-    journal=json.loads(_private_file(_unlinked_root(home)/'bootstrap-journal.json').read_text())
-    if journal.get('phase')!='activated' or journal.get('generation')!=selected['generation']:
-        raise ValueError('project_shared_store_transition_pending')
+    _assert_activated(selected,home)
     import config as qmd_config
     owner=qmd_config.find_project_config(str(scope))['projectRoot']
     if owner not in approved:raise ValueError('project_shared_migration_not_approved')
+
+
+def approved_owner_registry(home=None):
+    """Read-only (approvedProjects, registry) snapshot for change-owner routing.
+
+    Only a scoped, activated store carries the approval set that can name an
+    owner other than the event's own project. A legacy store has none, so it
+    never authorizes routing; a damaged registry raises like any other read.
+    """
+    selected=select(home)
+    approved=selected.get('approvedProjects')
+    if approved is None:raise ValueError('plugin_qmd_legacy_store_unscoped')
+    _assert_activated(selected,home)
+    return dict(approved),_registry(_unlinked_root(home))
+
+
+def approved_owner_revision(home=None):
+    """Like approved_owner_registry, plus a registration-lifetime revision.
+
+    The revision binds the selected generation, the whole approval map and the
+    exact registry file object (device, inode, ctime, mtime, byte digest) read
+    through one descriptor. Every registry mutation is a new file installed by
+    rename, so a retire/re-add with identical bytes still changes the revision.
+    It is None when no registry file exists (nothing is registered).
+    """
+    selected=select(home)
+    approved=selected.get('approvedProjects')
+    if approved is None:raise ValueError('plugin_qmd_legacy_store_unscoped')
+    _assert_activated(selected,home)
+    registry,identity=_registry_with_identity(_unlinked_root(home))
+    if identity is None:
+        return dict(approved),registry,None
+    material={'generation':selected['generation'],'approved':sorted(approved.items()),
+              'registry':identity}
+    revision=hashlib.sha256(json.dumps(material,sort_keys=True,separators=(',',':'))
+                            .encode('utf8')).hexdigest()
+    return dict(approved),registry,revision
 
 
 def _enrolled_projects(generation, prepared):
@@ -238,7 +280,42 @@ def _registry(base):
     file = _private_file(path)
     if file.stat().st_size > 1048576:
         raise ValueError('plugin_qmd_registry_invalid')
-    value = json.loads(file.read_text())
+    return _valid_registry(json.loads(file.read_text()))
+
+
+def _registry_with_identity(base):
+    """(registry, identity) from one descriptor, or ({}, None) when absent."""
+    import stat as stat_mode
+    try:
+        fd = os.open(base / 'collections.json', os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {}, None
+    try:
+        info = os.fstat(fd)
+        if (not stat_mode.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1):
+            raise ValueError('unsafe_plugin_qmd_store')
+        if info.st_size > 1048576:
+            raise ValueError('plugin_qmd_registry_invalid')
+        chunks, remaining = [], 1048577
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk); remaining -= len(chunk)
+        raw = b''.join(chunks)
+        after = os.fstat(fd)
+        if (len(raw) != info.st_size or (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                != (info.st_size, info.st_mtime_ns, info.st_ctime_ns)):
+            raise ValueError('plugin_qmd_registry_changed')
+    finally:
+        os.close(fd)
+    value = _valid_registry(json.loads(raw.decode('utf8')))
+    return value, [info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns,
+                   hashlib.sha256(raw).hexdigest()]
+
+
+def _valid_registry(value):
     if not isinstance(value, dict) or any(
             not isinstance(name, str) or not isinstance(owner, dict)
             or set(owner) != {'scope', 'path', 'indexed'}
@@ -308,18 +385,45 @@ def _reserve_owners(base, wanted):
             if current[name].get('scope') == owner['scope']:
                 raise ValueError('plugin_qmd_collection_path_change_requires_migration')
             raise ValueError('plugin_qmd_collection_collision')
+        # An unchanged retry keeps the same registry file object, so prior-owner
+        # observations bound to it stay valid. Any real change still installs a
+        # new file by rename and invalidates them (no retire/re-add ABA).
+        if wanted and all(current.get(name) == owner for name, owner in wanted.items()):
+            return
         current.update(wanted)
-        temp_fd, temp_name = tempfile.mkstemp(prefix='.collections-', dir=base)
-        try:
-            os.fchmod(temp_fd, 0o600)
-            with os.fdopen(temp_fd, 'w') as out:
-                json.dump(current, out, sort_keys=True, separators=(',', ':'))
-                out.flush(); os.fsync(out.fileno())
-            os.replace(temp_name, base / 'collections.json')
-        finally:
-            Path(temp_name).unlink(missing_ok=True)
+        _write_registry(base, current)
     finally:
         os.close(fd)
+
+
+def _write_registry(base, value):
+    """Install a new registry file; caller holds ``collections.lock``.
+
+    Its mtime is strictly after the replaced file's, so a retire/re-add that
+    restores identical bytes can never repeat the prior file identity even if
+    the filesystem reuses the inode within one coarse timestamp tick.
+    """
+    path = base / 'collections.json'
+    try:
+        previous = os.lstat(path).st_mtime_ns
+    except FileNotFoundError:
+        previous = 0
+    temp_fd, temp_name = tempfile.mkstemp(prefix='.collections-', dir=base)
+    try:
+        os.fchmod(temp_fd, 0o600)
+        with os.fdopen(temp_fd, 'w') as out:
+            json.dump(value, out, sort_keys=True, separators=(',', ':'))
+            out.flush(); os.fsync(out.fileno())
+        stamp = max(time.time_ns(), previous + 1)
+        os.utime(temp_name, ns=(stamp, stamp))
+        os.replace(temp_name, path)
+        directory = os.open(base, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temp_name).unlink(missing_ok=True)
 
 
 def verify_missing_collection(scope, name, config, *, home=None):
@@ -380,8 +484,7 @@ def _discard_unpublished_reservations(scope, *, home=None):
             raise ValueError('plugin_qmd_unapproved_physical_collection')
         for name in stale:
             del current[name]
-        import install_update
-        install_update._atomic(base/'collections.json', current)
+        _write_registry(base, current)
     finally:
         os.close(fd)
 
@@ -414,15 +517,7 @@ def retire_pruned(scope, config, *, home=None):
             raise ValueError('plugin_qmd_prune_not_settled')
         for name in stale:
             del registry[name]
-        temp_fd, temp_name = tempfile.mkstemp(prefix='.collections-', dir=base)
-        try:
-            os.fchmod(temp_fd, 0o600)
-            with os.fdopen(temp_fd, 'w') as out:
-                json.dump(registry, out, sort_keys=True, separators=(',', ':'))
-                out.flush(); os.fsync(out.fileno())
-            os.replace(temp_name, base / 'collections.json')
-        finally:
-            Path(temp_name).unlink(missing_ok=True)
+        _write_registry(base, registry)
         return len(stale)
     finally:
         os.close(fd)

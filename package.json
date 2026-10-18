@@ -7,8 +7,8 @@
     "node": "^22.0.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
-    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= python3 -B scripts/development_guard.py --kind test --max-seconds 1800 -- node --test --test-concurrency=1",
-    "test:focused": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= python3 -B scripts/development_guard.py --kind test -- node --test --test-concurrency=1",
+    "test": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= QMD_REAL_MODEL_TESTS= python3 -B scripts/development_guard.py --kind test --max-seconds 1800 -- node --test --test-concurrency=1",
+    "test:focused": "QMD_SETUP_GUARD_FIXTURE=1 QMD_RECALL_LOG= QMD_REAL_MODEL_TESTS= python3 -B scripts/development_guard.py --kind test -- node --test --test-concurrency=1",
     "test:guard-unit": "python3 -B -m unittest discover -s test -p development_guard_test.py",
     "test:runtime-unit": "python3 -B -m unittest discover -s test -p 'runtime_*test.py'",
     "dev:guard": "python3 -B scripts/development_guard.py"

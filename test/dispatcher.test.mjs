@@ -14,6 +14,9 @@ const fixtureEnv = {
   QMD_SETUP_GUARD_FIXTURE: '1',
   QMD_CACHE_DIR: join(fixtureRoot, 'cache'),
   QMD_RECALL_LOG: '',
+  // posttool launches manager ensure in the background. Keep that lifecycle
+  // inside this fixture instead of starting the user's actual QMD endpoint.
+  QMD_BACKEND_MANAGER: '/bin/true',
 };
 
 // hooks/run-hook <action> <engine> 를 fixture 모드로 실행하고 stdout 반환

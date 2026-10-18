@@ -10,7 +10,7 @@ import config,install_update as C,shared_qmd_setup as B,qmd_shared_store as S
 import qmd_runtime as R,qmd_route,setup_guard,qmd_endpoint as E
 import dirty_queue,sqlite_read,install_maintenance as maintenance
 import vector_integrity,qmd_write_fence,setup_readiness
-import install_deadline
+import install_deadline,install_evidence as V
 
 SCHEMA='qmd-shared-install-v1'
 JOURNAL='shared-install-journal.json'
@@ -139,8 +139,7 @@ def _drain(selected,auto,deadline):
   lease=lambda:maintenance.locks_status(locks,alive=E.alive),deadline=deadline)
 
 def _source_snapshot(root,request,deadline):
- _pin(root,request);result={}
- def identity(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+ _pin(root,request);result={};identity=V.file_identity
  for name,owner in request['collections'].items():
   if not owner['indexed']:continue
   base=Path(owner['path']);files={};result[name]=files
@@ -171,22 +170,18 @@ def _source_snapshot(root,request,deadline):
  return result
 
 def _queue_sources(root,row,auto,current):
- previous=row.get('sourceSnapshot',{});intent=row.get('sourceQueueIntent',{})
- names={name for name in current if previous.get(name)!=current[name]}|set(intent.get('collections',[]))
- if not names:return
  owners=row['request']['collections']
- if any(name not in current or not owners[name]['indexed'] for name in names):raise ValueError('invalid_install_source_queue_intent')
+ names=V.source_queue_names(row.get('sourceSnapshot',{}),current,row.get('sourceQueueIntent',{}),owners)
+ if not names:return
  # Persist intent before enqueue: a crash cannot acknowledge a new snapshot
  # without publishing its normal maintenance work on identical resume.
- row['sourceQueueIntent']={'snapshot':current,'collections':sorted(names)};_save(auto,row)
- dirty_queue.enqueue_collections({n:owners[n]['path'] for n in sorted(names)},project_root=str(root))
+ row['sourceQueueIntent']={'snapshot':current,'collections':names};_save(auto,row)
+ dirty_queue.enqueue_collections({n:owners[n]['path'] for n in names},project_root=str(root))
  row['sourceSnapshot']=current;row['queueCommitted']=True;row.pop('sourceQueueIntent',None);_save(auto,row)
 
 def _vector_scope(selected,request):
  proof=json.loads(S._private_file(S.root()/B.JOURNAL).read_text())['proof']
- fingerprints=proof['modelFingerprints']
- if len(fingerprints)!=1 or fingerprints[0]['model']!=request['model']['path']:raise ValueError('vector_model_identity_unproved')
- return [n for n,v in request['collections'].items() if v['indexed']],fingerprints[0]['model'],fingerprints[0]['fingerprint']
+ return V.vector_scope(proof,request['collections'],request['model'])
 
 def _vector_report(selected,request):
  names,model,fp=_vector_scope(selected,request)
@@ -220,7 +215,7 @@ def _ensure_vectors(root,selected,request,row,auto,deadline):
    finally:
     if db.in_transaction:db.rollback()
     db.close()
-   dirty_queue.enqueue_collections({n:v['path'] for n,v in request['collections'].items() if v['indexed']},project_root=str(root))
+   dirty_queue.enqueue_collections(V.indexed_paths(request['collections']),project_root=str(root))
    row['vectorRepair']['phase']='enqueued';_save(auto,row)
   result=_drain(selected,auto,deadline);attempts+=result['attempts'];waits+=result['waits']
   if result['status']=='deferred':raise TimeoutError('physical_vector_maintenance_deferred:'+result['reason'])
@@ -242,17 +237,15 @@ def _readiness(root,selected,request,deadline):
  searches={};counts={}
  with sqlite_read.connect(selected['INDEX_PATH']) as db:
   if db.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise ValueError('install_index_integrity_failed')
-  for name,owner in request['collections'].items():
-   if owner['indexed']:counts[name]=db.execute('SELECT count(*) FROM documents WHERE active=1 AND collection=?',(name,)).fetchone()[0]
+  for name in V.indexed_names(request['collections']):
+   counts[name]=db.execute('SELECT count(*) FROM documents WHERE active=1 AND collection=?',(name,)).fetchone()[0]
  for name,count in counts.items():
   if not count:continue  # Empty collections are proved by initializer/ACK.
   remaining=deadline-time.monotonic()
   if remaining<=0:raise TimeoutError('install_readiness_deadline')
   p=subprocess.run([runtime['wrapper'],'query','vec: installation readiness','--no-rerank','--json','-c',name],cwd=root,env=env,capture_output=True,text=True,timeout=min(120,remaining))
   if p.returncode:raise ValueError('install_scoped_search_failed:'+name)
-  hits=json.loads(p.stdout)
-  if not hits or any(not h.get('file','').startswith('qmd://'+name+'/') for h in hits):raise ValueError('install_scoped_search_not_ready:'+name)
-  searches[name]=len(hits)
+  searches[name]=V.scoped_search_count(name,json.loads(p.stdout))
  if _selected()['generation']!=selected['generation'] or R.select()['generation']!=runtime['generation']:raise ValueError('install_tuple_changed')
  _pin(root,request)
  if B._model(request['model']['path'])!=request['model']:raise ValueError('embedding_model_changed_requires_review')

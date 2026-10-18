@@ -75,8 +75,8 @@ revision 멱등성이 없으므로 둘 이상의 경로에 동의하면 같은 �
   캐시의 GC와 worktree 삭제를 별도 절차로 둔다.
 - 신규·수정 파일은 현재 raw 파일 경로를 먼저 사용할 수 있어야 한다. 임베딩과
   위키 생성은 후속 단계다. **현재 SessionStart 경로는 raw 즉시 검색 fallback이나
-  새 파일의 즉시 주입을 구현하지 않는다.** 검색 직전 상태 확인도 별도 후속
-  작업이다.
+  새 파일의 즉시 주입을 구현하지 않는다.** 검색 직전에는 반환된 결과만
+  확인한다(아래 단계 A). 반환되지 않은 새 파일의 확인은 후속 작업이다.
 - 갱신 중에는 이전 브랜치 결과를 조용히 주입하지 않는다. 한 검색 요청은
   게시된 단일 generation만 사용해야 한다. 준비 중인 generation의 부분 결과를
   현재 view와 섞지 않는다.
@@ -87,6 +87,56 @@ revision 멱등성이 없으므로 둘 이상의 경로에 동의하면 같은 �
   경로의 이전 view를 유지하고 오류를 드러낸 뒤 재시도한다. 읽을 수 있는
   collection 스캔에서 파일 부재가 확인되면 현재 view에서 제외한다.
 
-검색 직전 검사, checkout별 게시 generation, 콘텐츠 캐시 키/GC, 공유 위키의
-완전한 의존성 판정은 별도 구현·회귀 검증이 필요하다. 현재 QMD 색인 및
-recall 경로가 이 계약을 이미 만족한다고 주장하지 않는다.
+checkout별 게시 generation, 콘텐츠 캐시 키/GC, 공유 위키의 완전한 의존성
+판정은 별도 구현·회귀 검증이 필요하다. 현재 QMD 색인 및 recall 경로가 이
+계약을 이미 만족한다고 주장하지 않는다.
+
+## 단계 A: 반환된 결과 단위 최신성 검사 (구현됨)
+
+recall은 QMD가 **반환한 결과만** 주입 전에 다시 확인한다. 공유 저장소와 선택된
+프로젝트 로컬 색인 두 라이브 경로 모두 `qmd_scope.scoped_hits`를 적용한다.
+
+- 범위: 결과 경로를 현재 payload `cwd`에서 찾은 프로젝트의 허용 collection
+  경로로 해석한다. `..`·절대 경로·역슬래시, 미등록 collection, collection 밖으로
+  해석되는 symlink와 collection 내부의 symlink도 제외한다. 따라서 `cwd`가 다른 worktree로 바뀌면 그
+  worktree의 파일만 읽고, 이전 checkout의 경로는 주입하지 않는다.
+- 내용: 현재 파일의 SHA-256이 색인의 활성 문서 행 해시와 같을 때만 주입한다.
+  수정(`modified`), 삭제(`missing`), 색인 행 없음(`not_indexed`), 2 MiB 초과
+  (`oversize`), 읽기 오류(`read_error`), 색인을 읽을 수 없음(`index_unavailable`)은
+  해당 결과만 제외한다. 바이트가 같은 브랜치 복귀·detached HEAD·미추적 파일은
+  Git 정보 없이 내용으로 판정한다.
+- 비용: 반환된 행(최대 256행, 파일당 2 MiB)만 읽는다. 프로젝트 전체 스캔, Git
+  호출, dirty queue 등록, 색인 쓰기를 하지 않는다. 색인은 읽기 전용으로 연다.
+- SessionStart와 무관: 스냅샷이 없거나 `sessionStartSync: false`여도 해시가
+  일치하는 결과는 그대로 주입한다.
+- 진단: `QMD_RECALL_LOG` 선택 줄에 `index_guard`(`shared`|`project_local`|
+  `fixture`|`none`), `index_guard_checked`, `index_guard_dropped`,
+  `index_guard_drop_reasons`를 남긴다. `none`은 검증할 색인이 없는 경로(테스트
+  fixture나 전역 daemon 경로)이며 최신성을 뜻하지 않는다.
+
+이 단계가 보장하지 않는 것:
+
+- 새 파일이나 새 내용은 색인이 갱신되기 전까지 검색되지 않는다. 반환되지 않은
+  파일을 찾아 주입하지 않는다.
+- 이미 주입된 이전 컨텍스트를 회수하지 않는다.
+- 해시 확인과 본문 읽기 사이, 또는 QMD 검색과 해시 확인 사이의 동시 편집에
+  대한 원자성은 없다. 한 요청이 하나의 게시 generation을 쓴다는 보장도 없다.
+- QMD가 경로를 정규화해 저장하면(대소문자 등) 실제 파일과 맞지 않아
+  `missing`으로 제외될 수 있다(fail-closed).
+- 전역 daemon 경로(선택된 색인 없음)는 검사하지 않는다. 운영 환경은 공유
+  저장소 경로를 쓴다.
+
+## 단계 B1: 현재 존재하는 파일의 등록 소유자 라우팅 (구현됨)
+
+편집 이벤트의 파일이 현재 세션 프로젝트 collection 밖에 있어도, **이미
+승인·등록된** 공유 store collection의 정규 파일이면 그 소유 프로젝트의 색인
+dirty queue에 넣는다. 현재 세션 검색 scope는 여전히 실제 질의 cwd로 정한다.
+대상 프로젝트의 최신 설정·승인 hash·indexed role·`postToolUse` 동의를
+재검증한다. 미등록·OFF·모호한 중첩/중복 소유자·symlink는 보류한다. 새
+worktree 승인이나 외부 경로 자동 등록은 하지 않는다.
+
+이 단계는 색인 **요청 라우팅**이며 QMD 갱신 완료나 새 내용의 검색 가능성은
+증명하지 않는다. 삭제와 이동의 이전 경로는 과거 소유 snapshot 없이 등록
+정보만으로 확정하지 않으므로 B2 대상이다. Claude Bash와 Codex shell 도구의
+외부 파일 변경 관찰, worktree별 단일 게시 generation과 늦은 worker 차단은
+별도 후속 단계다. 최종 결과는 설치 후보 실제 호스트의 검색 E2E로 판정한다.
