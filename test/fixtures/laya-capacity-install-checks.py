@@ -52,8 +52,20 @@ class CapacityInstallChecks(unittest.TestCase):
     def test_existing_store_for_other_roots_is_refused(self):
         self.prepare()
         other = dict(self.roots, wiki=str(self.base / 'raw'))
-        with self.assertRaises((IndexContractError, ValueError)):
+        with self.assertRaisesRegex(install.InstallBlocked, 'capacity_store_mismatch'):
             self.prepare(other)
+
+    def test_catalog_interrupted_before_its_schema_is_recreated(self):
+        catalog = Path(str(self.db) + '.catalog.sqlite')
+        catalog.write_bytes(b'')  # created, crashed before the schema commit
+        catalog.chmod(0o600)
+        paths = self.prepare()
+        self.assertEqual(capacity_store_paths(self.db), paths)
+
+    def test_store_for_a_rebuilt_db_fails_with_a_specific_reason(self):
+        self.prepare()
+        with self.assertRaisesRegex(install.InstallBlocked, 'capacity_store_mismatch'):
+            install.prepare_capacity_stores(self.db, self.roots, SCOPE, '0' * 32)
 
     def test_origin_installer_keeps_capacity_stores_off_by_default(self):
         default = inspect.signature(install.prepare_owned_qmd_origin).parameters['capacity_stores']

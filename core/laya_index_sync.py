@@ -332,6 +332,21 @@ def _stale_detail(exc):
     return str(cause) if isinstance(cause, SourceStale) else str(exc)
 
 
+def _head_sealed(index, gen, profile_id):
+    """True when ``gen`` carries a valid vector seal under ``profile_id``.
+
+    A head published lexically, or sealed under another profile (a model
+    change), does not serve a vector route; it is recaptured and resealed
+    instead of being reported ``unchanged`` forever.
+    """
+    from laya_index_flow import _verify_bound_seal
+    try:
+        _verify_bound_seal(index, gen, profile_id)
+    except IndexContractError:
+        return False
+    return True
+
+
 def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False,
               vector_profile_id=None,
               max_files=200, max_bytes=5_000_000, max_stats=2_000,
@@ -381,9 +396,9 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
     captured only after ``laya_vector_capacity.vector_fill_step`` has cached
     a chunk set for every eligible member (``pending``/``vector_backlog``
     until then); the generation is then sealed from that cache before
-    publish, so this call never loads a model. A head that already serves
-    the snapshot is ``unchanged`` without a seal check; a lexical-only head
-    is not repaired here and fails closed on vector queries.
+    publish, so this call never loads a model. A head serves the snapshot
+    (``unchanged``) only if it also carries a seal under this profile; a
+    lexical-only or other-profile head is recaptured and resealed.
     """
     if not isinstance(runtime, LayaIndexRuntime):
         raise TypeError('explicit_runtime_required')
@@ -495,7 +510,9 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
                 rescan_unless_pending()
                 return None
             if (head is not None and head[1] == binding.source_manifest
-                    and head[2] == epoch and same_bound_source(served, binding)):
+                    and head[2] == epoch and same_bound_source(served, binding)
+                    and (not require_vector or _head_sealed(index, head[0],
+                                                            vector_profile_id))):
                 runtime._snapshot_verdict = (key, None)
                 return 'unchanged'
             if require_vector and not catalog.vector_fill(snapshot, vector_profile_id)['done']:

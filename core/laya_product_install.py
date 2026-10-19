@@ -460,16 +460,36 @@ def _candidate_prepared(path, generation, scope, manifest, source_digest,
         return index.incarnation()
 
 
+def _unfinished_catalog(path):
+    """True for a catalog file left with no tables by an interrupted create.
+
+    LayaSourceCatalog creates the file first and commits its schema later, so
+    a crash in between leaves a file it refuses to open. A valid catalog
+    always has tables, so an empty schema can only be that leftover.
+    """
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
+            return db.execute("SELECT COUNT(*) FROM sqlite_master "
+                              "WHERE type='table'").fetchone()[0] == 0
+    except sqlite3.Error:
+        return False
+
+
 def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
     """Create or verify the capacity catalog and binding store beside ``db_path``.
 
     Their presence switches the selected worker and host recall to the
     capacity path (``laya_index_runtime.capacity_store_paths``). Idempotent:
     an existing store is opened, which checks its scope, roots and
-    incarnation; a run interrupted after the catalog is completed by the
-    next run. Both end as private regular files.
+    incarnation, and a mismatch fails as ``capacity_store_mismatch`` (for
+    example after the candidate DB was rebuilt); nothing is deleted then. A
+    catalog left with no schema by an interrupted create is removed and
+    created again. Both end as private regular files.
     """
     from contextlib import closing
+    from laya_index_a import IndexContractError
     from laya_index_capacity import GenerationBindingStore
     from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX,
                                     capacity_store_paths)
@@ -478,12 +498,20 @@ def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
     catalog = db.with_name(db.name + CATALOG_SUFFIX)
     store = db.with_name(db.name + BINDING_STORE_SUFFIX)
     roots = dict(roots)
-    with closing(LayaSourceCatalog(catalog, roots, scope,
-                                   create=not os.path.lexists(catalog))):
-        pass
-    with closing(GenerationBindingStore(store, scope=scope, db_incarnation=db_incarnation,
-                                        roots=roots, create=not os.path.lexists(store))):
-        pass
+    if (os.path.lexists(catalog) and not catalog.is_symlink() and catalog.is_file()
+            and _unfinished_catalog(catalog)):
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            Path(str(catalog) + suffix).unlink(missing_ok=True)
+    try:
+        with closing(LayaSourceCatalog(catalog, roots, scope,
+                                       create=not os.path.lexists(catalog))):
+            pass
+        with closing(GenerationBindingStore(store, scope=scope,
+                                            db_incarnation=db_incarnation, roots=roots,
+                                            create=not os.path.lexists(store))):
+            pass
+    except IndexContractError:
+        _fail('capacity_store_mismatch')
     for path in (catalog, store):
         if not path.is_symlink() and path.is_file():
             os.chmod(path, 0o600)
@@ -662,8 +690,18 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             with closing(ClaimQueue.create(queue,
                                            index_incarnation=incarnation)):
                 pass
-        if capacity_stores:
-            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
+        if not capacity_stores:
+            # A store left by an earlier capacity_stores=True run would switch
+            # this route to the capacity path anyway (or fail it closed if only
+            # one exists); refuse rather than install something unrequested.
+            from laya_index_a import IndexContractError
+            from laya_index_runtime import capacity_store_paths
+            try:
+                leftover = capacity_store_paths(candidate) is not None
+            except IndexContractError:
+                leftover = True
+            if leftover:
+                _fail('capacity_store_unexpected')
         if plan_qmd_origin(project_root)['proposalSha256'] != expected_proposal_sha256:
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
@@ -697,6 +735,9 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             scope=plan['scopeId'], index_generation=generation,
             source_manifest=scan.manifest,
             vector_profile_id=profile['profileId'], claim=claim)
+        if capacity_stores:
+            # Only after a successful bind, so a failed run leaves no store.
+            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
         return {'status': 'cutover_prepared',
                 'proposalSha256': expected_proposal_sha256,
                 'journalPath': str(journal),

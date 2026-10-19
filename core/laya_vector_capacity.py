@@ -62,12 +62,17 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     * ``pending``/``source_changed``: a member's bytes no longer match the
       snapshot. A rescan is requested; the next snapshot restarts the fill.
     * ``deferred``/``catalog_busy``: progress could not be recorded.
+    * ``blocked``/``vector_budget_exceeded``: the snapshot has more chunk rows
+      than one generation seal may hold (``MAX_CANDIDATES``); nothing is
+      staged. ``blocked``/``vector_member_rejected``: the provider refused a
+      member (empty or oversize body); the fill cannot pass it. Both stay
+      until the source changes.
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
     ``embedded``/``cached`` count the members handled in this step.
     """
-    from laya_index_vector import LayaVectorIndex, qmd_markdown_title
+    from laya_index_vector import MAX_CANDIDATES, LayaVectorIndex, qmd_markdown_title
     from laya_source_catalog import PENDING_PHASES, load_exclusions
     if (type(max_files) is not int or max_files < 1
             or type(max_bytes) is not int or max_bytes < 1
@@ -98,10 +103,23 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
         raise IndexContractError('vector_profile_mismatch')
     exclusions = load_exclusions(runtime.index, runtime.scope)
     cursor = progress['cursor']
+    rows_total = progress['rows']
 
     def record(done):
-        if not catalog.set_vector_fill(snapshot, profile_id, cursor, done):
+        if not catalog.set_vector_fill(snapshot, profile_id, cursor, done, rows_total):
             return answer('deferred', 'catalog_busy', cursor=cursor)
+        return None
+
+    def counted(path, count):
+        # seal_generation writes one row per member chunk and fails past
+        # MAX_CANDIDATES; refuse here, before anything is staged.
+        nonlocal cursor, rows_total
+        if rows_total + count > MAX_CANDIDATES:
+            return record(False) or answer('blocked', 'vector_budget_exceeded',
+                                           cursor=cursor, path=path,
+                                           rows=rows_total + count)
+        rows_total += count
+        cursor = path
         return None
 
     while True:
@@ -129,20 +147,31 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 return answer('pending', 'source_changed', cursor=cursor, path=path)
             out['bytes'] += size
             title = qmd_markdown_title(text, path)
-            if vectors.cached_chunk_set(sha, title, profile_id) is not None:
+            cached = vectors.cached_chunk_set(sha, title, profile_id)
+            if cached is not None:
                 out['cached'] += 1
-                cursor = path
+                stopped = counted(path, len(cached))
+                if stopped:
+                    return stopped
                 continue
             if out['embedded'] >= max_files or (should_yield and should_yield()):
                 return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
-            rows = provider.embed_document_chunks(text, path=path)
+            try:
+                rows = provider.embed_document_chunks(text, path=path)
+            except IndexContractError as exc:
+                # A provider refusal of this body repeats on every call.
+                return record(False) or answer('blocked', 'vector_member_rejected',
+                                               cursor=cursor, path=path, detail=str(exc))
             if not isinstance(rows, list) or not rows:
-                raise IndexContractError('vector_coverage_incomplete')
+                return record(False) or answer('blocked', 'vector_member_rejected',
+                                               cursor=cursor, path=path, detail='no_chunks')
             # Chunk rows reference their content row; stage reuses it.
             runtime.index.ensure_content(sha, text)
             vectors.insert_chunk_set(sha, title, profile_id, rows)
             out['embedded'] += 1
-            cursor = path
+            stopped = counted(path, len(rows))
+            if stopped:
+                return stopped
             # A crash after this commit replays the file as cached, not embedded.
             stopped = record(False)
             if stopped:

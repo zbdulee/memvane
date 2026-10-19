@@ -124,8 +124,14 @@ def _run_bound_leased(index, queue, catalog, store, job, token, *,
     decision = queue.decide(index, job)
     if decision == ACK:
         if require_vector:
-            # A lexical-only receipt cannot satisfy a selected vector job.
-            _verify_bound_seal(index, job['gen'], vector_profile_id)
+            # A lexical-only receipt cannot satisfy a selected vector job. It
+            # is already published, so deferring would retry it forever:
+            # retire it, and sync_step reseals the head from a new capture.
+            try:
+                _verify_bound_seal(index, job['gen'], vector_profile_id)
+            except IndexContractError:
+                return ('replan' if queue.mark_replan(job, token, 'index_stale')
+                        else LEASE_LOST)
         result = queue.conditional_ack(job, token, index)
         return result if result in (ACK, LEASE_LOST) else 'deferred'
     if decision != REPROCESS:
@@ -152,11 +158,12 @@ def _run_bound_leased(index, queue, catalog, store, job, token, *,
             try:
                 # Model-free: built only from chunk sets the fill step cached.
                 LayaVectorIndex(index).seal_generation(job['gen'], vector_profile_id)
-            except IndexContractError as exc:
-                if str(exc) != 'vector_coverage_incomplete':
-                    raise
-                # A member changed after the fill; only a new snapshot and a
-                # new fill can produce a publishable seal.
+            except IndexContractError:
+                # Missing coverage, a damaged cached chunk set or a budget
+                # overrun repeats for this staged job: deferring would retry
+                # it before every scan step forever. Retire it; a new capture
+                # and fill decide again. (The fill refuses an over-budget
+                # snapshot before staging, so this is not a loop for it.)
                 return ('replan' if queue.mark_replan(job, token, 'index_stale')
                         else LEASE_LOST)
         published = capacity.publish_bound(index, catalog, store, binding, job,

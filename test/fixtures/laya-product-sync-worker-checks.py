@@ -527,21 +527,25 @@ class CapacityWorkerChecks(unittest.TestCase):
         def verify(_decision):
             return self.refreshed if marked else self.proof
         def cas(_journal,_epoch):
-            marked.append(1);return {'epoch':8,'newWriteSeen':True}
-        seen={'steps':[],'fills':0,'runtime':None}
+            marked.append(1);seen['cas']+=1;return {'epoch':8,'newWriteSeen':True}
+        seen={'steps':[],'fills':0,'runtime':None,'scans':0,'cas':0}
         answers=iter(steps);fill_answers=iter(fills)
-        def step(runtime,*,before_publish,require_vector,vector_profile_id,rescan):
+        def step(runtime,*,before_publish,require_vector,vector_profile_id):
             self.assertTrue(require_vector)
-            self.assertEqual(rescan,not seen['steps'])  # first round of a wake only
+            self.assertEqual(seen['scans'],1)  # the wake asked for its scan first
             seen['steps'].append(vector_profile_id)
             answer=next(answers)
-            if answer['state']=='indexed':before_publish()
+            if answer['state']=='indexed':
+                before_publish();before_publish()  # two publishes, one fence
             return answer
         def fill(_runtime,_provider,*,should_yield):
             seen['fills']+=1;return next(fill_answers)
         def runtime(**kwargs):
             seen['runtime']=kwargs
             context=MagicMock();context.__enter__.return_value=context
+            def request_scan():
+                seen['scans']+=1;return {'status':'started'}
+            context.request_scan.side_effect=request_scan
             return context
         patches=[p for p in patches if getattr(p,'attribute',None) not in
                  ('verify_selected_route','cas_mark_new_write','LayaIndexRuntime')]
@@ -565,10 +569,12 @@ class CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual(result,{'state':'indexed','generation':'g'})
         self.assertEqual(seen['steps'],['9'*64,'9'*64])
         self.assertEqual(seen['fills'],1)
+        self.assertEqual(seen['cas'],1)  # one journal epoch per wake
+        # The fake fill never embedded, so no model service was started.
+        service.stop.assert_not_called()
         db=self.decision['dbPath']
         self.assertEqual((seen['runtime']['catalog_path'],seen['runtime']['binding_store_path']),
                          (db+worker.CATALOG_SUFFIX,db+worker.BINDING_STORE_SUFFIX))
-        service.stop.assert_called_once_with()
 
     def test_rounds_are_bounded_and_pending_is_retained(self):
         self.stores()
@@ -591,6 +597,30 @@ class CapacityWorkerChecks(unittest.TestCase):
                 worker.run(self.project,coordinator=controller,
                            start_service=lambda *a,**k:calls.append(1))
         self.assertEqual(calls,[])
+
+    def test_qa_barrier_with_capacity_stores_fails_before_model_start(self):
+        self.stores()
+        controller,_service,_start,patches,_seen=self.capacity_wiring([])
+        calls=[]
+        with self._patches(patches),patch.object(worker,'qa_sync_barrier',return_value=object()):
+            with self.assertRaisesRegex(IndexContractError,'qa_barrier_capacity_unsupported'):
+                worker.run(self.project,coordinator=controller,
+                           start_service=lambda *a,**k:calls.append(1))
+        self.assertEqual(calls,[])
+
+    def test_busy_catalog_defers_the_wake(self):
+        self.stores()
+        controller,_service,start,patches,seen=self.capacity_wiring([])
+        def runtime(**_kwargs):
+            context=MagicMock();context.__enter__.return_value=context
+            context.request_scan.return_value={'status':'busy'}
+            return context
+        patches=[p for p in patches if getattr(p,'attribute',None)!='LayaIndexRuntime']
+        patches.append(patch.object(worker,'LayaIndexRuntime',side_effect=runtime))
+        with self._patches(patches):
+            result=worker.run(self.project,coordinator=controller,start_service=start)
+        self.assertEqual(result,{'state':'deferred','reason':'catalog_busy'})
+        self.assertEqual(seen['steps'],[])
 
     def test_shared_store_mode_fails_closed(self):
         self.stores(mode=0o644)
@@ -620,13 +650,35 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         for path in (catalog,store):os.chmod(path,0o600)
 
     def run_capacity(self):
-        with patch.object(worker,'prepare_candidate_batch_off_hook',
-                          side_effect=lambda *_a:self.fail('capacity path built a full batch')):
-            return self.run_worker()
+        decision=self.decision
+        def cas(path,expected):
+            self.assertEqual((path,expected),(decision['journalPath'],self.epoch))
+            self.epoch+=1;self.marks.append(self.epoch)
+            return {'epoch':self.epoch,'newWriteSeen':True}
+        def start(manifest,*,admit):
+            self.assertTrue(admit())
+            service=Mock();self.services.append(service)
+            return service
+        controller=Coordinator();controller.root=self.home
+        before=len(self.services)
+        patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
+            patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
+            patch.object(worker,'resource_report',return_value={'ready':True}),
+            patch.object(worker,'verify_worker_attestation',return_value={'synthetic':True}),
+            patch.object(worker,'verify_selected_route',side_effect=lambda _d:self.proof()),
+            patch.object(worker,'cas_mark_new_write',side_effect=cas),
+            patch.object(worker,'prepare_candidate_batch_off_hook',
+                         side_effect=lambda *_a:self.fail('capacity path built a full batch'))]
+        with WorkerChecks._patches(patches):
+            result=worker.run(self.home,coordinator=controller,start_service=start)
+        for service in self.services[before:]:
+            service.stop.assert_called_once_with()
+        return result,len(self.services)-before
 
     def test_capacity_origin_unchanged_then_one_edit(self):
         self.stores()
-        first=self.run_capacity()
+        first,started=self.run_capacity()
+        self.assertEqual(started,1)
         self.assertEqual(first['state'],'indexed')
         self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
         self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
@@ -640,15 +692,21 @@ class V2CapacityWorkerChecks(unittest.TestCase):
                                      self.provider_class()({'synthetic':True})))
             finally:
                 index.db.commit()
-        second=self.run_capacity()
+        second,started=self.run_capacity()
+        self.assertEqual(started,0)  # nothing to embed: no model load at all
         self.assertEqual((second['state'],second['generation']),('unchanged',first['generation']))
         self.assertEqual(len(self.embedded),2)  # cached chunk sets, no inference
         self.assertEqual(self.marks,[8])        # no second write fence
         (self.beta/'two.md').write_text('green heron',encoding='utf-8')
-        third=self.run_capacity()
+        # A file created between wakes is seen: the wake requests its scan.
+        (self.alpha/'three.md').write_text('amber crane',encoding='utf-8')
+        third,started=self.run_capacity()
+        self.assertEqual(started,1)
         self.assertEqual(third['state'],'indexed')
         self.assertNotEqual(third['generation'],first['generation'])
-        self.assertEqual(self.embedded[2:],['beta/two.md'])
+        self.assertEqual(sorted(self.embedded[2:]),['alpha/three.md','beta/two.md'])
+        self.assertEqual(self.members(third['generation']),
+                         ['alpha/one.md','alpha/three.md','beta/two.md'])
 
 
 if __name__=='__main__':unittest.main()

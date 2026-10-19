@@ -1069,7 +1069,8 @@ class LayaSourceCatalog:
         """Durable vector fill progress for ``(snapshot, profile_id)``.
 
         ``cursor`` is the last member path whose chunk set is known complete;
-        ``done`` means every eligible member is. Another snapshot or profile
+        ``done`` means every eligible member is; ``rows`` counts the chunk rows
+        of the members up to ``cursor``, as a generation seal would. Another snapshot or profile
         starts from the beginning. The table is created on first write, so an
         older catalog file without it reads as no progress.
         """
@@ -1081,23 +1082,24 @@ class LayaSourceCatalog:
                                      "AND name='vector_fill'").fetchone()
             if exists is None:
                 return None
-            return self.db.execute('SELECT cursor,done FROM vector_fill '
+            return self.db.execute('SELECT cursor,done,rows FROM vector_fill '
                                    'WHERE seq=? AND profile_id=?',
                                    (snapshot.seq, profile_id)).fetchone()
         row = self._read(read)
         if row is None:
-            return {'cursor': '', 'done': False}
-        return {'cursor': row[0], 'done': bool(row[1])}
+            return {'cursor': '', 'done': False, 'rows': 0}
+        return {'cursor': row[0], 'done': bool(row[1]), 'rows': row[2]}
 
     def set_vector_fill(self, snapshot: CatalogSnapshot, profile_id: str,
-                        cursor: str, done: bool) -> bool:
+                        cursor: str, done: bool, rows: int = 0) -> bool:
         """Record fill progress; False when the catalog is busy or moved on.
 
         Rows of other snapshots are dropped in the same write, so the table
         holds at most one row per profile.
         """
         if (not isinstance(snapshot, CatalogSnapshot) or not _HEX64.match(profile_id or '')
-                or not isinstance(cursor, str) or type(done) is not bool):
+                or not isinstance(cursor, str) or type(done) is not bool
+                or type(rows) is not int or rows < 0):
             raise ValueError('invalid vector fill record')
         if not self._begin_write():
             return False
@@ -1108,10 +1110,10 @@ class LayaSourceCatalog:
             self.db.execute('CREATE TABLE IF NOT EXISTS vector_fill('
                             'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
                             'cursor TEXT NOT NULL, done INTEGER NOT NULL, '
-                            'PRIMARY KEY(seq, profile_id))')
+                            'rows INTEGER NOT NULL, PRIMARY KEY(seq, profile_id))')
             self.db.execute('DELETE FROM vector_fill WHERE seq<>?', (snapshot.seq,))
-            self.db.execute('INSERT OR REPLACE INTO vector_fill VALUES(?,?,?,?)',
-                            (snapshot.seq, profile_id, cursor, int(done)))
+            self.db.execute('INSERT OR REPLACE INTO vector_fill VALUES(?,?,?,?,?)',
+                            (snapshot.seq, profile_id, cursor, int(done), rows))
             self.db.commit()
             return True
         except BaseException:

@@ -126,6 +126,17 @@ class HostCapacityTests(HostCapacityCase):
         self.assertTrue(all('edited' not in row['body'] for row in rows))
         self.assertGreaterEqual(query.finish()['dropped'].get('hash_mismatch', 0), 1)
 
+    def test_foreign_generation_row_poisons_the_whole_query(self):
+        query = self.pinned()
+        good = query.verify_rows(self.runtime.index.search(self.token, '"otter"', 5),
+                                 collection_names=('raw',))
+        self.assertTrue(good)
+        foreign = dict(good[0], generation='g-' + '0' * 32)
+        with self.assertRaises(IndexContractError):
+            query.verify_rows([foreign], collection_names=('raw',))
+        with self.assertRaises(IndexContractError):
+            query.finish()
+
     def test_full_scan_path_still_fails_closed_on_the_same_change(self):
         self.pinned()
         (self.raw / 'a.md').write_text('# A\nalpha otter, edited after sync\n',

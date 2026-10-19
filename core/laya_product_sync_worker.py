@@ -253,9 +253,12 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     source_root = _route_source(decision)
     # A mis-armed QA barrier fails before any model start or index write.
     qa = qa_sync_barrier(decision)
-    # The QA race barrier holds a full-scan batch, so QA keeps the full-scan
-    # path. A malformed capacity store fails here, before any model start.
-    capacity = None if qa is not None else _capacity_paths(decision)
+    # A malformed capacity store fails here, before any model start.
+    capacity = _capacity_paths(decision)
+    if capacity is not None and qa is not None:
+        # The QA race barrier holds a full-scan batch, but host recall would
+        # use the capacity path for the same stores: the two would disagree.
+        raise IndexContractError('qa_barrier_capacity_unsupported')
     provider = ReviewedLocalQmdProvider(proof['providerManifest'])
     profile = proof['vectorProfile']
     if (provider.profile['profile_id'] != profile['profileId'] or
@@ -265,6 +268,9 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         raise IndexContractError('selected_provider_profile_mismatch')
     controller = coordinator or Coordinator()
     observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
+    if capacity is not None:
+        return _run_capacity(decision, proof, source_root, capacity, provider, controller,
+                             observed, start_service)
     try:
         with controller.activity('provider', EMBED_POLICY, observed):
             # The hook's sealed stat receipt is a fast freshness fence. This
@@ -291,13 +297,10 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise ResourceDeferred('laya_sync_yield_priority')
                         return provider.embed_document_chunks(body, path)
 
-                stores = ({} if capacity is None else
-                          {'catalog_path': capacity[0], 'binding_store_path': capacity[1]})
                 with LayaIndexRuntime(source_root=source_root,
                                       scope=decision['scopeId'], db_path=decision['dbPath'],
                                       queue_path=decision['queuePath'],
-                                      db_incarnation=decision['dbIncarnation'],
-                                      **stores) as runtime:
+                                      db_incarnation=decision['dbIncarnation']) as runtime:
                     def before_publish():
                         nonlocal proof
                         if verify_selected_route(decision) != proof:
@@ -313,13 +316,6 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise IndexContractError('new_write_proof_unconfirmed')
                         proof = fresh
 
-                    if capacity is not None:
-                        result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
-                                                controller, lambda: verify_selected_route(decision)
-                                                != proof)
-                        if verify_selected_route(decision) != proof:
-                            raise IndexContractError('selected_proof_changed')
-                        return _checked(result)
                     batch = prepare_candidate_batch_off_hook(runtime, AdmittedProvider())
                     if verify_selected_route(decision) != proof:
                         raise IndexContractError('selected_proof_changed')
@@ -356,32 +352,112 @@ def _checked(result):
     return result
 
 
+def _run_capacity(decision, proof, source_root, capacity, provider, controller,
+                  observed, start_service):
+    """One wake on the capacity path.
+
+    Admission is the same provider lane as the full-scan path, but the model
+    service starts only when the fill has a file to embed, so a wake with no
+    new content loads no model. The journal new-write fence runs once per
+    wake: later publishes in the same wake only re-check the refreshed proof,
+    so concurrent hook queries see at most one epoch change.
+    """
+    from contextlib import ExitStack
+    state = {'proof': proof, 'service': None, 'fenced': False}
+
+    def proof_ok():
+        return verify_selected_route(decision) == state['proof']
+
+    def before_publish():
+        if not proof_ok():
+            raise IndexContractError('selected_proof_changed')
+        if state['fenced']:
+            return
+        current = state['proof']
+        marked = cas_mark_new_write(decision['journalPath'], current['selectionEpoch'])
+        if (marked.get('epoch') != current['selectionEpoch'] + 1 or
+                marked.get('newWriteSeen') is not True):
+            raise IndexContractError('new_write_intent_unconfirmed')
+        fresh = verify_selected_route(decision)
+        if (fresh.get('selectionEpoch') != marked['epoch'] or
+                fresh.get('productRouteAllowed') is not True):
+            raise IndexContractError('new_write_proof_unconfirmed')
+        state['proof'] = fresh
+        state['fenced'] = True
+
+    try:
+        with ExitStack() as stack:
+            stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+
+            def ensure_service():
+                if state['service'] is not None:
+                    return
+                # The full native closure is rehashed before any model load.
+                validated = verify_worker_attestation(decision)
+                if validated != state['proof']['providerManifest'] or not proof_ok():
+                    raise IndexContractError('selected_provider_proof_changed')
+
+                def admit():
+                    fresh = resource_report(EMBED_POLICY, detailed=True)
+                    return controller.check(EMBED_POLICY, fresh)['ready']
+                service = start_service(validated, admit=admit)
+                stack.callback(service.stop)
+                state['service'] = service
+                if not proof_ok():
+                    raise IndexContractError('selected_proof_changed')
+
+            class AdmittedProvider:
+                manifest = provider.manifest
+                profile = provider.profile
+
+                def embed_document_chunks(self, body, path):
+                    if _higher_priority_wake(controller):
+                        raise ResourceDeferred('laya_sync_yield_priority')
+                    ensure_service()
+                    return provider.embed_document_chunks(body, path)
+
+            with LayaIndexRuntime(source_root=source_root, scope=decision['scopeId'],
+                                  db_path=decision['dbPath'], queue_path=decision['queuePath'],
+                                  db_incarnation=decision['dbIncarnation'],
+                                  catalog_path=capacity[0],
+                                  binding_store_path=capacity[1]) as runtime:
+                result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
+                                        controller, lambda: not proof_ok())
+            if not proof_ok():
+                raise IndexContractError('selected_proof_changed')
+    except ResourceDeferred as exc:
+        return {'state': 'deferred', 'reason': str(exc)}
+    return _checked(result)
+
+
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed):
     """Bounded sync_step / vector_fill_step rounds for one wake.
 
-    ``sync_step`` never loads a model; it asks for ``vector_backlog`` until
-    the fill has cached every member, then seals and publishes. Chunk sets
-    already filled stay cached when this wake yields or stops.
+    The wake is the change signal (edits, Bash and SessionStart request it),
+    so it first asks the catalog for a scan; a pending scan is marked to run
+    once more. ``sync_step`` never loads a model; it asks for
+    ``vector_backlog`` until the fill has cached every member, then seals and
+    publishes. Chunk sets already filled stay cached when this wake stops.
     """
     from laya_vector_capacity import provider_profile_id, vector_fill_step
     profile_id = provider_profile_id(provider)
 
     def should_yield():
         return _higher_priority_wake(controller)
+    if runtime.request_scan().get('status') == 'busy':
+        return {'state': 'deferred', 'reason': 'catalog_busy'}
     result = None
-    for round_ in range(MAX_CAPACITY_ROUNDS):
+    for _ in range(MAX_CAPACITY_ROUNDS):
         if should_yield():
             raise ResourceDeferred('laya_sync_yield_priority')
         if proof_changed():
             raise IndexContractError('selected_proof_changed')
-        # A wake is the only change signal until CUD detection calls
-        # request_scan, so each wake asks for one scan (coalesced if pending).
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
-                           vector_profile_id=profile_id, rescan=round_ == 0)
+                           vector_profile_id=profile_id)
         if result['state'] != 'pending':
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield)
-            if fill['state'] == 'deferred':
-                return {'state': 'deferred', 'reason': fill['reason']}
+            if fill['state'] in ('deferred', 'blocked'):
+                return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result

@@ -284,5 +284,73 @@ class VectorFillTests(VectorFillCase):
             vc.provider_profile_id(Wrong())
 
 
+class ReviewFixTests(VectorFillCase):
+    """Findings from the 2026-10-19 subagent review of the capacity follow-up."""
+
+    def test_over_budget_snapshot_blocks_before_staging(self):
+        self.corpus(3)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        import laya_index_vector
+        with mock.patch.object(laya_index_vector, 'MAX_CANDIDATES', 2):
+            answer = self.fill(runtime)[-1]
+        self.assertEqual((answer['state'], answer['reason']),
+                         ('blocked', 'vector_budget_exceeded'))
+        self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+        gated = self.step(runtime)
+        self.assertEqual((gated['state'], gated['reason']), ('pending', 'vector_backlog'))
+        self.assertIsNone(self.head(runtime))
+
+    def test_provider_refusal_blocks_with_the_path(self):
+        self.write('a.md', '# A\nfine\n')
+        self.write('b.md', '# B\nrefused\n')
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def refuse(body, path):
+            if path.endswith('b.md'):
+                raise IndexContractError('provider_text_invalid')
+            return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}]
+        self.provider.embed_document_chunks = refuse
+        answer = self.fill(runtime)[-1]
+        self.assertEqual((answer['state'], answer['reason'], answer['path']),
+                         ('blocked', 'vector_member_rejected', 'plans/b.md'))
+        self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+
+    def test_deterministic_seal_failure_retires_the_job(self):
+        self.corpus(2)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        self.fill(runtime)
+        import laya_index_vector
+        with mock.patch.object(laya_index_vector.LayaVectorIndex, 'seal_generation',
+                               side_effect=IndexContractError('vector_provenance_mismatch')):
+            failed = self.step(runtime)
+        self.assertNotEqual(failed['state'], 'deferred')
+        self.assertIsNone(self.head(runtime))
+        # Nothing is left retained to defer every later call.
+        self.assertEqual(runtime.queue.active_for_scope(SCOPE), [])
+        self.assertEqual(self.sync(runtime)['state'], 'indexed')
+
+    def test_lexical_head_is_resealed_instead_of_unchanged(self):
+        self.corpus(2)
+        runtime = self.runtime()
+        for _ in range(1000):
+            lexical = sync_step(runtime, before_publish=lambda: None)
+            if lexical['state'] != 'pending':
+                break
+        self.assertEqual(lexical['state'], 'indexed')
+        resealed = self.sync(runtime)
+        self.assertEqual(resealed['state'], 'indexed')
+        self.assertNotEqual(resealed['generation'], lexical['generation'])
+        runtime.index.db.execute('BEGIN')
+        try:
+            proof = verify_generation_seal(runtime.index, resealed['generation'])
+        finally:
+            runtime.index.db.commit()
+        self.assertEqual(proof['profile_id'], self.profile_id)
+        self.assertEqual(self.step(runtime)['state'], 'unchanged')
+
+
 if __name__ == '__main__':
     unittest.main()
