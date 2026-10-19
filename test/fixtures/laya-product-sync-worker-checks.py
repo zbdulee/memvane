@@ -27,6 +27,7 @@ from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import prepare_candidate_batch_off_hook
 from laya_index_vector import profile_identity, qmd_markdown_title
 import laya_index_sync
+import laya_vector_capacity
 
 
 class Coordinator:
@@ -741,6 +742,208 @@ class V2WorkerChecks(unittest.TestCase):
         self.assertIn('(generation %s;'%results[0]['generation'],after)
         self.assertIn('title: South dam card',after)
         self.assertIn('"beta/dam-card.md"',after)
+
+
+class CapacityWorkerChecks(unittest.TestCase):
+    """Capacity-path selection inside run(); sync_step and the fill are fakes."""
+    # Borrow the helpers only; inheriting would run WorkerChecks' tests twice.
+    setUp=WorkerChecks.setUp
+    wiring=WorkerChecks.wiring
+    _patches=WorkerChecks.__dict__['_patches']
+
+    def stores(self,*,catalog=True,bindings=True,mode=0o600):
+        db=Path(self.decision['dbPath'])
+        for want,suffix in ((catalog,worker.CATALOG_SUFFIX),(bindings,worker.BINDING_STORE_SUFFIX)):
+            if want:
+                path=db.with_name(db.name+suffix);path.write_text('');path.chmod(mode)
+
+    def capacity_wiring(self,steps,fills=()):
+        controller,service,calls,start,patches=self.wiring(
+            sync=lambda *_a,**_k:self.fail('capacity path reached sync_full'))
+        marked=[]
+        def verify(_decision):
+            return self.refreshed if marked else self.proof
+        def cas(_journal,_epoch):
+            marked.append(1);seen['cas']+=1;return {'epoch':8,'newWriteSeen':True}
+        seen={'steps':[],'fills':0,'runtime':None,'scans':0,'cas':0}
+        answers=iter(steps);fill_answers=iter(fills)
+        def step(runtime,*,before_publish,require_vector,vector_profile_id):
+            self.assertTrue(require_vector)
+            self.assertEqual(seen['scans'],1)  # the wake asked for its scan first
+            seen['steps'].append(vector_profile_id)
+            answer=next(answers)
+            if answer['state']=='indexed':
+                before_publish();before_publish()  # two publishes, one fence
+            return answer
+        def fill(_runtime,_provider,*,should_yield):
+            seen['fills']+=1;return next(fill_answers)
+        def runtime(**kwargs):
+            seen['runtime']=kwargs
+            context=MagicMock();context.__enter__.return_value=context
+            def request_scan():
+                seen['scans']+=1;return {'status':'started'}
+            context.request_scan.side_effect=request_scan
+            return context
+        patches=[p for p in patches if getattr(p,'attribute',None) not in
+                 ('verify_selected_route','cas_mark_new_write','LayaIndexRuntime')]
+        patches+=[patch.object(worker,'verify_selected_route',side_effect=verify),
+                  patch.object(worker,'cas_mark_new_write',side_effect=cas),
+                  patch.object(worker,'LayaIndexRuntime',side_effect=runtime),
+                  patch.object(worker,'sync_step',side_effect=step),
+                  patch('laya_vector_capacity.vector_fill_step',side_effect=fill),
+                  patch('laya_vector_capacity.provider_profile_id',return_value='9'*64),
+                  patch.object(worker,'prepare_candidate_batch_off_hook',
+                               side_effect=lambda *_a:self.fail('capacity path built a full batch'))]
+        return controller,service,start,patches,seen
+
+    def test_both_stores_route_through_sync_step_and_fill(self):
+        self.stores()
+        controller,service,start,patches,seen=self.capacity_wiring(
+            [{'state':'pending','reason':'vector_backlog'},{'state':'indexed','generation':'g'}],
+            [{'state':'complete'}])
+        with self._patches(patches):
+            result=worker.run(self.project,coordinator=controller,start_service=start)
+        self.assertEqual(result,{'state':'indexed','generation':'g'})
+        self.assertEqual(seen['steps'],['9'*64,'9'*64])
+        self.assertEqual(seen['fills'],1)
+        self.assertEqual(seen['cas'],1)  # one journal epoch per wake
+        # The fake fill never embedded, so no model service was started.
+        service.stop.assert_not_called()
+        db=self.decision['dbPath']
+        self.assertEqual((seen['runtime']['catalog_path'],seen['runtime']['binding_store_path']),
+                         (db+worker.CATALOG_SUFFIX,db+worker.BINDING_STORE_SUFFIX))
+
+    def test_rounds_are_bounded_and_pending_is_retained(self):
+        self.stores()
+        backlog={'state':'pending','reason':'scan_pending'}
+        controller,service,start,patches,seen=self.capacity_wiring(
+            [backlog]*worker.MAX_CAPACITY_ROUNDS)
+        with self._patches(patches):
+            result=worker.run(self.project,coordinator=controller,start_service=start)
+        self.assertEqual(result,backlog)
+        self.assertEqual(len(seen['steps']),worker.MAX_CAPACITY_ROUNDS)
+        with patch('laya_product_sync_worker.run',return_value=backlog):
+            self.assertFalse(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
+
+    def test_one_store_without_the_other_fails_before_model_start(self):
+        self.stores(bindings=False)
+        controller,service,start,patches,_seen=self.capacity_wiring([])
+        calls=[]
+        with self._patches(patches):
+            with self.assertRaisesRegex(IndexContractError,'capacity_store_incomplete'):
+                worker.run(self.project,coordinator=controller,
+                           start_service=lambda *a,**k:calls.append(1))
+        self.assertEqual(calls,[])
+
+    def test_qa_barrier_with_capacity_stores_fails_before_model_start(self):
+        self.stores()
+        controller,_service,_start,patches,_seen=self.capacity_wiring([])
+        calls=[]
+        with self._patches(patches),patch.object(worker,'qa_sync_barrier',return_value=object()):
+            with self.assertRaisesRegex(IndexContractError,'qa_barrier_capacity_unsupported'):
+                worker.run(self.project,coordinator=controller,
+                           start_service=lambda *a,**k:calls.append(1))
+        self.assertEqual(calls,[])
+
+    def test_busy_catalog_defers_the_wake(self):
+        self.stores()
+        controller,_service,start,patches,seen=self.capacity_wiring([])
+        def runtime(**_kwargs):
+            context=MagicMock();context.__enter__.return_value=context
+            context.request_scan.return_value={'status':'busy'}
+            return context
+        patches=[p for p in patches if getattr(p,'attribute',None)!='LayaIndexRuntime']
+        patches.append(patch.object(worker,'LayaIndexRuntime',side_effect=runtime))
+        with self._patches(patches):
+            result=worker.run(self.project,coordinator=controller,start_service=start)
+        self.assertEqual(result,{'state':'deferred','reason':'catalog_busy'})
+        self.assertEqual(seen['steps'],[])
+
+    def test_shared_store_mode_fails_closed(self):
+        self.stores(mode=0o644)
+        controller,_service,_start,patches,_seen=self.capacity_wiring([])
+        with self._patches(patches):
+            with self.assertRaisesRegex(IndexContractError,'capacity_store_unsafe'):
+                worker.run(self.project,coordinator=controller,start_service=lambda *a,**k:None)
+
+
+class V2CapacityWorkerChecks(unittest.TestCase):
+    """The real runtime, catalog, binding store and sync_step behind run()."""
+    setUp=V2WorkerChecks.setUp
+    proof=V2WorkerChecks.proof
+    provider_class=V2WorkerChecks.provider_class
+    run_worker=V2WorkerChecks.run_worker
+    members=V2WorkerChecks.members
+
+    def stores(self):
+        from laya_index_capacity import GenerationBindingStore
+        from laya_source_catalog import LayaSourceCatalog
+        roots=self.decision['collectionRoots']
+        catalog=str(self.index_path)+worker.CATALOG_SUFFIX
+        store=str(self.index_path)+worker.BINDING_STORE_SUFFIX
+        LayaSourceCatalog(catalog,roots,SCOPE,create=True).close()
+        GenerationBindingStore(store,scope=SCOPE,db_incarnation=self.incarnation,
+                               roots=roots,create=True).close()
+        for path in (catalog,store):os.chmod(path,0o600)
+
+    def run_capacity(self):
+        decision=self.decision
+        def cas(path,expected):
+            self.assertEqual((path,expected),(decision['journalPath'],self.epoch))
+            self.epoch+=1;self.marks.append(self.epoch)
+            return {'epoch':self.epoch,'newWriteSeen':True}
+        def start(manifest,*,admit):
+            self.assertTrue(admit())
+            service=Mock();self.services.append(service)
+            return service
+        controller=Coordinator();controller.root=self.home
+        before=len(self.services)
+        patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
+            patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
+            patch.object(worker,'resource_report',return_value={'ready':True}),
+            patch.object(worker,'verify_worker_attestation',return_value={'synthetic':True}),
+            patch.object(worker,'verify_selected_route',side_effect=lambda _d:self.proof()),
+            patch.object(worker,'cas_mark_new_write',side_effect=cas),
+            patch.object(worker,'prepare_candidate_batch_off_hook',
+                         side_effect=lambda *_a:self.fail('capacity path built a full batch'))]
+        with WorkerChecks._patches(patches):
+            result=worker.run(self.home,coordinator=controller,start_service=start)
+        for service in self.services[before:]:
+            service.stop.assert_called_once_with()
+        return result,len(self.services)-before
+
+    def test_capacity_origin_unchanged_then_one_edit(self):
+        self.stores()
+        first,started=self.run_capacity()
+        self.assertEqual(started,1)
+        self.assertEqual(first['state'],'indexed')
+        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
+        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.marks,[8])
+        with closing(LayaIndexA(self.index_path)) as index:
+            from laya_index_vector import verify_generation_seal
+            index.db.execute('BEGIN')
+            try:
+                self.assertEqual(verify_generation_seal(index,first['generation'])['profile_id'],
+                                 laya_vector_capacity.provider_profile_id(
+                                     self.provider_class()({'synthetic':True})))
+            finally:
+                index.db.commit()
+        second,started=self.run_capacity()
+        self.assertEqual(started,0)  # nothing to embed: no model load at all
+        self.assertEqual((second['state'],second['generation']),('unchanged',first['generation']))
+        self.assertEqual(len(self.embedded),2)  # cached chunk sets, no inference
+        self.assertEqual(self.marks,[8])        # no second write fence
+        (self.beta/'two.md').write_text('green heron',encoding='utf-8')
+        # A file created between wakes is seen: the wake requests its scan.
+        (self.alpha/'three.md').write_text('amber crane',encoding='utf-8')
+        third,started=self.run_capacity()
+        self.assertEqual(started,1)
+        self.assertEqual(third['state'],'indexed')
+        self.assertNotEqual(third['generation'],first['generation'])
+        self.assertEqual(sorted(self.embedded[2:]),['alpha/three.md','beta/two.md'])
+        self.assertEqual(self.members(third['generation']),
+                         ['alpha/one.md','alpha/three.md','beta/two.md'])
 
 
 if __name__=='__main__':unittest.main()

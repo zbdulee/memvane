@@ -7,6 +7,13 @@ The caller first verifies the installer-owned selected route and rechecks it
 after this call. This module never selects a project, migrates QMD, invokes a
 model, or deletes index data. Separate index/queue DBs offer receipt-first
 redelivery, not a power-loss atomic transaction.
+
+``sync_step`` is the capacity path for a runtime opened with a catalog and a
+binding store: one finite call drains a bounded number of retained claims,
+publishes the catalog's current COMPLETE snapshot under a bound generation
+name when the head does not already serve it, or advances the durable scan
+by one step budget. The catalog, store and generation stage are separate
+transactions; the stage itself is one full-corpus A-int transaction.
 """
 from __future__ import annotations
 
@@ -19,7 +26,7 @@ import stat
 import uuid
 
 from laya_index_a import IndexContractError
-from laya_index_flow import process_one
+from laya_index_flow import process_bound_one, process_one
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_source_port import scan, scan_collections
 from laya_index_vector import (qmd_markdown_title as _qmd_markdown_title,
@@ -317,3 +324,283 @@ def sync_full(runtime: LayaIndexRuntime, *, before_publish,
         if outcome == 'ack':
             return _result('indexed', job['gen'], job['claim'])
         return _result('deferred', job['gen'], job['claim'], outcome)
+
+
+def _stale_detail(exc):
+    from laya_index_source_port import SourceStale
+    cause = exc.__cause__
+    return str(cause) if isinstance(cause, SourceStale) else str(exc)
+
+
+def _head_sealed(index, gen, profile_id):
+    """True when ``gen`` carries a valid vector seal under ``profile_id``.
+
+    A head published lexically, or sealed under another profile (a model
+    change), does not serve a vector route; it is recaptured and resealed
+    instead of being reported ``unchanged`` forever.
+    """
+    from laya_index_flow import _verify_bound_seal
+    try:
+        _verify_bound_seal(index, gen, profile_id)
+    except IndexContractError:
+        return False
+    return True
+
+
+def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False,
+              vector_profile_id=None,
+              max_files=200, max_bytes=5_000_000, max_stats=2_000,
+              max_claims=8, rescan=False) -> dict:
+    """One finite capacity-path sync unit for a product worker; call repeatedly.
+
+    Under the queue owner lock, in order:
+
+    1. At most ``max_claims`` retained claims are processed through
+       ``process_bound_one`` (receipt ACK, or the job's own stored binding;
+       unbound legacy claims are retired as ``replan``). More remaining is
+       ``pending``/``claim_backlog``.
+    2. If the catalog's COMPLETE snapshot has a manifest, root nodes,
+       incarnation or exclusion epoch that the head does not serve, one bound
+       generation is captured, its binding persisted, its claim queued, then
+       staged (streamed) and published; ``indexed`` on ACK. This also runs
+       while a newer scan is pending (``require_complete`` allows it), so an
+       exclusion or an unbound/unreadable head binding is repaired even when
+       that scan is long or deferred on an oversized file. A failed attempt
+       (changed member, replaced root) requests a rescan. While a newer scan
+       is pending, a snapshot this runtime already found served or unusable
+       under the same head and exclusion epoch is not captured or staged
+       again; ``snapshot_unusable`` repeats the first failure. That memo is
+       in-process: a new runtime checks such a snapshot once more.
+    3. ``rescan=True`` requests a scan unless one is already pending; with no
+       snapshot and no scan at all one is requested to bootstrap.
+    4. One ``catalog.step`` with the given budget. A step that completes the
+       scan goes back to 2 once.
+
+    The head's stored binding is evidence, never a precondition: if it cannot
+    be read, the head is not treated as served. A damaged row or store gives
+    a replacement generation (or, if the store cannot take the new binding
+    either, no publish); a busy store skips publishing for this call. Either
+    way the scan is still stepped, the answer carries ``binding_store``
+    (``reason``, ``detail``), and with no scan to step the answer is
+    ``deferred``/``binding_store_busy`` or ``binding_store_unavailable``.
+
+    ``pending`` (scan or claim backlog; durable, see ``catalog``) and
+    ``deferred`` (retry; ``reason``) are never a completed update. A file
+    larger than ``max_bytes`` is ``deferred``/``file_exceeds_step_bytes`` with
+    ``required`` = the byte budget that fits it; the same budget gets the
+    same answer without reading the file. A scan blocked by a source change
+    is restarted (``pending``/``scan_restarted``); any other block is
+    ``blocked`` until a later ``request_scan``.
+
+    ``require_vector=True`` needs ``vector_profile_id``. A snapshot is
+    captured only after ``laya_vector_capacity.vector_fill_step`` has cached
+    a chunk set for every eligible member (``pending``/``vector_backlog``
+    until then); the generation is then sealed from that cache before
+    publish, so this call never loads a model. A head serves the snapshot
+    (``unchanged``) only if it also carries a seal under this profile; a
+    lexical-only or other-profile head is recaptured and resealed.
+    """
+    if not isinstance(runtime, LayaIndexRuntime):
+        raise TypeError('explicit_runtime_required')
+    if not callable(before_publish):
+        raise TypeError('before_publish_required')
+    if (type(require_vector) is not bool or type(rescan) is not bool
+            or type(max_claims) is not int or max_claims < 1):
+        raise TypeError('invalid_sync_step')
+    if require_vector and not (isinstance(vector_profile_id, str)
+                               and len(vector_profile_id) == 64):
+        raise TypeError('vector_profile_required')
+    if runtime.catalog is None or runtime.binding_store is None:
+        raise IndexContractError('capacity_not_configured')
+    from laya_index_capacity import (binding_store_busy, capture_bound_generation_binding,
+                                     enqueue_bound_generation, generation_digest,
+                                     persist_generation_binding, same_bound_source)
+    from laya_source_catalog import PENDING_PHASES
+    index, queue = runtime.index, runtime.queue
+    catalog, store = runtime.catalog, runtime.binding_store
+    with _owner_lock(queue.path) as owned:
+        if not owned:
+            return _result('deferred', reason='owner_busy')
+        if queue.binding() != index.incarnation():
+            raise IndexContractError('queue_index_binding_mismatch')
+        fenced = False
+        completed = None
+        unusable = None
+        store_error = None
+
+        def ensure_fenced():
+            nonlocal fenced
+            if not fenced:
+                before_publish()
+                fenced = True
+
+        def answer(state, generation=None, claim=None, reason=None, **extra):
+            out = _result(state, generation, claim, reason)
+            out.update(extra)
+            if unusable is not None:
+                out['snapshot_unusable'] = unusable
+            if store_error is not None:
+                out['binding_store'] = store_error
+            out['catalog'] = catalog.status()
+            return out
+
+        def store_failed(exc):
+            nonlocal store_error
+            store_error = {'reason': ('binding_store_busy' if binding_store_busy(exc)
+                                      else 'binding_store_unavailable'),
+                           'detail': _stale_detail(exc)}
+
+        def rescan_unless_pending():
+            # A request during a pending scan would chain one more full scan.
+            scan = catalog.status()['active']
+            if scan is None or scan['phase'] not in PENDING_PHASES:
+                catalog.request_scan()
+
+        def process(job, recover=False):
+            ensure_fenced()
+            outcome = process_bound_one(index, queue, catalog, store, job['claim'],
+                                        recover=recover, require_vector=require_vector,
+                                        vector_profile_id=vector_profile_id)
+            if outcome == 'replan' and generation_digest(job['gen']) is not None:
+                # A member may have changed after the snapshot; only a new
+                # complete scan can produce a publishable binding.
+                rescan_unless_pending()
+            return outcome
+
+        def head_generation():
+            head, _epoch = _head(runtime)
+            return head[0] if head else None
+
+        def publish_current(pending):
+            """An answer, 'unchanged', or None when no snapshot is usable."""
+            nonlocal unusable
+            try:
+                snapshot = catalog.require_complete()
+            except IndexContractError:
+                return None
+            head, epoch = _head(runtime)
+            # The verdict for this snapshot under this head and exclusion
+            # epoch: None = served, else the unusable detail. It is reused
+            # only while a newer scan is pending; otherwise every call
+            # re-captures, which is what notices a replaced root while idle.
+            key = (snapshot, head[0] if head else None, epoch)
+            memo = runtime._snapshot_verdict
+            if pending and memo is not None and memo[0] == key:
+                if memo[1] is None:
+                    return 'unchanged'
+                unusable = memo[1]
+                return None
+            served = None
+            if head is not None and generation_digest(head[0]) is not None:
+                try:
+                    served = store.get(runtime.scope, head[0], store.db_incarnation)
+                except IndexContractError as exc:
+                    # Unreadable evidence never counts as served. A damaged row
+                    # gets a replacement generation; a busy store is retried.
+                    store_failed(exc)
+                    if binding_store_busy(exc):
+                        return None
+            try:
+                binding = capture_bound_generation_binding(index, catalog, snapshot)
+            except IndexContractError as exc:
+                # Replaced root or replaced snapshot: never publish it; rescan
+                # and let this call step the new scan.
+                unusable = _stale_detail(exc)
+                runtime._snapshot_verdict = (key, unusable)
+                rescan_unless_pending()
+                return None
+            if (head is not None and head[1] == binding.source_manifest
+                    and head[2] == epoch and same_bound_source(served, binding)
+                    and (not require_vector or _head_sealed(index, head[0],
+                                                            vector_profile_id))):
+                runtime._snapshot_verdict = (key, None)
+                return 'unchanged'
+            if require_vector and not catalog.vector_fill(snapshot, vector_profile_id)['done']:
+                # Not memoized: the fill advances between calls. While a newer
+                # scan is pending, step it instead: a member that changed
+                # after this snapshot can stop the fill until that scan lands.
+                if pending:
+                    return None
+                return answer('pending', head_generation(), reason='vector_backlog')
+            ensure_fenced()
+            try:
+                persist_generation_binding(store, index, binding)  # before queue and publish
+            except IndexContractError as exc:
+                store_failed(exc)
+                return None
+            job = enqueue_bound_generation(queue, binding, head[0] if head else None)
+            outcome = process(job)
+            if outcome == 'ack':
+                return answer('indexed', job['gen'], job['claim'])
+            if outcome == 'replan':
+                # The full re-read refused this snapshot (changed member, moved
+                # head or epoch); a pending rescan is the only way forward.
+                unusable = 'bound_claim_replanned'
+                runtime._snapshot_verdict = (key, unusable)
+                return answer('pending', head_generation(), job['claim'], 'replan')
+            return answer('deferred', job['gen'], job['claim'], outcome)
+
+        def unchanged():
+            gen = head_generation()
+            if completed is not None and gen == completed['gen']:
+                return answer('indexed', completed['gen'], completed['claim'])
+            if store_error is not None:
+                return answer('deferred', gen, reason=store_error['reason'],
+                              detail=store_error['detail'])
+            if gen is None:
+                return answer('pending', reason='no_complete_snapshot')
+            if unusable is not None:
+                return answer('pending', gen, reason='snapshot_unusable')
+            return answer('unchanged', gen, reason='intent_fenced' if fenced else None)
+
+        active = queue.active_for_scope(runtime.scope)
+        for job in active[:max_claims]:
+            outcome = process(job, recover=job['state'] == 'leased')
+            if outcome == 'ack':
+                completed = job
+            elif outcome != 'replan':
+                return answer('deferred', job['gen'], job['claim'], outcome)
+        if len(active) > max_claims:
+            return answer('pending', head_generation(), reason='claim_backlog',
+                          claims_pending=len(active) - max_claims)
+
+        status = catalog.status()
+        published = publish_current(status['active'] is not None
+                                    and status['active']['phase'] in PENDING_PHASES)
+        if isinstance(published, dict):
+            return published
+        if rescan or (status['active'] is None and status['current'] is None):
+            rescan_unless_pending()
+
+        scan = catalog.status()['active']
+        if scan is not None and scan['phase'] == 'blocked':
+            if scan['blocked_reason'] != 'source_changed':
+                return answer('blocked', head_generation(), reason=scan['blocked_reason'],
+                              detail=scan['detail'])
+            catalog.request_scan()
+            return answer('pending', head_generation(), reason='scan_restarted',
+                          detail=scan['detail'])
+        if scan is None or scan['phase'] not in PENDING_PHASES:
+            return unchanged()
+        step = catalog.step(max_files, max_bytes, max_stats)
+        if step['status'] == 'complete':
+            published = publish_current(False)
+            return published if isinstance(published, dict) else unchanged()
+        if step['status'] == 'pending':
+            return answer('pending', head_generation(), reason='scan_pending',
+                          work=step['work'])
+        if step['status'] == 'deferred':
+            return answer('deferred', head_generation(), reason=step['deferred']['reason'],
+                          path=step['deferred']['path'],
+                          required={'max_bytes': step['deferred']['size']},
+                          work=step['work'])
+        if step['status'] == 'blocked':
+            if step['blocked']['reason'] == 'source_changed':
+                catalog.request_scan()
+                return answer('pending', head_generation(), reason='scan_restarted',
+                              detail=step['blocked']['detail'])
+            return answer('blocked', head_generation(), reason=step['blocked']['reason'],
+                          detail=step['blocked']['detail'])
+        if step['status'] == 'busy':
+            return answer('deferred', head_generation(), reason='catalog_busy')
+        return unchanged()

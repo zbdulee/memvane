@@ -285,7 +285,7 @@ def host_payload(host: str, context: str) -> dict:
 
 def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, limit,
                    *, collection_roots=None, collection_names=None,
-                   verified_source=None, sealed_view=None):
+                   verified_source=None, sealed_view=None, row_verifier=None):
     from laya_index_vector import LayaVectorIndex, search_vector_verified
     pinned = LayaVectorIndex(runtime.index).profile_for_pin(token)
     if (pinned["scope"] != runtime.scope
@@ -308,6 +308,17 @@ def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, lim
         deadline_seconds=2.0)
     if collection_names is not None:
         query['path_prefixes'] = tuple(name + '/' for name in collection_names)
+    if row_verifier is not None:
+        # Capacity path: only the returned candidates are read and rehashed.
+        from laya_index_source_port import _seal
+        if sealed_view is None or _seal(runtime.index, token) != sealed_view:
+            _fail('selected_source_view_changed')
+        rows = LayaVectorIndex(runtime.index).search_exact(token, supplied['vector'],
+                                                             **query)
+        verified = row_verifier(rows)
+        if _seal(runtime.index, token) != sealed_view:
+            _fail('selected_source_view_changed')
+        return verified
     if verified_source is not None:
         from laya_index_source_port import _seal, _verify_row
         if sealed_view is None or _seal(runtime.index, token) != sealed_view:
@@ -478,18 +489,37 @@ def _promote_exact_ep(rows: list[dict], prompt: str) -> list[dict]:
 
 
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
-              patterns, min_score, skip_paths):
-    """One collection-scoped QMD-style phase over the same sealed pin."""
+              patterns, min_score, skip_paths, candidates=None):
+    """One collection-scoped QMD-style phase over the same sealed pin.
+
+    Without ``candidates`` every row is checked against one live scan of all
+    roots. With a ``CandidateQuery`` only the returned rows are read and
+    rehashed; a stale row is dropped instead of failing the query.
+    """
     from keywords import (build_lexical_terms, select_general_terms_explained,
                           GENERAL_LEX_TERM_CAP)
     from laya_index_a import IndexContractError
     from laya_index_source_port import (STALE, _raise_stale, _seal, _verify_row,
                                         scan_collections)
     sealed = _seal(runtime.index, token)
-    source = scan_collections(roots, sealed[0], runtime.index)
-    if source.manifest != sealed[2]:
-        raise IndexContractError(STALE) from _SealedManifestMismatch(
-            'collection manifest differs from view seal')
+    if candidates is None:
+        source = scan_collections(roots, sealed[0], runtime.index)
+        if source.manifest != sealed[2]:
+            raise IndexContractError(STALE) from _SealedManifestMismatch(
+                'collection manifest differs from view seal')
+
+        def check(rows):
+            return [_verify_row(row, sealed[0], sealed[1], source) for row in rows]
+        vector_check = None
+    else:
+        source = None
+
+        def check(rows):
+            # Same row shape as the full-scan path; the catalog snapshot id
+            # is query evidence, not part of a result row.
+            return [{key: row[key] for key in _ROW_KEYS}
+                    for row in candidates.verify_rows(rows, collection_names=names)]
+        vector_check = check
     prefixes = tuple(name + '/' for name in names)
 
     def verified_batch(queries, limit, *, deadline_seconds):
@@ -504,8 +534,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         for rows in batches:
             if not isinstance(rows, list) or len(rows) > limit:
                 _raise_stale('collection search exceeded limit')
-            checked = [_verify_row(row, sealed[0], sealed[1], source)
-                       for row in rows]
+            checked = check(rows)
             if any(not row['path'].startswith(prefixes) for row in checked):
                 _raise_stale('search escaped collection scope')
             verified.append(checked)
@@ -566,7 +595,8 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     vector_rows = _pinned_vector(runtime, token, ' '.join(prompt.split()), profile,
                                  provider, HYBRID_LIST_LIMIT,
                                  collection_roots=roots, collection_names=names,
-                                 verified_source=source, sealed_view=sealed)
+                                 verified_source=source, sealed_view=sealed,
+                                 row_verifier=vector_check)
     lists.append(vector_rows)
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
     filtered = [row for row in fused if row['score'] >= min_score and
@@ -680,11 +710,24 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
     if (not wiki or not raw or settings['recallStrategy'] != 'hierarchical'):
         _fail('selected_recall_settings_unsupported')
     token, _generation = runtime.index.pin(runtime.scope)
+    candidates = None
     try:
+        if getattr(runtime, 'binding_store', None) is not None:
+            from laya_index_capacity import open_pinned_candidate_query
+            # Fails closed when the pinned generation has no stored binding.
+            candidates = open_pinned_candidate_query(runtime.index, token,
+                                                     runtime.binding_store)
+
+        def deliver(rows, title_only):
+            # Candidate rows are deliverable only after finish() re-checks
+            # the seal, incarnation and live roots; if it raises, none are.
+            if candidates is not None:
+                candidates.finish()
+            return rows, title_only
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
-            tuple(settings['skipPaths']))
+            tuple(settings['skipPaths']), candidates)
         import wiki_freshness
         pending = wiki_freshness.unresolved_pending_refreshes_strict(
             Path(decision['projectRoot']))
@@ -696,16 +739,20 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                 if row['path'].rsplit('/', 1)[-1] not in ('index.md', 'log.md')
                 and _verified_wiki_row(row, decision, pending_sources, located)]
         if rows:
+            delivered = deliver(rows, (frozenset() if body_evidence else
+                                       frozenset(row['path'] for row in rows)))
+            # Only after finish(): a failed query contributes no locations.
             if source_locations is not None:
                 source_locations.update(located)
-            return rows, (frozenset() if body_evidence else
-                          frozenset(row['path'] for row in rows))
+            return delivered
         rows, _ = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             raw, tuple(settings['lexicalPatterns']),
-            settings['rawFallbackMinScore'], tuple(settings['skipPaths']))
-        return rows, frozenset()
+            settings['rawFallbackMinScore'], tuple(settings['skipPaths']), candidates)
+        return deliver(rows, frozenset())
     finally:
+        if candidates is not None:
+            candidates.close()
         runtime.index.release(token)
 
 
@@ -1002,14 +1049,23 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if (type(top_n) is not int or not 1 <= top_n <= MAX_ROWS
             or patterns not in ([], ["ep"])):
         _fail("selected_recall_settings_unsupported")
-    source_root = (next(iter(decision['collectionRoots'].values())) if v2
-                   else decision['sourceRoot'])
+    from laya_index_runtime import capacity_store_paths
+    capacity = capacity_store_paths(decision["dbPath"]) if v2 else None
+    if capacity is not None:
+        # The catalog binds every collection root; never one of them.
+        source_root = decision['collectionRoots']
+        stores = {'catalog_path': capacity[0], 'binding_store_path': capacity[1]}
+    else:
+        source_root = (next(iter(decision['collectionRoots'].values())) if v2
+                       else decision['sourceRoot'])
+        stores = {}
     locations: dict[str, tuple[str, ...]] = {}
     try:
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
-                              db_incarnation=decision["dbIncarnation"]) as runtime:
+                              db_incarnation=decision["dbIncarnation"],
+                              **stores) as runtime:
             if v2:
                 rows, title_only = query_selected_v2(
                     runtime, prompt, decision["vectorProfile"],

@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 import shutil
 import sqlite3
@@ -18,7 +18,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 from laya_index_a import LayaIndexA
-from laya_index_claim_queue import ClaimQueue
+from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 import laya_index_host_route as host
 import laya_install_journal as journal
 import laya_product_install as product_install
@@ -92,6 +92,8 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_qmd_cutover.py', 'laya_qmd_migration.py',
                  'laya_product_sync_worker.py',
                  'laya_index_sync.py',
+                 'laya_source_catalog.py', 'laya_index_capacity.py',
+                 'laya_vector_capacity.py',
                  'laya_package.py', 'laya_install_binding.py',
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
@@ -507,6 +509,48 @@ print(json.dumps(result))'''
                 product_install.prepare_owned_qmd_origin(**kwargs)
             self.assertFalse(backup.exists())
             raw.write_text(body_raw, encoding='utf-8')
+            queue = self.install / 'laya-claims.sqlite'
+            staged = []
+
+            class SyntheticKill(BaseException):
+                pass
+
+            def killed_create(path, *, index_incarnation=None):
+                # Model SIGKILL after the exclusive open, before SQLite init.
+                os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600))
+                staged.append(Path(path))
+                raise SyntheticKill()
+
+            with mock.patch.object(ClaimQueue, 'create', side_effect=killed_create):
+                with self.assertRaises(SyntheticKill):
+                    product_install.prepare_owned_qmd_origin(**kwargs)
+            self.assertEqual(len(staged), 1)
+            self.assertEqual(staged[0].parent.parent, self.install.resolve())
+            self.assertTrue(staged[0].parent.name.startswith('.laya-claims-'))
+            self.assertFalse(queue.exists(), 'interrupted stage must not reach final path')
+            self.assertTrue((self.install / 'laya-candidate.sqlite').is_file())
+            self.assertIn('provider', calls)
+            prior = list(calls)
+            # A pre-fix in-place create left an empty final queue: retained and
+            # rejected, never clobbered.
+            queue.write_bytes(b'')
+            with self.assertRaises(UnknownDatabase):
+                product_install.prepare_owned_qmd_origin(**kwargs)
+            self.assertEqual(queue.read_bytes(), b'')
+            queue.unlink()  # synthetic explicit recovery
+            stale_wal = Path(str(queue) + '-wal')
+            stale_wal.write_bytes(b'stale queue pages')
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'partial_queue_requires_recovery'):
+                product_install.prepare_owned_qmd_origin(**kwargs)
+            self.assertFalse(queue.exists())
+            self.assertEqual(stale_wal.read_bytes(), b'stale queue pages')
+            stale_wal.unlink()  # synthetic explicit recovery
+            # A killed private stage survives under its own name; retry
+            # neither reuses nor removes it.
+            residue = self.install / '.laya-claims-killed'
+            residue.mkdir(mode=0o700)
+            (residue / 'claims.sqlite').write_bytes(b'partial')
             with mock.patch('laya_qmd_cutover.bind_qmd_origin',
                             side_effect=RuntimeError('synthetic pre-bind interruption')):
                 with self.assertRaisesRegex(RuntimeError,
@@ -514,13 +558,23 @@ print(json.dumps(result))'''
                     product_install.prepare_owned_qmd_origin(**kwargs)
             self.assertTrue(backup.is_file())
             self.assertFalse(self.route_path.exists())
-            prior = list(calls)
+            self.assertEqual(queue.lstat().st_nlink, 1)
+            linked = self.install / '.laya-claims-linked'
+            linked.mkdir(mode=0o700)
+            os.link(queue, linked / 'claims.sqlite')
+            self.assertEqual(queue.lstat().st_nlink, 2)
             prepared = product_install.prepare_owned_qmd_origin(**kwargs)
         self.assertEqual(prepared['status'], 'cutover_prepared')
         self.assertEqual(prepared['cutoverPhase'], 'prepared')
         self.assertEqual(calls, prior, 'sealed retry must not rerun model')
         self.assertTrue((self.install / 'laya-candidate.sqlite').is_file())
-        self.assertTrue((self.install / 'laya-claims.sqlite').is_file())
+        self.assertTrue(queue.is_file())
+        self.assertEqual(queue.lstat().st_nlink, 1)
+        self.assertFalse((linked / 'claims.sqlite').exists())
+        self.assertEqual((residue / 'claims.sqlite').read_bytes(), b'partial')
+        route = json.loads((self.install / 'reviewed-route.json').read_text())
+        with closing(ClaimQueue.open(queue)) as opened:
+            self.assertEqual(opened.binding(), route['dbIncarnation'])
         self.assertTrue((self.install / 'reviewed-route.json').is_file())
         self.assertTrue((self.install / 'qmd-cutover.json').is_file())
         self.assertFalse(self.route_path.exists())
