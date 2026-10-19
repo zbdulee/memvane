@@ -172,11 +172,13 @@ def _multi_compile_supported(raw: dict, cfg: dict, root: Path,
         return not config.compile_active(compile_cfg)
     if mode != 'auto-wiki' or compile_cfg.get('mode') != 'auto-wiki':
         return False
+    # session_start_source is its own explicit consent; it is never widened
+    # from post_tool_source/post_sync_source.
+    active = {'post_tool_source', 'post_sync_source', 'session_start_source'}
     triggers = raw_compile.get('triggers')
     if (not isinstance(triggers, list) or triggers != compile_cfg.get('triggers')
-            or not set(triggers) & {'post_tool_source', 'post_sync_source'}
-            or any(trigger not in ('post_tool_source', 'post_sync_source', 'manual')
-                   for trigger in triggers)
+            or not set(triggers) & active
+            or any(trigger not in active | {'manual'} for trigger in triggers)
             or compile_cfg.get('recallVerifiedOnly') is not True
             or compile_cfg.get('verify', {}).get('enabled') is not True):
         return False

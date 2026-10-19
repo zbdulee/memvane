@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -39,6 +40,9 @@ _PROVIDER_RESULT_KEYS = frozenset({"profileId", "approvedProviderId",
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"})
 _PROVED_NOOP_ACTIONS = frozenset({"topical-event", "topical-stop", "topical-reconcile"})
 _PATCH_PATH = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$")
+_LOCATOR = re.compile(r"([^#]+)#L([1-9][0-9]{0,7})-L([1-9][0-9]{0,7})")
+MAX_SOURCE_LOCATIONS = 16
+SHOWN_SOURCE_LOCATIONS = 3
 
 
 class HostResponseError(ValueError):
@@ -108,10 +112,47 @@ def _quoted_body(body: str) -> list[str]:
     return lines
 
 
+def _location_line(locators: object) -> str:
+    """Host metadata for verifier-cited source lines; never a quoted body line."""
+    if (not isinstance(locators, tuple) or not locators
+            or len(locators) > MAX_SOURCE_LOCATIONS):
+        _fail("invalid_source_locations")
+    for locator in locators:
+        match = _LOCATOR.fullmatch(locator) if isinstance(locator, str) else None
+        if (match is None or _UNSAFE_PATH.search(match.group(1))
+                or len(match.group(1)) > MAX_PATH_CHARS
+                or any(part in ("", ".", "..") for part in match.group(1).split("/"))
+                or int(match.group(3)) < int(match.group(2))):
+            _fail("invalid_source_locations")
+    shown = ", ".join(f'"{locator}"' for locator in locators[:SHOWN_SOURCE_LOCATIONS])
+    more = len(locators) - SHOWN_SOURCE_LOCATIONS
+    suffix = f" (+{more} more)" if more > 0 else ""
+    return ("  source lines cited by verifier (excerpt locations, not per-claim proof): "
+            + shown + suffix)
+
+
 def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
                    ranking: str = "cosine_distance",
-                   title_only_paths: frozenset[str] = frozenset()) -> str:
-    """Render fully validated rows or raise; never return a partial context."""
+                   title_only_paths: frozenset[str] = frozenset(),
+                   source_locations: dict | None = None) -> str:
+    """Render fully validated rows or raise; never return a partial context.
+
+    ``source_locations`` maps a returned wiki row path to its verified span
+    locators. They are optional metadata: if they alone would exceed the
+    context budget they are all dropped, never a subset.
+    """
+    if source_locations:
+        try:
+            return _render_context(decision, rows, limit, ranking, title_only_paths,
+                                   source_locations)
+        except HostResponseError as exc:
+            if str(exc) != "result_context_too_large":
+                raise
+    return _render_context(decision, rows, limit, ranking, title_only_paths, {})
+
+
+def _render_context(decision, rows, limit, ranking, title_only_paths,
+                    source_locations) -> str:
     if not isinstance(decision, dict) or decision.get("state") != "candidate":
         _fail("unselected_route")
     scope = decision.get("scopeId")
@@ -139,6 +180,8 @@ def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
             or not isinstance(title_only_paths, frozenset)
             or any(not isinstance(path, str) for path in title_only_paths)):
         _fail("invalid_route_context")
+    if not isinstance(source_locations, dict):
+        _fail("invalid_source_locations")
     if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
         _fail("invalid_result_limit")
     if ranking not in ("cosine_distance", "hybrid_rrf"):
@@ -146,11 +189,14 @@ def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
     if not isinstance(rows, (tuple, list)) or len(rows) > limit:
         _fail("invalid_result_count")
     if not rows:
+        if source_locations:
+            _fail("invalid_source_locations")
         return f"[laya-index] {collection}: search completed; 0 matching documents."
     wiki_names = ({item['name'] for item in collections if item['role'] == 'wiki'}
                   if collections is not None else set())
     generation = None
     seen = set()
+    located = set()
     lines = []
     for row in rows:
         if not isinstance(row, dict) or set(row) != _ROW_KEYS:
@@ -199,6 +245,9 @@ def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
             if not title or _UNSAFE_BODY.search(title):
                 _fail('wiki_result_unverified')
             lines.append('  | title: ' + title[:200])
+            if row["path"] in source_locations:
+                lines.append(_location_line(source_locations[row["path"]]))
+                located.add(row["path"])
             if path not in title_only_paths:
                 summary, _complete = recall.extract_card_body(normalized, end + 5)
                 if summary:
@@ -210,6 +259,9 @@ def render_context(decision: dict, rows: object, *, limit: int = MAX_ROWS,
             lines.extend(_quoted_body(body))
     if not title_only_paths.issubset(seen):
         _fail("invalid_title_only_paths")
+    if set(source_locations) != located:
+        # Locations for a raw row or an absent path are never silently ignored.
+        _fail("invalid_source_locations")
     meaning = ("lower cosine distance is closer" if ranking == "cosine_distance"
                else "higher hybrid rank score ranks first")
     header = (f"[laya-index] {collection}: {len(rows)} verified source documents "
@@ -531,30 +583,53 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
 
 
 def _verified_wiki_row(row: dict, decision: dict,
-                       pending_sources: frozenset[str] = frozenset()) -> bool:
-    """Accept only compiler-proven wiki bytes whose raw revisions are current."""
+                       pending_sources: frozenset[str] = frozenset(),
+                       source_locations: dict | None = None) -> bool:
+    """Accept only compiler-proven wiki bytes whose raw revisions are current.
+
+    An optional ``sourceSpans`` list must be complete and current: each span is
+    bound to one of the card's revisions and re-hashed against the same full
+    source bytes the revision check reads. A malformed or stale present list
+    rejects the card (raw backfill remains); an absent list is a legacy
+    file-level card. Verified locators go to ``source_locations[path]``.
+    """
+    located = _verified_wiki_locations(row, decision, pending_sources)
+    if located is None:
+        return False
+    if source_locations is not None and located:
+        source_locations[row['path']] = located
+    return True
+
+
+def _verified_wiki_locations(row: dict, decision: dict,
+                             pending_sources: frozenset[str]) -> tuple[str, ...] | None:
     import recall
+    import source_spans
     import wiki_freshness
     import yaml_scalars
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     if not body.startswith('---\n'):
-        return False
+        return None
     end = body.find('\n---\n', 4)
     if end < 0:
-        return False
+        return None
     block = body[4:end]
     fields = recall.parse_frontmatter_scalars(block)
     revisions = recall.frontmatter_source_revisions(block)
     meta = {'status': fields.get('status'), 'createdBy': fields.get('createdBy'),
             'sourceRevisions': revisions}
     if not recall.is_auto_trusted_card(meta):
-        return False
+        return None
     # Selected v2 requires a body digest even though the legacy reader accepts
     # old verified cards without it. Migration must restamp such cards first.
     expected_body = fields.get('verifiedBodyHash')
     if (not isinstance(expected_body, str) or not _HEX64.fullmatch(expected_body)
             or yaml_scalars.card_body_hash(body) != expected_body):
-        return False
+        return None
+    span_state, spans = source_spans.read_card_spans(block)
+    if (span_state == source_spans.INVALID
+            or not source_spans.bound_to_revisions(spans, revisions)):
+        return None
     project = Path(decision['projectRoot'])
     roots = decision['collectionRoots']
     roles = {item['name']: item['role'] for item in decision['collections']}
@@ -562,28 +637,40 @@ def _verified_wiki_row(row: dict, decision: dict,
         normalized = yaml_scalars.normalize_source_revision(revision)
         if (normalized is None or roles.get(normalized['collection']) != 'raw'
                 or normalized['path'] in pending_sources):
-            return False
+            return None
         raw_root = Path(roots[normalized['collection']])
         try:
             candidate = project / normalized['path']
             relative = candidate.relative_to(raw_root)
             if (not relative.parts or any(part in ('', '.', '..') for part in relative.parts)
                     or candidate.resolve(strict=True) != candidate):
-                return False
+                return None
         except (OSError, RuntimeError, ValueError):
-            return False
-        current = wiki_freshness.snapshot_file(candidate)
-        if (current is None or current['sha256'] != normalized['sha256']
+            return None
+        # One stable read serves both the revision check and every span on it.
+        snapshot = wiki_freshness.snapshot_bytes(candidate)
+        if snapshot is None:
+            return None
+        current, data = snapshot
+        if (current['sha256'] != normalized['sha256']
                 or current['size'] != normalized['size']
                 or current['mtimeNs'] != normalized['mtimeNs']):
-            return False
-    return True
+            return None
+        if any(span['path'] == normalized['path'] and not source_spans.verify_span(span, data)
+               for span in spans):
+            return None
+    return tuple(source_spans.locator(span) for span in spans)
 
 
 def query_selected_v2(runtime, prompt: str, route_profile: dict,
                       approved_profile: dict, approved_provider,
-                      decision: dict) -> tuple[list[dict], frozenset[str]]:
-    """Wiki first, raw backfill on one pin; no model work in the hook."""
+                      decision: dict, *, source_locations: dict | None = None,
+                      ) -> tuple[list[dict], frozenset[str]]:
+    """Wiki first, raw backfill on one pin; no model work in the hook.
+
+    ``source_locations`` (optional, caller-owned) receives verified span
+    locators for the returned wiki rows only; it stays empty on raw backfill.
+    """
     _provider_ready(prompt, route_profile, approved_profile, approved_provider)
     roots = decision['collectionRoots']
     settings = decision['recallSettings']
@@ -604,10 +691,13 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
         if pending is None:
             _fail('wiki_pending_refresh_unknown')
         pending_sources = frozenset(item['sourcePath'] for item in pending)
+        located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
                 if row['path'].rsplit('/', 1)[-1] not in ('index.md', 'log.md')
-                and _verified_wiki_row(row, decision, pending_sources)]
+                and _verified_wiki_row(row, decision, pending_sources, located)]
         if rows:
+            if source_locations is not None:
+                source_locations.update(located)
             return rows, (frozenset() if body_evidence else
                           frozenset(row['path'] for row in rows))
         rows, _ = _v2_phase(
@@ -683,6 +773,107 @@ def _request_stale_sync(decision: dict, proof: dict):
     _fail("index_stale_sync_queued")
 
 
+def _request_selected_sync(action: str, decision: dict, proof: dict, *,
+                           start: bool = True) -> None:
+    """The hook's sync wake and its checks; raises on any refusal.
+
+    start=False records the durable wakes without starting the owner; the
+    caller then starts it on every exit path.
+    """
+    import runtime_work
+    from laya_install_journal import verify_selected_route
+    # Pass start only when deferring, so the default path keeps the
+    # preexisting request(kind, root) call shape.
+    defer = {} if start else {'start': False}
+    result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
+    if 'collections' in decision and action not in ('index', 'file-change-event'):
+        import compile_paths
+        import wiki_freshness
+        root = Path(decision['projectRoot'])
+        pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
+        if pending is None:
+            _fail('wiki_pending_refresh_unknown')
+        queues = (compile_paths.ledger(root, compile_paths.SOURCE_QUEUE),
+                  compile_paths.ledger(root, compile_paths.VERIFY_QUEUE))
+        if any(path is None for path in queues):
+            _fail('selected_compile_queue_unsafe')
+        if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
+            compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
+                                                  **defer)
+            if (not isinstance(compile_result, dict) or
+                    compile_result.get('status') not in ('queued', 'busy')):
+                _fail('selected_compile_enqueue_failed')
+    refreshed = verify_selected_route(decision)
+    # The owner may have started and advanced the journal epoch before
+    # request() returns. Keep the installed identity fixed, while allowing
+    # that one expected monotonic field to move forward.
+    stable = lambda row: {key: value for key, value in row.items()
+                          if key != "selectionEpoch"}
+    if (stable(refreshed) != stable(proof)
+            or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
+        _fail("selected_proof_changed")
+    if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
+        _fail("selected_sync_enqueue_failed")
+
+
+def _start_owner() -> None:
+    """Start the owner of wakes recorded with start=False; best effort.
+
+    The rows are durable, so any later wake still runs them. Same gate as
+    runtime_work.request's own start.
+    """
+    try:
+        import runtime_work
+        if os.environ.get('QMD_RUNTIME_DISPATCH') != '1':
+            runtime_work.hook_wake()
+    except Exception:
+        pass
+
+
+def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
+    """Activate a passed hook's grant, then record a wake that follows it.
+
+    A run already in flight saw the grant provisional and did not use it, and
+    its revision-scoped ACK may land before activation, so the earlier
+    coalesced wake is no proof that a later run exists. This request bumps
+    the same key: a still pending wake only coalesces (one run), a running
+    one is re-pended, an ACKed one is inserted anew (the only case subject to
+    queue capacity). Without that wake the grant is withdrawn, never left
+    for an unrelated later wake.
+    """
+    import laya_wiki_discovery
+    import runtime_work
+    try:
+        accepted = laya_wiki_discovery.activate_grant(decision, kind, grant)
+    except laya_wiki_discovery.GrantUncertain as exc:
+        _start_owner()
+        raise HostResponseError('selected_wiki_grant_revoke_failed') from exc
+    except Exception:
+        accepted = False  # a failed write was withdrawn before it propagated
+    if not accepted:
+        try:
+            laya_wiki_discovery.revoke_grant(decision, grant)
+        except Exception:
+            pass  # not active: inert
+        _start_owner()
+        _fail('selected_wiki_grant_failed')
+    try:
+        result = runtime_work.request('laya-sync', decision['projectRoot'])
+    except Exception:
+        result = None
+        _start_owner()
+    if isinstance(result, dict) and result.get('status') in ('queued', 'busy'):
+        return
+    try:
+        live = laya_wiki_discovery.revoke_grant(decision, grant)
+    except Exception as exc:
+        raise HostResponseError('selected_wiki_grant_revoke_failed') from exc
+    if live:
+        _fail('selected_wiki_wake_failed')
+    # Already used or retired by a run that took the lock after activation:
+    # its scan followed this event, so the event is served.
+
+
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Prove the installed route before opening A-int; unsupported actions fail."""
     if action not in ({"recall", "gate", "posttool", "compile", "update", "update-queued", "index",
@@ -748,34 +939,39 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         import runtime_work
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
-        result = runtime_work.request("laya-sync", decision["projectRoot"])
-        if 'collections' in decision and action not in ('index', 'file-change-event'):
-            import compile_paths
-            import wiki_freshness
-            root = Path(decision['projectRoot'])
-            pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
-            if pending is None:
-                _fail('wiki_pending_refresh_unknown')
-            queues = (compile_paths.ledger(root, compile_paths.SOURCE_QUEUE),
-                      compile_paths.ledger(root, compile_paths.VERIFY_QUEUE))
-            if any(path is None for path in queues):
-                _fail('selected_compile_queue_unsafe')
-            if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
-                compile_result = runtime_work.request('laya-compile', decision['projectRoot'])
-                if (not isinstance(compile_result, dict) or
-                        compile_result.get('status') not in ('queued', 'busy')):
-                    _fail('selected_compile_enqueue_failed')
-        refreshed = verify_selected_route(decision)
-        # The owner may have started and advanced the journal epoch before
-        # request() returns. Keep the installed identity fixed, while allowing
-        # that one expected monotonic field to move forward.
-        stable = lambda row: {key: value for key, value in row.items()
-                              if key != "selectionEpoch"}
-        if (stable(refreshed) != stable(proof)
-                or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
-            _fail("selected_proof_changed")
-        if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
-            _fail("selected_sync_enqueue_failed")
+        grant_failed = False
+        grant = grant_kind = None
+        if decision.get('collectionRoots') and action != 'index':
+            # Provisional record of this event only, made before the wake so
+            # the scan of any run that may use it follows the event. Compile
+            # consent stays the existing trigger gate, applied off-hook when
+            # raw changes are discovered; index, stale recall and wiki-card
+            # sync grant nothing.
+            import laya_wiki_discovery
+            grant_kind = 'sync' if action == 'file-change-event' else 'session_start'
+            try:
+                grant = laya_wiki_discovery.record_grant(decision, grant_kind)
+            except Exception:
+                grant_failed = True
+        try:
+            # With a grant, the owner starts only after activation, so the
+            # usual run is the one that can already use it.
+            _request_selected_sync(action, decision, proof, start=grant is None)
+        except BaseException:
+            if grant is not None:
+                # Still provisional: no run can use it, so withdrawal only
+                # frees its slot. The recorded wakes still need their owner.
+                try:
+                    laya_wiki_discovery.revoke_grant(decision, grant)
+                except Exception:
+                    pass
+                _start_owner()
+            raise
+        if grant_failed:
+            # The sync wake is recorded; only this event's compile grant is not.
+            _fail("selected_wiki_grant_failed")
+        if grant is not None:
+            _accept_wiki_grant(decision, grant_kind, grant)
         if action in ("index", "file-change-event"):
             return {}
         notice = "[laya-index] selected source update queued; recall requires a fresh published view."
@@ -808,6 +1004,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("selected_recall_settings_unsupported")
     source_root = (next(iter(decision['collectionRoots'].values())) if v2
                    else decision['sourceRoot'])
+    locations: dict[str, tuple[str, ...]] = {}
     try:
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
@@ -816,7 +1013,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             if v2:
                 rows, title_only = query_selected_v2(
                     runtime, prompt, decision["vectorProfile"],
-                    proof["vectorProfile"], provider, decision)
+                    proof["vectorProfile"], provider, decision,
+                    source_locations=locations)
             else:
                 rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
                                              proof["vectorProfile"], provider,
@@ -831,10 +1029,12 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if verify_selected_route(decision) != proof:
         _fail("selected_proof_changed")
     chosen = rows[:top_n]
+    chosen_paths = {row['path'] for row in chosen}
     context = render_context(decision, chosen, limit=top_n,
                              ranking="hybrid_rrf",
-                             title_only_paths=title_only.intersection(
-                                 row['path'] for row in chosen))
+                             title_only_paths=title_only.intersection(chosen_paths),
+                             source_locations={path: spans for path, spans in locations.items()
+                                               if path in chosen_paths})
     return host_payload(host, context)
 
 

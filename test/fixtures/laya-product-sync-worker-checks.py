@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Selected worker wiring only; no model, QMD, socket or host is started."""
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, redirect_stderr, redirect_stdout
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import threading
@@ -14,12 +17,15 @@ from unittest.mock import MagicMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_product_sync_worker as worker
 import runtime_work
+import runtime_wake_policy
 from context_learning.local_cycle import ResourceDeferred
+import laya_host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
+import laya_index_host_route as host_route
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import prepare_candidate_batch_off_hook
-from laya_index_vector import qmd_markdown_title
+from laya_index_vector import profile_identity, qmd_markdown_title
 import laya_index_sync
 
 
@@ -278,17 +284,18 @@ class V2WorkerChecks(unittest.TestCase):
                            {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}],
             'collectionRoots':{'alpha':str(self.alpha),'beta':str(self.beta)}}
         self.epoch=7;self.marks=[];self.embedded=[];self.batches=[];self.services=[]
+        self.profile=PROFILE
 
     def proof(self):
         return {'productRouteAllowed':True,'selectionEpoch':self.epoch,
-                'providerManifest':{'synthetic':True},'vectorProfile':PROFILE}
+                'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
 
     def provider_class(self):
-        test=self
+        test=self;selected=self.profile
         class Provider:
-            profile={'profile_id':PROFILE['profileId'],'model_id':PROFILE['modelId'],
-                     'embedding_fingerprint':PROFILE['embeddingFingerprint'],
-                     'dimension':PROFILE['dimension']}
+            profile={'profile_id':selected['profileId'],'model_id':selected['modelId'],
+                     'embedding_fingerprint':selected['embeddingFingerprint'],
+                     'dimension':selected['dimension']}
             manifest={'recipeId':'qmd-regex-token-chunks-candidate-v1'}
             def __init__(self,manifest):test.assertEqual(manifest,{'synthetic':True})
             def embed_document_chunks(self,body,path):
@@ -504,6 +511,236 @@ class V2WorkerChecks(unittest.TestCase):
                 start.assert_not_called()
                 self.assertEqual(controller.lanes,[])
                 self.assertEqual(snapshot(),before)
+
+    # Gap 1 end to end: the real route record/settings selector, hook entry
+    # point, WakeQueue, drain/dispatch handler and the worker pipeline above.
+    # The journal proof, the warm query provider and the service stay
+    # synthetic; publication is observed only after an explicit drain.
+    def selected_route(self):
+        self.profile={'profileId':profile_identity(PROFILE['modelId'],
+                          PROFILE['embeddingFingerprint'],PROFILE['dimension']),
+            'modelId':PROFILE['modelId'],'embeddingFingerprint':PROFILE['embeddingFingerprint'],
+            'dimension':PROFILE['dimension'],'metric':'cosine',
+            'approvedProviderId':'synthetic-provider','providerArtifactSha256':'e'*64,
+            'providerRelativePath':'core/synthetic_provider.py'}
+        auto=self.home/'.auto-context';auto.mkdir()
+        settings=auto/'settings.json'
+        settings.write_text(json.dumps({'collections':['alpha','beta'],'indexing':True,
+            'collectionPaths':{'alpha':'alpha','beta':'beta'},
+            'collectionRoles':{'alpha':'raw','beta':'wiki'},
+            'recallStrategy':'hierarchical','compile':{'mode':'off'}}),encoding='utf-8')
+        record={'schema':host_route.SCHEMA_V2,'status':'active','projectRoot':str(self.home),
+            'settingsSha256':hashlib.sha256(settings.read_bytes()).hexdigest(),
+            'dbPath':str(self.index_path),'queuePath':str(self.queue_path),
+            'dbIncarnation':self.incarnation,'scopeId':SCOPE,
+            'pluginRoot':str(Path(response.__file__).resolve().parents[1]),
+            'journalPath':str(self.home/'install-journal.sqlite'),'installId':'3'*32,
+            'generation':'g-'+'4'*32,'bundleManifestSha256':'2'*64,
+            'ownershipManifestSha256':'5'*64,'vectorProfile':self.profile,
+            'collections':[{'name':'alpha','role':'raw','sourceRoot':str(self.alpha)},
+                           {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}]}
+        (auto/host_route.RECORD).write_text(json.dumps(record),encoding='utf-8')
+        decision=host_route.select_route(str(self.home),action='update')
+        self.assertEqual(decision['state'],'candidate',decision)
+        # The worker rereads this same route; its journal stays synthetic.
+        self.decision=decision
+
+    def card(self,name,title,summary,source):
+        import yaml_scalars
+        info=source.stat()
+        revision={'kind':'file','path':source.relative_to(self.home).as_posix(),
+                  'collection':'alpha','sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+                  'size':info.st_size,'mtimeNs':info.st_mtime_ns}
+        body=('---\ntitle: %s\nstatus: verified\ncreatedBy: qmd-auto-context\n'
+              'sourceRevisions:\n  - %s\nverifiedBodyHash: {digest}\n---\n'
+              '## Summary\n%s\n')%(title,json.dumps(revision),summary)
+        digest=yaml_scalars.card_body_hash(body.replace('{digest}','0'*64))
+        (self.beta/name).write_text(body.replace('{digest}',digest),encoding='utf-8')
+
+    @contextmanager
+    def hook_world(self):
+        import laya_install_journal
+        import laya_local_embed_provider
+        real_queue=runtime_work.WakeQueue
+        payloads=tempfile.TemporaryDirectory(prefix='laya-hook-payload-')
+        self.addCleanup(payloads.cleanup)
+        self.payloads=Path(payloads.name).resolve();self.queried=[]
+        env={key:value for key,value in os.environ.items()
+             if key not in ('QMD_SANDBOX','QMD_SETUP_GUARD_FIXTURE',worker.QA_BARRIER_ENV)}
+        # HOME bounds config's ancestor search for the nested cwd. Dispatch=1
+        # keeps request() from spawning the UID-global runtime worker.
+        env.update(HOME=str(self.home),QMD_RUNTIME_DISPATCH='1',QMD_RECALL_LOG='')
+        def journal(decision):
+            self.assertEqual(decision['projectRoot'],str(self.home))
+            return self.proof()
+        def provider(manifest):
+            self.assertEqual(manifest,{'synthetic':True})
+            def embed(prompt,profile):
+                self.queried.append(prompt)
+                return {'profileId':profile['profileId'],
+                        'approvedProviderId':profile['approvedProviderId'],
+                        'providerArtifactSha256':profile['providerArtifactSha256'],
+                        'vector':[1.0,0.0]}
+            return embed
+        with patch.dict(os.environ,env,clear=True),\
+                patch.object(runtime_work,'WakeQueue',lambda root=None:real_queue(self.home)),\
+                patch.object(runtime_work,'wake',side_effect=AssertionError('hook spawned')),\
+                patch.object(laya_install_journal,'verify_selected_route',side_effect=journal),\
+                patch.object(laya_local_embed_provider,'ReviewedLocalQmdProvider',
+                             side_effect=provider):
+            yield real_queue(self.home)
+
+    def recall(self,cwd,prompt='where does the otter guard'):
+        path=self.payloads/('payload-%d.json'%len(list(self.payloads.iterdir())))
+        path.write_text(json.dumps({'hook_event_name':'UserPromptSubmit','prompt':prompt,
+                                    'cwd':str(cwd)}),encoding='utf-8')
+        out,err=io.StringIO(),io.StringIO()
+        with redirect_stdout(out),redirect_stderr(err):
+            status=response.main(['serve-hook','recall','claude',str(path),str(cwd)])
+        return status,out.getvalue(),err.getvalue()
+
+    def fresh_context(self,cwd):
+        status,out,err=self.recall(cwd)
+        self.assertEqual((status,err),(0,''))
+        return json.loads(out)['hookSpecificOutput']['additionalContext']
+
+    def assert_refused(self,cwd,code):
+        self.assertEqual(self.recall(cwd),(3,'','[laya-index] %s; QMD fallback refused\n'%code))
+
+    def drain(self,queue):
+        """Explicitly run the pending wake through runtime_handlers.laya_sync."""
+        real_run=worker.run;results=[];errors=[]
+        def handler(project):
+            try:
+                self.assertEqual(project,self.home)
+                # The handler imports worker.run at call time; run_worker
+                # then needs the real function back for its own call.
+                with patch.object(worker,'run',real_run):
+                    results.append(self.run_worker())
+                return results[-1]
+            except BaseException as exc:
+                errors.append(exc);raise
+        def no_wait(_seconds):
+            raise AssertionError('drain retried the wake')
+        try:
+            with patch.object(worker,'run',side_effect=handler):
+                status=runtime_work.drain(queue,ready=lambda:True,sleep=no_wait)
+        finally:
+            if errors:raise errors[0]
+        return status,results
+
+    def assert_published(self,result,members,base):
+        self.assertEqual(result['state'],'indexed')
+        self.assertEqual(self.members(result['generation']),members)
+        with closing(ClaimQueue.open(self.queue_path)) as queue:
+            job=queue.get(result['claim'])
+        self.assertEqual((job['state'],job['gen'],job['base_gen']),
+                         ('acked',result['generation'],base))
+        # Receipt first, then the conditional ACK above matched it.
+        with closing(LayaIndexA(self.index_path)) as index:
+            receipt=index.receipt_detail(result['claim'])
+        self.assertEqual(tuple(receipt),(SCOPE,job['gen'],job['source_manifest'],
+                                         job['claim_digest'],job['claim_epoch']))
+
+    def test_v2_stale_recall_wakes_owner_then_serves_published_raw_and_wiki_crud(self):
+        self.selected_route()
+        river,retired=self.alpha/'river.md',self.alpha/'retired.md'
+        river.write_text('# River\nThe otter guards the north weir.\n',encoding='utf-8')
+        retired.write_text('# Retired\nThe otter lantern stays lit.\n',encoding='utf-8')
+        self.card('river-card.md','North weir card','The otter guards the north weir.',river)
+        first=self.run_worker()
+        self.assertEqual(first['state'],'indexed')
+        with self.hook_world() as queue:
+            before=self.fresh_context(self.home)
+            self.assertIn('(generation %s;'%first['generation'],before)
+            self.assertIn('title: North weir card',before)
+            # A pull/checkout outside any hook: create, edit and delete in
+            # both the raw and the wiki root.
+            river.write_text('# River\nThe otter guards the south dam.\n',encoding='utf-8')
+            retired.unlink()
+            (self.alpha/'estuary.md').write_text('# Estuary\nThe otter swims the south estuary.\n',
+                                                 encoding='utf-8')
+            (self.beta/'two.md').write_text('green heron',encoding='utf-8')
+            (self.beta/'river-card.md').unlink()
+            (self.beta/'sightings.md').write_text('# Sightings\nheron sightings\n',encoding='utf-8')
+            seen=(len(self.queried),len(self.services),len(self.embedded))
+            for _ in range(5):
+                self.assert_refused(self.home,'index_stale_sync_queued')
+            self.assertEqual([(row['kind'],row['target'],row['status'],row['revision'])
+                              for row in queue.pending()],
+                             [('laya-sync',str(self.home),'pending',5)])
+            # Stale hooks call no query provider, start no model and embed nothing.
+            self.assertEqual((len(self.queried),len(self.services),len(self.embedded)),seen)
+            self.assertEqual(self.marks,[8])
+            status,results=self.drain(queue)
+            self.assertEqual(status,{'status':'drained','runs':1})
+            self.assertEqual(queue.pending(),[])
+            self.assertEqual(len(results),1)
+            second=results[0]
+            self.assert_published(second,['alpha/estuary.md','alpha/one.md','alpha/river.md',
+                                          'beta/sightings.md','beta/two.md'],first['generation'])
+            self.assertEqual(self.marks,[8,9])
+            self.assertEqual(sorted(self.embedded[seen[2]:]),
+                             ['alpha/estuary.md','alpha/river.md','beta/sightings.md',
+                              'beta/two.md'])
+            after=self.fresh_context(self.home)
+        # No verified card remains, so recall backfills from the new raw view.
+        self.assertIn('(generation %s;'%second['generation'],after)
+        self.assertIn('The otter guards the south dam.',after)
+        self.assertIn('"alpha/estuary.md"',after)
+        for old in ('north weir','North weir card','river-card.md','lantern','retired.md'):
+            self.assertNotIn(old,after)
+
+    def worktree(self,*,tracked):
+        """A `git worktree add` checkout: another path with tracked files copied."""
+        temp=tempfile.TemporaryDirectory(prefix='laya-worktree-');self.addCleanup(temp.cleanup)
+        root=Path(temp.name).resolve()
+        (root/'.git').write_text('gitdir: %s/.git/worktrees/%s\n'%(self.home,root.name))
+        for name in ('alpha','beta'):shutil.copytree(self.home/name,root/name)
+        if tracked:
+            (root/'.auto-context').mkdir()
+            for name in ('settings.json',host_route.RECORD):
+                shutil.copy2(self.home/'.auto-context'/name,root/'.auto-context'/name)
+        return root
+
+    def test_v2_nested_cwd_shares_wake_and_new_worktree_never_wakes_project(self):
+        self.selected_route()
+        river=self.alpha/'river.md'
+        river.write_text('# River\nThe otter guards the south dam.\n',encoding='utf-8')
+        nested=self.alpha/'drafts';nested.mkdir()
+        first=self.run_worker()
+        self.assertEqual(first['state'],'indexed')
+        copied,untracked=self.worktree(tracked=True),self.worktree(tracked=False)
+        with self.hook_world() as queue:
+            before=self.fresh_context(nested)
+            self.assertIn('(generation %s;'%first['generation'],before)
+            self.assertNotIn('South dam card',before)
+            # Wiki create outside any hook.
+            self.card('dam-card.md','South dam card','The otter guards the south dam.',river)
+            for cwd in (nested,self.home,nested):
+                self.assert_refused(cwd,'index_stale_sync_queued')
+            key=runtime_wake_policy.wake_key('laya-sync',str(self.home))
+            pending=[(row['id'],row['target'],row['revision']) for row in queue.pending()]
+            self.assertEqual(pending,[(key,str(self.home),3)])
+            # Pinned classification: a copied route record names the original
+            # projectRoot and blocks; without tracked .auto-context it is legacy.
+            self.assertEqual(host_route.select_route(str(copied)),
+                             {'state':'blocked','reason':'route_project_mismatch'})
+            self.assertEqual(host_route.select_route(str(untracked))['state'],'legacy')
+            for cwd in (copied,untracked,copied/'alpha'):
+                self.assert_refused(cwd,'selected_route_unavailable')
+            self.assertEqual([(row['id'],row['target'],row['revision'])
+                              for row in queue.pending()],pending)
+            status,results=self.drain(queue)
+            self.assertEqual(status,{'status':'drained','runs':1})
+            self.assertEqual(queue.pending(),[])
+            self.assert_published(results[0],['alpha/one.md','alpha/river.md',
+                                               'beta/dam-card.md','beta/two.md'],
+                                  first['generation'])
+            after=self.fresh_context(nested)
+        self.assertIn('(generation %s;'%results[0]['generation'],after)
+        self.assertIn('title: South dam card',after)
+        self.assertIn('"beta/dam-card.md"',after)
 
 
 if __name__=='__main__':unittest.main()
