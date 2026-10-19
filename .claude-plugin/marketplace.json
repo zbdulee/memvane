@@ -6,7 +6,7 @@
     {
       "name": "qmd-auto-context",
       "description": "qmd 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/sync/query/update/wiki-compile/wiki-dedup/wiki-source-repair/enable-compile manual skills",
-      "version": "0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning",
+      "version": "0.36.0",
       "source": "./",
       "author": { "name": "zbdulee" }
     }

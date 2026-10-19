@@ -26,7 +26,7 @@ SCOPE = 'single-synthetic-story'
 OPERATIONS = ['gold', 'local_train', 'quality_evaluate']
 COHORT_SCHEMA = 'qmd-synthetic-edit-cohort-v1'
 MAX_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000
-REVIEWED_PLUGIN_VERSION = '0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning'
+REVIEWED_PLUGIN_VERSION = '0.36.0'
 UPDATES_DIR = 'runtime-authorization-updates'
 UPDATE_SCHEMA = 'qmd-runtime-authorization-update-v1'
 
