@@ -8,5 +8,5 @@ test('Laya selected host responses are bounded and fail closed', () => {
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 40 tests/);
+  assert.match(result.stderr, /Ran 41 tests/);
 });

@@ -934,11 +934,14 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
-    if decision.get("pluginRoot") != str(Path(__file__).resolve().parent.parent):
-        _fail("selected_plugin_root_mismatch")
-    # Import on the selected path only. Failure must not reach QMD.
+    # The journal binds one owner cache; another host may execute only an
+    # independently sealed copy with the same exact bundle identity.
     from laya_install_journal import verify_selected_route
     proof = verify_selected_route(decision)
+    loaded_root = str(Path(__file__).resolve().parent.parent)
+    if proof.get('executingPluginRoot', decision.get('pluginRoot')) != loaded_root:
+        _fail("selected_plugin_root_mismatch")
+    # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
     if action in _PROVED_NOOP_ACTIONS or (

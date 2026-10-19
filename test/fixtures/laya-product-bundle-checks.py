@@ -388,6 +388,72 @@ print(json.dumps(result))'''
                 self.source, installed, commit_id=self.commit1,
                 vector_profile=self.vector_profile)
 
+    def test_host_pid_marker_is_bounded_metadata_in_adoption_and_readback(self):
+        installed = self.install / 'host-plugin'
+        shutil.copytree(self.source, installed,
+                        ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(installed):
+            Path(directory).chmod(0o700)
+        markers = installed / '.in_use'
+        markers.mkdir(mode=0o700)
+        marker = markers / '51026'
+        marker.write_bytes(b'host marker\n')
+        proof = bundle.adopt_host_loaded_plugin(
+            self.source, installed, commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        self.assertNotIn('.in_use/51026', proof['includedFiles'])
+        self.assertEqual(bundle.inspect_full_plugin_candidate(installed), proof)
+        marker.chmod(0o666)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.chmod(0o600)
+        marker.write_bytes(b'x' * 4097)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.write_bytes(b'host marker\n')
+        (markers / 'helper.py').write_text('pass\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / 'helper.py').unlink()
+        (markers / '2').symlink_to(marker)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '2').unlink()
+        (markers / '01').write_bytes(b'odd PID')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '01').unlink()
+        (markers / '2').mkdir()
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '2').rmdir()
+        markers.chmod(0o775)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        markers.chmod(0o700)
+        run_hook = installed / 'hooks' / 'run-hook'
+        run_hook.write_bytes(run_hook.read_bytes() + b'\n# changed executable\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(installed)
+        run_hook.write_bytes((self.source / 'hooks' / 'run-hook').read_bytes())
+        # Restoring bytes does not restore inode/mtime ownership evidence.
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.unlink()
+        markers.rmdir()
+        dirs = ['.in_use']
+        bundle._skip_host_in_use(installed, installed, dirs)
+        self.assertEqual(dirs, [])
+
     def test_owned_origin_plan_binds_both_qmd_collections_without_model(self):
         wiki = self.auto / 'wiki'
         wiki.mkdir()

@@ -177,6 +177,22 @@ class ResponseChecks(unittest.TestCase):
             response.serve_selected("unsupported", "claude", DECISION, {})
         self.assertEqual(str(caught.exception), "selected_action_unsupported")
 
+    def test_companion_root_requires_verifier_proof(self):
+        import laya_install_journal
+        local = str(Path(response.__file__).resolve().parents[1])
+        decision = {**DECISION, 'pluginRoot': '/synthetic/owner'}
+        accepted = {'productRouteAllowed': True, 'executingPluginRoot': local}
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=accepted) as verify:
+            self.assertEqual(response.serve_selected('topical-stop', 'claude',
+                                                     decision, {}), {})
+        self.assertEqual(verify.call_count, 2)
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value={'productRouteAllowed': True}):
+            with self.assertRaisesRegex(response.HostResponseError,
+                                        'selected_plugin_root_mismatch'):
+                response.serve_selected('topical-stop', 'claude', decision, {})
+
     def test_selected_recall_uses_journal_provider_and_warm_query(self):
         from contextlib import nullcontext
         import laya_install_journal

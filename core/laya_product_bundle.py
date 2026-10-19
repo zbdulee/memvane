@@ -493,7 +493,8 @@ def _plugin_paths(source, commit_id):
     selected = sorted(paths)
     if (not selected or any(name.startswith('/') or '..' in Path(name).parts or
                             '\\' in name or '.git' in Path(name).parts or
-                            '.laya-product' in Path(name).parts for name in selected) or
+                            '.laya-product' in Path(name).parts or
+                            Path(name).parts[:1] == ('.in_use',) for name in selected) or
             not {'hooks/run-hook', 'core/laya_index_runtime.py',
                  'core/laya_index_vector.py',
                  'core/laya_local_embed_provider.py',
@@ -514,6 +515,40 @@ def _plugin_paths(source, commit_id):
                  '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(selected)):
         _fail('incomplete_plugin_commit')
     return {name: paths[name] for name in selected}
+
+
+def _skip_host_in_use(root, current, dirs):
+    """Accept only the host's bounded root PID markers, never plugin code."""
+    if current != root or '.in_use' not in dirs:
+        return
+    marker_dir = root / '.in_use'
+    try:
+        directory = marker_dir.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or
+                directory.st_uid != os.getuid() or
+                directory.st_dev != root.stat().st_dev or
+                stat.S_IMODE(directory.st_mode) & 0o022):
+            _fail('unsafe_host_in_use_metadata')
+        entries = list(os.scandir(marker_dir))
+        if len(entries) > 64:
+            _fail('unsafe_host_in_use_metadata')
+        for entry in entries:
+            if (not re.fullmatch(r'[1-9][0-9]{0,15}', entry.name, re.ASCII)):
+                _fail('unsafe_host_in_use_metadata')
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # The host may remove a PID marker while we inspect.
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                    info.st_dev != directory.st_dev or info.st_nlink != 1 or
+                    info.st_size > 4096 or stat.S_IMODE(info.st_mode) & 0o133):
+                _fail('unsafe_host_in_use_metadata')
+    except FileNotFoundError:
+        dirs.remove('.in_use')  # The host removed the transient directory.
+        return
+    except OSError as exc:
+        raise BundleEvidenceError('unsafe_host_in_use_metadata') from exc
+    dirs.remove('.in_use')
 
 
 def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
@@ -553,6 +588,7 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
                 stat.S_IMODE(info.st_mode) & 0o022 or
                 any((current / child).is_symlink() for child in dirs)):
             _fail('unsafe_installed_directory')
+        _skip_host_in_use(installed, current, dirs)
         if current == installed and '.git' in dirs:
             dirs.remove('.git')  # Host marketplace clones may retain Git metadata.
         for name in files:
@@ -710,7 +746,8 @@ def inspect_full_plugin_candidate(plugin_root):
              'locks/qmd-2.5.3/package-lock.json',
              '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(expected_files) or
             any(Path(name).is_absolute() or '..' in Path(name).parts or
-                '.git' in Path(name).parts or '.laya-product' in Path(name).parts
+                '.git' in Path(name).parts or '.laya-product' in Path(name).parts or
+                Path(name).parts[:1] == ('.in_use',)
                 for name in expected_files)):
         _fail('bundle_file_set_invalid')
     seen_files = set()
@@ -723,6 +760,7 @@ def inspect_full_plugin_candidate(plugin_root):
         for dirname in dirs:
             if (current / dirname).is_symlink():
                 _fail('unsafe_bundle_directory')
+        _skip_host_in_use(root, current, dirs)
         if current == root and '.git' in dirs:
             dirs.remove('.git')
         for filename in files:
