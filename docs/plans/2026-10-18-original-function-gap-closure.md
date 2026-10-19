@@ -235,36 +235,46 @@ CI·QA: PR #13 head `077f8186`의 CI(Node 22/24/26)는 통과했다. L1 설치�
 Claude/Codex 새 세션, 운영 runtime·모델 검증은 실행하지 않았다. 이 계획의 어떤 수용 기준도
 그 QA를 대신하지 않는다.
 
-### 7.1 현재 구현 상태 (2026-10-18, 문서 커밋 `5912328` 뒤 후속 구현 배치)
+### 7.1 현재 구현 상태 (2026-10-19 갱신, 커밋 `935aa7c` 뒤 후속 배치)
 
 원래 기능은 **완료가 아니다.** 3–6절의 합성 수용 기준은 아래에서 충족했다고 적은 항목을
 빼고 모두 TODO로 남는다.
 
-- **간극 1 — 부분 구현(최소 단계 1–3만)**: 선택 v2 검색이 완료된 스캔과 seal manifest의
-  불일치(`_is_sealed_manifest_stale`)를 볼 때만 route proof를 다시 확인한 뒤
+- **간극 1 — 부분 구현(합성 E2E까지)**: 선택 v2 검색은 완료된 스캔과 seal manifest의
+  불일치(`_is_sealed_manifest_stale`)일 때만 route proof를 다시 확인하고
   `runtime_work.request('laya-sync', projectRoot)`를 기록한다(`_request_stale_sync`). 진단은
-  `index_stale_sync_queued`/`index_stale_sync_unavailable`로 나뉘고, exit 3·QMD fallback 없음은
-  그대로다. 그 밖의 stale, 용량 초과, 손상은 wake하지 않는다. 집중 가드
-  `test/laya-host-response.test.mjs` 통과(Node 1, 중첩 Python 34, receipt run
-  `80e26d4cfa9f4231b7a9b7df4af20f4e`).
-  TODO: G1→G2 drain·게시·재조회 E2E, pull/branch/worktree 합성 host fixture, 하위 디렉터리·
-  worktree wake 키 고정.
-- **간극 2 — 미구현(차단)**: 외부 등록 root routing은 설치·settings·route·journal 일치 proof
-  계약이 정해지지 않아 막혀 있다.
-- **간극 3 — 부분 구현(단계 2의 일부)**: 선택 Laya `wiki_compile_worker`는 유료 extraction
-  전에 bounded·no-follow 검증 카드 source revision proof(`selected_compiled_revision_card`)를
-  시도해, pending refresh가 없을 때 trigger가 달라도·claim 뒤에도 `already_compiled_revision`으로
-  건너뛴다. unknown·미검증·pending이면 기존 유료 경로로 보수적으로 넘어간다. 집중 가드
-  `test/wiki-compile-worker.test.mjs` 통과(Node 63, 최신 receipt
-  `d422fe06326747e58b763570f773daeb`). Claude 읽기 전용 리뷰가 찾은 무제한 카드 읽기는
-  bounded 읽기로 고쳤고, 리뷰된 범위에 알려진 Critical/High는 남아 있지 않다. 최종 수정 자체의
-  전체 독립 리뷰나 전체 스위트는 실행하지 않았다.
-  TODO: 선택 경로 raw→위키 queue 연결(단계 1), production 줄 span 계약(단계 3), pending refresh가
-  있는 같은 revision의 유료 재사용.
-- **간극 4 — 미구현**: batch/backlog·`index_over_cap` 상태 없음. 200 파일/5 MB는 공유 scanner
-  안전 예산이자 설치 초기 스캔·추천 가드 값으로 보이며, 사용자가 승인한 제품 corpus 상한으로
-  확인된 것은 아니다.
-- 릴리즈 설치·실제 모델·운영 QA는 실행하지 않았다.
+  `index_stale_sync_queued`/`index_stale_sync_unavailable`, exit 3·QMD fallback 없음은 그대로이며
+  그 밖의 stale·용량 초과·손상은 wake하지 않는다. 추가로 일회용 합성 fixture에서 stale wake →
+  drain → G1→G2 full membership 게시·receipt 조건부 ACK → 새 재조회를 raw·wiki 양쪽의
+  생성/수정/삭제로 고정했고, 하위 디렉터리 cwd는 같은 projectRoot·wake 키를 쓰며, 다른 경로로
+  복사된 route record(worktree 모사)는 거절돼 원 프로젝트 generation·wake를 쓰지 않는다.
+  **실제 `git worktree add`/pull/branch 시험과 운영 QA는 아니다.**
+  TODO: 실제 git worktree·pull/branch fixture, 설치본·운영 확인.
+- **간극 2 — 미구현(차단)**: 외부 등록 root 소유자 routing은 설치기·settings·route·journal
+  조율(일치 proof 계약)이 정해지지 않아 막혀 있다. 용량 관련
+  `core/laya_index_sync.py`/`core/laya_index_flow.py`/`core/laya_index_runtime.py`/`core/laya_index_a.py`
+  는 별도 capacity 작업이 소유하며, 이 배치에서 통합·출시한 것이 아니다.
+- **간극 3 — 부분 구현**:
+  - 선택 경로 raw→위키 generation discovery(`core/laya_wiki_discovery.py`): 수락된 trigger에 묶인
+    durable 2단계 grant, SHA 기준 pending cursor, bounded cap·retry.
+  - cursor가 없을 때의 여러 generation sealed lineage 증명: 조상은 최대 4096개까지만 따라가고,
+    끊긴·순환·상한 초과 lineage는 fail closed한다(집중 discovery receipt
+    `8966d94ac2804a05babf8527855b13d1` 통과, 아래 전체 스위트에도 포함).
+  - 선택 production verifier가 인용한 선택적 `sourceSpans`(`core/source_spans.py`): 정확하고
+    유일한 quote일 때만 기록하고 제공 시 live rehash로 재확인한다. span은 **발췌 위치이지 주장별
+    증명이 아니다.**
+  - 기존 유료 skip(`already_compiled_revision`, receipt `d422fe06326747e58b763570f773daeb`)은 유지.
+  - TODO: pending refresh가 있는 같은 revision의 유료 재사용, 외부 root 경로(간극 2 의존).
+- **간극 4 — 미구현**: batch/backlog·`index_over_cap` 상태는 별도 소유 작업에서 대기 중이다.
+  200 파일/5 MB가 사용자가 승인한 제품 corpus 상한으로 확인된 것은 아니다.
+- **검증**: 가드 집중 실행(wrapper 7개)은 170 pass / 1 fail(v1 mock 응답 형태)이었고, 좁은 host
+  회귀를 고친 뒤 재실행 통과(receipt `b4d72f472eca40c18e20e87704ce4d1d`). 전체 `npm test` 가드
+  실행은 통과했다(receipt `a6b1e8d9af244fd285954d45265ad2e1`, settled true): 1635개 중 1626 PASS,
+  9 SKIP, 0 FAIL. 이 실행은 기존 Python 3.9 PyYAML 6.0.3 site-packages를 **명령 범위
+  `PYTHONPATH`로만** 공급했다. 이전 PyYAML 없는 전체 실행의 실패
+  (recall-injection-body)는 이 로컬 환경 문제였고 해소됐다. 새 `source-spans`·`laya-wiki-discovery`
+  wrapper는 집중·전체 실행 모두에서 통과했다. 릴리즈 설치·실제 모델·운영 QA, 외부 root routing,
+  capacity 통합, PR #13 변경은 이 검증에 포함되지 않는다.
 
 ## 8. 요약: 결정의 종류
 
