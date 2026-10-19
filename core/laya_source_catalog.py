@@ -1078,9 +1078,10 @@ class LayaSourceCatalog:
             raise ValueError('invalid vector fill key')
 
         def read():
-            exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                                     "AND name='vector_fill'").fetchone()
-            if exists is None:
+            columns = [row[1] for row in
+                       self.db.execute('PRAGMA table_info(vector_fill)')]
+            if 'rows' not in columns:
+                # Absent, or an unreleased pre-rows layout: no progress.
                 return None
             return self.db.execute('SELECT cursor,done,rows FROM vector_fill '
                                    'WHERE seq=? AND profile_id=?',
@@ -1107,6 +1108,10 @@ class LayaSourceCatalog:
             if self._pointer('current') != snapshot.seq:
                 self.db.rollback()
                 return False
+            columns = [row[1] for row in self.db.execute('PRAGMA table_info(vector_fill)')]
+            if columns and 'rows' not in columns:
+                # Progress only (rebuilt by the next fill), never source data.
+                self.db.execute('DROP TABLE vector_fill')
             self.db.execute('CREATE TABLE IF NOT EXISTS vector_fill('
                             'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
                             'cursor TEXT NOT NULL, done INTEGER NOT NULL, '

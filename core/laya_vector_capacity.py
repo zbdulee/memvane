@@ -24,6 +24,10 @@ from laya_index_a import IndexContractError
 DEFAULT_FILL_FILES = 8
 DEFAULT_FILL_BYTES = 2_000_000
 CANDIDATE_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
+# ReviewedLocalQmdProvider refuses an empty body and one over this many UTF-8
+# bytes (provider_text_invalid). Both depend on the bytes only, so the fill
+# decides them before any model start instead of asking the provider.
+PROVIDER_MAX_TEXT_BYTES = 5_000_000
 _PAGE = 64
 
 
@@ -64,9 +68,13 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     * ``deferred``/``catalog_busy``: progress could not be recorded.
     * ``blocked``/``vector_budget_exceeded``: the snapshot has more chunk rows
       than one generation seal may hold (``MAX_CANDIDATES``); nothing is
-      staged. ``blocked``/``vector_member_rejected``: the provider refused a
-      member (empty or oversize body); the fill cannot pass it. Both stay
-      until the source changes.
+      staged. ``blocked``/``vector_member_rejected``: a member the provider
+      would refuse (empty or over ``PROVIDER_MAX_TEXT_BYTES``), decided
+      without loading a model, or one it returned no chunks for.
+      ``blocked``/``vector_cache_damaged``: a cached chunk set fails its own
+      seal; it is not repaired here. All three repeat until the source (or
+      the cache) changes. Other provider errors (service unavailable,
+      admission refused) are raised, never reported as a member problem.
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
@@ -147,7 +155,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 return answer('pending', 'source_changed', cursor=cursor, path=path)
             out['bytes'] += size
             title = qmd_markdown_title(text, path)
-            cached = vectors.cached_chunk_set(sha, title, profile_id)
+            try:
+                cached = vectors.cached_chunk_set(sha, title, profile_id)
+            except IndexContractError as exc:
+                return record(False) or answer('blocked', 'vector_cache_damaged',
+                                               cursor=cursor, path=path, detail=str(exc))
             if cached is not None:
                 out['cached'] += 1
                 stopped = counted(path, len(cached))
@@ -156,12 +168,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 continue
             if out['embedded'] >= max_files or (should_yield and should_yield()):
                 return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
-            try:
-                rows = provider.embed_document_chunks(text, path=path)
-            except IndexContractError as exc:
-                # A provider refusal of this body repeats on every call.
+            if not text or len(text.encode('utf-8')) > PROVIDER_MAX_TEXT_BYTES:
                 return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path, detail=str(exc))
+                                               cursor=cursor, path=path,
+                                               detail='provider_text_invalid')
+            rows = provider.embed_document_chunks(text, path=path)
             if not isinstance(rows, list) or not rows:
                 return record(False) or answer('blocked', 'vector_member_rejected',
                                                cursor=cursor, path=path, detail='no_chunks')

@@ -702,6 +702,12 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                 leftover = True
             if leftover:
                 _fail('capacity_store_unexpected')
+        else:
+            # Before the route is written and bound: bind_qmd_origin refuses
+            # a second run, so stores created after it could never be
+            # completed by a re-run. A failed run leaves them, and a re-run
+            # without the flag then fails as capacity_store_unexpected.
+            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
         if plan_qmd_origin(project_root)['proposalSha256'] != expected_proposal_sha256:
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
@@ -735,9 +741,6 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             scope=plan['scopeId'], index_generation=generation,
             source_manifest=scan.manifest,
             vector_profile_id=profile['profileId'], claim=claim)
-        if capacity_stores:
-            # Only after a successful bind, so a failed run leaves no store.
-            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
         return {'status': 'cutover_prepared',
                 'proposalSha256': expected_proposal_sha256,
                 'journalPath': str(journal),

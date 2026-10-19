@@ -301,21 +301,49 @@ class ReviewFixTests(VectorFillCase):
         self.assertEqual((gated['state'], gated['reason']), ('pending', 'vector_backlog'))
         self.assertIsNone(self.head(runtime))
 
-    def test_provider_refusal_blocks_with_the_path(self):
+    def test_member_the_provider_would_refuse_blocks_without_a_model_call(self):
         self.write('a.md', '# A\nfine\n')
-        self.write('b.md', '# B\nrefused\n')
+        self.write('b.md', '')
         runtime = self.runtime()
         self.scan_to_complete(runtime)
-
-        def refuse(body, path):
-            if path.endswith('b.md'):
-                raise IndexContractError('provider_text_invalid')
-            return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}]
-        self.provider.embed_document_chunks = refuse
         answer = self.fill(runtime)[-1]
         self.assertEqual((answer['state'], answer['reason'], answer['path']),
                          ('blocked', 'vector_member_rejected', 'plans/b.md'))
+        self.assertEqual(self.provider.calls, ['plans/a.md'])
         self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+
+    def test_transient_provider_error_is_raised_not_blamed_on_a_member(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def down(body, path):
+            raise IndexContractError('provider_unavailable')
+        self.provider.embed_document_chunks = down
+        with self.assertRaisesRegex(IndexContractError, 'provider_unavailable'):
+            vc.vector_fill_step(runtime, self.provider)
+
+    def test_damaged_cached_chunk_set_is_reported(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        import laya_index_vector
+        with mock.patch.object(laya_index_vector.LayaVectorIndex, 'cached_chunk_set',
+                               side_effect=IndexContractError('vector_chunk_set_invalid')):
+            answer = vc.vector_fill_step(runtime, self.provider)
+        self.assertEqual((answer['state'], answer['reason'], answer['path']),
+                         ('blocked', 'vector_cache_damaged', 'plans/f0.md'))
+        self.assertEqual(self.provider.calls, [])
+
+    def test_pre_rows_progress_table_is_replaced(self):
+        self.corpus(2)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        runtime.catalog.db.execute('CREATE TABLE vector_fill(seq INTEGER NOT NULL, '
+                                   'profile_id TEXT NOT NULL, cursor TEXT NOT NULL, '
+                                   'done INTEGER NOT NULL, PRIMARY KEY(seq, profile_id))')
+        self.assertEqual(self.fill(runtime)[-1]['state'], 'complete')
+        self.assertTrue(vc.fill_complete(runtime, self.profile_id))
 
     def test_deterministic_seal_failure_retires_the_job(self):
         self.corpus(2)
