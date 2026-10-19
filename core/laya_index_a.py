@@ -115,26 +115,30 @@ def _cjk(ch):
     return offset >= 0 and code <= _QMD_CJK_SCRIPT_RANGES[offset][1]
 
 
+# One character class over the same ranges as ``_cjk``; the search check
+# runs this over every body of a generation, so it must not loop per char.
+_QMD_CJK_RUN = re.compile('[' + ''.join(
+    '\\U%08x-\\U%08x' % (start, end) for start, end in _QMD_CJK_SCRIPT_RANGES) + ']+')
+
+
+def _space_cjk_run(match):
+    # ' a b c ' for the run 'abc': a space before each code point and after.
+    return ' ' + ' '.join(match.group()) + ' '
+
+
 def _qmd_fts_text(text, *, deadline=None):
-    """Space CJK runs by code point, as QMD's normalizeCjkForFTS does."""
-    out = []
-    in_run = False
-    for offset, ch in enumerate(text):
-        if (deadline is not None and offset % 4096 == 0
-                and time.monotonic() >= deadline):
-            raise IndexContractError('fts_deadline_exceeded')
-        if _cjk(ch):
-            out.append(' ')
-            out.append(ch)
-            in_run = True
-        else:
-            if in_run:
-                out.append(' ')
-                in_run = False
-            out.append(ch)
-    if in_run:
-        out.append(' ')
-    return ''.join(out)
+    """Space CJK runs by code point, as QMD's normalizeCjkForFTS does.
+
+    Every code point of a maximal CJK run gets a leading space and the run a
+    trailing one; everything else is copied. The deadline is checked before
+    the work and, for text longer than one 4096-char block, after it.
+    """
+    if text and deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    out = _QMD_CJK_RUN.sub(_space_cjk_run, text)
+    if len(text) > 4096 and deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    return out
 
 
 def _generation_fts_rows_match(db, gen, table, *, deadline=None):
