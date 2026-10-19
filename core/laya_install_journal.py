@@ -336,6 +336,23 @@ def _executing_from_candidate(plugin_root):
         _fail('future_import_path_unbound')
 
 
+def _verified_executing_root(selected, owner_proof):
+    """Prove this host's sealed copy against the journal-bound owner copy."""
+    root = Path(__file__).resolve().parent.parent
+    if str(root) != selected['pluginRoot']:
+        try:
+            local = inspect_full_plugin_candidate(root)
+        except BundleEvidenceError as exc:
+            raise JournalEvidenceError('executing_code_outside_bundle') from exc
+        if (local['pluginRoot'] != str(root) or
+                any(local[key] != owner_proof[key] for key in
+                    ('sourceCommit', 'bundleManifestSha256',
+                     'vectorProfile', 'includedFiles'))):
+            _fail('executing_bundle_not_selected')
+    _executing_from_candidate(root)
+    return str(root)
+
+
 def _project(route):
     try:
         path = Path(route.get('projectRoot'))
@@ -778,8 +795,7 @@ def verify_selected_route(decision):
             db.rollback()
             raise
     full = row['selected']['bundleKind'] == 'full_plugin'
-    if full:
-        _executing_from_candidate(row['selected']['pluginRoot'])
+    executing_root = _verified_executing_root(row['selected'], proof) if full else None
     attestation, observed_sha = _attestation(path) if full else (None, None)
     sealed_sha = row['provider_attestation_sha']
     if sealed_sha is not None and observed_sha != sealed_sha:
@@ -805,6 +821,7 @@ def verify_selected_route(decision):
             'productRouteAllowed': approved,
             'journalPath': str(path), 'selectionEpoch': row['epoch'],
             'pluginRoot': row['selected']['pluginRoot'], 'sourceCommit': proof['sourceCommit'],
+            **({'executingPluginRoot': executing_root} if full else {}),
             'bundleManifestSha256': proof['bundleManifestSha256'],
             'ownershipManifestSha256': proof['ownershipManifestSha256'],
             'installId': route['installId'], 'generation': route['generation'],

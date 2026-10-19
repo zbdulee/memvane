@@ -10,5 +10,5 @@ test('Laya exact plugin candidate and installer journal remain synthetic', () =>
   });
   assert.equal(run.status, 0,
     `python status=${run.status} signal=${run.signal} error=${run.error?.code ?? 'none'}\n${run.stdout}\n${run.stderr}`);
-  assert.match(run.stderr, /Ran 14 tests/);
+  assert.match(run.stderr, /Ran 15 tests/);
 });
