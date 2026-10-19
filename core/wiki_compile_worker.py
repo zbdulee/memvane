@@ -937,7 +937,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
     # card already proves this exact revision, whichever trigger or replayed claim
     # brought the job back. Legacy QMD keeps its existing path.
-    if selected_route is not None and bound_pending is None:
+    # A job kept after a partial failure (one card written, another rejected)
+    # is exactly the case where a trusted sibling does not prove the revision
+    # finished, so it is never skipped here.
+    if (selected_route is not None and bound_pending is None
+            and job.get("partialCompile") is not True):
         proof_card = selected_compiled_revision_card(root, selected_route, source_revision)
         if proof_card is not None:
             wiki_selected_laya.recheck(selected_route)
@@ -1118,6 +1122,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             verify_targets.append(result["targetPath"])
     if failed_compile:
         append_jsonl(cpath, bounded_failure("compile_failed", job, "writer_rejected"))
+        # Kept for retry with a marker: a card from this run may get verified
+        # before the retry, and the revision guard must not read that as done.
+        job["partialCompile"] = True
         return False, True, verify_targets
     if refresh_complete and bound_pending is not None:
         if not wiki_freshness.resolve_pending_refresh(
@@ -1274,7 +1281,8 @@ def main():
                 processed_count += 1
             verify_targets.extend(queued)
             if preserve:
-                remaining.append(raw_line)
+                remaining.append(json.dumps(job, ensure_ascii=False)
+                                 if job.get("partialCompile") is True else raw_line)
     finally:
         requeue_lines(queue, remaining)
         claimed.unlink(missing_ok=True)

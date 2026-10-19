@@ -912,6 +912,21 @@ class V2CapacityWorkerChecks(unittest.TestCase):
             service.stop.assert_called_once_with()
         return result,len(self.services)-before
 
+    def test_capacity_path_still_runs_wiki_discovery_after_sync(self):
+        import laya_wiki_discovery
+        self.stores()
+        calls=[]
+        def drain(decision,grants,*,recheck):
+            recheck()  # must use the proof refreshed at the capacity fence
+            calls.append(grants)
+            return {'state':'blocked','reason':'synthetic'}
+        with patch.object(laya_wiki_discovery,'observe_grants',return_value={'grants':{}}), \
+             patch.object(laya_wiki_discovery,'drain_after_sync',side_effect=drain):
+            result,_started=self.run_capacity()
+        self.assertEqual(result['state'],'indexed')
+        self.assertEqual(calls,[{'grants':{}}])
+        self.assertEqual(result['wikiDiscovery'],{'state':'blocked','reason':'synthetic'})
+
     def test_capacity_origin_unchanged_then_one_edit(self):
         self.stores()
         first,started=self.run_capacity()

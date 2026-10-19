@@ -209,22 +209,49 @@ def _grant_ids(ids, limit):
             and len(set(ids)) == len(ids))
 
 
-def _read_grants(path, decision):
-    """(active, provisional) ids by kind; an id is in at most one list."""
+def _quarantine(path):
+    """Move an unparseable grants file aside under a unique name; keep it."""
+    os.replace(path, str(path) + '.corrupt-%d' % time.time_ns())
+
+
+def _read_grants(path, decision, *, heal=False):
+    """(active, provisional) ids by kind; an id is in at most one list.
+
+    ``heal`` (hook entry points only): a grants file that does not parse or
+    does not match its schema is moved aside and read as empty. Without it
+    every SessionStart and file-change hook failed for good, with nothing to
+    repair the file. Losing grants only delays compiles until the next
+    accepted trigger. Worker reads keep failing closed (``blocked``), so the
+    drain never runs on grants it cannot prove; the next hook heals the file.
+    An unsafe file (owner, mode, links, size) always fails: it may not be ours.
+    """
     scope, incarnation, _queue, _roots, _raw = _binding(decision)
-    value = _read(path)
+    empty = ({kind: [] for kind in GRANT_KINDS}, {kind: [] for kind in GRANT_KINDS})
+    try:
+        value = _read(path)
+    except DiscoveryBlocked as exc:
+        if not heal or str(exc) != 'state_corrupt':
+            raise
+        _quarantine(path)
+        return empty
     if value is None:
-        return {kind: [] for kind in GRANT_KINDS}, {kind: [] for kind in GRANT_KINDS}
+        return empty
     phases = (value.get('grants'), value.get('provisional'))
     if (set(value) != _GRANT_KEYS or value['schema'] != GRANTS_SCHEMA
             or (value['scopeId'], value['dbIncarnation']) != (scope, incarnation)
             or any(not isinstance(ids, dict) or set(ids) != set(GRANT_KINDS)
                    or any(not _grant_ids(row, MAX_GRANT_COUNT) for row in ids.values())
                    for ids in phases)):
-        raise DiscoveryBlocked('grants_corrupt')
+        if not heal:
+            raise DiscoveryBlocked('grants_corrupt')
+        _quarantine(path)
+        return empty
     every = [grant for ids in phases for kind in GRANT_KINDS for grant in ids[kind]]
     if len(set(every)) != len(every):
-        raise DiscoveryBlocked('grants_corrupt')
+        if not heal:
+            raise DiscoveryBlocked('grants_corrupt')
+        _quarantine(path)
+        return empty
     return tuple({kind: list(ids[kind]) for kind in GRANT_KINDS} for ids in phases)
 
 
@@ -285,7 +312,7 @@ def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
     _state, path, lock = _paths(decision)
     grant = uuid.uuid4().hex
     with _locked(lock, wait):
-        active, waiting = _read_grants(path, decision)
+        active, waiting = _read_grants(path, decision, heal=True)
         # Bounded: past the cap the oldest provisional id of this kind goes;
         # its hook then fails to activate it, closed.
         waiting[kind] = (waiting[kind] + [grant])[-MAX_GRANT_COUNT:]
@@ -313,7 +340,7 @@ def activate_grant(decision, kind, grant, *, wait=HOOK_LOCK_SECONDS):
         raise ValueError('invalid_wiki_grant')
     _state, path, lock = _paths(decision)
     with _locked(lock, wait):
-        active, waiting = _read_grants(path, decision)
+        active, waiting = _read_grants(path, decision, heal=True)
         if grant not in waiting[kind]:
             return False
         waiting[kind] = [item for item in waiting[kind] if item != grant]
@@ -473,8 +500,20 @@ def _read_view(decision, base):
     return head, base, base_rows, head_rows
 
 
+class _PendingOverflow(Exception):
+    def __init__(self, count):
+        super().__init__(count)
+        self.count = count
+
+
 def _advance(pending, base_rows, head_rows, raw):
-    """Pending raw revisions at head: changed since base, or still unprocessed."""
+    """Pending raw revisions at head: changed since base, or still unprocessed.
+
+    Over MAX_PENDING (a pull or reformat touching thousands of files) the
+    burst is not kept: ``_PendingOverflow`` tells the caller to move the
+    cursor to head with nothing pending. Raising instead blocked discovery for good,
+    because every later run recomputed the same set from the same base.
+    """
     old = {path: sha for path, sha, _eligible in base_rows if _raw_path(path, raw)}
     result = {}
     for path, sha, eligible in head_rows:
@@ -483,7 +522,7 @@ def _advance(pending, base_rows, head_rows, raw):
         if path in pending or old.get(path) != sha:
             result[path] = sha
     if len(result) > MAX_PENDING:
-        raise DiscoveryBlocked('pending_over_cap')
+        raise _PendingOverflow(len(result))
     return result
 
 
@@ -569,7 +608,20 @@ def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, r
     head, base, base_rows, head_rows = _read_view(
         decision, state['baseGen'] if state is not None else None)
     before = state['pending'] if state is not None else {}
-    pending = before if base == head else _advance(before, base_rows, head_rows, raw)
+    try:
+        pending = before if base == head else _advance(before, base_rows, head_rows, raw)
+        overflow = None
+    except _PendingOverflow as exc:
+        pending, overflow = None, exc.count
+    if pending is None:
+        # Over the cap: skip the burst instead of blocking forever. Those raw
+        # revisions are not compiled (no backfill); cards built from older
+        # bytes fail the freshness check and are not served. Spend the
+        # observed grants with the cursor, as a normal ACK does.
+        _write(state_path, _state_doc(decision, head, {}, used))
+        _drop(grants_path, decision, used, provisional=False)
+        return _outcome('drained', 'pending_over_cap_skipped', generation=head,
+                        pending=0, skipped=overflow)
     if state is None or base != head or pending != before:
         # Journal first: a crash after this keeps every revision.
         _write(state_path, _state_doc(decision, head, pending))

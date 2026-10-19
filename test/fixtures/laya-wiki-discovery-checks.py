@@ -553,6 +553,45 @@ class DiscoveryChecks(unittest.TestCase):
         self.assertEqual([row[0] for row in self.source_rows()], ['alpha/a.md', 'alpha/b.md'])
         self.assertEqual(self.state()['pending'], {})
 
+    def test_pending_over_cap_skips_the_burst_instead_of_blocking(self):
+        self.selected_route()
+        self.run_worker()
+        for name in ('a.md', 'b.md', 'c.md'):
+            (self.alpha / name).write_text('# %s\nnew raw\n' % name, encoding='utf-8')
+        with self.hook_world() as queue, patch.object(discovery, 'MAX_PENDING', 2):
+            self.bash()
+            _status, results, failures = self.drain_all(queue)
+            self.assertEqual(failures, [])
+            self.assertEqual(results[0]['wikiDiscovery']['reason'], 'pending_over_cap_skipped')
+            self.assertEqual(results[0]['wikiDiscovery']['skipped'], 3)
+            # The cursor moves to head with nothing pending; nothing is queued.
+            self.assertEqual(self.state()['pending'], {})
+            self.assertEqual(self.source_rows(), [])
+            self.assertEqual(self.grants()['sync'], 0)
+            # A later small change is discovered normally: no permanent block.
+            (self.alpha / 'a.md').write_text('# a\nedited again\n', encoding='utf-8')
+            self.bash()
+            _status, results, failures = self.drain_all(queue)
+        self.assertEqual(failures, [])
+        self.assertEqual([row[0] for row in self.source_rows()], ['alpha/a.md'])
+
+    def test_corrupt_grants_file_is_set_aside_not_failing_every_hook(self):
+        self.selected_route()
+        self.run_worker()
+        grants_path = self.paths()[1]
+        grants_path.write_text('{not json', encoding='utf-8')
+        grants_path.chmod(0o600)
+        (self.alpha / 'a.md').write_text('# a\nnew raw\n', encoding='utf-8')
+        with self.hook_world() as queue:
+            self.bash()
+            _status, results, failures = self.drain_all(queue)
+        self.assertEqual(failures, [])
+        kept = [p for p in grants_path.parent.iterdir()
+                if p.name.startswith(grants_path.name + '.corrupt-')]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].read_text(encoding='utf-8'), '{not json')
+        self.assertEqual([row[0] for row in self.source_rows()], ['alpha/a.md'])
+
     def test_wiki_only_change_enqueues_nothing_and_uses_grant(self):
         self.selected_route()
         self.run_worker()

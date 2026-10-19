@@ -155,6 +155,32 @@ class RevisionSkipChecks(unittest.TestCase):
         self.process('session_start')
         self.assertEqual(len(self.extractor_calls), 2)
 
+    def test_partial_failure_is_retried_even_after_a_sibling_is_verified(self):
+        calls = []
+
+        def two_candidates(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            return {'candidates': [{'title': 'A', 'summary': 'a'},
+                                   {'title': 'B', 'summary': 'b'}]}, None, 0
+
+        def a_then_reject(root, candidate):
+            calls.append(candidate.get('title'))
+            if candidate.get('title') == 'B' and len(calls) <= 2:
+                return {'action': 'rejected'}
+            return self.fake_compile(root, candidate)
+        with patch.object(worker, 'run_extractor', side_effect=two_candidates), \
+                patch.object(worker, 'compile_candidate', side_effect=a_then_reject):
+            job = self.job('file_change')
+            processed, preserve, _queued = worker.process_job(
+                self.root, self.config, self.config['compile'], job)
+            self.assertEqual((processed, preserve), (False, True))
+            self.assertIs(job.get('partialCompile'), True)
+            self.verify(self.cards[0])  # A becomes trusted before the retry
+            worker.process_job(self.root, self.config, self.config['compile'], job)
+        self.assertEqual(len(self.extractor_calls), 2, 'the retry extracts again')
+        self.assertEqual(self.skip_reasons(), [])
+        self.assertIn('B', calls[2:])
+
     def test_unverified_card_does_not_skip(self):
         self.process('post_tool_source')
         self.process('session_start')  # card is still `generated`

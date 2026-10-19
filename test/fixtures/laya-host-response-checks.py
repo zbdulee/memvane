@@ -667,6 +667,18 @@ class ResponseChecks(unittest.TestCase):
                         response.render_context(decision, rows, source_locations=locations)
                     self.assertEqual(str(caught.exception), 'invalid_source_locations')
 
+    def test_gated_title_only_card_gets_no_source_locator(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-gated-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            text = response.render_context(
+                decision, [card], ranking='hybrid_rrf',
+                title_only_paths=frozenset({'wiki/card.md'}),
+                source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+            self.assertIn('  | title: Synthetic card', text.split('\n'))
+            self.assertNotIn('docs/a.md#L2', text)
+            self.assertNotIn('source lines cited by verifier', text)
+
     def test_render_drops_every_location_rather_than_exceed_context_budget(self):
         with tempfile.TemporaryDirectory(prefix='laya-span-budget-') as temp:
             _project, revision, decision = self.span_project(temp)

@@ -274,8 +274,9 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     controller = coordinator or Coordinator()
     observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
     if capacity is not None:
-        return _run_capacity(decision, proof, source_root, capacity, provider, controller,
-                             observed, start_service)
+        result, proof = _run_capacity(decision, proof, source_root, capacity, provider,
+                                      controller, observed, start_service)
+        return _after_sync(decision, proof, grants, result)
     try:
         with controller.activity('provider', EMBED_POLICY, observed):
             # The hook's sealed stat receipt is a fast freshness fence. This
@@ -346,18 +347,31 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         return {'state': 'deferred', 'reason': str(exc)}
     if result.get('state') not in ('indexed', 'unchanged', 'deferred'):
         raise IndexContractError('invalid_sync_result')
-    if grants is not None and result['state'] in ('indexed', 'unchanged'):
-        # After receipt and ACK, with the model service stopped. A raised
-        # error or a retry keeps this wake; the published head is not touched.
-        def recheck():
-            if verify_selected_route(decision) != proof:
-                raise IndexContractError('selected_proof_changed')
-        outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
-        if outcome['state'] == 'retry':
-            return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
-                    'generation': result.get('generation')}
-        if outcome['state'] == 'blocked':
-            result = {**result, 'wikiDiscovery': outcome}
+    return _after_sync(decision, proof, grants, result)
+
+
+def _after_sync(decision, proof, grants, result):
+    """Wiki discovery after a completed sync, on both sync paths.
+
+    After receipt and ACK, with the model service stopped. A raised error or
+    a retry keeps this wake; the published head is not touched. ``proof`` is
+    the one the sync ended with (the capacity path refreshes it at its
+    fence). A blocked run, or a burst skipped over the pending cap, is
+    reported as ``wikiDiscovery``.
+    """
+    if grants is None or result.get('state') not in ('indexed', 'unchanged'):
+        return result
+    import laya_wiki_discovery
+
+    def recheck():
+        if verify_selected_route(decision) != proof:
+            raise IndexContractError('selected_proof_changed')
+    outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
+    if outcome['state'] == 'retry':
+        return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
+                'generation': result.get('generation')}
+    if outcome['state'] == 'blocked' or outcome.get('reason') == 'pending_over_cap_skipped':
+        result = {**result, 'wikiDiscovery': outcome}
     return result
 
 
@@ -443,8 +457,8 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
             if not proof_ok():
                 raise IndexContractError('selected_proof_changed')
     except ResourceDeferred as exc:
-        return {'state': 'deferred', 'reason': str(exc)}
-    return _checked(result)
+        return {'state': 'deferred', 'reason': str(exc)}, state['proof']
+    return _checked(result), state['proof']
 
 
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed):

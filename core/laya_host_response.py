@@ -246,8 +246,12 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
                 _fail('wiki_result_unverified')
             lines.append('  | title: ' + title[:200])
             if row["path"] in source_locations:
-                lines.append(_location_line(source_locations[row["path"]]))
                 located.add(row["path"])
+                # A gated (title-only) card keeps only its link and title: a
+                # raw-source locator would invite opening a file for a card
+                # that is probably unrelated, so it is consumed, not shown.
+                if path not in title_only_paths:
+                    lines.append(_location_line(source_locations[row["path"]]))
             if path not in title_only_paths:
                 summary, _complete = recall.extract_card_body(normalized, end + 5)
                 if summary:
