@@ -452,6 +452,68 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
         self.assertEqual(observed['status'], 'production_attestation_unbound')
         self.assertTrue(observed['development'])
 
+        # Two real hosts keep separate cache directories. The same project
+        # route must accept either exact installed version while preserving
+        # the journal's single owner and rejecting a prior or altered cache.
+        companion_parent = self.root / 'claude-host-cache'
+        companion_parent.mkdir(mode=0o700)
+        companion = prepare_full_plugin_candidate(
+            source, companion_parent / 'plugin-v2-companion', commit_id=second,
+            vector_profile=profile)
+        self.assertNotEqual(companion['pluginRoot'], two['pluginRoot'])
+        self.assertNotEqual(Path(companion['pluginRoot']).parent, journal.parent)
+        self.assertEqual(companion['bundleManifestSha256'],
+                         two['bundleManifestSha256'])
+        self.assertNotEqual(companion['ownershipManifestSha256'],
+                            two['ownershipManifestSha256'])
+        alternate = ('import json,sys; sys.path.insert(0,sys.argv[1]); '
+                     'from laya_index_host_route import select_route; '
+                     'from laya_install_journal import verify_selected_route; '
+                     'd=select_route(sys.argv[2]); p=verify_selected_route(d); '
+                     'print(json.dumps({"state":d["state"],'
+                     '"manifest":p["bundleManifestSha256"]}))')
+        def prove_host(plugin):
+            return subprocess.run(
+                [sys.executable, '-c', alternate,
+                 str(Path(plugin['pluginRoot']) / 'core'), str(self.project)],
+                capture_output=True, text=True, timeout=20, cwd=self.project,
+                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1',
+                     'QMD_RECALL_LOG': '', 'QMD_SANDBOX': '1'})
+        def assert_host_denied(plugin, reason):
+            checked = prove_host(plugin)
+            self.assertNotEqual(checked.returncode, 0)
+            self.assertIn(reason, checked.stderr)
+        for candidate in (two, companion, two):
+            checked = prove_host(candidate)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertEqual(json.loads(checked.stdout)['manifest'],
+                             two['bundleManifestSha256'])
+        wrong_fingerprint = 'd' * 64
+        wrong_profile = {**profile, 'embeddingFingerprint': wrong_fingerprint,
+                         'profileId': hashlib.sha256(json.dumps(
+                             [MODEL_ID, wrong_fingerprint, 2, 'cosine'],
+                             sort_keys=True, ensure_ascii=False,
+                             separators=(',', ':')).encode()).hexdigest()}
+        different_profile = prepare_full_plugin_candidate(
+            source, companion_parent / 'plugin-v2-other-profile',
+            commit_id=second, vector_profile=wrong_profile)
+        assert_host_denied(different_profile, 'executing_bundle_not_selected')
+        assert_host_denied(one, 'executing_bundle_not_selected')
+        host_marker = Path(companion['pluginRoot']) / '.in_use'
+        host_marker.mkdir()
+        (host_marker / '1').write_text('host-owned marker\n')
+        self.assertEqual(prove_host(companion).returncode, 0)
+        (host_marker / '1').chmod(0o666)
+        assert_host_denied(companion, 'executing_code_outside_bundle')
+        (host_marker / '1').chmod(0o600)
+        (host_marker / 'helper.py').write_text('pass\n')
+        assert_host_denied(companion, 'executing_code_outside_bundle')
+        (host_marker / 'helper.py').unlink()
+        (host_marker / '1').unlink()
+        host_marker.rmdir()
+        self._alter_core(companion['pluginRoot'])
+        assert_host_denied(companion, 'executing_code_outside_bundle')
+
         # A development approval never opens product hooks. Each copied host
         # entrypoint must fail before QMD fallback or an index write.
         forbidden = self.root / 'legacy-fallback-invoked'
