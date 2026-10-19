@@ -4,6 +4,7 @@ Synthetic temp-dir corpora and a temp A-int DB only; no operating DB or source.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 import sys
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_source_catalog as catalog_mod
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_source_port import scan_collections
-from laya_source_catalog import (LayaSourceCatalog, load_exclusions,
+from laya_source_catalog import (CatalogPending, LayaSourceCatalog, load_exclusions,
                                  publish_from_catalog, search_catalog_verified,
                                  stage_from_catalog)
 
@@ -91,12 +92,56 @@ class CatalogCase(unittest.TestCase):
                                               'claim-' + gen, claim_digest=CLAIM,
                                               claim_epoch=0), 'published')
 
-    def search(self, catalog, query, limit=5):
+    def search(self, catalog, query, limit=5, **budget):
         token, _gen = self.index.pin(SCOPE)
         try:
-            return search_catalog_verified(self.index, catalog, token, query, limit)
+            return search_catalog_verified(self.index, catalog, token, query, limit,
+                                           **budget)
         finally:
             self.index.release(token)
+
+    @contextlib.contextmanager
+    def forbid_source_and_search(self):
+        """Any source read, stat hint or A-int search inside the block fails."""
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError('source or index touched')
+        saved = [(catalog_mod, 'scan_collections'), (catalog_mod, '_read_exact'),
+                 (catalog_mod, '_hash_entry'),
+                 (catalog_mod.LayaSourceCatalog, 'verify_unchanged')]
+        originals = [getattr(owner, name) for owner, name in saved]
+        for owner, name in saved:
+            setattr(owner, name, forbidden)
+        self.index.search = forbidden
+        try:
+            yield
+        finally:
+            del self.index.search
+            for (owner, name), original in zip(saved, originals):
+                setattr(owner, name, original)
+
+    def spoof_signatures(self, catalog):
+        """Patch the module's signature function to replay scan-time signatures.
+
+        Any node the current snapshot recorded reports its old signature, so
+        the stat hint sees nothing even though content or membership changed.
+        """
+        recorded = {}
+        for (sig,) in catalog.db.execute(
+                'SELECT sig FROM scan_dirs WHERE seq=(SELECT seq FROM current) '
+                'UNION ALL SELECT sig FROM scan_files '
+                'WHERE seq=(SELECT seq FROM current)'):
+            dev, ino = sig.split(':')[:2]
+            recorded[(int(dev), int(ino))] = sig
+        original = catalog_mod._sig_text
+        catalog_mod._sig_text = lambda st: recorded.get((st.st_dev, st.st_ino),
+                                                        original(st))
+        self.addCleanup(setattr, catalog_mod, '_sig_text', original)
+
+    def assert_stale(self, call, detail):
+        with self.assertRaisesRegex(IndexContractError, 'index_stale') as caught:
+            call()
+        self.assertNotIsInstance(caught.exception, CatalogPending)
+        self.assertIn(detail, str(caught.exception.__cause__))
 
     def assert_blocked_keeps(self, catalog, snapshot, reason, detail):
         result = drive(catalog)[-1]
@@ -151,11 +196,35 @@ class CapacityTests(CatalogCase):
         self.assertEqual(status['active']['backlog']['files_pending'], 0)
 
         self.assertEqual(self.catalog_manifest(catalog), self.port_manifest())
+        # Scan-time evidence still indexes the whole corpus in one generation.
         self.publish(catalog, 'g1', None)
-        rows = self.search(catalog, 'marker0257token')
+
+        # ...but normal search cannot prove it fresh: pending, zero rows, and
+        # neither the source nor A-int is touched.
+        with self.forbid_source_and_search():
+            with self.assertRaises(CatalogPending) as caught:
+                self.search(catalog, 'marker0257token')
+        pending = caught.exception
+        self.assertEqual(str(pending), 'index_stale')
+        self.assertEqual(pending.detail, {
+            'reason': 'proof_budget_exceeded', 'scan_id': status['current']['scan_id'],
+            'snapshot_files': 261, 'snapshot_bytes': total_bytes,
+            'max_proof_files': 200, 'max_proof_bytes': 5_000_000,
+            'files_over': 61, 'bytes_over': total_bytes - 5_000_000,
+            'requires': 'trusted_change_feed_or_immutable_source_snapshot'})
+        self.assertTrue(catalog.status()['servable'])  # pending is a query outcome
+
+        # An explicit, finite, test-only raised budget may search it.
+        rows = self.search(catalog, 'marker0257token', max_proof_files=261,
+                           max_proof_bytes=total_bytes)
         self.assertEqual([row['path'] for row in rows], ['plans/part12/doc17.md'])
         self.assertEqual(rows[0]['body'],
                          (self.plans / 'part12' / 'doc17.md').read_text(encoding='utf-8'))
+        for budget in ({'max_proof_files': 260, 'max_proof_bytes': total_bytes},
+                       {'max_proof_files': 261, 'max_proof_bytes': total_bytes - 1}):
+            with self.forbid_source_and_search():
+                with self.assertRaises(CatalogPending):
+                    self.search(catalog, 'marker0257token', **budget)
 
     def test_add_update_delete_publish_only_on_completion(self):
         for i in range(12):
@@ -538,6 +607,101 @@ class ServingTests(CatalogCase):
 
         (self.wiki / 'card.md').unlink()
         assert_not_served(stage_detail='wiki/card.md')
+
+
+class ProofTests(CatalogCase):
+    """Query-time freshness is a full byte proof, never a stat signature."""
+
+    def published_catalog(self):
+        catalog, snap = self.complete_catalog()
+        self.publish(catalog, 'g1', None)
+        self.assertEqual([r['path'] for r in self.search(catalog, 'card')],
+                         ['wiki/card.md'])
+        return catalog, snap
+
+    def test_proof_budget_boundaries_and_pending_never_deletes(self):
+        catalog, snap = self.published_catalog()
+        self.assertEqual(snap.files, 11)
+        exact = {'max_proof_files': snap.files, 'max_proof_bytes': snap.bytes}
+        self.assertEqual(len(self.search(catalog, 'card', **exact)), 1)
+        cases = (({**exact, 'max_proof_files': snap.files - 1}, (1, 0)),
+                 ({**exact, 'max_proof_bytes': snap.bytes - 1}, (0, 1)))
+        for budget, over in cases:
+            with self.forbid_source_and_search():
+                with self.assertRaises(CatalogPending) as caught:
+                    self.search(catalog, 'card', **budget)
+            detail = caught.exception.detail
+            self.assertEqual((detail['files_over'], detail['bytes_over']), over)
+        # A pending query outcome never changes or shrinks the snapshot.
+        status = catalog.status()
+        self.assertTrue(status['servable'])
+        self.assertEqual((status['current']['scan_id'], status['current']['files']),
+                         (snap.scan_id, 11))
+        self.assertIsNotNone(catalog.lookup(snap, 'plans/a09.md'))
+
+        # A partial rescan is pending catalog state (plain index_stale), and its
+        # partial listing deletes nothing from the current snapshot.
+        (self.plans / 'a09.md').unlink()
+        catalog.request_scan()
+        self.assertEqual(catalog.step(max_files=1)['status'], 'pending')
+        self.assert_stale(lambda: self.search(catalog, 'card', **exact), 'scan_pending')
+        self.assertEqual(catalog.status()['current']['files'], 11)
+        self.assertIsNotNone(catalog.lookup(snap, 'plans/a09.md'))
+        done = drive(catalog)[-1]
+        self.assertEqual((done['published']['deleted'], done['published']['files']),
+                         (1, 10))
+
+    def test_spoofed_same_size_mtime_rewrite_of_unreturned_file_fails_closed(self):
+        catalog, snap = self.published_catalog()
+        target = self.plans / 'a07.md'
+        before = os.stat(target)
+        with open(target, 'r+b') as handle:
+            handle.write(b'# A7\nplain DOC 7\n')
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = os.stat(target)
+        self.assertEqual((after.st_ino, after.st_size, after.st_mtime_ns),
+                         (before.st_ino, before.st_size, before.st_mtime_ns))
+        self.spoof_signatures(catalog)
+        catalog.verify_unchanged(snap)  # the stat hint is blind to this rewrite
+        self.assert_stale(lambda: self.search(catalog, 'card'),
+                          'source bytes or membership differ from catalog snapshot')
+        # The original bytes prove fresh again; the proof judges content only.
+        target.write_bytes(b'# A7\nplain doc 7\n')
+        self.assertEqual(len(self.search(catalog, 'card')), 1)
+
+    def test_spoofed_directory_add_and_delete_fail_closed(self):
+        catalog, snap = self.published_catalog()
+        self.spoof_signatures(catalog)
+        added = self.write(self.plans, 'zz.md', '# ZZ\nunrelated\n')
+        catalog.verify_unchanged(snap)  # spoofed directory signature passes
+        self.assert_stale(lambda: self.search(catalog, 'card'),
+                          'source bytes or membership differ from catalog snapshot')
+        added.unlink()
+        self.assertEqual(len(self.search(catalog, 'card')), 1)
+
+        # With the hint disabled entirely, the proof alone still sees a delete.
+        original = catalog_mod.LayaSourceCatalog.verify_unchanged
+        catalog_mod.LayaSourceCatalog.verify_unchanged = lambda *_a, **_k: None
+        self.addCleanup(setattr, catalog_mod.LayaSourceCatalog, 'verify_unchanged',
+                        original)
+        (self.plans / 'a03.md').unlink()
+        self.assert_stale(lambda: self.search(catalog, 'card'),
+                          'source bytes or membership differ from catalog snapshot')
+
+    def test_actual_source_over_budget_despite_snapshot_fails_closed(self):
+        catalog, snap = self.published_catalog()
+        exact = {'max_proof_files': snap.files, 'max_proof_bytes': snap.bytes}
+        self.spoof_signatures(catalog)
+        added = self.write(self.plans, 'zz.md', '# ZZ\nunrelated\n')
+        self.assert_stale(lambda: self.search(catalog, 'card', **exact),
+                          'too many files')
+        added.unlink()
+        self.assertEqual(len(self.search(catalog, 'card', **exact)), 1)
+
+        with open(self.plans / 'a07.md', 'ab') as handle:
+            handle.write(b'grown past the snapshot byte count\n')
+        catalog.verify_unchanged(snap)  # spoofed: the hint misses the growth
+        self.assert_stale(lambda: self.search(catalog, 'card', **exact), 'oversize')
 
 
 if __name__ == '__main__':
