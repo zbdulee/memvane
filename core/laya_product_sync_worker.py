@@ -21,7 +21,7 @@ from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
 from laya_index_host_route import select_route
 from laya_index_runtime import LayaIndexRuntime, _collection_roots
-from laya_index_sync import prepare_candidate_batch_off_hook, sync_full
+from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
 from laya_install_journal import (cas_mark_new_write, verify_selected_route,
                                   verify_worker_attestation)
 from laya_local_embed_provider import ReviewedLocalQmdProvider
@@ -40,6 +40,14 @@ QA_BARRIER_ARM = '.qa-laya-sync-barrier.json'
 QA_BARRIER_SCHEMA = 'laya-qa-sync-barrier-v1'
 QA_FIXTURE_SCHEMA = 'qmd-release-qa-fixture-v1'
 QA_BARRIER_MAX_SECONDS = 600
+
+# Capacity path stores beside the A-int DB. The installer owns them; this
+# worker never creates them, and uses the capacity path only when both exist.
+CATALOG_SUFFIX = '.catalog.sqlite'
+BINDING_STORE_SUFFIX = '.bindings.sqlite'
+# sync_step/vector_fill_step rounds in one wake; more remaining stays pending
+# and the dispatcher retains the wake.
+MAX_CAPACITY_ROUNDS = 64
 
 
 def _qa_invalid():
@@ -197,6 +205,33 @@ def _higher_priority_wake(controller):
         return True
 
 
+def _capacity_paths(decision):
+    """``(catalog, binding store)`` beside ``dbPath``, or None when neither exists.
+
+    Both must be private regular files of this user. One without the other,
+    a symlink or a shared mode fails closed before any model start.
+    """
+    db = Path(decision['dbPath'])
+    paths = (db.with_name(db.name + CATALOG_SUFFIX),
+             db.with_name(db.name + BINDING_STORE_SUFFIX))
+    present = []
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            present.append(False)
+            continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            raise IndexContractError('capacity_store_unsafe')
+        present.append(True)
+    if not any(present):
+        return None
+    if not all(present):
+        raise IndexContractError('capacity_store_incomplete')
+    return tuple(str(path) for path in paths)
+
+
 def _selected(project):
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
@@ -244,6 +279,9 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     source_root = _route_source(decision)
     # A mis-armed QA barrier fails before any model start or index write.
     qa = qa_sync_barrier(decision)
+    # The QA race barrier holds a full-scan batch, so QA keeps the full-scan
+    # path. A malformed capacity store fails here, before any model start.
+    capacity = None if qa is not None else _capacity_paths(decision)
     provider = ReviewedLocalQmdProvider(proof['providerManifest'])
     profile = proof['vectorProfile']
     if (provider.profile['profile_id'] != profile['profileId'] or
@@ -279,14 +317,13 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise ResourceDeferred('laya_sync_yield_priority')
                         return provider.embed_document_chunks(body, path)
 
+                stores = ({} if capacity is None else
+                          {'catalog_path': capacity[0], 'binding_store_path': capacity[1]})
                 with LayaIndexRuntime(source_root=source_root,
                                       scope=decision['scopeId'], db_path=decision['dbPath'],
                                       queue_path=decision['queuePath'],
-                                      db_incarnation=decision['dbIncarnation']) as runtime:
-                    batch = prepare_candidate_batch_off_hook(runtime, AdmittedProvider())
-                    if verify_selected_route(decision) != proof:
-                        raise IndexContractError('selected_proof_changed')
-
+                                      db_incarnation=decision['dbIncarnation'],
+                                      **stores) as runtime:
                     def before_publish():
                         nonlocal proof
                         if verify_selected_route(decision) != proof:
@@ -302,6 +339,16 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise IndexContractError('new_write_proof_unconfirmed')
                         proof = fresh
 
+                    if capacity is not None:
+                        result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
+                                                controller, lambda: verify_selected_route(decision)
+                                                != proof)
+                        if verify_selected_route(decision) != proof:
+                            raise IndexContractError('selected_proof_changed')
+                        return _checked(result)
+                    batch = prepare_candidate_batch_off_hook(runtime, AdmittedProvider())
+                    if verify_selected_route(decision) != proof:
+                        raise IndexContractError('selected_proof_changed')
                     try:
                         if qa is not None:
                             # The batch is accepted; nothing is enqueued yet.
@@ -324,4 +371,43 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         return {'state': 'deferred', 'reason': str(exc)}
     if result.get('state') not in ('indexed', 'unchanged', 'deferred'):
         raise IndexContractError('invalid_sync_result')
+    return result
+
+
+def _checked(result):
+    # The dispatcher completes the wake only on indexed/unchanged
+    # (runtime_handlers.laya_sync); pending and blocked are retried.
+    if result.get('state') not in ('indexed', 'unchanged', 'deferred', 'pending', 'blocked'):
+        raise IndexContractError('invalid_sync_result')
+    return result
+
+
+def _sync_capacity(runtime, provider, before_publish, controller, proof_changed):
+    """Bounded sync_step / vector_fill_step rounds for one wake.
+
+    ``sync_step`` never loads a model; it asks for ``vector_backlog`` until
+    the fill has cached every member, then seals and publishes. Chunk sets
+    already filled stay cached when this wake yields or stops.
+    """
+    from laya_vector_capacity import provider_profile_id, vector_fill_step
+    profile_id = provider_profile_id(provider)
+
+    def should_yield():
+        return _higher_priority_wake(controller)
+    result = None
+    for round_ in range(MAX_CAPACITY_ROUNDS):
+        if should_yield():
+            raise ResourceDeferred('laya_sync_yield_priority')
+        if proof_changed():
+            raise IndexContractError('selected_proof_changed')
+        # A wake is the only change signal until CUD detection calls
+        # request_scan, so each wake asks for one scan (coalesced if pending).
+        result = sync_step(runtime, before_publish=before_publish, require_vector=True,
+                           vector_profile_id=profile_id, rescan=round_ == 0)
+        if result['state'] != 'pending':
+            return result
+        if result.get('reason') == 'vector_backlog':
+            fill = vector_fill_step(runtime, provider, should_yield=should_yield)
+            if fill['state'] == 'deferred':
+                return {'state': 'deferred', 'reason': fill['reason']}
     return result
