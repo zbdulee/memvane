@@ -970,7 +970,8 @@ def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bo
     proof_keys = set(qmd_config.VERIFY_PROOF_FIELDS)
     replace_sources = new_by_key["sources"] != ["sources:", "  - {kind: unknown}"]
     for key, lines in old_sections:
-        if key in proof_keys or key in {"sourceRevisions", "reviewed"}:
+        # 줄 span 은 옛 본문을 검수한 verifier 인용의 위치다 — 재생성된 본문에 남기면 안 된다.
+        if key in proof_keys or key in {"sourceRevisions", "reviewed", yaml_scalars.SOURCE_SPANS_KEY}:
             continue
         if key == "status":
             merged.extend(new_by_key["status"])
@@ -1050,7 +1051,8 @@ def insert_source_revisions(path: Path, revisions: list) -> bool:
 
 
 @wiki_mutation_lock.guard_path
-def patch_frontmatter_fields(path: Path, updates: dict) -> bool:
+def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = None,
+                             expected_text: str | None = None) -> bool:
     """Rewrite only the named top-level scalar frontmatter keys in place.
 
     Leaves every other frontmatter line and the managed body untouched.
@@ -1059,10 +1061,25 @@ def patch_frontmatter_fields(path: Path, updates: dict) -> bool:
     field (`verifiedBy: ""`) leaves a residue that still reads as "this card was
     machine-verified once" — measured on 5 live cards that had been reset to
     `generated`. Removal is the honest state for "no verification on record".
+
+    `blocks` maps a block-list key to already-serialized entries (`None` = remove).
+    Every top-level declaration of that key — duplicates and quoted spellings
+    included — is dropped together with its indented children, so no orphan
+    child line survives; non-empty entries are appended as one new block in the
+    same atomic write. **Any `status` update also removes `sourceSpans`** unless
+    the caller passes it: spans locate quotes of one verification, and a status
+    change without a fresh list would leave them describing a different verdict.
+    `expected_text` refuses the write when the file differs from what the caller
+    validated.
     """
+    blocks = dict(blocks or {})
+    if "status" in updates:
+        blocks.setdefault(yaml_scalars.SOURCE_SPANS_KEY, None)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
+        return False
+    if expected_text is not None and text != expected_text:
         return False
     match = FRONTMATTER_RE.match(text)
     if not match:
@@ -1070,7 +1087,16 @@ def patch_frontmatter_fields(path: Path, updates: dict) -> bool:
     lines = match.group(1).splitlines()
     seen = set()
     new_lines = []
+    in_block = False
     for line in lines:
+        if in_block:
+            if not line.strip() or line[0].isspace():
+                continue
+            in_block = False
+        # 블록 헤더 판정은 읽는 쪽(`yaml_scalars.closed_block_entries`)과 같은 규칙이다.
+        if line and not line[0].isspace() and yaml_scalars.load(line.split(":", 1)[0].strip()) in blocks:
+            in_block = True
+            continue
         key = None
         if line and not line.startswith(" ") and ":" in line:
             key = line.split(":", 1)[0].strip()
@@ -1084,6 +1110,10 @@ def patch_frontmatter_fields(path: Path, updates: dict) -> bool:
     for key, value in updates.items():
         if key not in seen and value is not None:
             new_lines.append(f"{key}: {frontmatter_patch_scalar(key, value)}")
+    for key, entries in blocks.items():
+        if entries:
+            new_lines.append(f"{key}:")
+            new_lines.extend(f"  - {entry}" for entry in entries)
     new_frontmatter = "\n".join(new_lines)
     patched = text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
     # 원자적 쓰기 — 실패해도 카드는 원본 그대로다(자동 경로라 절단되면 아무도 모른다).
@@ -1092,7 +1122,7 @@ def patch_frontmatter_fields(path: Path, updates: dict) -> bool:
 
 @wiki_mutation_lock.guard_path
 def stamp_verification(path: Path, status: str, engine: str, mode: str,
-                       body_hash: str | None) -> bool:
+                       body_hash: str | None, source_spans: list | None = None) -> bool:
     """Write a machine-review outcome — status AND all three proof fields together.
 
     Single writer so a status can never land without its proof. The live corpus shows
@@ -1106,7 +1136,30 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
     claim than a cross-engine pass. The field is absent on every card verified
     before this existed — absence therefore means "unknown, most likely self"
     (measured 655/688), never "cross-engine".
+
+    `source_spans` (verifier-cited line spans, `source_spans.derive_spans`) are
+    written in the **same atomic write** as the status, and only on `verified`.
+    Every stamp without spans removes an existing list — contested, a pass with
+    no locatable quote, and every other writer of this function alike — so a
+    span list always belongs to the verdict stamped next to it. The list must be
+    complete and bound to this card's own `sourceRevisions`; otherwise nothing is
+    written (no partial proof).
     """
+    emitted = None
+    expected_text = None
+    if source_spans:
+        emitted = yaml_scalars.dump_source_spans(source_spans)
+        if status != "verified" or not emitted:
+            return False
+        try:
+            expected_text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return False
+        import source_spans as spans_module
+        if not spans_module.bound_to_revisions(
+                yaml_scalars.load_source_spans(emitted) or [],
+                spans_module.card_revisions(expected_text)):
+            return False
     return patch_frontmatter_fields(path, {
         "status": status,
         "verifiedBy": str(engine or "unknown"),
@@ -1118,7 +1171,7 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
         # None 이면 키를 쓰지 않는다(`patch_frontmatter_fields` 규약) = 결속 없는 legacy
         # 형태이고, 그것이 필요한 경로는 지금 없다(양 호출부 모두 값을 넘긴다).
         "verifiedBodyHash": body_hash,
-    })
+    }, blocks={yaml_scalars.SOURCE_SPANS_KEY: emitted}, expected_text=expected_text)
 
 
 @wiki_mutation_lock.guard_path
