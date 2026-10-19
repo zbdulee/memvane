@@ -371,36 +371,51 @@ class DiscoveryChecks(unittest.TestCase):
         return g3, [('alpha/one.md', 'post_sync_source', self.sha(one)),
                     ('alpha/three.md', 'post_sync_source', self.sha(three))]
 
-    def test_absent_cursor_after_several_publishes_walks_lineage(self):
+    def test_absent_cursor_after_several_publishes_uses_one_step_base(self):
         head, expected = self.three_blocked_publishes()
         with self.hook_world() as queue:
             self.bash()
             _status, results, failures = self.drain_all(queue)
         self.assertEqual((failures, results[0]['state'], results[0]['generation']),
                          ([], 'unchanged', head))
-        # Base is G1, the earliest ancestor: its own files stay baseline.
-        self.assertEqual(self.source_rows(), expected)
+        # Base is G2, one publish back: the G2->G3 change (three.md) is found.
+        # The G1->G2 edit of one.md predates it and is not backfilled.
+        self.assertEqual(self.source_rows(), [expected[1]])
         self.assertEqual((self.state()['baseGen'], self.state()['pending']), (head, {}))
         self.assertEqual(self.compile_wakes, [str(self.home)])
 
-    def test_absent_cursor_lineage_over_cap_fails_closed_without_reset(self):
+    def test_absent_cursor_does_not_depend_on_lineage_length(self):
         head, expected = self.three_blocked_publishes()
         with self.hook_world() as queue:
             self.bash()
-            with patch.object(discovery, 'MAX_LINEAGE', 2):
+            # A long history no longer blocks the first run: it walks one link.
+            with patch.object(discovery, 'MAX_LINEAGE', 1):
                 _status, results, failures = self.drain_all(queue)
-            self.assertEqual(failures, [])
-            self.assertEqual(results[0]['wikiDiscovery'],
-                             {'state': 'blocked', 'reason': 'lineage_over_cap'})
-            # No cursor at G3, nothing queued, the observed grant is retired.
-            self.assertFalse(self.paths()[0].exists())
-            self.assertEqual((self.source_rows(), self.compile_wakes), ([], []))
-            self.assertEqual(self.grants(), {'sync': 0, 'session_start': 0})
+        self.assertEqual(failures, [])
+        # Not blocked; the cursorless start is reported.
+        self.assertNotEqual(results[0]['wikiDiscovery']['state'], 'blocked')
+        self.assertIs(results[0]['wikiDiscovery']['cursorStarted'], True)
+        self.assertEqual((failures, results[0]['generation']), ([], head))
+        self.assertEqual(self.source_rows(), [expected[1]])
+        self.assertEqual((self.state()['baseGen'], self.state()['pending']), (head, {}))
+
+    def test_deleted_cursor_restarts_one_step_back_and_is_reported(self):
+        self.selected_route()
+        self.run_worker()
+        self.paths()[0].unlink()  # e.g. removed by hand
+        (self.alpha / 'one.md').write_text('silver otter after delete', encoding='utf-8')
+        with self.hook_world() as queue:
             self.bash()
             _status, results, failures = self.drain_all(queue)
-        self.assertEqual((failures, results[0]['generation']), ([], head))
-        self.assertEqual(self.source_rows(), expected)
-        self.assertEqual((self.state()['baseGen'], self.state()['pending']), (head, {}))
+        self.assertEqual(failures, [])
+        self.assertIs(results[0]['wikiDiscovery']['cursorStarted'], True)
+        self.assertEqual([row[0] for row in self.source_rows()], ['alpha/one.md'])
+        # Later runs have a cursor again and report nothing extra.
+        with self.hook_world() as queue:
+            self.bash()
+            _status, results, failures = self.drain_all(queue)
+        self.assertEqual(failures, [])
+        self.assertNotIn('wikiDiscovery', results[0])
 
     def test_lineage_walk_fails_closed_on_broken_cyclic_or_overlimit(self):
         # Synthetic seal/generation rows only: A-int triggers forbid forging these.
@@ -426,6 +441,18 @@ class DiscoveryChecks(unittest.TestCase):
         self.assertEqual(discovery._lineage_root(db, SCOPE, 'g1'), 'g1')
         with patch.object(discovery, 'MAX_LINEAGE', 3):
             self.assertEqual(discovery._lineage_root(db, SCOPE, 'g3'), 'g1')
+        # A step limit returns the checked generation that many links back.
+        self.assertEqual(discovery._lineage_root(db, SCOPE, 'g3', 1), 'g2')
+        self.assertEqual(discovery._lineage_root(db, SCOPE, 'g3', 2), 'g1')
+        self.assertEqual(discovery._lineage_root(db, SCOPE, 'g1', 1), 'g1')
+        chain(ok('g1', None, state='prepared'), ok('g2', 'g1'), ok('g3', 'g2'))
+        self.assertEqual(discovery._lineage_root(db, SCOPE, 'g3', 1), 'g2')
+        for broken in (ok('g2', 'g1', state='prepared'), ok('g2', 'g1', scope=other),
+                       ok('g2', 'g1', sealed=False)):
+            chain(ok('g1', None), broken, ok('g3', 'g2'))
+            with self.assertRaisesRegex(discovery.DiscoveryBlocked, '^lineage_broken$'):
+                discovery._lineage_root(db, SCOPE, 'g3', 1)
+        chain(ok('g1', None), ok('g2', 'g1'), ok('g3', 'g2'))
         cases = {
             'missing': ('lineage_broken', 'g3', [ok('g2', 'g1'), ok('g3', 'g2')]),
             'unpublished': ('lineage_broken', 'g3',

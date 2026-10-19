@@ -446,7 +446,10 @@ class V2WorkerChecks(unittest.TestCase):
             return rows,sets,head
         expected={(path,h,t,profile_id) for path,(h,t) in keys.items()}
         self.assertEqual(sealed(),(expected,2,gen))
-        self.assertEqual(self.run_worker(),{'state':'unchanged','generation':gen,'claim':None})
+        first=self.run_worker()
+        # The first sync after cutover starts the discovery cursor and says so.
+        self.assertIs(first.pop('wikiDiscovery')['cursorStarted'],True)
+        self.assertEqual(first,{'state':'unchanged','generation':gen,'claim':None})
         # No journal CAS fence and no inference: the worker reuses the sealed
         # namespaced (hash,title,profile) sets the cutover origin published.
         self.assertEqual(self.marks,[])

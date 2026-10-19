@@ -36,7 +36,9 @@ journal -> enqueue -> ACK (cursor + spent ids, one replace) -> grant removal,
 so a crash re-enqueues (the live-queue key coalesces it), never loses a
 revision, and a failed removal can never let a spent grant pay for the
 deferred tail. Unknown or corrupt state fails closed: nothing is enqueued and
-nothing is reset to a fresh baseline.
+nothing is reset to a fresh baseline. A missing cursor (first run, a new DB
+incarnation, or a deleted file) starts one publish back from head and is
+reported as `cursorStarted`, because changes before that are not discovered.
 """
 from __future__ import annotations
 
@@ -59,6 +61,9 @@ MAX_PENDING = 4096
 MAX_MEMBERS = 50_000
 MAX_GRANT_COUNT = 1000
 MAX_LINEAGE = 4096
+# Without a cursor, discovery diffs head against its sealed base this many
+# publishes back (see _read_view).
+FIRST_RUN_LINEAGE_STEPS = 1
 HOOK_LOCK_SECONDS = 1.0
 WORKER_LOCK_SECONDS = 5.0
 _HEX32 = re.compile(r'[0-9a-f]{32}\Z')
@@ -430,8 +435,11 @@ def _members(db, scope, gen):
     return rows
 
 
-def _lineage_root(db, scope, head):
+def _lineage_root(db, scope, head, steps=None):
     """Earliest published ancestor of head along sealed `base_gen` links.
+
+    ``steps`` stops after that many links and returns the generation reached
+    (still fully checked); None walks to the baseless first generation.
 
     Stage binds `base_gen` to the head it replaced and publish CASes on it,
     so the chain is the scope's publication order and ends at a baseless
@@ -443,7 +451,8 @@ def _lineage_root(db, scope, head):
     while True:
         if gen in seen:
             raise DiscoveryBlocked('lineage_cycle')
-        if len(seen) >= MAX_LINEAGE:
+        if steps is None and len(seen) >= MAX_LINEAGE:
+            # A step limit is its own bound; MAX_LINEAGE caps a full walk.
             raise DiscoveryBlocked('lineage_over_cap')
         seen.add(gen)
         row = db.execute('''SELECT g.scope,g.state,s.scope,s.base_gen FROM generations g
@@ -453,7 +462,7 @@ def _lineage_root(db, scope, head):
             raise DiscoveryBlocked('head_base_unproved')
         if row is None or row[0] != scope or row[1] != 'published' or row[2] != scope:
             raise DiscoveryBlocked('lineage_broken')
-        if row[3] is None:
+        if row[3] is None or (steps is not None and len(seen) > steps):
             return gen
         if not isinstance(row[3], str) or not _GENERATION.fullmatch(row[3]):
             raise DiscoveryBlocked('lineage_broken')
@@ -463,11 +472,14 @@ def _lineage_root(db, scope, head):
 def _read_view(decision, base):
     """Head, a proved base and both raw memberships in one read snapshot.
 
-    Without a cursor nothing proves which generations were discovered: a
-    drain blocked before its first journal may be followed by several
-    publishes. The base is then the head's earliest published ancestor, the
-    same baseline a cursor journaled at that first generation would hold, so
-    a raw change in any skipped step still differs from it. A first,
+    Without a cursor the base is head's sealed base one publish back
+    (FIRST_RUN_LINEAGE_STEPS), so the change that published head is still
+    discovered, including the first publish after an upgrade. Walking to the
+    scope's first generation instead made an upgrade a paid compile of every
+    raw file changed since then, and blocked for good past MAX_LINEAGE
+    publishes. The accepted cost: when the very first drain is blocked before
+    its journal while several publishes land, changes older than the last of
+    them are not discovered (no backfill, as for manual sync). A first,
     baseless head is its own base.
     """
     from laya_index_a import LayaIndexA
@@ -485,7 +497,7 @@ def _read_view(decision, base):
                 raise DiscoveryBlocked('head_missing')
             head = row[0]
             if base is None:
-                base = _lineage_root(db, scope, head)
+                base = _lineage_root(db, scope, head, FIRST_RUN_LINEAGE_STEPS)
             if not isinstance(head, str) or not _GENERATION.fullmatch(head) \
                     or not isinstance(base, str) or not _GENERATION.fullmatch(base):
                 raise DiscoveryBlocked('generation_unproved')
@@ -591,6 +603,15 @@ def drain_after_sync(decision, observed, *, recheck):
 
 
 def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw):
+    # Whether this run starts the cursor; a blocked run raises and writes none.
+    starting = not os.path.lexists(state_path)
+    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw)
+    if starting:
+        result['cursorStarted'] = True
+    return result
+
+
+def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw):
     recheck()
     state = _read(state_path)
     if state is not None:
