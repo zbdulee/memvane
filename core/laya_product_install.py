@@ -460,13 +460,52 @@ def _candidate_prepared(path, generation, scope, manifest, source_digest,
         return index.incarnation()
 
 
+def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
+    """Create or verify the capacity catalog and binding store beside ``db_path``.
+
+    Their presence switches the selected worker and host recall to the
+    capacity path (``laya_index_runtime.capacity_store_paths``). Idempotent:
+    an existing store is opened, which checks its scope, roots and
+    incarnation; a run interrupted after the catalog is completed by the
+    next run. Both end as private regular files.
+    """
+    from contextlib import closing
+    from laya_index_capacity import GenerationBindingStore
+    from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX,
+                                    capacity_store_paths)
+    from laya_source_catalog import LayaSourceCatalog
+    db = Path(db_path)
+    catalog = db.with_name(db.name + CATALOG_SUFFIX)
+    store = db.with_name(db.name + BINDING_STORE_SUFFIX)
+    roots = dict(roots)
+    with closing(LayaSourceCatalog(catalog, roots, scope,
+                                   create=not os.path.lexists(catalog))):
+        pass
+    with closing(GenerationBindingStore(store, scope=scope, db_incarnation=db_incarnation,
+                                        roots=roots, create=not os.path.lexists(store))):
+        pass
+    for path in (catalog, store):
+        if not path.is_symlink() and path.is_file():
+            os.chmod(path, 0o600)
+    paths = capacity_store_paths(db)
+    if paths != (str(catalog), str(store)):
+        _fail('capacity_store_unavailable')
+    return paths
+
+
 def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_root, commit_id,
                              expected_proposal_sha256, install_id,
                              accepted_provider_sha256, user_qmd_roots,
                              model_path=None, dimension=None,
                              coordinator=None, start_service=None,
-                             provider_factory=None):
+                             provider_factory=None, capacity_stores=False):
     """Prepare a bounded, privately backed up two-collection cutover.
+
+    ``capacity_stores=True`` also creates the capacity catalog and binding
+    store beside the candidate DB. Off by default: once they exist, recall
+    serves nothing until the worker publishes the first bound generation
+    (the origin head is not bound), whereas the full-scan path serves the
+    origin head at once.
 
     This is an off-hook installer operation. It leaves QMD selected and never
     activates the product route. Existing candidate bytes are verified and
@@ -623,6 +662,8 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             with closing(ClaimQueue.create(queue,
                                            index_incarnation=incarnation)):
                 pass
+        if capacity_stores:
+            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
         if plan_qmd_origin(project_root)['proposalSha256'] != expected_proposal_sha256:
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
