@@ -19,9 +19,11 @@ are imported only when these paths are given.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import os
 import re
 from pathlib import Path
 import sqlite3
+import stat
 from types import MappingProxyType
 
 from laya_index_a import IndexContractError, LayaIndexA
@@ -32,6 +34,40 @@ from laya_index_source_port import (_COLLECTION, scan, scan_collections,
 
 _INCARNATION = re.compile(r"[0-9a-f]{32}\Z")
 _MAX_COLLECTIONS = 16  # the scan_collections bound
+
+
+# Capacity path stores beside the A-int DB. The installer owns them; no hook
+# or worker creates them, and callers use the capacity path only when both
+# exist.
+CATALOG_SUFFIX = '.catalog.sqlite'
+BINDING_STORE_SUFFIX = '.bindings.sqlite'
+
+
+def capacity_store_paths(db_path):
+    """``(catalog, binding store)`` beside ``db_path``, or None when neither exists.
+
+    Both must be private regular files of this user. One without the other,
+    a symlink or a shared mode fails closed.
+    """
+    db = Path(db_path)
+    paths = (db.with_name(db.name + CATALOG_SUFFIX),
+             db.with_name(db.name + BINDING_STORE_SUFFIX))
+    present = []
+    for path in paths:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            present.append(False)
+            continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            raise IndexContractError('capacity_store_unsafe')
+        present.append(True)
+    if not any(present):
+        return None
+    if not all(present):
+        raise IndexContractError('capacity_store_incomplete')
+    return tuple(str(path) for path in paths)
 
 
 def _collection_roots(roots):

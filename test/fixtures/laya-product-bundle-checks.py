@@ -92,6 +92,8 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_qmd_cutover.py', 'laya_qmd_migration.py',
                  'laya_product_sync_worker.py',
                  'laya_index_sync.py',
+                 'laya_source_catalog.py', 'laya_index_capacity.py',
+                 'laya_vector_capacity.py',
                  'laya_package.py', 'laya_install_binding.py',
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',

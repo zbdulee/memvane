@@ -1039,6 +1039,92 @@ class LayaSourceCatalog:
             opener.close()
         check(snapshot)
 
+    def members(self, snapshot: CatalogSnapshot, exclusions: Exclusions, *,
+                after: str = '', limit: int = _PAGE,
+                allow_pending: bool = False) -> List[Tuple[str, str, bool]]:
+        """One page of ``(path, sha256, eligible)`` after ``after``; no body read.
+
+        Same rows and eligibility rule as ``manifest`` and ``iter_documents``,
+        in path order, so a caller can walk the snapshot in bounded pages.
+        """
+        if type(limit) is not int or limit < 1:
+            raise ValueError('invalid member page limit')
+        if not isinstance(after, str):
+            raise ValueError('invalid member cursor')
+        excluded_paths, excluded_hashes = exclusions
+
+        def read():
+            if not self._is_current(snapshot, allow_pending):
+                return None
+            return [(path, sha, path not in excluded_paths and sha not in excluded_hashes)
+                    for path, sha in self.db.execute(
+                        'SELECT path,sha256 FROM scan_files WHERE seq=? AND path>? '
+                        'ORDER BY path LIMIT ?', (snapshot.seq, after, limit))]
+        rows = self._read(read)
+        if rows is None:
+            _raise_stale('catalog snapshot changed')
+        return rows
+
+    def vector_fill(self, snapshot: CatalogSnapshot, profile_id: str) -> Dict[str, Any]:
+        """Durable vector fill progress for ``(snapshot, profile_id)``.
+
+        ``cursor`` is the last member path whose chunk set is known complete;
+        ``done`` means every eligible member is; ``rows`` counts the chunk rows
+        of the members up to ``cursor``, as a generation seal would. Another snapshot or profile
+        starts from the beginning. The table is created on first write, so an
+        older catalog file without it reads as no progress.
+        """
+        if not isinstance(snapshot, CatalogSnapshot) or not _HEX64.match(profile_id or ''):
+            raise ValueError('invalid vector fill key')
+
+        def read():
+            columns = [row[1] for row in
+                       self.db.execute('PRAGMA table_info(vector_fill)')]
+            if 'rows' not in columns:
+                # Absent, or an unreleased pre-rows layout: no progress.
+                return None
+            return self.db.execute('SELECT cursor,done,rows FROM vector_fill '
+                                   'WHERE seq=? AND profile_id=?',
+                                   (snapshot.seq, profile_id)).fetchone()
+        row = self._read(read)
+        if row is None:
+            return {'cursor': '', 'done': False, 'rows': 0}
+        return {'cursor': row[0], 'done': bool(row[1]), 'rows': row[2]}
+
+    def set_vector_fill(self, snapshot: CatalogSnapshot, profile_id: str,
+                        cursor: str, done: bool, rows: int = 0) -> bool:
+        """Record fill progress; False when the catalog is busy or moved on.
+
+        Rows of other snapshots are dropped in the same write, so the table
+        holds at most one row per profile.
+        """
+        if (not isinstance(snapshot, CatalogSnapshot) or not _HEX64.match(profile_id or '')
+                or not isinstance(cursor, str) or type(done) is not bool
+                or type(rows) is not int or rows < 0):
+            raise ValueError('invalid vector fill record')
+        if not self._begin_write():
+            return False
+        try:
+            if self._pointer('current') != snapshot.seq:
+                self.db.rollback()
+                return False
+            columns = [row[1] for row in self.db.execute('PRAGMA table_info(vector_fill)')]
+            if columns and 'rows' not in columns:
+                # Progress only (rebuilt by the next fill), never source data.
+                self.db.execute('DROP TABLE vector_fill')
+            self.db.execute('CREATE TABLE IF NOT EXISTS vector_fill('
+                            'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
+                            'cursor TEXT NOT NULL, done INTEGER NOT NULL, '
+                            'rows INTEGER NOT NULL, PRIMARY KEY(seq, profile_id))')
+            self.db.execute('DELETE FROM vector_fill WHERE seq<>?', (snapshot.seq,))
+            self.db.execute('INSERT OR REPLACE INTO vector_fill VALUES(?,?,?,?,?)',
+                            (snapshot.seq, profile_id, cursor, int(done), rows))
+            self.db.commit()
+            return True
+        except BaseException:
+            self._rollback()
+            raise
+
 
 def load_exclusions(index: Any, scope: str) -> Exclusions:
     """Read A-int exclusions once per operation (same accessor as the port)."""
@@ -1468,6 +1554,31 @@ class CandidateQuery:
             raise IndexContractError('candidate_query_closed')
 
     # -- phases ---------------------------------------------------------------
+
+    def verify_rows(self, rows: Iterable[Any], *,
+                    collection_names: Optional[Tuple[str, ...]] = None
+                    ) -> List[Dict[str, Any]]:
+        """Verify rows the caller already fetched from the pinned token.
+
+        For a caller that batches several queries into one A-int call
+        (``search_many``), so the generation's FTS check runs once rather than
+        once per ``phase``. Same per-row rules as ``phase``: a malformed,
+        foreign-generation or out-of-selection row poisons the query; a stale
+        candidate is dropped and counted in ``stats['dropped']``. There is no
+        refill round and no ``CatalogPending``: an all-dropped list is ``[]``.
+        """
+        self._require_open()
+        names = _selected(self.binding.collections, collection_names)
+        served: List[Dict[str, Any]] = []
+        try:
+            for row in rows:
+                verified, _path, _reason = self._verify_row(row, names)
+                if verified is not None:
+                    served.append(verified)
+        except BaseException:
+            self._failed = True
+            raise
+        return served
 
     def search(self, fts_query: str, limit: int, *,
                collection_names: Optional[Tuple[str, ...]] = None,

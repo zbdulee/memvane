@@ -115,26 +115,30 @@ def _cjk(ch):
     return offset >= 0 and code <= _QMD_CJK_SCRIPT_RANGES[offset][1]
 
 
+# One character class over the same ranges as ``_cjk``; the search check
+# runs this over every body of a generation, so it must not loop per char.
+_QMD_CJK_RUN = re.compile('[' + ''.join(
+    '\\U%08x-\\U%08x' % (start, end) for start, end in _QMD_CJK_SCRIPT_RANGES) + ']+')
+
+
+def _space_cjk_run(match):
+    # ' a b c ' for the run 'abc': a space before each code point and after.
+    return ' ' + ' '.join(match.group()) + ' '
+
+
 def _qmd_fts_text(text, *, deadline=None):
-    """Space CJK runs by code point, as QMD's normalizeCjkForFTS does."""
-    out = []
-    in_run = False
-    for offset, ch in enumerate(text):
-        if (deadline is not None and offset % 4096 == 0
-                and time.monotonic() >= deadline):
-            raise IndexContractError('fts_deadline_exceeded')
-        if _cjk(ch):
-            out.append(' ')
-            out.append(ch)
-            in_run = True
-        else:
-            if in_run:
-                out.append(' ')
-                in_run = False
-            out.append(ch)
-    if in_run:
-        out.append(' ')
-    return ''.join(out)
+    """Space CJK runs by code point, as QMD's normalizeCjkForFTS does.
+
+    Every code point of a maximal CJK run gets a leading space and the run a
+    trailing one; everything else is copied. The deadline is checked before
+    the work and, for text longer than one 4096-char block, after it.
+    """
+    if text and deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    out = _QMD_CJK_RUN.sub(_space_cjk_run, text)
+    if len(text) > 4096 and deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('fts_deadline_exceeded')
+    return out
 
 
 def _generation_fts_rows_match(db, gen, table, *, deadline=None):
@@ -682,6 +686,36 @@ class LayaIndexA:
             self.db.rollback()
         except sqlite3.Error:
             pass  # never replace the exception that is already propagating
+
+    def ensure_content(self, hash_, body):
+        """Store one immutable content row ahead of a stage; True if inserted.
+
+        Vector chunk sets require their content row, and the capacity vector
+        fill caches them before the generation is staged. ``stage`` and
+        ``stage_stream`` accept an existing row with the same body, so this
+        changes nothing a later stage would write. No membership is added:
+        until a generation lists the hash, no search or view serves it.
+        """
+        if not isinstance(body, str) or not isinstance(hash_, str):
+            raise IndexContractError('invalid_content')
+        if hashlib.sha256(body.encode('utf-8')).hexdigest() != hash_:
+            raise IndexContractError('content_hash_mismatch')
+        self._begin()
+        try:
+            existing = self.db.execute('SELECT body FROM content WHERE hash=?',
+                                       (hash_,)).fetchone()
+            if existing is not None:
+                if existing[0] != body:
+                    raise IndexContractError('hash_content_conflict')
+                self.db.commit()
+                return False
+            self.db.execute('INSERT INTO content VALUES(?,?)', (hash_, body))
+            self.db.execute('INSERT INTO content_fts(hash,body) VALUES(?,?)', (hash_, body))
+            self.db.commit()
+            return True
+        except BaseException:
+            self._rollback()
+            raise
 
     def stage(self, gen, scope, documents, fault_after=None, *,
               base=None, source_manifest=None, claim_digest=None, claim_epoch=None):

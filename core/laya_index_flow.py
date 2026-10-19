@@ -105,10 +105,33 @@ def _run_leased(index, queue, root, job, token, *,
     return 'deferred'
 
 
-def _run_bound_leased(index, queue, catalog, store, job, token):
+def _verify_bound_seal(index, gen, profile_id):
+    from laya_index_vector import verify_generation_seal
+    index.db.execute('BEGIN')
+    try:
+        proof = verify_generation_seal(index, gen)
+        index.db.commit()
+    except BaseException:
+        index.db.rollback()
+        raise
+    if proof['profile_id'] != profile_id:
+        raise IndexContractError('vector_profile_mismatch')
+
+
+def _run_bound_leased(index, queue, catalog, store, job, token, *,
+                      require_vector=False, vector_profile_id=None):
     import laya_index_capacity as capacity
     decision = queue.decide(index, job)
     if decision == ACK:
+        if require_vector:
+            # A lexical-only receipt cannot satisfy a selected vector job. It
+            # is already published, so deferring would retry it forever:
+            # retire it, and sync_step reseals the head from a new capture.
+            try:
+                _verify_bound_seal(index, job['gen'], vector_profile_id)
+            except IndexContractError:
+                return ('replan' if queue.mark_replan(job, token, 'index_stale')
+                        else LEASE_LOST)
         result = queue.conditional_ack(job, token, index)
         return result if result in (ACK, LEASE_LOST) else 'deferred'
     if decision != REPROCESS:
@@ -130,7 +153,21 @@ def _run_bound_leased(index, queue, catalog, store, job, token):
         capacity.stage_bound_streaming(index, catalog, binding, base=job['base_gen'],
                                        claim_digest=job['claim_digest'],
                                        claim_epoch=job['claim_epoch'])
-        published = capacity.publish_bound(index, catalog, store, binding, job)
+        if require_vector:
+            from laya_index_vector import LayaVectorIndex
+            try:
+                # Model-free: built only from chunk sets the fill step cached.
+                LayaVectorIndex(index).seal_generation(job['gen'], vector_profile_id)
+            except IndexContractError:
+                # Missing coverage, a damaged cached chunk set or a budget
+                # overrun repeats for this staged job: deferring would retry
+                # it before every scan step forever. Retire it; a new capture
+                # and fill decide again. (The fill refuses an over-budget
+                # snapshot before staging, so this is not a loop for it.)
+                return ('replan' if queue.mark_replan(job, token, 'index_stale')
+                        else LEASE_LOST)
+        published = capacity.publish_bound(index, catalog, store, binding, job,
+                                           require_vector=require_vector)
     except IndexContractError as exc:
         if capacity.binding_store_busy(exc):
             # A locked store proves nothing about the binding; it surfaces as
@@ -183,10 +220,13 @@ def process_one(index, queue, root, claim, *, recover=False,
         prepare_vector=prepare_vector))
 
 
-def process_bound_one(index, queue, catalog, store, claim, *, recover=False):
+def process_bound_one(index, queue, catalog, store, claim, *, recover=False,
+                      require_vector=False, vector_profile_id=None):
     """``process_one`` for a bound catalog claim; same returns and lease rules.
 
-    Lexical only: a vector seal is not prepared on this path. A receipt
+    With ``require_vector`` the staged generation is sealed from cached chunk
+    sets before publish (no model call); missing coverage is ``replan``, and
+    an existing receipt is ACKed only with a matching seal. A receipt
     already in A-int is ACKed without re-staging. Otherwise the job's stored
     binding must exist and still describe the catalog's current COMPLETE
     snapshot; a newer published snapshot, changed member, exclusion epoch or
@@ -194,5 +234,9 @@ def process_bound_one(index, queue, catalog, store, claim, *, recover=False):
     cannot be read is ``replan`` too, unless the store is only busy
     (``deferred``).
     """
+    if require_vector and not (isinstance(vector_profile_id, str)
+                               and len(vector_profile_id) == 64):
+        raise IndexContractError('vector_profile_required')
     return _process_leased(queue, claim, recover, lambda job, token: _run_bound_leased(
-        index, queue, catalog, store, job, token))
+        index, queue, catalog, store, job, token, require_vector=require_vector,
+        vector_profile_id=vector_profile_id))
