@@ -33,6 +33,29 @@ def _digest(scope, entries):
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
+class _StreamDigest:
+    """``_digest`` over entries that arrive in strictly increasing path order.
+
+    Unique paths in increasing order are already ``sorted(entries)``, so the
+    JSON text ``_digest`` hashes can be fed piecewise without keeping a list.
+    """
+
+    def __init__(self, scope):
+        self._hash = hashlib.sha256(
+            ('[' + json.dumps(scope, ensure_ascii=False) + ',[').encode('utf-8'))
+        self._first = True
+
+    def add(self, path, hash_, flag):
+        part = json.dumps([path, hash_, flag], ensure_ascii=False, separators=(',', ':'))
+        self._hash.update((part if self._first else ',' + part).encode('utf-8'))
+        self._first = False
+
+    def hexdigest(self):
+        final = self._hash.copy()
+        final.update(b']]')
+        return final.hexdigest()
+
+
 def _gen_fts(ordinal):
     # Only an integer allocated by SQLite becomes an SQL identifier.
     return f'gen_fts_{int(ordinal)}'
@@ -133,6 +156,28 @@ def _generation_fts_rows_match(db, gen, table, *, deadline=None):
     if deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
     return expected == actual
+
+
+def _generation_fts_rows_stream_match(db, gen, table):
+    """Lockstep FTS check for a ``stage_stream`` generation; one body at a time.
+
+    ``stage_stream`` inserts FTS rows in path order, so rowid order must equal
+    membership path order. Any other order is a mismatch (fail closed), never
+    a fallback to the whole-generation sort in ``_generation_fts_rows_match``.
+    """
+    members = db.execute(
+        'SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
+        'WHERE m.gen=? AND m.eligible=1 ORDER BY m.path', (gen,))
+    rows = db.execute(f'SELECT path_key,filepath,title,body FROM {table} ORDER BY rowid')
+    while True:
+        member = members.fetchone()
+        row = rows.fetchone()
+        if member is None or row is None:
+            return member is None and row is None
+        path, body = member
+        if row != (path, _qmd_fts_text(path), _qmd_fts_text(_qmd_title(body, path)),
+                   _qmd_fts_text(body)):
+            return False
 
 
 def _path_predicate(prefixes):
@@ -724,6 +769,122 @@ class LayaIndexA:
                          _qmd_fts_text(body), path))
                 if fault_after == n:
                     raise InjectedFault('stage_after_member')
+            self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
+            self.db.commit()
+            return 'prepared'
+        except BaseException:
+            self._rollback()
+            raise
+
+    def stage_stream(self, gen, scope, documents, fault_after=None, *,
+                     base, source_manifest, claim_digest, claim_epoch):
+        """Sealed ``stage`` that consumes ``documents`` one at a time.
+
+        Same seal, base, exclusion, content-immutability and replay rules as
+        ``stage``, but no body list is built: each ``(path, body, eligible)``
+        is validated, hashed and written as it arrives, and the manifest
+        digest is computed incrementally, so paths must be strictly
+        increasing. Peak memory is one body plus SQLite's cache. It is still
+        ONE write transaction over the whole corpus: the A-int write lock is
+        held while the caller re-reads every member (a concurrent ``pin`` or
+        ``release`` raises SQLite busy after the 2 s timeout, which
+        ``LayaIndexRuntime.query_bound`` reports as ``pending``), and any failure,
+        including a digest that differs from ``source_manifest`` after the
+        last row, rolls everything back. An identical prepared or published
+        generation is compared row by row against the re-read documents
+        (never by manifest alone) and returns ``already_staged``.
+        """
+        if (not isinstance(source_manifest, str) or len(source_manifest) != 64
+                or not isinstance(claim_digest, str) or len(claim_digest) != 64
+                or type(claim_epoch) is not int or claim_epoch < 0
+                or (base is not None and (not isinstance(base, str) or not base))):
+            raise IndexContractError('invalid_candidate_seal')
+        if not isinstance(gen, str) or not gen or not isinstance(scope, str) or not scope:
+            raise IndexContractError('invalid_identity')
+        digest = _StreamDigest(scope)
+        last = None
+
+        def entries():
+            nonlocal last
+            for path, body, eligible in documents:
+                if (not _valid_relative_path(path) or (last is not None and path <= last)
+                        or not isinstance(body, str) or type(eligible) is not bool):
+                    raise IndexContractError('invalid_document')
+                last = path
+                hash_ = hashlib.sha256(body.encode('utf-8')).hexdigest()
+                digest.add(path, hash_, int(eligible))
+                yield path, hash_, int(eligible), body
+
+        self._begin()
+        try:
+            prior = self.db.execute('SELECT scope,state,digest,rev_epoch FROM generations WHERE gen=?',
+                                    (gen,)).fetchone()
+            if prior is not None:
+                seal = self.db.execute('''SELECT scope,base_gen,source_manifest,claim_digest,
+                         claim_epoch,entries_digest FROM candidate_seals WHERE gen=?''', (gen,)).fetchone()
+                if (prior[0] != scope or prior[1] not in ('prepared', 'published')
+                        or prior[2] != source_manifest
+                        or seal != (scope, base, source_manifest, claim_digest, claim_epoch,
+                                    source_manifest)):
+                    raise IndexContractError('generation_conflict')
+                stored = self.db.execute('SELECT path,hash,eligible FROM membership '
+                                         'WHERE gen=? ORDER BY path', (gen,))
+                same = True
+                for path, hash_, flag, _body in entries():
+                    same = same and stored.fetchone() == (path, hash_, flag)
+                if digest.hexdigest() != source_manifest:
+                    raise IndexContractError('manifest_mismatch')
+                ordinal = self.db.execute('SELECT ord FROM gen_index WHERE gen=?',
+                                          (gen,)).fetchone()
+                if (not same or stored.fetchone() is not None or ordinal is None
+                        or not _generation_fts_rows_stream_match(
+                            self.db, gen, _gen_fts(ordinal[0]))):
+                    raise IndexContractError('generation_conflict')
+                current_epoch = self.db.execute(
+                    'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]
+                self.db.rollback()
+                return 'already_staged' if prior[3] == current_epoch else 'index_stale'
+            head = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+            if (head[0] if head else None) != base:
+                raise IndexContractError('head_moved')
+            rev_epoch = self.db.execute(
+                'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]
+            # The digest is checked after the last row; until then the generation
+            # carries the claimed manifest, and a mismatch rolls the insert back.
+            self.db.execute('INSERT INTO generations(gen,scope,state,digest,rev_epoch) VALUES(?,?,?,?,?)',
+                            (gen, scope, 'building', source_manifest, rev_epoch))
+            self.db.execute('''INSERT INTO candidate_seals
+                VALUES(?,?,?,?,?,?,?)''',
+                (gen,scope,base,source_manifest,claim_digest,claim_epoch,source_manifest))
+            ordinal = self.db.execute('INSERT INTO gen_index(gen) VALUES(?)', (gen,)).lastrowid
+            table = _gen_fts(ordinal)
+            self.db.execute(_gen_fts_ddl(table))
+            for n, (path, hash_, flag, body) in enumerate(entries(), 1):
+                if flag and self.db.execute('''SELECT 1 FROM exclusions
+                    WHERE scope=? AND ((kind='path' AND value=?) OR
+                                       (kind='hash' AND value=?))''',
+                    (scope, path, hash_)).fetchone():
+                    raise IndexContractError('excluded_document')
+                existing = self.db.execute('SELECT body FROM content WHERE hash=?',
+                                           (hash_,)).fetchone()
+                if existing is None:
+                    self.db.execute('INSERT INTO content VALUES(?,?)', (hash_, body))
+                    self.db.execute('INSERT INTO content_fts(hash,body) VALUES(?,?)',
+                                    (hash_, body))
+                elif existing[0] != body:
+                    raise IndexContractError('hash_content_conflict')
+                self.db.execute('INSERT INTO membership VALUES(?,?,?,?,?)',
+                                (gen, scope, path, hash_, flag))
+                if flag:
+                    self.db.execute(
+                        f'INSERT INTO {table}(filepath,title,body,path_key) VALUES(?,?,?,?)',
+                        (_qmd_fts_text(path),
+                         _qmd_fts_text(_qmd_title(body, path)),
+                         _qmd_fts_text(body), path))
+                if fault_after == n:
+                    raise InjectedFault('stage_after_member')
+            if digest.hexdigest() != source_manifest:
+                raise IndexContractError('manifest_mismatch')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
             self.db.commit()
             return 'prepared'
