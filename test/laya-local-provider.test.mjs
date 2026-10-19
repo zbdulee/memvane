@@ -9,6 +9,6 @@ test('Laya local provider verifies explicit artifacts without loading a model', 
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 11 tests/);
+  assert.match(result.stderr, /Ran 13 tests/);
   assert.doesNotMatch(result.stderr, /skipped=/);
 });

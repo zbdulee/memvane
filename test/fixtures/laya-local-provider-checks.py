@@ -95,6 +95,9 @@ class ProviderChecks(unittest.TestCase):
                         providerArtifactSha256=identity['providerArtifactSha256'],
                         embeddingFingerprint=identity['embeddingFingerprint'],
                         ok=True, result=result)
+                    if isinstance(result, dict) and '__envelope__' in result:
+                        # A raw failure reply: replace ok/result, add fields.
+                        envelope = {**envelope, **result['__envelope__']}
                     conn.sendall(json.dumps(envelope).encode('utf-8'))
             listener.close()
         thread = threading.Thread(target=serve, daemon=True)
@@ -231,6 +234,38 @@ class ProviderChecks(unittest.TestCase):
         with self.assertRaisesRegex(IndexContractError, 'provider_recipe_invalid'):
             ReviewedLocalQmdProvider(self.manifest).embed_document_chunks('hello', path='docs/T.md')
 
+    def test_member_refusal_is_named_only_for_document_chunks(self):
+        manifest = {**self.manifest, 'recipeId': 'qmd-regex-token-chunks-candidate-v1'}
+        manifest['embeddingFingerprint'] = recipe_fingerprint(
+            model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
+            runtime_id=manifest['runtimeId'], recipe_id=manifest['recipeId'],
+            provider_sha256=manifest['providerArtifactSha256'],
+            worker_sha256=manifest['workerSha256'],
+            node_sha256=manifest['nodeSha256'],
+            module_entry_sha256=manifest['moduleEntrySha256'],
+            closure_sha256=manifest['dependencyClosureSha256'])
+        provider = ReviewedLocalQmdProvider(manifest)
+        refused = {'__envelope__': {'ok': False, 'result': None,
+                                    'refused': 'provider_chunks_invalid'}}
+        unknown = {'__envelope__': {'ok': False, 'result': None, 'refused': 'busy'}}
+        busy = {'__envelope__': {'ok': False, 'result': None}}
+        with self.fake_service([refused, unknown, busy], manifest=manifest):
+            with self.assertRaisesRegex(IndexContractError, '^provider_member_refused$'):
+                provider.embed_document_chunks('hello', path='docs/T.md')
+            for _ in range(2):
+                with self.assertRaisesRegex(IndexContractError, '^provider_result_invalid$'):
+                    provider.embed_document_chunks('hello', path='docs/T.md')
+        profile = dict(profileId=provider.profile['profile_id'],
+                       modelId=provider.profile['model_id'],
+                       embeddingFingerprint=provider.profile['embedding_fingerprint'],
+                       dimension=2, metric='cosine')
+        refused_query = {'__envelope__': {'ok': False, 'result': None,
+                                          'refused': 'provider_context_exceeded'}}
+        with self.fake_service([refused_query], manifest=manifest):
+            # A hook query never gets the member code: it is not a document.
+            with self.assertRaisesRegex(IndexContractError, '^provider_result_invalid$'):
+                provider('otter', profile)
+
     def test_query_fails_closed_without_warm_worker(self):
         provider = ReviewedLocalQmdProvider(self.manifest)
         profile = dict(profileId=provider.profile['profile_id'],
@@ -294,6 +329,49 @@ export async function getLlama() {
         self.assertFalse(self.sock.exists())
         self.assertTrue(lease.released)
         self.assertIsNotNone(service.process.poll())
+
+    def test_real_worker_names_a_content_refusal(self):
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('Node unavailable')
+        stub = self.root / 'refusing-module.mjs'
+        # One token per character. A first heading longer than the context
+        # is prefixed to every chunk, so no chunking can make it fit.
+        stub.write_text('''
+export async function getLlama() {
+  return {async loadModel() { return {
+    trainContextSize: 2048,
+    tokenize: text => new Uint32Array(String(text).length),
+    async createEmbeddingContext() { return {
+      async getEmbeddingFor() { return {vector: [1, 0]}; },
+      async dispose() {} }; },
+    async dispose() {}
+  }; }, async dispose() {} };
+}
+''', encoding='utf-8')
+        manifest = dict(self.manifest, nodePath=os.path.realpath(node),
+                        nodeSha256=sha(Path(os.path.realpath(node))),
+                        moduleEntryPath=str(stub), moduleEntrySha256=sha(stub),
+                        recipeId='qmd-regex-token-chunks-candidate-v1')
+        manifest['embeddingFingerprint'] = recipe_fingerprint(
+            model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
+            runtime_id=manifest['runtimeId'], recipe_id=manifest['recipeId'],
+            provider_sha256=manifest['providerArtifactSha256'],
+            worker_sha256=manifest['workerSha256'],
+            node_sha256=manifest['nodeSha256'],
+            module_entry_sha256=manifest['moduleEntrySha256'],
+            closure_sha256=manifest['dependencyClosureSha256'])
+        provider = ReviewedLocalQmdProvider(manifest)
+        service = start_owned_embed_service(manifest, admit=lambda: True)
+        try:
+            self.assertEqual(len(provider.embed_document_chunks('small text', path='docs/a.md')), 1)
+            with self.assertRaisesRegex(IndexContractError, '^provider_member_refused$'):
+                provider.embed_document_chunks('# ' + 'T' * 3000 + '\nbody\n',
+                                               path='docs/b.md')
+            # The worker is still serving after a refusal.
+            self.assertEqual(len(provider.embed_document_chunks('small again', path='docs/c.md')), 1)
+        finally:
+            service.stop()
 
     def test_worker_stays_local_and_preserves_default_format(self):
         node = shutil.which('node')
