@@ -1525,3 +1525,42 @@ print("OK")
     assert.equal(out, 'OK');
   } finally { removeTemp(work); }
 });
+
+// 줄 span 은 옛 본문을 검수한 verifier 인용의 위치다. 재생성된 본문(새 revision)에 남으면
+// selected recall 이 옛 인용 위치를 새 카드의 출처처럼 표시한다.
+test('rewrite_generated_card drops verifier-cited sourceSpans with the other proof fields', () => {
+  const work = repoTemp('span-rewrite');
+  const script = `
+import hashlib, json, sys
+from pathlib import Path
+sys.path.insert(0, 'core')
+import source_spans, wiki_compile as wc, yaml_scalars as ys
+root = Path(${JSON.stringify(work)})
+(root / 'docs').mkdir()
+src = root / 'docs' / 'a.md'
+src.write_bytes(b'# A\\n\\nport is 8080\\n')
+st = src.stat()
+data = src.read_bytes()
+rev = {'kind': 'file', 'path': 'docs/a.md', 'collection': 'raw',
+       'sha256': hashlib.sha256(data).hexdigest(), 'size': st.st_size, 'mtimeNs': st.st_mtime_ns}
+candidate = {'title': 'Port', 'sources': [{'kind': 'file', 'path': 'docs/a.md'}], 'sourceRevisions': [rev]}
+card = root / 'card.md'
+card.write_text(wc.markdown_page(candidate, 'port is 8080', 'generated', [], 'aa'), encoding='utf-8')
+item = source_spans.evidence_item('docs/a.md', rev['sha256'], data, len(data))
+spans = source_spans.derive_spans([{'supported': True, 'quote': 'port is 8080', 'sourcePath': 'docs/a.md'}],
+                                  {'docs/a.md': item})
+assert wc.stamp_verification(card, 'verified', 'codex', 'cross-engine',
+                             ys.card_body_hash(card.read_text(encoding='utf-8')), source_spans=spans)
+stamped = card.read_text(encoding='utf-8')
+assert 'startLine: 3, endLine: 3' in stamped, stamped
+new = wc.markdown_page(candidate, 'port is 9090', 'generated', [], 'bb')
+ok = wc.rewrite_generated_card(card, stamped, new)
+after = card.read_text(encoding='utf-8')
+print(json.dumps({'ok': ok, 'spans': 'sourceSpans' in after, 'revisions': 'sourceRevisions' in after,
+                  'status': 'status: generated' in after, 'newBody': 'port is 9090' in after}))
+`;
+  try {
+    const r = JSON.parse(execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trim());
+    assert.deepEqual(r, { ok: true, spans: false, revisions: true, status: true, newBody: true });
+  } finally { removeTemp(work); }
+});

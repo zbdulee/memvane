@@ -242,6 +242,11 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     decision, proof = _selected(project)
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
+    grants = None
+    if not isinstance(source_root, str):
+        # v2 only. Snapshot hook grants before the scan; later ones stay live.
+        import laya_wiki_discovery
+        grants = laya_wiki_discovery.observe_grants(decision)
     # A mis-armed QA barrier fails before any model start or index write.
     qa = qa_sync_barrier(decision)
     provider = ReviewedLocalQmdProvider(proof['providerManifest'])
@@ -324,4 +329,16 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         return {'state': 'deferred', 'reason': str(exc)}
     if result.get('state') not in ('indexed', 'unchanged', 'deferred'):
         raise IndexContractError('invalid_sync_result')
+    if grants is not None and result['state'] in ('indexed', 'unchanged'):
+        # After receipt and ACK, with the model service stopped. A raised
+        # error or a retry keeps this wake; the published head is not touched.
+        def recheck():
+            if verify_selected_route(decision) != proof:
+                raise IndexContractError('selected_proof_changed')
+        outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
+        if outcome['state'] == 'retry':
+            return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
+                    'generation': result.get('generation')}
+        if outcome['state'] == 'blocked':
+            result = {**result, 'wikiDiscovery': outcome}
     return result

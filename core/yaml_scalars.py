@@ -41,6 +41,19 @@ SOURCE_REVISION_KEY_SET = frozenset(SOURCE_REVISION_KEYS)
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 NONNEGATIVE_INT_RE = re.compile(r"0|[1-9][0-9]*")
 
+# Verifier-cited source line spans (``sourceSpans``).  Same closed-schema rule
+# as ``sourceRevisions``: no raw quote text, typed 1-based inclusive line
+# numbers, and any malformed sibling makes the whole list unusable.
+SOURCE_SPAN_KEYS = ("path", "sourceSha256", "startLine", "endLine", "spanSha256")
+SOURCE_SPAN_KEY_SET = frozenset(SOURCE_SPAN_KEYS)
+SOURCE_SPANS_KEY = "sourceSpans"
+MAX_SOURCE_SPANS = 16
+MAX_SPAN_LINES = 200
+MAX_SPAN_PATH_CHARS = 512
+# Eight digits bound both the token length handed to ``int`` and the value.
+LINE_NUMBER_RE = re.compile(r"[1-9][0-9]{0,7}")
+_UNSAFE_SPAN_PATH_RE = re.compile(r'[\x00-\x1f\x7f-\x9f\\"#  ‪-‮⁦-⁩]')
+
 # YAML 1.2 double-quoted 이스케이프(값 → 표기). 순서 중요: 백슬래시가 먼저다.
 _DUMP_ESCAPES = [
     ("\\", "\\\\"),
@@ -362,12 +375,14 @@ def load_flow_mapping(raw: str) -> tuple[dict, str]:
     return fields, issue
 
 
-def _closed_flow_mapping(raw: str) -> dict | None:
+def _closed_flow_mapping(raw: str, int_keys=("size", "mtimeNs"),
+                         int_re=NONNEGATIVE_INT_RE) -> dict | None:
     """Parse one flow mapping without the permissive first-wins fallback.
 
     ``load_flow_mapping`` is intentionally lenient for legacy ``sources``.
     Provenance is different: duplicate, malformed, or unknown fields must not
-    become a compiler-owned revision record.
+    become a compiler-owned revision record.  ``int_keys`` names the fields
+    whose unquoted token must match ``int_re`` and become an ``int``.
     """
     items, issue = _scan_flow_mapping(raw.strip())
     if issue:
@@ -386,12 +401,12 @@ def _closed_flow_mapping(raw: str) -> dict | None:
         parsed, value_issue = load_with_issue(value)
         if key_issue or value_issue or not SAFE_KEY_RE.fullmatch(key) or key in fields:
             return None
-        if key in ("size", "mtimeNs"):
+        if key in int_keys:
             # ``load_with_issue`` intentionally returns strings for both
             # `1` and `"1"`.  Preserve the original token distinction here:
             # quoted numbers are strings, not typed provenance integers.
             token = value.strip()
-            if not NONNEGATIVE_INT_RE.fullmatch(token):
+            if not int_re.fullmatch(token):
                 return None
             fields[key] = int(token)
         else:
@@ -472,6 +487,118 @@ def load_source_revisions(entries) -> list[dict]:
             return []
         parsed.append(revision)
     return parsed
+
+
+def _line_number(value) -> int | None:
+    if type(value) is not int or not 1 <= value <= 99_999_999:
+        return None
+    return value
+
+
+def _safe_span_path(value) -> bool:
+    if (not isinstance(value, str) or not value or len(value) > MAX_SPAN_PATH_CHARS
+            or value.startswith("/") or _UNSAFE_SPAN_PATH_RE.search(value)):
+        return False
+    return all(part not in ("", ".", "..") for part in value.split("/"))
+
+
+def normalize_source_span(record) -> dict | None:
+    """Validate one verifier-cited line span; ``None`` for anything else.
+
+    The record carries no quote text.  ``#`` is refused in the path because the
+    rendered locator is ``path#Lx-Ly`` and must stay unambiguous.
+    """
+    if not isinstance(record, dict) or set(record) != SOURCE_SPAN_KEY_SET:
+        return None
+    path = record.get("path")
+    source_sha = record.get("sourceSha256")
+    span_sha = record.get("spanSha256")
+    start = _line_number(record.get("startLine"))
+    end = _line_number(record.get("endLine"))
+    if not _safe_span_path(path):
+        return None
+    if not isinstance(source_sha, str) or not SHA256_RE.fullmatch(source_sha):
+        return None
+    if not isinstance(span_sha, str) or not SHA256_RE.fullmatch(span_sha):
+        return None
+    if start is None or end is None or end < start or end - start + 1 > MAX_SPAN_LINES:
+        return None
+    return {"path": path, "sourceSha256": source_sha, "startLine": start,
+            "endLine": end, "spanSha256": span_sha}
+
+
+def _normalize_source_spans(spans) -> list[dict] | None:
+    """Whole-list validation shared by emit and load: all valid, unique, bounded."""
+    if not isinstance(spans, list) or not spans or len(spans) > MAX_SOURCE_SPANS:
+        return None
+    normalized = [normalize_source_span(item) for item in spans]
+    if any(item is None for item in normalized):
+        return None
+    keys = {(item["path"], item["startLine"], item["endLine"]) for item in normalized}
+    if len(keys) != len(normalized):
+        return None
+    return normalized
+
+
+def dump_source_spans(spans) -> list[str]:
+    """Emit a complete span list as flow mappings, or nothing at all."""
+    normalized = _normalize_source_spans(spans)
+    if normalized is None:
+        return []
+    return ["{" + ", ".join(f"{key}: {dump(item[key])}" for key in SOURCE_SPAN_KEYS) + "}"
+            for item in normalized]
+
+
+def load_source_spans(entries) -> list[dict] | None:
+    """Parse a complete span list; ``None`` when any entry or the list is bad."""
+    if not isinstance(entries, list):
+        return None
+    parsed = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            return None
+        parsed.append(normalize_source_span(_closed_flow_mapping(
+            entry, int_keys=("startLine", "endLine"), int_re=LINE_NUMBER_RE)))
+    return _normalize_source_spans(parsed)
+
+
+_BLOCK_ENTRY_RE = re.compile(r"  - (\S.*)\Z")
+
+
+def closed_block_entries(block: str, key: str, max_entries: int) -> tuple[str, list[str]]:
+    """Find one top-level block list in a frontmatter body: ``(state, entries)``.
+
+    ``state`` is ``absent``, ``present`` or ``invalid``.  Unlike the lenient
+    readers this never returns a usable prefix: a duplicate or quoted-duplicate
+    header, an inline value, an entry not written as ``  - <value>``, an empty
+    list, or more than ``max_entries`` items all make the block ``invalid``.
+    """
+    entries: list[str] = []
+    seen = False
+    inside = False
+    for line in block.split("\n"):
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            name, issue = load_with_issue(line.split(":", 1)[0].strip())
+            if not issue and name == key:
+                if seen or line.rstrip() != f"{key}:":
+                    return "invalid", []
+                seen = inside = True
+            else:
+                inside = False
+            continue
+        if not inside:
+            continue
+        match = _BLOCK_ENTRY_RE.fullmatch(line.rstrip())
+        if match is None:
+            return "invalid", []
+        entries.append(match.group(1))
+        if len(entries) > max_entries:
+            return "invalid", []
+    if not seen:
+        return "absent", []
+    return ("present", entries) if entries else ("invalid", [])
 
 
 def fold_inline(value) -> str:

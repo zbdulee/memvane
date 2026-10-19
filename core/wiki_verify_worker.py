@@ -31,6 +31,11 @@ Every deletion (fail and inconclusive alike) also appends one row to
 verify-deleted.jsonl, the untrimmed audit ledger — verify-log.jsonl logs passes too and
 so rotates its history away within days on an active project.
 
+A pass may also stamp `sourceSpans`: line locations of the verifier's own exact
+quotes, located in code against the revision-checked snapshot bytes
+(source_spans.py). They are written with the status in one atomic write, carry
+no quote text, and only locate cited excerpts — they are not per-claim proof.
+
 Runs piggybacked from wiki_compile_worker.main() under the same per-cwd lock,
 and doubles as a standalone CLI for tests/manual runs. Silent by default (hook
 path); queue/log records never store source bodies.
@@ -52,6 +57,7 @@ import wiki_compile as wc
 import wiki_compile_worker as wcw
 import wiki_freshness
 import wiki_source_missing as wsm
+import source_spans
 import yaml_scalars
 from dirty_queue import enqueue_project_collections
 from wiki_compile_enqueue import _safe_queue_path
@@ -497,40 +503,61 @@ def snapshot_revision_sources(
     ``sourceRevisions``.  Once the field exists, invalid records, unsafe paths,
     failed snapshots, and hash mismatches all fail closed before a verifier call.
     """
+    loaded, freshness, _evidence = snapshot_revision_evidence(root, config, job, max_chars)
+    return loaded, freshness
+
+
+def snapshot_revision_evidence(
+    root: Path, config: dict, job: dict, max_chars: int
+) -> tuple[list[dict] | None, dict | None, dict]:
+    """``snapshot_revision_sources`` plus the full snapshot bytes per revision path.
+
+    The third value feeds ``source_spans.derive_spans``: the same stable bytes
+    whose hash matched the job revision, and how many characters of them the
+    verifier was shown.  It is keyed only by worker-owned revision paths, so a
+    model-chosen ``sourcePath`` cannot add evidence.  It never leaves the worker.
+    """
     if "sourceRevisions" not in job:
-        return None, None
+        return None, None, {}
     raw_revisions = job.get("sourceRevisions")
     if not isinstance(raw_revisions, list) or not raw_revisions:
-        return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}
+        return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}, {}
 
     import recall
 
     allow_roots = wsm.allow_roots_of(config)
     loaded = []
+    evidence: dict[str, dict] = {}
     for raw in raw_revisions:
         expected = yaml_scalars.normalize_source_revision(raw)
         if expected is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "invalid_source_revision"}
+            return [], {"state": wiki_freshness.UNKNOWN, "reason": "invalid_source_revision"}, {}
         resolved, reason = recall.resolve_existing_source(expected["path"], root, allow_roots)
         if resolved is None:
             state = wiki_freshness.STALE if reason == "missing" else wiki_freshness.UNKNOWN
-            return [], {"state": state, "reason": reason or "source_unavailable"}
+            return [], {"state": state, "reason": reason or "source_unavailable"}, {}
         snapshot = wiki_freshness.snapshot_bytes(resolved)
         if snapshot is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_snapshot_failed"}
+            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_snapshot_failed"}, {}
         revision, data = snapshot
         if revision["sha256"] != expected["sha256"]:
-            return [], {"state": wiki_freshness.STALE, "reason": "content_hash_mismatch"}
+            return [], {"state": wiki_freshness.STALE, "reason": "content_hash_mismatch"}, {}
         bounded = wcw.decode_source_bounded(data, max_chars)
         if bounded is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_decode_failed"}
+            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_decode_failed"}, {}
         content, truncated = bounded
         loaded.append({
             "path": expected["path"],
             "content": content,
             "truncated": truncated,
         })
-    return loaded, {"state": wiki_freshness.FRESH, "checked": len(loaded)}
+        # A path listed twice cannot name one unambiguous snapshot to locate in.
+        item = source_spans.evidence_item(expected["path"], expected["sha256"], data, len(content))
+        if expected["path"] in evidence or item is None:
+            evidence[expected["path"]] = {}
+        else:
+            evidence[expected["path"]] = item
+    return loaded, {"state": wiki_freshness.FRESH, "checked": len(loaded)}, evidence
 
 
 def record_source_missing(root: Path, config: dict, compile_cfg: dict, rel: str,
@@ -633,9 +660,15 @@ def apply_verify_verdict_locked(
     target: Path, job_hash: str, payload_text: str | None,
     engine: str, verified_mode: str,
     provenance: dict, verdict: str, claims: list, reasons: list[str],
-    sources: list[dict], log_path: Path,
+    sources: list[dict], log_path: Path, *, spans: list[dict],
 ) -> tuple[bool, bool]:
-    """Re-read, decide, and mutate one card while CARD_WRITE_LOCK is held."""
+    """Re-read, decide, and mutate one card while CARD_WRITE_LOCK is held.
+
+    ``spans`` were derived from the snapshot bytes before the lock.  They stay
+    valid because the freshness re-check below compares the same revision
+    ``sha256`` they are bound to; they are further narrowed to the card's own
+    ``sourceRevisions`` so recall can bind them to what the card claims.
+    """
     fresh_text, fresh_meta, fresh_status, fresh_hash = card_state(target)
     if card_changed_during_verify(job_hash, fresh_meta, fresh_status, fresh_hash,
                                   payload_text, fresh_text):
@@ -660,12 +693,15 @@ def apply_verify_verdict_locked(
     if verdict == "pass":
         # 지문은 **검증기에 보낸 전문**에서 파생한다. 가드가 전문 동등성을 통과시켰으므로
         # 디스크와 같은 값이지만, 출처를 "검증된 텍스트"로 고정해 둔다.
+        # 줄 span 은 위치할 수 있는 인용만 담는다. 비면 키 없이 기존 파일 단위 verified 다.
+        bound = source_spans.bind_to_card(spans, fresh_text) if spans else []
         if not wc.stamp_verification(target, "verified", engine, verified_mode,
-                                     yaml_scalars.card_body_hash(payload_text)):
+                                     yaml_scalars.card_body_hash(payload_text),
+                                     source_spans=bound or None):
             log_verdict(log_path, {**record, "result": "stamp_failed", "stampStatus": "verified"})
             return False, True
         reindex_wiki(root, config)
-        log_verdict(log_path, {**record, "result": "verified"})
+        log_verdict(log_path, {**record, "result": "verified", "sourceSpans": len(bound)})
         return True, False
 
     action = vcfg.get("onFail", "delete") if verdict == "fail" else vcfg.get("onInconclusive", "delete")
@@ -708,7 +744,8 @@ def process_verify_job(
         return True, False
 
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
-    snapshot_sources, freshness = snapshot_revision_sources(root, config, job, max_chars)
+    snapshot_sources, freshness, span_evidence = snapshot_revision_evidence(
+        root, config, job, max_chars)
     if freshness is not None and freshness.get("state") != wiki_freshness.FRESH:
         log_verdict(log_path, {
             **base_record(job), "result": "deferred", "reason": "source_changed_before_verify",
@@ -854,6 +891,8 @@ def process_verify_job(
         # (lib 우회)도 여기서 함께 덮인다.
         return defer_or_drop(root, vcfg, job, attempt, has_more, provenance, "invalid_verdict", log_path)
 
+    # 기존 pass claims 의 정확한 인용만 코드로 위치시킨다(추가 유료 호출·프롬프트 변경 없음).
+    spans = source_spans.derive_spans(claims, span_evidence) if verdict == "pass" else []
     wiki_selected_laya.recheck(selected_route)
     try:
         with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
@@ -864,7 +903,7 @@ def process_verify_job(
                 # 이 텍스트에서 파생한 본문 지문이 카드에 찍힌다.
                 text,
                 engine, verified_mode, provenance, verdict, claims, reasons,
-                sources, log_path,
+                sources, log_path, spans=spans,
             )
     except OSError:
         log_verdict(log_path, {

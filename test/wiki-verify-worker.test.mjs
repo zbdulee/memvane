@@ -1367,3 +1367,152 @@ test('프롬프트 계약대로 온 claims 하나면 pass 는 그대로 verified
     assert.equal(log.at(-1).claims, 1, '로그는 개수만 남긴다 — 모양 근거는 프롬프트 계약이다');
   } finally { removeTemp(project); }
 });
+
+// ── verifier-cited source line spans (sourceSpans) ─────────────────────────────
+// 기대 줄 번호·slice 바이트는 아래 합성 원문에서 손으로 적은 값이다(구현 재계산 아님).
+
+function sha256(text) {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+// job 과 카드가 **같은 바이트**의 revision 을 가리키게 한다. 카드 표기는 writer 와 같은
+// `key: value` flow mapping 이다(JSON.stringify 는 `"k":"v"` 라 YAML 구분자가 아니다).
+function bindSource(project, text, { card = true } = {}) {
+  const sourcePath = join(project, 'docs', 'source.md');
+  if (text !== undefined) writeFileSync(sourcePath, text);
+  const st = statSync(sourcePath, { bigint: true });
+  const revision = {
+    kind: 'file', path: 'docs/source.md', collection: 'proj-docs',
+    sha256: sha256(readFileSync(sourcePath)), size: Number(st.size), mtimeNs: Number(st.mtimeNs),
+  };
+  const queue = join(project, '.auto-context', 'compile', 'verify-queue.jsonl');
+  const job = JSON.parse(readFileSync(queue, 'utf8').trim());
+  writeFileSync(queue, JSON.stringify({ ...job, sourceRevisions: [revision] }) + '\n');
+  if (card) {
+    const flow = `{kind: "file", path: "docs/source.md", collection: "proj-docs", sha256: "${revision.sha256}", size: ${revision.size}, mtimeNs: ${revision.mtimeNs}}`;
+    const cardPath = join(project, CARD_REL);
+    writeFileSync(cardPath, readFileSync(cardPath, 'utf8').replace(
+      /^createdBy: qmd-auto-context$/m, `createdBy: qmd-auto-context\nsourceRevisions:\n  - ${flow}`));
+  }
+  return revision;
+}
+
+function frontmatterOf(project) {
+  const text = readFileSync(join(project, CARD_REL), 'utf8');
+  return text.slice(0, text.indexOf('\n---\n', 4));
+}
+
+function passWith(claims) {
+  return mockVerifier({ verdict: 'pass', claims, reasons: [] });
+}
+
+test('sourceSpans: exact unique single-line quote is stamped with verified status, without quote text', () => {
+  const quote = 'the source documents cite';
+  const project = setupProject({ extractorArgv: ['python3', passWith([
+    { claim: 'c', supported: true, quote, sourcePath: 'docs/source.md' }])] });
+  try {
+    const revision = bindSource(project);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const fm = frontmatterOf(project);
+    assert.match(fm, /^status: verified$/m);
+    const lineSha = sha256('Durable claim: the source documents cite markdown.\n');
+    assert.match(fm, new RegExp(`^sourceSpans:\\n  - \\{path: "docs/source\\.md", sourceSha256: "${revision.sha256}", startLine: 3, endLine: 3, spanSha256: "${lineSha}"\\}$`, 'm'));
+    assert.ok(!fm.includes(quote), 'frontmatter never stores raw quote text');
+    const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
+    assert.equal(log.at(-1).result, 'verified');
+    assert.equal(log.at(-1).sourceSpans, 1);
+    assert.ok(!JSON.stringify(log).includes(quote), 'verify log stores counts, not quotes');
+  } finally { removeTemp(project); }
+});
+
+test('sourceSpans: multiline quote covers the whole inclusive line slice', () => {
+  const project = setupProject({ extractorArgv: ['python3', passWith([
+    { claim: 'c', supported: true, quote: 'line one\nbeta', sourcePath: 'docs/source.md' }])] });
+  try {
+    bindSource(project, '# Source\n\nalpha line one\nbeta line two\ngamma\n');
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const fm = frontmatterOf(project);
+    assert.match(fm, /startLine: 3, endLine: 4, /);
+    assert.ok(fm.includes(`spanSha256: "${sha256('alpha line one\nbeta line two\n')}"`));
+  } finally { removeTemp(project); }
+});
+
+test('sourceSpans: unlocatable quotes keep file-level verified behaviour with no span key', () => {
+  const cases = [
+    ['duplicate quote', { quote: 'repeat me' }, '# S\n\nrepeat me\nrepeat me\n'],
+    ['paraphrase', { quote: 'the source docs cite markdown' }],
+    ['truncated tail', { quote: 'tail fact' }, `# S\n\n${'x'.repeat(40)}\ntail fact\n`, 30],
+    ['decoy sourcePath', { quote: 'the source documents cite', sourcePath: 'docs/decoy.md' }],
+    ['supported false', { quote: 'the source documents cite', supported: false }],
+    ['supported null', { quote: 'the source documents cite', supported: null }],
+    ['card without own revisions', { quote: 'the source documents cite' }, undefined, undefined, false],
+  ];
+  for (const [label, override, text, maxSourceChars, card = true] of cases) {
+    const claimRow = { claim: 'c', supported: true, sourcePath: 'docs/source.md', ...override };
+    const project = setupProject({ extractorArgv: ['python3', passWith([claimRow])] });
+    try {
+      if (maxSourceChars) {
+        const settingsPath = join(project, '.auto-context', 'settings.json');
+        const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+        settings.compile.maxSourceChars = maxSourceChars;
+        writeFileSync(settingsPath, JSON.stringify(settings));
+      }
+      bindSource(project, text, { card });
+      assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1, label);
+      const fm = frontmatterOf(project);
+      assert.match(fm, /^status: verified$/m, `${label}: verdict still applies`);
+      assert.doesNotMatch(fm, /sourceSpans/, `${label}: no span key`);
+      const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
+      assert.equal(log.at(-1).sourceSpans, 0, label);
+    } finally { removeTemp(project); }
+  }
+});
+
+test('sourceSpans: source changed during verify stamps neither status nor spans', () => {
+  const verifier = join(mkdtempSync(join(tmpdir(), 'verifier-span-race-')), 'verify.py');
+  writeFileSync(verifier, `#!/usr/bin/env python3
+import json, pathlib, sys
+payload = json.loads(sys.stdin.read())
+pathlib.Path(payload['cwd'], 'docs/source.md').write_text('# S\\n\\ninserted\\nDurable claim: the source documents cite markdown.\\n', encoding='utf-8')
+print(json.dumps({'verdict': 'pass', 'claims': [{'claim': 'c', 'supported': True, 'quote': 'the source documents cite', 'sourcePath': 'docs/source.md'}], 'reasons': []}))
+`);
+  const project = setupProject({ extractorArgv: ['python3', verifier] });
+  try {
+    bindSource(project);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 0);
+    const fm = frontmatterOf(project);
+    assert.match(fm, /^status: generated$/m);
+    assert.doesNotMatch(fm, /sourceSpans/);
+    assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl')).at(-1).reason,
+      'source_changed_during_verify');
+  } finally { removeTemp(project); }
+});
+
+test('sourceSpans: contested verdict removes a stale span list in the same stamp', () => {
+  const stale = `sourceSpans:\n  - {path: "docs/source.md", sourceSha256: "${'a'.repeat(64)}", startLine: 1, endLine: 1, spanSha256: "${'b'.repeat(64)}"}`;
+  const verifier = mockVerifier({ verdict: 'fail', claims: [{ claim: 'c', supported: false, quote: '', sourcePath: 'docs/source.md' }], reasons: ['contradiction'] });
+  const project = setupProject({ extractorArgv: ['python3', verifier], verify: { onFail: 'contested' }, cardExtraFm: stale });
+  try {
+    bindSource(project);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const fm = frontmatterOf(project);
+    assert.match(fm, /^status: contested$/m);
+    assert.doesNotMatch(fm, /sourceSpans|spanSha256/);
+  } finally { removeTemp(project); }
+});
+
+test('sourceSpans: tampered duplicate span headers on a generated card are replaced by one fresh list', () => {
+  const junk = 'sourceSpans:\n  - {junk: "1"}\n"sourceSpans":\n  - x';
+  const project = setupProject({ extractorArgv: ['python3', passWith([
+    { claim: 'c', supported: true, quote: 'the source documents cite', sourcePath: 'docs/source.md' }])],
+  cardExtraFm: junk });
+  try {
+    bindSource(project);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const fm = frontmatterOf(project);
+    assert.match(fm, /^status: verified$/m);
+    assert.equal(fm.match(/sourceSpans/g).length, 1);
+    assert.doesNotMatch(fm, /junk/);
+    assert.match(fm, /startLine: 3, endLine: 3/);
+  } finally { removeTemp(project); }
+});

@@ -524,6 +524,165 @@ class ResponseChecks(unittest.TestCase):
                          [('wiki',), ('raw',)])
         self.assertTrue(index.released)
 
+    # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
+    # Expected slices are literal bytes of SPAN_SOURCE, not recomputed by the
+    # module under test.
+    SPAN_SOURCE = b'alpha\nport is 8080\nomega\n'
+
+    def span_project(self, temp):
+        project = Path(temp).resolve()
+        (project / 'docs').mkdir()
+        (project / 'wiki').mkdir()
+        source = project / 'docs' / 'a.md'
+        source.write_bytes(self.SPAN_SOURCE)
+        revision = {'kind': 'file', 'path': 'docs/a.md', 'collection': 'raw',
+                    'sha256': hashlib.sha256(self.SPAN_SOURCE).hexdigest(),
+                    'size': source.stat().st_size, 'mtimeNs': source.stat().st_mtime_ns}
+        return project, revision, v2_decision(str(project))
+
+    @staticmethod
+    def span_entry(path, source_sha, start, end, slice_bytes, start_token=None):
+        return ('  - {path: "%s", sourceSha256: "%s", startLine: %s, endLine: %d, '
+                'spanSha256: "%s"}\n' % (path, source_sha, start_token or start, end,
+                                         hashlib.sha256(slice_bytes).hexdigest()))
+
+    @staticmethod
+    def span_card(revision, spans_text=''):
+        import yaml_scalars
+        frontmatter = ('---\ntitle: Synthetic card\nstatus: verified\n'
+                       'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                       + json.dumps(revision) + '\n' + spans_text
+                       + 'verifiedBodyHash: {digest}\n---\n## Summary\nSource fact.\n')
+        digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
+        return row(path='wiki/card.md', body=frontmatter.replace('{digest}', digest))
+
+    def test_v2_wiki_source_spans_are_checked_against_current_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-ok-') as temp:
+            project, revision, decision = self.span_project(temp)
+            sha = revision['sha256']
+            single = 'sourceSpans:\n' + self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n')
+            multi = 'sourceSpans:\n' + self.span_entry('docs/a.md', sha, 2, 3,
+                                                       b'port is 8080\nomega\n')
+            for spans_text, expected in ((single, ('docs/a.md#L2-L2',)),
+                                         (multi, ('docs/a.md#L2-L3',))):
+                located = {}
+                self.assertTrue(response._verified_wiki_row(
+                    self.span_card(revision, spans_text), decision, frozenset(), located))
+                self.assertEqual(located, {'wiki/card.md': expected})
+            # Legacy card without the key: accepted, file-level only.
+            located = {}
+            self.assertTrue(response._verified_wiki_row(
+                self.span_card(revision), decision, frozenset(), located))
+            self.assertEqual(located, {})
+            # Same line bytes, but the revision moved: the whole card is stale.
+            (project / 'docs' / 'a.md').write_bytes(b'new\n' + self.SPAN_SOURCE)
+            self.assertFalse(response._verified_wiki_row(
+                self.span_card(revision, single), decision))
+
+    def test_v2_wiki_bad_or_stale_source_spans_reject_the_card(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-bad-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            sha = revision['sha256']
+            good = self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n')
+            cases = {
+                'wrong_slice_hash': self.span_entry('docs/a.md', sha, 2, 2, b'alpha\n'),
+                'past_last_line': self.span_entry('docs/a.md', sha, 4, 4, b''),
+                'path_not_a_revision': self.span_entry('docs/b.md', sha, 2, 2, b'port is 8080\n'),
+                'other_revision_sha': self.span_entry('docs/a.md', 'c' * 64, 2, 2,
+                                                      b'port is 8080\n'),
+                'quoted_line_number': self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n',
+                                                      start_token='"2"'),
+                'duplicate_entry': good + good,
+            }
+            for name, entries in cases.items():
+                with self.subTest(name=name):
+                    located = {}
+                    self.assertFalse(response._verified_wiki_row(
+                        self.span_card(revision, 'sourceSpans:\n' + entries),
+                        decision, frozenset(), located))
+                    self.assertEqual(located, {})
+            for name, text in {'duplicate_header': 'sourceSpans:\n' + good + 'sourceSpans:\n' + good,
+                               'inline_value': 'sourceSpans: []\n',
+                               'empty_list': 'sourceSpans:\n'}.items():
+                with self.subTest(name=name):
+                    self.assertFalse(response._verified_wiki_row(
+                        self.span_card(revision, text), decision))
+
+    def test_v2_source_locations_follow_returned_wiki_rows_only(self):
+        import wiki_freshness
+        with tempfile.TemporaryDirectory(prefix='laya-span-query-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            good = self.span_card(revision, 'sourceSpans:\n' + self.span_entry(
+                'docs/a.md', revision['sha256'], 2, 2, b'port is 8080\n'))
+            tampered = self.span_card(revision, 'sourceSpans: []\n')
+            for card, expect_path, expect_locations in (
+                    (good, 'wiki/card.md', {'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                    (tampered, 'docs/a.md', {})):
+                with self.subTest(expect=expect_path):
+                    runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+                    located = {}
+                    with patch.object(response, '_v2_phase', side_effect=[
+                            ([card], True), ([row(path='docs/a.md')], True)]), \
+                         patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
+                                      return_value=[]):
+                        found, _title_only = response.query_selected_v2(
+                            runtime, 'find port', VECTOR_PROFILE, VECTOR_PROFILE,
+                            lambda *_: None, decision, source_locations=located)
+                    self.assertEqual([item['path'] for item in found], [expect_path])
+                    self.assertEqual(located, expect_locations)
+
+    def test_render_source_locations_are_metadata_not_quoted_body(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-render-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            raw_row = row(path='docs/a.md', body='port is 8080\n')
+            text = response.render_context(
+                decision, [card, raw_row], ranking='hybrid_rrf',
+                source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+            lines = text.split('\n')
+            meta = ('  source lines cited by verifier (excerpt locations, not per-claim proof): '
+                    '"docs/a.md#L2-L2"')
+            self.assertIn(meta, lines)
+            self.assertEqual(lines[lines.index(meta) - 1], '  | title: Synthetic card')
+            self.assertFalse(any(line.startswith('  | ') and '#L2' in line for line in lines))
+            many = tuple(f'docs/a.md#L{n}-L{n}' for n in range(1, 6))
+            self.assertIn('"docs/a.md#L3-L3" (+2 more)', response.render_context(
+                decision, [card], source_locations={'wiki/card.md': many}))
+            self.assertEqual(response.render_context(decision, [card]),
+                             response.render_context(decision, [card], source_locations={}))
+            bad = {
+                'raw_row': ([raw_row], {'docs/a.md': ('docs/a.md#L2-L2',)}),
+                'absent_row': ([card], {'wiki/other.md': ('docs/a.md#L2-L2',)}),
+                'no_rows': ([], {'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                'quote_in_path': ([card], {'wiki/card.md': ('docs/a"b.md#L1-L1',)}),
+                'newline_in_path': ([card], {'wiki/card.md': ('docs/a\nb.md#L1-L1',)}),
+                'reversed': ([card], {'wiki/card.md': ('docs/a.md#L3-L2',)}),
+                'absolute': ([card], {'wiki/card.md': ('/etc/a.md#L1-L1',)}),
+                'list_value': ([card], {'wiki/card.md': ['docs/a.md#L2-L2']}),
+                'empty_value': ([card], {'wiki/card.md': ()}),
+            }
+            for name, (rows, locations) in bad.items():
+                with self.subTest(name=name):
+                    with self.assertRaises(response.HostResponseError) as caught:
+                        response.render_context(decision, rows, source_locations=locations)
+                    self.assertEqual(str(caught.exception), 'invalid_source_locations')
+
+    def test_render_drops_every_location_rather_than_exceed_context_budget(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-budget-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            plain = response.render_context(decision, [card])
+            budget = len(plain.encode('utf-8'))
+            with patch.object(response, 'MAX_CONTEXT_BYTES', budget):
+                self.assertEqual(response.render_context(
+                    decision, [card], source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                    plain)
+            with patch.object(response, 'MAX_CONTEXT_BYTES', budget - 1):
+                with self.assertRaises(response.HostResponseError) as caught:
+                    response.render_context(
+                        decision, [card], source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+                self.assertEqual(str(caught.exception), 'result_context_too_large')
+
     def test_fts_atom_matches_qmd_compound_and_cjk_policy(self):
         self.assertEqual(response._fts_atom('PIO-1384'), '"pio 1384"')
         self.assertEqual(response._fts_atom('한국어'), '"한 국 어"')
