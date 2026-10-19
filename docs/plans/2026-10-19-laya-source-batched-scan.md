@@ -22,6 +22,40 @@ This revision passed sequential guarded focused tests on 2026-10-19:
 Production sync, query, install and host-response paths are **not** wired to
 any of it, and overall product integration is **not** done.
 
+A later local subset (uncommitted; its focused test passed 22 Python cases,
+Node 1/1, guard run `adc7cb2319a1401d9b2de10641f692c8`) adds the
+standalone durable binding sidecar `core/laya_index_capacity.py` with
+`test/fixtures/laya-index-capacity-checks.py` (22 cases) and
+`test/laya-index-capacity.test.mjs`. Its second revision replaces the
+append-only JSON-lines prototype with the initially agreed SQLite sidecar
+and binds each generation name to its binding digest. See "Durable binding
+sidecar" below.
+
+A review-fix revision of the third subset (uncommitted) fixes the
+independent capacity review's P2-1 (publish during a pending scan without
+repeated failed attempts), P2-2 (A-int lock contention in `query_bound`)
+and P3 (unreadable head binding) findings and adds their cases to the
+product-path fixture; see "Product-path integration". It is covered by the
+current 24-case product-path run below.
+
+A third local subset (uncommitted; its current product-path fixture passed
+24 Python cases, Node 1/1, guard run `390cf04fabb241318cf8510c1c291cfd`) wires the
+capacity path into the local product modules: `core/laya_index_a.py`
+(`stage_stream`), `core/laya_index_flow.py` (`process_bound_one`),
+`core/laya_index_sync.py` (`sync_step`), `core/laya_index_runtime.py`
+(`catalog_path`/`binding_store_path`, `query_bound`) and
+`core/laya_index_capacity.py` (streamed bound stage, enforced
+persist-before-publish). New tests: `test/fixtures/laya-index-capacity-product-checks.py`
+(24 cases) and `test/laya-index-capacity-product.test.mjs`. Host response,
+host route, the other-owned product sync worker, vector, wiki, installer
+and bundle are **not** wired, so no installed product path uses it yet, and
+nothing has been deployed. The seven-file focused regression passed (Node
+7/7, guard run `3a14c533836943d3b780f400bd4df731`), and a final run of the
+existing sync regression passed (Node 1/1, guard run
+`8390499e049d4dfebbcf672293f1a4ad`); see "Test commands". The full
+repository test suite has not been run in this worktree. See
+"Product-path integration" below. `core/laya_index_source_port.py` is unchanged.
+
 ## Two separate correctness claims
 
 The earlier revision merged two claims. They have different costs and must
@@ -125,15 +159,22 @@ here claims the live tree still equals the snapshot.
   path never opens the catalog and never uses "the latest snapshot" for an
   older pinned generation. Construction validates syntax only. Filesystem
   identity is checked by each query.
-* **Storage is not chosen here.** No schema migration is made. The parent
-  picks the durable owner: a route/journal record, or an A-int change.
+* **Storage.** No A-int schema migration is made. A standalone SQLite
+  sidecar (`GenerationBindingStore`, below) is the durable owner, and the
+  generation name `g-<uuid32>-b<digest64>` commits to the binding. The
+  local `sync_step`/`query_bound` path uses both; no installed product
+  caller does yet.
 
 ### Integration requirements (parent-owned; stage/publish crash windows)
 
 1. **Persist before publish.** Write the binding durably (fsynced, keyed
    by `(scope, generation, db_incarnation)`) *before* `A-int publish`.
    Alternatively, add it atomically in the same A-int transaction once
-   A-int owns it. Never publish first and persist later.
+   A-int owns it. Never publish first and persist later. On the integrated
+   path `publish_bound` enforces it: it refuses (`index_stale`, nothing
+   published) unless the store already holds exactly this binding. A direct
+   `publish_from_catalog` caller is still unchecked; such a head only fails
+   closed at query time (requirement 3).
 2. **Prepared-but-unpublished is harmless.** If a crash happens after the
    binding is written but before stage or publish, the binding is orphaned.
    No published head references it, and a query pins only published heads,
@@ -145,7 +186,9 @@ here claims the live tree still equals the snapshot.
    generation and a new binding.
 4. **Lookup by pinned generation.** The query side loads the binding for
    `view_seal(token)['gen']`, never for "current". `CandidateQuery` rejects
-   any mismatch in scope, generation, manifest or incarnation.
+   any mismatch in scope, generation, manifest or incarnation. The pinned
+   name must be a bound name whose digest equals the stored binding's;
+   a legacy unsuffixed head fails closed.
 5. **DB incarnation.** A recreated A-int file with the same path has a
    new `incarnation`. Bindings of the old incarnation are rejected.
 
@@ -259,6 +302,405 @@ Candidate verification bounds only the *source* side of a query.
 the final check. A write after `finish()` (TOCTOU) is not seen, the same as
 the port. A hard link inside a root that points outside it is accepted,
 as in the port.
+
+## Durable binding sidecar (`core/laya_index_capacity.py`)
+
+Status: local subset, second revision. Its focused test passed (22 Python
+cases, Node 1/1; see "Test commands"). The third subset ("Product-path integration" below) calls it from
+local sync, flow and runtime; host response, claim queue and install still
+do not.
+
+### Why the storage design changed
+
+The first revision was an append-only, hash-chained JSON-lines file. Review
+against the agreed contract found two gaps:
+
+1. **Every lookup read the whole store.** Validation needed the full chain,
+   so each `get` was O(records) bytes, and the `MAX_STORE_BYTES` = 64 MiB
+   guard against that turned into an arbitrary, eventual product ceiling on
+   the number of generations ever published (there was no compaction).
+2. **The commitment was not anchored outside the sidecar.** The unkeyed
+   chain detected accidents, but a writer who recomputed it could bind a
+   different root, manifest or incarnation to an existing immutable A-int
+   generation. Nothing in A-int referred to the commitment.
+
+The revision therefore:
+
+* uses the initially agreed **SQLite sidecar**: one primary-key lookup per
+  query (`EXPLAIN QUERY PLAN` is asserted to be `USING PRIMARY KEY`), no
+  whole-store read on the query or write path and no byte cap;
+* commits the binding into the **generation name** that A-int already stores
+  immutably. No A-int schema change is needed.
+
+### Bound generation names
+
+```
+generation = 'g-' + nonce32 + '-b' + binding_digest(binding)       # 100 chars
+binding_digest(b) = sha256(b'laya.generation-name-binding.v1\0'
+                           + canonical(b.as_record() minus 'generation'))
+```
+
+* `canonical` is `json.dumps(sort_keys=True, separators=(',', ':'),
+  ensure_ascii=True, allow_nan=False)`.
+* `nonce32` is `uuid4().hex`, so two generations with identical bindings
+  still get different names.
+* The digest covers `scope`, `source_manifest`, `catalog_scan_id`,
+  `catalog_raw_digest`, `db_incarnation` and every root
+  `(collection, canonical root, dev, ino)`. It excludes only `generation`,
+  which would otherwise have to contain its own hash.
+* A recreated A-int DB therefore yields different names even for the same
+  nonce, and a byte-identical worktree at other root paths yields a
+  different digest.
+
+**Why a rewrite cannot rebind a generation.** A-int never renames a
+generation, and the pinned lookup takes the name from `view_seal(token)`.
+A sidecar row only serves that name if `binding_digest(row) ==
+suffix(name)`. A self-consistent rewrite (record, digest column and store
+metadata all recomputed) can only:
+
+* keep the A-int name, so the digest check fails
+  (`generation name does not commit to binding`); or
+* use a new name, so the A-int head has no binding
+  (`generation source binding missing`).
+
+Either way nothing is served. Binding another root to the existing name
+needs a SHA-256 second preimage. The tests cover both cases and a
+CHECK-violating attempt.
+
+### API
+
+```python
+# Naming (pure)
+binding_digest(binding) -> str                       # 64 hex
+bound_generation_name(binding, nonce=None) -> str    # 'g-<nonce32>-b<digest64>'
+bind_generation(binding, nonce=None) -> GenerationSourceBinding   # same fields, bound name
+generation_digest(name) -> Optional[str]             # suffix digest, None if not a bound name
+require_bound_generation(binding) -> str             # IndexContractError
+                                                     #   'generation_name_unbound' / '..._mismatch'
+capture_bound_generation_binding(index, catalog, snapshot, *, nonce=None)
+    # capture_generation_binding under a provisional 'g-<nonce>' that is never
+    # queued, staged or stored; returns bind_generation(binding, nonce)
+
+# Claim-queue allocation (calls the existing ClaimQueue.enqueue_next unchanged)
+enqueue_bound_generation(queue, binding, base_gen) -> job
+    # require_bound_generation(binding), then
+    # queue.enqueue_next(binding.scope, binding.generation, binding.source_manifest, base_gen)
+    # and the returned job must echo scope/gen/source_manifest/base_gen
+
+# Store
+store = open_binding_store(path, index, catalog, create=False)
+store = GenerationBindingStore(path, scope=..., db_incarnation=..., roots=..., create=False)
+store.get(scope, generation, db_incarnation) -> Optional[GenerationSourceBinding]
+store.put(binding) -> {'status': 'stored'|'exists', 'generation', 'binding_digest'}
+store.verify() -> {'store_id', 'records', 'generations'}   # audit only, O(records)
+store.close()
+persist_generation_binding(store, index, binding)          # after stage, BEFORE publish
+load_pinned_binding(index, token, store)                   # binding of view_seal(token)['gen']
+open_pinned_candidate_query(index, token, store, **budgets)   # -> CandidateQuery
+search_pinned_candidates(index, token, store, fts, limit, **kw)
+```
+
+**Exact parent sequence for queue generation allocation** (one owner worker
+inside its lease; replaces `'g-' + uuid.uuid4().hex` at
+`core/laya_index_sync.py:310` for the catalog path):
+
+```python
+snapshot = catalog.require_complete()
+binding  = capture_bound_generation_binding(index, catalog, snapshot)
+job      = enqueue_bound_generation(queue, binding, base_gen=head_gen_or_None)
+stage_from_catalog(index, catalog, job['gen'], base=job['base_gen'],
+                   claim_digest=job['claim_digest'], claim_epoch=job['claim_epoch'],
+                   binding=binding)                                  # 'prepared'
+persist_generation_binding(store, index, binding)                    # 'stored'|'exists'
+publish_from_catalog(index, catalog, job['base_gen'], job['gen'], job['claim'],
+                     claim_digest=job['claim_digest'], claim_epoch=job['claim_epoch'],
+                     binding=binding)                                # 'published'
+```
+
+The name must be allocated **after** capture, because it commits to the
+snapshot. Queue, stage, persist and publish all use the same
+`binding.generation`. Any exception means nothing is published. The worker
+calls `request_scan()` and later captures a new binding, which gets a new
+name. Queue replay (`lease`/`recover`) keeps the job's `gen`, so a replayed
+job must carry, or re-read from the store, the binding with exactly that
+name. Re-capturing would give a different name, and `put` would refuse it.
+
+The integrated `sync_step` uses a stricter order than the sequence above:
+capture → **persist** → enqueue → streamed stage → `publish_bound`. Persisting
+before the claim exists means every queued bound claim can find its binding
+on replay (`load_job_binding`); a crash between persist and enqueue only
+leaves a harmless orphan row.
+
+### SQLite sidecar
+
+One file next to the A-int DB, distinct from it, `application_id` =
+`0x4c594742` (`LYGB`), `user_version` = 1.
+
+```sql
+meta(key TEXT PRIMARY KEY, value TEXT)    -- format, version, store_id, scope,
+                                          -- db_incarnation, roots (canonical JSON)
+bindings(scope, generation, db_incarnation, binding_digest, record,
+         PRIMARY KEY(scope, generation, db_incarnation),
+         CHECK(length(binding_digest) = 64),
+         CHECK(length(generation) = 100 AND substr(generation,1,2) = 'g-'
+               AND substr(generation,35,2) = '-b'
+               AND substr(generation,37) = binding_digest),
+         CHECK(length(record) <= 262144)) WITHOUT ROWID
+-- triggers: meta insert-once (6 keys), no UPDATE/DELETE on meta;
+--           no UPDATE/DELETE/REPLACE on bindings ('binding_immutable')
+```
+
+* **Durability.** The store uses a rollback journal (`journal_mode=DELETE`)
+  with `synchronous=FULL` and `fullfsync=ON` (`F_FULLFSYNC` on macOS).
+  `put` returns only after `COMMIT`.
+* **Transactions.** Every operation is one transaction. Writers use
+  `BEGIN IMMEDIATE`; readers use `BEGIN`. `put` reads the key, then inserts,
+  then commits. Any error rolls back.
+* **Insert-only.** An identical re-put returns `exists` with no write.
+  A binding whose name does not commit to it raises
+  `generation_name_unbound` or `generation_name_mismatch` before any write.
+  `binding_conflict` remains as a defensive check.
+* **Safe creation.** The schema and metadata are built in an `O_EXCL`
+  temp file, which is fsynced, published with a no-clobber `link`, and the
+  directory is fsynced (both through the `F_FULLFSYNC`-aware `_fsync`).
+  Creation refuses:
+  * an existing path (`binding_store_exists`);
+  * a leftover `-journal`/`-wal`/`-shm` (`stale_binding_store_sidecar`).
+* **Identity checks.**
+  * At open: the path is absolute, its parent is a directory, and it is
+    not a symlink. `lstat` must show a regular file. The raw header must
+    carry the SQLite magic and rollback-journal bytes 18–19 = 1, checked
+    *before* SQLite can roll a journal or open a WAL.
+  * Every transaction:
+    * `lstat`s the path and requires the node seen at open with
+      `st_nlink == 1`. A second hard link (for example the temp name left
+      by a crash between `link` and its unlink) would let SQLite keep an
+      independent `-journal` per name, so it is refused
+      (`binding store has multiple links`) until the alias is removed;
+    * re-checks `application_id`, `user_version`, the exact
+      `sqlite_master` rows and `journal_mode`;
+    * requires the exact metadata keys and values: scope, incarnation and
+      roots against the caller, and `store_id` against the value at open.
+* **Row decode on lookup.**
+  * The record must be canonical JSON and pass `from_record`.
+  * Its `generation` must equal the key.
+  * Its scope, incarnation and root paths must match the store.
+  * The digest column, `binding_digest(record)` and the name suffix must
+    all be equal.
+
+  A failure is `index_stale` (`binding store corrupt: ...`). A writer
+  never re-confirms a corrupt row.
+* Root `(dev, ino)` may differ between rows: a recreated root directory is
+  a legal new generation with a new name. `put` checks only the name
+  commitment and the store identity (scope, incarnation, root paths); it
+  does **not** prove the recorded `(dev, ino)` are the live roots. Capture
+  checks them at capture time, and `CandidateQuery` checks the live node at
+  open and `finish()`.
+* **Busy.** A `database is locked` error on `BEGIN` or inside a transaction
+  is `index_stale` with `binding store busy` (retryable). Other SQLite
+  errors stay `binding store unavailable` / `unreadable`.
+
+**Recovery.**
+
+* **Crash before `COMMIT`.** SQLite rolls back the hot journal on the next
+  open. Nothing is stored and nothing was acknowledged, so nothing was
+  published.
+* **Crash after `COMMIT`, before the acknowledgement.** The row is durable
+  and harmless: no head references it until publish. Re-persisting returns
+  `exists`.
+* **Recreated A-int DB.** It has a new incarnation, so the old store is
+  refused. The owner creates a new store file.
+* **Legacy (unsuffixed) heads.** They are never served through this path
+  (`generation name is not bound`). Recovery is a new scan and a new bound
+  generation.
+
+**What triggers and CHECKs do not prove.** Anyone who can write the file
+can drop them. They only stop accidental misuse. Integrity against a
+recomputing writer comes from the A-int name suffix, as described above.
+`CandidateQuery` still re-checks seal, incarnation and live roots. Deleting
+rows or the whole file loses bindings, and that only fails closed.
+
+**Costs.**
+
+* A lookup is one primary-key search plus constant-size checks
+  (`sqlite_master`, six `meta` rows).
+* A `put` is one search and one insert.
+* `verify()` (`quick_check` plus a decode of every row) is O(records) and is
+  for audit only.
+* There is no byte or row cap. There is no GC: orphan and old-generation
+  rows stay until a parent-owned GC removes them. GC is not implemented,
+  and the triggers would have to allow it.
+
+### Old-file interfaces
+
+The sync, runtime, flow and A-int parts are now done locally (next
+section). Still open: `laya_product_sync_worker.py` and
+`laya_host_response.py` callers, and the installer choosing and creating
+the catalog and store paths next to the A-int DB, one per incarnation.
+
+## Product-path integration (local; focused test passed, not deployed)
+
+### What is wired
+
+```python
+runtime = LayaIndexRuntime(source_root={...}, scope=..., db_path=..., queue_path=...,
+                           db_incarnation=..., catalog_path=..., binding_store_path=...)
+sync_step(runtime, *, before_publish, require_vector=False,
+          max_files=200, max_bytes=5_000_000, max_stats=2_000,
+          max_claims=8, rescan=False)          # one finite unit; call repeatedly
+runtime.query_bound(fts, limit, *, collection_names=None,
+                    max_file_bytes=None, max_query_bytes=None, max_query_files=None)
+runtime.request_scan()                          # catalog.request_scan()
+runtime.capacity_status()                       # catalog.status(): durable backlog
+```
+
+* **Runtime.** `catalog_path`/`binding_store_path` are optional, given
+  together, absolute, distinct from the DB and queue paths, and only valid
+  with Mapping roots. The runtime opens (never creates) the catalog for the
+  same scope and roots and the store for the same scope, roots and DB
+  incarnation. Both modules are imported lazily, only on this path, because
+  the product bundle `ARTIFACTS` list does not ship them yet.
+* **`sync_step`**, under the existing queue owner lock and `before_publish`
+  fence (called once before the first queue/store/A-int write):
+  1. at most `max_claims` retained claims through `process_bound_one`; a
+     larger queue returns `pending`/`claim_backlog` with `claims_pending`;
+  2. if the head does not serve the current COMPLETE snapshot (manifest,
+     root `(dev, ino)`, incarnation, exclusion epoch; scan id and raw
+     digest are ignored, so an unchanged rescan does not publish), capture
+     a bound binding, persist it, enqueue its claim, stream-stage and
+     `publish_bound`. This also runs **while a newer scan is pending**
+     (the `allow_pending` rule), so an exclusion, or an unbound (legacy
+     `sync_full`), binding-less or unreadable-binding head, is replaced by a
+     bound generation even when that scan is long or deferred on an
+     oversized file;
+  3. `rescan=True` requests a scan unless one is pending; an empty catalog
+     bootstraps one;
+  4. one `catalog.step(max_files, max_bytes, max_stats)`. A step that
+     completes the scan goes back to 2 once.
+* **Results.** `state` is `indexed`, `unchanged`, `pending`, `deferred` or
+  `blocked`, plus `catalog` (the durable `status()` with `active.backlog`).
+  Reasons include `scan_pending` (with `work`), `claim_backlog`, `replan`,
+  `scan_restarted`, `no_complete_snapshot`, `snapshot_unusable`,
+  `owner_busy`, `catalog_busy`, `file_exceeds_step_bytes`,
+  `binding_store_busy`, `binding_store_unavailable` and
+  `vector_capacity_path_unavailable`.
+* **Liveness.** A snapshot that failed to capture or stage (replaced root,
+  changed member: the claim is `replan`) requests a rescan. While that (or
+  any) newer scan is pending, the runtime keeps an in-process verdict per
+  `(snapshot, head generation, exclusion epoch)`: a snapshot already found
+  served or unusable is not captured or staged again, and the answer
+  repeats `snapshot_unusable` (`bound_claim_replanned` for a stage
+  failure). A new head or a new exclusion changes the key, so one new
+  attempt is made. With no newer scan pending every call re-captures (this
+  is what notices a replaced root while idle). The verdict is not durable:
+  a restarted worker repeats one failed attempt per unusable snapshot.
+  A scan blocked by `source_changed` is restarted; any other block
+  (`source_invalid`, `root_unavailable`, ...) is reported as `blocked`
+  until a later `request_scan`.
+* **Unreadable head binding.** The head's stored binding is evidence, not a
+  precondition. If `store.get` fails, the head is not treated as served:
+  a damaged row (or any non-busy failure) leads to a replacement bound
+  generation; a busy store skips publishing for this call. If the new
+  binding cannot be persisted either, nothing is published. In every case
+  the scan is still stepped and the answer carries `binding_store`
+  (`reason`, `detail`); with no scan to step the result is
+  `deferred`/`binding_store_busy` or `binding_store_unavailable`, never
+  `unchanged`. A retained claim whose own binding cannot be read is retired
+  as `replan` (`deferred` if the store is only busy), so it cannot defer
+  every later step.
+* **Large single file.** A file above `max_bytes` returns `deferred` with
+  `reason='file_exceeds_step_bytes'`, `path` and
+  `required={'max_bytes': size}`. Calling again with the same budget returns
+  the same answer with zero bytes read; only a larger explicit budget
+  advances. No loop is hidden inside one call.
+* **`process_bound_one`** (flow): same lease/ACK/release rules as
+  `process_one`. A receipt is ACKed without restaging. Otherwise the job's
+  own stored binding is loaded (`load_job_binding`); an unbound legacy name
+  or a missing binding retires the claim as `replan` (it can never
+  publish). A busy binding store, at load or at `publish_bound`'s stored
+  binding check, is classified first: `deferred`, the claim is retained,
+  no rescan is requested and the snapshot is not marked unusable.
+  Otherwise `head_moved`/`index_stale` (newer snapshot published, member
+  changed, binding mismatch, exclusion epoch) is `replan`; nothing is
+  published.
+* **`publish_bound`** refuses unless the job matches the binding and the
+  store already holds exactly that binding, then calls
+  `publish_from_catalog(binding=...)`.
+* **`query_bound`** pins one generation and calls `search_pinned_candidates`.
+  `status` is `ok` (verified rows; `[]` is normal, including index lag),
+  `pending` (`no_published_generation`, `candidates_unverified` with the
+  drop counts, `index_busy`, `binding_store_busy`) or `stale` (fail closed
+  with the diagnostic: unbound, missing or corrupt binding, replaced root,
+  recreated DB, `exclusion_epoch_changed`). `pending` and `stale` always
+  carry zero rows.
+* **A-int lock contention.** `pin` and `release` each take the A-int write
+  lock (`BEGIN IMMEDIATE`, 2 s busy timeout), which a `sync_step` stage
+  holds for a whole corpus pass. A busy pin is `pending`/`index_busy`
+  instead of a raw `database is locked`. If the release stays busy, the
+  verified rows are withheld (`ok` becomes `pending`/`index_busy`; a
+  `pending`/`stale` answer keeps its status) and the answer carries
+  `pin_released: False`. **Pin-cleanup limitation:** the unreleased token
+  is retried only by later `query_bound` calls on the same runtime, after
+  their own release succeeds. If the process exits first, the pin row stays
+  in A-int; nothing removes it. It affects no answer; it only keeps its
+  generation listed as active in the read-only `gc_plan` census (no
+  deletion path exists).
+* **Compatibility.** `stage`, `sync_full`, `process_one`, `query` and
+  `enqueue_claim` keep their signatures and behaviour; a runtime without the
+  new paths is unchanged, and `sync_step`/`query_bound` on it raise
+  `capacity_not_configured`.
+
+### Streaming A-int stage (`LayaIndexA.stage_stream`, `stage_bound_streaming`)
+
+* `stage_bound_streaming` runs the same snapshot and binding checks as
+  bound `stage_from_catalog`, then passes the `catalog.iter_documents`
+  generator straight to `LayaIndexA.stage_stream`. No document list is
+  built: peak Python memory is one body (plus its FTS-normalized copies),
+  not the corpus.
+* **Every member is re-read and rehashed** against the snapshot, on first
+  stage and on replay. Nothing is reused because a hash or manifest
+  matched. A replay of an identical prepared/published generation consumes
+  every re-read document, compares each `(path, hash, eligible)` with the
+  stored membership in path order, checks the FTS rows in lockstep, and
+  only then returns `already_staged`.
+* The manifest digest is computed incrementally (`_StreamDigest`, equal to
+  `_digest` for strictly increasing paths); unsorted or duplicate paths are
+  `invalid_document`. The generation row carries the claimed manifest until
+  the last row; a final mismatch is `manifest_mismatch` and rolls back.
+* **Stage remains one full-corpus transaction.** The A-int write lock is
+  held for the whole re-read, insert and FTS build: O(N + B) time and WAL
+  growth per generation, no incremental stage, and other A-int writers wait
+  (readers continue under WAL; `query_bound`'s pin/release are writers and
+  answer `pending`/`index_busy` after 2 s). Streaming only removes the O(B) Python
+  memory of the old document list.
+* **Candidate current-byte checks do not prove whole-corpus ranking.**
+  `query_bound` proves each *returned* body is the file's current bytes. It
+  does not prove the ranking, BM25 statistics or "which rows exist" match
+  the live corpus; those are the pinned generation's (index lag).
+
+### Not done (incomplete interfaces)
+
+* `laya_product_sync_worker.py` still calls `sync_full` with a vector batch.
+  It must open the runtime with the catalog/store paths, call `sync_step`
+  repeatedly, and accept the new `pending`/`blocked` states (its result
+  check accepts only `indexed`/`unchanged`/`deferred`).
+* Vectors: `sync_step(require_vector=True)` is `deferred`
+  (`vector_capacity_path_unavailable`). `_prepare_vector`/`_validated_batch`
+  take a port scan, and `prepare_candidate_batch_off_hook` still scans the
+  whole corpus. A catalog-driven vector batch is parent work.
+* `laya_host_response.py` / host route still use `query`; they must call
+  `query_bound` (or open `open_pinned_candidate_query` for multi-phase
+  wiki/raw/vector queries) and map `pending`/`stale`.
+* `laya_product_bundle.ARTIFACTS` and `laya_package.ARTIFACTS` do not list
+  `laya_source_catalog.py` or `laya_index_capacity.py`; an installed bundle
+  cannot use this path until they do.
+* Installer: create the catalog and store next to the A-int DB, one store
+  per incarnation, and lift or keep `MAX_INITIAL_FILES`/`_BYTES`.
+* Change feed: CUD detection should call `runtime.request_scan()`; until
+  then the worker passes `rescan=True` periodically.
+* GC of orphan bindings, retired claims and superseded generations.
+* `LayaIndexA.search_many` still re-tokenizes every eligible body per query
+  (`_generation_fts_rows_match`); `stage_stream` did not change it.
 
 ## Optional audit/test oracle: `search_catalog_verified`
 
@@ -412,7 +854,10 @@ bound stage/publish (see "Bound indexing rule").
 * **Full-generation stage.** `stage_from_catalog` builds the full
   `documents` list, holding every body in memory, and `LayaIndexA.stage`
   inserts every row and builds FTS in one transaction. That is O(N + B)
-  memory and write time per generation. There is no incremental stage.
+  memory and write time per generation. The integrated path uses
+  `stage_bound_streaming` / `stage_stream` instead: O(one body) Python
+  memory, but still O(N + B) time in one transaction holding the A-int write
+  lock. There is no incremental stage.
 * **Full-corpus FTS check per query.** Every `LayaIndexA.search` /
   `search_many` call runs `_generation_fts_rows_match`, which re-tokenizes
   every eligible body of the generation: O(N + B) CPU and memory per query.
@@ -432,21 +877,18 @@ bound stage/publish (see "Bound indexing rule").
 
 1. **Durable binding owner** (required before any product query uses the
    candidate path). See "Integration requirements" above: persist before
-   publish, lookup by pinned generation, fail closed when missing.
-2. `core/laya_index_sync.py` / `laya_product_sync_worker.py`: within its
-   lease, the owner worker:
-   1. calls `catalog.step()`;
-   2. on `complete`, calls `capture_generation_binding`;
-   3. stages with the binding;
-   4. persists the binding;
-   5. publishes with the binding.
-
-   On any failure nothing is published and the worker calls
-   `request_scan()`.
+   publish, lookup by pinned generation, fail closed when missing. The
+   sidecar (`core/laya_index_capacity.py`) is wired into local sync, flow
+   and runtime; product worker, host response and installer are open (see
+   "Not done").
+2. `core/laya_index_sync.py`: done locally as `sync_step` (capture,
+   persist, enqueue, streamed stage, enforced persisted publish; failures
+   request a rescan). `laya_product_sync_worker.py` must still call it.
 3. `core/index_enqueue.py` / dirty queue / `file_change_queue.py`: each
    detected CUD calls `catalog.request_scan()`. This shortens index lag; it
    is not a freshness proof and is not required for stale-exposure safety.
-4. `core/laya_index_runtime.py` `query`, `core/laya_host_response.py`
+4. `core/laya_index_runtime.py`: done locally as `query_bound` (lexical,
+   one phase). `core/laya_host_response.py`
    `_v2_phase` / `query_selected_hybrid`: open one `CandidateQuery` per user
    query with the persisted binding for the pinned generation. Run the
    wiki, raw, lexical and vector phases through `search`/`phase` and call
@@ -580,8 +1022,31 @@ only):
   It is not re-read in later phases of the same query.
 * A-int's per-query full FTS check and vector `MAX_CANDIDATES` remain
   O(N + B) and capped respectively.
-* No durable binding storage exists yet. Product callers must not use the
-  candidate path until the parent provides it.
+* Durable binding storage is the SQLite sidecar, whose 22 focused cases
+  passed. Local `sync_step` allocates bound names, persists bindings
+  before publish and `query_bound` loads them per pinned generation; those
+  24 focused product-path cases passed, the seven-file focused regression
+  passed (7/7), and the existing sync regression passed in a final run
+  (Node 1/1). The full repository test suite has not been run in this
+  worktree, and nothing is deployed. Installed product callers
+  must not use the candidate path until the other-owned product worker, host
+  response and route, vector, bundle and installer interfaces under "Not
+  done" land.
+* The generation stage is still one full-corpus A-int transaction, and a
+  `sync_step` that publishes is bounded by the corpus, not by the step
+  budget; only scan steps are budgeted.
+* Every currently published head has an unsuffixed `g-<uuid>` name. On the
+  sidecar path it fails closed until a new bound generation is published.
+  There is no migration that renames heads.
+* The name suffix is unkeyed SHA-256: it binds content, not authorship. A
+  writer who can write the A-int DB itself is outside this threat model.
+  So is one who deletes sidecar rows, which only denies service.
+* The sidecar has no GC, and its insert-only triggers would block one.
+  Retention of old and orphan rows is a parent decision.
+* Crash recovery relies on SQLite's rollback journal. The tests model it with
+  child processes that die before and after `COMMIT`, and with a spilled
+  uncommitted transaction. They do not simulate power loss or a lying disk
+  cache.
 * Hidden entries change their directory's signature, so the stat hint
   fails closed until the next rescan (conservative; `binding=None`
   indexing only, since the bound path does not run the hint).
@@ -598,3 +1063,189 @@ only):
 npm run test:focused -- test/laya-source-catalog.test.mjs    # 18 unittests
 npm run test:focused -- test/laya-source-candidate.test.mjs  # 15 candidate unittests
 ```
+
+Binding sidecar and product-path integration (focused tests passed under
+the shared guard on 2026-10-19):
+
+```bash
+npm run test:focused -- test/laya-index-capacity.test.mjs          # 22 sidecar unittests
+npm run test:focused -- test/laya-index-capacity-product.test.mjs  # 24 product-path unittests
+```
+
+* Sidecar: 22 Python cases passed, Node 1/1, guard run
+  `adc7cb2319a1401d9b2de10641f692c8`. An earlier run
+  (`d867f2a6ffaf4bffb52688f181650a44`) passed 21/22: the hot-journal
+  recovery test asserted too strictly that the `-journal` file is
+  unlinked. That assertion was corrected (a cold journal may legally
+  remain) before the passing rerun.
+* Product path: 24 Python cases passed, Node 1/1, guard run
+  `390cf04fabb241318cf8510c1c291cfd`. This is the current fixture,
+  including the review-fix cases. (An earlier 16-case revision passed
+  under guard run `d4e0b8e4ef074ed2bea5af86275c0db1`.)
+
+Focused regression over the suites touching the edited modules (passed
+under the shared guard on 2026-10-19):
+
+```bash
+npm run test:focused -- test/laya-index-capacity.test.mjs test/laya-index-a.test.mjs \
+  test/laya-index-sync.test.mjs test/laya-index-runtime.test.mjs \
+  test/laya-source-catalog.test.mjs test/laya-source-candidate.test.mjs \
+  test/laya-product-bundle.test.mjs
+```
+
+* Seven-file run: Node 7/7 passed, guard run
+  `3a14c533836943d3b780f400bd4df731`.
+* An earlier six-file run (the same list without
+  `test/laya-index-capacity.test.mjs`) passed Node 6/6, 0 failed, guard run
+  `783abe9272824d3a9b9e11a96ae08c86`.
+* Final run of the existing sync regression, exactly
+  `npm run test:focused -- test/laya-index-sync.test.mjs`: Node 1/1 passed,
+  guard run `8390499e049d4dfebbcf672293f1a4ad`.
+
+These are focused runs only: the full repository test suite has **not**
+been run in this worktree, and no full-suite pass is claimed. No installed
+product path uses the capacity APIs yet; host, product-worker, install and
+vector wiring remain outside this branch (see "Not done").
+
+`test/fixtures/laya-index-capacity-product-checks.py` (temp source, A-int,
+queue, catalog and store only) covers:
+
+* **Streaming stage:** `_StreamDigest` equals `_digest` (including empty,
+  escaped and non-ASCII paths); `stage_stream` refuses unsorted documents
+  and a manifest mismatch with nothing left behind, replays an identical
+  generation as `already_staged`, and refuses a changed replay
+  (`manifest_mismatch`) or a different claim seal (`generation_conflict`).
+* **>200 files, >5 MB:** 261 files / ~6.5 MB indexed by repeated
+  `sync_step` calls; every scan step stays within 200 units / 5 MB;
+  `LayaIndexA.stage` and `stage_from_catalog` are patched to fail; every
+  member is re-read exactly once for stage; `tracemalloc` peak stays below
+  half the corpus; the head is a bound name whose stored binding names the
+  current scan; `query_bound` serves the one matching file; a second call is
+  `unchanged`.
+* **Add/modify/delete:** before a rescan, a modified candidate is `pending`
+  (`hash_mismatch`), a deleted one `pending` (`missing`), a new file `ok []`
+  (lag). A partial rescan leaves head and membership untouched (no false
+  deletion). The completed scan publishes the full new membership; the old
+  generation is unchanged.
+* **Source changes:** a directory changed after listing blocks the scan,
+  which is restarted once, and nothing is published from it. A member
+  rewritten with the same size after its snapshot completed fails the
+  streamed rehash: the claim is retired (`replan`), the head does not move,
+  a rescan is requested, and the next scan publishes the new bytes.
+* **Root branch transition:** a recreated root directory makes
+  `query_bound` `stale` (`collection root replaced: plans`); `sync_step`
+  reports `snapshot_unusable`, rescans, and publishes a generation bound to
+  the new root inode; old terms are gone, new ones served.
+* **Statuses and recovery:** `pending`/`no_published_generation`; a legacy
+  `sync_full` head is `stale` (unbound) while `query` still works and
+  `sync_step` replaces it; an exclusion is `stale`
+  (`exclusion_epoch_changed`) until `sync_step` republishes; a store
+  without the head's binding is `stale` until a new bound generation.
+* **Large single file:** a 6 MB file under a 5 MB budget is `deferred`
+  with `required={'max_bytes': 6000000}`; three repeats read zero bytes;
+  the explicit larger budget indexes it; the default candidate budget
+  answers `pending` (`file_budget`) and a larger query budget serves it.
+* **Claims:** owner contention is `deferred`/`owner_busy`; ten legacy
+  claims drain four per call with `claim_backlog`, all retired as `replan`.
+* **Binding gate:** a forged binding never stages; publishing before
+  persist is `index_stale` with no head or receipt; a job for another name
+  is refused; a binding of a replaced snapshot never stages.
+* **Compatibility:** invalid capacity arguments are rejected; a plain
+  runtime keeps `sync_full`/`query` and raises `capacity_not_configured`
+  for the new calls; `require_vector=True` is `deferred`.
+* **Crash/restart/replay** (child process `os._exit` at each point): after
+  persist (orphan row, new generation published, orphan never head); after
+  enqueue and mid-stage (A-int rolled back, the leased claim is recovered
+  and publishes its own name); after stage (replay re-reads every member,
+  `already_staged`, then publishes); after publish (receipt ACK without any
+  restage).
+* **Independent capacity review fixes** (`ReviewFixTests` plus one crash
+  case; passed as part of the 24-case run):
+  * P2-1: with a newer scan deferred on a 6 MB file, an exclusion is
+    published from the COMPLETE snapshot (`indexed`, scan still pending
+    and deferred, excluded row gone, then `deferred` again with no
+    republish), and a binding-less head (fresh store) is replaced during
+    the same deferral;
+  * P2-1: a snapshot that fails its streamed stage (member rewritten,
+    exclusion added) is staged once, then three calls answer `deferred`
+    with `snapshot_unusable` and no further `stage_stream`; a new runtime
+    pays exactly one more attempt (in-process verdict);
+  * P2-2: a real `stage_stream` holding the write lock in another
+    connection makes `query_bound` answer `pending`/`index_busy`, not
+    `database is locked`; a writer that arrives between search and release
+    withholds the verified rows (`pin_released: False`, pin row left), and
+    the next query releases it;
+  * P3: a corrupted head binding row (schema intact) is `stale` on query
+    and `sync_step` publishes a replacement; an exclusively locked store is
+    `pending`/`binding_store_busy` on query, still lets the scan step, and
+    is `deferred`/`binding_store_busy` when there is nothing to step; a
+    leased claim whose stored binding is corrupt is retired as `replan` and
+    a new generation publishes;
+  * a store locked exactly for `publish_bound`'s stored binding read, while
+    a newer scan is pending/deferred, is `deferred` (claim retained, no
+    `snapshot_unusable`, no rescan request, old head still fails closed on
+    query); after the lock is released the same claim publishes and is
+    ACKed on the next step without a new scan.
+
+`test/fixtures/laya-index-capacity-checks.py` (sidecar) covers (temp source,
+temp A-int, temp claim queue, temp store only):
+
+* **Round trip:** the bound name format and an independent recomputation of
+  the digest; the lookup plan is `USING PRIMARY KEY` with no `SCAN`; the
+  pragmas are `delete`/FULL/`fullfsync`; the raw row content.
+* **Duplicates and immutability:** an identical re-put is `exists` with no
+  write. Raw `UPDATE`/`DELETE`/`INSERT OR REPLACE` on `bindings`, and any
+  `meta` change, are refused by the triggers. A digest column that differs
+  from the name is refused by the CHECK.
+* **Restart:** a new store instance and a new A-int instance. Creation
+  never clobbers, refuses a leftover `-journal`, and leaves no temp file.
+* **Strict identity:** record identity (scope, incarnation, root paths)
+  and store identity (scope, incarnation, roots, missing file, foreign
+  SQLite file, non-SQLite file).
+* **Naming:** the helpers and nonce validation; unbound-name shapes; every
+  committed field, including root dev/ino, moves the digest. `put`
+  refuses unbound and mismatched names without writing. An unsuffixed
+  published head fails closed on load, open, search and `get`.
+* **Self-consistent rewrite:**
+  * a same-path root-node rewrite is refused by the name suffix;
+  * a recomputed digest column is refused by the CHECK;
+  * a fully recomputed rewrite to another worktree passes the audit but
+    leaves the A-int head with no binding;
+  * `put` cannot attach the rewritten binding to the A-int name.
+* **Row corruption:** non-canonical, unparseable or NaN records, a
+  non-object record, a missing field, a key mismatch, a foreign identity
+  and a digest mismatch all fail `get`, `verify`, the pinned search and
+  `put`. Restoring the row serves again.
+* **File and schema damage:** a dropped trigger, a foreign
+  `application_id`, a WAL-mode switch, an overwritten header, rewritten
+  `meta` scope, an extra `meta` key, and a `store_id` rewritten under an
+  open instance.
+* **Replaced store:** a store replaced by a copy, by a symlink, or deleted;
+  a second hard link is refused on the open instance and on reopen, and
+  removing it serves again.
+* **Recovery:**
+  * an in-process rollback before `COMMIT` stores nothing and leaves no
+    journal;
+  * an acknowledged-but-unpublished orphan is harmless, the retry is
+    `exists`, then publish serves;
+  * a child process dying inside `put` before `COMMIT` leaves nothing,
+    and after `COMMIT` leaves the row durable;
+  * a child that spills an uncommitted transaction leaves a hot journal,
+    which is rolled back on restart: only the committed record is visible,
+    a second restart sees the same state, and a later valid append is
+    `stored` and survives reopen. The test does not require the `-journal`
+    file to be unlinked, since a cold (non-hot) journal may legally remain.
+* **Incarnation:** a recreated A-int incarnation changes the name for the
+  same nonce. The old store is refused and the new store serves. A binding
+  that matches the new seal in scope, name and manifest but carries the old
+  incarnation reaches, and fails, `CandidateQuery`'s incarnation check.
+* **Worktrees:** another worktree's roots (same manifest, different digest)
+  are refused, and a swapped root node is refused by `CandidateQuery`.
+* **Pins and heads:** an old pin keeps its own binding across a head move.
+  A published bound head without a stored binding fails closed.
+* **Candidate verification:** a rewritten candidate is dropped through the
+  store helper.
+* **Queue allocation:** `enqueue_bound_generation` refuses an unbound
+  binding and queues nothing. A bound binding is queued under its name, and
+  the job's claim, digest and epoch carry through stage, persist, publish
+  and the pinned query.
