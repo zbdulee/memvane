@@ -158,19 +158,30 @@ with runtime(catalog_path, binding_store_path):
 * Keep every existing proof check (`verify_selected_route` before and after,
   `cas_mark_new_write` inside `before_publish`).
 
-### 4. Host response and bundle (items 5 and 6, same change as item 4)
+### 4. Host response and bundle (implemented)
 
-* `query_selected_hybrid`/`_v2_phase` open one
-  `open_pinned_candidate_query` per user query and run the wiki, raw,
-  lexical and vector phases through it, then `finish()`.
-  `CatalogPending` means "no rows for this phase, index pending".
-* Vector phase: `search_exact` still scores the pinned generation's rows
-  (bounded by `MAX_CANDIDATES`). Returned candidates go through
-  `CandidateQuery.phase` so their bodies are verified like lexical ones.
-* Add `laya_source_catalog.py` and `laya_index_capacity.py` to
-  `laya_product_bundle.ARTIFACTS` and `laya_package.ARTIFACTS`. PR #17 also
-  changes `laya_product_bundle.py` and the bundle checks, so this lands
-  after #17 or is rebased onto it.
+* `serve_selected` opens the capacity runtime (all collection roots, both
+  stores) only when `capacity_store_paths(dbPath)` finds both stores; the
+  same helper gates the worker. Otherwise the runtime is unchanged.
+* `query_selected_v2` opens one `open_pinned_candidate_query` per user query
+  (fails closed when the pinned generation has no stored binding), passes it
+  to both the wiki and the raw phase, and delivers rows only after
+  `finish()`. It is closed on every path.
+* `_v2_phase` with a candidate query skips the per-query
+  `scan_collections` of every root. It does **not** use `CandidateQuery.phase`
+  per query: the host batches the DF probes and the lexical queries into one
+  `search_many`, so the generation's full FTS check runs once; one `phase`
+  per query would repeat it for every probe. Instead the new
+  `CandidateQuery.verify_rows` checks the rows of that one batch (same
+  per-row and poisoning rules as `phase`, no refill round, no
+  `CatalogPending`). Vector rows from `search_exact` go through the same
+  verifier. Rows are reshaped to the host's `_ROW_KEYS`.
+* Difference from the full-scan path: a candidate whose file changed after
+  sync is dropped and the query continues. The full-scan path fails the
+  whole query on the same change.
+* Bundle: the three capacity modules are in `laya_product_bundle.ARTIFACTS`
+  and the full-plugin required files; the A-int package carries the two the
+  flow needs.
 
 ## Limits that remain
 

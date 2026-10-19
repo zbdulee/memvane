@@ -1548,6 +1548,31 @@ class CandidateQuery:
 
     # -- phases ---------------------------------------------------------------
 
+    def verify_rows(self, rows: Iterable[Any], *,
+                    collection_names: Optional[Tuple[str, ...]] = None
+                    ) -> List[Dict[str, Any]]:
+        """Verify rows the caller already fetched from the pinned token.
+
+        For a caller that batches several queries into one A-int call
+        (``search_many``), so the generation's FTS check runs once rather than
+        once per ``phase``. Same per-row rules as ``phase``: a malformed,
+        foreign-generation or out-of-selection row poisons the query; a stale
+        candidate is dropped and counted in ``stats['dropped']``. There is no
+        refill round and no ``CatalogPending``: an all-dropped list is ``[]``.
+        """
+        self._require_open()
+        names = _selected(self.binding.collections, collection_names)
+        served: List[Dict[str, Any]] = []
+        try:
+            for row in rows:
+                verified, _path, _reason = self._verify_row(row, names)
+                if verified is not None:
+                    served.append(verified)
+        except BaseException:
+            self._failed = True
+            raise
+        return served
+
     def search(self, fts_query: str, limit: int, *,
                collection_names: Optional[Tuple[str, ...]] = None,
                refill_factor: int = DEFAULT_REFILL_FACTOR) -> List[Dict[str, Any]]:

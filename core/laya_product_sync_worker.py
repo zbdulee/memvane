@@ -20,7 +20,8 @@ from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
 from laya_index_host_route import select_route
-from laya_index_runtime import LayaIndexRuntime, _collection_roots
+from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
+                                _collection_roots, capacity_store_paths)
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
 from laya_install_journal import (cas_mark_new_write, verify_selected_route,
                                   verify_worker_attestation)
@@ -41,10 +42,6 @@ QA_BARRIER_SCHEMA = 'laya-qa-sync-barrier-v1'
 QA_FIXTURE_SCHEMA = 'qmd-release-qa-fixture-v1'
 QA_BARRIER_MAX_SECONDS = 600
 
-# Capacity path stores beside the A-int DB. The installer owns them; this
-# worker never creates them, and uses the capacity path only when both exist.
-CATALOG_SUFFIX = '.catalog.sqlite'
-BINDING_STORE_SUFFIX = '.bindings.sqlite'
 # sync_step/vector_fill_step rounds in one wake; more remaining stays pending
 # and the dispatcher retains the wake.
 MAX_CAPACITY_ROUNDS = 64
@@ -206,30 +203,7 @@ def _higher_priority_wake(controller):
 
 
 def _capacity_paths(decision):
-    """``(catalog, binding store)`` beside ``dbPath``, or None when neither exists.
-
-    Both must be private regular files of this user. One without the other,
-    a symlink or a shared mode fails closed before any model start.
-    """
-    db = Path(decision['dbPath'])
-    paths = (db.with_name(db.name + CATALOG_SUFFIX),
-             db.with_name(db.name + BINDING_STORE_SUFFIX))
-    present = []
-    for path in paths:
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            present.append(False)
-            continue
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) & 0o077):
-            raise IndexContractError('capacity_store_unsafe')
-        present.append(True)
-    if not any(present):
-        return None
-    if not all(present):
-        raise IndexContractError('capacity_store_incomplete')
-    return tuple(str(path) for path in paths)
+    return capacity_store_paths(decision['dbPath'])
 
 
 def _selected(project):
