@@ -3,7 +3,7 @@
 Status: independent slice only. The four initial files of the bounded
 prototype were committed at `83bd2d2` (base `077f8186`) on
 `feat/laya-capacity-batched-scan-20261019`. The current six-file candidate
-and catalog revision extends `83bd2d2` locally:
+and catalog revision is committed at `2416389`:
 
 * the strict full-proof oracle (`search_catalog_verified`, `CatalogPending`);
 * the returned-candidate verification API (`GenerationSourceBinding`,
@@ -22,7 +22,7 @@ This revision passed sequential guarded focused tests on 2026-10-19:
 Production sync, query, install and host-response paths are **not** wired to
 any of it, and overall product integration is **not** done.
 
-A later local subset (uncommitted; its focused test passed 22 Python cases,
+A later subset (committed at `8110224`; its focused test passed 22 Python cases,
 Node 1/1, guard run `adc7cb2319a1401d9b2de10641f692c8`) adds the
 standalone durable binding sidecar `core/laya_index_capacity.py` with
 `test/fixtures/laya-index-capacity-checks.py` (22 cases) and
@@ -31,14 +31,14 @@ append-only JSON-lines prototype with the initially agreed SQLite sidecar
 and binds each generation name to its binding digest. See "Durable binding
 sidecar" below.
 
-A review-fix revision of the third subset (uncommitted) fixes the
+A review-fix revision of the third subset (committed at `8110224`) fixes the
 independent capacity review's P2-1 (publish during a pending scan without
 repeated failed attempts), P2-2 (A-int lock contention in `query_bound`)
 and P3 (unreadable head binding) findings and adds their cases to the
 product-path fixture; see "Product-path integration". It is covered by the
 current 24-case product-path run below.
 
-A third local subset (uncommitted; its current product-path fixture passed
+A third subset (committed at `8110224`; its current product-path fixture passed
 24 Python cases, Node 1/1, guard run `390cf04fabb241318cf8510c1c291cfd`) wires the
 capacity path into the local product modules: `core/laya_index_a.py`
 (`stage_stream`), `core/laya_index_flow.py` (`process_bound_one`),
@@ -52,8 +52,13 @@ and bundle are **not** wired, so no installed product path uses it yet, and
 nothing has been deployed. The seven-file focused regression passed (Node
 7/7, guard run `3a14c533836943d3b780f400bd4df731`), and a final run of the
 existing sync regression passed (Node 1/1, guard run
-`8390499e049d4dfebbcf672293f1a4ad`); see "Test commands". The full
-repository test suite has not been run in this worktree. See
+`8390499e049d4dfebbcf672293f1a4ad`); see "Test commands". The full repository suite (`npm test`, guard `--kind test`, file
+concurrency 1) ran on 2026-10-19 at `8110224`: 1,629 tests, 1,616 pass,
+4 fail, 9 skip, guard run `4077f486078544f394630c5440375a76`. All four
+failures are the PyYAML cross-checks in `test/recall-injection-body.test.mjs`
+(`ModuleNotFoundError: No module named 'yaml'`): the local `python3` has no
+PyYAML, an environment artifact noted in CLAUDE.md, not a capacity or Laya
+failure. No capacity or Laya test failed. See
 "Product-path integration" below. `core/laya_index_source_port.py` is unchanged.
 
 ## Two separate correctness claims
@@ -305,7 +310,7 @@ as in the port.
 
 ## Durable binding sidecar (`core/laya_index_capacity.py`)
 
-Status: local subset, second revision. Its focused test passed (22 Python
+Status: committed at `8110224`, second revision. Its focused test passed (22 Python
 cases, Node 1/1; see "Test commands"). The third subset ("Product-path integration" below) calls it from
 local sync, flow and runtime; host response, claim queue and install still
 do not.
@@ -1027,8 +1032,8 @@ only):
   before publish and `query_bound` loads them per pinned generation; those
   24 focused product-path cases passed, the seven-file focused regression
   passed (7/7), and the existing sync regression passed in a final run
-  (Node 1/1). The full repository test suite has not been run in this
-  worktree, and nothing is deployed. Installed product callers
+  (Node 1/1). The full suite passed except four PyYAML environment
+  failures (see "Test commands"), and nothing is deployed. Installed product callers
   must not use the candidate path until the other-owned product worker, host
   response and route, vector, bundle and installer interfaces under "Not
   done" land.
@@ -1102,8 +1107,13 @@ npm run test:focused -- test/laya-index-capacity.test.mjs test/laya-index-a.test
   `npm run test:focused -- test/laya-index-sync.test.mjs`: Node 1/1 passed,
   guard run `8390499e049d4dfebbcf672293f1a4ad`.
 
-These are focused runs only: the full repository test suite has **not**
-been run in this worktree, and no full-suite pass is claimed. No installed
+The runs above are focused runs. The full repository suite (`npm test`, guard `--kind test`, file
+concurrency 1) ran on 2026-10-19 at `8110224`: 1,629 tests, 1,616 pass,
+4 fail, 9 skip, guard run `4077f486078544f394630c5440375a76`. All four
+failures are the PyYAML cross-checks in `test/recall-injection-body.test.mjs`
+(`ModuleNotFoundError: No module named 'yaml'`): the local `python3` has no
+PyYAML, an environment artifact noted in CLAUDE.md, not a capacity or Laya
+failure. No capacity or Laya test failed. No installed
 product path uses the capacity APIs yet; host, product-worker, install and
 vector wiring remain outside this branch (see "Not done").
 
