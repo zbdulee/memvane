@@ -323,6 +323,39 @@ class ReviewFixTests(VectorFillCase):
         with self.assertRaisesRegex(IndexContractError, 'provider_unavailable'):
             vc.vector_fill_step(runtime, self.provider)
 
+    def test_request_the_worker_would_drop_is_refused_before_the_model(self):
+        # Under the raw 5 MB cap, but JSON escaping (each newline -> \\n)
+        # pushes the request line past the worker's 5,100,000-byte cap.
+        self.write('big.md', '# Big\n' + '\n' * 2_700_000)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        answer = vc.vector_fill_step(runtime, self.provider, max_bytes=10_000_000)
+        self.assertEqual((answer['state'], answer['reason'], answer['detail']),
+                         ('blocked', 'vector_member_rejected', 'provider_request_too_large'))
+        self.assertEqual(self.provider.calls, [])
+
+    def test_empty_worker_answer_defers_with_the_path(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def silent(body, path):
+            raise IndexContractError('provider_result_invalid')
+        self.provider.embed_document_chunks = silent
+        answer = vc.vector_fill_step(runtime, self.provider)
+        self.assertEqual((answer['state'], answer['reason'], answer['path']),
+                         ('deferred', 'provider_result_invalid', 'plans/f0.md'))
+
+    def test_index_wide_error_in_cache_lookup_is_not_blamed_on_a_member(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        import laya_index_vector
+        with mock.patch.object(laya_index_vector.LayaVectorIndex, 'cached_chunk_set',
+                               side_effect=IndexContractError('schema_manifest_mismatch')):
+            with self.assertRaisesRegex(IndexContractError, 'schema_manifest_mismatch'):
+                vc.vector_fill_step(runtime, self.provider)
+
     def test_damaged_cached_chunk_set_is_reported(self):
         self.corpus(1)
         runtime = self.runtime()

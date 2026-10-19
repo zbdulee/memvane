@@ -17,6 +17,7 @@ admitted owner worker and is never called from a host hook.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Dict, Optional
 
 from laya_index_a import IndexContractError
@@ -28,6 +29,23 @@ CANDIDATE_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 # bytes (provider_text_invalid). Both depend on the bytes only, so the fill
 # decides them before any model start instead of asking the provider.
 PROVIDER_MAX_TEXT_BYTES = 5_000_000
+# laya_local_embed_worker.mjs drops a request over this many bytes (the JSON
+# line the provider sends, newline included) and answers nothing, which the
+# provider can only report as provider_result_invalid. Escaping can push a
+# body under PROVIDER_MAX_TEXT_BYTES over it, so the fill measures the same
+# line the provider builds.
+WORKER_MAX_REQUEST_BYTES = 5_100_000
+_DAMAGED_CACHE = ('vector_chunk_set_incomplete', 'vector_chunk_set_invalid')
+
+
+def _provider_refuses(text, path):
+    if not text or len(text.encode('utf-8')) > PROVIDER_MAX_TEXT_BYTES:
+        return 'provider_text_invalid'
+    line = json.dumps({'kind': 'document_chunks', 'text': text, 'title': None, 'path': path},
+                      ensure_ascii=False, separators=(',', ':')).encode('utf-8') + b'\n'
+    if len(line) > WORKER_MAX_REQUEST_BYTES:
+        return 'provider_request_too_large'
+    return None
 _PAGE = 64
 
 
@@ -75,6 +93,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
       seal; it is not repaired here. All three repeat until the source (or
       the cache) changes. Other provider errors (service unavailable,
       admission refused) are raised, never reported as a member problem.
+    * ``deferred``/``provider_result_invalid`` with ``path``: the worker
+      answered nothing usable for that member. It cannot tell a refusal of
+      the member (chunk or context limits) from being busy, so this is not
+      a member verdict; a member that keeps returning it needs the worker to
+      report a distinct refusal code (a reviewed provider artifact change).
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
@@ -158,6 +181,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             try:
                 cached = vectors.cached_chunk_set(sha, title, profile_id)
             except IndexContractError as exc:
+                if str(exc) not in _DAMAGED_CACHE:
+                    raise
                 return record(False) or answer('blocked', 'vector_cache_damaged',
                                                cursor=cursor, path=path, detail=str(exc))
             if cached is not None:
@@ -168,11 +193,21 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 continue
             if out['embedded'] >= max_files or (should_yield and should_yield()):
                 return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
-            if not text or len(text.encode('utf-8')) > PROVIDER_MAX_TEXT_BYTES:
+            refused = _provider_refuses(text, path)
+            if refused:
                 return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path,
-                                               detail='provider_text_invalid')
-            rows = provider.embed_document_chunks(text, path=path)
+                                               cursor=cursor, path=path, detail=refused)
+            try:
+                rows = provider.embed_document_chunks(text, path=path)
+            except IndexContractError as exc:
+                if str(exc) != 'provider_result_invalid':
+                    raise
+                # The worker's own per-member refusals (over 1,024 chunks, a
+                # chunk over the context) and its busy reply both arrive as
+                # this one code, so it is neither blamed on the member nor
+                # left pathless: deferred with the path, retried next wake.
+                return record(False) or answer('deferred', 'provider_result_invalid',
+                                               cursor=cursor, path=path)
             if not isinstance(rows, list) or not rows:
                 return record(False) or answer('blocked', 'vector_member_rejected',
                                                cursor=cursor, path=path, detail='no_chunks')
