@@ -1039,6 +1039,85 @@ class LayaSourceCatalog:
             opener.close()
         check(snapshot)
 
+    def members(self, snapshot: CatalogSnapshot, exclusions: Exclusions, *,
+                after: str = '', limit: int = _PAGE,
+                allow_pending: bool = False) -> List[Tuple[str, str, bool]]:
+        """One page of ``(path, sha256, eligible)`` after ``after``; no body read.
+
+        Same rows and eligibility rule as ``manifest`` and ``iter_documents``,
+        in path order, so a caller can walk the snapshot in bounded pages.
+        """
+        if type(limit) is not int or limit < 1:
+            raise ValueError('invalid member page limit')
+        if not isinstance(after, str):
+            raise ValueError('invalid member cursor')
+        excluded_paths, excluded_hashes = exclusions
+
+        def read():
+            if not self._is_current(snapshot, allow_pending):
+                return None
+            return [(path, sha, path not in excluded_paths and sha not in excluded_hashes)
+                    for path, sha in self.db.execute(
+                        'SELECT path,sha256 FROM scan_files WHERE seq=? AND path>? '
+                        'ORDER BY path LIMIT ?', (snapshot.seq, after, limit))]
+        rows = self._read(read)
+        if rows is None:
+            _raise_stale('catalog snapshot changed')
+        return rows
+
+    def vector_fill(self, snapshot: CatalogSnapshot, profile_id: str) -> Dict[str, Any]:
+        """Durable vector fill progress for ``(snapshot, profile_id)``.
+
+        ``cursor`` is the last member path whose chunk set is known complete;
+        ``done`` means every eligible member is. Another snapshot or profile
+        starts from the beginning. The table is created on first write, so an
+        older catalog file without it reads as no progress.
+        """
+        if not isinstance(snapshot, CatalogSnapshot) or not _HEX64.match(profile_id or ''):
+            raise ValueError('invalid vector fill key')
+
+        def read():
+            exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                     "AND name='vector_fill'").fetchone()
+            if exists is None:
+                return None
+            return self.db.execute('SELECT cursor,done FROM vector_fill '
+                                   'WHERE seq=? AND profile_id=?',
+                                   (snapshot.seq, profile_id)).fetchone()
+        row = self._read(read)
+        if row is None:
+            return {'cursor': '', 'done': False}
+        return {'cursor': row[0], 'done': bool(row[1])}
+
+    def set_vector_fill(self, snapshot: CatalogSnapshot, profile_id: str,
+                        cursor: str, done: bool) -> bool:
+        """Record fill progress; False when the catalog is busy or moved on.
+
+        Rows of other snapshots are dropped in the same write, so the table
+        holds at most one row per profile.
+        """
+        if (not isinstance(snapshot, CatalogSnapshot) or not _HEX64.match(profile_id or '')
+                or not isinstance(cursor, str) or type(done) is not bool):
+            raise ValueError('invalid vector fill record')
+        if not self._begin_write():
+            return False
+        try:
+            if self._pointer('current') != snapshot.seq:
+                self.db.rollback()
+                return False
+            self.db.execute('CREATE TABLE IF NOT EXISTS vector_fill('
+                            'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
+                            'cursor TEXT NOT NULL, done INTEGER NOT NULL, '
+                            'PRIMARY KEY(seq, profile_id))')
+            self.db.execute('DELETE FROM vector_fill WHERE seq<>?', (snapshot.seq,))
+            self.db.execute('INSERT OR REPLACE INTO vector_fill VALUES(?,?,?,?)',
+                            (snapshot.seq, profile_id, cursor, int(done)))
+            self.db.commit()
+            return True
+        except BaseException:
+            self._rollback()
+            raise
+
 
 def load_exclusions(index: Any, scope: str) -> Exclusions:
     """Read A-int exclusions once per operation (same accessor as the port)."""

@@ -543,9 +543,9 @@ class BindingGateTests(CapacityProductCase):
                      lambda: self.step(plain)):
             with self.assertRaisesRegex(IndexContractError, 'capacity_not_configured'):
                 call()
-        self.assertEqual(sync_step(plain, before_publish=lambda: None, require_vector=True),
-                         {'state': 'deferred', 'generation': None, 'claim': None,
-                          'reason': 'vector_capacity_path_unavailable'})
+        # The vector path needs the reviewed profile; see laya-vector-capacity-checks.
+        with self.assertRaisesRegex(TypeError, 'vector_profile_required'):
+            sync_step(plain, before_publish=lambda: None, require_vector=True)
         self.assertEqual(sync_full(plain, before_publish=lambda: None,
                                    require_vector=False)['state'], 'indexed')
         self.assertEqual([r['path'] for r in plain.query('"finch"', 5)], ['wiki/c.md'])

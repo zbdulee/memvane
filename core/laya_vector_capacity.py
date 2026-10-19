@@ -1,0 +1,149 @@
+"""Step-bounded vector fill for the Laya capacity path.
+
+``vector_fill_step`` embeds the members of the catalog's current COMPLETE
+snapshot a few files at a time. Each file's chunk set is committed on its
+own (``LayaVectorIndex.insert_chunk_set``), and progress is a durable
+cursor in the catalog, so a later call resumes after the last committed
+file. Unchanged content is never embedded twice: the chunk-set cache is
+keyed by content hash and title, not by generation.
+
+The seal of a generation is separate and needs no model:
+``sync_step(require_vector=True)`` stages only after the fill is complete,
+then ``seal_generation`` builds the seal from those cached chunk sets before
+publish. Design: ``docs/plans/2026-10-19-laya-vector-capacity-design.md``.
+
+This module loads nothing by itself. The provider is passed in by the
+admitted owner worker and is never called from a host hook.
+"""
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, Optional
+
+from laya_index_a import IndexContractError
+
+DEFAULT_FILL_FILES = 8
+DEFAULT_FILL_BYTES = 2_000_000
+CANDIDATE_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
+_PAGE = 64
+
+
+def provider_profile_id(provider: Any) -> str:
+    """Profile identity of a reviewed candidate provider; raises if unusable."""
+    from laya_index_vector import profile_identity
+    profile = getattr(provider, 'profile', None)
+    if (not callable(getattr(provider, 'embed_document_chunks', None))
+            or not isinstance(profile, dict)
+            or getattr(provider, 'manifest', {}).get('recipeId') != CANDIDATE_RECIPE):
+        raise IndexContractError('candidate_provider_required')
+    return profile_identity(profile.get('model_id'), profile.get('embedding_fingerprint'),
+                            profile.get('dimension'))
+
+
+def fill_complete(runtime: Any, profile_id: str) -> bool:
+    """True when every eligible member of the current snapshot is cached."""
+    try:
+        snapshot = runtime.catalog.require_complete()
+    except IndexContractError:
+        return False
+    return runtime.catalog.vector_fill(snapshot, profile_id)['done']
+
+
+def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FILL_FILES,
+                     max_bytes: int = DEFAULT_FILL_BYTES,
+                     should_yield: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+    """Embed at most ``max_files`` uncached members; one body in memory at a time.
+
+    Answers:
+
+    * ``complete``: every eligible member of the snapshot has a chunk set.
+    * ``pending``/``vector_backlog``: budget or yield stopped the step;
+      call again.
+    * ``pending``/``no_snapshot``: the catalog has no COMPLETE snapshot yet.
+    * ``pending``/``source_changed``: a member's bytes no longer match the
+      snapshot. A rescan is requested; the next snapshot restarts the fill.
+    * ``deferred``/``catalog_busy``: progress could not be recorded.
+
+    ``max_bytes`` bounds bytes read in one step, but one member is always
+    read so a file larger than the budget cannot stall the fill.
+    ``embedded``/``cached`` count the members handled in this step.
+    """
+    from laya_index_vector import LayaVectorIndex, qmd_markdown_title
+    from laya_source_catalog import PENDING_PHASES, load_exclusions
+    if (type(max_files) is not int or max_files < 1
+            or type(max_bytes) is not int or max_bytes < 1
+            or (should_yield is not None and not callable(should_yield))):
+        raise TypeError('invalid_vector_fill_step')
+    catalog = getattr(runtime, 'catalog', None)
+    if catalog is None:
+        raise IndexContractError('capacity_not_configured')
+    profile_id = provider_profile_id(provider)
+    profile = provider.profile
+    out = {'embedded': 0, 'cached': 0, 'bytes': 0}
+
+    def answer(state, reason=None, **extra):
+        result = {'state': state, 'reason': reason, 'profile_id': profile_id, **out}
+        result.update(extra)
+        return result
+
+    try:
+        snapshot = catalog.require_complete()
+    except IndexContractError:
+        return answer('pending', 'no_snapshot')
+    progress = catalog.vector_fill(snapshot, profile_id)
+    if progress['done']:
+        return answer('complete')
+    vectors = LayaVectorIndex(runtime.index)
+    if vectors.register_profile(profile['model_id'], profile['embedding_fingerprint'],
+                                profile['dimension']) != profile_id:
+        raise IndexContractError('vector_profile_mismatch')
+    exclusions = load_exclusions(runtime.index, runtime.scope)
+    cursor = progress['cursor']
+
+    def record(done):
+        if not catalog.set_vector_fill(snapshot, profile_id, cursor, done):
+            return answer('deferred', 'catalog_busy', cursor=cursor)
+        return None
+
+    while True:
+        page = catalog.members(snapshot, exclusions, after=cursor, limit=_PAGE,
+                               allow_pending=True)
+        if not page:
+            return record(True) or answer('complete', cursor=cursor)
+        for path, sha, eligible in page:
+            if not eligible:
+                cursor = path
+                continue
+            found = catalog.lookup(snapshot, path)
+            size = found[1] if found else 0
+            if out['bytes'] and out['bytes'] + size > max_bytes:
+                return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
+            try:
+                text = catalog.read_verified(snapshot, path, sha).decode('utf-8')
+            except IndexContractError:
+                stopped = record(False)
+                if stopped:
+                    return stopped
+                scan = catalog.status()['active']
+                if scan is None or scan['phase'] not in PENDING_PHASES:
+                    catalog.request_scan()
+                return answer('pending', 'source_changed', cursor=cursor, path=path)
+            out['bytes'] += size
+            title = qmd_markdown_title(text, path)
+            if vectors.cached_chunk_set(sha, title, profile_id) is not None:
+                out['cached'] += 1
+                cursor = path
+                continue
+            if out['embedded'] >= max_files or (should_yield and should_yield()):
+                return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
+            rows = provider.embed_document_chunks(text, path=path)
+            if not isinstance(rows, list) or not rows:
+                raise IndexContractError('vector_coverage_incomplete')
+            # Chunk rows reference their content row; stage reuses it.
+            runtime.index.ensure_content(sha, text)
+            vectors.insert_chunk_set(sha, title, profile_id, rows)
+            out['embedded'] += 1
+            cursor = path
+            # A crash after this commit replays the file as cached, not embedded.
+            stopped = record(False)
+            if stopped:
+                return stopped

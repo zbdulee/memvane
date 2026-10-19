@@ -333,6 +333,7 @@ def _stale_detail(exc):
 
 
 def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False,
+              vector_profile_id=None,
               max_files=200, max_bytes=5_000_000, max_stats=2_000,
               max_claims=8, rescan=False) -> dict:
     """One finite capacity-path sync unit for a product worker; call repeatedly.
@@ -374,8 +375,15 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
     ``required`` = the byte budget that fits it; the same budget gets the
     same answer without reading the file. A scan blocked by a source change
     is restarted (``pending``/``scan_restarted``); any other block is
-    ``blocked`` until a later ``request_scan``. Vector seals are not built on
-    this path; ``require_vector=True`` is ``deferred``.
+    ``blocked`` until a later ``request_scan``.
+
+    ``require_vector=True`` needs ``vector_profile_id``. A snapshot is
+    captured only after ``laya_vector_capacity.vector_fill_step`` has cached
+    a chunk set for every eligible member (``pending``/``vector_backlog``
+    until then); the generation is then sealed from that cache before
+    publish, so this call never loads a model. A head that already serves
+    the snapshot is ``unchanged`` without a seal check; a lexical-only head
+    is not repaired here and fails closed on vector queries.
     """
     if not isinstance(runtime, LayaIndexRuntime):
         raise TypeError('explicit_runtime_required')
@@ -384,8 +392,9 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
     if (type(require_vector) is not bool or type(rescan) is not bool
             or type(max_claims) is not int or max_claims < 1):
         raise TypeError('invalid_sync_step')
-    if require_vector:
-        return _result('deferred', reason='vector_capacity_path_unavailable')
+    if require_vector and not (isinstance(vector_profile_id, str)
+                               and len(vector_profile_id) == 64):
+        raise TypeError('vector_profile_required')
     if runtime.catalog is None or runtime.binding_store is None:
         raise IndexContractError('capacity_not_configured')
     from laya_index_capacity import (binding_store_busy, capture_bound_generation_binding,
@@ -435,7 +444,8 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
         def process(job, recover=False):
             ensure_fenced()
             outcome = process_bound_one(index, queue, catalog, store, job['claim'],
-                                        recover=recover)
+                                        recover=recover, require_vector=require_vector,
+                                        vector_profile_id=vector_profile_id)
             if outcome == 'replan' and generation_digest(job['gen']) is not None:
                 # A member may have changed after the snapshot; only a new
                 # complete scan can produce a publishable binding.
@@ -488,6 +498,13 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
                     and head[2] == epoch and same_bound_source(served, binding)):
                 runtime._snapshot_verdict = (key, None)
                 return 'unchanged'
+            if require_vector and not catalog.vector_fill(snapshot, vector_profile_id)['done']:
+                # Not memoized: the fill advances between calls. While a newer
+                # scan is pending, step it instead: a member that changed
+                # after this snapshot can stop the fill until that scan lands.
+                if pending:
+                    return None
+                return answer('pending', head_generation(), reason='vector_backlog')
             ensure_fenced()
             try:
                 persist_generation_binding(store, index, binding)  # before queue and publish

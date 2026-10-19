@@ -1,6 +1,8 @@
 # Laya vector capacity path: design (2026-10-19)
 
-Status: design only. Nothing here is implemented. This is item 7 of the
+Status: fill step and seal implemented locally (sections 1 and 2); worker,
+host response and bundle (sections 3 and 4) are not. Tests:
+`test/fixtures/laya-vector-capacity-checks.py` (13 cases). This is item 7 of the
 follow-up list and the prerequisite for wiring the product sync worker
 (item 4), host response (item 5) and bundle `ARTIFACTS` (item 6) to the
 capacity path from `docs/plans/2026-10-19-laya-source-batched-scan.md`.
@@ -55,6 +57,14 @@ design removes.
 * The chunk-set cache is keyed by content hash and title, not by
   generation, so work done for one snapshot is reused by the next one for
   every unchanged file.
+* A `vector_chunks` row requires its `content` row (trigger in
+  `laya_index_a.py`, `NOT EXISTS (SELECT 1 FROM content WHERE hash=...)`).
+  Content is normally written by stage, so the fill writes it first with
+  the new `LayaIndexA.ensure_content`. Stage accepts an existing row with
+  the same body (`hash_content_conflict` otherwise), so nothing a later
+  stage writes changes. A content row with no membership is served by no
+  view. Content is immutable and has no GC, so a file that changes before
+  it is staged leaves its old content row, as old generations already do.
 
 ## Design
 
@@ -75,9 +85,13 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
   needs a new read-only method (`members(snapshot, exclusions, after=,
   limit=)`) built on the same `scan_files` query and eligibility rule as
   `manifest` (`laya_source_catalog.py:899`), so the two cannot disagree. It
-  resumes from a durable cursor stored
-  in the catalog DB and keyed by `(snapshot seq, profile_id)`. A new
-  snapshot or profile resets the cursor.
+  resumes from a durable cursor in the catalog DB keyed by
+  `(snapshot seq, profile_id)` (`vector_fill`/`set_vector_fill`). The
+  table is created on first write with `CREATE TABLE IF NOT EXISTS`; the
+  catalog checks only `application_id`/`user_version`, so the schema
+  version is unchanged and an older catalog file reads as no progress. A
+  write drops rows of other snapshots. A new snapshot or profile restarts
+  the cursor.
 * For each eligible member with no `cached_chunk_set` for
   `(sha256, qmd_markdown_title(text, path), profile_id)`:
   `read_verified(snapshot, path, sha256)` (one body in memory), compute the
@@ -93,10 +107,10 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
 * Holds at most one body plus one file's chunk vectors in memory.
 
 The title has to be computed from the body, so a cache check costs one
-verified read per eligible file on the first pass. To keep later passes
-cheap, the step records `(sha256, title)` for each member as it goes; a
-member whose `sha256` is unchanged in the next snapshot reuses the
-recorded title without a read.
+verified read per eligible file. Within one snapshot the cursor keeps that
+to once per file. A new snapshot re-reads every eligible file once (bounded
+per step by `max_bytes`) but embeds only changed content. A title memo was
+considered and not built.
 
 ### 2. Seal inside `sync_step(require_vector=True)`
 
@@ -105,13 +119,22 @@ recorded title without a read.
 
 * Before capture, check the fill state for the snapshot. If it is not
   `complete`, return `pending`/`vector_backlog` and do not stage. No
-  generation is staged that cannot be sealed.
+  generation is staged that cannot be sealed. Exception: while a newer
+  scan is pending, `sync_step` steps that scan instead. Without this, a
+  member that changed after the snapshot stops the fill
+  (`source_changed`) and the gate stops the scan, and neither moves
+  (found by the changed-member test).
 * After the bound streaming stage, call `seal_generation(gen, profile_id)`
   before `before_publish` and publish. This is DB-only.
-* If the seal raises `vector_coverage_incomplete` (a member changed between
-  fill and stage, or the cache was damaged), do not publish. Request a
-  rescan and return `pending`/`vector_backlog`. The prepared generation is
-  handled like any other unpublishable bound generation.
+* If the seal raises `vector_coverage_incomplete` (fill state says done but
+  a chunk set is missing), do not publish: the claim is `replan`
+  (`index_stale`), and `sync_step` requests a rescan as for any replan. A
+  member that changed is normally caught earlier, by the stage re-read.
+* A receipt that is ACKed without re-staging must carry a seal with the
+  same profile (as on the legacy path).
+* A head that already serves the snapshot is `unchanged` without a seal
+  check. A lexical-only bound head is not repaired here and fails closed
+  on vector queries.
 * The profile comes from the runtime (the worker's reviewed provider
   profile), never from the queue.
 
@@ -177,11 +200,23 @@ with runtime(catalog_path, binding_store_path):
    raise.
 9. Memory: peak held bodies is one (instrument the fake catalog reads).
 
-## Open questions for review
+## Decisions taken while implementing
 
-* Where the fill cursor lives: catalog DB (proposed, same scope as the
-  snapshot) or the binding store.
-* Whether a member skipped as `changed` should request a rescan
-  immediately or wait for the fill pass to finish.
-* Default `max_files`/`max_bytes` for one fill step, given that one embed
-  call per file is the expensive part.
+* Fill cursor: catalog DB (same scope as the snapshot).
+* A changed member stops the step and requests a rescan at once
+  (`pending`/`source_changed`); it is not skipped.
+* One fill step defaults to 8 embedded files and 2 MB read
+  (`DEFAULT_FILL_FILES`/`DEFAULT_FILL_BYTES`). These are technical defaults,
+  not a product cap.
+* Contract change: `sync_step(require_vector=True)` now needs
+  `vector_profile_id` (`TypeError('vector_profile_required')` without it)
+  instead of returning `deferred`/`vector_capacity_path_unavailable`.
+
+## Open for review
+
+* `ensure_content` writes content outside a stage. `LayaIndexA.inspect`
+  only requires `content` and `content_fts` to match, and `ensure_content`
+  writes both; the fill test runs `inspect()` before any stage. Other
+  readers of `content` should still be reviewed.
+* Worker loop (section 3) is not written; the test helper `sync()` is the
+  intended shape.
