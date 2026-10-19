@@ -28,11 +28,12 @@
    expansion is an optional decision after v2 opens; search and embedding
    product functionality still needs its own Laya gate.
    For a Laya Index replacement release, require every `LI-*` row in the
-   [agent QA gate](release-agent-qa.md) on the exact installed plugin. Current
-   blockers include the missing installer connection to the host-loaded plugin,
-   unverified production provider/model closure, single-raw-only cutover,
-   and absent fresh-host retrieval parity; these rows remain `NOT RUN` until
-   the installed candidate supplies evidence.
+   [agent QA gate](release-agent-qa.md) on the exact installed plugin. The
+   host-loaded installer path and raw+wiki route have source and synthetic
+   coverage; their installed-candidate behaviour, production provider/model
+   closure, migration cutover and fresh-host retrieval parity remain
+   unverified. The corresponding rows stay `NOT RUN` until the installed
+   candidate supplies evidence.
 7. Publish a GitHub Release with compatibility notes, user-visible changes,
    upgrade notes, and known limitations. Name every OS or host that was not
    verified in this release.
