@@ -15,8 +15,10 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import sys
+import tempfile
 
 from laya_install_journal import (create_journal, inspect_journal,
                                   preflight_product_candidate,
@@ -521,6 +523,100 @@ def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
     return paths
 
 
+def _publish_claim_queue(queue, incarnation):
+    """Publish a complete, closed claim queue without clobbering a final path.
+
+    ClaimQueue.create initializes SQLite in place after its exclusive open, so
+    process death there would leave a partial final queue. Build privately and
+    hard-link only a verified single-file DB, as the QMD candidate does. A
+    killed private stage is retained under its own name and never reused.
+    """
+    from contextlib import closing
+    from laya_index_claim_queue import ClaimQueue
+
+    with tempfile.TemporaryDirectory(prefix='.laya-claims-', dir=queue.parent) as work:
+        built = Path(work) / 'claims.sqlite'
+        with closing(ClaimQueue.create(built, index_incarnation=incarnation)):
+            pass
+        with closing(ClaimQueue.open(built)) as opened:
+            if opened.binding() != incarnation:
+                _fail('queue_stage_binding_mismatch')
+        # ClaimQueue.open restores WAL mode. Switch the closed private DB back
+        # to a self-contained rollback journal before publishing it: a fresh
+        # read-only opener cannot read a WAL-mode header without sidecars.
+        with closing(sqlite3.connect(built)) as db:
+            mode = db.execute('PRAGMA journal_mode=DELETE').fetchone()
+            if mode is None or mode[0].lower() != 'delete':
+                _fail('queue_stage_not_self_contained')
+        # Closing the last WAL connection checkpoints it; a nonempty sidecar
+        # could still carry rows, so never discard one. Only this private
+        # stage reaches here.
+        for suffix in ('-wal', '-journal'):
+            sidecar = Path(str(built) + suffix)
+            if sidecar.exists() and sidecar.stat().st_size:
+                _fail('queue_stage_not_self_contained')
+        for suffix in ('-wal', '-shm', '-journal'):
+            Path(str(built) + suffix).unlink(missing_ok=True)
+        with built.open('rb') as stream:
+            os.fsync(stream.fileno())
+        # Preserve the final-path guard from ClaimQueue.create. A stale WAL
+        # beside a missing main file must never attach to the fresh queue.
+        if any(Path(str(queue) + suffix).exists() or
+               Path(str(queue) + suffix).is_symlink()
+               for suffix in ('-wal', '-shm', '-journal')):
+            _fail('partial_queue_requires_recovery')
+        try:
+            os.link(built, queue)
+        except FileExistsError as exc:
+            raise InstallBlocked('partial_queue_requires_recovery') from exc
+        # Drop the private name at once; cutover and sync owner fences
+        # require the published queue to be a single-link file.
+        built.unlink()
+        directory = os.open(queue.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def _finish_interrupted_claim_queue_link(queue, incarnation):
+    """Drop only our verified private hard link after an interrupted publish."""
+    from contextlib import closing
+    from laya_index_claim_queue import ClaimQueue
+
+    final = queue.lstat()
+    if final.st_nlink == 1:
+        return
+    if not stat.S_ISREG(final.st_mode) or final.st_nlink != 2:
+        _fail('partial_queue_requires_recovery')
+    with closing(ClaimQueue.open(queue)) as opened:
+        if opened.binding() != incarnation:
+            _fail('partial_queue_requires_recovery')
+    for parent in queue.parent.iterdir():
+        if not parent.name.startswith('.laya-claims-'):
+            continue
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            continue
+        built = parent / 'claims.sqlite'
+        try:
+            staged = built.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISREG(staged.st_mode) and staged.st_uid == os.getuid()
+                and staged.st_dev == final.st_dev and staged.st_ino == final.st_ino
+                and staged.st_nlink == 2):
+            built.unlink()
+            directory = os.open(queue.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return
+    _fail('partial_queue_requires_recovery')
+
+
 def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_root, commit_id,
                              expected_proposal_sha256, install_id,
                              accepted_provider_sha256, user_qmd_roots,
@@ -683,13 +779,12 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             candidate, generation, plan['scopeId'], scan.manifest,
             plan['sourceDigest'], profile['profileId'], scan.files, claim)
         if queue.exists() or queue.is_symlink():
+            _finish_interrupted_claim_queue_link(queue, incarnation)
             with closing(ClaimQueue.open(queue)) as opened:
                 if opened.binding() != incarnation:
                     _fail('partial_queue_requires_recovery')
         else:
-            with closing(ClaimQueue.create(queue,
-                                           index_incarnation=incarnation)):
-                pass
+            _publish_claim_queue(queue, incarnation)
         if not capacity_stores:
             # A store left by an earlier capacity_stores=True run would switch
             # this route to the capacity path anyway (or fail it closed if only
