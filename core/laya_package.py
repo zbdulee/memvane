@@ -23,6 +23,9 @@ ARTIFACTS = (
     'core/laya_index_source_port.py',
     'core/laya_index_claim_queue.py',
     'core/laya_index_flow.py',
+    # The bound flow path imports these lazily.
+    'core/laya_index_capacity.py',
+    'core/laya_source_catalog.py',
 )
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')

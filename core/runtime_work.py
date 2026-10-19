@@ -15,11 +15,12 @@ import subprocess
 import sys
 import time
 
-from context_learning.resource_coordination import Coordinator,default_root,_lock,decision
-from context_learning.local_cycle import ResourceDeferred
-from context_learning.local_cycle import _atomic_json
-from context_learning import resident
+from resource_deferred import ResourceDeferred
+# Neutral lease primitives: importing this module never loads context_learning.
+from runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 import runtime_wake_policy as wake_policy
+# Re-exported: drain's default executor and external callers keep this object.
+from runtime_handlers import dispatch
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
         'targetHeadroomFraction':.35}
@@ -27,6 +28,18 @@ POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
 KINDS=wake_policy.KINDS
 RETRY=wake_policy.RETRY
 MAX_WAKES=wake_policy.MAX_WAKES
+
+
+def Coordinator(*args,**kwargs):
+    # Call-time shim: the real coordinator and its root stay in context_learning.
+    # Module attribute, so tests can keep patching runtime_work.Coordinator.
+    from context_learning.resource_coordination import Coordinator as coordinator
+    return coordinator(*args,**kwargs)
+
+
+def default_root():
+    from context_learning.resource_coordination import default_root as root
+    return root()
 
 
 def sample():
@@ -66,7 +79,7 @@ def qmd_operation(argv,*,coordinator=None,execute=None):
 
 class WakeQueue:
     def __init__(self,root=None):
-        self.root=resident._private_state(Path(root) if root is not None else default_root())
+        self.root=_private_state(Path(root) if root is not None else default_root())
         self.path=self.root/'runtime-wakes.sqlite3'
 
     @contextmanager
@@ -103,60 +116,6 @@ class WakeQueue:
         with self.connect() as db:return [dict(row) for row in db.execute('SELECT * FROM wakes ORDER BY due,id')]
 
 
-def dispatch(row):
-    """Fixed handlers revalidate setup/ownership/authorization themselves."""
-    if row['kind']=='index':
-        result=subprocess.run(['bash',str(Path(__file__).resolve().parents[1]/'backend/index_worker.sh')],
-            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-            env={**os.environ,'QMD_RUNTIME_DISPATCH':'1'},check=False)
-        from dirty_queue import queue_path
-        path=queue_path()
-        return result.returncode==0 and (not path.exists() or path.stat().st_size==0)
-    if row['kind']=='update':
-        import update_hook_queue
-        update_hook_queue.worker(row['target'])
-        return not (update_hook_queue._private_queue()/(row['target']+'.job.json')).exists()
-    if row['kind']=='laya-sync':
-        from laya_product_sync_worker import run
-        result=run(Path(row['target']))
-        return result['state'] in ('indexed','unchanged')
-    if row['kind']=='laya-compile':
-        from wiki_selected_laya import run
-        result=run(Path(row['target']))
-        return result['state']=='drained'
-    if row['kind']=='learning':
-        import config
-        import setup_guard
-        from context_learning import shared
-        project=Path(row['target'])
-        if not project.is_dir():return True
-        if setup_guard.status(project)['status']!='ready':return False
-        cfg=config.find_project_config(str(project))['config'];root=shared._safe_root(cfg,project)
-        if root is None:return True
-        # Resource retries must not launch a teacher or create fresh captures.
-        from context_learning.history_lifecycle import worker_lease
-        with worker_lease():
-            if setup_guard.status(project)['status']!='ready':return False
-            result=shared.run_training_pending(root,project)
-        return wake_policy.handler_done(result['status'])
-    if row['kind']=='auto':
-        import context_learning_auto
-        result=context_learning_auto.run(Path(row['target']))
-        return wake_policy.handler_done(result['status'])
-    if row['kind']=='cleanup':
-        import setup_guard,qmd_route
-        project=Path(row['target'])
-        if not project.is_dir():return True
-        if setup_guard.status(project)['status']!='ready':return False
-        route=qmd_route.project_paths(project)
-        result=subprocess.run([sys.executable,'-B',str(Path(__file__).with_name('orphan_reclaim.py')),
-            '--cwd',str(project),'--json'],stdin=subprocess.DEVNULL,capture_output=True,text=True,
-            env={**os.environ,**{key:route[key] for key in qmd_route.PATH_KEYS},'QMD_RUNTIME_DISPATCH':'1'},check=False)
-        if result.returncode:return False
-        return wake_policy.cleanup_done(json.loads(result.stdout))
-    raise ValueError('invalid_runtime_handler')
-
-
 def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.time,
           sleep=time.sleep,max_seconds=60,max_runs=8,lease_fd=None):
     if not 0<max_seconds<=60 or not 1<=max_runs<=8:raise ValueError('invalid_runtime_budget')
@@ -167,10 +126,7 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
         with queue.connect() as db:db.execute("UPDATE wakes SET status='pending' WHERE status='running'")
         controller=Coordinator(queue.root);deadline=clock()+max_seconds;runs=0
         def admitted(row):
-            # The wake is only a dispatch hint. Index/update/cleanup have their
-            # own admission and retained content queues in their handlers.
-            # A training-sized memory reserve must not hold those wakes here.
-            if row['kind'] not in ('learning','auto'):
+            if not wake_policy.needs_compute_admission(row['kind']):
                 return True
             try:report=sample()
             except (OSError,ValueError,TypeError,KeyError):report=None

@@ -28,6 +28,20 @@ def file_identity(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def same_source_identity(before, after):
+    """Whether a later stat (fd or path) still matches the pre-hash stat.
+
+    Any identity field differing, ctime alone included, means the file was
+    touched while hashing. The caller decides what to raise.
+    """
+    return file_identity(before) == file_identity(after)
+
+
+def source_entry(sha256, before):
+    """Snapshot entry of one hashed source file; identity is the pre-hash stat."""
+    return {'sha256': sha256, 'identity': list(file_identity(before))}
+
+
 def source_queue_names(previous, current, intent, owners):
     """Collections whose source evidence must be (re)published to the queue.
 
@@ -56,6 +70,28 @@ def vector_scope(proof, collections, model):
     if len(fingerprints) != 1 or fingerprints[0]['model'] != model['path']:
         raise ValueError('vector_model_identity_unproved')
     return indexed_names(collections), fingerprints[0]['model'], fingerprints[0]['fingerprint']
+
+
+def vectors_complete(report):
+    """True when a physical vector audit report lists no defects."""
+    return not report['defects']
+
+
+def require_complete_vectors(report, reason):
+    """Return the report, or raise ValueError(reason) when it lists defects.
+
+    The reason stays caller-specific: still_incomplete after repair,
+    incomplete before readiness, changed_during_readiness after it.
+    """
+    if report['defects']:
+        raise ValueError(reason)
+    return report
+
+
+def vector_repair_intent(generation, model, fingerprint, report):
+    """Journal 'intent' entry persisted before invalidating defective vectors."""
+    return {'phase': 'intent', 'store': generation, 'model': model, 'fingerprint': fingerprint,
+            'hashes': [v['hash'] for v in report['defects']]}
 
 
 def scoped_search_count(name, hits):

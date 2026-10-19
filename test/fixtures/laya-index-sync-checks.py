@@ -16,11 +16,13 @@ sys.path.insert(0, str(ROOT / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 from laya_index_runtime import LayaIndexRuntime
-from laya_index_source_port import (publish_from_source, scan, search_verified,
-                                    stage_from_source)
+from laya_index_source_port import (publish_from_source, scan, scan_collections,
+                                    search_verified, stage_from_source)
 from laya_index_sync import _owner_lock, prepare_candidate_batch_off_hook, sync_full
 from laya_index_vector import (LayaVectorIndex, qmd_markdown_title,
                                search_vector_verified)
+import laya_index_runtime
+import laya_index_source_port
 import laya_index_sync
 
 SCOPE = 'a' * 32
@@ -612,6 +614,132 @@ with LayaIndexRuntime(source_root=source,scope=scope,db_path=db,
             with self.assertRaisesRegex(IndexContractError, 'vector_profile_mismatch'):
                 sync_full(runtime, before_publish=lambda: self.fail('marked'),
                           vector_batch=wrong)
+
+    # Stage 6a: one scope over explicit disjoint collection roots.
+    def collection_roots(self):
+        alpha = self.home / 'alpha'
+        beta = self.home / 'beta'
+        alpha.mkdir()
+        beta.mkdir()
+        (alpha / 'one.md').write_text('silver otter', encoding='utf-8')
+        (beta / 'two.md').write_text('purple finch', encoding='utf-8')
+        return {'beta': str(beta), 'alpha': str(alpha)}
+
+    def collection_runtime(self, roots):
+        return LayaIndexRuntime(source_root=roots, scope=SCOPE,
+                                db_path=str(self.index_path),
+                                queue_path=str(self.queue_path),
+                                db_incarnation=self.incarnation)
+
+    def members(self, runtime, gen):
+        return [row[0] for row in runtime.index.db.execute(
+            'SELECT path FROM membership WHERE gen=? ORDER BY path', (gen,))]
+
+    def test_two_disjoint_roots_index_then_unchanged(self):
+        roots = self.collection_roots()
+        with self.collection_runtime(roots) as runtime:
+            marks = []
+            first = self.sync(runtime, lambda: marks.append('fenced'))
+            self.assertEqual(first['state'], 'indexed')
+            self.assertEqual(marks, ['fenced'])
+            self.assertEqual(runtime.queue.get(first['claim'])['state'], 'acked')
+            self.assertEqual(self.members(runtime, first['generation']),
+                             ['alpha/one.md', 'beta/two.md'])
+            head, _ = laya_index_sync._head(runtime)
+            self.assertEqual(head[1], scan_collections(roots, SCOPE,
+                                                       runtime.index).manifest)
+            self.assertEqual(self.sync(runtime, lambda: marks.append('again')),
+                             {'state': 'unchanged', 'generation': first['generation'],
+                              'claim': None})
+            self.assertEqual(marks, ['fenced'])
+            self.assertEqual([r['path'] for r in runtime.query('"otter"', 5)],
+                             ['alpha/one.md'])
+            self.assertEqual([r['path'] for r in runtime.query('"finch"', 5)],
+                             ['beta/two.md'])
+
+    def test_one_root_edit_publishes_full_membership_generation(self):
+        roots = self.collection_roots()
+        with self.collection_runtime(roots) as runtime:
+            first = self.sync(runtime)
+            Path(roots['beta'], 'two.md').write_text('green heron', encoding='utf-8')
+            changed = self.sync(runtime)
+            self.assertEqual(changed['state'], 'indexed')
+            self.assertNotEqual(changed['generation'], first['generation'])
+            # The untouched root is a member of the new immutable generation.
+            self.assertEqual(self.members(runtime, changed['generation']),
+                             ['alpha/one.md', 'beta/two.md'])
+            self.assertEqual(self.members(runtime, first['generation']),
+                             ['alpha/one.md', 'beta/two.md'])
+            self.assertEqual(runtime.index.db.execute(
+                'SELECT gen FROM head WHERE scope=?', (SCOPE,)).fetchone()[0],
+                changed['generation'])
+            # Content is shared across generations: otter, finch and heron once each.
+            self.assertEqual(runtime.index.db.execute(
+                'SELECT COUNT(*) FROM content').fetchone()[0], 3)
+            self.assertEqual([r['path'] for r in runtime.query('"otter"', 5)],
+                             ['alpha/one.md'])
+            self.assertEqual([r['path'] for r in runtime.query('"heron"', 5)],
+                             ['beta/two.md'])
+            self.assertEqual(runtime.query('"finch"', 5), [])
+            self.assertEqual(self.sync(runtime)['state'], 'unchanged')
+
+    def test_retained_collection_claim_replays_through_collection_publish(self):
+        roots = self.collection_roots()
+        with self.collection_runtime(roots) as runtime:
+            manifest = scan_collections(roots, SCOPE, runtime.index).manifest
+            job = runtime.queue.enqueue_next(SCOPE, 'g-collections', manifest, None)
+            with patch.object(laya_index_source_port, 'publish_from_source',
+                              side_effect=AssertionError('v1 publish')), \
+                 patch.object(laya_index_source_port, 'scan',
+                              side_effect=AssertionError('v1 scan')):
+                result = self.sync(runtime)
+            self.assertEqual(result, {'state': 'indexed', 'generation': 'g-collections',
+                                      'claim': job['claim']})
+            self.assertEqual(runtime.queue.get(job['claim'])['state'], 'acked')
+            self.assertEqual(self.members(runtime, 'g-collections'),
+                             ['alpha/one.md', 'beta/two.md'])
+
+    def test_collection_vector_batch_uses_namespaced_paths(self):
+        roots = self.collection_roots()
+        with self.collection_runtime(roots) as runtime:
+            provider = self.FakeChunkProvider()
+            batch = prepare_candidate_batch_off_hook(runtime, provider)
+            self.assertEqual(sorted(path for _, path in provider.calls),
+                             ['alpha/one.md', 'beta/two.md'])
+            self.assertEqual(sync_full(runtime, before_publish=lambda: None,
+                                       vector_batch=batch)['state'], 'indexed')
+            token, _ = runtime.index.pin(SCOPE)
+            try:
+                found = search_vector_verified(runtime.index, runtime.source_root,
+                                               token, [1.0, 0.0],
+                                               model_id=batch['model_id'],
+                                               embedding_fingerprint=batch['embedding_fingerprint'],
+                                               dimension=batch['dimension'], limit=5)
+                self.assertEqual(sorted(row['path'] for row in found),
+                                 ['alpha/one.md', 'beta/two.md'])
+            finally:
+                runtime.index.release(token)
+            self.assertEqual(sync_full(runtime, before_publish=lambda: self.fail('marked'),
+                                       vector_batch=batch)['state'], 'unchanged')
+
+    def test_v1_string_root_never_calls_collection_helpers(self):
+        def refuse(*_args, **_kwargs):
+            raise AssertionError('collection helper called for v1 root')
+        with patch.object(laya_index_source_port, 'scan_collections', refuse), \
+             patch.object(laya_index_source_port, 'publish_collections_from_source',
+                          refuse), \
+             patch.object(laya_index_sync, 'scan_collections', refuse), \
+             patch.object(laya_index_runtime, 'scan_collections', refuse), \
+             patch.object(laya_index_runtime, 'search_collections_verified', refuse):
+            with self.runtime() as runtime:
+                self.assertIsInstance(runtime.source_root, str)
+                first = self.sync(runtime)
+                self.assertEqual(first['state'], 'indexed')
+                self.assertEqual(self.members(runtime, first['generation']),
+                                 ['chapter.md'])
+                self.assertEqual(self.sync(runtime)['state'], 'unchanged')
+                self.assertEqual([r['path'] for r in runtime.query('"otter"', 5)],
+                                 ['chapter.md'])
 
 
 if __name__ == '__main__':

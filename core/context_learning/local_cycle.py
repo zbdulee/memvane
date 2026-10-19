@@ -14,7 +14,6 @@ from pathlib import Path
 import signal
 import stat
 import subprocess
-import tempfile
 import time
 
 from .contracts import digest
@@ -22,9 +21,11 @@ from .cycle_policy import promotion_decision, selection_score
 from .dataset import read_private_json
 from .selection_queue import build_queue
 from .store import canonical, database
+from resource_deferred import ResourceDeferred  # re-exported for existing callers
+# Re-exported: the same object and output budget as runtime_lease.
+from runtime_lease import MAX_FILE, atomic_json as _atomic_json
 
 MAX_QUESTIONS = 2000
-MAX_FILE = 16 * 1024 * 1024
 
 
 def _safe_file(path, *, max_size=2 * 1024 * 1024 * 1024):
@@ -41,28 +42,8 @@ def _hash(path):
     return hash_file(_safe_file(path))
 
 
-def _atomic_json(path, value):
-    path = Path(path)
-    data = (canonical(value)+'\n').encode()
-    if len(data) > MAX_FILE: raise ValueError('output_budget_exceeded')
-    fd, name = tempfile.mkstemp(prefix='.write-', dir=path.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, 'wb') as out:
-            out.write(data); out.flush(); os.fsync(out.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name): os.unlink(name)
-
-
 def _load_state(path):
     return read_private_json(path) if Path(path).exists() else None
-
-
-class ResourceDeferred(ValueError):
-    def __init__(self, reason, report=None):
-        super().__init__(reason)
-        self.report = report or {}
 
 
 def record_resource_defer(root, report, *, reason='trainer_system_pressure'):

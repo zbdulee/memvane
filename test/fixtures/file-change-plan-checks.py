@@ -61,6 +61,23 @@ class PlanChangeSet(unittest.TestCase):
                                    {'n.md': meta(1, 'new')}, ())])
         self.assertEqual(plan['changedFiles']['c']['updated'], ['n.md'])
 
+    def test_hashed_scan_carries_revisions_only_for_live_hashed_paths(self):
+        previous = {'old.md': meta(1, 'h-old'), 'gone.md': meta(1, 'h-gone'),
+                    'same.md': meta(1, 'h-same'), 'plain.txt': meta(1)}
+        scanned = {'old.md': meta(1, 'h-new'), 'new.md': meta(2, 'h-created'),
+                   'same.md': meta(1, 'h-same'), 'plain.txt': meta(2)}
+        plan = P.plan_change_set([('c', '/c', previous, scanned, ())])
+        entry = plan['changedFiles']['c']
+        # A delete has nothing to read; an unhashed update has no revision.
+        self.assertEqual(entry['revisions'], {'new.md': 'h-created', 'old.md': 'h-new'})
+        self.assertEqual(entry['updated'], ['old.md', 'plain.txt'])
+        # The snapshot side is the scanned metas, untouched by the revision view.
+        self.assertEqual(plan['collections']['c']['files'], scanned)
+
+    def test_unhashed_change_set_has_no_revisions_key(self):
+        plan = P.plan_change_set([('c', '/c', {'a.md': meta(1)}, {'a.md': meta(2), 'b.md': meta(1)}, ())])
+        self.assertEqual(set(plan['changedFiles']['c']), {'root', 'created', 'updated', 'deleted'})
+
 
 class ApplyChangeSet(unittest.TestCase):
     def setUp(self):

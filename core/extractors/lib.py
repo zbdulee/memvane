@@ -481,7 +481,7 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
     # The adapter may be launched directly, without wiki_compile_worker.
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
     from runtime_admission import provider
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     try:
         with provider():return _run_isolated_admitted(cmd,timeout)
     except ResourceDeferred:return None,75,"resource_deferred"

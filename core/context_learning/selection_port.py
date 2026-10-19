@@ -3,14 +3,15 @@
 This module covers only the query-time step that turns recall's already
 filtered QMD pool into the model rows a local selector scores, and then maps
 the selector's ids back to recall hits. It never captures, enqueues, trains,
-writes checkpoints or creates state directories. State resolution
-(`seam._private_state`, which may mkdir), the selector itself
-(`live_select.choose`) and all diagnostics stay in `recall.py`.
+writes checkpoints or creates state directories, and stays pure. State
+resolution (`seam._private_state`, which may mkdir) and the selector itself
+(`live_select.choose`) are called by the `selection_read` coordinator; all
+diagnostics stay in `recall.py`.
 
-The error codes are a contract: recall maps any ValueError/KeyError/OSError/
-UnicodeError from here to its existing `candidate_unavailable` fallback, so
-raising the same exception types in the same order keeps public behavior
-unchanged.
+The error codes are a contract: `selection_read` maps any ValueError/
+KeyError/OSError/UnicodeError/TypeError from here to the existing
+`candidate_unavailable` fallback, so raising the same exception types in the
+same order keeps public behavior unchanged.
 """
 from __future__ import annotations
 

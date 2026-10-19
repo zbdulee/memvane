@@ -107,6 +107,16 @@ test('worker recovery coalesces canonical cwd aliases in the queue-append crash 
   } finally { removeTemp(project); }
 });
 
+test('selected Laya: a verified card for the same source revision skips paid extraction across triggers and claims', () => {
+  // Fake extractor call counts: once per content revision; unverified/stale/tampered
+  // cards, pending or corrupt refresh ledgers, symlinks and the legacy route never skip.
+  const run = spawnSync('python3', ['-B', 'test/fixtures/wiki-compile-revision-skip-checks.py'], {
+    cwd: process.cwd(), encoding: 'utf8', timeout: 60000,
+    env: { ...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1' },
+  });
+  assert.equal(run.status, 0, run.stderr || run.stdout);
+});
+
 test('worker runs the engine backend argv, writes generated wiki page, and stays silent', () => {
   const extractor = join(mkdtempSync(join(tmpdir(), 'extractor-')), 'extract.py');
   writeFileSync(extractor, `#!/usr/bin/env python3

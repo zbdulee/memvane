@@ -289,11 +289,68 @@ with temp_context as temp:
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     assert sync.run(str(dual), session_start=session, json_output=True) == 0
-                assert json.loads(output.getvalue())['compileQueued'] == 1
+                dual_result = json.loads(output.getvalue())
+                assert dual_result['compileQueued'] == 1
+                assert 'compileWakePending' not in dual_result, dual_result
             queue = dual / '.auto-context' / 'compile' / 'source-queue.jsonl'
             records = [json.loads(line) for line in queue.read_text().splitlines()]
             assert [row['source']['path'] for row in records] == ['docs/same.md'] * 2
             assert [row['trigger'] for row in records] == ['post_sync_source', 'session_start_source']
+
+            # Stage 3: SessionStart enqueues, then the snapshot write fails. The
+            # retry must not append the same-revision row again (compileQueued
+            # stays a truthful 0) but must still ask update.sh to kick.
+            retry = home / 'retry-wake'
+            (retry / 'docs').mkdir(parents=True)
+            retry_file = retry / 'docs' / 'one.md'
+            retry_file.write_text('Revision one.\n')
+            retry_settings = retry / '.auto-context' / 'settings.json'
+            retry_settings.parent.mkdir()
+            retry_base = {
+                'indexing': True, 'collections': ['retry-docs'],
+                'collectionPaths': {'retry-docs': 'docs'},
+                'collectionRoles': {'retry-docs': 'raw'},
+                'compile': {'mode': 'off'},
+            }
+            retry_settings.write_text(json.dumps(retry_base))
+            code, result, _ = invoke(retry, session_start=True)
+            assert (code, result['reason']) == (0, 'baseline'), result
+            retry_state = Path(result['statePath'])
+            baseline_state = retry_state.read_bytes()
+            retry_settings.write_text(json.dumps({**retry_base, 'compile': {
+                'mode': 'auto-wiki', 'triggers': ['session_start_source']}}))
+            retry_file.write_text('Revision two.\n')
+            retry_queue = retry / '.auto-context' / 'compile' / 'source-queue.jsonl'
+            with mock.patch.object(sync, 'write_state_atomic',
+                                   side_effect=OSError('synthetic persist failure')):
+                try:
+                    invoke(retry, session_start=True)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError('snapshot persist failure must not be silent')
+            assert retry_state.read_bytes() == baseline_state
+            enqueued = retry_queue.read_bytes()
+            rows = [json.loads(line) for line in enqueued.decode().splitlines()]
+            assert [row['source']['path'] for row in rows] == ['docs/one.md'], rows
+            assert rows[0]['trigger'] == 'session_start_source' and rows[0].get('contentRevision'), rows
+
+            code, retried, errors = invoke(retry, session_start=True)
+            assert (code, retried['reason'], errors) == (0, 'synced', ''), retried
+            assert retried['updated'] == 1, retried
+            assert (retried['compileQueued'], retried['compileDeferred']) == (0, 0), retried
+            assert retried['compileReason'] == 'no_sources', retried
+            assert retried['compileWakePending'] is True, retried
+            assert retry_queue.read_bytes() == enqueued, 'same-revision row must not be appended again'
+            assert retry_state.read_bytes() != baseline_state, 'retry must advance the snapshot'
+            retry_out = original_env.get('QMD_SESSIONSTART_RETRY_OUT')
+            if retry_out:
+                Path(retry_out).write_text(json.dumps(retried))
+
+            code, settled, _ = invoke(retry, session_start=True)
+            assert (code, settled['reason'], settled['compileQueued']) == (0, 'unchanged', 0), settled
+            assert 'compileWakePending' not in settled, settled
+            assert retry_queue.read_bytes() == enqueued
     finally:
         os.environ.clear(); os.environ.update(original_env)
 print('sessionstart-sync-ok')

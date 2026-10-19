@@ -139,7 +139,7 @@ def _drain(selected,auto,deadline):
   lease=lambda:maintenance.locks_status(locks,alive=E.alive),deadline=deadline)
 
 def _source_snapshot(root,request,deadline):
- _pin(root,request);result={};identity=V.file_identity
+ _pin(root,request);result={}
  for name,owner in request['collections'].items():
   if not owner['indexed']:continue
   base=Path(owner['path']);files={};result[name]=files
@@ -161,11 +161,11 @@ def _source_snapshot(root,request,deadline):
       for chunk in iter(lambda:handle.read(1024*1024),b''):
        if time.monotonic()>=deadline:raise TimeoutError('install_source_snapshot_deadline')
        digest.update(chunk)
-      if identity(before)!=identity(os.fstat(handle.fileno())) or identity(before)!=identity(path.stat()):
+      if not V.same_source_identity(before,os.fstat(handle.fileno())) or not V.same_source_identity(before,path.stat()):
        raise maintenance.UnstableSourceSnapshot('source_changed_while_hashing')
      # Content can return A→B→A after a worker indexed B. Identity/mtime/ctime
      # still show that the supposedly stable indexing window changed.
-     files[path.relative_to(base).as_posix()]={'sha256':digest.hexdigest(),'identity':list(identity(before))}
+     files[path.relative_to(base).as_posix()]=V.source_entry(digest.hexdigest(),before)
   except OSError as exc:raise maintenance.UnstableSourceSnapshot('source_scan_changed') from exc
  return result
 
@@ -193,7 +193,7 @@ def _ensure_vectors(root,selected,request,row,auto,deadline):
  attempts=0;waits=0
  for _ in range(2):
   report=_vector_report(selected,request)
-  if not report['defects']:return report,attempts,waits
+  if V.vectors_complete(report):return report,attempts,waits
   remaining=deadline-time.monotonic()
   if remaining<=0:raise TimeoutError('physical_vector_repair_deadline')
   with qmd_write_fence.hold(min(30,remaining)) as verify:
@@ -207,9 +207,9 @@ def _ensure_vectors(root,selected,request,row,auto,deadline):
     if (index.stat().st_dev,index.stat().st_ino)!=identity:raise ValueError('vector_repair_index_changed')
     vector_integrity.load_vectors(db,R.select());names,model,fp=_vector_scope(selected,request)
     report=vector_integrity.audit(db,names,model,fp,request['dimension'])
-    if not report['defects']:
+    if V.vectors_complete(report):
      db.rollback();return report,attempts,waits
-    row['vectorRepair']={'phase':'intent','store':selected['generation'],'model':model,'fingerprint':fp,'hashes':[v['hash'] for v in report['defects']]};_save(auto,row)
+    row['vectorRepair']=V.vector_repair_intent(selected['generation'],model,fp,report);_save(auto,row)
     vector_integrity.invalidate(db,names,model,fp,request['dimension']);_pin(root,request);verify();db.commit()
     row['vectorRepair']['phase']='metadata_invalidated';_save(auto,row)
    finally:
@@ -219,8 +219,7 @@ def _ensure_vectors(root,selected,request,row,auto,deadline):
    row['vectorRepair']['phase']='enqueued';_save(auto,row)
   result=_drain(selected,auto,deadline);attempts+=result['attempts'];waits+=result['waits']
   if result['status']=='deferred':raise TimeoutError('physical_vector_maintenance_deferred:'+result['reason'])
- report=_vector_report(selected,request)
- if report['defects']:raise ValueError('physical_vectors_still_incomplete')
+ report=V.require_complete_vectors(_vector_report(selected,request),'physical_vectors_still_incomplete')
  return report,attempts,waits
 
 def _readiness(root,selected,request,deadline):
@@ -232,8 +231,7 @@ def _readiness(root,selected,request,deadline):
  route=qmd_route.project_paths(root,isolated=True,reject_conflicts=True)
  if route['generation']!=selected['generation'] or setup_guard.status(root)['status']!='ready':raise ValueError('install_hook_route_not_ready')
  runtime=R.select();env={**_environment(selected),**{k:selected[k] for k in ('INDEX_PATH','QMD_CONFIG_DIR','XDG_CACHE_HOME')}}
- vector_report=_vector_report(selected,request)
- if vector_report['defects']:raise ValueError('physical_vectors_incomplete')
+ V.require_complete_vectors(_vector_report(selected,request),'physical_vectors_incomplete')
  searches={};counts={}
  with sqlite_read.connect(selected['INDEX_PATH']) as db:
   if db.execute('PRAGMA quick_check').fetchone()[0]!='ok':raise ValueError('install_index_integrity_failed')
@@ -252,8 +250,7 @@ def _readiness(root,selected,request,deadline):
  if time.monotonic()>=deadline:raise TimeoutError('install_readiness_deadline')
  current=E.read()
  if current['pid']!=endpoint['pid'] or not E.healthy(current['port'],current['url']):raise TimeoutError('install_endpoint_changed_or_not_ready')
- vector_report=_vector_report(selected,request)
- if vector_report['defects']:raise ValueError('physical_vectors_changed_during_readiness')
+ vector_report=V.require_complete_vectors(_vector_report(selected,request),'physical_vectors_changed_during_readiness')
  return {'guard':'ready','store':selected['generation'],'runtime':runtime['generation'],'endpoint':current['url'],'daemonPid':current['pid'],'quickCheck':'ok','scopedSearchCounts':searches,'documents':counts,'physicalVectorAudit':True,'vectorCoverage':vector_report}
 
 def install(args):

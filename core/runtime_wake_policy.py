@@ -1,9 +1,10 @@
 """Pure wake decisions for runtime_work: validation, ordering, retry and ACK.
 
-No I/O lives here. runtime_work owns SQLite, the dispatch lease, admission and
-handler side effects; this module only answers "is this wake well-formed",
-"which due wake runs next", "did the handler finish" and "when does a failed
-attempt come back". Keeping the answers pure lets tests pin the old retry/busy
+No I/O lives here. runtime_work owns SQLite, the dispatch lease and admission
+sampling; runtime_handlers owns handler side effects. This module only answers
+"is this wake well-formed", "does this kind wait for compute admission", "which
+due wake runs next", "did the handler finish" and "when does a failed attempt
+come back". Keeping the answers pure lets tests pin the old retry/busy
 semantics without a database or a real handler.
 """
 from __future__ import annotations
@@ -52,6 +53,16 @@ def wake_key(kind, target):
 def capacity_limit(kind, max_wakes=MAX_WAKES):
     """Row count at which a *new* wake is refused; one slot stays reserved for index."""
     return max_wakes if kind == 'index' else max_wakes - 1
+
+
+def needs_compute_admission(kind):
+    """Only learning/auto wait for the shared compute admission before dispatch.
+
+    The wake is only a dispatch hint. Index/update/cleanup and Laya work have
+    their own admission and retained content queues in their handlers, so a
+    training-sized memory reserve must not hold those wakes here.
+    """
+    return kind in ('learning', 'auto')
 
 
 def due_rows(rows, now):

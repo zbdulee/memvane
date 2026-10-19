@@ -60,6 +60,67 @@ def row(path="docs/a.md", body="alpha\n# quoted heading", **changes):
     return result
 
 
+V2_PROOF = {"productRouteAllowed": True, "selectionEpoch": 3,
+            "vectorProfile": VECTOR_PROFILE,
+            "providerManifest": {"approvedProviderId": "synthetic-provider"}}
+V2_BUILT = {"generalTerms": ["alpha", "beta", "gamma"], "epTerms": [], "identifiers": []}
+
+
+def v2_decision(project="/synthetic/project"):
+    settings = {"topN": 3, "lexicalPatterns": [], "recallStrategy": "hierarchical",
+                "minScore": 0, "rawFallbackMinScore": 0, "skipPaths": []}
+    roots = {"raw": project + "/docs", "wiki": project + "/wiki"}
+    return {**DECISION,
+            "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+            "projectRoot": project, "dbPath": "/synthetic/index.sqlite",
+            "queuePath": "/synthetic/queue.sqlite", "dbIncarnation": "a" * 32,
+            "vectorProfile": VECTOR_PROFILE, "collectionRoots": roots,
+            "collections": [{"name": name, "role": name, "sourceRoot": root}
+                            for name, root in roots.items()],
+            "recallSettings": settings}
+
+
+def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
+                    provider_calls=None):
+    """Run selected v2 recall with fake journal/runtime/source; return the failure."""
+    from contextlib import ExitStack, nullcontext
+    import config
+    import keywords
+    import laya_install_journal
+    import laya_index_runtime
+    import laya_local_embed_provider
+    import laya_index_source_port as source_port
+    import runtime_work
+    calls = [] if provider_calls is None else provider_calls
+
+    def provider(*args):
+        calls.append(args)
+        raise AssertionError("provider must not run on a stale view")
+
+    runtime = SimpleNamespace(index=index or FakeIndex(), scope=SCOPE, source_root=ROOT)
+    with ExitStack() as stack:
+        enter = stack.enter_context
+        journal = enter(patch.object(laya_install_journal, "verify_selected_route",
+                                     side_effect=verify))
+        enter(patch.object(laya_index_runtime, "LayaIndexRuntime",
+                           return_value=nullcontext(runtime)))
+        enter(patch.object(laya_local_embed_provider, "ReviewedLocalQmdProvider",
+                           return_value=provider))
+        enter(patch.object(config, "load_project_config",
+                           return_value=dict(decision["recallSettings"])))
+        enter(patch.object(keywords, "build_lexical_terms", return_value=V2_BUILT))
+        enter(patch.object(source_port, "_seal",
+                           return_value=(SCOPE, "generation-7", "sealed-manifest")))
+        enter(patch.object(source_port, "scan_collections", side_effect=scan))
+        requested = (enter(patch.object(runtime_work, "request", side_effect=request))
+                     if request is not None else None)
+        try:
+            response.serve_selected("recall", "claude", decision, {"prompt": "find alpha"})
+        except Exception as exc:
+            return exc, requested, journal, runtime.index
+    raise AssertionError("stale recall returned a host payload")
+
+
 class ResponseChecks(unittest.TestCase):
     def assert_rejected(self, code, rows, decision=DECISION):
         with self.assertRaises(response.HostResponseError) as caught:
@@ -463,6 +524,177 @@ class ResponseChecks(unittest.TestCase):
                          [('wiki',), ('raw',)])
         self.assertTrue(index.released)
 
+    # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
+    # Expected slices are literal bytes of SPAN_SOURCE, not recomputed by the
+    # module under test.
+    SPAN_SOURCE = b'alpha\nport is 8080\nomega\n'
+
+    def span_project(self, temp):
+        project = Path(temp).resolve()
+        (project / 'docs').mkdir()
+        (project / 'wiki').mkdir()
+        source = project / 'docs' / 'a.md'
+        source.write_bytes(self.SPAN_SOURCE)
+        revision = {'kind': 'file', 'path': 'docs/a.md', 'collection': 'raw',
+                    'sha256': hashlib.sha256(self.SPAN_SOURCE).hexdigest(),
+                    'size': source.stat().st_size, 'mtimeNs': source.stat().st_mtime_ns}
+        return project, revision, v2_decision(str(project))
+
+    @staticmethod
+    def span_entry(path, source_sha, start, end, slice_bytes, start_token=None):
+        return ('  - {path: "%s", sourceSha256: "%s", startLine: %s, endLine: %d, '
+                'spanSha256: "%s"}\n' % (path, source_sha, start_token or start, end,
+                                         hashlib.sha256(slice_bytes).hexdigest()))
+
+    @staticmethod
+    def span_card(revision, spans_text=''):
+        import yaml_scalars
+        frontmatter = ('---\ntitle: Synthetic card\nstatus: verified\n'
+                       'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                       + json.dumps(revision) + '\n' + spans_text
+                       + 'verifiedBodyHash: {digest}\n---\n## Summary\nSource fact.\n')
+        digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
+        return row(path='wiki/card.md', body=frontmatter.replace('{digest}', digest))
+
+    def test_v2_wiki_source_spans_are_checked_against_current_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-ok-') as temp:
+            project, revision, decision = self.span_project(temp)
+            sha = revision['sha256']
+            single = 'sourceSpans:\n' + self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n')
+            multi = 'sourceSpans:\n' + self.span_entry('docs/a.md', sha, 2, 3,
+                                                       b'port is 8080\nomega\n')
+            for spans_text, expected in ((single, ('docs/a.md#L2-L2',)),
+                                         (multi, ('docs/a.md#L2-L3',))):
+                located = {}
+                self.assertTrue(response._verified_wiki_row(
+                    self.span_card(revision, spans_text), decision, frozenset(), located))
+                self.assertEqual(located, {'wiki/card.md': expected})
+            # Legacy card without the key: accepted, file-level only.
+            located = {}
+            self.assertTrue(response._verified_wiki_row(
+                self.span_card(revision), decision, frozenset(), located))
+            self.assertEqual(located, {})
+            # Same line bytes, but the revision moved: the whole card is stale.
+            (project / 'docs' / 'a.md').write_bytes(b'new\n' + self.SPAN_SOURCE)
+            self.assertFalse(response._verified_wiki_row(
+                self.span_card(revision, single), decision))
+
+    def test_v2_wiki_bad_or_stale_source_spans_reject_the_card(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-bad-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            sha = revision['sha256']
+            good = self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n')
+            cases = {
+                'wrong_slice_hash': self.span_entry('docs/a.md', sha, 2, 2, b'alpha\n'),
+                'past_last_line': self.span_entry('docs/a.md', sha, 4, 4, b''),
+                'path_not_a_revision': self.span_entry('docs/b.md', sha, 2, 2, b'port is 8080\n'),
+                'other_revision_sha': self.span_entry('docs/a.md', 'c' * 64, 2, 2,
+                                                      b'port is 8080\n'),
+                'quoted_line_number': self.span_entry('docs/a.md', sha, 2, 2, b'port is 8080\n',
+                                                      start_token='"2"'),
+                'duplicate_entry': good + good,
+            }
+            for name, entries in cases.items():
+                with self.subTest(name=name):
+                    located = {}
+                    self.assertFalse(response._verified_wiki_row(
+                        self.span_card(revision, 'sourceSpans:\n' + entries),
+                        decision, frozenset(), located))
+                    self.assertEqual(located, {})
+            for name, text in {'duplicate_header': 'sourceSpans:\n' + good + 'sourceSpans:\n' + good,
+                               'inline_value': 'sourceSpans: []\n',
+                               'empty_list': 'sourceSpans:\n'}.items():
+                with self.subTest(name=name):
+                    self.assertFalse(response._verified_wiki_row(
+                        self.span_card(revision, text), decision))
+
+    def test_v2_source_locations_follow_returned_wiki_rows_only(self):
+        import wiki_freshness
+        with tempfile.TemporaryDirectory(prefix='laya-span-query-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            good = self.span_card(revision, 'sourceSpans:\n' + self.span_entry(
+                'docs/a.md', revision['sha256'], 2, 2, b'port is 8080\n'))
+            tampered = self.span_card(revision, 'sourceSpans: []\n')
+            for card, expect_path, expect_locations in (
+                    (good, 'wiki/card.md', {'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                    (tampered, 'docs/a.md', {})):
+                with self.subTest(expect=expect_path):
+                    runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+                    located = {}
+                    with patch.object(response, '_v2_phase', side_effect=[
+                            ([card], True), ([row(path='docs/a.md')], True)]), \
+                         patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
+                                      return_value=[]):
+                        found, _title_only = response.query_selected_v2(
+                            runtime, 'find port', VECTOR_PROFILE, VECTOR_PROFILE,
+                            lambda *_: None, decision, source_locations=located)
+                    self.assertEqual([item['path'] for item in found], [expect_path])
+                    self.assertEqual(located, expect_locations)
+
+    def test_render_source_locations_are_metadata_not_quoted_body(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-render-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            raw_row = row(path='docs/a.md', body='port is 8080\n')
+            text = response.render_context(
+                decision, [card, raw_row], ranking='hybrid_rrf',
+                source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+            lines = text.split('\n')
+            meta = ('  source lines cited by verifier (excerpt locations, not per-claim proof): '
+                    '"docs/a.md#L2-L2"')
+            self.assertIn(meta, lines)
+            self.assertEqual(lines[lines.index(meta) - 1], '  | title: Synthetic card')
+            self.assertFalse(any(line.startswith('  | ') and '#L2' in line for line in lines))
+            many = tuple(f'docs/a.md#L{n}-L{n}' for n in range(1, 6))
+            self.assertIn('"docs/a.md#L3-L3" (+2 more)', response.render_context(
+                decision, [card], source_locations={'wiki/card.md': many}))
+            self.assertEqual(response.render_context(decision, [card]),
+                             response.render_context(decision, [card], source_locations={}))
+            bad = {
+                'raw_row': ([raw_row], {'docs/a.md': ('docs/a.md#L2-L2',)}),
+                'absent_row': ([card], {'wiki/other.md': ('docs/a.md#L2-L2',)}),
+                'no_rows': ([], {'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                'quote_in_path': ([card], {'wiki/card.md': ('docs/a"b.md#L1-L1',)}),
+                'newline_in_path': ([card], {'wiki/card.md': ('docs/a\nb.md#L1-L1',)}),
+                'reversed': ([card], {'wiki/card.md': ('docs/a.md#L3-L2',)}),
+                'absolute': ([card], {'wiki/card.md': ('/etc/a.md#L1-L1',)}),
+                'list_value': ([card], {'wiki/card.md': ['docs/a.md#L2-L2']}),
+                'empty_value': ([card], {'wiki/card.md': ()}),
+            }
+            for name, (rows, locations) in bad.items():
+                with self.subTest(name=name):
+                    with self.assertRaises(response.HostResponseError) as caught:
+                        response.render_context(decision, rows, source_locations=locations)
+                    self.assertEqual(str(caught.exception), 'invalid_source_locations')
+
+    def test_gated_title_only_card_gets_no_source_locator(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-gated-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            text = response.render_context(
+                decision, [card], ranking='hybrid_rrf',
+                title_only_paths=frozenset({'wiki/card.md'}),
+                source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+            self.assertIn('  | title: Synthetic card', text.split('\n'))
+            self.assertNotIn('docs/a.md#L2', text)
+            self.assertNotIn('source lines cited by verifier', text)
+
+    def test_render_drops_every_location_rather_than_exceed_context_budget(self):
+        with tempfile.TemporaryDirectory(prefix='laya-span-budget-') as temp:
+            _project, revision, decision = self.span_project(temp)
+            card = self.span_card(revision)
+            plain = response.render_context(decision, [card])
+            budget = len(plain.encode('utf-8'))
+            with patch.object(response, 'MAX_CONTEXT_BYTES', budget):
+                self.assertEqual(response.render_context(
+                    decision, [card], source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)}),
+                    plain)
+            with patch.object(response, 'MAX_CONTEXT_BYTES', budget - 1):
+                with self.assertRaises(response.HostResponseError) as caught:
+                    response.render_context(
+                        decision, [card], source_locations={'wiki/card.md': ('docs/a.md#L2-L2',)})
+                self.assertEqual(str(caught.exception), 'result_context_too_large')
+
     def test_fts_atom_matches_qmd_compound_and_cjk_policy(self):
         self.assertEqual(response._fts_atom('PIO-1384'), '"pio 1384"')
         self.assertEqual(response._fts_atom('한국어'), '"한 국 어"')
@@ -535,6 +767,195 @@ class ResponseChecks(unittest.TestCase):
             with self.assertRaisesRegex(IndexContractError, '^fts_deadline_exceeded$'):
                 response._v2_phase(runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE,
                                    lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+
+    def test_only_completed_scan_vs_seal_mismatch_is_wakeable_stale(self):
+        import laya_index_source_port as source_port
+        from laya_index_a import IndexContractError
+        runtime = SimpleNamespace(index=FakeIndex())
+        with patch.object(source_port, '_seal',
+                          return_value=(SCOPE, 'generation-7', 'sealed-manifest')), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='live-manifest')):
+            with self.assertRaises(IndexContractError) as caught:
+                response._v2_phase(runtime, 'token', 'alpha', VECTOR_PROFILE,
+                                   lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
+        # The outward contract stays index_stale; only the cause is marked.
+        self.assertEqual(str(caught.exception), 'index_stale')
+        self.assertTrue(response._is_sealed_manifest_stale(caught.exception))
+        others = []
+        for detail in ('too many files', 'oversize: raw/a.md',
+                       'changed during read: raw/a.md', 'malformed view seal',
+                       'search row does not match source',
+                       'collection manifest differs from view seal'):
+            try:
+                source_port._raise_stale(detail)
+            except IndexContractError as exc:
+                others.append((detail, exc))
+        others += [('no cause', IndexContractError('index_stale')),
+                   ('fts', IndexContractError('fts_deadline_exceeded')),
+                   ('host', response.HostResponseError('index_stale'))]
+        for name, exc in others:
+            with self.subTest(case=name):
+                self.assertFalse(response._is_sealed_manifest_stale(exc))
+
+    def test_v2_stale_recall_queues_sync_without_rows_or_provider(self):
+        decision = v2_decision()
+        provider_calls = []
+        exc, requested, journal, index = serve_v2_recall(
+            decision, verify=lambda _d: V2_PROOF,
+            scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'),
+            request=lambda *_a: {'status': 'queued'}, provider_calls=provider_calls)
+        self.assertIsInstance(exc, response.HostResponseError)
+        self.assertEqual(str(exc), 'index_stale_sync_queued')
+        requested.assert_called_once_with('laya-sync', '/synthetic/project')
+        # Initial proof, recheck before the wake, recheck after it.
+        self.assertEqual(journal.call_count, 3)
+        self.assertEqual(provider_calls, [])
+        self.assertTrue(index.released)
+        # A running owner may advance the journal epoch before request returns.
+        advanced = {**V2_PROOF, 'selectionEpoch': 4}
+        exc, requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, V2_PROOF, advanced],
+            scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'),
+            request=lambda *_a: {'status': 'busy'})
+        self.assertEqual(str(exc), 'index_stale_sync_queued')
+
+    def test_v2_stale_recall_reports_unavailable_wake_and_rechecks_proof(self):
+        decision = v2_decision()
+        live = lambda *_a, **_k: SimpleNamespace(manifest='live-manifest')
+        # None is runtime_work.request's fixture/sandbox no-op return.
+        for name, request in (('fixture', lambda *_a: None),
+                              ('raised', OSError('synthetic queue failure')),
+                              ('capacity', lambda *_a: {'status': 'deferred_queue_capacity'})):
+            with self.subTest(case=name):
+                exc, requested, _journal, _index = serve_v2_recall(
+                    decision, verify=lambda _d: V2_PROOF, scan=live, request=request)
+                self.assertIsInstance(exc, response.HostResponseError)
+                self.assertEqual(str(exc), 'index_stale_sync_unavailable')
+                requested.assert_called_once_with('laya-sync', '/synthetic/project')
+        changed = {**V2_PROOF, 'productRouteAllowed': False}
+        exc, requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, changed], scan=live,
+            request=lambda *_a: {'status': 'queued'})
+        self.assertEqual(str(exc), 'selected_proof_changed')
+        requested.assert_not_called()
+        regressed = {**V2_PROOF, 'selectionEpoch': 2}
+        exc, _requested, _journal, _index = serve_v2_recall(
+            decision, verify=[V2_PROOF, V2_PROOF, regressed], scan=live,
+            request=lambda *_a: {'status': 'queued'})
+        self.assertEqual(str(exc), 'selected_proof_changed')
+
+    def test_v2_budget_row_corruption_and_legacy_stale_do_not_wake(self):
+        import laya_index_source_port as source_port
+        from laya_index_a import IndexContractError
+        decision = v2_decision()
+
+        def budget(*_a, **_k):
+            source_port._raise_stale('too many files')
+
+        class CorruptRowIndex(FakeIndex):
+            def search_many(self, token, queries, limit, **kwargs):
+                return [[{'scope': SCOPE, 'generation': 'generation-7',
+                          'path': 'wiki/a.md', 'hash': '0' * 64, 'score': 0.1}]
+                        for _ in queries]
+
+        cases = {'budget': (budget, None),
+                 'row': (lambda *_a, **_k: SimpleNamespace(manifest='sealed-manifest',
+                                                           by_path={}),
+                         CorruptRowIndex())}
+        for name, (scan, index) in cases.items():
+            with self.subTest(case=name):
+                exc, requested, journal, used = serve_v2_recall(
+                    decision, verify=lambda _d: V2_PROOF, scan=scan, index=index,
+                    request=lambda *_a: {'status': 'queued'})
+                # Unchanged generic failure: main maps it to
+                # selected_proof_or_query_failed, never to a sync diagnostic.
+                self.assertIs(type(exc), IndexContractError)
+                self.assertEqual(str(exc), 'index_stale')
+                requested.assert_not_called()
+                self.assertEqual(journal.call_count, 1)
+                self.assertTrue(used.released)
+        # Legacy v1 keeps its behavior even for a marked cause.
+        import laya_install_journal
+        import laya_index_runtime
+        import laya_local_embed_provider
+        import config
+        import runtime_work
+        from contextlib import nullcontext
+        try:
+            raise IndexContractError('index_stale') from response._SealedManifestMismatch('x')
+        except IndexContractError as marked:
+            legacy_stale = marked
+        legacy = {key: value for key, value in decision.items()
+                  if key not in ('collections', 'collectionRoots', 'recallSettings')}
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=V2_PROOF), \
+             patch.object(laya_index_runtime, 'LayaIndexRuntime',
+                          return_value=nullcontext(runtime)), \
+             patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider'), \
+             patch.object(config, 'load_project_config',
+                          return_value={'topN': 3, 'lexicalPatterns': []}), \
+             patch.object(response, 'query_selected_hybrid', side_effect=legacy_stale), \
+             patch.object(runtime_work, 'request') as requested:
+            with self.assertRaises(IndexContractError):
+                response.serve_selected('recall', 'claude', legacy, {'prompt': 'find alpha'})
+        requested.assert_not_called()
+
+    def test_repeated_stale_recall_coalesces_in_existing_wake_queue(self):
+        import os
+        import runtime_work
+        decision = v2_decision()
+        real_queue = runtime_work.WakeQueue
+        with tempfile.TemporaryDirectory(prefix='laya-stale-wake-') as temp:
+            state = Path(temp).resolve()
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('QMD_SETUP_GUARD_FIXTURE', 'QMD_SANDBOX')}
+            env['QMD_RUNTIME_DISPATCH'] = '1'
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(runtime_work, 'WakeQueue',
+                              lambda root=None: real_queue(state)), \
+                 patch.object(runtime_work, 'wake') as spawned:
+                for _ in range(5):
+                    exc, _requested, _journal, index = serve_v2_recall(
+                        decision, verify=lambda _d: V2_PROOF,
+                        scan=lambda *_a, **_k: SimpleNamespace(manifest='live-manifest'))
+                    self.assertEqual(str(exc), 'index_stale_sync_queued')
+                    self.assertTrue(index.released)
+                spawned.assert_not_called()
+            wakes = real_queue(state).pending()
+        self.assertEqual([(item['kind'], item['target'], item['status'])
+                          for item in wakes],
+                         [('laya-sync', '/synthetic/project', 'pending')])
+        self.assertEqual(wakes[0]['revision'], 5)
+
+    def test_main_reports_stale_sync_codes_with_exit_3_and_no_fallback(self):
+        import contextlib
+        import io
+        from laya_index_a import IndexContractError
+        selection = {'state': 'candidate'}
+        with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
+            payload = Path(temp) / 'payload.json'
+            payload.write_text(json.dumps({'prompt': 'find alpha', 'cwd': temp}),
+                               encoding='utf-8')
+            for raised, code in (
+                    (response.HostResponseError('index_stale_sync_queued'),
+                     'index_stale_sync_queued'),
+                    (response.HostResponseError('index_stale_sync_unavailable'),
+                     'index_stale_sync_unavailable'),
+                    (IndexContractError('index_stale'), 'selected_proof_or_query_failed')):
+                with self.subTest(code=code):
+                    out, err = io.StringIO(), io.StringIO()
+                    with patch.object(response, 'select_hook_route', return_value=selection), \
+                         patch.object(response, 'select_route', return_value=selection), \
+                         patch.object(response, 'serve_selected', side_effect=raised), \
+                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        status = response.main(['serve-hook', 'recall', 'claude',
+                                                str(payload), temp])
+                    self.assertEqual(status, 3)
+                    self.assertEqual(out.getvalue(), '')
+                    self.assertEqual(err.getvalue(),
+                                     f'[laya-index] {code}; QMD fallback refused\n')
 
 
 if __name__ == "__main__":

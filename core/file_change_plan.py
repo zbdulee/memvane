@@ -45,6 +45,20 @@ def plan_collection(previous_files, scanned_files, unknown=()):
     return files, created, updated, deleted
 
 
+def content_revisions(files, rels):
+    """`{rel: sha256}` for the given paths whose scanned meta carries a hash.
+
+    Only hashed scans (SessionStart sync, the file-change worker) record
+    `sha256`; a path without one simply has no revision.
+    """
+    revisions = {}
+    for rel in rels:
+        digest = (files.get(rel) or {}).get("sha256")
+        if isinstance(digest, str) and digest:
+            revisions[rel] = digest
+    return revisions
+
+
 def plan_change_set(entries, is_indexed=None):
     """Combine per-collection plans into one change set without side effects.
 
@@ -54,6 +68,11 @@ def plan_change_set(entries, is_indexed=None):
     `is_indexed(name)` accepts (every changed one when None) to their root;
     `changedFiles` keeps every changed collection, including `source` roles
     that the wiki reads but QMD does not index.
+
+    A changed collection gains `revisions` (`{rel: sha256}`) only when the
+    scan hashed some created/updated file. It lives in this in-memory change
+    set alone; snapshots are persisted from `collections`, so an unhashed
+    (manual) sync produces exactly the entry it did before.
     """
     collections, changed_files, index_targets = {}, {}, {}
     totals = {"created": 0, "updated": 0, "deleted": 0}
@@ -66,6 +85,9 @@ def plan_change_set(entries, is_indexed=None):
         if created or updated or deleted:
             changed_files[name] = {"root": root, "created": created,
                                    "updated": updated, "deleted": deleted}
+            revisions = content_revisions(files, created + updated)
+            if revisions:
+                changed_files[name]["revisions"] = revisions
             if is_indexed is None or is_indexed(name):
                 index_targets[name] = root
         collections[name] = {"root": root, "files": files}

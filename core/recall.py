@@ -2872,89 +2872,30 @@ def _main():
     # The normal path retains topN. The local selector sees the exact bounded
     # QMD pool that optional capture records, with no synthetic padding.
     # Any missing/invalid local prerequisite restores the bounded QMD choice.
-    final_results = filtered_results[:min(top_n, 3) if live_selection else top_n]
+    final_results = filtered_results[:top_n]
     live_reason = 'disabled'
     live_chose_zero = False
     if live_selection:
-        candidate_count = min(len(filtered_results), primary_limit)
-        resources = {}
-        current_corpus = None
-        model_rows = []
-        work_estimate = {}
-        try:
-            from context_learning.corpus import snapshot as corpus_snapshot
-            from context_learning.live_select import choose
-            from context_learning.seam import _private_state, _snapshot
-            from context_learning import selection_port
-            state = _private_state(config, card_roots[0])
-            shared_state = None
-            if shared_trial:
-                from context_learning.shared import _current_config, _policy, _safe_root
-                shared_state = _safe_root(config, card_roots[0])
-                if shared_state is not None:
-                    _policy(shared_state)
-                    if shared_profile:
-                        from context_learning.learning_profile import selection_root
-                        shared_state=selection_root(config,card_roots[0])
-                    elif _current_config(shared_state, card_roots[0]) is None:shared_state = None
-            current_corpus = corpus_snapshot(card_roots[0], config, qmd_paths=qmd_paths)
-            indexed_hashes = selection_port.indexed_revisions(current_corpus)
-            if shared_trial and live_plan['requested'] == 0:
-                live_reason = live_plan['reason']
-            elif shared_trial and shared_state is None:
-                live_reason = 'shared_state_unavailable'
-            elif state is None and shared_state is None:
-                live_reason = 'private_state_unavailable'
-            elif (pool_reason := selection_port.pool_rejection(
-                    filtered_results, primary_limit,
-                    lambda collection: qmd_config.is_wiki_collection(roles, collection))) is not None:
-                live_reason = pool_reason
-            else:
-                # Read-only port: all-or-nothing rows from the bounded pool.
-                model_rows = selection_port.candidate_rows(
-                    filtered_results, primary_limit,
-                    resolve_path=lambda hit: resolve_wiki_result_path(hit, config, cwd, card_roots),
-                    snapshot=_snapshot, indexed=indexed_hashes)
-                if shared_trial:
-                    from context_learning.adaptive_pool import actual_work
-                    from context_learning.compact_input import derive
-                    bodies = [derive(row['source_text'], row['revision_sha256'])['body_text']
-                              for row in model_rows]
-                    work_estimate = actual_work(prompt, bodies,
-                        edit_view=internal_edit,
-                        rerank_target_seconds=shared_options.get('rerankTargetSeconds', 1.0))
-                    if not work_estimate['all_pairs_fit_estimate']:
-                        raise ValueError('input_window_unavailable')
-                    if (internal_edit and
-                            not work_estimate['within_rerank_target_estimate']):
-                        # Preserve the complete captured QMD pool. Scoring a
-                        # shorter subset would make applied inference differ
-                        # from the gold/training candidate view.
-                        raise ValueError('responsiveness_deferred')
-                selection_kwargs = {
-                    'corpus_fingerprint': current_corpus['fingerprint'] if current_corpus else None,
-                    'deadline': hook_budget.deadline()}
-                if shared_state is not None:
-                    if shared_profile:
-                        from context_learning.candidate_apply import readable
-                        readable(shared_state)
-                    else:
-                        from context_learning.shared import trial_eligible
-                        if not trial_eligible(shared_state, deadline=hook_budget.deadline()):raise ValueError('shared_trial_not_eligible')
-                        selection_kwargs['pointer_name'] = 'experimental-checkpoint.json'
-                selected_ids, live_reason, resources = choose(
-                    shared_state if shared_state is not None else state,
-                    prompt, model_rows, **selection_kwargs)
-                if selected_ids is not None:
-                    final_results = selection_port.apply_selection(
-                        filtered_results, primary_limit, selected_ids)
-                    live_chose_zero = not selected_ids
-        except (OSError, ValueError, UnicodeError, KeyError, TypeError) as exc:
-            live_reason = (str(exc) if str(exc) in
-                           ('input_window_unavailable', 'responsiveness_deferred')
-                           else 'candidate_unavailable')
-        if shared_trial and live_reason != 'selected':
-            final_results = filtered_results[:top_n]
+        # State, consent, corpus, port and selector reads live behind one
+        # entry; the diagnostics below stay here.
+        from context_learning import selection_read
+        live = selection_read.select(
+            filtered_results, primary_limit, top_n,
+            config=config, card_root=card_roots[0], qmd_paths=qmd_paths, prompt=prompt,
+            is_wiki_collection=lambda collection: qmd_config.is_wiki_collection(roles, collection),
+            resolve_path=lambda hit: resolve_wiki_result_path(hit, config, cwd, card_roots),
+            shared_trial=shared_trial, shared_profile=shared_profile, live_plan=live_plan,
+            edit_view=internal_edit,
+            rerank_target_seconds=shared_options.get('rerankTargetSeconds', 1.0),
+            deadline=hook_budget.deadline)
+        final_results = live['final_results']
+        live_reason = live['reason']
+        live_chose_zero = live['chose_zero']
+        candidate_count = live['candidate_count']
+        resources = live['resources']
+        current_corpus = live['corpus']
+        model_rows = live['model_rows']
+        work_estimate = live['work_estimate']
         log_recall_event(log_path, live_reason, event_override='qmd_laya_selection',
                          candidates=candidate_count, selected=len(final_results),
                          requested=live_plan['requested'] if live_plan else primary_limit,

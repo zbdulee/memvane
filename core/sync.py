@@ -437,7 +437,7 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
                 if previous is None:
                     write_state_atomic(out_state, snapshot)
 
-        emit_json(json_output, {
+        result = {
             "ok": True,
             "reason": reason,
             "projectRoot": project_root,
@@ -450,7 +450,13 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
             "compileReason": compile_result["reason"],
             "statePath": str(out_state),
             "warnings": warnings,
-        })
+        }
+        # 같은 revision 행이 아직 live 큐에 있어 건너뛴 재시도(예: enqueue 뒤 스냅샷 저장
+        # 실패)는 compileQueued=0이지만 깨울 작업은 남아 있다. 그때만 내부 신호를 덧붙여
+        # update.sh가 compile worker를 kick하게 한다. 그 밖의 출력은 바이트 그대로다.
+        if compile_result.get("wakePending"):
+            result["compileWakePending"] = True
+        emit_json(json_output, result)
         return 0
     finally:
         release_lock(lock)

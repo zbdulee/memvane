@@ -495,7 +495,7 @@ def main(argv=None):
                   'activate': lambda: coordinator.activate(args.project),
                       'rollback': lambda: coordinator.rollback(args.project)}[args.action]()
     except Exception as exc:
-        from context_learning.local_cycle import ResourceDeferred
+        from resource_deferred import ResourceDeferred
         if isinstance(exc, ResourceDeferred):
             result = {'status': 'deferred', 'reason': str(exc),
                       'changesApplied': 0}

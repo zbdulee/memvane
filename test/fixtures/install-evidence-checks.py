@@ -3,7 +3,7 @@
 No install, QMD, worker, DB or model runs. The lifecycle cases patch only the
 journal save and queue append to observe intent → enqueue → ACK ordering.
 """
-import ast,copy,json,sys,unittest
+import ast,copy,hashlib,json,os,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,6 +28,33 @@ class Pure(unittest.TestCase):
   self.assertEqual(V.file_identity(info),(1,2,3,4,5))
   later=SimpleNamespace(st_dev=1,st_ino=2,st_size=3,st_mtime_ns=4,st_ctime_ns=6)
   self.assertNotEqual(V.file_identity(info),V.file_identity(later))
+
+ def test_same_source_identity_rejects_ctime_only_change(self):
+  base=dict(st_dev=1,st_ino=2,st_size=3,st_mtime_ns=4,st_ctime_ns=5)
+  self.assertIs(V.same_source_identity(SimpleNamespace(**base),SimpleNamespace(**base)),True)
+  self.assertIs(V.same_source_identity(SimpleNamespace(**base),SimpleNamespace(**dict(base,st_ctime_ns=6))),False)
+  for field in base:
+   self.assertIs(V.same_source_identity(SimpleNamespace(**base),SimpleNamespace(**dict(base,**{field:99}))),False,field)
+
+ def test_source_entry_exact_shape(self):
+  info=SimpleNamespace(st_dev=1,st_ino=2,st_size=3,st_mtime_ns=4,st_ctime_ns=5)
+  entry=V.source_entry('ab'*32,info)
+  self.assertEqual(entry,{'sha256':'ab'*32,'identity':[1,2,3,4,5]})
+  self.assertEqual(list(entry),['sha256','identity']);self.assertIs(type(entry['identity']),list)
+  self.assertEqual(json.loads(json.dumps(entry)),entry)
+
+ def test_vector_defect_decisions(self):
+  clean={'defects':[]};bad={'defects':[{'hash':'h1','x':1},{'hash':'h2'}]}
+  self.assertIs(V.vectors_complete(clean),True);self.assertIs(V.vectors_complete(bad),False)
+  self.assertIs(V.require_complete_vectors(clean,'physical_vectors_incomplete'),clean)
+  intent=V.vector_repair_intent('gen-1','/m/embed.gguf','fp',bad)
+  self.assertEqual(intent,{'phase':'intent','store':'gen-1','model':'/m/embed.gguf','fingerprint':'fp','hashes':['h1','h2']})
+  self.assertEqual(list(intent),['phase','store','model','fingerprint','hashes'])
+
+ def test_require_complete_vectors_raises_caller_reason(self):
+  bad={'defects':[{'hash':'h'}]}
+  for reason in ('physical_vectors_still_incomplete','physical_vectors_incomplete','physical_vectors_changed_during_readiness'):
+   with self.assertRaisesRegex(ValueError,'^'+reason+'$'):V.require_complete_vectors(bad,reason)
 
  def test_source_queue_names(self):
   snap={'a-docs':{'x.md':{'sha256':'1'}},'b-docs':{}}
@@ -110,6 +137,25 @@ class Lifecycle(unittest.TestCase):
    self.assertEqual(self.si._vector_scope(None,request),(['b-docs','a-docs'],MODEL['path'],'fp'))
   with patch.object(self.si.S,'root',return_value=Path('/synthetic-store')),patch.object(self.si.S,'_private_file',return_value=Proof({'modelFingerprints':[]})):
    with self.assertRaisesRegex(ValueError,'^vector_model_identity_unproved$'):self.si._vector_scope(None,request)
+
+ def test_source_snapshot_entry_shape_and_ctime_only_instability(self):
+  # Synthetic temp collection only; _pin (settings read) is patched out.
+  with tempfile.TemporaryDirectory() as tmp:
+   path=Path(tmp)/'x.md';path.write_bytes(b'synthetic\n')
+   request={'collections':{'a-docs':{'path':tmp,'indexed':True},'wiki-src':{'path':'/p/s','indexed':False}}}
+   with patch.object(self.si,'_pin'):
+    snap=self.si._source_snapshot(Path('/root'),request,time.monotonic()+60)
+    self.assertEqual(snap,{'a-docs':{'x.md':{'sha256':hashlib.sha256(b'synthetic\n').hexdigest(),'identity':list(V.file_identity(os.stat(path)))}}})
+    real=os.fstat;calls=[]
+    def fstat(fd):
+     info=real(fd);calls.append(fd)
+     if len(calls)!=2:return info
+     # Second (post-hash) fstat differs only in ctime.
+     return SimpleNamespace(st_mode=info.st_mode,st_dev=info.st_dev,st_ino=info.st_ino,st_size=info.st_size,st_mtime_ns=info.st_mtime_ns,st_ctime_ns=info.st_ctime_ns+1)
+    with patch.object(self.si.os,'fstat',side_effect=fstat):
+     with self.assertRaisesRegex(self.si.maintenance.UnstableSourceSnapshot,'^source_changed_while_hashing$'):
+      self.si._source_snapshot(Path('/root'),request,time.monotonic()+60)
+    self.assertEqual(len(calls),2)
 
 if __name__=='__main__':
  unittest.main(verbosity=2)

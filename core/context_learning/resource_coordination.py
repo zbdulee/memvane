@@ -14,6 +14,8 @@ import time
 from . import resident
 from .local_cycle import ResourceDeferred, _atomic_json
 from .dataset import read_private_json
+# Re-exported: the same object as the neutral runtime_lease primitive.
+from runtime_lease import coordination_lock as _lock
 
 SLOTS=64
 MAX_OBSERVATION_AGE=2
@@ -22,13 +24,6 @@ RECOVERY_MAX_GAP=7
 _COMPUTE_OWNER=ContextVar('qmd_compute_owner',default=None)
 _INFERENCE_OWNER=ContextVar('qmd_inference_owner',default=None)
 _STARTUP_OWNER=ContextVar('qmd_startup_owner',default=None)
-
-
-def _lock(path):
-    fd=resident._private_lock(path)
-    if os.fstat(fd).st_nlink!=1:
-        os.close(fd);raise ValueError('unsafe_coordination_lock')
-    return fd
 
 
 def _present(path):

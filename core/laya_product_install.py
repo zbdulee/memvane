@@ -462,6 +462,67 @@ def _candidate_prepared(path, generation, scope, manifest, source_digest,
         return index.incarnation()
 
 
+def _unfinished_catalog(path):
+    """True for a catalog file left with no tables by an interrupted create.
+
+    LayaSourceCatalog creates the file first and commits its schema later, so
+    a crash in between leaves a file it refuses to open. A valid catalog
+    always has tables, so an empty schema can only be that leftover.
+    """
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as db:
+            return db.execute("SELECT COUNT(*) FROM sqlite_master "
+                              "WHERE type='table'").fetchone()[0] == 0
+    except sqlite3.Error:
+        return False
+
+
+def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
+    """Create or verify the capacity catalog and binding store beside ``db_path``.
+
+    Their presence switches the selected worker and host recall to the
+    capacity path (``laya_index_runtime.capacity_store_paths``). Idempotent:
+    an existing store is opened, which checks its scope, roots and
+    incarnation, and a mismatch fails as ``capacity_store_mismatch`` (for
+    example after the candidate DB was rebuilt); nothing is deleted then. A
+    catalog left with no schema by an interrupted create is removed and
+    created again. Both end as private regular files.
+    """
+    from contextlib import closing
+    from laya_index_a import IndexContractError
+    from laya_index_capacity import GenerationBindingStore
+    from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX,
+                                    capacity_store_paths)
+    from laya_source_catalog import LayaSourceCatalog
+    db = Path(db_path)
+    catalog = db.with_name(db.name + CATALOG_SUFFIX)
+    store = db.with_name(db.name + BINDING_STORE_SUFFIX)
+    roots = dict(roots)
+    if (os.path.lexists(catalog) and not catalog.is_symlink() and catalog.is_file()
+            and _unfinished_catalog(catalog)):
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            Path(str(catalog) + suffix).unlink(missing_ok=True)
+    try:
+        with closing(LayaSourceCatalog(catalog, roots, scope,
+                                       create=not os.path.lexists(catalog))):
+            pass
+        with closing(GenerationBindingStore(store, scope=scope,
+                                            db_incarnation=db_incarnation, roots=roots,
+                                            create=not os.path.lexists(store))):
+            pass
+    except IndexContractError:
+        _fail('capacity_store_mismatch')
+    for path in (catalog, store):
+        if not path.is_symlink() and path.is_file():
+            os.chmod(path, 0o600)
+    paths = capacity_store_paths(db)
+    if paths != (str(catalog), str(store)):
+        _fail('capacity_store_unavailable')
+    return paths
+
+
 def _publish_claim_queue(queue, incarnation):
     """Publish a complete, closed claim queue without clobbering a final path.
 
@@ -561,15 +622,21 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                              accepted_provider_sha256, user_qmd_roots,
                              model_path=None, dimension=None,
                              coordinator=None, start_service=None,
-                             provider_factory=None):
+                             provider_factory=None, capacity_stores=False):
     """Prepare a bounded, privately backed up two-collection cutover.
+
+    ``capacity_stores=True`` also creates the capacity catalog and binding
+    store beside the candidate DB. Off by default: once they exist, recall
+    serves nothing until the worker publishes the first bound generation
+    (the origin head is not bound), whereas the full-scan path serves the
+    origin head at once.
 
     This is an off-hook installer operation. It leaves QMD selected and never
     activates the product route. Existing candidate bytes are verified and
     reused; inconsistent partial state is retained for explicit recovery.
     """
     from contextlib import closing
-    from context_learning.local_cycle import ResourceDeferred
+    from resource_deferred import ResourceDeferred
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
     from laya_index_a import LayaIndexA
@@ -718,6 +785,24 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                     _fail('partial_queue_requires_recovery')
         else:
             _publish_claim_queue(queue, incarnation)
+        if not capacity_stores:
+            # A store left by an earlier capacity_stores=True run would switch
+            # this route to the capacity path anyway (or fail it closed if only
+            # one exists); refuse rather than install something unrequested.
+            from laya_index_a import IndexContractError
+            from laya_index_runtime import capacity_store_paths
+            try:
+                leftover = capacity_store_paths(candidate) is not None
+            except IndexContractError:
+                leftover = True
+            if leftover:
+                _fail('capacity_store_unexpected')
+        else:
+            # Before the route is written and bound: bind_qmd_origin refuses
+            # a second run, so stores created after it could never be
+            # completed by a re-run. A failed run leaves them, and a re-run
+            # without the flag then fails as capacity_store_unexpected.
+            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
         if plan_qmd_origin(project_root)['proposalSha256'] != expected_proposal_sha256:
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
