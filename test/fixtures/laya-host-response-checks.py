@@ -964,6 +964,10 @@ class ResponseChecks(unittest.TestCase):
                      'index_stale_sync_queued'),
                     (response.HostResponseError('index_stale_sync_unavailable'),
                      'index_stale_sync_unavailable'),
+                    (IndexContractError('vector_deadline_exceeded'),
+                     'vector_deadline_exceeded'),
+                    (IndexContractError('vector_budget_exceeded'),
+                     'vector_budget_exceeded'),
                     (IndexContractError('index_stale'), 'selected_proof_or_query_failed')):
                 with self.subTest(code=code):
                     out, err = io.StringIO(), io.StringIO()

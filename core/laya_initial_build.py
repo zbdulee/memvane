@@ -27,7 +27,10 @@ Phases (``PHASES``):
   ``laya_qmd_cutover`` ledger and project marker). The wake does nothing
   more; activation is a separate explicit installer step. Between the
   marker and this phase (an interrupted finalize) the wake defers without
-  stepping, and a repeated finalize records ``bound``.
+  stepping, and a repeated finalize records ``bound``. If QMD changes
+  before activation the binding is retired and the record stays ``bound``
+  for good; ``retire_project_pointer`` releases the project pointer so a
+  fresh install (its own state root and record) can register.
 
 Freshness is separate from ``sealed``: ``request_freshness`` records a time T
 and requests a catalog scan. ``freshness_satisfied`` is true only when the
@@ -299,6 +302,75 @@ def register_project(identity):
     if existing != pointer:
         _fail('initial_build_already_registered')
     return str(path)
+
+
+RETIRED_POINTER = 'retired-build-pointer.json'
+
+
+def retire_project_pointer(identity):
+    """Release the project's wake pointer of a retired build; deletes no store.
+
+    The caller holds the build ``owner`` and has already retired the build's
+    QMD binding while the record stays ``bound`` (so a wake never steps it
+    again). The exact pointer bytes are first archived, no-clobber, as
+    ``RETIRED_POINTER`` in the build's state root. Then only a pointer that
+    is exactly this build's is moved aside within the pointer directory and
+    removed; a pointer a later install registered is never touched (it is
+    re-linked if it raced in). The holding name carries this install id, so
+    an interrupted retirement of one install never blocks another's; only a
+    held file equal to the archived pointer is ever removed. Idempotent,
+    including after an interruption between the move and the removal.
+    Returns ``retired``, ``absent`` or ``other``.
+    """
+    _validate_identity(identity)
+    pointer = {'schema': POINTER_SCHEMA, 'projectRoot': identity['projectRoot'],
+               'stateRoot': identity['stateRoot'], 'installId': identity['installId']}
+    archive = Path(_private_dir(identity['stateRoot'])) / RETIRED_POINTER
+    stored = _read_json(archive)
+    if stored is None:
+        try:
+            _write_json(archive, pointer, replace=False)
+        except IndexContractError as exc:
+            if str(exc) != 'initial_build_record_exists':
+                raise
+        stored = _read_json(archive)
+    if stored != pointer:
+        _fail('initial_build_pointer_archive_mismatch')
+    directory = _pointer_dir(create=False)
+    if directory is None:
+        return 'absent'
+    path = pointer_path(identity['projectRoot'], directory)
+    holding = path.with_name('.retiring-' + identity['installId'] + '-' + path.name)
+    held = _read_json(holding)
+    if held is not None and held != stored:
+        # Only this install moves a file here, and only its own pointer.
+        _fail('initial_build_pointer_changed')
+    current = _read_json(path)
+    if current is not None and current != pointer:
+        if held is not None:
+            os.unlink(holding)
+            _fsync_dir(directory)
+        return 'other'
+    if current is not None:
+        if held is not None:
+            os.unlink(holding)
+        os.rename(path, holding)
+        _fsync_dir(directory)
+        if _read_json(holding) != pointer:
+            # Replaced between the read and the move: restore, never delete.
+            try:
+                os.link(holding, path)
+            except FileExistsError:
+                _fail('initial_build_pointer_changed')
+            os.unlink(holding)
+            _fsync_dir(directory)
+            _fail('initial_build_pointer_changed')
+        held = pointer
+    if held is not None:
+        os.unlink(holding)
+        _fsync_dir(directory)
+        return 'retired'
+    return 'absent'
 
 
 def lookup(project_root):

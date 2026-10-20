@@ -10,7 +10,10 @@ By default every origin is registered as a durable inactive initial build
 bounded steps, then bound by an explicit ``finalize-build`` and activated by a
 separate ``activate``, which then queues one selected ``laya-sync`` wake. A
 QMD change after the bind refuses activation (the bound generation is stale)
-and is never rebound. An explicit ``restore`` withdraws the selection back to
+and is never rebound; an explicit ``retire-origin`` withdraws that stale
+binding (deleting nothing) so a fresh install with its own state root,
+reviewed provider, attestation and candidate can be prepared, built and bound.
+An explicit ``restore`` withdraws the selection back to
 the preserved QMD origin without deleting any database. The in-process synchronous origin (one bounded scan,
 embedded in the installer call) remains only as the explicit legacy
 ``background=False`` / ``--synchronous-origin`` path; a source larger than
@@ -1246,6 +1249,139 @@ def finalize_initial_build(*, project_root, state_root):
             'generation': sealed['generation'], 'buildPhase': record['phase']}
 
 
+def retire_drifted_origin(*, project_root, state_root):
+    """Retire a bound initial build whose QMD changed before activation.
+
+    ``finalize``/``activate`` refuse a QMD digest that moved after the bind
+    (``cutover_source_drift_requires_fresh_generation``) and never rebind
+    the stale generation. This explicit, idempotent step makes room for a
+    fresh install; it deletes nothing and activates nothing. Under the
+    install lock and the build owner, in order (each resumed by a repeat):
+
+    1. Prove the build is this project's exact reviewed install from what
+       the bind pinned: the private journal beside this state root, still
+       ``candidate_ready`` for this project, scope and reviewed route with
+       no selected write and the candidate never its provider; the reviewed
+       route bytes; the ledger's attestation; and a ``bound`` (or an
+       interrupted-bind ``sealed``) record naming the ledger's generation
+       and candidate incarnation. The current plan and installed bundle are
+       deliberately not consulted: withdrawal selects nothing, and a later
+       settings or runtime change must not strand it. An interrupted bind is
+       first recorded ``bound`` so no later wake can step the old candidate.
+    2. The cutover owner retires the binding (``retire_drifted_binding``:
+       ledger ``prepared`` -> ``retired``, retirement record, and only its
+       own project marker withdrawn).
+    3. The project's wake pointer of this build is archived in its state
+       root and released (``retire_project_pointer``).
+
+    The old state root keeps the QMD backup, candidate, queue, catalog,
+    binding store, journal, ledger, route and build record. QMD stays
+    selected. The next install is a new ``review-provider`` and
+    ``prepare-origin`` with a new install id and state root, then the
+    ordinary build, ``finalize`` and ``activate`` of that install.
+    """
+    import laya_initial_build as initial_build
+    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, inspect_bound_cutover,
+                                  retire_drifted_binding)
+    project = _checked_project(project_root)
+    state = _private_parent(state_root)
+    with _install_lock(state), initial_build.owner(state) as owned:
+        if not owned:
+            _fail('initial_build_busy')
+        record = initial_build.read(state)
+        if record is None:
+            _fail('initial_build_missing')
+        identity = record['identity']
+        journal = state / 'install-journal.sqlite'
+        if (identity['projectRoot'] != str(project) or
+                identity['stateRoot'] != str(state) or
+                identity['journalPath'] != str(journal)):
+            _fail('initial_build_project_mismatch')
+        row = inspect_bound_cutover(journal)
+        if row is None:
+            _fail('cutover_ledger_missing')
+        sealed = record['sealed']
+        if (row['schema'] != SCHEMA_V3 or row['projectRoot'] != str(project) or
+                row['journalPath'] != str(journal) or
+                row['routeSha256'] != identity['routeSha256'] or
+                row['candidateDb'] != identity['candidateDb'] or
+                row['queueDb'] != identity['queueDb'] or
+                row['catalogDb'] != identity['catalogDb'] or
+                row['bindingStore'] != identity['bindingStore'] or
+                row['candidateIncarnation'] != identity['dbIncarnation'] or
+                row['attestationSha256'] != identity['attestationSha256'] or
+                sealed is None or row['indexGeneration'] != sealed['generation']):
+            _fail('retire_cutover_mismatch')
+        route_bytes = _read_private(identity['routeFile'], 8192)
+        if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
+            _fail('initial_build_route_changed')
+        if row['phase'] == 'prepared':
+            # Withdrawal selects nothing, so it is proven against what was
+            # pinned at the bind, not the current plan or installed bundle:
+            # a settings or runtime change since then must not strand it.
+            pending = inspect_journal(journal)
+            if (pending['state'] != 'candidate_ready' or pending['pending'] is None or
+                    pending['newWriteSeen'] or
+                    pending['projectRoot'] != str(project) or
+                    pending['scopeId'] != identity['scopeId'] or
+                    pending['pendingRouteSha256'] != identity['routeSha256'] or
+                    pending['providerAttestationSha256'] is not None or
+                    pending['providerFileIdentitySha256'] is not None):
+                # A ready journal has not selected the pinned provider yet.
+                _fail('initial_build_journal_changed')
+            if record['phase'] == 'sealed':
+                record = initial_build.advance(record, phase='bound')
+        elif row['phase'] != RETIRED:
+            _fail('cutover_not_prepared')
+        if record['phase'] != 'bound':
+            _fail('initial_build_bind_unsettled')
+        retired = retire_drifted_binding(project, journal, route_bytes)
+        pointer = initial_build.retire_project_pointer(identity)
+    retirement = retired['retirement']
+    return {'status': 'origin_binding_retired', 'cutoverPhase': retired['phase'],
+            'stateRoot': str(state), 'journalPath': str(journal),
+            'retiredGeneration': retirement['indexGeneration'],
+            'boundSourceDigest': retirement['boundSourceDigest'],
+            'observedSourceDigest': retirement['observedSourceDigest'],
+            'preservedBackup': retirement['backupDb'],
+            'buildPointer': pointer, 'buildPhase': record['phase'],
+            'changesApplied': 1,
+            'next': ['plan-index-origin', 'review-index-provider',
+                     'prepare-index-origin'],
+            'nextRequires': 'new_install_id_and_state_root'}
+
+
+def retired_build_pointer(project_root):
+    """Read-only: the retired build still holding this project's wake pointer.
+
+    An interrupted ``retire_drifted_origin`` can withdraw the marker yet
+    leave the pointer, which then refuses a fresh install as
+    ``initial_build_already_registered``. Only a pointer naming a build
+    whose own ledger is ``retired`` qualifies; an active or prepared
+    install is never named. Returns the next action, or None.
+    """
+    import laya_initial_build as initial_build
+    from laya_qmd_cutover import RETIRED, inspect_bound_cutover
+    try:
+        record = initial_build.lookup(str(_checked_project(project_root)))
+        if record is None:
+            return None
+        identity = record['identity']
+        state = Path(identity['stateRoot'])
+        if identity['journalPath'] != str(state / 'install-journal.sqlite'):
+            return None
+        row = inspect_bound_cutover(state / 'install-journal.sqlite')
+    except Exception:  # a hint only; the real refusal stays the caller's
+        return None
+    if (row is None or row['phase'] != RETIRED or
+            row['projectRoot'] != identity['projectRoot'] or
+            row['journalPath'] != identity['journalPath'] or
+            row['candidateIncarnation'] != identity['dbIncarnation']):
+        return None
+    return {'nextAction': 'retire-index-origin', 'stateRoot': str(state),
+            'reason': 'retired_build_pointer_registered'}
+
+
 def _checked_project(project_root):
     project = Path(project_root)
     if (not project.is_absolute() or project.is_symlink() or
@@ -1288,16 +1424,31 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     is queued so the selected worker catches up any source edit made after
     the sealed snapshot; its outcome is reported, never retried here.
     """
-    from laya_qmd_cutover import SCHEMA_V3, inspect_bound_cutover
+    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, _qmd_digest, _source_binding,
+                                  inspect_bound_cutover)
     project = _checked_project(project_root)
     journal = Path(journal_path)
     row = inspect_bound_cutover(journal)
     if row is None:
         _fail('cutover_ledger_missing')
+    if row['phase'] == RETIRED:
+        _fail('cutover_binding_retired')
     if row['schema'] == SCHEMA_V3:
         _require_fresh_bound_generation(row, journal.parent)
     row = activate_qmd_origin(project, journal, route_bytes)
-    return {**row, 'syncWake': _request_build_wake(str(project))}
+    result = {**row, 'syncWake': _request_build_wake(str(project))}
+    if row['schema'] == SCHEMA_V3:
+        # Committed and forward-only. A QMD write after the last pre-commit
+        # recheck is an ordinary source edit for the selected sync just
+        # queued; report it rather than hide it. Never fails the activation.
+        try:
+            names, _roots = _source_binding(row)
+            late = _qmd_digest(row['sourceDb'], row['sourceFormat'], names,
+                               True) != row['sourceDigest']
+        except Exception:
+            late = None
+        result['qmdChangedAfterActivation'] = late
+    return result
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
@@ -1345,6 +1496,12 @@ def restore_origin_selection(*, project_root, state_root):
         if (row['projectRoot'] != str(project) or row['journalPath'] != str(journal) or
                 hashlib.sha256(route_bytes).hexdigest() != row['routeSha256']):
             _fail('restore_cutover_mismatch')
+        from laya_qmd_cutover import RETIRED
+        if row['phase'] == RETIRED:
+            # Never selected; the project marker may now be a later install's.
+            return {'status': 'binding_retired', 'cutoverPhase': RETIRED,
+                    'journalState': inspect_journal(journal)['state'],
+                    'changesApplied': 0}
         before = observed()
         settled = (('prepared', 'candidate_ready', 'legacy'),
                    ('restored', 'restored_qmd', 'legacy'))
@@ -1520,6 +1677,11 @@ def main(argv=None):
     restore.add_argument('--project-root', required=True)
     restore.add_argument('--state-root', required=True)
     restore.add_argument('--approve-restore', action='store_true')
+    retire = sub.add_parser('retire-origin',
+                            help='retire a bound build whose QMD changed before activation')
+    retire.add_argument('--project-root', required=True)
+    retire.add_argument('--state-root', required=True)
+    retire.add_argument('--approve-retire', action='store_true')
     args = parser.parse_args(argv)
     root = _installed_root()
     state_root = (_private_parent(args.state_root)
@@ -1563,6 +1725,11 @@ def main(argv=None):
             _fail('restore_approval_required')
         result = restore_origin_selection(project_root=args.project_root,
                                           state_root=args.state_root)
+    elif args.action == 'retire-origin':
+        if not args.approve_retire:
+            _fail('retire_approval_required')
+        result = retire_drifted_origin(project_root=args.project_root,
+                                       state_root=args.state_root)
     else:
         project = _checked_project(args.project_root)
         route = _read_private(args.route_file, 8192)

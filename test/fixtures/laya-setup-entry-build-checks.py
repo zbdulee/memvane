@@ -91,6 +91,26 @@ class SetupInitialBuild(unittest.TestCase):
                 restore.assert_called_once_with(project_root=str(self.project),
                                                 state_root=self.state)
 
+    def test_retire_entry_requires_approval_and_drift_names_it(self):
+        with mock.patch.object(product, '_private_parent', return_value=self.state), \
+             mock.patch.object(product, 'retire_drifted_origin',
+                               return_value={'status': 'origin_binding_retired'}) as retire:
+            code, row = self.call('retire-index-origin', '--state-root', str(self.state))
+            self.assertEqual((code, row['reason'], row['changesApplied']),
+                             (1, 'index_origin_retire_approval_required', 0))
+            retire.assert_not_called()
+            code, row = self.call('retire-index-origin', '--state-root', str(self.state),
+                                  '--approve-index-origin-retire')
+            self.assertEqual((code, row['status']), (0, 'origin_binding_retired'))
+            retire.assert_called_once_with(project_root=str(self.project),
+                                           state_root=self.state)
+        drift = product.InstallBlocked('cutover_source_drift_requires_fresh_generation')
+        with mock.patch.object(product, '_private_parent', return_value=self.state), \
+             mock.patch.object(product, 'finalize_initial_build', side_effect=drift):
+            code, row = self.call('finalize-index-origin', '--state-root', str(self.state))
+        self.assertEqual((code, row['status'], row['nextAction']),
+                         (1, 'rejected', 'retire-index-origin'))
+
     def test_activate_and_recover_entries_use_the_syncing_product_paths(self):
         with mock.patch.object(product, '_private_parent', return_value=self.state), \
              mock.patch.object(product, '_read_private', return_value=b'{}'), \

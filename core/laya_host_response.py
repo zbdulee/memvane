@@ -1198,7 +1198,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         # Hook stderr is intentionally terse. No source body, path, or secrets.
-        code = str(exc) if isinstance(exc, HostResponseError) else "selected_proof_or_query_failed"
+        from laya_index_a import IndexContractError
+        bounded_vector = (type(exc) is IndexContractError and str(exc) in
+                          ('vector_deadline_exceeded', 'vector_budget_exceeded'))
+        code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
+                else "selected_proof_or_query_failed")
         print(f"[laya-index] {code}; QMD fallback refused", file=sys.stderr)
         if action == "topical-stop":
             print("{}")

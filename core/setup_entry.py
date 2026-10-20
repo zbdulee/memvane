@@ -382,7 +382,7 @@ def main(argv=None):
                                           'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
-                                          'restore-index-origin'))
+                                          'restore-index-origin','retire-index-origin'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -426,6 +426,7 @@ def main(argv=None):
     parser.add_argument('--user-qmd-root', action='append')
     parser.add_argument('--approve-index-origin-activation', action='store_true')
     parser.add_argument('--approve-index-origin-restore', action='store_true')
+    parser.add_argument('--approve-index-origin-retire', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.action in ('plan-index-origin','review-index-provider',
@@ -433,11 +434,15 @@ def main(argv=None):
                            'index-build-status','index-build-rescan',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
-                           'restore-index-origin'):
+                           'restore-index-origin','retire-index-origin'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action == 'plan-index-origin':
                 result = product.plan_qmd_origin(args.project, background=True)
+                pending = product.retired_build_pointer(Path(args.project).resolve())
+                if pending is not None:
+                    # Finish the interrupted retirement before preparing.
+                    result['pendingRetirement'] = pending
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     source_root=args.source_root, plugin_root=installed,
@@ -482,6 +487,12 @@ def main(argv=None):
                     if not args.approve_index_origin_restore:
                         raise ValueError('index_origin_restore_approval_required')
                     result = product.restore_origin_selection(
+                        project_root=args.project, state_root=state)
+                elif args.action == 'retire-index-origin':
+                    # A QMD change stranded the bound build; deletes no DB or store.
+                    if not args.approve_index_origin_retire:
+                        raise ValueError('index_origin_retire_approval_required')
+                    result = product.retire_drifted_origin(
                         project_root=args.project, state_root=state)
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
@@ -529,6 +540,18 @@ def main(argv=None):
                       'changesApplied': 0}
         else:
             result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
+            if (str(exc) == 'cutover_source_drift_requires_fresh_generation' and
+                    args.action in ('finalize-index-origin', 'activate-index-origin')):
+                # The bound generation is stale and never rebound: the way on.
+                result['nextAction'] = 'retire-index-origin'
+            if (str(exc) == 'initial_build_already_registered' and
+                    args.action == 'prepare-index-origin'):
+                import laya_product_install as product
+                pending = product.retired_build_pointer(Path(args.project).resolve())
+                if pending is not None:
+                    # Only the exact retired build's own pointer is named.
+                    result['nextAction'] = pending['nextAction']
+                    result['retireStateRoot'] = pending['stateRoot']
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing',
