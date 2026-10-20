@@ -97,7 +97,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_package.py', 'laya_install_binding.py',
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
-                 'laya_host_response.py')
+                 'laya_host_response.py', 'laya_owner_projection.py')
         (self.source / 'core').mkdir()
         for name in names:
             shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)

@@ -141,6 +141,28 @@ class ChangeOwner(unittest.TestCase):
         self.hook(session, target)
         self.assertEqual(self.lines(), [['beta-docs', str(owner / 'docs'), str(owner)]])
 
+    def test_foreign_laya_owner_uses_its_wake_without_qmd_enqueue(self):
+        session = self.project('alpha'); owner = self.project('beta')
+        target = self.note(owner)
+        self.store([session, owner])
+        with patch('laya_index_host_route.select_route',
+                   return_value={'state': 'candidate'}), \
+             patch('laya_owner_projection.route_external',
+                   return_value=([str(owner)], [])) as wake:
+            self.hook(session, target)
+        self.assertEqual(self.lines(), [])
+        wake.assert_called_once_with([str(target)], str(session),
+                                     selected_root=str(session))
+
+    def test_foreign_blocked_laya_owner_never_falls_back_to_qmd(self):
+        session = self.project('alpha'); owner = self.project('beta')
+        target = self.note(owner)
+        self.store([session, owner])
+        with patch('laya_index_host_route.select_route',
+                   return_value={'state': 'blocked'}):
+            self.hook(session, target)
+        self.assertEqual(self.lines(), [])
+
     def test_mixed_edit_keeps_each_owner_and_session_scope_separate(self):
         session = self.project('alpha'); owner = self.project('beta')
         mine, theirs = self.note(session), self.note(owner)
