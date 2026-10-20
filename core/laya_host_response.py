@@ -43,6 +43,8 @@ _PATCH_PATH = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Mov
 _LOCATOR = re.compile(r"([^#]+)#L([1-9][0-9]{0,7})-L([1-9][0-9]{0,7})")
 MAX_SOURCE_LOCATIONS = 16
 SHOWN_SOURCE_LOCATIONS = 3
+_DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
+                                  'deferred_queue_capacity_retained'))
 
 
 class HostResponseError(ValueError):
@@ -896,7 +898,7 @@ def _request_stale_sync(decision: dict, proof: dict,
     if (stable(refreshed) != stable(proof)
             or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
         _fail("selected_proof_changed")
-    if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
+    if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
         _fail("index_stale_sync_unavailable")
     _fail(code)
 
@@ -929,7 +931,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
             compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
                                                   **defer)
             if (not isinstance(compile_result, dict) or
-                    compile_result.get('status') not in ('queued', 'busy')):
+                    compile_result.get('status') not in _DURABLE_WAKE_STATES):
                 _fail('selected_compile_enqueue_failed')
     refreshed = verify_selected_route(decision)
     # The owner may have started and advanced the journal epoch before
@@ -940,7 +942,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     if (stable(refreshed) != stable(proof)
             or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
         _fail("selected_proof_changed")
-    if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
+    if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
         _fail("selected_sync_enqueue_failed")
 
 
@@ -990,7 +992,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     except Exception:
         result = None
         _start_owner()
-    if isinstance(result, dict) and result.get('status') in ('queued', 'busy'):
+    if isinstance(result, dict) and result.get('status') in _DURABLE_WAKE_STATES:
         return
     try:
         live = laya_wiki_discovery.revoke_grant(decision, grant)

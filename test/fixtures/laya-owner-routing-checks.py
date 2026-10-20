@@ -341,6 +341,14 @@ class OwnerRouting(unittest.TestCase):
         self.assertEqual(self.edit(session, target), (None, 'external_owner_sync_unavailable'))
         self.assertEqual(self.ledger(), {})
 
+    def test_retained_overflow_wake_is_durable(self):
+        session = self.project('alpha'); owner = self.project('beta')
+        target = self.note(owner); self.store([session, owner])
+        self.wake_result = {'status': 'deferred_queue_capacity_retained'}
+        self.assertEqual(self.edit(session, target), ({}, None))
+        self.assertEqual(self.requests, self.sync(owner))
+        self.assertEqual(self.ledger()[str(target)]['projectRoot'], str(owner))
+
     def test_failed_edit_does_not_wake_another_owner(self):
         session = self.project('alpha'); owner = self.project('beta')
         target = self.note(owner); self.store([session, owner])

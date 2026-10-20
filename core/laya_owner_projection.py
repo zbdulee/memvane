@@ -37,6 +37,8 @@ import stat
 # routes to its queue. Reasons from change_owner pass through unchanged.
 _PROJECTION_KEYS = ('projectRoot', 'scopeId', 'dbIncarnation', 'installId',
                     'generation')
+_DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
+                                  'deferred_queue_capacity_retained'))
 
 
 def _route_settings_digest(root: str) -> str | None:
@@ -142,7 +144,7 @@ def _wake(root: str, accepted: list, base, home) -> str | None:
             or proof.get('selectionEpoch', -1) < first['proof'].get('selectionEpoch', 0)):
         # The wake is durable and its worker re-proves this owner itself.
         return 'owner_proof_changed'
-    if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):
+    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
         return 'owner_sync_unavailable'
     present = [owner['registryOwner'] for _raw, owner in accepted
                if owner['registryOwner']['change'] == 'present']

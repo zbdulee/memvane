@@ -849,6 +849,11 @@ class ResponseChecks(unittest.TestCase):
                 self.assertIsInstance(exc, response.HostResponseError)
                 self.assertEqual(str(exc), 'index_stale_sync_unavailable')
                 requested.assert_called_once_with('laya-sync', '/synthetic/project')
+        exc, requested, _journal, _index = serve_v2_recall(
+            decision, verify=lambda _d: V2_PROOF, scan=live,
+            request=lambda *_a: {'status': 'deferred_queue_capacity_retained'})
+        self.assertEqual(str(exc), 'index_stale_sync_queued')
+        requested.assert_called_once_with('laya-sync', '/synthetic/project')
         changed = {**V2_PROOF, 'productRouteAllowed': False}
         exc, requested, _journal, _index = serve_v2_recall(
             decision, verify=[V2_PROOF, changed], scan=live,

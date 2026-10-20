@@ -15,7 +15,7 @@ test('selected Laya hook wakes only a proved, approved Laya owner of an outside 
             QMD_SKIP_BACKGROUND_WORKER: '1', PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 20 tests/);
+    assert.match(result.stderr, /Ran 21 tests/);
   } finally {
     removeTemp(home);
   }
