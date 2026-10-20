@@ -34,6 +34,12 @@ class InstallBlocked(RuntimeError):
     pass
 
 
+_REVIEWED_MODEL_BASENAMES = frozenset((
+    'embeddinggemma-300M-Q8_0.gguf',
+    'hf_ggml-org_embeddinggemma-300M-Q8_0.gguf',
+))
+
+
 def _fail(reason):
     raise InstallBlocked(reason)
 
@@ -344,8 +350,10 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
         expected_model_hash = None
     if type(dimension) is not int or not 1 <= dimension <= 2048:
         _fail('provider_review_dimension_invalid')
+    # QMD's local resolver prefixes the same GGUF basename in its cache.
+    # The explicit physical path and its content hash remain review-bound.
     if (not isinstance(model_path, str) or
-            Path(model_path).name != 'embeddinggemma-300M-Q8_0.gguf'):
+            Path(model_path).name not in _REVIEWED_MODEL_BASENAMES):
         _fail('provider_review_model_identity_invalid')
     model_sha = _hash_file(str(model_path))
     if expected_model_hash is not None and model_sha != expected_model_hash:

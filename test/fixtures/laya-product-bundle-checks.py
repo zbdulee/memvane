@@ -17,7 +17,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
-from laya_index_a import LayaIndexA
+from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 import laya_index_host_route as host
 import laya_install_journal as journal
@@ -692,6 +692,34 @@ print(json.dumps(result))'''
                 model_path=str(model), dimension=3)
             self.assertEqual(first, second)
             self.assertEqual(len(first['reviewedProvider']['dependencyClosure']), 2)
+            cache = self.root / 'models'
+            cache.mkdir()
+            cached_model = cache / 'hf_ggml-org_embeddinggemma-300M-Q8_0.gguf'
+            cached_model.write_bytes(model.read_bytes())
+            cached = product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(cached_model), dimension=3)
+            cached_manifest = cached['reviewedProvider']['providerManifest']
+            self.assertEqual(cached_manifest['modelPath'], str(cached_model))
+            self.assertEqual(cached_manifest['modelSha256'], hashlib.sha256(model.read_bytes()).hexdigest())
+            self.assertNotEqual(cached['proposalSha256'], first['proposalSha256'])
+            partial = cache / (cached_model.name + '.ipull')
+            partial.write_bytes(model.read_bytes())
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'provider_review_model_identity_invalid'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1,
+                    model_path=str(partial), dimension=3)
+            linked_cache = self.root / 'models-link'
+            linked_cache.symlink_to(cache, target_is_directory=True)
+            with self.assertRaisesRegex(IndexContractError,
+                                        'provider_artifact_path_invalid'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1,
+                    model_path=str(linked_cache / cached_model.name), dimension=3)
             native.write_bytes(b'changed synthetic native')
             changed = product_install.review_local_provider(
                 source_root=self.source, plugin_root=proof['pluginRoot'],

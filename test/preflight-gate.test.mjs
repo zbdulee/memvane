@@ -29,6 +29,13 @@ test('pending(config 없음) + Edit → deny', () => {
     const out = gate({ tool_name: 'Edit', tool_input: { file_path: join(dir, 'a.md') }, cwd: dir, session_id: 's1' }, env());
     const j = JSON.parse(out);
     assert.equal(j.hookSpecificOutput.permissionDecision, 'deny');
+    const reason = j.hookSpecificOutput.permissionDecisionReason;
+    assert.match(reason, /사용자에게 자연어로/);
+    assert.match(reason, /추천 범위 확인/);
+    assert.match(reason, /끄기/);
+    assert.match(reason, /2시간 미루기/);
+    assert.match(reason, /setup 스킬/);
+    assert.doesNotMatch(reason, /update\.sh|--(?:recommend|optin|optout|skip)\b|\.auto-context\/settings\.json/);
   } finally { removeTemp(home); }
 });
 
@@ -68,6 +75,17 @@ test('잘못된 tool_name(Read) → allow', () => {
   const { home, dir, env } = makeTmpDir();
   try {
     assert.equal(gate({ tool_name: 'Read', tool_input: { file_path: join(dir,'a.md') }, cwd: dir, session_id: 's1' }, env()).trim(), '');
+  } finally { removeTemp(home); }
+});
+
+test('pending에서 Bash는 기존 설계대로 허용하고 Write 계열은 차단', () => {
+  const { home, dir, env } = makeTmpDir();
+  try {
+    assert.equal(gate({ tool_name: 'Bash', tool_input: { command: 'true' }, cwd: dir }, env()).trim(), '');
+    for (const tool_name of ['Write', 'MultiEdit', 'NotebookEdit']) {
+      const out = gate({ tool_name, tool_input: { file_path: join(dir, 'a.md') }, cwd: dir }, env());
+      assert.equal(JSON.parse(out).hookSpecificOutput.permissionDecision, 'deny', tool_name);
+    }
   } finally { removeTemp(home); }
 });
 

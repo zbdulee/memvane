@@ -1,0 +1,22 @@
+# Laya Index 0.36 follow-up integration (2026-10-20)
+
+Status: implementation plan. Base is PR #22 head `4dde371fb643e092e96e06035759a376cf2d2980`; main is `143a7898373dff2782d9c6632c10cf9286e27008`. PR #22 is Draft with no review decision. Its CI checks are green, but its installed-host L1/LI QA and Codex RQA-HOOK-02 remain NOT RUN; the Mini-login rows are USER_WAIVED, never PASS. This plan does not change those statuses. No public release or operating cutover is implied by main integration.
+
+## Ownership and interfaces before parallel work
+
+Three Claude Opus tasks use distinct worktrees based on the exact PR head. They must not run tests, hash/backup jobs, model probes, or installation; the integrator runs the shared development guard serially. Only the integrator changes this plan, release docs, manifests, setup entry, bundle inventory, and the existing six-file guidance patch. Each task provides code, focused synthetic tests, a diff, and a written gap/limitation report. No task reads or transmits manuscripts, operating DBs, secrets, or user Claude session content.
+
+| Track | Owned production files | Owned tests | Interface contract |
+|---|---|---|---|
+| Owner routing | `core/laya_host_response.py`, new `core/laya_owner_projection.py` (if needed) | new focused owner-routing fixture/test; existing host-response fixture only | Read-only projection of previously enrolled owner identity and registered collection roots. Revalidate owner settings, route and incarnation before requesting owner-specific `laya-sync`; no implicit registration, no cross-worktree search scope expansion, no cwd-derived owner fallback. Unknown, ambiguous or stale mapping leaves a diagnostic and no wake. |
+| Initial background build | `core/laya_product_install.py`, `core/laya_product_sync_worker.py`, `core/laya_source_catalog.py`, `core/laya_vector_capacity.py`, new private build state module(s) if needed | new focused background-install fixture/test; existing product-install/sync-worker fixtures only | Remove whole-corpus 200-file/5MB refusal. Keep step admission and durable cursor; create inactive candidate before route selection; never present partial generation as complete or automatically activate. Installer may register work and return `index_building`; only a complete sealed generation may become `index_ready_inactive`. Preserve backup, binding, rollback and exact bundle proofs. No arbitrary total corpus quota, including the existing 20k chunk ceiling; explicit scale deferral is only an interim diagnostic, not completion. |
+| Paid work and learning contention | `core/wiki_compile_worker.py`, `core/wiki_source_intent.py`, `core/context_learning/shared.py`, `core/runtime_wake_policy.py` | new focused wiki/learning fixture/test; existing wiki compile/learning fixtures only | First inspect current same-revision card proof and selected learning queue. Keep verified-card skip; change only a demonstrated duplicate paid call or uncovered direct learning launch. Learning must request durable queue/admission and coordinate with index/update compute lease, recover after restart, and never stall ordinary search/install/tests. |
+
+Cross-track shared surfaces (`core/runtime_work.py`, `core/runtime_handlers.py`, `core/laya_index_a.py`, `core/laya_index_runtime.py`, `core/laya_install_journal.py`, `core/setup_entry.py`, `core/laya_product_bundle.py`) are integrator-owned. Tracks may propose exact patches for them but do not edit them. Integrator resolves route-to-wake and inactive build handler contracts only after reviewing all three diffs.
+
+## Integration gates
+
+1. Inspect each implementation and its independent review; reject incomplete source migration, silently partial index, or widened owner authority.
+2. Integrate on one branch preserving all six existing local guidance edits and untracked state. Run focused tests and then full tests under the global development guard, one file at a time, with system Python and PyYAML-only test path.
+3. Regenerate provider proposal for exact head, complete candidate L1/LI and Codex RQA-HOOK-02 where the host permits, and record real PASS/FAIL/NOT RUN/USER_WAIVED. Do not repeat prior two-call embedding model smoke or begin real training without separate resource proposal.
+4. Push candidate, verify CI and independent review. Change PR #22 Draft state or merge to main only when its ordinary gates and declared QA boundary permit it. A main merge is not provider activation, public release, Mini installation, or operating cutover.

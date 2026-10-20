@@ -808,7 +808,7 @@ test('update core: --sandbox 인자 → 무출력 exit 0', () => {
 });
 
 // BUG-2 regression: collection add가 "already exists" + exit 1 반환해도 update/embed는 실행돼야 함
-test('pending: 안내 메시지에 --recommend/--optin --recommended/.auto-context/settings.json/--optout/--skip 5개 포함', () => {
+test('pending: SessionStart는 내부 명령 대신 자연어 선택과 setup 스킬을 안내', () => {
   // pending 폴더(config 없음)를 stdin으로 전달해 main() 경로의 pending 분기를 실행.
   // qmd, curl 등 외부 명령이 없어도 pending 분기는 메시지만 출력하고 종료하므로 PATH stub 불필요.
   const work = repoTemp('qmd-pending-msg');
@@ -827,11 +827,10 @@ test('pending: 안내 메시지에 --recommend/--optin --recommended/.auto-conte
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, QMD_CACHE_DIR: CACHE_DIR },
     });
 
-    assert.ok(out.includes('--recommend'), `--recommend 없음: ${out}`);
-    assert.ok(out.includes('--optin --recommended'), `--optin --recommended 없음: ${out}`);
-    assert.ok(out.includes('.auto-context/settings.json'), `.auto-context/settings.json 없음: ${out}`);
-    assert.ok(out.includes('--optout'), `--optout 없음: ${out}`);
-    assert.ok(out.includes('--skip'), `--skip 없음: ${out}`);
+    for (const choice of ['자연어', '추천 범위 확인', '켜기', '끄기', '2시간 미루기', 'setup 스킬']) {
+      assert.ok(out.includes(choice), `${choice} 없음: ${out}`);
+    }
+    assert.doesNotMatch(out, /update\.sh|--(?:recommend|optin|optout|skip)\b|\.auto-context\/settings\.json/);
   } finally {
     removeTemp(work);
   }
