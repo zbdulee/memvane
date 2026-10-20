@@ -334,6 +334,20 @@ class ReviewFixTests(VectorFillCase):
                          ('blocked', 'vector_member_rejected', 'provider_request_too_large'))
         self.assertEqual(self.provider.calls, [])
 
+    def test_named_worker_refusal_blocks_the_member(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def refuse(body, path):
+            raise IndexContractError('provider_member_refused')
+        self.provider.embed_document_chunks = refuse
+        answer = vc.vector_fill_step(runtime, self.provider)
+        self.assertEqual((answer['state'], answer['reason'], answer['path'], answer['detail']),
+                         ('blocked', 'vector_member_rejected', 'plans/f0.md',
+                          'provider_member_refused'))
+        self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+
     def test_empty_worker_answer_defers_with_the_path(self):
         self.corpus(1)
         runtime = self.runtime()

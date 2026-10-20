@@ -35,6 +35,12 @@ async function load(config) {
   return {llama, model, context, contextSize};
 }
 
+// Refusals that depend only on the document: the same input is refused on
+// every try. They are reported as `refused` so the caller can stop retrying
+// that member; busy and every other failure keep the bare failure reply.
+const MEMBER_REFUSALS = new Set(['provider_context_exceeded', 'provider_chunks_invalid',
+                                 'chunk_recursion_limit', 'token_truncation_fallback']);
+
 async function embed(config, state, request) {
   if (!validRequest(request)) throw Error('provider_request_invalid');
   const {model, context, contextSize} = state;
@@ -144,8 +150,10 @@ if (!serving) {
         const request = JSON.parse(data.trim());
         const result = await embed(config, state, request);
         socket.end(JSON.stringify({...identity, ok: true, result}));
-      } catch {
-        socket.end(JSON.stringify({...identity, ok: false, result: null}));
+      } catch (error) {
+        const refused = error instanceof Error && MEMBER_REFUSALS.has(error.message)
+          ? {refused: error.message} : {};
+        socket.end(JSON.stringify({...identity, ok: false, result: null, ...refused}));
       } finally { busy = false; }
     });
   });

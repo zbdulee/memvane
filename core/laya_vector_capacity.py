@@ -93,11 +93,12 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
       seal; it is not repaired here. All three repeat until the source (or
       the cache) changes. Other provider errors (service unavailable,
       admission refused) are raised, never reported as a member problem.
+    * ``blocked``/``vector_member_rejected`` (``provider_member_refused``):
+      the worker refused the document on content alone (over 1,024 chunks,
+      a chunk over the context).
     * ``deferred``/``provider_result_invalid`` with ``path``: the worker
-      answered nothing usable for that member. It cannot tell a refusal of
-      the member (chunk or context limits) from being busy, so this is not
-      a member verdict; a member that keeps returning it needs the worker to
-      report a distinct refusal code (a reviewed provider artifact change).
+      answered nothing usable (busy, or an older worker that does not name
+      its refusals). Not a member verdict; retried next wake.
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
@@ -200,12 +201,14 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             try:
                 rows = provider.embed_document_chunks(text, path=path)
             except IndexContractError as exc:
+                if str(exc) == 'provider_member_refused':
+                    return record(False) or answer('blocked', 'vector_member_rejected',
+                                                   cursor=cursor, path=path,
+                                                   detail='provider_member_refused')
                 if str(exc) != 'provider_result_invalid':
                     raise
-                # The worker's own per-member refusals (over 1,024 chunks, a
-                # chunk over the context) and its busy reply both arrive as
-                # this one code, so it is neither blamed on the member nor
-                # left pathless: deferred with the path, retried next wake.
+                # Busy, or an older worker that sends refusals bare: not a
+                # member verdict, but never pathless. Retried next wake.
                 return record(False) or answer('deferred', 'provider_result_invalid',
                                                cursor=cursor, path=path)
             if not isinstance(rows, list) or not rows:

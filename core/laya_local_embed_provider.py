@@ -19,6 +19,9 @@ from laya_index_vector import profile_identity
 
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
+# Must match MEMBER_REFUSALS in laya_local_embed_worker.mjs.
+MEMBER_REFUSALS = frozenset({'provider_context_exceeded', 'provider_chunks_invalid',
+                             'chunk_recursion_limit', 'token_truncation_fallback'})
 DEFAULT_EMBED_MODEL_URI = ('hf:ggml-org/embeddinggemma-300M-GGUF/'
                            'embeddinggemma-300M-Q8_0.gguf')
 _RUNTIMES = {'qmd-2.5.3-node-llama-cpp-3.18.1',
@@ -247,6 +250,18 @@ class ReviewedLocalQmdProvider:
             raise IndexContractError('provider_unavailable') from exc
         try:
             envelope = json.loads(output.decode('utf-8'))
+            # A document the worker refuses on content alone (too many chunks,
+            # a chunk over the context) is named, so the fill can stop
+            # retrying it. Busy and other failures stay provider_result_invalid.
+            if (kind == 'document_chunks' and isinstance(envelope, dict)
+                    and set(envelope) == {'approvedProviderId', 'providerArtifactSha256',
+                                          'embeddingFingerprint', 'ok', 'result', 'refused'}
+                    and envelope.get('approvedProviderId') == m['approvedProviderId']
+                    and envelope.get('providerArtifactSha256') == m['providerArtifactSha256']
+                    and envelope.get('embeddingFingerprint') == m['embeddingFingerprint']
+                    and envelope.get('ok') is False and envelope.get('result') is None
+                    and envelope.get('refused') in MEMBER_REFUSALS):
+                _fail('provider_member_refused')
             if (not isinstance(envelope, dict) or
                     envelope.get('approvedProviderId') != m['approvedProviderId'] or
                     envelope.get('providerArtifactSha256') != m['providerArtifactSha256'] or
@@ -281,6 +296,13 @@ class ReviewedLocalQmdProvider:
                 _fail('provider_result_invalid')
             _blob(response['vector'], m['dimension'])
             return response['vector']
+        except IndexContractError as exc:
+            # IndexContractError is a ValueError: let only the new member code
+            # through. Everything else (a malformed reply, or _blob's
+            # invalid_vector) keeps its old provider_result_invalid name.
+            if str(exc) == 'provider_member_refused':
+                raise
+            raise IndexContractError('provider_result_invalid') from exc
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise IndexContractError('provider_result_invalid') from exc
 
