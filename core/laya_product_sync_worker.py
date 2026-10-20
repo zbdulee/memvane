@@ -356,8 +356,9 @@ def _after_sync(decision, proof, grants, result):
     After receipt and ACK, with the model service stopped. A raised error or
     a retry keeps this wake; the published head is not touched. ``proof`` is
     the one the sync ended with (the capacity path refreshes it at its
-    fence). A blocked run, or a burst skipped over the pending cap, is
-    reported as ``wikiDiscovery``.
+    fence). A blocked run, a burst skipped over the pending cap, or a run
+    that started the cursor (earlier changes are not discovered) is reported
+    as ``wikiDiscovery``.
     """
     if grants is None or result.get('state') not in ('indexed', 'unchanged'):
         return result
@@ -370,7 +371,8 @@ def _after_sync(decision, proof, grants, result):
     if outcome['state'] == 'retry':
         return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
                 'generation': result.get('generation')}
-    if outcome['state'] == 'blocked' or outcome.get('reason') == 'pending_over_cap_skipped':
+    if (outcome['state'] == 'blocked' or outcome.get('reason') == 'pending_over_cap_skipped'
+            or outcome.get('cursorStarted') is True):
         result = {**result, 'wikiDiscovery': outcome}
     return result
 
