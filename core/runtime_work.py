@@ -94,10 +94,13 @@ class WakeQueue:
         try:
             db.execute('PRAGMA synchronous=FULL')
             db.execute('CREATE TABLE IF NOT EXISTS wakes (id TEXT PRIMARY KEY,kind TEXT NOT NULL,target TEXT NOT NULL,revision INTEGER NOT NULL,status TEXT NOT NULL,due REAL NOT NULL,attempts INTEGER NOT NULL,reason TEXT)')
+            db.execute('CREATE TABLE IF NOT EXISTS wake_meta (key TEXT PRIMARY KEY,value INTEGER NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS wake_overflow (id TEXT PRIMARY KEY,kind TEXT NOT NULL,target TEXT NOT NULL,at REAL NOT NULL)')
             with db:yield db
         finally:db.close()
 
-    def put(self,kind,target,*,now=None):
+    def offer(self,kind,target,*,now=None):
+        """'queued', 'retained' (capacity-deferred, promoted later) or 'dropped'."""
         wake_policy.validate_wake(kind,target)
         key=wake_policy.wake_key(kind,target)
         now=time.time() if now is None else now
@@ -105,15 +108,50 @@ class WakeQueue:
             db.execute('BEGIN IMMEDIATE')
             exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(key,)).fetchone()
             limit=wake_policy.capacity_limit(kind,MAX_WAKES)
-            if not exists and db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]>=limit:
-                _atomic_json(self.root/'runtime-wake-overflow.json',{'status':'deferred_queue_capacity',
-                    'kind':kind,'key':key,'at':now,'limit':MAX_WAKES})
-                return None
-            db.execute("INSERT INTO wakes VALUES (?,?,?,1,'pending',?,0,NULL) ON CONFLICT(id) DO UPDATE SET revision=revision+1",(key,kind,target,now))
-        return key
+            if exists or db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]<limit:
+                _upsert(db,key,kind,target,now);return 'queued'
+            retained=(db.execute('SELECT 1 FROM wake_overflow WHERE id=?',(key,)).fetchone() is not None
+                      or db.execute('SELECT COUNT(*) FROM wake_overflow').fetchone()[0]<wake_policy.MAX_OVERFLOW)
+            if retained:db.execute('INSERT INTO wake_overflow VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',(key,kind,target,now))
+            _atomic_json(self.root/'runtime-wake-overflow.json',{'status':'deferred_queue_capacity',
+                'kind':kind,'key':key,'at':now,'limit':MAX_WAKES,'retained':retained})
+            return 'retained' if retained else 'dropped'
+
+    def put(self,kind,target,*,now=None):
+        key=wake_policy.wake_key(kind,target)
+        return key if self.offer(kind,target,now=now)=='queued' else None
 
     def pending(self):
-        with self.connect() as db:return [dict(row) for row in db.execute('SELECT * FROM wakes ORDER BY due,id')]
+        with self.connect() as db:
+            _promote_overflow(db,time.time())
+            return [dict(row) for row in db.execute('SELECT * FROM wakes ORDER BY due,id')]
+
+
+def _next_revision(db):
+    """Queue-unique, increasing revision; a re-created row never reuses one.
+
+    Handlers may record the revision they served, so a later wake for the
+    same (kind, target) must be distinguishable after the old row was ACKed.
+    """
+    row=db.execute("SELECT value FROM wake_meta WHERE key='revision'").fetchone()
+    value=(row[0] if row else db.execute('SELECT COALESCE(MAX(revision),0) FROM wakes').fetchone()[0])+1
+    db.execute("INSERT INTO wake_meta VALUES ('revision',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(value,))
+    return value
+
+
+def _upsert(db,key,kind,target,now):
+    db.execute("INSERT INTO wakes VALUES (?,?,?,?,'pending',?,0,NULL) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision",
+               (key,kind,target,_next_revision(db),now))
+
+
+def _promote_overflow(db,now):
+    """Move capacity-deferred wakes into free slots, oldest first."""
+    for row in db.execute('SELECT id,kind,target FROM wake_overflow ORDER BY at,id').fetchall():
+        exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(row['id'],)).fetchone()
+        if not exists and db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]>=wake_policy.capacity_limit(row['kind'],MAX_WAKES):
+            continue
+        _upsert(db,row['id'],row['kind'],row['target'],now)
+        db.execute('DELETE FROM wake_overflow WHERE id=?',(row['id'],))
 
 
 def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.time,
@@ -177,9 +215,12 @@ def wake():
 def request(kind,target='',*,start=True):
     # Fixture runs must never create runtime files/children in the real UID home.
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1' or os.environ.get('QMD_SANDBOX'):return
-    key=WakeQueue().put(kind,target)
+    offered=WakeQueue().offer(kind,target)
     if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':wake()
-    return {'status':'queued' if key is not None else 'deferred_queue_capacity'}
+    # A retained wake is durable and promoted when a slot frees; only a
+    # dropped one needs the caller's own request file and the next hook.
+    return {'status':{'queued':'queued','retained':'deferred_queue_capacity_retained',
+                      'dropped':'deferred_queue_capacity'}[offered]}
 
 
 def _drain_and_rewake(queue,fd):

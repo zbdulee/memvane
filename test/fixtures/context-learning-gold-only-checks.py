@@ -108,13 +108,27 @@ with tempfile.TemporaryDirectory(prefix='qmd-gold-only-') as name:
         assert launch({}, project, after_index=True) == {
             'status': 'deferred_gold_only_manual_review'}
         child.assert_not_called()
+    # The hook persists a full-worker request and its durable wake; only the
+    # runtime dispatcher starts the owned child (see learning_worker_step).
     with patch.dict(os.environ, {'QMD_SHARED_GOLD_ONLY': ''}), \
             patch('context_learning.shared._safe_root', return_value=root), \
             patch('context_learning.shared._policy', return_value=current_policy), \
             patch('context_learning.shared.subprocess.Popen') as child, \
+            patch('runtime_work.request', return_value={'status': 'queued'}) as wake, \
             patch('context_learning.shared.job_telemetry.emit'):
-        assert launch({}, project) == {'status': 'launched'}
+        assert launch({}, project) == {'status': 'queued'}
+        child.assert_not_called()
+        wake.assert_called_once_with('learning', str(project.resolve()))
+        assert json.loads((root / 'full-worker-request.json').read_text())['afterIndex'] is False
+    # The owned child gets a whitelisted environment: no gold-only override.
+    from context_learning.shared import learning_worker_step
+    with patch.dict(os.environ, {'QMD_SHARED_GOLD_ONLY': '1'}), \
+            patch('context_learning.shared.subprocess.Popen') as child:
+        assert learning_worker_step(root, project, 1)['status'] == 'started'
         assert 'QMD_SHARED_GOLD_ONLY' not in child.call_args.kwargs['env']
+        assert child.call_args.args[0][3] == 'run-owned-worker'
+    (root / 'full-worker-request.json').unlink()
+    (root / 'full-worker-state.json').unlink()
     # A selected profile has no capture/teacher phase in its normal worker.
     # Only its durable training wake may start that worker.
     with patch.dict(os.environ, {'QMD_SHARED_GOLD_ONLY': ''}), \

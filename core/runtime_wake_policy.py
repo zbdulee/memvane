@@ -21,6 +21,9 @@ KINDS = {'index': 0, 'update': 1, 'cleanup': 2, 'laya-sync': 2,
 RETRY = {'busy', 'deferred_resource', 'deferred_quota', 'staged_evaluation_deferred', 'apply_deferred',
          'setup_required', 'setup_in_progress'}
 MAX_WAKES = 256
+# Capacity-deferred wakes kept for promotion when a slot frees; coalesced by
+# wake_key like the queue itself. Only beyond this is a wake dropped.
+MAX_OVERFLOW = 1024
 MAX_TARGET_BYTES = 4096
 RETRY_BASE_SECS = 5
 RETRY_MAX_EXPONENT = 6

@@ -58,14 +58,15 @@ base=Path(sys.argv[1]).resolve()
 (base/'shared-learning.sqlite3').write_bytes(b'corrupt synthetic database')
 (base/'shared-last-status.json').write_text(json.dumps({'reason':'preparation_budget'}))
 source=ast.parse(Path('test/fixtures/context-learning-project-hook-e2e.py').read_text())
-functions={n.name:n for n in ast.walk(source) if isinstance(n,ast.FunctionDef) and n.name in ('rows','wait_busy')}
-clock=iter([0,0,16]);namespace={'sqlite3':sqlite3,'time':SimpleNamespace(monotonic=lambda:next(clock),sleep=lambda _:None)}
-exec(compile(ast.fix_missing_locations(ast.Module(body=[functions['rows'],functions['wait_busy']],type_ignores=[])),'fixture-diagnostic','exec'),namespace)
+functions={n.name:n for n in ast.walk(source) if isinstance(n,ast.FunctionDef) and n.name in ('rows','wait_requested')}
+clock=iter([0,0,16]);namespace={'sqlite3':sqlite3,'time':SimpleNamespace(monotonic=lambda:next(clock),sleep=lambda _:None),
+ 'shared':SimpleNamespace(FULL_WORKER_REQUEST='full-worker-request.json'),'request_nonces':set()}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[functions['rows'],functions['wait_requested']],type_ignores=[])),'fixture-diagnostic','exec'),namespace)
 before=(base/'shared-learning.sqlite3').read_bytes()
-try:namespace['wait_busy'](base,1)
+try:namespace['wait_requested'](base,base)
 except AssertionError as error:
  message=str(error)
- assert 'direct fixture workers did not finish' in message and 'preparation_budget' in message,message
+ assert 'full-worker request not persisted' in message and 'preparation_budget' in message,message
  assert 'captures=0' in message and 'cases=unavailable' in message,message
 else:raise AssertionError('missing failure')
 assert (base/'shared-learning.sqlite3').read_bytes()==before

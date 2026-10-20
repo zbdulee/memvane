@@ -4,8 +4,9 @@ QMD results, OS account-home/resource observations and signed-in Codex inventory
 are local external-boundary fixtures. Resource verdicts and kernel locks stay real.
 The teacher invoke callback stands only for external inference; it
 does not attest native CLI execution or process monitoring. No guard, scope,
-source, installation, or process identity function is patched. Worker kernel
-locks keep ordinary detached recall workers busy while captures commit.
+source, installation, or process identity function is patched. Hooks only
+persist a full-worker request and durable wake; the held dispatcher lease keeps
+any owned worker from starting while captures commit.
 """
 import fcntl
 import json
@@ -266,21 +267,28 @@ assert not attempts,attempts
             input=canonical({'cwd':str(project),'prompt':prompt,'hook_event_name':'UserPromptSubmit'}),
             text=True,capture_output=True,env=env,cwd=project,timeout=20,check=True)
         assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr,(base/'recall.jsonl').read_text())
-    def wait_busy(namespace,count):
-        deadline=time.monotonic()+15; log=namespace/'worker.log'
+    request_nonces = set()
+    def wait_requested(project,namespace):
+        """The hook persists a new full-worker request and its durable wake."""
+        deadline=time.monotonic()+15; path=namespace/shared.FULL_WORKER_REQUEST
         while time.monotonic()<deadline:
-            if log.exists() and log.read_text().count('"status":"busy"')>=count:return
+            if path.exists():
+                nonce=json.loads(path.read_text())['nonce']
+                if nonce not in request_nonces:
+                    request_nonces.add(nonce)
+                    wakes={(row['kind'],row['target']) for row in WakeQueue().pending()}
+                    assert ('learning',str(project.resolve())) in wakes,wakes
+                    return
             time.sleep(.05)
         def diagnostic(read):
             try:return read()
             except Exception as error:return 'unavailable:'+type(error).__name__
-        raise AssertionError('direct fixture workers did not finish: '+str(namespace)
-            +' log='+diagnostic(lambda:log.read_text() if log.exists() else 'missing')
+        raise AssertionError('full-worker request not persisted: '+str(namespace)
             +' shared='+diagnostic(lambda:(namespace/'shared-last-status.json').read_text()[:2048]
                 if (namespace/'shared-last-status.json').exists() else 'missing')
             +' captures='+str(diagnostic(lambda:len(rows(namespace,'samples'))))
             +' cases='+str(diagnostic(lambda:len(rows(namespace,'cases')))))
-    def recall_until_enqueued(project, namespace, fixture, host, prompt, case_count, busy_count):
+    def recall_until_enqueued(project, namespace, fixture, host, prompt, case_count):
         """Retry only a captured hook whose admission timed out before enqueue.
 
         Each retry is a new prompt event. It is safe only when the prior event
@@ -301,7 +309,7 @@ assert not attempts,attempts
             assert status.get('request_id_hash') == digest(next(iter(new_ids))), status
             if status.get('status') == 'queued':
                 assert len(rows(namespace, 'cases')) == case_count + 1, status
-                wait_busy(namespace, busy_count)
+                wait_requested(project, namespace)
                 return
             assert (status.get('status'), status.get('stage'), status.get('reason')) == (
                 'unavailable', 'enqueue', 'preparation_budget'), status
@@ -335,9 +343,9 @@ assert not attempts,attempts
         progress('activated',project)
     for project,namespace,fixture in projects:
         recall_until_enqueued(project,namespace,fixture,'claude',
-            'Where do synthetic Cobalt garden flowers grow?',0,1)
+            'Where do synthetic Cobalt garden flowers grow?',0)
         recall_until_enqueued(project,namespace,fixture,'codex',
-            'Which synthetic Cobalt garden flowers are documented?',1,2)
+            'Which synthetic Cobalt garden flowers are documented?',1)
         with sqlite3.connect(namespace/'learning.sqlite3') as db:
             samples = [json.loads(row[0]) for row in db.execute('SELECT body FROM samples')]
         assert {row['host'] for row in samples} == {'claude','codex'}, samples
@@ -411,7 +419,7 @@ assert not attempts,attempts
     # Sensitive query is captured locally but never passed to teacher transport.
     project,namespace,fixture = projects[0]
     recall_until_enqueued(project,namespace,fixture,'codex',
-        'Find synthetic Cobalt garden password="never-send-this-secret"',2,3)
+        'Find synthetic Cobalt garden password="never-send-this-secret"',2)
     result = general_teacher.process_pending(namespace,project,shared._policy(namespace),
         invoke=lambda *a,**k:(_ for _ in ()).throw(AssertionError('secret crossed transport')))
     assert result['outcomes']==['excluded_sensitive'], result
@@ -430,12 +438,26 @@ assert not attempts,attempts
         assert (namespace/'active-checkpoint.json').read_bytes()==pointer
         progress('insufficient_training_preserves_checkpoint',project)
     receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
+    # Hooks never spawn the worker; only the runtime dispatcher may.
     worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
-    assert len(worker_receipts)==5 and all(row['home']==str(home) for row in worker_receipts),worker_receipts
+    assert worker_receipts==[],worker_receipts
     for lock in locks: lock.close()
     from runtime_work import drain
-    drained=drain(WakeQueue(),max_seconds=15,max_runs=8)
+    # The dispatcher starts one owned worker per pending request and keeps its
+    # wake until that worker settles; teacher work was already committed above.
+    for _ in range(4):
+        drained=drain(WakeQueue(),max_seconds=15,max_runs=8)
+        if drained['status']=='drained':break
     assert drained['status']=='drained',drained
+    receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
+    worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
+    # Compute admission can defer one child while another project trains.
+    # That yields another owned process, but never another completed cycle.
+    assert len(worker_receipts)>=len(projects) and all(row['home']==str(home) for row in worker_receipts),worker_receipts
+    for _,namespace,_ in projects:
+        assert json.loads((namespace/shared.FULL_WORKER_STATE).read_text())['acked'] is True
+        outcomes=[json.loads(line)['status'] for line in (namespace/'worker.log').read_text().splitlines()]
+        assert outcomes.count('waiting_fresh_train')==1,outcomes
     progress('private_retry_queue_drained')
     assert not any(name in sys.modules for name in ('torch','transformers','laya'))
     assert not os.environ.get('QMD_SETUP_GUARD_FIXTURE')
