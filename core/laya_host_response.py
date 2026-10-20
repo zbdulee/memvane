@@ -67,6 +67,27 @@ def _is_sealed_manifest_stale(exc: BaseException) -> bool:
             and type(exc.__cause__) is _SealedManifestMismatch)
 
 
+def _stale_sync_code(exc: BaseException) -> str | None:
+    """The refusal code for a freshness outcome that must wake sync, else None.
+
+    A completed full scan or capacity proof that differs from the pinned
+    generation is stale. A capacity proof that could not finish (budget,
+    deadline, unreadable source) is unknown freshness; it also blocks and
+    wakes sync, under its own code so it is never read as a stale view that
+    one sync will clear.
+    """
+    if _is_sealed_manifest_stale(exc):
+        return 'index_stale_sync_queued'
+    from laya_index_a import IndexContractError
+    from laya_source_catalog import CatalogPending, CorpusDiverged
+    if (type(exc) is IndexContractError and str(exc) == 'index_stale'
+            and type(exc.__cause__) is CorpusDiverged):
+        return 'index_stale_sync_queued'
+    if type(exc) is CatalogPending and exc.reason == 'freshness_unproven':
+        return 'index_freshness_unproven_sync_queued'
+    return None
+
+
 def _successful_bash(payload: dict) -> bool:
     """Same acceptance as file_change_queue; the selected path imports no QMD module."""
     response = payload.get("tool_response")
@@ -498,7 +519,9 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
 
     Without ``candidates`` every row is checked against one live scan of all
     roots. With a ``CandidateQuery`` only the returned rows are read and
-    rehashed; a stale row is dropped instead of failing the query.
+    rehashed here; a stale row is dropped and counted, and the caller's
+    ``prove_fresh`` turns that count, or any unreturned source change, into
+    a blocked answer before delivery.
     """
     from keywords import (build_lexical_terms, select_general_terms_explained,
                           GENERAL_LEX_TERM_CAP)
@@ -723,9 +746,14 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                                                      runtime.binding_store)
 
         def deliver(rows, title_only):
-            # Candidate rows are deliverable only after finish() re-checks
-            # the seal, incarnation and live roots; if it raises, none are.
+            # Returned-row checks miss unreturned new/renamed/changed files
+            # and turn a stale row into a shorter answer. Every answer, an
+            # empty one included, first needs the live proof that the whole
+            # bound corpus is still this pinned generation; then finish()
+            # re-checks the seal, incarnation and live roots. If either
+            # raises, no row is delivered.
             if candidates is not None:
+                candidates.prove_fresh()
                 candidates.finish()
             return rows, title_only
         rows, body_evidence = _v2_phase(
@@ -846,11 +874,13 @@ def _route_external_edits(decision: dict, payload: dict, current: Path,
         _fail("external_" + first[1])
 
 
-def _request_stale_sync(decision: dict, proof: dict):
-    """Record one durable full-scan wake for a stale view; always raises.
+def _request_stale_sync(decision: dict, proof: dict,
+                        code: str = "index_stale_sync_queued"):
+    """Record one durable full-scan wake for a stale or unproven view; always raises.
 
     The wake key coalesces repeated recalls. The hook never waits for the
-    owner and never serves the stale generation's rows.
+    owner and never serves the pinned generation's rows. ``code`` is the
+    refusal once the wake is recorded.
     """
     from laya_install_journal import verify_selected_route
     if verify_selected_route(decision) != proof:
@@ -868,7 +898,7 @@ def _request_stale_sync(decision: dict, proof: dict):
         _fail("selected_proof_changed")
     if not isinstance(result, dict) or result.get("status") not in ("queued", "busy"):
         _fail("index_stale_sync_unavailable")
-    _fail("index_stale_sync_queued")
+    _fail(code)
 
 
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,
@@ -1142,10 +1172,12 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 title_only = frozenset()
     except Exception as exc:
         # A pull/checkout outside any hook is first seen here. Wake the owner
-        # only for a verified content mismatch; every other failure is unchanged.
-        if not v2 or not _is_sealed_manifest_stale(exc):
+        # for a verified content mismatch or an unproven capacity freshness
+        # proof; every other failure is unchanged.
+        code = _stale_sync_code(exc) if v2 else None
+        if code is None:
             raise
-        _request_stale_sync(decision, proof)
+        _request_stale_sync(decision, proof, code)
     if verify_selected_route(decision) != proof:
         _fail("selected_proof_changed")
     chosen = rows[:top_n]
