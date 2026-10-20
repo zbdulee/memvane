@@ -381,7 +381,8 @@ def main(argv=None):
                                           'prepare-index-origin','index-origin-status',
                                           'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
-                                          'activate-index-origin','recover-index-origin'))
+                                          'activate-index-origin','recover-index-origin',
+                                          'restore-index-origin'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -424,13 +425,15 @@ def main(argv=None):
     parser.add_argument('--provider-dimension', type=int)
     parser.add_argument('--user-qmd-root', action='append')
     parser.add_argument('--approve-index-origin-activation', action='store_true')
+    parser.add_argument('--approve-index-origin-restore', action='store_true')
     args = parser.parse_args(argv)
     try:
         if args.action in ('plan-index-origin','review-index-provider',
                            'prepare-index-origin','index-origin-status',
                            'index-build-status','index-build-rescan',
                            'finalize-index-origin',
-                           'activate-index-origin','recover-index-origin'):
+                           'activate-index-origin','recover-index-origin',
+                           'restore-index-origin'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action == 'plan-index-origin':
@@ -474,16 +477,22 @@ def main(argv=None):
                 elif args.action == 'finalize-index-origin':
                     result = product.finalize_initial_build(
                         project_root=args.project, state_root=state)
+                elif args.action == 'restore-index-origin':
+                    # User-visible withdrawal to the preserved QMD; deletes no DB.
+                    if not args.approve_index_origin_restore:
+                        raise ValueError('index_origin_restore_approval_required')
+                    result = product.restore_origin_selection(
+                        project_root=args.project, state_root=state)
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
                     with product._install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
                                 raise ValueError('index_origin_activation_approval_required')
-                            result = product.activate_qmd_origin(
+                            result = product.activate_origin_selection(
                                 Path(args.project), journal, route)
                         else:
-                            result = product.recover_qmd_origin(
+                            result = product.recover_origin_selection(
                                 Path(args.project), journal, route)
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         elif args.action=='activate-learning-profile':result=select_learning(args)

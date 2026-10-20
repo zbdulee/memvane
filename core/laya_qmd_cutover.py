@@ -51,9 +51,11 @@ PHASES = ('prepared', 'switching', 'active', 'restoring', 'restored')
 BOUND_FILES = (('sourceDb', 'sourceIdentity'), ('backupDb', 'backupIdentity'),
                ('candidateDb', 'candidateIdentity'), ('queueDb', 'queueIdentity'),
                ('catalogDb', 'catalogIdentity'), ('bindingStore', 'bindingStoreIdentity'))
-# What a replayed v3 bind must repeat exactly. Only the QMD digest and its
-# backup may be refreshed while the ledger is still ``prepared``.
-BOUND_IDENTITY = ('projectRoot', 'journalPath', 'routeSha256', 'sourceDb',
+# What a replayed v3 bind must repeat exactly. Only the backup of the same QMD
+# digest may be refreshed while the ledger is still ``prepared``. A changed
+# QMD digest is never rebound: the sealed generation predates that change, so
+# a fresh generation is required (``cutover_source_drift_requires_fresh_generation``).
+BOUND_IDENTITY =('projectRoot', 'journalPath', 'routeSha256', 'sourceDb',
                   'sourceFormat', 'collections', 'candidateDb', 'queueDb', 'catalogDb',
                   'bindingStore', 'scope', 'indexGeneration', 'sourceManifest',
                   'bindingDigest', 'catalogScanId', 'catalogRawDigest',
@@ -61,8 +63,10 @@ BOUND_IDENTITY = ('projectRoot', 'journalPath', 'routeSha256', 'sourceDb',
                   'attestationSha256', 'providerFileIdentitySha256', 'sourceIdentity',
                   'candidateIdentity', 'queueIdentity', 'catalogIdentity',
                   'bindingStoreIdentity')
-BOUND_REFRESH = ('sourceDigest', 'backupDb', 'backupIdentity')
-V3_FIELDS = frozenset(('schema', 'epoch', 'phase', *BOUND_IDENTITY, *BOUND_REFRESH))
+BOUND_REFRESH = ('backupDb', 'backupIdentity')
+V3_FIELDS = frozenset(('schema', 'epoch', 'phase', 'sourceDigest',
+                       *BOUND_IDENTITY, *BOUND_REFRESH))
+SOURCE_DRIFT = 'cutover_source_drift_requires_fresh_generation'
 # Ledger field -> ``laya_initial_build.evidence`` field.
 BOUND_EVIDENCE = (('indexGeneration', 'generation'), ('bindingDigest', 'bindingDigest'),
                   ('sourceManifest', 'sourceManifest'), ('catalogScanId', 'catalogScanId'),
@@ -411,7 +415,8 @@ def _check_bound_evidence(row, restore):
             _fail('cutover_bound_file_replaced')
     names, roots = _source_binding(row)
     if _qmd_digest(row['sourceDb'], row['sourceFormat'], names, True) != row['sourceDigest']:
-        _fail('cutover_source_changed')
+        # Before selection the sealed generation is stale; it is never rebound.
+        _fail('cutover_source_changed' if restore else SOURCE_DRIFT)
     _restore_verified(row['backupDb'], row['sourceFormat'], names,
                       row['sourceDigest'], True)
     if restore:
@@ -682,8 +687,10 @@ def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
 
     Idempotent: a repeat with the same binding re-proves it, completes a
     marker an interruption left unwritten and returns the ledger. While the
-    ledger is still ``prepared`` a repeat may refresh only the QMD digest and
-    backup (QMD keeps indexing until activation). Any other difference is
+    ledger is still ``prepared`` a repeat may refresh only the backup of the
+    same QMD digest. QMD keeps indexing until activation; a changed digest
+    means the sealed generation is stale and is refused as ``SOURCE_DRIFT``
+    without touching the ledger, marker or backups. Any other difference is
     refused; a ledger that moved past ``prepared`` is returned unchanged.
     """
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)
@@ -765,6 +772,9 @@ def _replay_bound(fresh, ledger_path, marker_path, route_path):
             _fail('cutover_route_uncertain')
         if marker_path.exists() or marker_path.is_symlink():
             _check_marker(current, marker_path)
+        if current['sourceDigest'] != fresh['sourceDigest']:
+            # The bound generation was sealed before QMD indexed this change.
+            _fail(SOURCE_DRIFT)
         _check_evidence(fresh)
         _inactive_approval(fresh['journalPath'], fresh['routeSha256'])
         if any(current[key] != fresh[key] for key in BOUND_REFRESH):
@@ -841,6 +851,14 @@ def activate_qmd_origin(project_root, journal_path, route_bytes):
             approval['pendingRouteSha256'] != row['routeSha256']):
         _fail('cutover_attestation_changed')
     row = _change(ledger_path, row['epoch'], 'prepared', 'switching')
+    # The marker no longer classifies as legacy once ``switching``. A QMD
+    # write that landed after the proof above makes the bound generation
+    # stale: withdraw to ``prepared`` before any route or journal change.
+    names, _roots = _source_binding(row)
+    if _qmd_digest(row['sourceDb'], row['sourceFormat'], names,
+                   row['schema'] != SCHEMA) != row['sourceDigest']:
+        _change(ledger_path, row['epoch'], 'switching', 'prepared')
+        _fail(SOURCE_DRIFT if row['schema'] == SCHEMA_V3 else 'cutover_source_changed')
     _write(route_path, route_bytes, replace=False)
     active = cas_activate(journal_path, journal['epoch'], route_bytes)
     if (active['state'] != 'active' or

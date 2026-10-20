@@ -34,7 +34,8 @@ import laya_product_sync_worker as worker  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_host_route import SCHEMA_V2 as ROUTE_V2  # noqa: E402
 from laya_index_vector import qmd_markdown_title  # noqa: E402
-from laya_qmd_migration import QMD_253, QmdMigrationBlocked  # noqa: E402
+from laya_qmd_migration import (QMD_253, QmdMigrationBlocked,  # noqa: E402
+                                inspect_qmd_collections)
 from laya_source_catalog import LayaSourceCatalog  # noqa: E402
 
 SCOPE, PROFILE_ID = BUILD['SCOPE'], BUILD['PROFILE_ID']
@@ -127,6 +128,7 @@ class BoundCase(BUILD['BuildCase']):
                 (cutover, 'cas_activate', self.fj.activate),
                 (cutover, 'cas_restore_qmd', self.fj.restore),
                 (product, 'preflight_product_candidate', self.fj.approval),
+                (product, 'inspect_journal', self.fj.inspect),
                 (product, 'plan_qmd_origin', plan)):
             patcher = mock.patch.object(target, name, value)
             patcher.start()
@@ -226,6 +228,32 @@ class BoundCase(BUILD['BuildCase']):
 
     def backups(self):
         return sorted(path.name for path in self.state.glob('qmd-origin-backup-*.sqlite'))
+
+    def qmd_digest(self):
+        return inspect_qmd_collections(self.qmd, QMD_253, ('docs', 'wiki'))['digest']
+
+    def bind_kwargs(self, row, **changes):
+        """The exact ``bind_qmd_origin_bound`` call that wrote ``row``."""
+        roots = {item['name']: item['sourceRoot'] for item in row['collections']}
+        kwargs = dict(project_root=self.project, journal_path=self.journal_path,
+                      route_bytes=self.route_bytes, source_db=row['sourceDb'],
+                      backup_db=row['backupDb'], source_format=row['sourceFormat'],
+                      collection=('docs', 'wiki'), source_digest=row['sourceDigest'],
+                      source_root=roots, candidate_db=row['candidateDb'],
+                      queue_db=row['queueDb'], catalog_db=row['catalogDb'],
+                      binding_store=row['bindingStore'], scope=row['scope'],
+                      index_generation=row['indexGeneration'],
+                      source_manifest=row['sourceManifest'],
+                      binding_digest=row['bindingDigest'],
+                      catalog_scan_id=row['catalogScanId'],
+                      catalog_raw_digest=row['catalogRawDigest'],
+                      vector_profile_id=row['vectorProfileId'],
+                      vector_rows=row['vectorRows'])
+        return {**kwargs, **changes}
+
+    def restore_entry(self):
+        return product.restore_origin_selection(project_root=self.project,
+                                                state_root=self.state)
 
     def kept(self):
         """Nothing a cutover may never delete: QMD, backups, candidate, sources."""
@@ -476,21 +504,54 @@ class BoundCutoverProofTests(BoundCase):
         self.assert_prepared_unselected()
         self.assertEqual(self.fj.calls, [])
 
-    def test_changed_qmd_refuses_then_rebinding_takes_a_fresh_backup(self):
+    def test_changed_qmd_is_never_rebound_to_the_stale_generation(self):
         self.bound()
         first = self.row()
+        marker = self.marker.read_bytes()
+        record = self.record()
         self.qmd_indexes('late.md', '# Late\nindexed after bind\n')
-        self.refused('cutover_source_changed')
-        again = self.finalize()
-        row = self.row()
-        self.assertEqual(again['status'], 'cutover_prepared')
-        self.assertEqual(row['epoch'], first['epoch'] + 1)
-        self.assertNotEqual(row['sourceDigest'], first['sourceDigest'])
-        self.assertNotEqual(row['backupDb'], first['backupDb'])
-        self.assertEqual(len(self.backups()), 2, 'the earlier backup is kept')
-        self.assertEqual({key: row[key] for key in cutover.BOUND_IDENTITY},
-                         {key: first[key] for key in cutover.BOUND_IDENTITY})
-        self.assertEqual(self.activate()['phase'], 'active')
+        drifted = self.qmd_digest()
+        self.assertNotEqual(drifted, first['sourceDigest'])
+        self.refused(cutover.SOURCE_DRIFT)
+        # Finalize refuses before taking a backup of the drifted digest.
+        with self.assertRaisesRegex(product.InstallBlocked, cutover.SOURCE_DRIFT):
+            self.finalize()
+        # The cutover owner refuses the same replay made directly.
+        with self.assertRaisesRegex(cutover.CutoverBlocked, cutover.SOURCE_DRIFT):
+            cutover.bind_qmd_origin_bound(**self.bind_kwargs(first, source_digest=drifted))
+        self.assertEqual(self.row(), first, 'the ledger keeps the bound digest')
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertEqual(self.record(), record)
+        self.assertEqual(len(self.backups()), 1)
+        self.refused(cutover.SOURCE_DRIFT)
+        # The product entry refuses too, and queues no selected sync.
+        with mock.patch.object(product, '_request_build_wake') as wake:
+            with self.assertRaisesRegex(cutover.CutoverBlocked, cutover.SOURCE_DRIFT):
+                product.activate_origin_selection(self.project, self.journal_path,
+                                                  self.route_bytes)
+        wake.assert_not_called()
+        self.assert_prepared_unselected()
+        # Restoring a never-selected cutover changes nothing.
+        restored = self.restore_entry()
+        self.assertEqual((restored['status'], restored['changesApplied']), ('qmd_selected', 0))
+        self.assertEqual(self.row(), first)
+        self.assertEqual(self.fj.calls, [])
+
+    def test_qmd_write_racing_activation_withdraws_before_the_route(self):
+        self.bound()
+        real = cutover._change
+
+        def change(path, epoch, expected, following, updates=None):
+            row = real(path, epoch, expected, following, updates)
+            if (expected, following) == ('prepared', 'switching'):
+                self.qmd_indexes('race.md', '# Race\nindexed during activation\n')
+            return row
+        with mock.patch.object(cutover, '_change', change):
+            with self.assertRaisesRegex(cutover.CutoverBlocked, cutover.SOURCE_DRIFT):
+                self.activate()
+        self.assert_prepared_unselected()
+        self.assertEqual(self.fj.calls, [])
+        self.refused(cutover.SOURCE_DRIFT)
 
     def test_changed_settings_attestation_or_route_refuse(self):
         self.bound()
@@ -542,21 +603,7 @@ class BoundCutoverProofTests(BoundCase):
     def test_a_different_binding_is_never_merged_into_the_ledger(self):
         self.bound()
         row = self.row()
-        roots = {item['name']: item['sourceRoot'] for item in row['collections']}
-        kwargs = dict(project_root=self.project, journal_path=self.journal_path,
-                      route_bytes=self.route_bytes, source_db=row['sourceDb'],
-                      backup_db=row['backupDb'], source_format=row['sourceFormat'],
-                      collection=('docs', 'wiki'), source_digest=row['sourceDigest'],
-                      source_root=roots, candidate_db=row['candidateDb'],
-                      queue_db=row['queueDb'], catalog_db=row['catalogDb'],
-                      binding_store=row['bindingStore'], scope=row['scope'],
-                      index_generation=row['indexGeneration'],
-                      source_manifest=row['sourceManifest'],
-                      binding_digest=row['bindingDigest'],
-                      catalog_scan_id=row['catalogScanId'],
-                      catalog_raw_digest=row['catalogRawDigest'],
-                      vector_profile_id=row['vectorProfileId'],
-                      vector_rows=row['vectorRows'] + 1)
+        kwargs = self.bind_kwargs(row, vector_rows=row['vectorRows'] + 1)
         with self.assertRaisesRegex(cutover.CutoverBlocked,
                                     'cutover_selection_already_exists'):
             cutover.bind_qmd_origin_bound(**kwargs)
@@ -571,6 +618,103 @@ class BoundCutoverProofTests(BoundCase):
                        {**row, 'catalogDb': row['bindingStore']}):
             with self.assertRaisesRegex(cutover.CutoverBlocked, 'cutover_ledger_invalid'):
                 cutover._validated(forged, self.ledger)
+
+
+class BoundProductEntryTests(BoundCase):
+    def test_activation_requires_the_fresh_bound_generation_then_wakes_sync(self):
+        self.bound()
+        record = self.record()
+        sealed = record['sealed']
+        stale = (
+            {**record, 'freshness': {'requestedNs': sealed['scanStartedNs'] + 1}},
+            {**record, 'sealed': {**sealed, 'vectorRows': sealed['vectorRows'] + 1}},
+            {**record, 'sealed': {**sealed, 'catalogScanId': 'f' * 32}},
+        )
+        wakes = []
+
+        def wake(project):
+            wakes.append(project)
+            return {'status': 'queued'}
+        with mock.patch.object(product, '_request_build_wake', wake):
+            for forged in stale:
+                with mock.patch.object(initial_build, 'read', return_value=forged):
+                    with self.assertRaisesRegex(product.InstallBlocked,
+                                                'activation_requires_fresh_generation'):
+                        product.activate_origin_selection(self.project, self.journal_path,
+                                                          self.route_bytes)
+            unsettled = {**record, 'phase': 'sealed'}
+            with mock.patch.object(initial_build, 'read', return_value=unsettled):
+                with self.assertRaisesRegex(product.InstallBlocked,
+                                            'initial_build_bind_unsettled'):
+                    product.activate_origin_selection(self.project, self.journal_path,
+                                                      self.route_bytes)
+            self.assertEqual(wakes, [])
+            self.assert_prepared_unselected()
+            self.assertEqual(self.fj.calls, [])
+            active = product.activate_origin_selection(self.project, self.journal_path,
+                                                       self.route_bytes)
+        self.assertEqual((active['phase'], active['syncWake']), ('active', {'status': 'queued'}))
+        self.assertEqual(wakes, [str(self.project)], 'one selected sync after activation')
+        self.assertEqual(self.selection(), 'candidate')
+
+    def test_restore_entry_withdraws_to_qmd_and_keeps_every_store(self):
+        self.bound()
+        self.assertEqual(self.restore_entry()['status'], 'qmd_selected')
+        self.activate()
+        qmd_before = _sha(self.qmd.read_bytes())
+        marker = self.marker.read_bytes()
+        result = self.restore_entry()
+        self.assertEqual((result['status'], result['cutoverPhase'], result['journalState'],
+                          result['selection'], result['changesApplied']),
+                         ('qmd_restored', 'restored', 'restored_qmd', 'legacy', 1))
+        self.assertFalse(self.route.exists())
+        self.assertEqual(self.marker.read_bytes(), marker)
+        self.assertTrue(self.ledger.is_file())
+        self.assertTrue((self.state / 'reviewed-route.json').is_file())
+        self.assertEqual(self.fj.calls, ['activate', 'restore'])
+        self.assertEqual(_sha(self.qmd.read_bytes()), qmd_before, 'QMD is read-only')
+        self.kept()
+        again = self.restore_entry()
+        self.assertEqual((again['status'], again['changesApplied']), ('qmd_selected', 0))
+        self.assertEqual(self.fj.calls, ['activate', 'restore'])
+
+    def test_restore_entry_after_a_new_write_is_forward_only(self):
+        self.bound()
+        self.activate()
+        self.fj.new_write = True
+        with self.assertRaisesRegex(cutover.CutoverBlocked, 'cutover_rollback_not_authorized'):
+            self.restore_entry()
+        self.assertEqual((self.row()['phase'], self.route.read_bytes()),
+                         ('active', self.route_bytes))
+        self.assertEqual((self.fj.calls, self.selection()), (['activate'], 'candidate'))
+        self.kept()
+
+    def test_interrupted_restore_entry_reports_recovery_then_settles(self):
+        self.bound()
+        self.activate()
+        with mock.patch.object(cutover, 'cas_restore_qmd',
+                               side_effect=RuntimeError('journal_cas_failed')):
+            result = self.restore_entry()
+        self.assertEqual((result['status'], result['reason'], result['cutoverPhase'],
+                          result['journalState'], result['selection']),
+                         ('recovery_required', 'journal_cas_failed', 'restoring',
+                          'active', 'blocked'))
+        self.assertFalse(self.route.exists())
+        self.kept()
+        settled = self.restore_entry()
+        self.assertEqual((settled['status'], settled['cutoverPhase'], settled['journalState']),
+                         ('qmd_restored', 'restored', 'restored_qmd'))
+        self.assertEqual(self.fj.calls, ['activate', 'restore'])
+        self.kept()
+
+    def test_restore_entry_refuses_a_changed_reviewed_route(self):
+        self.bound()
+        self.activate()
+        (self.state / 'reviewed-route.json').write_bytes(self.route_bytes + b' ')
+        with self.assertRaisesRegex(product.InstallBlocked, 'restore_cutover_mismatch'):
+            self.restore_entry()
+        self.assertEqual((self.row()['phase'], self.fj.calls), ('active', ['activate']))
+        self.assertEqual(self.route.read_bytes(), self.route_bytes)
 
 
 if __name__ == '__main__':

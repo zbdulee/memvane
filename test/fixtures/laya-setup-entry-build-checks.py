@@ -74,6 +74,48 @@ class SetupInitialBuild(unittest.TestCase):
         finalize.assert_called_once_with(project_root=str(self.project), state_root=self.state)
         activate.assert_not_called()
 
+    def test_restore_entry_requires_explicit_approval_and_reports_outcome(self):
+        with mock.patch.object(product, '_private_parent', return_value=self.state), \
+             mock.patch.object(product, 'restore_origin_selection') as restore:
+            code, row = self.call('restore-index-origin', '--state-root', str(self.state))
+            self.assertEqual((code, row['status'], row['reason'], row['changesApplied']),
+                             (1, 'rejected', 'index_origin_restore_approval_required', 0))
+            restore.assert_not_called()
+            for outcome, expected in (('qmd_restored', 0), ('qmd_selected', 0),
+                                      ('recovery_required', 1), ('blocked', 1)):
+                restore.reset_mock()
+                restore.return_value = {'status': outcome}
+                code, row = self.call('restore-index-origin', '--state-root', str(self.state),
+                                      '--approve-index-origin-restore')
+                self.assertEqual((code, row['status']), (expected, outcome))
+                restore.assert_called_once_with(project_root=str(self.project),
+                                                state_root=self.state)
+
+    def test_activate_and_recover_entries_use_the_syncing_product_paths(self):
+        with mock.patch.object(product, '_private_parent', return_value=self.state), \
+             mock.patch.object(product, '_read_private', return_value=b'{}'), \
+             mock.patch.object(product, '_install_lock',
+                               side_effect=lambda _state: contextlib.nullcontext()), \
+             mock.patch.object(product, 'activate_qmd_origin') as raw_activate, \
+             mock.patch.object(product, 'activate_origin_selection',
+                               return_value={'phase': 'active',
+                                             'syncWake': {'status': 'queued'}}) as activate, \
+             mock.patch.object(product, 'recover_origin_selection',
+                               return_value={'phase': 'prepared'}) as recover:
+            code, row = self.call('activate-index-origin', '--state-root', str(self.state))
+            self.assertEqual((code, row['reason']),
+                             (1, 'index_origin_activation_approval_required'))
+            activate.assert_not_called()
+            code, row = self.call('activate-index-origin', '--state-root', str(self.state),
+                                  '--approve-index-origin-activation')
+            self.assertEqual((code, row['syncWake']), (0, {'status': 'queued'}))
+            self.assertEqual(self.call('recover-index-origin', '--state-root',
+                                       str(self.state))[1]['phase'], 'prepared')
+        journal = self.state / 'install-journal.sqlite'
+        activate.assert_called_once_with(self.project, journal, b'{}')
+        recover.assert_called_once_with(self.project, journal, b'{}')
+        raw_activate.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

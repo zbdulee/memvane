@@ -8,5 +8,5 @@ test('setup entry defaults to durable inactive build and exposes its safe status
     env: {...process.env, QMD_SANDBOX: '1', QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 3 tests/);
+  assert.match(result.stderr, /Ran 5 tests/);
 });

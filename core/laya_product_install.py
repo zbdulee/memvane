@@ -8,7 +8,10 @@ An already prepared QMD cutover ledger is mandatory before activation.
 By default every origin is registered as a durable inactive initial build
 (``laya_initial_build``) that the runtime ``laya-sync`` wake advances in
 bounded steps, then bound by an explicit ``finalize-build`` and activated by a
-separate ``activate``. The in-process synchronous origin (one bounded scan,
+separate ``activate``, which then queues one selected ``laya-sync`` wake. A
+QMD change after the bind refuses activation (the bound generation is stale)
+and is never rebound. An explicit ``restore`` withdraws the selection back to
+the preserved QMD origin without deleting any database. The in-process synchronous origin (one bounded scan,
 embedded in the installer call) remains only as the explicit legacy
 ``background=False`` / ``--synchronous-origin`` path; a source larger than
 that one scan is still planned as a background build, never refused.
@@ -1124,15 +1127,19 @@ def finalize_initial_build(*, project_root, state_root):
     Repeating it is safe. After an interruption between the ledger, the
     marker and the build record, it re-proves the same binding, completes
     what is missing and records ``bound``. While the cutover is still
-    ``prepared`` a repeat re-proves it and, if QMD indexed meanwhile, binds a
-    fresh no-clobber backup of the new QMD digest (old backups are kept).
+    ``prepared`` a repeat re-proves it. If QMD indexed meanwhile, the bound
+    generation predates that change: the repeat refuses as
+    ``cutover_source_drift_requires_fresh_generation`` before taking any
+    backup, and never rebinds the stale generation to the new digest. QMD
+    stays selected; the ledger, marker, backups and candidate are kept.
     Once the cutover moved on it only reports the phase.
     """
     import laya_initial_build as initial_build
     from contextlib import closing
     from laya_index_runtime import LayaIndexRuntime
     from laya_install_journal import inspect_journal
-    from laya_qmd_cutover import SCHEMA_V3, bind_qmd_origin_bound, inspect_bound_cutover
+    from laya_qmd_cutover import (SCHEMA_V3, SOURCE_DRIFT, bind_qmd_origin_bound,
+                                  inspect_bound_cutover)
     from laya_source_catalog import LayaSourceCatalog
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -1205,6 +1212,10 @@ def finalize_initial_build(*, project_root, state_root):
         names = tuple(item['name'] for item in identity['collections'])
         digest = inspect_qmd_collections(identity['sourceDb'], identity['sourceFormat'],
                                          names)['digest']
+        if cutover is not None and digest != cutover['sourceDigest']:
+            # QMD indexed after the bind: the bound generation is stale. Refuse
+            # before any backup; the prepared ledger and QMD stay selected.
+            _fail(SOURCE_DRIFT)
         backup = state / ('qmd-origin-backup-' + digest[:16] + '.sqlite')
         if not backup.exists() and not backup.is_symlink():
             backup_qmd_collections(identity['sourceDb'], identity['sourceFormat'],
@@ -1233,6 +1244,140 @@ def finalize_initial_build(*, project_root, state_root):
             'journalPath': identity['journalPath'], 'sourceBackup': str(backup),
             'candidateDb': identity['candidateDb'], 'routeFile': identity['routeFile'],
             'generation': sealed['generation'], 'buildPhase': record['phase']}
+
+
+def _checked_project(project_root):
+    project = Path(project_root)
+    if (not project.is_absolute() or project.is_symlink() or
+            project.resolve(strict=True) != project):
+        _fail('invalid_project_root')
+    return project
+
+
+def _require_fresh_bound_generation(row, state):
+    """A v3 cutover activates only the generation sealed after a freshness request.
+
+    The build record must be ``bound`` to exactly the ledger's generation and
+    sealed evidence, from a scan started at or after the recorded request.
+    """
+    import laya_initial_build as initial_build
+    from laya_qmd_cutover import BOUND_EVIDENCE
+    record = initial_build.read(state)
+    if record is None:
+        _fail('initial_build_missing')
+    identity, sealed, freshness = record['identity'], record['sealed'], record['freshness']
+    if (identity['journalPath'] != row['journalPath'] or
+            identity['projectRoot'] != row['projectRoot'] or
+            identity['candidateDb'] != row['candidateDb']):
+        _fail('initial_build_project_mismatch')
+    if record['phase'] != 'bound':
+        _fail('initial_build_bind_unsettled')
+    if (sealed is None or freshness is None or
+            sealed['scanStartedNs'] < freshness['requestedNs'] or
+            any(sealed[theirs] != row[ours] for ours, theirs in BOUND_EVIDENCE)):
+        _fail('activation_requires_fresh_generation')
+
+
+def activate_origin_selection(project_root, journal_path, route_bytes):
+    """Explicitly activate a prepared cutover, then wake the selected sync.
+
+    The caller holds the install lock. A v3 cutover first proves its bound
+    generation is the fresh one (``_require_fresh_bound_generation``); the
+    cutover owner then re-proves QMD, backup and candidate evidence, and
+    refuses a QMD change since the bind. Once active, one ``laya-sync`` wake
+    is queued so the selected worker catches up any source edit made after
+    the sealed snapshot; its outcome is reported, never retried here.
+    """
+    from laya_qmd_cutover import SCHEMA_V3, inspect_bound_cutover
+    project = _checked_project(project_root)
+    journal = Path(journal_path)
+    row = inspect_bound_cutover(journal)
+    if row is None:
+        _fail('cutover_ledger_missing')
+    if row['schema'] == SCHEMA_V3:
+        _require_fresh_bound_generation(row, journal.parent)
+    row = activate_qmd_origin(project, journal, route_bytes)
+    return {**row, 'syncWake': _request_build_wake(str(project))}
+
+
+def recover_origin_selection(project_root, journal_path, route_bytes):
+    """Settle an interrupted cutover; an ``active`` result wakes the selected sync."""
+    project = _checked_project(project_root)
+    row = recover_qmd_origin(project, Path(journal_path), route_bytes)
+    if row['phase'] == 'active':
+        return {**row, 'syncWake': _request_build_wake(str(project))}
+    return row
+
+
+def restore_origin_selection(*, project_root, state_root):
+    """Withdraw a Laya selection back to the preserved QMD origin.
+
+    The user-visible restore. Under the install lock it reads the ledger
+    beside the private journal and requires the same project, journal and
+    reviewed route bytes. ``active`` restores through the cutover owner only
+    while the journal has seen no selected write (CAS to ``restored_qmd``);
+    ``switching``/``restoring`` settle through recovery; ``prepared`` never
+    left QMD and changes nothing. The result is accepted only when the ledger
+    phase, the journal state and the marker selection agree.
+
+    One attempt, no retry: a failure that moved any of them reports
+    ``recovery_required`` with what was observed. QMD, every backup, the
+    candidate stores, the ledger and the marker are kept; only the exact
+    route file this cutover published is withdrawn.
+    """
+    from laya_qmd_cutover import (MARKER, ROUTE, classify_marker,
+                                  inspect_bound_cutover, restore_qmd_origin)
+    project = _checked_project(project_root)
+    state = _private_parent(state_root)
+    journal = state / 'install-journal.sqlite'
+    auto = project / '.auto-context'
+
+    def observed():
+        return {'cutoverPhase': inspect_bound_cutover(journal)['phase'],
+                'journalState': inspect_journal(journal)['state'],
+                'selection': classify_marker(project, auto / MARKER, auto / ROUTE)}
+
+    with _install_lock(state):
+        row = inspect_bound_cutover(journal)
+        if row is None:
+            _fail('cutover_ledger_missing')
+        route_bytes = _read_private(state / 'reviewed-route.json', 8192)
+        if (row['projectRoot'] != str(project) or row['journalPath'] != str(journal) or
+                hashlib.sha256(route_bytes).hexdigest() != row['routeSha256']):
+            _fail('restore_cutover_mismatch')
+        before = observed()
+        settled = (('prepared', 'candidate_ready', 'legacy'),
+                   ('restored', 'restored_qmd', 'legacy'))
+        if tuple(before.values()) in settled:
+            return {'status': 'qmd_selected', **before, 'changesApplied': 0}
+        try:
+            if row['phase'] == 'active':
+                restore_qmd_origin(project, journal)
+            else:
+                recover_qmd_origin(project, journal, route_bytes)
+        except Exception as exc:
+            try:
+                after = observed()
+            except Exception:
+                return {'status': 'recovery_required', 'reason': str(exc),
+                        'stateUnverified': True}
+            if after == before:
+                raise
+            return {'status': 'recovery_required', 'reason': str(exc), **after,
+                    'changesApplied': 1}
+        after = observed()
+    if tuple(after.values()) in settled and not os.path.lexists(auto / ROUTE):
+        return {'status': 'qmd_restored', **after, 'changesApplied': 1}
+    if after['cutoverPhase'] == 'active' and before['cutoverPhase'] == 'switching':
+        # Recovery found the activation committed; a repeated restore decides.
+        return {'status': 'recovery_required', 'reason': 'activation_settled_forward',
+                **after, 'changesApplied': 1}
+    if after['cutoverPhase'] == 'active':
+        # A selected write was seen: the Laya route is forward-only now.
+        return {'status': 'blocked', 'reason': 'rollback_forward_only', **after,
+                'changesApplied': int(after != before)}
+    return {'status': 'recovery_required', 'reason': 'restore_unsettled', **after,
+            'changesApplied': int(after != before)}
 
 
 def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,
@@ -1370,6 +1515,11 @@ def main(argv=None):
         command.add_argument('--route-file', required=True)
         if name == 'activate':
             command.add_argument('--approve-activation', action='store_true')
+    restore = sub.add_parser('restore',
+                             help='withdraw the Laya selection back to the preserved QMD')
+    restore.add_argument('--project-root', required=True)
+    restore.add_argument('--state-root', required=True)
+    restore.add_argument('--approve-restore', action='store_true')
     args = parser.parse_args(argv)
     root = _installed_root()
     state_root = (_private_parent(args.state_root)
@@ -1408,20 +1558,24 @@ def main(argv=None):
     elif args.action == 'status':
         proof = inspect_full_plugin_candidate(root)
         result = {'bundle': proof, 'journal': inspect_journal(journal)}
+    elif args.action == 'restore':
+        if not args.approve_restore:
+            _fail('restore_approval_required')
+        result = restore_origin_selection(project_root=args.project_root,
+                                          state_root=args.state_root)
     else:
-        project = Path(args.project_root)
-        if (not project.is_absolute() or project.is_symlink() or
-                project.resolve(strict=True) != project):
-            _fail('invalid_project_root')
+        project = _checked_project(args.project_root)
         route = _read_private(args.route_file, 8192)
         with _install_lock(state_root):
             if args.action == 'activate':
                 if not args.approve_activation:
                     _fail('activation_approval_required')
-                result = activate_qmd_origin(project, journal, route)
+                result = activate_origin_selection(project, journal, route)
             else:
-                result = recover_qmd_origin(project, journal, route)
+                result = recover_origin_selection(project, journal, route)
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    if args.action == 'restore' and result.get('status') in ('blocked', 'recovery_required'):
+        return 2
     return 0
 
 

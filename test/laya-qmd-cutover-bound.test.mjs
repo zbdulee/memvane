@@ -9,6 +9,6 @@ test('bound initial-build cutover: bind, activate, prewrite restore, crash and p
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 17 tests/);
+  assert.match(result.stderr, /Ran 23 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });
