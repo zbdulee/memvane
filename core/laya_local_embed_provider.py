@@ -20,7 +20,8 @@ from laya_index_vector import profile_identity
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 # Must match MEMBER_REFUSALS in laya_local_embed_worker.mjs.
-MEMBER_REFUSALS = frozenset({'provider_context_exceeded', 'provider_chunks_invalid'})
+MEMBER_REFUSALS = frozenset({'provider_context_exceeded', 'provider_chunks_invalid',
+                             'chunk_recursion_limit', 'token_truncation_fallback'})
 DEFAULT_EMBED_MODEL_URI = ('hf:ggml-org/embeddinggemma-300M-GGUF/'
                            'embeddinggemma-300M-Q8_0.gguf')
 _RUNTIMES = {'qmd-2.5.3-node-llama-cpp-3.18.1',
@@ -295,10 +296,13 @@ class ReviewedLocalQmdProvider:
                 _fail('provider_result_invalid')
             _blob(response['vector'], m['dimension'])
             return response['vector']
-        except IndexContractError:
-            # Already named (provider_member_refused, provider_result_invalid);
-            # IndexContractError is a ValueError, so keep it from the remap below.
-            raise
+        except IndexContractError as exc:
+            # IndexContractError is a ValueError: let only the new member code
+            # through. Everything else (a malformed reply, or _blob's
+            # invalid_vector) keeps its old provider_result_invalid name.
+            if str(exc) == 'provider_member_refused':
+                raise
+            raise IndexContractError('provider_result_invalid') from exc
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise IndexContractError('provider_result_invalid') from exc
 

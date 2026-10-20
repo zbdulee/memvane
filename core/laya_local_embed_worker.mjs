@@ -38,7 +38,8 @@ async function load(config) {
 // Refusals that depend only on the document: the same input is refused on
 // every try. They are reported as `refused` so the caller can stop retrying
 // that member; busy and every other failure keep the bare failure reply.
-const MEMBER_REFUSALS = new Set(['provider_context_exceeded', 'provider_chunks_invalid']);
+const MEMBER_REFUSALS = new Set(['provider_context_exceeded', 'provider_chunks_invalid',
+                                 'chunk_recursion_limit', 'token_truncation_fallback']);
 
 async function embed(config, state, request) {
   if (!validRequest(request)) throw Error('provider_request_invalid');

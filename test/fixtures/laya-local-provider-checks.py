@@ -249,10 +249,12 @@ class ProviderChecks(unittest.TestCase):
                                     'refused': 'provider_chunks_invalid'}}
         unknown = {'__envelope__': {'ok': False, 'result': None, 'refused': 'busy'}}
         busy = {'__envelope__': {'ok': False, 'result': None}}
-        with self.fake_service([refused, unknown, busy], manifest=manifest):
+        # A zero vector fails _blob as invalid_vector; it must keep the old name.
+        zero = {'chunks': [{'seq': 0, 'pos': 0, 'vector': [0, 0]}]}
+        with self.fake_service([refused, unknown, busy, zero], manifest=manifest):
             with self.assertRaisesRegex(IndexContractError, '^provider_member_refused$'):
                 provider.embed_document_chunks('hello', path='docs/T.md')
-            for _ in range(2):
+            for _ in range(3):
                 with self.assertRaisesRegex(IndexContractError, '^provider_result_invalid$'):
                     provider.embed_document_chunks('hello', path='docs/T.md')
         profile = dict(profileId=provider.profile['profile_id'],
@@ -365,13 +367,35 @@ export async function getLlama() {
         service = start_owned_embed_service(manifest, admit=lambda: True)
         try:
             self.assertEqual(len(provider.embed_document_chunks('small text', path='docs/a.md')), 1)
+            long_title = '# ' + 'T' * 3000 + '\nbody\n'
             with self.assertRaisesRegex(IndexContractError, '^provider_member_refused$'):
-                provider.embed_document_chunks('# ' + 'T' * 3000 + '\nbody\n',
-                                               path='docs/b.md')
+                provider.embed_document_chunks(long_title, path='docs/b.md')
+            # Which refusal fired: read the worker's own reply.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.connect(manifest['serviceSocketPath'])
+                conn.sendall(json.dumps({'kind': 'document_chunks', 'text': long_title,
+                                         'title': None, 'path': 'docs/b.md'}).encode() + b'\n')
+                conn.shutdown(socket.SHUT_WR)
+                reply = b''
+                while True:
+                    part = conn.recv(65536)
+                    if not part:
+                        break
+                    reply += part
+            self.assertEqual(json.loads(reply)['refused'], 'provider_context_exceeded')
             # The worker is still serving after a refusal.
             self.assertEqual(len(provider.embed_document_chunks('small again', path='docs/c.md')), 1)
         finally:
             service.stop()
+
+    def test_worker_and_provider_agree_on_member_refusals(self):
+        import re
+        import laya_local_embed_provider
+        source = (Path(__file__).resolve().parents[2] / 'core' /
+                  'laya_local_embed_worker.mjs').read_text(encoding='utf-8')
+        block = re.search(r'MEMBER_REFUSALS = new Set\(\[(.*?)\]\)', source, re.S).group(1)
+        self.assertEqual(frozenset(re.findall(r"'([a-z_]+)'", block)),
+                         laya_local_embed_provider.MEMBER_REFUSALS)
 
     def test_worker_stays_local_and_preserves_default_format(self):
         node = shutil.which('node')
