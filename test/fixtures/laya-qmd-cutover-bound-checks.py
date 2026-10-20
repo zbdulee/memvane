@@ -71,7 +71,7 @@ class FakeJournal:
                 'providerAttestationSha256': self.attestation if active else None,
                 'providerFileIdentitySha256': self.file_identity if active else None}
 
-    def approval(self, _path=None):
+    def approval(self, _path=None, **_kwargs):
         if self.state != 'candidate_ready':
             raise RuntimeError('journal_not_pending')
         return {'attestationSha256': self.attestation,

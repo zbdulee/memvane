@@ -294,7 +294,7 @@ def _bind_attestation(journal_path, identity, proof):
     return digest, _provider_file_identity(record)
 
 
-def preflight_product_candidate(journal_path):
+def preflight_product_candidate(journal_path, *, require_executing=False):
     """Review the pending installed provider before publishing a QMD cutover.
 
     The returned digest is an expectation to persist before the route becomes
@@ -307,6 +307,8 @@ def preflight_product_candidate(journal_path):
     if identity.get('bundleKind') != 'full_plugin':
         _fail('product_full_plugin_required')
     proof = _inspect_identity(identity)
+    if require_executing:
+        _verified_executing_root(identity, proof)
     attestation, digest = _attestation(journal_path)
     if not production_provider_approved(
             proof.get('vectorProfile'), proof, attestation,

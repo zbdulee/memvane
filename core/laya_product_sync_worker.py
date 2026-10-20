@@ -578,7 +578,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     'initialBuild': 'bound'}
         baseline = _inactive_journal(identity)
         # Bundle identity, attestation and provider approval, before any model.
-        approval = preflight_product_candidate(identity['journalPath'])
+        approval = preflight_product_candidate(identity['journalPath'],
+                                               require_executing=True)
         if (approval['attestationSha256'] != identity['attestationSha256']
                 or approval['pendingRouteSha256'] != identity['routeSha256']):
             raise IndexContractError('initial_build_attestation_changed')

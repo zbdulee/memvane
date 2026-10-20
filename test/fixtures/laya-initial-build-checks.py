@@ -106,7 +106,7 @@ class BuildCase(unittest.TestCase):
         self.attestation = 'b' * 64
         for target, value in (
                 ('inspect_journal', lambda _path: dict(self.journal)),
-                ('preflight_product_candidate', lambda _path: {
+                ('preflight_product_candidate', lambda _path, **_kwargs: {
                     'attestationSha256': self.attestation,
                     'pendingRouteSha256': self.journal['pendingRouteSha256'],
                     'providerManifest': {'synthetic': True}}),
@@ -325,6 +325,21 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(busy, {'state': 'deferred', 'reason': 'initial_build_busy'})
         self.assertEqual(self.record(), before)
         self.assertEqual(FakeProvider.calls, [])
+
+    def test_foreign_executing_bundle_is_refused_before_model_or_store_write(self):
+        self.corpus(1)
+        self.register()
+        before = self.record()
+        def reject(_path, *, require_executing=False):
+            self.assertTrue(require_executing)
+            raise IndexContractError('executing_bundle_not_selected')
+        with mock.patch.object(worker, 'preflight_product_candidate', reject):
+            with self.assertRaisesRegex(IndexContractError,
+                                        'executing_bundle_not_selected'):
+                self.wake()
+        self.assertEqual(self.record(), before)
+        self.assertIsNone(self.head())
+        self.assertEqual((FakeProvider.calls, self.service_log), ([], []))
 
     def test_changed_journal_or_attestation_stops_before_any_publish(self):
         self.corpus(2)
