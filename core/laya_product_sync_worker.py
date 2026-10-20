@@ -554,6 +554,15 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
     if record['phase'] == 'bound':
         return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
     if not _still_unselected(project):
+        decision = select_route(str(project), action='update')
+        if (record['phase'] == 'sealed' and (decision.get('state'), decision.get('reason'))
+                == ('legacy', 'qmd_selection_verified')):
+            # finalize bound this sealed candidate (prepared cutover marker,
+            # QMD still selected) but stopped before recording ``bound``. The
+            # build must not move under that binding; a repeated finalize
+            # settles it. Keep the wake without touching any store.
+            return _checked({'state': 'deferred', 'reason': 'initial_build_bind_unsettled',
+                             'initialBuild': 'sealed'})
         raise IndexContractError('initial_build_project_selected')
     from contextlib import ExitStack
     import laya_initial_build as initial_build

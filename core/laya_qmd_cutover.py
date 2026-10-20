@@ -4,10 +4,17 @@ Only explicit installer calls mutate the candidate, journal, or route. QMD is
 opened read-only; its original database and backup are never removed. The
 project marker keeps an interrupted selected route from silently becoming a
 legacy QMD hook invocation.
+
+Ledger schemas: v1 (one collection) and v2 (raw+wiki) bind a candidate that
+the full-scan producer published here (``bind_qmd_origin``). v3 binds a
+candidate an inactive initial build already sealed on the capacity path
+(``bind_qmd_origin_bound``): its evidence is the stored generation binding,
+the catalog snapshot it names and the vector seal, re-proved from those
+durable stores. A v3 proof never scans the source tree and never publishes.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import fcntl
 import hashlib
 import json
@@ -32,11 +39,36 @@ from laya_install_journal import (cas_activate, cas_restore_qmd, inspect_journal
 
 SCHEMA = 'laya-qmd-product-cutover-v1'
 SCHEMA_V2 = 'laya-qmd-product-cutover-v2'
+SCHEMA_V3 = 'laya-qmd-product-cutover-v3'
 MARKER_SCHEMA = 'laya-qmd-selection-marker-v1'
 LEDGER = 'qmd-cutover.json'
 MARKER = 'laya-index-selection.json'
 ROUTE = 'laya-index-route.json'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
+HEX32 = re.compile(r'[0-9a-f]{32}\Z')
+PHASES = ('prepared', 'switching', 'active', 'restoring', 'restored')
+# v3 files whose (dev, ino) the ledger pins.
+BOUND_FILES = (('sourceDb', 'sourceIdentity'), ('backupDb', 'backupIdentity'),
+               ('candidateDb', 'candidateIdentity'), ('queueDb', 'queueIdentity'),
+               ('catalogDb', 'catalogIdentity'), ('bindingStore', 'bindingStoreIdentity'))
+# What a replayed v3 bind must repeat exactly. Only the QMD digest and its
+# backup may be refreshed while the ledger is still ``prepared``.
+BOUND_IDENTITY = ('projectRoot', 'journalPath', 'routeSha256', 'sourceDb',
+                  'sourceFormat', 'collections', 'candidateDb', 'queueDb', 'catalogDb',
+                  'bindingStore', 'scope', 'indexGeneration', 'sourceManifest',
+                  'bindingDigest', 'catalogScanId', 'catalogRawDigest',
+                  'vectorProfileId', 'vectorRows', 'candidateIncarnation',
+                  'attestationSha256', 'providerFileIdentitySha256', 'sourceIdentity',
+                  'candidateIdentity', 'queueIdentity', 'catalogIdentity',
+                  'bindingStoreIdentity')
+BOUND_REFRESH = ('sourceDigest', 'backupDb', 'backupIdentity')
+V3_FIELDS = frozenset(('schema', 'epoch', 'phase', *BOUND_IDENTITY, *BOUND_REFRESH))
+# Ledger field -> ``laya_initial_build.evidence`` field.
+BOUND_EVIDENCE = (('indexGeneration', 'generation'), ('bindingDigest', 'bindingDigest'),
+                  ('sourceManifest', 'sourceManifest'), ('catalogScanId', 'catalogScanId'),
+                  ('catalogRawDigest', 'catalogRawDigest'),
+                  ('vectorProfileId', 'vectorProfileId'), ('vectorRows', 'vectorRows'),
+                  ('candidateIncarnation', 'dbIncarnation'))
 
 
 class CutoverBlocked(RuntimeError):
@@ -150,7 +182,53 @@ def _paths(project_root, journal_path):
 
 
 def _ledger(ledger_path):
-    row = _read_json(ledger_path)
+    return _validated(_read_json(ledger_path), ledger_path)
+
+
+def _identity_pair(value):
+    return (isinstance(value, list) and len(value) == 2 and
+            all(type(v) is int and v >= 0 for v in value))
+
+
+def _two_collections(collections):
+    try:
+        from laya_qmd_migration import _collection_names
+        names = _collection_names([item['name'] for item in collections])
+        return (isinstance(collections, list) and len(collections) == 2
+                and [item['name'] for item in collections] == list(names)
+                and all(isinstance(item, dict) and set(item) ==
+                        {'name','role','sourceRoot'} and item['role'] in
+                        ('raw','wiki') and isinstance(item['sourceRoot'], str)
+                        for item in collections)
+                and sorted(item['role'] for item in collections) == ['raw','wiki'])
+    except (TypeError, KeyError, ValueError, QmdMigrationBlocked):
+        return False
+
+
+def _validated_v3(row):
+    from laya_index_capacity import generation_digest
+    identities = {field for _name, field in BOUND_FILES}
+    scalar = V3_FIELDS - identities - {'epoch', 'phase', 'collections', 'vectorRows'}
+    if (set(row) != V3_FIELDS
+            or type(row['epoch']) is not int or row['epoch'] < 1
+            or row['phase'] not in PHASES
+            or any(not isinstance(row[k], str) or not row[k] for k in scalar)
+            or any(not _identity_pair(row[k]) for k in identities)
+            or type(row['vectorRows']) is not int or row['vectorRows'] < 1
+            or any(not SHA.fullmatch(row[k]) for k in
+                   ('routeSha256', 'sourceDigest', 'sourceManifest', 'bindingDigest',
+                    'catalogRawDigest', 'vectorProfileId', 'attestationSha256',
+                    'providerFileIdentitySha256'))
+            or any(not HEX32.fullmatch(row[k]) for k in
+                   ('scope', 'catalogScanId', 'candidateIncarnation'))
+            or generation_digest(row['indexGeneration']) != row['bindingDigest']
+            or not _two_collections(row['collections'])
+            or len({row[name] for name, _field in BOUND_FILES}) != len(BOUND_FILES)):
+        _fail('cutover_ledger_invalid')
+    return row
+
+
+def _validated(row, ledger_path):
     common = {'schema','epoch','phase','projectRoot','journalPath','routeSha256',
                 'sourceDb','backupDb','sourceFormat','collection','sourceDigest',
                 'sourceRoot','candidateDb','queueDb','scope','indexGeneration',
@@ -159,6 +237,11 @@ def _ledger(ledger_path):
                 'sourceIdentity','backupIdentity','candidateIdentity','queueIdentity'}
     if not isinstance(row, dict):
         _fail('cutover_ledger_invalid')
+    if row.get('schema') == SCHEMA_V3:
+        _validated_v3(row)
+        if Path(row['journalPath']).parent / LEDGER != Path(ledger_path):
+            _fail('cutover_ledger_path_mismatch')
+        return row
     if row.get('schema') == SCHEMA:
         required = common
     elif row.get('schema') == SCHEMA_V2:
@@ -169,11 +252,10 @@ def _ledger(ledger_path):
                          'candidateIdentity','queueIdentity','collections'}
     if (set(row) != required
             or type(row['epoch']) is not int or row['epoch'] < 1
-            or row['phase'] not in ('prepared','switching','active','restoring','restored')
+            or row['phase'] not in PHASES
             or any(not isinstance(row[k], str) or not row[k] for k in
                    scalar)
-            or any(not isinstance(row[k], list) or len(row[k]) != 2 or
-                   any(type(v) is not int or v < 0 for v in row[k]) for k in
+            or any(not _identity_pair(row[k]) for k in
                    ('sourceIdentity','backupIdentity','candidateIdentity','queueIdentity'))
             or not SHA.fullmatch(row['routeSha256'])
             or not SHA.fullmatch(row['sourceDigest'])
@@ -181,21 +263,8 @@ def _ledger(ledger_path):
             or not SHA.fullmatch(row['attestationSha256'])
             or not SHA.fullmatch(row['providerFileIdentitySha256'])):
         _fail('cutover_ledger_invalid')
-    if row['schema'] == SCHEMA_V2:
-        try:
-            from laya_qmd_migration import _collection_names
-            collections = row['collections']
-            names = _collection_names([item['name'] for item in collections])
-            if (not isinstance(collections, list) or len(collections) != 2
-                    or [item['name'] for item in collections] != list(names)
-                    or any(not isinstance(item, dict) or set(item) !=
-                           {'name','role','sourceRoot'} or item['role'] not in
-                           ('raw','wiki') or not isinstance(item['sourceRoot'], str)
-                           for item in collections)
-                    or sorted(item['role'] for item in collections) != ['raw','wiki']):
-                _fail('cutover_ledger_invalid')
-        except (TypeError, KeyError, ValueError, QmdMigrationBlocked):
-            _fail('cutover_ledger_invalid')
+    if row['schema'] == SCHEMA_V2 and not _two_collections(row['collections']):
+        _fail('cutover_ledger_invalid')
     if Path(row['journalPath']).parent / LEDGER != Path(ledger_path):
         _fail('cutover_ledger_path_mismatch')
     return row
@@ -299,7 +368,7 @@ def _preflight_bound_settings(row, route_bytes):
     route, digest = _route(route_bytes, Path(row['journalPath']))
     if digest != row['routeSha256']:
         _fail('cutover_route_mismatch')
-    if row['schema'] == SCHEMA_V2:
+    if row['schema'] in (SCHEMA_V2, SCHEMA_V3):
         if (route['schema'] != ROUTE_V2 or
                 route['collections'] != row['collections']):
             _fail('cutover_route_mismatch')
@@ -323,7 +392,64 @@ def _identity(path):
     return [info.st_dev, info.st_ino]
 
 
-def _check_evidence(row):
+def _check_bound_evidence(row, restore):
+    """Re-prove a v3 binding from its durable stores; never scans the source.
+
+    Every ledger file keeps its (dev, ino); QMD still has the bound digest and
+    the backup restores to it. Before selection (``restore=False``) the
+    candidate must still serve exactly the sealed build: the same published
+    head under its stored binding, the catalog snapshot that binding names
+    as the current servable one with the same live root nodes, and the
+    vector seal for the reviewed profile, all read through the incarnation-
+    and queue-checked runtime. For a rollback (``restore=True``) the head
+    must still be the bound generation (nothing was published after
+    selection), but the catalog may have rescanned and the roots may be
+    gone: the user is leaving the candidate, not serving it.
+    """
+    for name, field in BOUND_FILES:
+        if _identity(row[name]) != row[field]:
+            _fail('cutover_bound_file_replaced')
+    names, roots = _source_binding(row)
+    if _qmd_digest(row['sourceDb'], row['sourceFormat'], names, True) != row['sourceDigest']:
+        _fail('cutover_source_changed')
+    _restore_verified(row['backupDb'], row['sourceFormat'], names,
+                      row['sourceDigest'], True)
+    if restore:
+        with closing(LayaIndexA(row['candidateDb'])) as index:
+            if index.incarnation() != row['candidateIncarnation']:
+                _fail('cutover_candidate_changed')
+            index.db.execute('BEGIN')
+            try:
+                head = index.db.execute('SELECT gen FROM head WHERE scope=?',
+                                        (row['scope'],)).fetchone()
+                index.db.rollback()
+            except BaseException:
+                index.db.rollback()
+                raise
+        if head != (row['indexGeneration'],):
+            _fail('cutover_candidate_evidence_mismatch')
+        with closing(ClaimQueue.open(row['queueDb'])) as queue:
+            if queue.binding() != row['candidateIncarnation']:
+                _fail('cutover_queue_binding_mismatch')
+        return
+    import laya_initial_build
+    from laya_index_runtime import LayaIndexRuntime, capacity_store_paths
+    if capacity_store_paths(row['candidateDb']) != (row['catalogDb'], row['bindingStore']):
+        _fail('cutover_capacity_store_mismatch')
+    with LayaIndexRuntime(source_root=roots, scope=row['scope'],
+                          db_path=row['candidateDb'], queue_path=row['queueDb'],
+                          db_incarnation=row['candidateIncarnation'],
+                          catalog_path=row['catalogDb'],
+                          binding_store_path=row['bindingStore']) as runtime:
+        live = laya_initial_build.evidence(runtime, row['indexGeneration'],
+                                           row['vectorProfileId'])
+    if live is None or any(live[theirs] != row[ours] for ours, theirs in BOUND_EVIDENCE):
+        _fail('cutover_candidate_evidence_mismatch')
+
+
+def _check_evidence(row, *, restore=False):
+    if row['schema'] == SCHEMA_V3:
+        return _check_bound_evidence(row, restore)
     for name, field in (('sourceDb','sourceIdentity'), ('backupDb','backupIdentity'),
                         ('candidateDb','candidateIdentity'), ('queueDb','queueIdentity')):
         if _identity(row[name]) != row[field]:
@@ -394,7 +520,8 @@ def _recover_missing_marker(row, marker_path, route_path, route_bytes):
     _check_marker(row, marker_path)
 
 
-def _change(ledger_path, expected_epoch, expected_phase, next_phase):
+@contextmanager
+def _ledger_lock(ledger_path):
     lock_path = Path(ledger_path).with_suffix('.lock')
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
@@ -402,15 +529,22 @@ def _change(ledger_path, expected_epoch, expected_phase, next_phase):
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
             _fail('cutover_lock_unsafe')
         fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _change(ledger_path, expected_epoch, expected_phase, next_phase, updates=None):
+    with _ledger_lock(ledger_path):
         row = _ledger(ledger_path)
         if row['epoch'] != expected_epoch or row['phase'] != expected_phase:
             _fail('cutover_stale_cas')
         row['epoch'] += 1
         row['phase'] = next_phase
+        row.update(updates or {})
+        _validated(row, ledger_path)
         _write(ledger_path, row, replace=True)
         return row
-    finally:
-        os.close(fd)
 
 
 def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
@@ -520,6 +654,138 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
     return row
 
 
+def _inactive_approval(journal_path, route_sha):
+    journal = inspect_journal(journal_path)
+    if (journal['state'] != 'candidate_ready' or journal['pending'] is None or
+            journal['pendingRouteSha256'] != route_sha or journal['newWriteSeen']):
+        _fail('cutover_journal_not_ready')
+    approval = preflight_product_candidate(journal_path)
+    if approval['pendingRouteSha256'] != route_sha:
+        _fail('cutover_attested_route_mismatch')
+    return journal, approval
+
+
+def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
+                          backup_db, source_format, collection, source_digest,
+                          source_root, candidate_db, queue_db, catalog_db,
+                          binding_store, scope, index_generation, source_manifest,
+                          binding_digest, catalog_scan_id, catalog_raw_digest,
+                          vector_profile_id, vector_rows):
+    """Durably bind a sealed initial-build candidate to the still-selected QMD.
+
+    The candidate was built, sealed and published on the capacity path by the
+    inactive initial build; this neither scans the source tree nor publishes.
+    It re-proves the exact inactive journal, attested route, project settings
+    and provider, the QMD digest and its restorable backup, and the sealed
+    candidate (``_check_bound_evidence``), then writes the v3 ledger and the
+    project marker, each fsynced and no-clobber. QMD stays selected.
+
+    Idempotent: a repeat with the same binding re-proves it, completes a
+    marker an interruption left unwritten and returns the ledger. While the
+    ledger is still ``prepared`` a repeat may refresh only the QMD digest and
+    backup (QMD keeps indexing until activation). Any other difference is
+    refused; a ledger that moved past ``prepared`` is returned unchanged.
+    """
+    ledger_path, marker_path, route_path = _paths(project_root, journal_path)
+    if not isinstance(route_bytes, bytes) or not route_bytes or len(route_bytes) > 8192:
+        _fail('cutover_route_invalid')
+    from laya_install_journal import _route
+    from laya_index_host_route import SCHEMA_V2 as ROUTE_V2
+    from laya_index_runtime import capacity_store_paths
+    from laya_qmd_migration import _collection_names
+    route, route_sha = _route(route_bytes, Path(journal_path))
+    if route_sha != _sha(route_bytes):
+        _fail('cutover_route_invalid')
+    names = _collection_names(collection)
+    if (route['schema'] != ROUTE_V2 or route['projectRoot'] != str(project_root)
+            or route['dbPath'] != str(candidate_db) or route['queuePath'] != str(queue_db)
+            or route['scopeId'] != scope
+            or route['vectorProfile']['profileId'] != vector_profile_id
+            or not isinstance(source_root, dict) or set(source_root) != set(names)
+            or [item['name'] for item in route['collections']] != list(names)
+            or any(item['sourceRoot'] != source_root[item['name']]
+                   for item in route['collections'])):
+        _fail('cutover_route_mismatch')
+    if capacity_store_paths(candidate_db) != (str(catalog_db), str(binding_store)):
+        _fail('cutover_capacity_store_mismatch')
+    if ledger_path.exists() or ledger_path.is_symlink():
+        current = _ledger(ledger_path)
+        if current['phase'] != 'prepared':
+            # The journal is no longer inactive; report the settled binding.
+            if (current['schema'] != SCHEMA_V3 or current['routeSha256'] != route_sha or
+                    current['candidateDb'] != str(candidate_db) or
+                    current['indexGeneration'] != index_generation):
+                _fail('cutover_selection_already_exists')
+            _check_marker(current, marker_path)
+            return current
+    _journal, approval = _inactive_approval(journal_path, route_sha)
+    _preflight_multi_settings(route, project_root)
+    row = {'schema': SCHEMA_V3, 'epoch': 1, 'phase': 'prepared',
+           'projectRoot': str(project_root), 'journalPath': str(journal_path),
+           'routeSha256': route_sha, 'sourceDb': str(source_db),
+           'backupDb': str(backup_db), 'sourceFormat': source_format,
+           'sourceDigest': source_digest, 'collections': route['collections'],
+           'candidateDb': str(candidate_db), 'queueDb': str(queue_db),
+           'catalogDb': str(catalog_db), 'bindingStore': str(binding_store),
+           'scope': scope, 'indexGeneration': index_generation,
+           'sourceManifest': source_manifest, 'bindingDigest': binding_digest,
+           'catalogScanId': catalog_scan_id, 'catalogRawDigest': catalog_raw_digest,
+           'vectorProfileId': vector_profile_id, 'vectorRows': vector_rows,
+           'candidateIncarnation': route['dbIncarnation'],
+           'attestationSha256': approval['attestationSha256'],
+           'providerFileIdentitySha256': approval['providerFileIdentitySha256']}
+    for name, field in BOUND_FILES:
+        row[field] = _identity(row[name])
+    _validated(row, ledger_path)
+    if ledger_path.exists() or ledger_path.is_symlink():
+        return _replay_bound(row, ledger_path, marker_path, route_path)
+    if (route_path.exists() or route_path.is_symlink() or
+            marker_path.exists() or marker_path.is_symlink()):
+        _fail('cutover_selection_already_exists')
+    _check_evidence(row)
+    # The proof read stores, not the journal: confirm it did not move meanwhile.
+    _inactive_approval(journal_path, route_sha)
+    _write(ledger_path, row, replace=False)
+    _write(marker_path, _marker(row), replace=False)
+    _check_marker(row, marker_path)
+    return row
+
+
+def _replay_bound(fresh, ledger_path, marker_path, route_path):
+    with _ledger_lock(ledger_path):
+        current = _ledger(ledger_path)
+        if (current['schema'] != SCHEMA_V3 or
+                any(current[key] != fresh[key] for key in BOUND_IDENTITY)):
+            _fail('cutover_selection_already_exists')
+        if current['phase'] != 'prepared':
+            # Selection moved on: activate/restore/recover settle it, not bind.
+            _check_marker(current, marker_path)
+            return current
+        if route_path.exists() or route_path.is_symlink():
+            _fail('cutover_route_uncertain')
+        if marker_path.exists() or marker_path.is_symlink():
+            _check_marker(current, marker_path)
+        _check_evidence(fresh)
+        _inactive_approval(fresh['journalPath'], fresh['routeSha256'])
+        if any(current[key] != fresh[key] for key in BOUND_REFRESH):
+            current = {**current, **{key: fresh[key] for key in BOUND_REFRESH},
+                       'epoch': current['epoch'] + 1}
+            _validated(current, ledger_path)
+            _write(ledger_path, current, replace=True)
+    if not marker_path.exists() and not marker_path.is_symlink():
+        _write(marker_path, _marker(current), replace=False)
+    _check_marker(current, marker_path)
+    return current
+
+
+def inspect_bound_cutover(journal_path):
+    """The validated ledger beside ``journal_path``, or None. Read-only."""
+    ledger_path = Path(journal_path).parent / LEDGER
+    if not ledger_path.exists() and not ledger_path.is_symlink():
+        return None
+    return _ledger(ledger_path)
+
+
 def classify_marker(project_root, marker_path, route_path):
     """Read-only selector result: candidate, legacy, or blocked."""
     try:
@@ -593,7 +859,7 @@ def restore_qmd_origin(project_root, journal_path):
             journal['newWriteSeen'] or not route_path.is_file() or
             _sha(_private_file(route_path, 8192)) != row['routeSha256']):
         _fail('cutover_rollback_not_authorized')
-    _check_evidence(row)
+    _check_evidence(row, restore=True)
     row = _change(ledger_path, row['epoch'], 'active', 'restoring')
     # A concurrent selected writer may mark forward-only after our first read.
     # Recheck before unlink; if it raced after unlink, the marker remains
@@ -629,15 +895,22 @@ def recover_qmd_origin(project_root, journal_path, route_bytes):
             if present and (route_path.is_symlink() or
                             _private_file(route_path, 8192) != route_bytes):
                 _fail('cutover_route_uncertain')
-            try:
-                _preflight_bound_settings(row, route_bytes)
-                _check_evidence(row)
-                approval = preflight_product_candidate(journal_path)
-                if (approval['pendingRouteSha256'] != row['routeSha256'] or
-                        approval['attestationSha256'] != row['attestationSha256'] or
-                        approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
-                    _fail('cutover_attestation_changed')
-            except Exception:
+            # A v3 recovery never completes an activation the journal did not
+            # commit: it withdraws to ``prepared`` and the installer repeats
+            # the explicit, re-proving activation.
+            withdraw = row['schema'] == SCHEMA_V3
+            if not withdraw:
+                try:
+                    _preflight_bound_settings(row, route_bytes)
+                    _check_evidence(row)
+                    approval = preflight_product_candidate(journal_path)
+                    if (approval['pendingRouteSha256'] != row['routeSha256'] or
+                            approval['attestationSha256'] != row['attestationSha256'] or
+                            approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
+                        _fail('cutover_attestation_changed')
+                except Exception:
+                    withdraw = True
+            if withdraw:
                 # No journal commit or selected write occurred. Withdraw only
                 # the exact route owned by this prepared ledger; preserve both
                 # databases and let the installer replan changed evidence.
@@ -694,7 +967,7 @@ def recover_qmd_origin(project_root, journal_path, route_bytes):
             elif route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:
                 _fail('cutover_route_uncertain')
             return _change(ledger_path, row['epoch'], 'restoring', 'active')
-        _check_evidence(row)
+        _check_evidence(row, restore=True)
         if present:
             if route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:
                 _fail('cutover_route_uncertain')

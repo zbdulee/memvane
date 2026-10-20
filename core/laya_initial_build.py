@@ -23,8 +23,11 @@ Phases (``PHASES``):
 * ``blocked``: a step reported a block that retrying cannot clear (invalid
   source, vector budget, a member the provider refuses). It is re-evaluated by
   every wake and cleared by an explicit rescan.
-* ``bound``: finalize bound the sealed candidate to the QMD origin. The wake
-  does nothing more; activation is a separate explicit installer step.
+* ``bound``: finalize bound the sealed candidate to the QMD origin (a v3
+  ``laya_qmd_cutover`` ledger and project marker). The wake does nothing
+  more; activation is a separate explicit installer step. Between the
+  marker and this phase (an interrupted finalize) the wake defers without
+  stepping, and a repeated finalize records ``bound``.
 
 Freshness is separate from ``sealed``: ``request_freshness`` records a time T
 and requests a catalog scan. ``freshness_satisfied`` is true only when the

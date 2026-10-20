@@ -5,10 +5,13 @@ The host must install and load the exact Git candidate first. Staging seals
 that *installed* root; it never installs a plugin or changes a project route.
 An already prepared QMD cutover ledger is mandatory before activation.
 
-A source one synchronous scan cannot cover is never refused for its size: it
-is registered as a durable inactive initial build (``laya_initial_build``)
-that the runtime ``laya-sync`` wake advances in bounded steps, then bound by
-an explicit ``finalize-build`` and activated by a separate ``activate``.
+By default every origin is registered as a durable inactive initial build
+(``laya_initial_build``) that the runtime ``laya-sync`` wake advances in
+bounded steps, then bound by an explicit ``finalize-build`` and activated by a
+separate ``activate``. The in-process synchronous origin (one bounded scan,
+embedded in the installer call) remains only as the explicit legacy
+``background=False`` / ``--synchronous-origin`` path; a source larger than
+that one scan is still planned as a background build, never refused.
 """
 from __future__ import annotations
 
@@ -176,20 +179,25 @@ def _exceeds_one_scan(exc):
     return detail in ('too many files', 'too many entries') or detail.startswith('oversize: ')
 
 
-def plan_qmd_origin(project_root, *, background=False):
+def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
     """Read the owned QMD source and both current collection trees for review.
 
     This plan contains no manuscript bodies. It refuses an unindexed source,
     changed QMD title recipe, an unowned QMD database or active route. No
     model, backup, candidate or plugin cache is touched.
 
-    A source that one synchronous scan cannot cover (or ``background=True``)
-    gets a ``mode: background`` plan instead of a refusal: it binds the
-    project, settings, collection roots and QMD identity, and leaves the
-    complete source inventory to the durable catalog of the initial build.
-    The QMD digest it observed is reported but not reviewed, because QMD
-    stays selected and keeps indexing while the build runs; finalize takes
-    the backup the cutover binds.
+    The default (``background=True``) is a ``mode: background`` plan: it
+    binds the project, settings, collection roots and QMD identity, and
+    leaves the complete source inventory to the durable catalog of the
+    initial build. The QMD digest it observed is reported but not reviewed,
+    because QMD stays selected and keeps indexing while the build runs;
+    finalize takes the backup the cutover binds. ``background=False`` is the
+    legacy synchronous plan; a source that one synchronous scan cannot cover
+    still gets the background plan instead of a refusal.
+
+    ``_bound_marker`` is finalize's replay only: the project marker of a
+    ``prepared`` bound cutover it wrote itself is allowed (the cutover owner
+    re-checks it); a route record never is.
     """
     import config
     import qmd_route
@@ -207,8 +215,8 @@ def plan_qmd_origin(project_root, *, background=False):
         _fail('invalid_project_root')
     auto = project / '.auto-context'
     if ((auto / RECORD).exists() or (auto / RECORD).is_symlink() or
-            (auto / QMD_SELECTION_MARKER).exists() or
-            (auto / QMD_SELECTION_MARKER).is_symlink()):
+            (not _bound_marker and ((auto / QMD_SELECTION_MARKER).exists() or
+                                    (auto / QMD_SELECTION_MARKER).is_symlink()))):
         _fail('project_selection_already_exists')
     found = config.find_project_config(str(project))
     settings = auto / 'settings.json'
@@ -683,20 +691,24 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                              model_path=None, dimension=None,
                              coordinator=None, start_service=None,
                              provider_factory=None, capacity_stores=False,
-                             background=False):
-    """Prepare a bounded, privately backed up two-collection cutover.
+                             background=True):
+    """Prepare a reviewed two-collection QMD origin; never activates it.
 
+    Default (``background=True``, the reviewed ``mode: background`` plan): no
+    embedding happens here. A durable inactive initial build is registered
+    instead (``_register_initial_build``) and ``initial_build_registered`` is
+    returned. No model is loaded and no QMD byte is copied;
+    ``finalize_initial_build`` binds the sealed candidate later.
+
+    ``background=False`` is the legacy synchronous path: a bounded,
+    privately backed up candidate embedded in this call. Its plan must have
+    been made with ``background=False`` too (a source over one synchronous
+    scan still reviews as a background plan and registers a build).
     ``capacity_stores=True`` also creates the capacity catalog and binding
-    store beside the candidate DB. Off by default: once they exist, recall
+    store beside that candidate DB. Off by default: once they exist, recall
     serves nothing until the worker publishes the first bound generation
     (the origin head is not bound), whereas the full-scan path serves the
     origin head at once.
-
-    A reviewed ``mode: background`` plan (a source one synchronous scan cannot
-    cover, or ``background=True``) is not embedded here: it registers a
-    durable inactive initial build instead (``_register_initial_build``) and
-    returns ``initial_build_registered``. No model is loaded and no QMD byte
-    is copied; ``finalize_initial_build`` binds the sealed candidate later.
 
     This is an off-hook installer operation. It leaves QMD selected and never
     activates the product route. Existing candidate bytes are verified and
@@ -813,7 +825,7 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                                        'vector': row['vector']} for row in rows)
                 finally:
                     service.stop()
-            fresh_plan = plan_qmd_origin(project_root)
+            fresh_plan = plan_qmd_origin(project_root, background=False)
             if fresh_plan['proposalSha256'] != expected_proposal_sha256:
                 _fail('origin_changed_during_embedding')
             prepare_qmd_candidate(
@@ -858,7 +870,8 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             # completed by a re-run. A failed run leaves them, and a re-run
             # without the flag then fails as capacity_store_unexpected.
             prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
-        if plan_qmd_origin(project_root)['proposalSha256'] != expected_proposal_sha256:
+        if (plan_qmd_origin(project_root, background=False)['proposalSha256']
+                != expected_proposal_sha256):
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
                  'projectRoot': plan['projectRoot'],
@@ -1104,13 +1117,22 @@ def finalize_initial_build(*, project_root, state_root):
     has re-sealed from a scan started after that request, the next call
     re-checks the reviewed plan, the inactive journal and attestation and
     the live sealed evidence, takes the no-clobber QMD backup at this
-    cutover point, and binds through the cutover owner. Unknown freshness,
-    a pending or blocked scan, or any changed evidence refuses.
+    cutover point, and binds through the cutover owner
+    (``bind_qmd_origin_bound``: v3 ledger, then the project marker). Unknown
+    freshness, a pending or blocked scan, or any changed evidence refuses.
+
+    Repeating it is safe. After an interruption between the ledger, the
+    marker and the build record, it re-proves the same binding, completes
+    what is missing and records ``bound``. While the cutover is still
+    ``prepared`` a repeat re-proves it and, if QMD indexed meanwhile, binds a
+    fresh no-clobber backup of the new QMD digest (old backups are kept).
+    Once the cutover moved on it only reports the phase.
     """
     import laya_initial_build as initial_build
     from contextlib import closing
     from laya_index_runtime import LayaIndexRuntime
     from laya_install_journal import inspect_journal
+    from laya_qmd_cutover import SCHEMA_V3, bind_qmd_origin_bound, inspect_bound_cutover
     from laya_source_catalog import LayaSourceCatalog
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -1122,13 +1144,29 @@ def finalize_initial_build(*, project_root, state_root):
         identity = record['identity']
         if identity['projectRoot'] != str(project_root):
             _fail('initial_build_project_mismatch')
-        if record['phase'] == 'bound':
-            return {'status': 'initial_build_bound', 'phase': 'bound',
-                    'sealed': record['sealed']}
         if record['phase'] == 'blocked':
             return {'status': 'initial_build_blocked', 'blocked': record['blocked']}
+        cutover = inspect_bound_cutover(identity['journalPath'])
+        if cutover is not None and (
+                cutover['schema'] != SCHEMA_V3 or record['sealed'] is None or
+                cutover['indexGeneration'] != record['sealed']['generation'] or
+                cutover['candidateDb'] != identity['candidateDb']):
+            _fail('cutover_selection_already_exists')
+        if cutover is not None and cutover['phase'] != 'prepared':
+            if record['phase'] != 'bound':
+                record = initial_build.advance(record, phase='bound')
+            return {'status': 'cutover_' + cutover['phase'],
+                    'cutoverPhase': cutover['phase'],
+                    'journalPath': identity['journalPath'],
+                    'sourceBackup': cutover['backupDb'],
+                    'generation': cutover['indexGeneration'],
+                    'buildPhase': record['phase']}
+        if record['phase'] == 'bound' and cutover is None:
+            _fail('initial_build_bound_without_cutover')
         roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
-        if not initial_build.freshness_satisfied(record):
+        # A prepared bound cutover was written only after this sealed evidence
+        # was proved fresh, and a bound or binding build never moves: replay.
+        if cutover is None and not initial_build.freshness_satisfied(record):
             if record['phase'] == 'building' and record['freshness'] is not None:
                 return {'status': 'freshness_pending', 'phase': record['phase'],
                         'progress': record['progress'],
@@ -1139,7 +1177,8 @@ def finalize_initial_build(*, project_root, state_root):
             return {'status': 'freshness_pending', 'phase': record['phase'],
                     'freshness': record['freshness'],
                     'wake': _request_build_wake(identity['projectRoot'])}
-        plan = plan_qmd_origin(project_root, background=True)
+        plan = plan_qmd_origin(project_root, background=True,
+                               _bound_marker=cutover is not None)
         if plan['proposalSha256'] != identity['proposalSha256']:
             _fail('reviewed_origin_plan_changed')
         journal = inspect_journal(identity['journalPath'])
@@ -1161,12 +1200,6 @@ def finalize_initial_build(*, project_root, state_root):
                                           identity['vectorProfileId'])
         if live != sealed:
             _fail('initial_build_candidate_changed')
-        try:
-            from laya_qmd_cutover import bind_qmd_origin_bound
-        except ImportError:
-            # Fail before any backup: the bound-candidate cutover owner
-            # interface is not present in this tree (see the build plan).
-            _fail('cutover_bound_binding_unavailable')
         from laya_qmd_migration import (backup_qmd_collections, inspect_qmd_collections,
                                         verify_restore_collections)
         names = tuple(item['name'] for item in identity['collections'])
@@ -1192,9 +1225,11 @@ def finalize_initial_build(*, project_root, state_root):
             binding_digest=sealed['bindingDigest'],
             catalog_scan_id=sealed['catalogScanId'],
             catalog_raw_digest=sealed['catalogRawDigest'],
-            vector_profile_id=identity['vectorProfileId'])
-        record = initial_build.advance(record, phase='bound')
-    return {'status': 'cutover_prepared', 'cutoverPhase': row['phase'],
+            vector_profile_id=identity['vectorProfileId'],
+            vector_rows=sealed['vectorRows'])
+        if record['phase'] != 'bound':
+            record = initial_build.advance(record, phase='bound')
+    return {'status': 'cutover_' + row['phase'], 'cutoverPhase': row['phase'],
             'journalPath': identity['journalPath'], 'sourceBackup': str(backup),
             'candidateDb': identity['candidateDb'], 'routeFile': identity['routeFile'],
             'generation': sealed['generation'], 'buildPhase': record['phase']}
@@ -1275,6 +1310,15 @@ def _installed_root():
     return Path(__file__).resolve(strict=True).parent.parent
 
 
+def _origin_mode_arguments(parser):
+    """Background build is the default; the synchronous origin is explicit."""
+    mode = parser.add_mutually_exclusive_group()
+    # Accepted for compatibility with earlier callers; it is the default.
+    mode.add_argument('--background-build', action='store_true')
+    mode.add_argument('--synchronous-origin', action='store_true',
+                      help='legacy: embed one bounded scan in the installer call')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
@@ -1287,7 +1331,7 @@ def main(argv=None):
     stage.add_argument('--user-qmd-roots-file', required=True)
     plan = sub.add_parser('plan-origin', help='inspect an owned two-collection QMD origin')
     plan.add_argument('--project-root', required=True)
-    plan.add_argument('--background-build', action='store_true')
+    _origin_mode_arguments(plan)
     review = sub.add_parser('review-provider',
                             help='inventory exact local Node/model/native artifacts')
     review.add_argument('--source-root', required=True)
@@ -1307,7 +1351,7 @@ def main(argv=None):
     prepare.add_argument('--model-file')
     prepare.add_argument('--dimension', type=int)
     prepare.add_argument('--user-qmd-root', action='append', required=True)
-    prepare.add_argument('--background-build', action='store_true')
+    _origin_mode_arguments(prepare)
     status = sub.add_parser('status', help='inspect the inactive or active install journal')
     status.add_argument('--state-root', required=True)
     build_status = sub.add_parser('build-status', help='inspect a registered initial build')
@@ -1332,7 +1376,7 @@ def main(argv=None):
                   if args.action in ('status', 'activate', 'recover') else None)
     journal = state_root / 'install-journal.sqlite' if state_root else None
     if args.action == 'plan-origin':
-        result = plan_qmd_origin(args.project_root, background=args.background_build)
+        result = plan_qmd_origin(args.project_root, background=not args.synchronous_origin)
     elif args.action == 'build-status':
         result = initial_build_status(args.state_root)
     elif args.action == 'build-rescan':
@@ -1353,7 +1397,7 @@ def main(argv=None):
             install_id=args.install_id,
             accepted_provider_sha256=args.accepted_provider_sha256,
             model_path=args.model_file, dimension=args.dimension,
-            user_qmd_roots=args.user_qmd_root, background=args.background_build)
+            user_qmd_roots=args.user_qmd_root, background=not args.synchronous_origin)
     elif args.action == 'stage':
         result = stage_host_loaded_candidate(
             source_root=args.source_root, plugin_root=root,

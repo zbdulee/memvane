@@ -38,6 +38,29 @@ WORKER_MAX_REQUEST_BYTES = 5_100_000
 _DAMAGED_CACHE = ('vector_chunk_set_incomplete', 'vector_chunk_set_invalid')
 
 
+def generation_row_limit():
+    """Rows one generation seal can hold, or None when the seal has no bound.
+
+    The fill refuses a snapshot past this before anything is staged, so the
+    preflight follows the seal actually installed: ``laya_index_vector``
+    exports ``MAX_GENERATION_SEAL_ROWS`` (an int, or None for a streaming
+    seal without a whole-generation bound). Without that export the seal
+    still loads every row of one generation at once, bounded by
+    ``MAX_CANDIDATES``, and the preflight keeps that bound.
+    """
+    import laya_index_vector as vector
+    limit = getattr(vector, 'MAX_GENERATION_SEAL_ROWS', vector.MAX_CANDIDATES)
+    if limit is not None and (type(limit) is not int or limit < 1):
+        raise IndexContractError('vector_seal_limit_invalid')
+    return limit
+
+
+def document_row_limit():
+    """Chunks one member's cached set may hold (``_read_chunk_set``'s bound)."""
+    import laya_index_vector as vector
+    return vector.MAX_CANDIDATES
+
+
 def _provider_refuses(text, path):
     if not text or len(text.encode('utf-8')) > PROVIDER_MAX_TEXT_BYTES:
         return 'provider_text_invalid'
@@ -85,10 +108,12 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
       snapshot. A rescan is requested; the next snapshot restarts the fill.
     * ``deferred``/``catalog_busy``: progress could not be recorded.
     * ``blocked``/``vector_budget_exceeded``: the snapshot has more chunk rows
-      than one generation seal may hold (``MAX_CANDIDATES``); nothing is
-      staged. ``blocked``/``vector_member_rejected``: a member the provider
-      would refuse (empty or over ``PROVIDER_MAX_TEXT_BYTES``), decided
-      without loading a model, or one it returned no chunks for.
+      than the installed generation seal can hold (``generation_row_limit``;
+      no check when the seal reports no bound); nothing is staged.
+      ``blocked``/``vector_member_rejected``: a member the provider would
+      refuse (empty or over ``PROVIDER_MAX_TEXT_BYTES``), decided without
+      loading a model, one it returned no chunks for, or one whose chunk set
+      exceeds ``document_row_limit`` (``chunk_set_too_large``).
       ``blocked``/``vector_cache_damaged``: a cached chunk set fails its own
       seal; it is not repaired here. All three repeat until the source (or
       the cache) changes. Other provider errors (service unavailable,
@@ -104,7 +129,7 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     read so a file larger than the budget cannot stall the fill.
     ``embedded``/``cached`` count the members handled in this step.
     """
-    from laya_index_vector import MAX_CANDIDATES, LayaVectorIndex, qmd_markdown_title
+    from laya_index_vector import LayaVectorIndex, qmd_markdown_title
     from laya_source_catalog import PENDING_PHASES, load_exclusions
     if (type(max_files) is not int or max_files < 1
             or type(max_bytes) is not int or max_bytes < 1
@@ -136,6 +161,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     exclusions = load_exclusions(runtime.index, runtime.scope)
     cursor = progress['cursor']
     rows_total = progress['rows']
+    seal_limit = generation_row_limit()
+    member_limit = document_row_limit()
 
     def record(done):
         if not catalog.set_vector_fill(snapshot, profile_id, cursor, done, rows_total):
@@ -143,10 +170,10 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
         return None
 
     def counted(path, count):
-        # seal_generation writes one row per member chunk and fails past
-        # MAX_CANDIDATES; refuse here, before anything is staged.
+        # A bounded seal fails past its row limit at stage time; refuse here,
+        # before anything is staged. Rows are still counted without a bound.
         nonlocal cursor, rows_total
-        if rows_total + count > MAX_CANDIDATES:
+        if seal_limit is not None and rows_total + count > seal_limit:
             return record(False) or answer('blocked', 'vector_budget_exceeded',
                                            cursor=cursor, path=path,
                                            rows=rows_total + count)
@@ -214,6 +241,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             if not isinstance(rows, list) or not rows:
                 return record(False) or answer('blocked', 'vector_member_rejected',
                                                cursor=cursor, path=path, detail='no_chunks')
+            if len(rows) > member_limit:
+                # Stored, it would read back as a damaged cache; say what it is.
+                return record(False) or answer('blocked', 'vector_member_rejected',
+                                               cursor=cursor, path=path,
+                                               detail='chunk_set_too_large')
             # Chunk rows reference their content row; stage reuses it.
             runtime.index.ensure_content(sha, text)
             vectors.insert_chunk_set(sha, title, profile_id, rows)

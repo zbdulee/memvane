@@ -534,7 +534,9 @@ class RecordAndInstallerTests(BuildCase):
             worker.run(self.project, coordinator=self.coordinator, report={},
                        start_service=self.start)
 
-    def test_finalize_requires_fresh_seal_and_the_bound_cutover_owner(self):
+    def test_finalize_reads_qmd_only_after_a_fresh_seal(self):
+        # The full bind -> activate -> restore flow is in
+        # laya-qmd-cutover-bound-checks.py; here only the freshness gate.
         self.corpus(3)
         identity = self.register()
         patches = [
@@ -545,7 +547,7 @@ class RecordAndInstallerTests(BuildCase):
             mock.patch.object(product, 'preflight_product_candidate',
                               return_value={'attestationSha256': self.attestation}),
             mock.patch('laya_qmd_migration.inspect_qmd_collections',
-                       side_effect=AssertionError('no QMD read before the owner check')),
+                       side_effect=AssertionError('qmd read')),
         ]
         for patcher in patches:
             patcher.start()
@@ -562,8 +564,9 @@ class RecordAndInstallerTests(BuildCase):
         self.assertEqual(self.catalog().status()['active']['scan_id'], scan)
         self.assertEqual(self.until_settled()[-1]['initialBuild'], 'sealed')
         self.assertTrue(initial_build.freshness_satisfied(self.record()))
-        with self.assertRaisesRegex(product.InstallBlocked,
-                                    'cutover_bound_binding_unavailable'):
+        # Fresh and sealed: the next call reaches the QMD inventory read that
+        # precedes the backup and the bound cutover.
+        with self.assertRaisesRegex(AssertionError, 'qmd read'):
             product.finalize_initial_build(project_root=self.project, state_root=self.state)
         self.assertEqual(sorted(p.name for p in self.state.glob('qmd-origin-backup*')), [])
         self.assertEqual(self.record()['phase'], 'sealed')
