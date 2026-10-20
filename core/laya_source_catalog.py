@@ -658,9 +658,12 @@ class LayaSourceCatalog:
         dfd = opener.open_dir(rel)
         before = os.fstat(dfd)
         names = sorted(os.listdir(dfd))
+        # One listing is atomic and held in memory, so the entry bound applies
+        # to it. Rows are durable per step, so the scan total is only counted:
+        # a corpus-wide entry cap would be a corpus-size refusal.
         state['entries'] += len(names)
-        if state['entries'] > MAX_ENTRIES:
-            raise _Blocked('source_invalid', 'too many entries')
+        if len(names) > MAX_ENTRIES:
+            raise _Blocked('source_invalid', f'too many entries in one directory: {rel}')
         for name in names:
             if name.startswith('.'):
                 continue
@@ -1038,6 +1041,27 @@ class LayaSourceCatalog:
         finally:
             opener.close()
         check(snapshot)
+
+    def snapshot_started_ns(self, snapshot: CatalogSnapshot) -> int:
+        """When the scan that produced the current ``snapshot`` was requested.
+
+        A scan lists and hashes only after it starts, so a snapshot whose scan
+        started at or after a time T reflects no source state older than T
+        (up to the scan's own mutation checks). This is the freshness fact an
+        activation gate needs; ``finished_ns`` alone is not, because a scan
+        that started before T may finish after it. A pending newer scan is
+        allowed, as in ``require_complete``.
+        """
+        def read():
+            if not self._is_current(snapshot, True):
+                return None
+            row = self.db.execute('SELECT started_ns FROM scans WHERE seq=?',
+                                  (snapshot.seq,)).fetchone()
+            return None if row is None else row[0]
+        started = self._read(read)
+        if type(started) is not int:
+            _raise_stale('catalog snapshot changed')
+        return started
 
     def members(self, snapshot: CatalogSnapshot, exclusions: Exclusions, *,
                 after: str = '', limit: int = _PAGE,

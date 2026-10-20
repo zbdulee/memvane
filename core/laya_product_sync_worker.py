@@ -23,7 +23,8 @@ from laya_index_host_route import select_route
 from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
                                 _collection_roots, capacity_store_paths)
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
-from laya_install_journal import (cas_mark_new_write, verify_selected_route,
+from laya_install_journal import (cas_mark_new_write, inspect_journal,
+                                  preflight_product_candidate, verify_selected_route,
                                   verify_worker_attestation)
 from laya_local_embed_provider import ReviewedLocalQmdProvider
 from laya_local_embed_service import start_owned_embed_service
@@ -45,6 +46,9 @@ QA_BARRIER_MAX_SECONDS = 600
 # sync_step/vector_fill_step rounds in one wake; more remaining stays pending
 # and the dispatcher retains the wake.
 MAX_CAPACITY_ROUNDS = 64
+# Wall-clock bound of one initial-build wake (checked between rounds). The
+# rest stays durable in the catalog, fill cursor and claim queue.
+BUILD_WAKE_SECONDS = 45
 
 
 def _qa_invalid():
@@ -247,8 +251,25 @@ def _route_source(decision):
 
 
 def run(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
-    """Run one selected sync; call only from the durable runtime wake worker."""
-    decision, proof = _selected(project)
+    """Run one selected sync; call only from the durable runtime wake worker.
+
+    A project that does not select a Laya route but has a registered
+    inactive initial build runs one bounded build step instead
+    (``run_initial_build``). Without one, the refusal is unchanged.
+    """
+    try:
+        decision, proof = _selected(project)
+    except IndexContractError as exc:
+        if str(exc) != 'selected_route_unavailable':
+            raise
+        # Imported here: a selected route never needs it, and an installed
+        # bundle that does not ship it yet must keep serving selected wakes.
+        import laya_initial_build as initial_build
+        build = initial_build.lookup(Path(project))
+        if build is None:
+            raise
+        return run_initial_build(Path(project), build, coordinator=coordinator,
+                                 report=report, start_service=start_service)
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
     grants = None
@@ -494,3 +515,192 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed)
             if fill['state'] in ('deferred', 'blocked'):
                 return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result
+
+
+# -- inactive initial build ---------------------------------------------------
+
+def _inactive_journal(identity):
+    """The pending, unselected journal this build was registered against."""
+    journal = inspect_journal(identity['journalPath'])
+    if (journal['state'] != 'candidate_ready' or journal['pending'] is None
+            or journal['pendingRouteSha256'] != identity['routeSha256']
+            or journal['newWriteSeen']):
+        raise IndexContractError('initial_build_journal_changed')
+    return journal['epoch'], journal['pendingRouteSha256']
+
+
+def _still_unselected(project):
+    """The project selects QMD with no route record and no cutover marker."""
+    decision = select_route(str(project), action='update')
+    return (decision.get('state'), decision.get('reason')) == ('legacy', 'no_route_record')
+
+
+def run_initial_build(project, record, *, coordinator=None, report=None,
+                      start_service=start_owned_embed_service, clock=time.monotonic):
+    """One bounded step of an inactive initial build; never selects a route.
+
+    Admission is the provider lane of the selected path, and the model starts
+    only when the fill has an uncached member, under a fresh resource sample
+    per member. The build writes only its private candidate stores, so the
+    publish fence checks that the journal is still the pending, unselected
+    one and the project still selects QMD, instead of marking a new write.
+
+    Answers follow the dispatcher contract: ``indexed``/``unchanged`` (ACK)
+    only once the build is ``sealed`` (or already ``bound``); ``pending``,
+    ``deferred`` and ``blocked`` keep the wake. The phase is recorded in the
+    build record under the build owner lock.
+    """
+    identity = record['identity']
+    if record['phase'] == 'bound':
+        return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
+    if not _still_unselected(project):
+        raise IndexContractError('initial_build_project_selected')
+    from contextlib import ExitStack
+    import laya_initial_build as initial_build
+    from laya_vector_capacity import provider_profile_id
+    with initial_build.owner(identity['stateRoot']) as owned:
+        if not owned:
+            return {'state': 'deferred', 'reason': 'initial_build_busy'}
+        record = initial_build.read(identity['stateRoot'])
+        if record is None or record['identity'] != identity:
+            raise IndexContractError('initial_build_identity_changed')
+        if record['phase'] == 'bound':
+            return {'state': 'unchanged', 'reason': 'initial_build_bound',
+                    'initialBuild': 'bound'}
+        baseline = _inactive_journal(identity)
+        # Bundle identity, attestation and provider approval, before any model.
+        approval = preflight_product_candidate(identity['journalPath'])
+        if (approval['attestationSha256'] != identity['attestationSha256']
+                or approval['pendingRouteSha256'] != identity['routeSha256']):
+            raise IndexContractError('initial_build_attestation_changed')
+        provider = ReviewedLocalQmdProvider(approval['providerManifest'])
+        if (provider.profile['profile_id'] != identity['vectorProfileId']
+                or provider_profile_id(provider) != identity['vectorProfileId']):
+            raise IndexContractError('initial_build_provider_profile_mismatch')
+        controller = coordinator or Coordinator()
+        observed = report if report is not None else resource_report(EMBED_POLICY,
+                                                                      detailed=True)
+        state = {'service': None}
+
+        def proof_ok():
+            return _inactive_journal(identity) == baseline and _still_unselected(project)
+
+        def before_publish():
+            if not proof_ok():
+                raise IndexContractError('initial_build_proof_changed')
+
+        def admitted():
+            fresh = resource_report(EMBED_POLICY, detailed=True)
+            return controller.check(EMBED_POLICY, fresh)['ready']
+
+        roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+
+                def ensure_service():
+                    if state['service'] is not None:
+                        return
+                    if not proof_ok():
+                        raise IndexContractError('initial_build_proof_changed')
+                    try:
+                        service = start_service(approval['providerManifest'], admit=admitted)
+                    except IndexContractError as exc:
+                        if str(exc) == 'provider_admission_deferred':
+                            raise ResourceDeferred('laya_build_resource_pressure') from exc
+                        raise
+                    stack.callback(service.stop)
+                    state['service'] = service
+
+                class AdmittedProvider:
+                    manifest = provider.manifest
+                    profile = provider.profile
+
+                    def embed_document_chunks(self, body, path):
+                        if _higher_priority_wake(controller):
+                            raise ResourceDeferred('laya_sync_yield_priority')
+                        if not admitted():
+                            raise ResourceDeferred('laya_build_resource_pressure')
+                        ensure_service()
+                        return provider.embed_document_chunks(body, path)
+
+                with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
+                                      db_path=identity['candidateDb'],
+                                      queue_path=identity['queueDb'],
+                                      db_incarnation=identity['dbIncarnation'],
+                                      catalog_path=identity['catalogDb'],
+                                      binding_store_path=identity['bindingStore']) as runtime:
+                    result = _build_rounds(runtime, AdmittedProvider(), before_publish,
+                                           controller, lambda: not proof_ok(), admitted,
+                                           deadline=clock() + BUILD_WAKE_SECONDS, clock=clock)
+                    sealed = None
+                    if result['state'] in ('indexed', 'unchanged'):
+                        sealed = initial_build.evidence(runtime, result.get('generation'),
+                                                        identity['vectorProfileId'])
+            if not proof_ok():
+                raise IndexContractError('initial_build_proof_changed')
+        except ResourceDeferred as exc:
+            result, sealed = {'state': 'deferred', 'reason': str(exc)}, None
+        changes = initial_build.transition(record, result, sealed)
+        if changes:
+            record = initial_build.advance(record, **changes)
+    answer = {key: result[key] for key in ('state', 'reason', 'generation', 'path',
+                                           'required', 'detail') if key in result}
+    answer['initialBuild'] = record['phase']
+    if result['state'] in ('indexed', 'unchanged') and record['phase'] != 'sealed':
+        # Published, but a newer scan keeps the candidate unservable: not done.
+        answer['state'], answer['reason'] = 'pending', 'initial_build_scan_pending'
+    return _checked(answer)
+
+
+def _build_rounds(runtime, provider, before_publish, controller, proof_changed, admitted,
+                  *, deadline, clock):
+    """Bounded sync_step / vector_fill_step rounds of one initial-build wake.
+
+    Unlike a selected wake this never requests a scan: the catalog bootstraps
+    one itself, and every extra request would chain another full rescan
+    (and a re-read of every member for the fill) into a long build. A file
+    over one step's byte budget is hashed by one single-file step sized to it
+    (streamed, never buffered), after a fresh resource sample; under pressure
+    the wake defers and the scan stays pending at that file.
+    """
+    from laya_vector_capacity import provider_profile_id, vector_fill_step
+    profile_id = provider_profile_id(provider)
+
+    def should_yield():
+        return _higher_priority_wake(controller)
+    result = None
+    large = None
+    for _ in range(MAX_CAPACITY_ROUNDS):
+        if clock() >= deadline:
+            break
+        if should_yield():
+            raise ResourceDeferred('laya_sync_yield_priority')
+        if proof_changed():
+            raise IndexContractError('initial_build_proof_changed')
+        budget = {}
+        if large is not None:
+            if not admitted():
+                raise ResourceDeferred('laya_build_resource_pressure')
+            budget, large = {'max_files': 1, 'max_bytes': large}, None
+        result = sync_step(runtime, before_publish=before_publish, require_vector=True,
+                           vector_profile_id=profile_id, **budget)
+        if (result['state'] == 'deferred' and not budget
+                and result.get('reason') == 'file_exceeds_step_bytes'):
+            large = result['required']['max_bytes']
+            continue
+        if result['state'] == 'indexed':
+            # Settle once more: a newer scan may still be pending.
+            continue
+        if result['state'] != 'pending':
+            return result
+        if result.get('reason') == 'vector_backlog':
+            fill = vector_fill_step(runtime, provider, should_yield=should_yield)
+            result = {**result, 'fill': {key: fill[key] for key in
+                                         ('state', 'reason', 'embedded', 'cached', 'bytes',
+                                          'cursor', 'path', 'detail', 'rows') if key in fill}}
+            if fill['state'] in ('deferred', 'blocked'):
+                return {**{key: fill[key] for key in ('state', 'reason', 'path', 'detail')
+                           if key in fill}, 'fill': result['fill'],
+                        'catalog': result.get('catalog')}
+    return result if result is not None else {'state': 'pending', 'reason': 'wake_budget'}
