@@ -379,6 +379,8 @@ def main(argv=None):
                                           'plan-learning-profile','activate-learning-profile',
                                           'plan-index-origin','review-index-provider',
                                           'prepare-index-origin','index-origin-status',
+                                          'index-build-status','index-build-rescan',
+                                          'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
@@ -426,11 +428,13 @@ def main(argv=None):
     try:
         if args.action in ('plan-index-origin','review-index-provider',
                            'prepare-index-origin','index-origin-status',
+                           'index-build-status','index-build-rescan',
+                           'finalize-index-origin',
                            'activate-index-origin','recover-index-origin'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action == 'plan-index-origin':
-                result = product.plan_qmd_origin(args.project)
+                result = product.plan_qmd_origin(args.project, background=True)
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     source_root=args.source_root, plugin_root=installed,
@@ -447,7 +451,8 @@ def main(argv=None):
                     install_id=args.install_id,
                     user_qmd_roots=args.user_qmd_root,
                     model_path=args.provider_model_file,
-                    dimension=args.provider_dimension)
+                    dimension=args.provider_dimension,
+                    background=True)
             else:
                 state = product._private_parent(args.state_root)
                 journal = state / 'install-journal.sqlite'
@@ -455,6 +460,20 @@ def main(argv=None):
                     from laya_install_journal import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),
                               'routeFile': str(state / 'reviewed-route.json')}
+                    from laya_initial_build import read as read_build
+                    if read_build(state) is not None:
+                        result['initialBuild'] = product.initial_build_status(state)
+                elif args.action in ('index-build-status','index-build-rescan'):
+                    from laya_initial_build import read as read_build
+                    build = read_build(state)
+                    if build is None or build['identity']['projectRoot'] != str(Path(args.project).resolve()):
+                        raise ValueError('initial_build_project_mismatch')
+                    result = (product.initial_build_status(state)
+                              if args.action == 'index-build-status' else
+                              product.request_initial_build_rescan(state))
+                elif args.action == 'finalize-index-origin':
+                    result = product.finalize_initial_build(
+                        project_root=args.project, state_root=state)
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
                     with product._install_lock(state):
