@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_vector import (LayaVectorIndex, profile_identity,
                                qmd_markdown_title, search_vector_verified,
-                               source_evidence, verify_generation_seal)
+                               source_evidence, verify_generation_seal,
+                               _OrderedRowsDigest, _rows_digest)
 from laya_index_source_port import SourceStale, scan
 
 
@@ -98,6 +99,16 @@ class VectorChecks(unittest.TestCase):
             self.assertEqual(len(self.query(pin)), 3)
             with self.assertRaisesRegex(IndexContractError, 'vector_budget_exceeded'):
                 self.query(pin, max_candidates=2)
+
+    def test_streamed_generation_digest_matches_existing_v2_seal(self):
+        rows = [('a.md', 'a' * 64, '한글', 0, 'b' * 64),
+                ('a.md', 'a' * 64, '한글', 1, 'c' * 64),
+                ('z.md', 'd' * 64, 'Z', 0, 'e' * 64)]
+        streamed = _OrderedRowsDigest('g0', 'scope', self.profile)
+        for row in rows:
+            streamed.add(row)
+        self.assertEqual(streamed.hexdigest(),
+                         _rows_digest('g0', 'scope', self.profile, rows))
 
     def test_collection_filter_precedes_vector_budget_and_top_k(self):
         docs = [(f'raw/a-{i}.md', f'raw {i}', True) for i in range(8)]
