@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
 
 from laya_index_a import IndexContractError, LayaIndexA
+import laya_index_vector
 from laya_index_vector import (LayaVectorIndex, profile_identity,
                                qmd_markdown_title, search_vector_verified,
                                source_evidence, verify_generation_seal,
@@ -189,6 +190,46 @@ class VectorChecks(unittest.TestCase):
         self.index.exclude('alpha', path='a.md')
         with self.assertRaisesRegex(IndexContractError, 'index_stale'):
             self.query(pin)
+
+    def test_expired_deadline_stops_before_seal_row_work(self):
+        docs = [(f'doc-{i}.md', f'body {i}', True) for i in range(4)]
+        pin = self.seal_publish('g0', 'alpha', docs, 'c0',
+                                vectors={body: (1.0, 0.0) for _, body, _ in docs})
+        self.assertEqual(len(self.query(pin, deadline_seconds=30)), 4)
+        clock = mock.Mock()
+        # The first reading sets the 2s deadline; every later reading is past it.
+        clock.monotonic.side_effect = [0.0] + [10.0] * 10_000
+        with mock.patch.object(laya_index_vector, 'time', clock), \
+             mock.patch.object(laya_index_vector, '_read_chunk_set') as chunk_sets, \
+             mock.patch.object(laya_index_vector, '_provenance') as provenance:
+            with self.assertRaisesRegex(IndexContractError, 'vector_deadline_exceeded'):
+                self.query(pin, deadline_seconds=2)
+        chunk_sets.assert_not_called()
+        provenance.assert_not_called()
+        self.assertFalse(self.index.db.in_transaction)
+        # The handler is removed and the unchanged pin still proves its seal.
+        self.assertEqual(len(self.query(pin)), 4)
+
+    def test_deadline_interrupts_seal_proof_midway_and_fails_closed(self):
+        docs = [(f'doc-{i}.md', f'body {i}', True) for i in range(6)]
+        pin = self.seal_publish('g0', 'alpha', docs, 'c0',
+                                vectors={body: (1.0, 0.0) for _, body, _ in docs})
+        real = laya_index_vector._read_chunk_set
+        reads = []
+        def counted(*args, **kwargs):
+            reads.append(kwargs.get('deadline'))
+            return real(*args, **kwargs)
+        clock = mock.Mock()
+        # Time runs out once the proof has read its first per-path chunk set.
+        clock.monotonic.side_effect = lambda: 10.0 if reads else 0.0
+        with mock.patch.object(laya_index_vector, 'time', clock), \
+             mock.patch.object(laya_index_vector, '_read_chunk_set', side_effect=counted):
+            with self.assertRaisesRegex(IndexContractError, 'vector_deadline_exceeded'):
+                self.query(pin, deadline_seconds=2)
+        self.assertEqual(reads, [2.0])
+        self.assertFalse(self.index.db.in_transaction)
+        # Publish-time verification carries no deadline and still checks all rows.
+        self.assertEqual(verify_generation_seal(self.index, 'g0')['rows_count'], 6)
 
     def test_cross_connection_pin_and_reopen(self):
         old = self.seal_publish('g0', 'alpha', [('a.md', 'old', True)], 'c0',

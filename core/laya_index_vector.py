@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 import struct
 import time
 import unicodedata
@@ -32,6 +33,11 @@ def _json(value):
 
 def _hex(value):
     return isinstance(value, str) and _HEX.fullmatch(value) is not None
+
+
+def _check_deadline(deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise IndexContractError('vector_deadline_exceeded')
 
 
 def qmd_markdown_title(body: str, path: str) -> str:
@@ -134,7 +140,8 @@ def _chunk_set_digest(hash_, title, profile_id, rows):
                [(row['seq'], row['pos'], row['provenance']) for row in rows]])).hexdigest()
 
 
-def _read_chunk_set(db, hash_, title, profile_id, dimension, *, allow_unsealed=False):
+def _read_chunk_set(db, hash_, title, profile_id, dimension, *, allow_unsealed=False,
+                    deadline=None):
     """Return only a fully sealed, contiguous, source/provenance-valid set."""
     seal = db.execute('''SELECT rows_count,rows_digest FROM vector_chunk_sets
         WHERE hash=? AND title=? AND profile_id=?''',
@@ -156,6 +163,7 @@ def _read_chunk_set(db, hash_, title, profile_id, dimension, *, allow_unsealed=F
     rows = []
     last_pos = -1
     for expected_seq, (seq, pos, blob, evidence, provenance) in enumerate(raw):
+        _check_deadline(deadline)
         if (seq != expected_seq or type(pos) is not int or pos <= last_pos
                 or evidence != evidence_expected or not _hex(provenance)
                 or provenance != _provenance(hash_, title, profile_id, seq,
@@ -180,13 +188,17 @@ def _profile(db, profile_id):
             'embedding_fingerprint': row[1], 'dimension': row[2], 'metric': row[3]}
 
 
-def verify_generation_seal(index, gen):
+def verify_generation_seal(index, gen, *, deadline=None):
     """Verify a seal in the caller's existing read/write transaction.
 
     This function neither begins nor commits; A-int publish calls it under its
     write transaction, and exact search calls it under its pinned snapshot.
+    The full proof is O(generation rows). A query passes its monotonic
+    deadline so verification fails closed with vector_deadline_exceeded
+    instead of running unbounded; publish passes none and verifies fully.
     """
     db = index.db
+    _check_deadline(deadline)
     seal = db.execute('''SELECT scope,profile_id,rows_digest,rows_count
                          FROM gen_vector_seals WHERE gen=?''', (gen,)).fetchone()
     state = db.execute('SELECT scope,state FROM generations WHERE gen=?', (gen,)).fetchone()
@@ -216,12 +228,19 @@ def verify_generation_seal(index, gen):
     current_path = None
     current_key = None
     current_chunks = None
+    current_title = None
     path_count = 0
     for row_scope, path, hash_, title, row_profile, seq, pos, blob, evidence, provenance, body in rows:
+        _check_deadline(deadline)
         if (row_scope != scope or row_profile != profile_id or not _hex(evidence)
                 or not _hex(provenance) or type(seq) is not int or seq < 0
-                or type(pos) is not int or pos < 0
-                or qmd_markdown_title(body, path) != title):
+                or type(pos) is not int or pos < 0):
+            raise IndexContractError('vector_seal_invalid')
+        # One path binds one (hash, title) key below, and content is keyed by
+        # hash, so the body title is parsed once per path rather than per chunk.
+        if path != current_path:
+            current_title = qmd_markdown_title(body, path)
+        if current_title != title:
             raise IndexContractError('vector_seal_invalid')
         _unpack(blob, profile['dimension'])
         if provenance != _provenance(hash_, title, profile_id, seq, pos, evidence, blob):
@@ -236,7 +255,7 @@ def verify_generation_seal(index, gen):
                 raise IndexContractError('vector_coverage_incomplete')
             current_path, current_key, path_count = path, key, 0
             chunks = _read_chunk_set(db, hash_, title, profile_id,
-                                     profile['dimension'])
+                                     profile['dimension'], deadline=deadline)
             if chunks is None:
                 raise IndexContractError('vector_chunk_set_incomplete')
             current_chunks = len(chunks)
@@ -515,15 +534,37 @@ class LayaVectorIndex:
         qnorm = math.sqrt(math.fsum(v * v for v in query))
         deadline = None if deadline_seconds is None else time.monotonic() + deadline_seconds
         db = self.index.db
+        # The seal proof is never skipped; it shares the query deadline. The
+        # handler also interrupts single long statements inside the proof.
+        if deadline is not None:
+            db.set_progress_handler(
+                lambda: int(time.monotonic() >= deadline), 1000)
+        try:
+            return self._search_exact_pinned(
+                token, query, qnorm, profile_id, dimension, limit,
+                max_candidates, max_float_work, deadline,
+                prefix_sql, prefix_params)
+        except sqlite3.OperationalError as exc:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise IndexContractError('vector_deadline_exceeded') from exc
+            raise
+        finally:
+            if deadline is not None:
+                db.set_progress_handler(None, 0)
+
+    def _search_exact_pinned(self, token, query, qnorm, profile_id, dimension,
+                             limit, max_candidates, max_float_work, deadline,
+                             prefix_sql, prefix_params):
+        db = self.index.db
         db.execute('BEGIN')
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
-            profile = verify_generation_seal(self.index, gen)
+            _check_deadline(deadline)
+            profile = verify_generation_seal(self.index, gen, deadline=deadline)
             if profile['scope'] != scope or profile['profile_id'] != profile_id:
                 raise IndexContractError('vector_profile_mismatch')
-            if deadline is not None and time.monotonic() > deadline:
-                raise IndexContractError('vector_deadline_exceeded')
+            _check_deadline(deadline)
             # The same predicate is used in the count and scan. No global ANN
             # candidate can consume a scoped slot before scoring and LIMIT.
             predicate = '''FROM gen_vector_rows r
@@ -550,8 +591,7 @@ class LayaVectorIndex:
             cursor = db.execute('''SELECT m.path,m.hash,c.body,v.seq,v.pos,v.embedding ''' +
                 predicate + ' ORDER BY m.path COLLATE BINARY,v.seq', params)
             for path, hash_, body, seq, pos, blob in cursor:
-                if deadline is not None and time.monotonic() > deadline:
-                    raise IndexContractError('vector_deadline_exceeded')
+                _check_deadline(deadline)
                 count += 1
                 if ((max_candidates is not None and count > max_candidates)
                         or (max_float_work is not None and
