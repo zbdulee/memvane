@@ -38,14 +38,9 @@ Two correctness claims are kept apart
     re-read no-follow under the bound roots, hash to the row's indexed hash.
     A candidate that fails is dropped. The whole query fails if the binding,
     seal, incarnation or a root identity does not match. Ranking reflects the
-    pinned generation, not the live corpus. Returned-row checks alone cannot
-    see an unreturned new or changed file, and a dropped row silently
-    shrinks the answer, so they are not a freshness claim.
-    ``CandidateQuery.prove_fresh`` is: one bounded live listing and byte hash
-    of every bound root must reproduce the pinned manifest, else the query
-    fails (``CorpusDiverged``) or is unproven (``CatalogPending``
-    ``freshness_unproven``). Above its budget a large corpus stays blocked.
-    Stat signatures and TTLs are never acceptance evidence.
+    pinned generation, not the live corpus: new or changed files are not
+    discoverable until async sync (index lag), but a stale body is never
+    returned. Stat signatures and TTLs are never acceptance evidence.
   * ``search_catalog_verified`` is kept as an optional full-proof audit
     oracle: one fresh full enumeration and byte hash per call, bounded by
     ``max_proof_files``/``max_proof_bytes``. Above budget it raises
@@ -100,18 +95,10 @@ DEFAULT_VERIFY_STATS = 10_000
 # bound is dropped (``file_budget``/``query_budget``), never deleted; if no
 # candidate survives the phase raises ``CatalogPending``. Callers may pass
 # larger explicit values.
-DEFAULT_CANDIDATE_FILE_BYTES = 1_000_000
+DEFAULT_CANDIDATE_FILE_BYTES = 5_000_000
 DEFAULT_CANDIDATE_QUERY_BYTES = 5_000_000
 DEFAULT_CANDIDATE_QUERY_FILES = 200
 DEFAULT_REFILL_FACTOR = 4
-# Live freshness proof before a selected answer is delivered: every bound root
-# is re-listed and every member rehashed. Same file/byte bounds as the
-# per-query full proof; above them freshness is unknown and the answer is
-# blocked. A completed large-corpus path needs a trusted change feed.
-DEFAULT_FRESHNESS_FILES = DEFAULT_PROOF_FILES
-DEFAULT_FRESHNESS_BYTES = DEFAULT_PROOF_BYTES
-DEFAULT_FRESHNESS_SECONDS = 2.0
-MAX_FRESHNESS_SECONDS = 60.0
 A_INT_MAX_LIMIT = 100  # LayaIndexA.search_many/search_scored, vector search_exact
 PENDING_PHASES = ('enumerate', 'hash', 'verify_dirs', 'verify_files')
 MAX_COLLECTIONS = 16
@@ -181,12 +168,6 @@ class CatalogPending(IndexContractError):
       candidate of at most two bounded rounds was dropped. The cause is a
       changed, deleted, unsafe or over-budget file, or a sync lag. Nothing is
       deleted; async sync or a larger budget clears it.
-    * ``reason='freshness_unproven'`` (``CandidateQuery.prove_fresh``): the
-      live corpus could not be proven equal to the pinned generation within
-      the proof's file, byte or time budget, or a source was unreadable.
-      Freshness is unknown, so no row of the query may be served. A larger
-      budget, a smaller corpus or a trusted change feed clears it; a sync
-      alone does not make an over-budget corpus provable.
     """
 
     def __init__(self, detail: Dict[str, Any]):
@@ -195,14 +176,8 @@ class CatalogPending(IndexContractError):
         self.detail = detail
 
 
-class CorpusDiverged(SourceStale):
-    """Cause of ``index_stale``: the live corpus differs from the pinned generation.
-
-    Chained by ``CandidateQuery.prove_fresh`` for a completed proof whose
-    membership or bytes differ (new, renamed, deleted or changed file, or a
-    source rule the catalog scan would block), and for a returned candidate
-    that failed its byte check. Only a new sync can clear it.
-    """
+class ReturnedCandidateDiverged(SourceStale):
+    """A returned row no longer matches the pinned generation's source."""
 
 
 @dataclass(frozen=True)
@@ -1534,192 +1509,6 @@ def _os_reason(exc: OSError) -> str:
 
 Verdict = Tuple[str, ...]  # ('ok', sha256, text) or ('drop', reason)
 
-# Returned-candidate drops, as seen by the freshness proof. ``excluded`` is a
-# filter, not a source change; a budget or I/O drop leaves freshness unknown;
-# every other drop means the pinned generation no longer matches the source.
-_DROP_FILTERED = frozenset({'excluded'})
-_DROP_UNPROVEN = frozenset({'file_budget', 'query_budget', 'unreadable'})
-
-
-class _Unproven(Exception):
-    """Proof ended without a verdict: budget, deadline or unreadable source."""
-
-
-class _Diverged(Exception):
-    """Proof completed far enough to show the source differs."""
-
-
-class _ProofBudget:
-    def __init__(self, max_files: int, max_bytes: int, deadline: float):
-        self.max_files = max_files
-        self.max_bytes = max_bytes
-        self.deadline = deadline
-        self.dirs = 0
-        self.names = 0
-        self.files = 0
-        self.bytes = 0
-        self.files_hashed = 0
-        self.bytes_read = 0
-
-    def tick(self) -> None:
-        if time.monotonic() > self.deadline:
-            raise _Unproven('deadline')
-
-    def listing(self, count: int) -> None:
-        self.dirs += 1
-        self.names += count
-        if self.dirs > self.max_files:
-            raise _Unproven('dir_budget')
-        if self.names > MAX_ENTRIES:
-            raise _Unproven('entry_budget')
-
-    def member(self, size: int) -> None:
-        self.files += 1
-        self.bytes += size
-        if self.files > self.max_files:
-            raise _Unproven('file_budget')
-        if self.bytes > self.max_bytes:
-            raise _Unproven('byte_budget')
-
-    def report(self) -> Dict[str, int]:
-        return {'dirs_listed': self.dirs, 'files_known': self.files,
-                'bytes_known': self.bytes, 'files_hashed': self.files_hashed,
-                'bytes_read': self.bytes_read}
-
-
-_LiveFile = Tuple[str, str, str, int, Tuple[int, int]]  # path, dir_rel, name, size, node
-
-
-def _walk_live(dfd: int, rel: str, depth: int, root_dev: int, budget: _ProofBudget,
-               dirs: Dict[str, Tuple[int, int]], files: List[_LiveFile]) -> None:
-    """List one directory under the catalog scan's rules; recurse no-follow.
-
-    A rule the catalog scan would block on means the live source is not the
-    snapshot the generation was built from, so it is a divergence.
-    """
-    budget.tick()
-    if depth > MAX_DEPTH:
-        raise _Diverged(f'too deep: {rel}')
-    before = os.fstat(dfd)
-    dirs[rel] = _node(before)
-    names = sorted(os.listdir(dfd))
-    if len(names) > MAX_ENTRIES:
-        raise _Diverged(f'too many entries in one directory: {rel}')
-    budget.listing(len(names))
-    subdirs: List[Tuple[str, str, os.stat_result]] = []
-    for name in names:
-        if name.startswith('.'):
-            continue
-        try:
-            path = _safe_rel(rel, name)
-        except IndexContractError:
-            raise _Diverged(f'unsafe name under {rel}') from None
-        st = _lstat_at(dfd, name)
-        if stat.S_ISLNK(st.st_mode):
-            raise _Diverged(f'symlink: {path}')
-        if st.st_dev != root_dev:
-            raise _Diverged(f'crosses device: {path}')
-        if stat.S_ISDIR(st.st_mode):
-            subdirs.append((name, path + '/', st))
-        elif name.endswith('.md'):
-            if not stat.S_ISREG(st.st_mode):
-                raise _Diverged(f'not a regular file: {path}')
-            budget.member(st.st_size)
-            files.append((path, rel, name, st.st_size, _node(st)))
-    if _sig_text(os.fstat(dfd)) != _sig_text(before):
-        raise _Diverged(f'directory changed during listing: {rel}')
-    for name, child_rel, st in subdirs:
-        child = os.open(name, _DIR_FLAGS, dir_fd=dfd)
-        try:
-            if _node(os.fstat(child)) != _node(st):
-                raise _Diverged(f'directory replaced: {child_rel}')
-            _walk_live(child, child_rel, depth + 1, root_dev, budget, dirs, files)
-        finally:
-            os.close(child)
-
-
-def _open_live_dir(root_fds: Mapping[str, int], dirs: Mapping[str, Tuple[int, int]],
-                   rel: str) -> int:
-    """Re-open a listed directory; every component must be the listed node."""
-    parts = rel[:-1].split('/')
-    fd = os.dup(root_fds[parts[0]])
-    try:
-        prefix = parts[0] + '/'
-        for part in parts[1:]:
-            prefix += part + '/'
-            child = os.open(part, _DIR_FLAGS, dir_fd=fd)
-            os.close(fd)
-            fd = child
-            if _node(os.fstat(fd)) != dirs.get(prefix):
-                raise _Diverged(f'directory replaced: {prefix}')
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
-def _hash_live(dfd: int, name: str, path: str, size: int, node: Tuple[int, int],
-               budget: _ProofBudget) -> str:
-    """Stream one listed member; it must still be the listed node and size."""
-    fd = os.open(name, _FILE_FLAGS, dir_fd=dfd)
-    try:
-        before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or _node(before) != node
-                or before.st_size != size):
-            raise _Diverged(f'changed after listing: {path}')
-        digest = hashlib.sha256()
-        total = 0
-        while True:
-            budget.tick()
-            chunk = os.read(fd, min(_READ_CHUNK, size + 1 - total))
-            if not chunk:
-                break
-            total += len(chunk)
-            budget.bytes_read += len(chunk)
-            if total > size:
-                raise _Diverged(f'changed during read: {path}')
-            digest.update(chunk)
-        after = os.fstat(fd)
-    finally:
-        os.close(fd)
-    if total != size or _sig_text(after) != _sig_text(before):
-        raise _Diverged(f'changed during read: {path}')
-    budget.files_hashed += 1
-    return digest.hexdigest()
-
-
-def _prove_live(root_fds: Mapping[str, int], root_devs: Mapping[str, int],
-                budget: _ProofBudget) -> List[Tuple[str, str]]:
-    """``(path, sha256)`` of every live member of every bound root, path order.
-
-    Membership is listed first, so an over-budget corpus is refused before
-    any byte is read. Then members are hashed in path order.
-    """
-    dirs: Dict[str, Tuple[int, int]] = {}
-    files: List[_LiveFile] = []
-    for collection in sorted(root_fds):
-        fd = os.dup(root_fds[collection])
-        try:
-            _walk_live(fd, collection + '/', 0, root_devs[collection], budget, dirs, files)
-        finally:
-            os.close(fd)
-    files.sort()
-    hashed: List[Tuple[str, str]] = []
-    last: Optional[Tuple[str, int]] = None
-    try:
-        for path, dir_rel, name, size, node in files:
-            budget.tick()
-            if last is None or last[0] != dir_rel:
-                if last is not None:
-                    os.close(last[1])
-                    last = None
-                last = (dir_rel, _open_live_dir(root_fds, dirs, dir_rel))
-            hashed.append((path, _hash_live(last[1], name, path, size, node, budget)))
-    finally:
-        if last is not None:
-            os.close(last[1])
-    return hashed
-
 
 class CandidateQuery:
     """Live verification of returned candidates for one pinned, bound generation.
@@ -1735,11 +1524,6 @@ class CandidateQuery:
     Rows returned by ``phase``/``search`` are deliverable only after
     ``finish()`` returns. ``finish`` re-checks seal, incarnation and live root
     identities. If it raises, every row of the query must be discarded.
-
-    That is returned-row correctness only: an unreturned new, renamed or
-    changed file is invisible to it, and a dropped stale row just shrinks
-    the answer. A caller that must not serve an old or empty generation
-    (selected host recall) calls ``prove_fresh()`` before ``finish()``.
     """
 
     def __init__(self, index: Any, token: Any, binding: Any, *,
@@ -1891,6 +1675,31 @@ class CandidateQuery:
                 'dropped': dict(sorted(Counter(dropped.values()).items()))})
         return valid[:limit]
 
+    def require_returned_verified(self) -> None:
+        """Refuse a partial answer after checking returned candidates only.
+
+        An unreturned new file is index lag, not evidence that a returned row
+        is stale. Exclusions may remove rows; every other drop withholds the
+        complete answer. Source mismatches request sync at the host boundary;
+        read and size limits report unavailable source without a futile scan.
+        """
+        self._require_open()
+        if self._failed:
+            _raise_stale('candidate query already failed')
+        dropped = {reason: count for reason, count in self.stats['dropped'].items()
+                   if reason != 'excluded' and count}
+        if not dropped:
+            return
+        self._failed = True
+        unavailable = frozenset(('file_budget', 'query_budget', 'unreadable'))
+        if set(dropped) <= unavailable:
+            raise CatalogPending({'reason': 'returned_unverified',
+                                  'dropped': dropped,
+                                  'scope': self.binding.scope,
+                                  'generation': self.binding.generation})
+        raise IndexContractError(STALE) from ReturnedCandidateDiverged(
+            'returned source differs from the pinned generation')
+
     def finish(self) -> Dict[str, Any]:
         """Re-check seal, incarnation and live root identities; then close."""
         self._require_open()
@@ -1906,84 +1715,6 @@ class CandidateQuery:
         finally:
             self.close()
         return {**self.stats, 'dropped': dict(self.stats['dropped'])}
-
-    def prove_fresh(self, *, max_files: int = DEFAULT_FRESHNESS_FILES,
-                    max_bytes: int = DEFAULT_FRESHNESS_BYTES,
-                    deadline_seconds: float = DEFAULT_FRESHNESS_SECONDS
-                    ) -> Dict[str, Any]:
-        """Prove the live corpus is the pinned generation's; else block.
-
-        Call after every phase and before ``finish()``. Any returned-candidate
-        drop other than ``excluded`` is decided first, without I/O. Then every
-        bound root, not only the selected collections, is listed under the
-        held root fds by the catalog scan's rules and every ``.md`` member is
-        rehashed. The manifest of those ``(path, sha256)`` pairs, with the
-        exclusions this query loaded, must equal the binding's (and so the
-        seal's) manifest, and every served candidate must have the proven
-        hash. This covers new, renamed, deleted and changed files whether or
-        not a phase returned them.
-
-        * Divergence raises ``IndexContractError('index_stale')`` from
-          ``CorpusDiverged``: the caller must request a sync.
-        * A file, byte, directory or time budget, or an unreadable source,
-          raises ``CatalogPending`` ``freshness_unproven``: freshness is
-          unknown and nothing may be served. Membership is listed before any
-          byte is read, so an over-budget corpus costs no hashing.
-
-        Either way the query is failed. A window after the last read
-        remains, as with every live proof.
-        """
-        self._require_open()
-        max_files = _positive_int('max_files', max_files)
-        max_bytes = _positive_int('max_bytes', max_bytes)
-        if (type(deadline_seconds) not in (int, float)
-                or not 0 < deadline_seconds <= MAX_FRESHNESS_SECONDS):
-            raise ValueError('invalid freshness deadline')
-        budget = _ProofBudget(max_files, max_bytes, time.monotonic() + deadline_seconds)
-        try:
-            if self._failed:
-                _raise_stale('candidate query already failed')
-            try:
-                self._prove_fresh(budget)
-            except _Diverged as exc:
-                raise IndexContractError(STALE) from CorpusDiverged(str(exc))
-            except _Unproven as exc:
-                raise CatalogPending({
-                    'reason': 'freshness_unproven', 'cause': str(exc),
-                    'scope': self.binding.scope, 'generation': self.binding.generation,
-                    'snapshot': self.binding.catalog_scan_id,
-                    'max_files': max_files, 'max_bytes': max_bytes,
-                    'deadline_seconds': deadline_seconds,
-                    **budget.report()}) from None
-        except BaseException:
-            self._failed = True
-            raise
-        self.stats['freshness'] = {'proven': True, **budget.report()}
-        return dict(self.stats['freshness'])
-
-    def _prove_fresh(self, budget: _ProofBudget) -> None:
-        dropped = set(self.stats['dropped'])
-        if dropped - _DROP_FILTERED - _DROP_UNPROVEN:
-            raise _Diverged('a returned candidate differs from the pinned generation')
-        if dropped & _DROP_UNPROVEN:
-            raise _Unproven('candidate_unverified')
-        if os.listdir not in os.supports_fd:
-            raise _Unproven('platform')
-        try:
-            hashed = _prove_live(self._root_fds, self._root_devs, budget)
-        except OSError as exc:
-            if exc.errno in _CHANGED_ERRNOS:
-                raise _Diverged(f'source changed: {type(exc).__name__}') from None
-            raise _Unproven('unreadable') from None
-        excluded_paths, excluded_hashes = self._exclusions
-        entries = [(path, sha, int(path not in excluded_paths and sha not in excluded_hashes))
-                   for path, sha in hashed]
-        if _digest(self.binding.scope, entries) != self.binding.source_manifest:
-            raise _Diverged('live source differs from the pinned generation')
-        proven = dict(hashed)
-        for path, verdict in self._memo.items():
-            if verdict[0] == 'ok' and proven.get(path) != verdict[1]:
-                raise _Diverged('a returned candidate changed during the query')
 
     # -- one candidate --------------------------------------------------------
 
