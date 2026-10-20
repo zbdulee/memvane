@@ -10,6 +10,115 @@ scenario captures objective evidence. Record each run with
 
 ## Status of this document
 
+**2026-10-20 `40e500c` Claude 프로젝트 설치 smoke (L1 PASS 아님):**
+사용자가 승인한 기존 합성 QA 프로젝트에 후보
+`40e500cb44e32ab62e05f14d75113dd4d59d3534`를 Claude 공식 CLI로
+project scope 설치했다. 별도 `qmd-laya-40e500c-qa` marketplace를 등록하고
+이전 `4dde371` project entry를 비활성화했다. 사용자 전역 설치는 유지되며
+이 QA 프로젝트에서만 비활성 상태다. 설치 cache와 **실제 Claude가 실행한
+marketplace source 경로** 모두 Git tree의 915/915 파일 내용·실행 권한과
+일치했다(guard `7f6478a5e78c46d688429660aaf961e7`,
+`239e566a186e4966affbc7f4b3d9b20e`, 각각 passed/settled).
+새 Claude Opus 세션에서 SessionStart의 `topical-reconcile`·`update-queued`,
+UserPromptSubmit의 `recall`, Stop의 `topical-stop`이 모두 그 source의
+`hooks/run-hook`에서 exit 0으로 실행됐다. 이전 entry의 hook 실행은
+관측되지 않았다(guard `1d6759402beb4a66bfe2366cdb1aff4e`,
+passed/settled). 응답은 합성 표식 `QA_LOAD_40E500C`였고, 실제
+`claude-opus-5-5` 사용량은 input 2, output 14, cache create 65,787,
+cache read 0, thinking 0 token, web 0회였다. 증거는
+`laya-l1-gate-4dde371-qa/evidence-40e500c/`의
+`installed-identity.json`, `loaded-identity.json`,
+`claude-load-evidence.json`, `claude-load-debug.log`에 있다.
+합성 프로젝트에는 `.auto-context` 설정이 없어 setup notice
+`settings_not_ready`가 정상 표시됐고, 새 hook trust를 승인하거나
+provider를 활성화하지 않았다. 이 smoke는 전용 OS 계정/VM의 정식 L1,
+설치 소유 journal·DB/queue incarnation, 실제 QMD 이관·검색·학습,
+Codex hook 검증을 충족하지 않는다. 해당 행은 `NOT RUN`이다.
+현재 exact head의 Node 22/24/26 CI는
+[run 39448832807](https://github.com/zbdulee/qmd-auto-context/actions/runs/39448832807)에서 성공했다.
+이 기록을 소스에 반영하면 Git tree가 바뀌므로, 위 설치의 exact identity와
+CI는 계속 **커밋 `40e500c`에만** 귀속된다.
+
+**2026-10-20 설치 후 읽기 전용·합성 게이트 추적:** 실제 로드된
+marketplace source에서 `select_route()`는 `legacy/no_route_record`를 반환했다.
+이 합성 프로젝트에는 Laya route, 설치 journal, index DB, claim queue가
+없다. `update-queued` hook 자체는 exit 0이었으나, 비설정 프로젝트의
+background update status는 `failed`이고 등록 안내를 남겼다. 따라서
+hook 로드는 확인했지만 검색·설치·큐의 제품 동작으로 세지 않는다.
+package/journal/DB/queue 및 두 후보의 중단·복구 합성 검사는 2/2 통과했다
+(guard `669202a15e1545a69a18cf0475d4b165`, passed/settled).
+fixture 자체는 `FORMAL_RELEASE_L1=NOT_RUN`으로 표시한다.
+
+선택된 플러그인 shared QMD 세대의 읽기 전용 선택은 성공했지만
+`bootstrap-proof.json`, `bootstrap-journal.json`, `scope-policy.json`이
+없고 현재 선택된 cache에서 GGUF를 찾지 못했다. 실제 Claude 로드 경로와
+canonical private state 경로로 provider 검토를 재시도한 결과, 세대의
+`bootstrap-proof.json`을 읽는 지점에서 차단되어 proposal digest는 없다
+(guard `6b6ba2132b6b41cea09e3331c696fed5`, passed/settled;
+검토 결과는 **blocked**). `qmd_model_reason()`도
+`qmd_embedding_model_proof_required`를 반환한다. 이전 smoke의
+328,576,992바이트 모델과 별도로 발견된 333,590,944바이트 GGUF의
+동일성은 입증되지 않아 대체하지 않았다. 기존 선택 세대에 증명 파일을
+임의 생성하는 것은 정상 복구가 아니다. 새 `plan-replacement-store`와
+`prepare-replacement-store`는 선택된 pointer·managed runtime·설정된
+모델 이름·프로젝트 scope의 입력 동일성을 확인하고, 사용자가 명시한 GGUF
+경로·SHA256·크기와 승인한 계획 digest에 결속된 별도 journal에 빈 비활성
+세대의 실제 QMD vector/search 증명을 남긴다. 합성 fixture에서는 기존
+선택 세대와 원본 journal·DB·설정의 보존, 빠진/다른 모델의 차단,
+pointer 변경·세대 ID 충돌·중단 뒤 재개를 확인했다. Claude Opus의
+독립 리뷰가 짚은 replacement journal supersession과 runtime wrapper
+결속을 보강한 뒤 합성 검사는 43/43 PASS
+(guard `84594f6be1c64d9d8c2a9f7e5414c42f`, `passed/settled:true`)였다.
+보강 후 인접 설치·공유 저장소·cutover 검사는
+39/39 PASS (guard `904dc9f6a4144aa88ec1bad525857fc9`,
+`passed/settled:true`)였다. 같은 요청의 실패 journal 재시작과 runtime
+pointer 직접 결속을 추가한 뒤 합성 검사는 45/45 PASS
+(guard `eba1930e922e48c78de2aa667c489361`, `passed/settled:true`)였다.
+이 마지막 좁은 변경 뒤 인접 39건은 재실행하지 않았으며, 전체 exact-commit
+CI가 아직 필요하다. 이 경로는 운영
+세대의 proof를 위조하지 않으며 새 세대를 선택하거나 기존 QMD 자료를
+이관하지 않는다. 현재 설치된 `40e500c`에는 이 새 경로가 없고, 이
+문서의 기존 설치 smoke와 CI는 새 후보를 검증하지 않는다. 동일성이
+확인된 원래 모델의 명시 경로, 실제 데이터 백업·이관·복구 검증 및
+별도 replacement cutover가 남는다.
+명시 모델 경로만으로 provider 제안을 얻어도 shared QMD의 setup readiness
+증명 누락은 별개로 남는다.
+
+Claude Opus 구현 제안은 guard `cc546f5e31c04cd4b3e2d55fddce037f`
+(`passed/settled:true`, modelUsage input 2/output 7,332/cache create 1,582/
+cache read 2,061/thinking 1,778/web 0)에서 받았다. 첫 코드 리뷰는 guard
+`7831210978c54262ac574c86c05ebaa0`
+(`passed/settled:true`, modelUsage input 2/output 12,635/cache create 15,340/
+cache read 2,061/thinking 9,920/web 0)에서 journal liveness와 runtime
+결속 결함을 찾았다. 전체 diff 후속 리뷰는 guard
+`3b23e22c5593415a8d37f5206ae8cd42`에서 180초 시간초과로
+`failed/settled:true`이며 검토 결론이 없다. 좁힌 후속 리뷰는 guard
+`df9cceae50434068bab568a945529863` (`passed/settled:true`, input 2/
+output 6,439/cache create 5,756/cache read 2,061/thinking 4,406/web 0)에서
+같은 요청의 실패 checkpoint 재시작 결함을 찾았다. 수정 후 마지막 좁힌
+리뷰는 guard `8c1dd37a30be42e789544c925a4fe124` (`passed/settled:true`,
+input 2/output 4,554/cache create 4,665/cache read 2,061/thinking 3,707/
+web 0)에서 **보여 준 수정 범위에 P1/P2가 없다고** 판정했다. 이는 전체
+릴리스 후보의 독립 승인이나 설치 QA가 아니다.
+
+이 복구 변경은 기존 `RQA-RES-02`의 별도 안전 범위 학습 검증을 바꾸지
+않는다. 다중 PC 시험이나 검색·embedding의 별도 부하 큐는 새 필수
+릴리스 게이트로 추가하지 않았다.
+
+| 분류 | `40e500c` 현재 결과 |
+|---|---|
+| 완료 | exact head CI Node 22/24/26, Claude project-scope 설치·실제 로드 identity 915/915, 위의 합성 검사·읽기 전용 상태 확인. |
+| 실패/차단 | 비설정 합성 프로젝트의 update worker status `failed`(예상된 등록 안내); 실제 provider 검토는 proof 부재로 차단, digest 없음. 운영 전환 실패를 의미하지는 않는다. |
+| 미실행 | 전용 환경의 정식 L1, Codex 설치 훅·신뢰·RQA-HOOK-02, 설치 소유 journal/DB/queue incarnation, 실제 QMD 이관·검색 동등성, 자원 압력 아래 학습 재개, main 병합·정식 릴리스·Mini 설치·운영 활성화. |
+| 사용자 한시 면제 | 이번 후보의 Mini 관리자 로그인 필요 QA만 `USER_WAIVED/NOT RUN`; 다른 필수 행은 면제되지 않았다. |
+
+합성 자료만 전달한 Claude Opus 독립 검토는 guard
+`365569afbaa54a568d2c02a1e9da000d`에서 passed/settled였고 실제
+`modelUsage`는 input 2, output 2,947, cache create 2,805, cache read 649,
+thinking 1,405 token, web 0회였다. 검토의 “정식 릴리스 승인이 없었다”는
+판정은 이전 사용자 승인 기록과 맞지 않아 채택하지 않았다. 출처·상태 요약은
+합성 QA 폴더의 `evidence-40e500c/read-only-gate-inventory.json`에 남겼다.
+
 **2026-10-18 설치 후보 중간 기록:** draft PR #12의 `c18067edcc02057efe26956aa5ea8a210a646c7e`를
 전체 Git tree 862개 파일 그대로 별도 Claude/Codex 로컬 marketplace에 설치했다.
 두 설치 cache와 commit의 blob/mode가 862/862 일치했고, manifest SHA256은
