@@ -353,6 +353,35 @@ class RetirementRefusalTests(RebuildCase):
 
 
 class RetirementCrashTests(RebuildCase):
+    def test_crash_after_bind_ledger_before_marker_keeps_sealed_build_still(self):
+        self.corpus(3)
+        self.write('wiki/w0.md', '# W\nwiki\n')
+        self.qmd_source()
+        self.register()
+        self.until_settled()
+        self.assertEqual(self.finalize()['status'], 'freshness_pending')
+        self.until_settled()
+        real = cutover._write
+
+        def write(path, value, *, replace):
+            real(path, value, replace=replace)
+            if Path(path) == self.ledger and not replace:
+                raise Kill()
+        with mock.patch.object(cutover, '_write', write):
+            with self.assertRaises(Kill):
+                self.finalize()
+        self.assertEqual(self.record()['phase'], 'sealed')
+        self.assertTrue(self.ledger.exists())
+        self.assertFalse(self.marker.exists())
+        self.assertEqual(self.selection(), 'blocked')
+        result = worker.run_initial_build(self.project, self.record(),
+                                          coordinator=self.coordinator, report={},
+                                          start_service=self.start)
+        self.assertEqual(result['reason'], 'initial_build_bind_unsettled')
+        self.assertEqual(self.record()['phase'], 'sealed')
+        self.assertEqual(self.finalize()['status'], 'cutover_prepared')
+        self.assertEqual(self.record()['phase'], 'bound')
+
     def resumed(self):
         result = self.retire()
         self.assertEqual(result['status'], 'origin_binding_retired')

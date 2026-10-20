@@ -553,6 +553,11 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
     identity = record['identity']
     if record['phase'] == 'bound':
         return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
+    if record['phase'] == 'sealed':
+        from laya_qmd_cutover import inspect_bound_cutover
+        if inspect_bound_cutover(identity['journalPath']) is not None:
+            return _checked({'state': 'deferred', 'reason': 'initial_build_bind_unsettled',
+                             'initialBuild': 'sealed'})
     if not _still_unselected(project):
         decision = select_route(str(project), action='update')
         if (record['phase'] == 'sealed' and (decision.get('state'), decision.get('reason'))
@@ -576,6 +581,16 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         if record['phase'] == 'bound':
             return {'state': 'unchanged', 'reason': 'initial_build_bound',
                     'initialBuild': 'bound'}
+        if record['phase'] == 'sealed':
+            from laya_qmd_cutover import inspect_bound_cutover
+            if inspect_bound_cutover(identity['journalPath']) is not None:
+                # Finalize may have written the durable ledger and died before
+                # its project marker. The selector still says plain QMD then,
+                # but stepping this candidate could invalidate that binding.
+                # Repeated finalize settles it; no model or store is touched.
+                return _checked({'state': 'deferred',
+                                 'reason': 'initial_build_bind_unsettled',
+                                 'initialBuild': 'sealed'})
         baseline = _inactive_journal(identity)
         # Bundle identity, attestation and provider approval, before any model.
         approval = preflight_product_candidate(identity['journalPath'],

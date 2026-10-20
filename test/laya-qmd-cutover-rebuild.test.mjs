@@ -9,6 +9,6 @@ test('QMD drift after a bound cutover: retire, fresh install, crash resume and l
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 16 tests/);
+  assert.match(result.stderr, /Ran 17 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });
