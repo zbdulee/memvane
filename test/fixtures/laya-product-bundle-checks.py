@@ -483,7 +483,7 @@ print(json.dumps(result))'''
               mock.patch('qmd_route.project_paths', return_value=selection),
               mock.patch('laya_qmd_migration.inspect_qmd_collections',
                          return_value=inventory)):
-            plan = product_install.plan_qmd_origin(self.project)
+            plan = product_install.plan_qmd_origin(self.project, background=False)
             self.assertEqual(plan['status'], 'review_required')
             self.assertEqual(plan['sourceFiles'],
                              [['docs/chapter.md', documents[0][2]],
@@ -494,12 +494,12 @@ print(json.dumps(result))'''
                 'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}}))
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'unsupported_selected_compile_settings'):
-                product_install.plan_qmd_origin(self.project)
+                product_install.plan_qmd_origin(self.project, background=False)
             self.settings.write_text(json.dumps(settings))
             raw.write_text('# First chapter\nChanged.\n', encoding='utf-8')
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'qmd_current_source_changed'):
-                product_install.plan_qmd_origin(self.project)
+                product_install.plan_qmd_origin(self.project, background=False)
 
     def test_owned_origin_prepares_backup_vector_candidate_and_retries_without_model(self):
         wiki = self.auto / 'wiki'
@@ -560,7 +560,8 @@ print(json.dumps(result))'''
                   'user_qmd_roots': [self.user_qmd],
                   'coordinator': Controller(),
                   'start_service': lambda *_args, **_kw: Service(),
-                  'provider_factory': Provider}
+                  'provider_factory': Provider,
+                  'background': False}
         with (mock.patch('qmd_route.binary_info', return_value=runtime),
               mock.patch('qmd_route.project_paths', return_value=selection),
               mock.patch('laya_product_install.review_local_provider',
@@ -568,7 +569,7 @@ print(json.dumps(result))'''
                                        'reviewedProvider': review}),
               mock.patch('context_learning.shared.resource_report',
                          return_value={'synthetic': True})):
-            plan = product_install.plan_qmd_origin(self.project)
+            plan = product_install.plan_qmd_origin(self.project, background=False)
             kwargs['expected_proposal_sha256'] = plan['proposalSha256']
             raw.write_text('# Chapter\nChanged.\n', encoding='utf-8')
             with self.assertRaisesRegex(product_install.InstallBlocked,

@@ -19,6 +19,9 @@ from laya_index_a import IndexContractError, _NOT_EXCLUDED, _path_predicate
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 MAX_DIMENSION = 2048
 MAX_CANDIDATES = 20_000
+# The generation seal streams rows; MAX_CANDIDATES remains the per-document
+# chunk-set and bounded query/work limit, not a whole-generation ceiling.
+MAX_GENERATION_SEAL_ROWS = None
 MAX_FLOAT_WORK = 4_000_000
 MAX_TITLE_BYTES = 5_000_000
 

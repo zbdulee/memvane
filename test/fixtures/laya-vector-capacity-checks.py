@@ -292,7 +292,7 @@ class ReviewFixTests(VectorFillCase):
         runtime = self.runtime()
         self.scan_to_complete(runtime)
         import laya_index_vector
-        with mock.patch.object(laya_index_vector, 'MAX_CANDIDATES', 2):
+        with mock.patch.object(laya_index_vector, 'MAX_GENERATION_SEAL_ROWS', 2):
             answer = self.fill(runtime)[-1]
         self.assertEqual((answer['state'], answer['reason']),
                          ('blocked', 'vector_budget_exceeded'))
@@ -300,6 +300,16 @@ class ReviewFixTests(VectorFillCase):
         gated = self.step(runtime)
         self.assertEqual((gated['state'], gated['reason']), ('pending', 'vector_backlog'))
         self.assertIsNone(self.head(runtime))
+
+    def test_streaming_seal_has_no_whole_generation_row_cap(self):
+        self.corpus(3)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        import laya_index_vector
+        with mock.patch.object(laya_index_vector, 'MAX_CANDIDATES', 2):
+            answer = self.fill(runtime)[-1]
+        self.assertEqual((answer['state'], answer['reason']), ('complete', None))
+        self.assertTrue(vc.fill_complete(runtime, self.profile_id))
 
     def test_member_the_provider_would_refuse_blocks_without_a_model_call(self):
         self.write('a.md', '# A\nfine\n')
