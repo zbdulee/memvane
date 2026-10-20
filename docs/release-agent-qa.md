@@ -132,6 +132,20 @@ Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선�
 필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
 않는다.
 
+**2026-10-20 후속 L0 기록 (설치 후보 QA 아님):** 비활성 초기 빌드와
+QMD 결속 전환/복구, 기존 승인 소유자의 Laya 경로, durable 학습 child 및
+overflow wake를 소스와 합성 fixture에 연결했다. 전체 `npm test` 출력은
+1,648건 중 1,639 PASS·9 SKIP·0 FAIL이었지만 실행 도구 시간 한계로
+guard supervisor가 정산 전에 종료됐다. 소유 프로세스가 모두 종료됐음을
+검사하고 해당 checkpoint를 `stopped`/`settled`/`completed:false`로 기록했다.
+동일한 273개 test 파일을 직렬 guard 6회로 재실행해 1,645건 중
+1,636 PASS·9 SKIP·0 FAIL을 얻었고, Node가 자동 발견하는 helper 파일
+3개도 별도 guard에서 모두 PASS였다. 정산된 범위 합계는 1,648건 중
+1,639 PASS·9 SKIP·0 FAIL이며 **하나의 정산된 full-suite 실행은 아니다**.
+세부 run ID와 Opus 사용량은
+[후속 통합 기록](plans/2026-10-20-laya-index-followup-integration.md)에 있다.
+이 기록은 `LI-*` 또는 `RQA-*` 설치 후보 행을 통과시키지 않는다.
+
 ## 1. Source verification and installed-candidate QA are separate
 
 | Level | What runs | Can it satisfy this gate? |

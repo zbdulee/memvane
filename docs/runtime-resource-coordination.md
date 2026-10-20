@@ -76,6 +76,11 @@ per session. Index readiness work precedes learning. Version-matched wake ACKs
 preserve an enqueue that arrived during dispatch. After a crash/reboot, obtaining
 the worker kernel lease allows interrupted `running` hints to become pending;
 the original handler still revalidates setup/scope/authorization before work.
+Wake revisions increase across row deletion and recreation. When the primary
+queue is full, a bounded private overflow table retains coalesced wakes for
+promotion as slots open; when both stores are full the caller receives an
+explicit capacity deferral. The learning request file remains for the next
+normal hook in that case.
 
 The waiter polls at five-second intervals for **at most 60 seconds of dispatch
 loop lifetime and eight dispatches**. It sleeps with only its own dispatch lease,
@@ -90,13 +95,20 @@ is still needed.** No boot/login service,
 LaunchAgent, new credential or security permission is installed.
 
 Learning retries recheck the common setup guard and retain the existing history
-worker fence before entering the local handler. An install/update transition
-therefore preserves the wake instead of training against an unready setup.
-Learning resource retries call only existing local training/evaluation handlers;
-they do not rerun teacher calls. Existing consent/quota/approval controls remain
-in those handlers. Legacy auto-cycle resource refusal retains its phase receipts
-and cadence instead of becoming a 24-hour quality failure; its existing policy
-is revalidated on retry. No new project enrollment or broader grant is inferred.
+worker fence. The runtime dispatcher starts at most one owned learning child
+per private learning root and returns immediately, so index and update wakes
+can progress while the child runs. A general/legacy full request is persisted
+before its child starts; after a crash the request is retried under a bounded
+restart count. The teacher's existing uncertain-send receipts still decide
+whether any external call may be repeated. Once the teacher phase completes,
+a resource-deferred training phase hands off to a training-only child, which
+never calls the teacher. The selected-profile retry also uses that child.
+Training pressure stops at the existing committed group boundary and the
+next admitted child resumes from the training cursor. Existing consent,
+quota and approval controls remain in the worker. Legacy auto-cycle resource
+refusal retains its phase receipts and cadence instead of becoming a 24-hour
+quality failure. An install/update transition preserves the wake until setup
+is ready; no new project enrollment or broader grant is inferred.
 
 ## Safe boundaries and limits
 
