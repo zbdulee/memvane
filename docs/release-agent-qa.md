@@ -101,6 +101,15 @@ input 2/output 4,554/cache create 4,665/cache read 2,061/thinking 3,707/
 web 0)에서 **보여 준 수정 범위에 P1/P2가 없다고** 판정했다. 이는 전체
 릴리스 후보의 독립 승인이나 설치 QA가 아니다.
 
+첫 후속 PR head `e1fc313`의 CI run `39511702028`에서 Node 22가 실패했다.
+`shared-install-resilience`의 설치 중단 fixture가 기존 두 인자 `_save`
+호출을 모의하는데, 새 공통 `_build`가 legacy 경로까지 세 인자로 호출한
+회귀였다. Legacy 호출 형태를 복원하고 replacement 경로에만 journal 이름을
+추가했다. 정확한 실패 케이스와 shared QMD 45건은 단일 가드
+`4408de69e3fe44cf8927e212d60772dc`에서 Node 5/5 PASS,
+`passed/settled:true`로 재검증했다. 이 수정은 `e1fc313` 뒤의 소스
+변경이므로 새 exact-commit CI가 필요하다.
+
 이 복구 변경은 기존 `RQA-RES-02`의 별도 안전 범위 학습 검증을 바꾸지
 않는다. 다중 PC 시험이나 검색·embedding의 별도 부하 큐는 새 필수
 릴리스 게이트로 추가하지 않았다.

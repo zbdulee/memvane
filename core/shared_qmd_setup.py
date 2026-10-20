@@ -359,7 +359,11 @@ def _build(journal, base, native_lease=None, *, journal_name):
     if not resuming:
         journal['building']=progress
     def save_progress():
-        journal['buildingSha256']=coordinator.digest(progress);_save(base,journal,journal_name)
+        journal['buildingSha256']=coordinator.digest(progress)
+        if journal_name == JOURNAL:
+            _save(base, journal)
+        else:
+            _save(base, journal, journal_name)
     save_progress()  # Generation identity precedes all stage writes.
     generation.mkdir(mode=0o700,exist_ok=resuming);store._private_dir(generation)
     config=generation/'config';cache=generation/'cache';probe=generation/'bootstrap-probe'
