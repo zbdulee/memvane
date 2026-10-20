@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,6 +82,22 @@ class VectorChecks(unittest.TestCase):
         rows = self.query(pin)
         self.assertEqual([r['path'] for r in rows], [f'a-{i:03}.md' for i in range(5)])
         self.assertTrue(all(r['generation'] == 'alpha-0' and r['scope'] == 'alpha' for r in rows))
+
+    def test_generation_size_is_not_a_query_or_seal_admission_cap(self):
+        docs = [(f'doc-{i}.md', f'body {i}', True) for i in range(3)]
+        self.stage('g0', 'alpha', docs)
+        for _, body, _ in docs:
+            self.chunk(body, (1.0, 0.0))
+        # Each document has one bounded chunk set. The generation as a whole
+        # must remain sealable and searchable beyond the old candidate cap.
+        with mock.patch('laya_index_vector.MAX_CANDIDATES', 2):
+            self.assertEqual(self.vectors.seal_generation('g0', self.profile)['rows_count'], 3)
+            self.assertEqual(self.index.publish(None, 'g0', 'claim',
+                                                require_vector=True), 'published')
+            pin = self.index.pin('alpha')[0]
+            self.assertEqual(len(self.query(pin)), 3)
+            with self.assertRaisesRegex(IndexContractError, 'vector_budget_exceeded'):
+                self.query(pin, max_candidates=2)
 
     def test_collection_filter_precedes_vector_budget_and_top_k(self):
         docs = [(f'raw/a-{i}.md', f'raw {i}', True) for i in range(8)]
