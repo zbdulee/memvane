@@ -369,6 +369,21 @@ class RevisionSkipChecks(unittest.TestCase):
             self.assertEqual(self.run_main()['processed'], 1)
         self.assertEqual(len(self.extractor_calls), 1)
 
+    def test_run_lock_rejects_hardlink_and_loose_mode(self):
+        base = self.root / '.auto-context' / 'compile'
+        original = base / 'original.lock'
+        original.write_text('owned', encoding='utf-8')
+        lock = base / worker.COMPILE_RUN_LOCK
+        os.link(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+        self.assertEqual(original.read_text(encoding='utf-8'), 'owned')
+        lock.unlink()
+        original.chmod(0o644)
+        os.rename(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+
     def test_legacy_route_keeps_existing_path(self):
         self.compile_verified_once()
         self.bound = None
