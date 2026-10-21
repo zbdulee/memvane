@@ -525,10 +525,22 @@ db.commit();db.close()
     def test_inspect_without_store_is_read_only(self):
         result=setup_entry.discover(self.project)
         self.assertEqual(result['discovered']['sharedStoreStatus'],'not_prepared')
+        self.assertEqual(result['discovered']['pythonExecutable'],sys.executable)
+        self.assertIs(result['discovered']['sqliteExtensionLoading'],
+                      setup_entry.sqlite_extension_loading_available())
         self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
         update=setup_entry.check_update(self.project)
         self.assertIn('plugin_qmd_store_not_ready',update['reasons'])
         self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
+
+    def test_sqlite_extension_capability_probe_is_read_only(self):
+        class Unavailable: pass
+        class Available:
+            def enable_load_extension(self, enabled): pass
+            def load_extension(self, path): pass
+        self.assertFalse(setup_entry.sqlite_extension_loading_available(Unavailable))
+        self.assertTrue(setup_entry.sqlite_extension_loading_available(Available))
+        self.assert_preserved()
 
     def test_unsupported_platform_remains_blocked_without_staging(self):
         with patch('install_update.supported_platform', return_value=False):

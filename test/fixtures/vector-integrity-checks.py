@@ -74,4 +74,10 @@ class ExtensionLocation(unittest.TestCase):
   with self.assertRaisesRegex(ValueError,'unsafe_vector_extension'):
    V.load_vectors(self.db,self.runtime)
   self.db.load_extension.assert_not_called()
+ def test_missing_python_sqlite_extension_api_fails_clearly(self):
+  self.create(self.nested)
+  self.db.enable_load_extension=None
+  with self.assertRaisesRegex(ValueError,'python_sqlite_extension_loading_unavailable'):
+   V.load_vectors(self.db,self.runtime)
+  self.db.load_extension.assert_not_called()
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -28,6 +28,8 @@ def load_vectors(db,runtime):
  if path is None:raise ValueError('physical_vector_extension_unavailable')
  info=path.lstat()
  if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_uid not in (0,os.getuid()) or info.st_mode&0o022:raise ValueError('unsafe_vector_extension')
+ if not callable(getattr(db,'enable_load_extension',None)) or not callable(getattr(db,'load_extension',None)):
+  raise ValueError('python_sqlite_extension_loading_unavailable')
  db.enable_load_extension(True)
  try:db.load_extension(str(path))
  finally:db.enable_load_extension(False)

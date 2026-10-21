@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 
@@ -44,6 +45,13 @@ def _sha_file(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sqlite_extension_loading_available(connection_type=None):
+    """Inspect this interpreter without loading a library or touching a DB."""
+    connection_type = sqlite3.Connection if connection_type is None else connection_type
+    return (callable(getattr(connection_type, 'enable_load_extension', None)) and
+            callable(getattr(connection_type, 'load_extension', None)))
 
 
 def discover(project, *, probe_laya=True):
@@ -91,7 +99,9 @@ def discover(project, *, probe_laya=True):
                              'routeSelected': paths['selected'],
                              'commonStoreSelected': bool(paths.get('shared')),
                              'sharedStoreStatus': store_status,
-                             'sharedStoreReason': store_reason},
+                             'sharedStoreReason': store_reason,
+                             'pythonExecutable': sys.executable,
+                             'sqliteExtensionLoading': sqlite_extension_loading_available()},
               'changesApplied': 0}
     return result
 
