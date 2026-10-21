@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 import fcntl
+from functools import wraps
 import hashlib
 import json
 import os
@@ -54,6 +55,9 @@ RETIRED = 'retired'
 V3_PHASES = PHASES + (RETIRED,)
 RETIREMENT = 'cutover-retirement.json'
 RETIREMENT_SCHEMA = 'laya-qmd-cutover-retirement-v1'
+RETIREMENT_SCHEMA_V2 = 'laya-qmd-cutover-retirement-v2'
+REPLACEMENT_RETIREMENT = 'replacement_evidence_invalid'
+SOURCE_IDENTITY_RETIREMENT = 'source_identity_changed'
 # v3 files whose (dev, ino) the ledger pins.
 BOUND_FILES = (('sourceDb', 'sourceIdentity'), ('backupDb', 'backupIdentity'),
                ('candidateDb', 'candidateIdentity'), ('queueDb', 'queueIdentity'),
@@ -73,6 +77,9 @@ BOUND_IDENTITY =('projectRoot', 'journalPath', 'routeSha256', 'sourceDb',
 BOUND_REFRESH = ('backupDb', 'backupIdentity')
 V3_FIELDS = frozenset(('schema', 'epoch', 'phase', 'sourceDigest',
                        *BOUND_IDENTITY, *BOUND_REFRESH))
+V3_REPLACEMENT_FIELDS = V3_FIELDS | {'replacementEvidenceSha256'}
+V3_RETIREMENT_OBSERVED = 'retirementObservedSourceDigest'
+V3_RETIREMENT_IDENTITY = 'retirementObservedSourceIdentity'
 SOURCE_DRIFT = 'cutover_source_drift_requires_fresh_generation'
 # Ledger field -> ``laya_initial_build.evidence`` field.
 BOUND_EVIDENCE = (('indexGeneration', 'generation'), ('bindingDigest', 'bindingDigest'),
@@ -220,7 +227,9 @@ def _validated_v3(row):
     from laya_index_capacity import generation_digest
     identities = {field for _name, field in BOUND_FILES}
     scalar = V3_FIELDS - identities - {'epoch', 'phase', 'collections', 'vectorRows'}
-    if (set(row) != V3_FIELDS
+    fields = set(row) - {'retirementReason', V3_RETIREMENT_OBSERVED,
+                         V3_RETIREMENT_IDENTITY}
+    if (fields not in (V3_FIELDS, V3_REPLACEMENT_FIELDS)
             or type(row['epoch']) is not int or row['epoch'] < 1
             or row['phase'] not in V3_PHASES
             or any(not isinstance(row[k], str) or not row[k] for k in scalar)
@@ -230,6 +239,27 @@ def _validated_v3(row):
                    ('routeSha256', 'sourceDigest', 'sourceManifest', 'bindingDigest',
                     'catalogRawDigest', 'vectorProfileId', 'attestationSha256',
                     'providerFileIdentitySha256'))
+            or ('replacementEvidenceSha256' in row and
+                (not isinstance(row['replacementEvidenceSha256'], str) or
+                 not SHA.fullmatch(row['replacementEvidenceSha256'])))
+            or ('retirementReason' in row and
+                (row['phase'] != RETIRED or
+                 row['retirementReason'] not in
+                 (REPLACEMENT_RETIREMENT, SOURCE_IDENTITY_RETIREMENT) or
+                 (row['retirementReason'] == REPLACEMENT_RETIREMENT and
+                  'replacementEvidenceSha256' not in row) or
+                 (row['retirementReason'] == SOURCE_IDENTITY_RETIREMENT and
+                  (V3_RETIREMENT_IDENTITY not in row or
+                   V3_RETIREMENT_OBSERVED not in row))))
+            or (V3_RETIREMENT_OBSERVED in row and
+                (row['phase'] != RETIRED or
+                 not isinstance(row[V3_RETIREMENT_OBSERVED], str) or
+                 not SHA.fullmatch(row[V3_RETIREMENT_OBSERVED])))
+            or (V3_RETIREMENT_IDENTITY in row and
+                (row.get('retirementReason') != SOURCE_IDENTITY_RETIREMENT or
+                 not _identity_pair(row[V3_RETIREMENT_IDENTITY]) or
+                 row[V3_RETIREMENT_IDENTITY] == row['sourceIdentity'] or
+                 row[V3_RETIREMENT_OBSERVED] != row['sourceDigest']))
             or any(not HEX32.fullmatch(row[k]) for k in
                    ('scope', 'catalogScanId', 'candidateIncarnation'))
             or generation_digest(row['indexGeneration']) != row['bindingDigest']
@@ -417,6 +447,7 @@ def _check_bound_evidence(row, restore):
     selection), but the catalog may have rescanned and the roots may be
     gone: the user is leaving the candidate, not serving it.
     """
+    _check_replacement_source(row)
     for name, field in BOUND_FILES:
         if _identity(row[name]) != row[field]:
             _fail('cutover_bound_file_replaced')
@@ -457,6 +488,57 @@ def _check_bound_evidence(row, restore):
                                            row['vectorProfileId'])
     if live is None or any(live[theirs] != row[ours] for ours, theirs in BOUND_EVIDENCE):
         _fail('cutover_candidate_evidence_mismatch')
+
+
+def _check_replacement_source(row):
+    """An inactive model proof may bind a Laya candidate, never the QMD route.
+
+    The old shared generation must still be selected while QMD is the source.
+    This proof is intentionally not consulted by forward recovery after the
+    Laya journal committed: the old QMD pointer need not remain selected then.
+    """
+    expected = row.get('replacementEvidenceSha256')
+    if expected is None:
+        return
+    try:
+        import shared_qmd_setup
+        from laya_install_journal import _attestation
+        evidence = shared_qmd_setup.replacement_model_evidence()
+        attestation, attestation_sha = _attestation(row['journalPath'])
+    except Exception as exc:
+        raise CutoverBlocked('cutover_replacement_evidence_changed') from exc
+    provider = attestation.get('providerManifest') if isinstance(attestation, dict) else None
+    if (not isinstance(evidence, dict) or
+            not isinstance(evidence.get('modelSha256'), str) or
+            not SHA.fullmatch(evidence['modelSha256']) or
+            type(evidence.get('dimension')) is not int or
+            evidence['dimension'] < 1 or
+            not isinstance(provider, dict) or
+            not isinstance(provider.get('modelSha256'), str) or
+            not SHA.fullmatch(provider['modelSha256']) or
+            type(provider.get('dimension')) is not int or
+            provider['dimension'] < 1 or
+            evidence.get('evidenceSha256') != expected or
+            evidence.get('sourceDb') != row['sourceDb'] or
+            attestation_sha != row['attestationSha256'] or
+            provider.get('modelSha256') != evidence.get('modelSha256') or
+            provider.get('dimension') != evidence.get('dimension')):
+        _fail('cutover_replacement_evidence_changed')
+
+
+def _transition_source_error(row, names, multi):
+    """Return a reason while switching, so an uncommitted route can withdraw."""
+    try:
+        current = _qmd_digest(row['sourceDb'], row['sourceFormat'], names, multi)
+    except Exception:
+        return 'cutover_source_unavailable'
+    if current != row['sourceDigest']:
+        return SOURCE_DRIFT if row['schema'] == SCHEMA_V3 else 'cutover_source_changed'
+    try:
+        _check_replacement_source(row)
+    except Exception:
+        return 'cutover_replacement_evidence_changed'
+    return None
 
 
 def _check_evidence(row, *, restore=False):
@@ -546,6 +628,54 @@ def _ledger_lock(ledger_path):
         os.close(fd)
 
 
+@contextmanager
+def _operation_lock(marker_path):
+    """Serialize route mutations for one project across different state roots.
+
+    A separate lock avoids nesting ``_ledger_lock`` inside ``_change``. The
+    installed product lock, when present, is acquired first by its caller.
+    Readers may observe intermediate phases and must classify them blocked.
+    """
+    parent = Path(marker_path).parent
+    info = parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) & 0o022):
+        _fail('cutover_operation_parent_unsafe')
+    path = parent / 'laya-qmd-cutover-operation.lock'
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except OSError as exc:
+        raise CutoverBlocked('cutover_operation_lock_unavailable') from exc
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o077):
+            _fail('cutover_operation_lock_unsafe')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CutoverBlocked('cutover_operation_busy') from exc
+        after = path.lstat()
+        if (not stat.S_ISREG(after.st_mode) or
+                (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)):
+            _fail('cutover_operation_lock_changed')
+        yield
+    finally:
+        os.close(fd)
+
+
+def _serialized_operation(fn):
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        project = kwargs.get('project_root', args[0] if args else None)
+        journal = kwargs.get('journal_path', args[1] if len(args) > 1 else None)
+        _ledger_path, marker_path, _route_path = _paths(project, journal)
+        with _operation_lock(marker_path):
+            return fn(*args, **kwargs)
+    return guarded
+
+
 def _change(ledger_path, expected_epoch, expected_phase, next_phase, updates=None):
     with _ledger_lock(ledger_path):
         row = _ledger(ledger_path)
@@ -559,6 +689,7 @@ def _change(ledger_path, expected_epoch, expected_phase, next_phase, updates=Non
         return row
 
 
+@_serialized_operation
 def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
                     backup_db, source_format, collection, source_digest,
                     source_root, candidate_db, queue_db, scope,
@@ -677,12 +808,14 @@ def _inactive_approval(journal_path, route_sha):
     return journal, approval
 
 
+@_serialized_operation
 def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
                           backup_db, source_format, collection, source_digest,
                           source_root, candidate_db, queue_db, catalog_db,
                           binding_store, scope, index_generation, source_manifest,
                           binding_digest, catalog_scan_id, catalog_raw_digest,
-                          vector_profile_id, vector_rows):
+                          vector_profile_id, vector_rows,
+                          replacement_evidence_sha256=None):
     """Durably bind a sealed initial-build candidate to the still-selected QMD.
 
     The candidate was built, sealed and published on the capacity path by the
@@ -722,6 +855,10 @@ def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
         _fail('cutover_route_mismatch')
     if capacity_store_paths(candidate_db) != (str(catalog_db), str(binding_store)):
         _fail('cutover_capacity_store_mismatch')
+    if (replacement_evidence_sha256 is not None and
+            (not isinstance(replacement_evidence_sha256, str) or
+             not SHA.fullmatch(replacement_evidence_sha256))):
+        _fail('cutover_replacement_evidence_invalid')
     if ledger_path.exists() or ledger_path.is_symlink():
         current = _ledger(ledger_path)
         if current['phase'] == RETIRED:
@@ -731,7 +868,8 @@ def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
             # The journal is no longer inactive; report the settled binding.
             if (current['schema'] != SCHEMA_V3 or current['routeSha256'] != route_sha or
                     current['candidateDb'] != str(candidate_db) or
-                    current['indexGeneration'] != index_generation):
+                    current['indexGeneration'] != index_generation or
+                    current.get('replacementEvidenceSha256') != replacement_evidence_sha256):
                 _fail('cutover_selection_already_exists')
             _check_marker(current, marker_path)
             return current
@@ -751,6 +889,8 @@ def bind_qmd_origin_bound(*, project_root, journal_path, route_bytes, source_db,
            'candidateIncarnation': route['dbIncarnation'],
            'attestationSha256': approval['attestationSha256'],
            'providerFileIdentitySha256': approval['providerFileIdentitySha256']}
+    if replacement_evidence_sha256 is not None:
+        row['replacementEvidenceSha256'] = replacement_evidence_sha256
     for name, field in BOUND_FILES:
         row[field] = _identity(row[name])
     _validated(row, ledger_path)
@@ -772,7 +912,9 @@ def _replay_bound(fresh, ledger_path, marker_path, route_path):
     with _ledger_lock(ledger_path):
         current = _ledger(ledger_path)
         if (current['schema'] != SCHEMA_V3 or
-                any(current[key] != fresh[key] for key in BOUND_IDENTITY)):
+                any(current[key] != fresh[key] for key in BOUND_IDENTITY) or
+                current.get('replacementEvidenceSha256') !=
+                fresh.get('replacementEvidenceSha256')):
             _fail('cutover_selection_already_exists')
         if current['phase'] == RETIRED:
             _fail('cutover_binding_retired')
@@ -809,7 +951,8 @@ def inspect_bound_cutover(journal_path):
 
 
 def _retirement(row, observed):
-    return {'schema': RETIREMENT_SCHEMA, 'projectRoot': row['projectRoot'],
+    result = {'schema': (RETIREMENT_SCHEMA_V2 if 'retirementReason' in row
+                         else RETIREMENT_SCHEMA), 'projectRoot': row['projectRoot'],
             'journalPath': row['journalPath'], 'routeSha256': row['routeSha256'],
             'candidateDb': row['candidateDb'],
             'candidateIncarnation': row['candidateIncarnation'],
@@ -817,15 +960,71 @@ def _retirement(row, observed):
             'bindingDigest': row['bindingDigest'], 'backupDb': row['backupDb'],
             'boundSourceDigest': row['sourceDigest'],
             'observedSourceDigest': observed, 'marker': _marker(row)}
+    if 'retirementReason' in row:
+        result['reason'] = row['retirementReason']
+    if V3_RETIREMENT_IDENTITY in row:
+        result['observedSourceIdentity'] = row[V3_RETIREMENT_IDENTITY]
+    return result
 
 
-def retire_drifted_binding(project_root, journal_path, route_bytes):
-    """Withdraw a ``prepared`` v3 binding whose QMD digest moved since the bind.
+def _settle_retired_binding(row, record_path, marker_path, route_path):
+    """Complete only this terminal ledger's receipt and marker withdrawal.
 
-    The bound generation predates that QMD change and is never rebound
-    (``SOURCE_DRIFT``). This is the only exit: an explicit, idempotent
-    retirement so a fresh install (new state root, journal, attestation,
-    candidate incarnation and route) can bind a freshly sealed generation.
+    Ownership, absence of a selected route, and journal inactivity were
+    proved before the retired CAS. A later journal or route may belong to a
+    new install; neither is read or modified here. An owned marker with any
+    route remains uncertain and is never withdrawn automatically.
+    """
+    own_marker = False
+    if marker_path.exists() or marker_path.is_symlink():
+        if marker_path.is_symlink():
+            _fail('cutover_marker_changed')
+        current = _read_json(marker_path)
+        if current == _marker(row):
+            own_marker = True
+            if route_path.exists() or route_path.is_symlink():
+                _fail('cutover_route_uncertain')
+        elif not isinstance(current, dict) or current.get('journalPath') == row['journalPath']:
+            _fail('cutover_marker_changed')
+    if record_path.exists() or record_path.is_symlink():
+        stored = _read_json(record_path)
+        if (not isinstance(stored, dict) or
+                {key: value for key, value in stored.items()
+                 if key != 'observedSourceDigest'} !=
+                {key: value for key, value in _retirement(row, None).items()
+                 if key != 'observedSourceDigest'} or
+                not isinstance(stored.get('observedSourceDigest'), str) or
+                not SHA.fullmatch(stored['observedSourceDigest']) or
+                (V3_RETIREMENT_OBSERVED in row and
+                 stored['observedSourceDigest'] != row[V3_RETIREMENT_OBSERVED]) or
+                (row.get('retirementReason') == REPLACEMENT_RETIREMENT and
+                 stored['observedSourceDigest'] != row['sourceDigest'])):
+            _fail('cutover_retirement_mismatch')
+        retirement = stored
+    else:
+        observed = row.get(V3_RETIREMENT_OBSERVED)
+        if observed is None:
+            # Historical retired ledgers did not pin the observation. Keep
+            # their original recovery path without weakening new records.
+            if row.get('retirementReason') == REPLACEMENT_RETIREMENT:
+                observed = row['sourceDigest']
+            else:
+                names, _roots = _source_binding(row)
+                observed = _qmd_digest(row['sourceDb'], row['sourceFormat'], names, True)
+        retirement = _retirement(row, observed)
+        _write(record_path, retirement, replace=False)
+    if own_marker:
+        marker_path.unlink()
+        _fsync_dir(marker_path.parent)
+    return {**row, 'retirement': retirement}
+
+
+@_serialized_operation
+def _retire_prepared_binding(project_root, journal_path, route_bytes, reason):
+    """Withdraw an unselected v3 binding after source or model-proof drift.
+
+    The sealed generation is never rebound. Explicit, idempotent retirement
+    makes room for a fresh install identity without deleting source or backup.
 
     Steps, each durable and each resumed by repeating the call:
 
@@ -834,7 +1033,7 @@ def retire_drifted_binding(project_root, journal_path, route_bytes):
        of this binding, the pending unselected journal with no selected
        write, the project marker (when present), the pinned candidate,
        queue, catalog, binding-store and backup files, the candidate and
-       queue incarnation, and that QMD's digest really moved.
+       queue incarnation, and the selected reason's exact source evidence.
     2. Write the no-clobber retirement record beside the ledger. It keeps
        the bound and the observed digests and the exact marker bytes.
     3. Withdraw only this binding's project marker. A different marker (a
@@ -848,28 +1047,47 @@ def retire_drifted_binding(project_root, journal_path, route_bytes):
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)
     record_path = ledger_path.parent / RETIREMENT
     row = _ledger(ledger_path)
-    if row['schema'] != SCHEMA_V3:
+    if (row['schema'] != SCHEMA_V3 or
+            row['projectRoot'] != str(project_root) or
+            row['journalPath'] != str(journal_path)):
         _fail('cutover_retire_unsupported')
+    if reason == REPLACEMENT_RETIREMENT:
+        if 'replacementEvidenceSha256' not in row:
+            _fail('cutover_replacement_retire_unsupported')
+    elif reason != 'source_drift':
+        _fail('cutover_retirement_reason_invalid')
+    if row['phase'] == RETIRED:
+        observed_reason = row.get('retirementReason')
+        if (reason == REPLACEMENT_RETIREMENT and
+                observed_reason != REPLACEMENT_RETIREMENT or
+                reason == 'source_drift' and observed_reason not in
+                (None, SOURCE_IDENTITY_RETIREMENT)):
+            _fail('cutover_retirement_reason_mismatch')
     if not isinstance(route_bytes, bytes) or _sha(route_bytes) != row['routeSha256']:
         _fail('cutover_route_mismatch')
+    if row['phase'] == RETIRED:
+        return _settle_retired_binding(row, record_path, marker_path, route_path)
     if route_path.exists() or route_path.is_symlink():
-        # This binding never published a route. Its own bytes there, or any
-        # route while still prepared, is a state nothing here may judge.
-        if (row['phase'] != RETIRED or route_path.is_symlink() or
-                _sha(_private_file(route_path, 8192)) == row['routeSha256']):
-            _fail('cutover_route_uncertain')
+        _fail('cutover_route_uncertain')
     journal = inspect_journal(row['journalPath'])
     if (journal['state'] != 'candidate_ready' or journal['pending'] is None or
             journal['pendingRouteSha256'] != row['routeSha256'] or journal['newWriteSeen']):
         _fail('cutover_journal_not_ready')
+    if (reason == REPLACEMENT_RETIREMENT and
+            (journal['projectRoot'] != row['projectRoot'] or
+             journal['scopeId'] != row['scope'] or
+             journal['providerAttestationSha256'] is not None or
+             journal['providerFileIdentitySha256'] is not None)):
+        _fail('cutover_journal_not_ready')
     names, _roots = _source_binding(row)
-    observed = None
     if row['phase'] == 'prepared':
         if marker_path.exists() or marker_path.is_symlink():
             _check_marker(row, marker_path)
         for name, field in BOUND_FILES:
-            # QMD's own file is not ours to pin here; its digest decides.
-            if name != 'sourceDb' and _identity(row[name]) != row[field]:
+            # A drift retirement permits QMD to have replaced its own file;
+            # a proof retirement requires the same, still-restorable source.
+            if ((reason == REPLACEMENT_RETIREMENT or name != 'sourceDb') and
+                    _identity(row[name]) != row[field]):
                 _fail('cutover_bound_file_replaced')
         with closing(LayaIndexA(row['candidateDb'])) as index:
             if index.incarnation() != row['candidateIncarnation']:
@@ -877,42 +1095,64 @@ def retire_drifted_binding(project_root, journal_path, route_bytes):
         with closing(ClaimQueue.open(row['queueDb'])) as queue:
             if queue.binding() != row['candidateIncarnation']:
                 _fail('cutover_queue_binding_mismatch')
+        observed_identity = _identity(row['sourceDb'])
         observed = _qmd_digest(row['sourceDb'], row['sourceFormat'], names, True)
-        if observed == row['sourceDigest']:
-            # Still fresh: activate it instead; nothing to retire.
-            _fail('cutover_source_not_drifted')
-        row = _change(ledger_path, row['epoch'], 'prepared', RETIRED)
+        if reason == REPLACEMENT_RETIREMENT:
+            if observed != row['sourceDigest']:
+                _fail(SOURCE_DRIFT)
+            _restore_verified(row['backupDb'], row['sourceFormat'], names,
+                              row['sourceDigest'], True)
+            from laya_install_journal import _attestation
+            attestation, digest = _attestation(row['journalPath'])
+            if (digest != row['attestationSha256'] or
+                    not isinstance(attestation, dict)):
+                _fail('cutover_attestation_changed')
+            with closing(LayaIndexA(row['candidateDb'])) as index:
+                head = index.db.execute('SELECT gen FROM head WHERE scope=?',
+                                        (row['scope'],)).fetchone()
+            if head != (row['indexGeneration'],):
+                _fail('cutover_candidate_evidence_mismatch')
+            try:
+                _check_replacement_source(row)
+            except CutoverBlocked as exc:
+                if str(exc) != 'cutover_replacement_evidence_changed':
+                    raise
+            else:
+                _fail('cutover_replacement_evidence_still_valid')
+            row = _change(ledger_path, row['epoch'], 'prepared', RETIRED,
+                          {'retirementReason': REPLACEMENT_RETIREMENT,
+                           V3_RETIREMENT_OBSERVED: observed})
+        else:
+            if (observed == row['sourceDigest'] and
+                    observed_identity == row['sourceIdentity']):
+                # Still fresh: activate it instead; nothing to retire.
+                _fail('cutover_source_not_drifted')
+            updates = {V3_RETIREMENT_OBSERVED: observed}
+            if observed == row['sourceDigest']:
+                updates.update(retirementReason=SOURCE_IDENTITY_RETIREMENT,
+                               **{V3_RETIREMENT_IDENTITY: observed_identity})
+            row = _change(ledger_path, row['epoch'], 'prepared', RETIRED, updates)
     elif row['phase'] != RETIRED:
         _fail('cutover_not_prepared')
-    if record_path.exists() or record_path.is_symlink():
-        stored = _read_json(record_path)
-        if (not isinstance(stored, dict) or
-                {key: value for key, value in stored.items()
-                 if key != 'observedSourceDigest'} !=
-                {key: value for key, value in _retirement(row, None).items()
-                 if key != 'observedSourceDigest'} or
-                not isinstance(stored.get('observedSourceDigest'), str) or
-                not SHA.fullmatch(stored['observedSourceDigest'])):
-            _fail('cutover_retirement_mismatch')
-        retirement = stored
-    else:
-        if observed is None:
-            # Interrupted after step 1: the digest it saw is not durable, so
-            # record what QMD holds now (it already differed at step 1).
-            observed = _qmd_digest(row['sourceDb'], row['sourceFormat'], names, True)
-        retirement = _retirement(row, observed)
-        _write(record_path, retirement, replace=False)
-    if marker_path.exists() or marker_path.is_symlink():
-        if marker_path.is_symlink():
-            _fail('cutover_marker_changed')
-        current = _read_json(marker_path)
-        if current == _marker(row):
-            marker_path.unlink()
-            _fsync_dir(marker_path.parent)
-        elif not isinstance(current, dict) or current.get('journalPath') == row['journalPath']:
-            _fail('cutover_marker_changed')
-        # Otherwise it is a later install's marker: never touched.
-    return {**row, 'retirement': retirement}
+    return _settle_retired_binding(row, record_path, marker_path, route_path)
+
+
+def retire_drifted_binding(project_root, journal_path, route_bytes):
+    """Retire an unselected v3 candidate only after its QMD source drifted."""
+    return _retire_prepared_binding(project_root, journal_path, route_bytes,
+                                    'source_drift')
+
+
+def retire_unusable_replacement_binding(project_root, journal_path, route_bytes):
+    """Retire an unselected v3 candidate whose pinned model proof was lost.
+
+    The selected QMD source must retain its bound digest and the installed
+    candidate, backup, attestation, journal and route owner must remain exact.
+    No route or selected write may exist. This keeps every byte for a fresh
+    reviewed preparation with a new install identity.
+    """
+    return _retire_prepared_binding(project_root, journal_path, route_bytes,
+                                    REPLACEMENT_RETIREMENT)
 
 
 def classify_marker(project_root, marker_path, route_path):
@@ -955,6 +1195,7 @@ def classify_marker(project_root, marker_path, route_path):
         return 'blocked'
 
 
+@_serialized_operation
 def activate_qmd_origin(project_root, journal_path, route_bytes):
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)
     row = _ledger(ledger_path)
@@ -978,24 +1219,25 @@ def activate_qmd_origin(project_root, journal_path, route_bytes):
     # write that landed after the proof above makes the bound generation
     # stale: withdraw to ``prepared`` before any route or journal change.
     names, _roots = _source_binding(row)
-    drift = SOURCE_DRIFT if row['schema'] == SCHEMA_V3 else 'cutover_source_changed'
     multi = row['schema'] != SCHEMA
-    if _qmd_digest(row['sourceDb'], row['sourceFormat'], names, multi) != row['sourceDigest']:
+    changed = _transition_source_error(row, names, multi)
+    if changed:
         _change(ledger_path, row['epoch'], 'switching', 'prepared')
-        _fail(drift)
+        _fail(changed)
     _write(route_path, route_bytes, replace=False)
     # A route under ``switching`` classifies ``blocked``, so no hook served
     # it yet. A QMD write that landed while it was written still withdraws:
     # only the exact route this activation wrote is removed, before any
     # journal commit. After the commit a later QMD write is a source edit
     # the queued selected sync catches up (the product entry reports it).
-    if _qmd_digest(row['sourceDb'], row['sourceFormat'], names, multi) != row['sourceDigest']:
+    changed = _transition_source_error(row, names, multi)
+    if changed:
         if route_path.is_symlink() or _private_file(route_path, 8192) != route_bytes:
             _fail('cutover_route_uncertain')
         route_path.unlink()
         _fsync_dir(route_path.parent)
         _change(ledger_path, row['epoch'], 'switching', 'prepared')
-        _fail(drift)
+        _fail(changed)
     active = cas_activate(journal_path, journal['epoch'], route_bytes)
     if (active['state'] != 'active' or
             active['providerAttestationSha256'] != row['attestationSha256'] or
@@ -1004,6 +1246,7 @@ def activate_qmd_origin(project_root, journal_path, route_bytes):
     return _change(ledger_path, row['epoch'], 'switching', 'active')
 
 
+@_serialized_operation
 def restore_qmd_origin(project_root, journal_path):
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)
     row = _ledger(ledger_path)
@@ -1029,6 +1272,7 @@ def restore_qmd_origin(project_root, journal_path):
     return _change(ledger_path, row['epoch'], 'restoring', 'restored')
 
 
+@_serialized_operation
 def recover_qmd_origin(project_root, journal_path, route_bytes):
     """Settle interrupted selection without deleting either source database."""
     ledger_path, marker_path, route_path = _paths(project_root, journal_path)

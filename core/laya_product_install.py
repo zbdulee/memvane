@@ -399,19 +399,34 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
         _fail('provider_review_native_closure_incomplete')
     closure = [{'path': str(path), 'sha256': _hash_file(str(path)),
                 'bytes': path.stat().st_size} for path in sorted(native_files)]
+    replacement_evidence = None
     if model_path is None:
         import qmd_shared_store
         import shared_qmd_setup
         selected = qmd_shared_store.select()
         metadata = Path(selected['generation']) / 'bootstrap-proof.json'
-        model_proof = json.loads(_read_private_or_package(metadata))
-        if (not isinstance(model_proof, dict) or
-                model_proof.get('schema') != shared_qmd_setup.SCHEMA or
-                model_proof.get('searchProved') is not True):
-            _fail('provider_review_model_proof_invalid')
-        model_path = model_proof.get('modelPath')
-        dimension = model_proof.get('dimension')
-        expected_model_hash = model_proof.get('modelSha256')
+        if metadata.exists() or metadata.is_symlink():
+            model_proof = json.loads(_read_private_or_package(metadata))
+            if (not isinstance(model_proof, dict) or
+                    model_proof.get('schema') != shared_qmd_setup.SCHEMA or
+                    model_proof.get('searchProved') is not True):
+                _fail('provider_review_model_proof_invalid')
+            model_path = model_proof.get('modelPath')
+            dimension = model_proof.get('dimension')
+            expected_model_hash = model_proof.get('modelSha256')
+        else:
+            # A selected legacy generation cannot be retroactively certified.
+            # The separately proved, inactive model may instead build a fresh
+            # Laya candidate while the legacy QMD remains its document source.
+            try:
+                replacement_evidence = shared_qmd_setup.replacement_model_evidence()
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise InstallBlocked('provider_review_replacement_proof_required') from exc
+            if replacement_evidence['legacyGeneration'] != selected['generation']:
+                _fail('provider_review_replacement_source_changed')
+            model_path = replacement_evidence['modelPath']
+            dimension = replacement_evidence['dimension']
+            expected_model_hash = replacement_evidence['modelSha256']
     else:
         expected_model_hash = None
     if type(dimension) is not int or not 1 <= dimension <= 2048:
@@ -466,9 +481,65 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
                 'reviewedProvider': {'vectorProfile': profile,
                                      'providerManifest': manifest,
                                      'dependencyClosure': closure}}
+    if replacement_evidence is not None:
+        proposal['replacementEvidenceSha256'] = replacement_evidence['evidenceSha256']
     return {'status': 'review_required',
             'proposalSha256': hashlib.sha256(_canonical(proposal)).hexdigest(),
             **proposal}
+
+
+def _replacement_origin_binding(review, plan):
+    """Recheck an inactive proof against this QMD-origin project's source.
+
+    The replacement QMD generation is never selected. Its proved model is
+    allowed only to produce fresh Laya vectors for a scoped, reviewed origin.
+    """
+    digest = review.get('replacementEvidenceSha256')
+    if digest is None:
+        return None
+    import shared_qmd_setup
+    try:
+        evidence = shared_qmd_setup.replacement_model_evidence()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise InstallBlocked('replacement_model_evidence_changed') from exc
+    if (not isinstance(evidence, dict) or
+            not isinstance(evidence.get('approvedProjectSettings'), dict) or
+            plan['projectRoot'] not in evidence['approvedProjectSettings'] or
+            evidence.get('evidenceSha256') != digest or
+            evidence.get('legacyIndexPath') != plan['sourceDb'] or
+            evidence.get('legacyGeneration') != plan['qmdStoreGeneration'] or
+            evidence['approvedProjectSettings'].get(plan['projectRoot']) !=
+            plan['settingsSha256'] or
+            review['reviewedProvider']['providerManifest']['modelSha256'] !=
+            evidence.get('modelSha256') or
+            review['reviewedProvider']['providerManifest']['dimension'] !=
+            evidence.get('dimension')):
+        _fail('replacement_model_origin_mismatch')
+    return digest
+
+
+def _check_record_replacement_binding(identity, plan, provider_manifest):
+    digest = identity.get('replacementEvidenceSha256')
+    if digest is None:
+        return
+    if not isinstance(provider_manifest, dict):
+        _fail('replacement_provider_attestation_missing')
+    import shared_qmd_setup
+    try:
+        evidence = shared_qmd_setup.replacement_model_evidence()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise InstallBlocked('replacement_model_evidence_changed') from exc
+    if (not isinstance(evidence, dict) or
+            not isinstance(evidence.get('approvedProjectSettings'), dict) or
+            identity['projectRoot'] not in evidence['approvedProjectSettings'] or
+            digest != evidence.get('evidenceSha256') or
+            evidence.get('legacyGeneration') != plan['qmdStoreGeneration'] or
+            evidence.get('legacyIndexPath') != identity['sourceDb'] or
+            evidence['approvedProjectSettings'].get(identity['projectRoot']) !=
+            plan['settingsSha256'] or
+            provider_manifest.get('modelSha256') != evidence.get('modelSha256') or
+            provider_manifest.get('dimension') != evidence.get('dimension')):
+        _fail('replacement_model_origin_mismatch')
 
 
 def _read_private_or_package(path):
@@ -762,6 +833,7 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
+        replacement_evidence_sha = _replacement_origin_binding(review, plan)
         reviewed_provider = review['reviewedProvider']
         names = tuple(item['name'] for item in plan['collections'])
         roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
@@ -769,9 +841,12 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             return _register_initial_build(
                 plan=plan, reviewed_provider=reviewed_provider,
                 provider_proposal_sha256=accepted_provider_sha256,
+                replacement_evidence_sha256=replacement_evidence_sha,
                 source_root=source_root, plugin_root=plugin_root, state=state,
                 journal=journal, socket=socket, commit_id=commit_id,
                 install_id=install_id, user_qmd_roots=user_qmd_roots)
+        if replacement_evidence_sha is not None:
+            _fail('replacement_background_build_required')
         scan = _plan_scan(plan)
         proof, profile, manifest = _adopt_and_attest(
             source_root=source_root, plugin_root=plugin_root, commit_id=commit_id,
@@ -983,6 +1058,7 @@ def _request_build_wake(project_root):
 
 
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
+                            replacement_evidence_sha256=None,
                             source_root, plugin_root, state, journal, socket,
                             commit_id, install_id, user_qmd_roots):
     """Create every store of an inactive initial build and register it once.
@@ -1059,6 +1135,8 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
                 'sourceDb': plan['sourceDb'], 'sourceFormat': plan['sourceFormat'],
                 'proposalSha256': plan['proposalSha256'],
                 'providerProposalSha256': provider_proposal_sha256}
+    if replacement_evidence_sha256 is not None:
+        identity['replacementEvidenceSha256'] = replacement_evidence_sha256
     if identity['routeSha256'] != staged['pendingRouteSha256']:
         _fail('staged_route_changed')
     record = initial_build.create_or_verify(identity)
@@ -1199,6 +1277,8 @@ def finalize_initial_build(*, project_root, state_root):
         approval = preflight_product_candidate(identity['journalPath'])
         if approval['attestationSha256'] != identity['attestationSha256']:
             _fail('initial_build_attestation_changed')
+        _check_record_replacement_binding(identity, plan,
+                                          approval.get('providerManifest'))
         sealed = record['sealed']
         with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
                               db_path=identity['candidateDb'],
@@ -1240,7 +1320,8 @@ def finalize_initial_build(*, project_root, state_root):
             catalog_scan_id=sealed['catalogScanId'],
             catalog_raw_digest=sealed['catalogRawDigest'],
             vector_profile_id=identity['vectorProfileId'],
-            vector_rows=sealed['vectorRows'])
+            vector_rows=sealed['vectorRows'],
+            replacement_evidence_sha256=identity.get('replacementEvidenceSha256'))
         if record['phase'] != 'bound':
             record = initial_build.advance(record, phase='bound')
     return {'status': 'cutover_' + row['phase'], 'cutoverPhase': row['phase'],
@@ -1250,7 +1331,7 @@ def finalize_initial_build(*, project_root, state_root):
 
 
 def retire_drifted_origin(*, project_root, state_root):
-    """Retire a bound initial build whose QMD changed before activation.
+    """Retire a bound initial build whose QMD or replacement proof went stale.
 
     ``finalize``/``activate`` refuse a QMD digest that moved after the bind
     (``cutover_source_drift_requires_fresh_generation``) and never rebind
@@ -1281,8 +1362,10 @@ def retire_drifted_origin(*, project_root, state_root):
     ordinary build, ``finalize`` and ``activate`` of that install.
     """
     import laya_initial_build as initial_build
-    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, inspect_bound_cutover,
-                                  retire_drifted_binding)
+    from laya_qmd_cutover import (CutoverBlocked, RETIRED, SCHEMA_V3,
+                                  REPLACEMENT_RETIREMENT, inspect_bound_cutover,
+                                  retire_drifted_binding,
+                                  retire_unusable_replacement_binding)
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -1333,12 +1416,28 @@ def retire_drifted_origin(*, project_root, state_root):
                 record = initial_build.advance(record, phase='bound')
         elif row['phase'] != RETIRED:
             _fail('cutover_not_prepared')
+        elif record['phase'] == 'sealed':
+            # A direct cutover API can commit retirement before the product
+            # wrapper resumes. Keep the sealed candidate terminal so a later
+            # worker wake cannot step the old generation.
+            record = initial_build.advance(record, phase='bound')
         if record['phase'] != 'bound':
             _fail('initial_build_bind_unsettled')
-        retired = retire_drifted_binding(project, journal, route_bytes)
+        if row['phase'] == RETIRED and row.get('retirementReason') == REPLACEMENT_RETIREMENT:
+            retired = retire_unusable_replacement_binding(project, journal, route_bytes)
+        else:
+            try:
+                retired = retire_drifted_binding(project, journal, route_bytes)
+            except CutoverBlocked as exc:
+                if (str(exc) != 'cutover_source_not_drifted' or
+                        row.get('replacementEvidenceSha256') is None):
+                    raise
+                retired = retire_unusable_replacement_binding(project, journal,
+                                                                route_bytes)
         pointer = initial_build.retire_project_pointer(identity)
     retirement = retired['retirement']
     return {'status': 'origin_binding_retired', 'cutoverPhase': retired['phase'],
+            'retirementReason': retirement.get('reason', 'source_drift'),
             'stateRoot': str(state), 'journalPath': str(journal),
             'retiredGeneration': retirement['indexGeneration'],
             'boundSourceDigest': retirement['boundSourceDigest'],
@@ -1678,7 +1777,7 @@ def main(argv=None):
     restore.add_argument('--state-root', required=True)
     restore.add_argument('--approve-restore', action='store_true')
     retire = sub.add_parser('retire-origin',
-                            help='retire a bound build whose QMD changed before activation')
+                            help='retire a bound build with stale QMD or replacement proof')
     retire.add_argument('--project-root', required=True)
     retire.add_argument('--state-root', required=True)
     retire.add_argument('--approve-retire', action='store_true')

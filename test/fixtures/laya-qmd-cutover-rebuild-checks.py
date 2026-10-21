@@ -136,7 +136,9 @@ class RebuildCase(BOUND['BoundCase']):
         first = self.first
         row = self.old_ledger()
         self.assertEqual(row['phase'], cutover.RETIRED)
-        self.assertEqual({k: v for k, v in row.items() if k not in ('epoch', 'phase')},
+        self.assertEqual({k: v for k, v in row.items()
+                          if k not in ('epoch', 'phase',
+                                       'retirementObservedSourceDigest')},
                          {k: v for k, v in first['row'].items()
                           if k not in ('epoch', 'phase')})
         retirement = cutover._read_json(first['state'] / cutover.RETIREMENT)
@@ -144,6 +146,8 @@ class RebuildCase(BOUND['BoundCase']):
         self.assertEqual(retirement['marker'], cutover._marker(first['row']))
         self.assertEqual(retirement['boundSourceDigest'], first['row']['sourceDigest'])
         self.assertNotEqual(retirement['observedSourceDigest'], first['row']['sourceDigest'])
+        self.assertEqual(row['retirementObservedSourceDigest'],
+                         retirement['observedSourceDigest'])
         self.assertEqual(Path(first['row']['backupDb']).read_bytes(), first['backup'])
         record = initial_build.read(first['state'])
         self.assertEqual((record['phase'], record['sealed']),

@@ -49,6 +49,89 @@ package/journal/DB/queue 및 두 후보의 중단·복구 합성 검사는 2/2 �
 (guard `669202a15e1545a69a18cf0475d4b165`, passed/settled).
 fixture 자체는 `FORMAL_RELEASE_L1=NOT_RUN`으로 표시한다.
 
+**2026-10-21 후속 제품 연결 (새 릴리스 후보 아직 미확정):**
+기존 selected shared QMD의 `bootstrap-proof.json` 부재를 사실대로
+유지하면서, 별도 비활성 replacement 세대의 실제 QMD 검색·벡터
+증명을 Laya 후보 모델의 입력으로 연결했다. 읽기 전용
+`replacement_model_evidence()`는 journal·GGUF 경로/SHA/크기·768차원·
+managed QMD runtime·선택된 옛 포인터의 inode와 SHA·원본 DB 경로·
+프로젝트 설정 SHA를 다시 검증한다. Provider proposal과 초기 빌드
+기록, v3 cutover ledger는 이 evidence digest를 결속한다. 설치 준비와
+cutover 직전에는 현재 증거와 QMD 원문·위키 백업, 새 세대 seal,
+provider attestation을 재검사한다. 이전 QMD 벡터를 새 모델에서
+나온 것으로 주장하거나 복사하지 않는다. 옛 QMD와 별도 global
+QMD 및 백업은 보존한다. 선택된 old QMD의 setup readiness는
+여전히 proof-required다.
+
+Claude Opus의 좁은 설계 검토는 guard
+`42267a987e194d438610cd09195ea2fa` (`passed/settled:true`,
+`claude-opus-5-5` modelUsage input 2/output 5,468/cache create 1,533/
+cache read 2,061/thinking 3,214/web 0)에서 공유 QMD 포인터를 또
+바꾸는 두 번째 cutover를 피하고, 기존 QMD→Laya v3 프로젝트 전환에
+비활성 모델 증거를 묶도록 제안했다. 첫 합성 focused run
+`7ea7ddb0fa6b48708f99ac382e684d0d`는 shared QMD 45건과
+v3 bound 검사는 통과했으나 새 fixture의 오류명 기대와 기존
+initial-build fixture mock 연결 두 곳이 실패했다. 이를 수정한
+재검사 `1b7d8cfebfdd473b86ad1378bf10c88d`에서 initial-build
+21건과 새 replacement/v3 증거 10건이 모두 PASS,
+`passed/settled:true`였다. 추가 합성 15건을 포함한 focused run
+`5f1c75ac27ba418ab391be8635d38685`도 PASS,
+`passed/settled:true`였다. 첫 전체 suite는 시스템 Python에
+PyYAML이 없어 wiki 두 건이 실패했다. 기존 venv의 PyYAML
+site-packages만 `PYTHONPATH`에 더한 별도 47건 검사는
+`5ff1d58e922f408684255dd8e3140231`에서 PASS했고, 전체
+재검사 `a0d0ecbf89784b50bcd52346cebc91da`는 1,650건 중
+1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)이었다.
+이는 이후 리뷰 수정 이전 소스이므로 최종 전체 회귀는 다시 필요하다.
+이전 head `753bc2f`의 CI [39514146609](https://github.com/zbdulee/qmd-auto-context/actions/runs/39514146609)는
+Node 22·24·26 모두 성공했지만 이 변경의 CI가 아니다.
+Claude Opus는 `bb1087dd4ee942408fd681016387ba91`와
+`cc61044ea0a94c829ec29b36dd83770e`에서 replacement 증거와
+cutover를 독립 검토했다. 이어 `a0003238320e48a186ec56dbfa5a461d`
+(`model-test`, `passed/settled:true`, modelUsage input 2/output 8,705/
+cache create 6,323/read 2,061/thinking 6,303/web 0)은
+prepared 결속의 증명 상실 뒤 철회, drift 철회의 CAS→record
+중단 재생, 직접 route 변경 호출의 직렬화, sealed build pointer의
+마무리를 지적했다. 이를 고친 후 `9826a1c547d449718baa15f84ac700a1`
+(`model-test`, `passed/settled:true`, modelUsage input 2/output 11,494/
+cache create 8,333/read 2,061/thinking 9,531/web 0)은 앞선
+세 경계의 수정을 확인하고, 동일 digest의 QMD inode 교체와
+terminal 은퇴 뒤 나중 설치가 진행된 경우의 재생을 추가 지적했다.
+마지막 수정은 `source_identity_changed`를 ledger/receipt에 남기고,
+이미 terminal인 ledger의 record·marker 정리를 이전 journal이나
+나중 route에 종속시키지 않는다. 자체 marker와 route가 동시에
+있으면 불확실성으로 거부한다. 이 마지막 변경의 합성 22건은
+`ffc328d95e774d65b1d5f05fc82ec33a`에서 PASS,
+`passed/settled:true`였다. 앞선 focused run
+`f8bcd376898643dda30180e5df9d665f`는 새 fixture가 나중 marker를
+비정규 JSON으로 써서 1건 실패했으며 제품은 올바르게 거부했다.
+fixture만 canonical 형식으로 고쳐 재실행했다. 최종 전체 suite는
+기존 venv의 PyYAML import 경로만 제공해 guard
+`6d5361a6a0234ca4ba1ebe5607e770c5`에서 1,650건 중
+1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)였다.
+새 exact-head CI, installed-candidate LI-MIG/LI-RECOVER/LI-RECALL은
+별도로 기록해야 한다. 실제 운영 이관·provider 활성화·main 병합·
+Mini 설치는 이 합성 결과로 수행하지 않았다.
+
+최종 코드 응답에서 Claude Opus는 추가 P1/P2를 찾지 않았다
+(`claude-opus-5-5` modelUsage input 2/output 8,379/cache create 9,078/
+read 2,061/thinking 6,918/web 0). 다만 결과 파일이 작성된 직후
+도구 대기가 중단되어 해당 실행의 원래 checkpoint는
+`running/settled:false`였다. 기록된 supervisor·자식 PID 4개와
+프로세스 그룹의 부재를 읽기 전용으로 확인한 뒤, 해당 가드 실행
+`5eace2009a9847478d4e73784f0f0382`만 `stopped/settled:true`,
+`completed:false`로 정리했다. 이를 `passed` 검증으로 기록하지 않는다.
+소스의 최종 전체 회귀와 CI는 별도로 확인한다.
+
+원래 328,576,992바이트 GGUF가 필요한 기술적 이유는 **기존 검색
+행태와 동일 모델이라는 주장 및 parity 분석**이다. 같은 이름이나
+다른 크기의 GGUF는 동일 모델 증거가 아니다. 더구나 원래 파일을
+찾더라도 QMD의 이전 벡터 fingerprint만으로 그 파일에서 각 벡터가
+나왔음을 암호학적으로 증명할 수 없으므로 기존 벡터를 이관하지
+않는다. 별도로 정확히 검토·승인된 GGUF는 그 자체의 SHA/크기로
+새 Laya 문서·질의 벡터를 만들 수 있지만, 이전 모델로 취급하거나
+미실행 retrieval parity를 PASS로 기록하지 않는다.
+
 선택된 플러그인 shared QMD 세대의 읽기 전용 선택은 성공했지만
 `bootstrap-proof.json`, `bootstrap-journal.json`, `scope-policy.json`이
 없고 현재 선택된 cache에서 GGUF를 찾지 못했다. 실제 Claude 로드 경로와
@@ -80,7 +163,8 @@ CI가 아직 필요하다. 이 경로는 운영
 이관하지 않는다. 현재 설치된 `40e500c`에는 이 새 경로가 없고, 이
 문서의 기존 설치 smoke와 CI는 새 후보를 검증하지 않는다. 동일성이
 확인된 원래 모델의 명시 경로, 실제 데이터 백업·이관·복구 검증 및
-별도 replacement cutover가 남는다.
+그 준비 경로 자체에는 당시 product cutover가 없었고, 위의 후속
+제품 연결이 기존 QMD→Laya v3 project route를 활용한다.
 명시 모델 경로만으로 provider 제안을 얻어도 shared QMD의 setup readiness
 증명 누락은 별개로 남는다.
 

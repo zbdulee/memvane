@@ -263,7 +263,8 @@ def _journal(base, name=JOURNAL):
     store._private_file(path)
     if path.stat().st_size > 65536: raise ValueError('invalid_store_setup_journal')
     value = json.loads(path.read_text())
-    if value.get('schema') != SCHEMA: raise ValueError('invalid_store_setup_journal')
+    if not isinstance(value, dict) or value.get('schema') != SCHEMA:
+        raise ValueError('invalid_store_setup_journal')
     return value
 
 
@@ -697,6 +698,81 @@ def replacement_status():
             'requestSha256': journal.get('requestSha256'),
             'verification': 'journal_record_only', 'cutoverReady': False,
             'changesApplied': 0}
+
+
+def replacement_model_evidence():
+    """Re-prove an inactive replacement for a Laya provider review.
+
+    This is a read-only snapshot, not authority to select the replacement QMD
+    generation. A caller must recheck it when preparing or activating its own
+    candidate; the old shared-store pointer remains selected throughout.
+    """
+    base = store._private_dir(store._unlinked_root())
+    journal_path = base / REPLACEMENT_JOURNAL
+    journal_identity, _ = _private_snapshot(journal_path)
+    journal = _journal(base, REPLACEMENT_JOURNAL)
+    if (journal is None or journal.get('operation') != 'replacement' or
+            journal.get('phase') != 'prepared_inactive_replacement'):
+        raise ValueError('replacement_model_proof_not_prepared')
+    request = journal.get('request')
+    if (not isinstance(request, dict) or
+            journal.get('requestSha256') != coordinator.digest(request) or
+            any(not isinstance(request.get(key), dict) for key in
+                ('replacementFrom', 'model', 'qmd', 'scopes')) or
+            any(not isinstance(journal.get(key), dict) for key in
+                ('runtime', 'proof', 'files'))):
+        raise ValueError('replacement_model_proof_invalid')
+    generation = _check_prepared(journal)
+    _check_replacement_sources(request)
+    model, model_identity = _model_identity(request['model']['path'])
+    if (model != request['model'] or model_identity != request['modelIdentity'] or
+            model['sha256'] != request['expectedModelSha256'] or
+            model_identity['bytes'] != request['expectedModelBytes'] or
+            journal['proof'].get('schema') != SCHEMA or
+            journal['proof'].get('modelPath') != model['path'] or
+            journal['proof'].get('modelSha256') != model['sha256'] or
+            journal['proof'].get('dimension') != request['dimension'] or
+            journal['proof'].get('searchProved') is not True or
+            str(generation) == request['replacementFrom']['generation']):
+        raise ValueError('replacement_model_proof_invalid')
+    selected = _selected_replacement()
+    if selected != request['replacementFrom']:
+        raise ValueError('replacement_selected_store_changed')
+    if (request['qmd'].get('mode') != 'active' or
+            request['qmd'].get('generation') != selected['runtimeGeneration'] or
+            request['qmd'].get('proof') != selected['runtimeProof'] or
+            journal['runtime'].get('generation') != selected['runtimeGeneration'] or
+            journal['runtime'].get('wrapper') != selected['runtimeWrapper'] or
+            request['dimension'] != selected['dimension'] or
+            request['dimension'] != 768 or
+            not _model_matches_selected(model['path'], selected['embedModelId'])):
+        raise ValueError('replacement_model_source_mismatch')
+    if _private_snapshot(journal_path)[0] != journal_identity:
+        raise ValueError('replacement_model_proof_changed')
+    if _selected_replacement() != selected:
+        raise ValueError('replacement_selected_store_changed')
+    if _model_identity(model['path']) != (model, model_identity):
+        raise ValueError('replacement_embedding_model_changed')
+    evidence = {
+        'schema': 'qmd-inactive-replacement-model-evidence-v1',
+        'generation': str(generation),
+        'requestSha256': journal['requestSha256'],
+        'bootstrapProofSha256': journal['files']['bootstrap-proof.json'],
+        'modelPath': model['path'], 'modelSha256': model['sha256'],
+        'modelBytes': model_identity['bytes'],
+        'modelIdentity': model_identity,
+        'dimension': request['dimension'],
+        'legacyGeneration': selected['generation'],
+        'legacyIndexPath': str(Path(selected['generation']) / 'index.sqlite'),
+        'sourceDb': str(Path(selected['generation']) / 'index.sqlite'),
+        'legacyPointer': selected['pointer'],
+        'runtimeGeneration': selected['runtimeGeneration'],
+        'runtimePointer': selected['runtimePointer'],
+        'runtimeProofSha256': coordinator.digest(selected['runtimeProof']),
+        'scopeSha256': coordinator.digest(request['scopes']),
+        'approvedProjectSettings': dict(request['scopes']),
+    }
+    return {**evidence, 'evidenceSha256': coordinator.digest(evidence)}
 
 
 def status():

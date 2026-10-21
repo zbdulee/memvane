@@ -69,6 +69,7 @@ IDENTITY_FIELDS = frozenset((
     'journalPath', 'routeFile', 'routeSha256', 'attestationSha256',
     'vectorProfileId', 'sourceDb', 'sourceFormat', 'proposalSha256',
     'providerProposalSha256'))
+REPLACEMENT_IDENTITY_FIELDS = IDENTITY_FIELDS | {'replacementEvidenceSha256'}
 RECORD_FIELDS = frozenset(('schema', 'epoch', 'phase', 'identity', 'progress',
                            'sealed', 'freshness', 'blocked', 'updatedNs'))
 SEALED_FIELDS = frozenset(('generation', 'bindingDigest', 'sourceManifest',
@@ -170,7 +171,8 @@ def _write_json(path, value, *, replace):
 
 
 def _validate_identity(identity):
-    if not isinstance(identity, dict) or set(identity) != IDENTITY_FIELDS:
+    if not isinstance(identity, dict) or set(identity) not in (
+            IDENTITY_FIELDS, REPLACEMENT_IDENTITY_FIELDS):
         _fail('initial_build_identity_invalid')
     for key in IDENTITY_FIELDS - {'collections'}:
         if not isinstance(identity[key], str) or not identity[key]:
@@ -182,6 +184,9 @@ def _validate_identity(identity):
                 'proposalSha256', 'providerProposalSha256'):
         if not _HEX64.fullmatch(identity[key]):
             _fail('initial_build_identity_invalid')
+    if ('replacementEvidenceSha256' in identity and
+            not _HEX64.fullmatch(identity['replacementEvidenceSha256'])):
+        _fail('initial_build_identity_invalid')
     for key in ('projectRoot', 'stateRoot', 'candidateDb', 'queueDb', 'catalogDb',
                 'bindingStore', 'journalPath', 'routeFile', 'sourceDb'):
         if not Path(identity[key]).is_absolute():
