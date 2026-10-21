@@ -358,6 +358,7 @@ test('update core: worker migration keeps missing legacy collection without an a
       collections: ['gone'],
       collectionPaths: { gone: 'missing' },
     }));
+    const legacyBytes = readFileSync(join(work, '.auto-context.json'));
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -378,14 +379,14 @@ test('update core: worker migration keeps missing legacy collection without an a
       },
     });
 
-    const cfg = JSON.parse(readFileSync(join(work, '.auto-context', 'settings.json'), 'utf8'));
-    assert.deepEqual(cfg.collections, ['gone']);
-    assert.deepEqual(cfg.collectionPaths, { gone: 'missing' });
-    // The migration run skips prune; ownership registration is the gate that stops it.
+    // The selected-route ownership gate aborts before migration, so the legacy
+    // config stays byte-identical and no canonical settings are written.
+    assert.deepEqual(readFileSync(join(work, '.auto-context.json')), legacyBytes);
+    assert.equal(existsSync(join(work, '.auto-context', 'settings.json')), false);
     withLog(hookLog, () => {
       const hook = readFileSync(hookLog, 'utf8');
       assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
-      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+      assert.match(hook, /ABORT: selected QMD route unavailable or project ownership not approved/);
     });
     const register = spawnSync('python3', ['core/qmd_route.py', 'register-config', work], {
       encoding: 'utf8',
@@ -443,11 +444,11 @@ test('update core: missing root prune refuses symlinked .auto-context directory'
     assert.deepEqual(gateResult(fakeHome, `import config
 print(json.dumps(list(config._safe_project_settings_dir(sys.argv[1]))))`, [work]),
     [null, 'unsafe_settings_dir']);
-    // Prune never touches the symlinked settings, and registration still blocks the missing root.
+    // Prune never touches the symlinked settings, and the ownership gate still blocks the missing root.
     withLog(hookLog, () => {
       const hook = readFileSync(hookLog, 'utf8');
       assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
-      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+      assert.match(hook, /ABORT: selected QMD route unavailable or project ownership not approved/);
     });
     assert.equal(existsSync(qmdLog), false, 'symlinked settings block QMD writes');
   } finally {

@@ -184,8 +184,12 @@ def _policy(root):
             "batchMax", "targetExact", "trainerArgv", "baseArtifact",
             "maxRssMib", "minAvailableMib", "maxLoadPerCpu",
             "safetySeconds", "experimental"}
-    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {'modelInputView', 'adaptiveMemory'} or value["schema"] != SCHEMA or value["enabled"] is not True:
+    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {'modelInputView', 'adaptiveMemory', 'targetHeadroomFraction'} or value["schema"] != SCHEMA or value["enabled"] is not True:
         raise ValueError("invalid_shared_policy")
+    if ('targetHeadroomFraction' in value and
+            (type(value['targetHeadroomFraction']) not in (int,float) or
+             not .1<=value['targetHeadroomFraction']<=.5)):
+        raise ValueError('invalid_shared_headroom')
     if not isinstance(value["goldModel"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value["goldModel"]):
         raise ValueError("invalid_gold_model")
     uncapped_gold = value["maxGoldCalls"] is None
@@ -201,7 +205,25 @@ def _policy(root):
             raise ValueError("invalid_shared_budget")
     if not uncapped_gold and (type(value["maxGoldCalls"]) is not int
                               or not 2 <= value["maxGoldCalls"] <= 1000):
-        raise ValueError("invalid_shared_budget")
+        if value["maxGoldCalls"] != 0:
+            raise ValueError("invalid_shared_budget")
+        # Zero is reserved for an exact teacher-free QA transaction. The
+        # installing phase is needed while profile.activate calls _policy;
+        # runtime use still requires the activated phase in synthetic_local_only.
+        import project_learning_setup
+        path = root / project_learning_setup.NAME
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("invalid_shared_budget")
+        setup = read_private_json(path)
+        plan = setup.get("plan") if isinstance(setup, dict) else None
+        if (not isinstance(plan, dict)
+                or setup.get("phase") not in ("installing", "activated")
+                or plan.get("mode") != project_learning_setup.SYNTHETIC_STAGED
+                or setup.get("acceptedSha256") != project_learning_setup.proposal_sha256(plan)
+                or plan.get("policy") != value
+                or plan.get("teacherConsent") is not None
+                or (root / "project-teacher-consent.json").exists()):
+            raise ValueError("invalid_shared_budget")
     if value["batchMax"] < value["batchMin"] or type(value["targetExact"]) not in (int, float) or not .5 <= value["targetExact"] <= 1:
         raise ValueError("invalid_shared_cadence")
     if type(value["maxLoadPerCpu"]) not in (int, float) or not .1 <= value["maxLoadPerCpu"] <= 4:
@@ -2132,6 +2154,10 @@ def launch(config, project, *, parent_id=None, episode=None,
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         project_scope.require(root,_policy(root),'local_train')
+        import project_learning_setup
+        if project_learning_setup.synthetic_local_only(root,project,_policy(root)):
+            # Editing/capture must not start the expressly manual QA job.
+            return {'status':'manual_synthetic_training_required'}
     # A source/card edit has its own one-use hook tickets. SessionStart also
     # retries admission if the prior index worker died after its QMD ACK.
     from .learning_profile import present,SCHEMA
@@ -2585,6 +2611,10 @@ def run_training_pending(root,project):
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
+    import project_learning_setup
+    if project_learning_setup.synthetic_local_only(root,project,policy):
+        budget=project_learning_setup.synthetic_budget_status(root,project,policy)
+        if budget['status']!='ready':return budget
     from . import project_scope
     if project_scope.present(root):
         from .project_worker import setup_ready
@@ -2592,12 +2622,13 @@ def run_training_pending(root,project):
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         if not setup_ready(root):return {'status':'setup_in_progress'}
-        from .general_teacher import read_weekly_quota
-        try:read_weekly_quota()
-        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        except ValueError as exc:
-            return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
-                'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable'}
+        if not project_learning_setup.synthetic_local_only(root,project,policy):
+            from .general_teacher import read_weekly_quota
+            try:read_weekly_quota()
+            except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
+            except ValueError as exc:
+                return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
+                    'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable'}
     from . import learning_profile
     selected_profile=learning_profile.present(root) or cfg.get('sharedLearning',{}).get('profile')==learning_profile.SCHEMA
     profile=None
@@ -2673,11 +2704,21 @@ def main(argv):
         print(canonical(result), flush=True)
         return 1 if result["status"] == "failed" else 0
     if len(argv) != 2 or argv[0] not in ("run", "run-project", "run-project-after-index",
+                                          "start-synthetic-training",
                                           "launch-project", "wake-after-index",
                                           "status", "rollback"):
         return 2
     try:
-        if argv[0] == "wake-after-index":
+        if argv[0] == "start-synthetic-training":
+            import config,project_learning_setup,runtime_work
+            project=Path(argv[1]).resolve(strict=True)
+            cfg=config.find_project_config(str(project))['config']
+            root=_safe_root(cfg,project)
+            if root is None or not project_learning_setup.synthetic_local_only(root,project,_policy(root)):
+                raise ValueError('synthetic_training_setup_required')
+            budget=project_learning_setup.start_synthetic_budget(root,project,_policy(root))
+            result=(runtime_work.request('learning',str(project)) or {'status':'deferred_resource'}) if budget['status']=='ready' else budget
+        elif argv[0] == "wake-after-index":
             result = wake_after_index(argv[1])
         elif argv[0] == "launch-project":
             import config

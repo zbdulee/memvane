@@ -387,6 +387,7 @@ def main(argv=None):
     parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
                                           'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store',
                                           'plan-replacement-store', 'prepare-replacement-store', 'replacement-store-status',
+                                          'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll',
                                           'plan-install','install',
                                           'plan-learning-profile','activate-learning-profile',
                                           'plan-index-origin','review-index-provider',
@@ -410,6 +411,7 @@ def main(argv=None):
     parser.add_argument('--expected-embedding-model-sha256')
     parser.add_argument('--expected-embedding-model-bytes', type=int)
     parser.add_argument('--accepted-replacement-request-sha256')
+    parser.add_argument('--accepted-legacy-enrollment-sha256')
     parser.add_argument('--qmd-cpu', action='store_true')
     parser.add_argument('--qmd-backend', choices=('auto','cpu'))
     parser.add_argument('--replace-inactive-store-preparation', action='store_true')
@@ -539,7 +541,8 @@ def main(argv=None):
                 except (OSError,ValueError,KeyError,TypeError) as exc:
                     result['learningProfile']={'status':'profile_review_required','reason':str(exc),'changesApplied':0}
                     result['status']='qmd_ready_learning_profile_review_required'
-        elif args.action.endswith('-store') or args.action in ('store-status', 'replacement-store-status'):
+        elif args.action.endswith('-store') or args.action in ('store-status', 'replacement-store-status',
+                'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll'):
             import shared_qmd_setup
             result = shared_qmd_setup.run(args)
         else:

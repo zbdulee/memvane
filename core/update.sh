@@ -1146,7 +1146,7 @@ PY
   # Invalid pointers fail closed instead of falling back to the user's DB.
   local selected_qmd_env
   selected_qmd_env="$(python3 "$_QMD_CORE_DIR/qmd_route.py" resolve-env "$workdir")" || {
-    log "ABORT: project QMD index pointer invalid"
+    log "ABORT: selected QMD route unavailable or project ownership not approved"
     exit 0
   }
   if [ -n "$selected_qmd_env" ]; then

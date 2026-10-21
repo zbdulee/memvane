@@ -99,6 +99,26 @@ class GuardChecks(unittest.TestCase):
         self.assertEqual(guard.command_for('model-test',['node','--test','one.test.mjs']),
             ['node','--test','--test-concurrency=1','one.test.mjs'])
 
+    def test_model_test_child_gets_private_run_identity(self):
+        from types import SimpleNamespace
+        sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
+                'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
+        with tempfile.TemporaryDirectory() as folder:
+            child=SimpleNamespace(pid=500,poll=lambda:0)
+            args=SimpleNamespace(kind='model-test',command=['node','--test','one.test.mjs'],
+                max_seconds=60,sample_seconds=2)
+            with patch.object(guard,'execution_hold',return_value=False), \
+                 patch.object(guard,'system_sample',return_value=sample), \
+                 patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
+                 patch.object(guard.subprocess,'Popen',return_value=child) as launch, \
+                 patch.object(guard.time,'sleep'):
+                self.assertEqual(guard.run_job(args,Path(folder)),0)
+            env=launch.call_args.kwargs['env']
+            checkpoint=guard.json.loads((Path(env['QMD_DEVELOPMENT_GUARD_RUN'])/'checkpoint.json').read_text())
+            self.assertEqual(env['QMD_DEVELOPMENT_GUARD_NONCE'],checkpoint['proofNonce'])
+            self.assertEqual(checkpoint['kind'],'model-test')
+            self.assertTrue(checkpoint['settled'])
+
     def test_warning_allows_mock_job_but_refuses_actual_model_before_launch(self):
         from types import SimpleNamespace
         sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',

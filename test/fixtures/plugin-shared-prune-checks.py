@@ -29,6 +29,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-owned-prune-', dir=Path.cwd()) as t
     (docs / 'synthetic.md').write_text('Synthetic document.\n')
     config = {'indexing': True, 'collections': ['synthetic-docs'],
               'collectionPaths': {'synthetic-docs': 'docs'}}
+    settings = project / '.auto-context/settings.json'
+    settings.parent.mkdir()
+    settings.write_text(json.dumps(config))
     base = qmd_shared_store.root(home)
     generation = base / 'generations' / ('g-' + 'a' * 32)
     config_dir = generation / 'config'
@@ -59,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-owned-prune-', dir=Path.cwd()) as t
     pointer.write_text(json.dumps({'schema': qmd_shared_store.SCHEMA,
                                    'generation': generation.name}))
     pointer.chmod(0o600)
+    # Legacy selected stores retain preexisting registrations only.
+    qmd_shared_store._reserve_owners(base,
+        qmd_shared_store._collection_owners(project, config))
     qmd_shared_store.register_config(project, config, home=home)
     denied(lambda: qmd_shared_store.verify_missing_collection(
         project, 'synthetic-docs', config, home=home),

@@ -785,6 +785,232 @@ def status():
             'lastError': journal.get('lastError'), 'changesApplied': 0}
 
 
+def plan_legacy_enrollment(args):
+    """Review a new owner of an old selected store without granting it.
+
+    The old generation has no bootstrap/model proof. This action never
+    supplies one, changes the selected pointer, or writes a QMD collection.
+    It requires every current physical collection to have an exact registered
+    owner so a new project's names cannot silently take an old row.
+    """
+    import config as qmd_config
+    from laya_qmd_migration import QMD_253, inspect_qmd_collections
+    base=store._private_dir(store._unlinked_root())
+    selected=store.select()
+    if selected.get('approvedProjects') is not None:
+        raise ValueError('legacy_unscoped_store_required')
+    pinned=_selected_replacement()
+    project=coordinator.project_root(args.project)
+    settings=project/'.auto-context/settings.json'
+    if settings.is_symlink() or not settings.is_file():
+        raise ValueError('canonical_settings_required')
+    found=qmd_config.find_project_config(str(project))
+    if (found['projectRoot']!=str(project) or found['configPath']!=str(settings)
+            or found['config'].get('indexing') is not True):
+        raise ValueError('canonical_indexed_settings_required')
+    wanted=store._collection_owners(project,found['config'])
+    if not wanted or not all(row['indexed'] for row in wanted.values()):
+        raise ValueError('indexed_collections_required')
+    registry,identity=store._registry_with_identity(base)
+    if identity is None or any(row['scope']==str(project) for row in registry.values()):
+        raise ValueError('legacy_owner_already_registered')
+    if set(wanted)&set(registry):
+        raise ValueError('plugin_qmd_collection_collision')
+    for scope in sorted({row['scope'] for row in registry.values()}):
+        previous=qmd_config.find_project_config(scope)
+        if (previous['projectRoot']!=scope or
+                {name:row for name,row in registry.items() if row['scope']==scope}
+                != store._collection_owners(scope,previous['config'])):
+            raise ValueError('legacy_owner_scope_unproved')
+    with sqlite_read.connect(selected['INDEX_PATH']) as db:
+        physical={name:(path,pattern) for name,path,pattern in db.execute(
+            'SELECT name,path,pattern FROM store_collections')}
+    if (not physical or len(physical)>16 or
+            set(physical)!={name for name,row in registry.items() if row['indexed']} or
+            any(physical[name]!=(registry[name]['path'],'**/*.md') for name in physical)):
+        raise ValueError('legacy_physical_registry_mismatch')
+    inventory=inspect_qmd_collections(selected['INDEX_PATH'],QMD_253,tuple(physical))
+    request={'schema':'qmd-legacy-enrollment-request-v1',
+             'project':str(project),'settingsSha256':coordinator.file_sha(settings),
+             'collectionNames':sorted(wanted),'owners':wanted,
+             'generation':selected['generation'],
+             'pointerSha256':pinned['pointer']['sha256'],
+             'legacySelected':pinned,'registryIdentity':identity,
+             'registrySnapshot':registry,
+             'physicalNames':sorted(physical),'sourceDigest':inventory['digest'],
+             'sourceFormat':QMD_253}
+    # QMD's ordinary worker runs a global embed. A source inventory/backup
+    # proves preservation, not that this store's existing vectors and the
+    # reviewed local GGUF have the same provenance. No queue may be published
+    # while that proof is missing.
+    bootstrap=_journal(base)
+    model_blocker=(None if bootstrap and bootstrap.get('phase')=='activated'
+                   and bootstrap.get('generation')==selected['generation']
+                   else 'legacy_embedding_model_proof_required')
+    return {'status':'review_required','request':request,
+            'proposalSha256':coordinator.digest(request),'changesApplied':0,
+            'backupRequired':True,'activationBlockers':([model_blocker] if model_blocker else []),
+            'modelProof':'legacy_unproved_preserved'}
+
+
+def _legacy_journal(base):
+    path=base/store.LEGACY_ENROLL_JOURNAL
+    if not path.exists() and not path.is_symlink():return None
+    file=store._private_file(path)
+    if file.stat().st_size>65536:raise ValueError('legacy_enrollment_journal_invalid')
+    row=json.loads(file.read_text())
+    if (not isinstance(row,dict) or row.get('schema')!='qmd-legacy-enrollment-v1'
+            or row.get('phase') not in ('prepared','publishing','completed')
+            or not isinstance(row.get('request'),dict)
+            or row.get('requestSha256')!=coordinator.digest(row['request'])
+            or type(row.get('backupVerified')) is not bool
+            or row.get('backupPath')!=str(base/('legacy-enrollment-backup-'+
+                row['requestSha256'][:24]+'.sqlite'))):
+        raise ValueError('legacy_enrollment_journal_invalid')
+    return row
+
+
+def _save_legacy(base,row):
+    coordinator._atomic(base/store.LEGACY_ENROLL_JOURNAL,row)
+    fd=os.open(base,os.O_RDONLY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+
+
+def prepare_legacy_enrollment(args):
+    """Save an intent and a verified whole-DB backup before any new grant."""
+    if not args.approve_project_enrollment:
+        raise ValueError('project_enrollment_review_required')
+    accepted=getattr(args,'accepted_legacy_enrollment_sha256',None)
+    with _locked() as base:
+        with qmd_write_fence.hold(args.writer_wait_seconds) as verify_fence:
+            proposal=plan_legacy_enrollment(args)
+            if proposal['proposalSha256']!=accepted:
+                raise ValueError('legacy_enrollment_proposal_changed')
+            request=proposal['request'];row=_legacy_journal(base)
+            if row and row['requestSha256']!=accepted:
+                raise ValueError('legacy_enrollment_request_changed')
+            if not row:
+                backup=base/('legacy-enrollment-backup-'+accepted[:24]+'.sqlite')
+                row={'schema':'qmd-legacy-enrollment-v1','phase':'prepared',
+                     'request':request,'requestSha256':accepted,
+                     'backupPath':str(backup),'backupVerified':False}
+                _save_legacy(base,row)
+            else:
+                backup=Path(row['backupPath'])
+            from laya_qmd_migration import (backup_qmd_collections,
+                verify_restore_collections, inspect_qmd_collections)
+            names=request['physicalNames']
+            if not row['backupVerified']:
+                if not backup.exists() and not backup.is_symlink():
+                    result=backup_qmd_collections(store.select()['INDEX_PATH'],
+                        request['sourceFormat'],names,backup)
+                    if result['source_digest']!=request['sourceDigest']:
+                        raise ValueError('legacy_enrollment_source_changed')
+                elif backup.is_symlink():
+                    raise ValueError('legacy_enrollment_backup_changed')
+                restored=verify_restore_collections(backup,request['sourceFormat'],
+                    names,request['sourceDigest'])
+                if restored['verified'] is not True:
+                    raise ValueError('legacy_enrollment_restore_failed')
+                verify_fence()
+                current=inspect_qmd_collections(store.select()['INDEX_PATH'],
+                    request['sourceFormat'],names)
+                if current['digest']!=request['sourceDigest']:
+                    raise ValueError('legacy_enrollment_source_changed')
+                row['backupVerified']=True
+                _save_legacy(base,row)
+            return {'status':'prepared_inactive','journal':str(base/store.LEGACY_ENROLL_JOURNAL),
+                    'backup':str(backup),'sourceDigest':request['sourceDigest'],
+                    'changesApplied':0,'modelProof':'legacy_unproved_preserved'}
+
+
+def activate_legacy_enrollment(args):
+    """Commit one reviewed new owner; interrupted queueing is idempotent."""
+    if not args.approve_project_enrollment or not args.approve_index_execution:
+        raise ValueError('project_enrollment_review_required')
+    accepted=getattr(args,'accepted_legacy_enrollment_sha256',None)
+    with _locked() as base:
+        with qmd_write_fence.hold(args.writer_wait_seconds) as verify_fence:
+            row=_legacy_journal(base)
+            if not row or not row.get('backupVerified') or row['requestSha256']!=accepted:
+                raise ValueError('legacy_enrollment_preparation_required')
+            request=row['request'];selected=store.select()
+            bootstrap=_journal(base)
+            if (bootstrap is None or bootstrap.get('phase')!='activated'
+                    or bootstrap.get('generation')!=selected['generation']):
+                raise ValueError('legacy_embedding_model_proof_required')
+            import setup_readiness
+            if setup_readiness.qmd_model_reason() is not None:
+                raise ValueError('legacy_embedding_model_proof_required')
+            proof=bootstrap.get('proof')
+            proved=json.loads(store._private_file(Path(selected['generation']) /
+                'bootstrap-proof.json').read_text())
+            if (not isinstance(proof,dict) or proof!=proved or
+                    bootstrap.get('request',{}).get('model') !=
+                    {'path':proof.get('modelPath'),'sha256':proof.get('modelSha256')} or
+                    type(proof.get('dimension')) is not int or
+                    proof['dimension']!=request['legacySelected']['dimension'] or
+                    not isinstance(proof.get('modelFingerprints'),list) or
+                    len(proof['modelFingerprints'])!=1 or
+                    proof['modelFingerprints'][0].get('model')!=proof.get('modelPath')):
+                raise ValueError('legacy_embedding_model_proof_required')
+            import vector_integrity
+            with sqlite_read.connect(selected['INDEX_PATH']) as db:
+                db.execute('BEGIN')
+                vector_integrity.load_vectors(db,qmd_runtime.select())
+                audit=vector_integrity.audit(db,request['physicalNames'],
+                    proof['modelPath'],proof['modelFingerprints'][0]['fingerprint'],
+                    proof['dimension'])
+                db.rollback()
+            if audit['defects']:
+                raise ValueError('legacy_physical_vectors_model_unproved')
+            if (selected['generation']!=request['generation'] or
+                    _private_snapshot(base/'active.json')[0]['sha256']!=request['pointerSha256'] or
+                    _selected_replacement()!=request['legacySelected']):
+                raise ValueError('legacy_enrollment_selected_store_changed')
+            from laya_qmd_migration import (verify_restore_collections,
+                inspect_qmd_collections)
+            verify_restore_collections(row['backupPath'],request['sourceFormat'],
+                                       request['physicalNames'],request['sourceDigest'])
+            if row['phase']=='prepared':
+                current=plan_legacy_enrollment(args)
+                if current['proposalSha256']!=accepted:
+                    raise ValueError('legacy_enrollment_proposal_changed')
+                row['phase']='publishing';_save_legacy(base,row)
+            else:
+                registry=store._registry(base)
+                baseline={name:value for name,value in registry.items()
+                          if name not in request['owners']}
+                if (baseline!=request['registrySnapshot'] or
+                        any(registry.get(name)!=owner for name,owner in request['owners'].items()
+                            if name in registry)):
+                    raise ValueError('legacy_enrollment_registry_changed')
+            verify_fence()
+            store._reserve_owners(base,request['owners'])
+            registry=store._registry(base)
+            if (registry!={**request['registrySnapshot'],**request['owners']}):
+                raise ValueError('legacy_enrollment_registry_changed')
+            grant={'schema':'qmd-legacy-enrollment-grant-v1',
+                   'requestSha256':accepted}
+            grant_path=base/store.LEGACY_ENROLL_GRANT
+            if grant_path.exists() or grant_path.is_symlink():
+                if json.loads(store._private_file(grant_path).read_text())!=grant:
+                    raise ValueError('legacy_enrollment_grant_changed')
+            else:
+                coordinator._atomic(grant_path,grant)
+            verify_fence()
+            import dirty_queue
+            dirty_queue.enqueue_collections({name:owner['path']
+                for name,owner in request['owners'].items() if owner['indexed']},
+                project_root=request['project'])
+            row['phase']='completed';_save_legacy(base,row)
+            return {'status':'enrolled','project':request['project'],
+                    'collections':request['collectionNames'],'indexStatus':'queued',
+                    'backup':row['backupPath'],'changesApplied':1,
+                    'modelProof':'legacy_unproved_preserved'}
+
+
 def activate(args):
     live=getattr(args,'allow_live_host_sessions',False)
     if not args.approve_store_activation or (not live and not args.old_host_sessions_restarted):
@@ -932,6 +1158,9 @@ def run(args):
                     'store-status': status, 'activate-store': lambda: activate(args), 'enroll-store': lambda: enroll(args),
                     'plan-replacement-store': lambda: plan_replacement(args),
                     'prepare-replacement-store': lambda: prepare_replacement(args),
-                    'replacement-store-status': replacement_status}[args.action]()
+                    'replacement-store-status': replacement_status,
+                    'plan-legacy-enroll': lambda: plan_legacy_enrollment(args),
+                    'prepare-legacy-enroll': lambda: prepare_legacy_enrollment(args),
+                    'activate-legacy-enroll': lambda: activate_legacy_enrollment(args)}[args.action]()
         except TimeoutError as exc:
             return {'status':'deferred','reason':str(exc),'exitCode':75}

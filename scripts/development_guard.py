@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import secrets
 import signal
 import stat
 import subprocess
@@ -287,6 +288,7 @@ def run_job(args,root):
         run=private_dir(root/'runs'/uuid.uuid4().hex)
         state={'status':'preflight','completed':False,'settled':False,'kind':args.kind,
                'resourceLimits':policy.resource_limits,'run':str(run)}
+        if args.kind=='model-test':state['proofNonce']=secrets.token_hex(24)
         if calibration is not None:state['calibrationRunId']=calibration['runId']
         def save():checkpoint(run,state);put(active,state)
         save();child=None;tree=None;interrupted=[];calibration_fd=None
@@ -324,6 +326,9 @@ def run_job(args,root):
             observe_log(run,baseline,{},0)
             if reason:raise GuardError(reason)
             environment=cpu_environment()
+            if args.kind=='model-test':
+                environment['QMD_DEVELOPMENT_GUARD_RUN']=str(run)
+                environment['QMD_DEVELOPMENT_GUARD_NONCE']=state['proofNonce']
             if interrupted:raise GuardError('interrupted')
             if time.monotonic()>=PROBE_DEADLINE:raise GuardError('wall_time_budget')
             child=subprocess.Popen(command,start_new_session=True,env=environment,pass_fds=(lease.fd,))
@@ -359,7 +364,8 @@ def run_job(args,root):
             if original_calibration is None:os.environ.pop('QMD_CALIBRATION_ENVELOPE',None)
             else:os.environ['QMD_CALIBRATION_ENVELOPE']=original_calibration
             for sig,handler in previous.items():signal.signal(sig,handler)
-            print(json.dumps(state,sort_keys=True),flush=True)
+            print(json.dumps({key:value for key,value in state.items() if key!='proofNonce'},
+                             sort_keys=True),flush=True)
 
 
 def main():

@@ -15,13 +15,14 @@ sys.path.insert(0, str(Path.cwd() / 'core'))
 import config
 import dirty_queue
 import qmd_route
+import qmd_shared_store
 import resolve_paths
 import runtime_work
 import sync
 import compile_paths
 import update_hook_queue
 
-with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp:
+with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir=Path.cwd().parent) as temp:
     home = Path(temp).resolve()
     base = home / 'novel'
     base.mkdir()
@@ -41,6 +42,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
         'test/fixtures/prepare-shared-qmd-store.py', str(home)],
         cwd=Path.cwd(), capture_output=True, text=True, check=False)
     assert prepared.returncode == 0, prepared.stderr
+    # SessionStart here uses two grandfathered owners of the legacy store.
+    for story in stories:
+        config_row = json.loads((story / '.auto-context/settings.json').read_text())
+        qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+            qmd_shared_store._collection_owners(story, config_row))
     # runtime_work intentionally uses the OS UID home, not HOME. Keep the
     # selected-store/setup path real while suppressing only test child wake
     # writes, which would otherwise reach the user's live runtime-wakes DB.
@@ -137,6 +143,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
     allowed['collectionRoles']['story-0-source'] = 'source'
     allowed['compile'] = {'mode': 'auto-wiki', 'triggers': ['session_start_source']}
     settings.write_text(json.dumps(allowed))
+    # This synthetic case begins at an already registered source owner; the
+    # session exercise must not implicitly enroll a new legacy collection.
+    qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+        qmd_shared_store._collection_owners(stories[0], allowed))
     before_queue = stories[0] / compile_paths.rel(compile_paths.SOURCE_QUEUE)
     old_env = os.environ.copy()
     original_risky = resolve_paths.is_risky_path

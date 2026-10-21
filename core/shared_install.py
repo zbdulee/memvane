@@ -52,7 +52,16 @@ def plan(args):
  selected=_selected();model=None
  if args.embedding_model_file:model=B._model(args.embedding_model_file)
  if selected:
-  bootstrap=json.loads(S._private_file(S.root()/B.JOURNAL).read_text())
+  journal=S.root()/B.JOURNAL
+  if not journal.exists() and not journal.is_symlink() and selected.get('approvedProjects') is None:
+   # A legacy shared DB can retain its registered owners, but it has no
+   # binding from historical vectors to an exact model file. The normal
+   # installer runs a whole-store embed, so a new collection would risk
+   # changing unrelated vectors or mixing model generations. A separately
+   # reviewed GGUF does not prove the bytes used for the old vectors.
+   return {'status':'blocked','blockers':['legacy_embedding_model_proof_required'],
+    'changesApplied':0,'storeSelected':True,'laya':'deferred_no_learning'}
+  bootstrap=json.loads(S._private_file(journal).read_text())
   proof=bootstrap['proof']
   requested_backend=args.qmd_backend or ('cpu' if args.qmd_cpu else None)
   if requested_backend and requested_backend!=bootstrap['request']['backend']:raise ValueError('runtime_backend_changed_requires_review')

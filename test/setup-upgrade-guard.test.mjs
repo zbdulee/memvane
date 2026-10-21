@@ -5,12 +5,16 @@ import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, unlinkS
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
+import {removeTemp, tempBase} from './helpers/temp.mjs';
 
 function run(command, args, env, input='') {
   return spawnSync(command, args, {cwd: process.cwd(), env, input, encoding:'utf8', timeout:8000});
 }
-function fixture() {
-  const base=mkdtempSync(join(tmpdir(),'qmd-upgrade-guard-'));
+// Seeded-owner tests need a base under ~/.cache: tmpdir() resolves to
+// /private/tmp, which _collection_owners refuses as a risky path.
+function fixture({underCache=false}={}) {
+  const root=underCache ? realpathSync(tempBase()) : tmpdir();
+  const base=mkdtempSync(join(root,'qmd-upgrade-guard-'));
   const project=join(base,'project'); mkdirSync(project);
   const home=join(base,'home'); mkdirSync(home);
   const queue=join(base,'queue'); mkdirSync(queue,{mode:0o700});
@@ -29,6 +33,14 @@ function fixture() {
 function activateSharedStore(f) {
   const prepared=run('python3',['test/fixtures/prepare-shared-qmd-store.py',f.home],f.env);
   assert.equal(prepared.status,0,prepared.stderr);
+}
+// The synthetic store is a legacy (unscoped) selection, so check_project only
+// admits an owner whose exact registry rows already exist. Seed those rows for
+// the fixture project; no enrollment journal or grant is written.
+function seedExistingOwnerRows(f) {
+  const registry=join(f.home,'Library/Application Support/qmd-auto-context/shared-qmd/collections.json');
+  writeFileSync(registry,JSON.stringify({docs:{scope:realpathSync(f.project),
+    path:realpathSync(f.docs),indexed:true}}),{mode:0o600});
 }
 
 test('code upgrade blocks old project hooks before SessionStart for both hosts and preserves legacy bytes',()=>{
@@ -85,11 +97,13 @@ test('first SessionStart only gives setup notice; old queued workers retain work
   assert.equal(existsSync(f.called),false);
 });
 
-test('shared-store activation resumes new code; journal or optout blocks it',()=>{
-  const f=fixture();
+test('shared-store activation resumes new code; journal or optout blocks it',(t)=>{
+  const f=fixture({underCache:true});
+  t.after(()=>removeTemp(f.base));
   activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
+  seedExistingOwnerRows(f);
   unlinkSync(join(f.project,'.auto-context.json'));
   const pointer=join(auto,'qmd-index-active.json');
   writeFileSync(pointer,JSON.stringify({schema:'qmd-index-pointer-v1'}));
@@ -128,11 +142,13 @@ test('shared-store activation resumes new code; journal or optout blocks it',()=
   assert.equal(optoutNotice.stdout,'');
 });
 
-test('topical hook binds selected opted-in project from host cwd without test root',()=>{
-  const f=fixture();
+test('topical hook binds selected opted-in project from host cwd without test root',(t)=>{
+  const f=fixture({underCache:true});
+  t.after(()=>removeTemp(f.base));
   activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
+  seedExistingOwnerRows(f);
   unlinkSync(join(f.project,'.auto-context.json'));
   writeFileSync(join(auto,'qmd-index-active.json'),JSON.stringify({schema:'qmd-index-pointer-v1'}));
   const marker=join(f.project,'.qmd-topical-v2-project');
@@ -183,11 +199,13 @@ test('unreadable legacy settings are setup-required before any hook work',()=>{
   assert.equal(existsSync(f.called),false);
 });
 
-test('prepared journal gives one SessionStart repair notice while work stays blocked',()=>{
-  const f=fixture();
+test('prepared journal gives one SessionStart repair notice while work stays blocked',(t)=>{
+  const f=fixture({underCache:true});
+  t.after(()=>removeTemp(f.base));
   activateSharedStore(f);
   const auto=join(f.project,'.auto-context');mkdirSync(auto);
   writeFileSync(join(auto,'settings.json'),JSON.stringify({collections:['docs'],collectionPaths:{docs:'docs'}}));
+  seedExistingOwnerRows(f);
   unlinkSync(join(f.project,'.auto-context.json'));
   writeFileSync(join(auto,'qmd-index-active.json'),JSON.stringify({schema:'qmd-index-pointer-v1'}));
   const journal=join(auto,'install-update-journal.json');

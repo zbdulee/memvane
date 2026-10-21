@@ -23,6 +23,7 @@ def run(root, project, config=None):
         return {'status':'disabled'}
     if not setup_ready(root):return {'status':'setup_in_progress'}
     from . import project_scope,general_teacher
+    import project_learning_setup
     from .resource_coordination import _lock
     policy=shared._policy(root)
     fd=_lock(root/'project-worker.lock')
@@ -35,17 +36,25 @@ def run(root, project, config=None):
         from .local_cycle import ResourceDeferred
         try:project_scope.require(root,policy,'local_train',fresh_inventory=True)
         except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        teacher=general_teacher.process_pending(root,project,policy,max_cases=1)
-        # A quota/consent uncertainty cannot become a new local model call.
-        if teacher['status'] in ('deferred_quota','deferred_resource','consent_required','busy'):
-            return {'status':teacher['status'],'teacher':teacher}
-        try:
-            quota=general_teacher.read_weekly_quota()
-        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        except ValueError as exc:
-            return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
-                'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable',
-                'teacher':teacher}
+        if project_learning_setup.synthetic_local_only(root,project,policy):
+            teacher={'status':'disabled_synthetic_local_only'}
+            quota={'status':'not_applicable_local_only'}
+            budget=project_learning_setup.synthetic_budget_status(root,project,policy)
+            if budget['status']!='ready':
+                return {'status':budget['status'],'teacher':teacher,'cycle':budget,
+                        'quota':quota,'activeCheckpointChanged':False}
+        else:
+            teacher=general_teacher.process_pending(root,project,policy,max_cases=1)
+            # A quota/consent uncertainty cannot become a new local model call.
+            if teacher['status'] in ('deferred_quota','deferred_resource','consent_required','busy'):
+                return {'status':teacher['status'],'teacher':teacher}
+            try:
+                quota=general_teacher.read_weekly_quota()
+            except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
+            except ValueError as exc:
+                return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
+                    'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable',
+                    'teacher':teacher}
         cycle=shared.run_training_pending(root,project)
         result={'status':cycle['status'],'teacher':teacher,'cycle':cycle,
                 'quota':quota,

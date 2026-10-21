@@ -20,7 +20,9 @@ after(() => { for (const path of disposable.reverse()) removeTemp(path); });
 function enqueue(cwd, payload, queuePath) {
   execFileSync("python3", ["core/index_enqueue.py"], {
     input: JSON.stringify(payload), encoding: "utf8",
-    env: { ...process.env, HOME: isolatedHome, QMD_SETUP_GUARD_FIXTURE: '',
+    // These cases exercise hook path parsing. The synthetic selected store
+    // has no approved owner registry, so production routing must reject it.
+    env: { ...process.env, HOME: isolatedHome, QMD_SETUP_GUARD_FIXTURE: '1',
       QMD_DIRTY_QUEUE: queuePath, PYTHONDONTWRITEBYTECODE: '1' },
   });
 }
@@ -42,7 +44,7 @@ test("연결된 폴더 story-path 편집 → 큐에 적재", () => {
   const lines = readFileSync(q, "utf8").trim().split("\n");
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0].split('\t'), ['x-manuscript',
-    realpathSync(join(proj, '04_Manuscript')), realpathSync(proj)]);
+    realpathSync(join(proj, '04_Manuscript'))]);
 });
 
 test("agy TargetFile payload → 큐에 적재", () => {
@@ -57,7 +59,7 @@ test("agy TargetFile payload → 큐에 적재", () => {
   const lines = readFileSync(q, "utf8").trim().split("\n");
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0].split('\t'), ['x-manuscript',
-    realpathSync(join(proj, '04_Manuscript')), realpathSync(proj)]);
+    realpathSync(join(proj, '04_Manuscript'))]);
 });
 
 test("agy ReplacementChunks payload → 큐에 적재", () => {
@@ -76,7 +78,7 @@ test("agy ReplacementChunks payload → 큐에 적재", () => {
   const lines = readFileSync(q, "utf8").trim().split("\n");
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0].split('\t'), ['x-manuscript',
-    realpathSync(join(proj, '04_Manuscript')), realpathSync(proj)]);
+    realpathSync(join(proj, '04_Manuscript'))]);
 });
 
 test("collections 빈(pending) → 큐 미생성", () => {

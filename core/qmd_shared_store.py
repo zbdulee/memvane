@@ -22,6 +22,64 @@ import uuid
 
 
 SCHEMA = 'qmd-plugin-shared-store-v1'
+LEGACY_ENROLL_JOURNAL = 'legacy-enrollment-journal.json'
+LEGACY_ENROLL_GRANT = 'legacy-enrollment-grant.json'
+
+
+def _legacy_enrollment(base, selected):
+    """Read the separate grant for one old, unscoped selected generation.
+
+    A prepared/publishing intent is a *deny* for its new owner, even if its
+    metadata reservation survived a crash. It never upgrades the old
+    prepared.json or purports to prove the old embedding model.
+    """
+    path = base / LEGACY_ENROLL_JOURNAL
+    if not path.exists() and not path.is_symlink():
+        return None, None
+    file = _private_file(path)
+    if file.stat().st_size > 65536:
+        raise ValueError('legacy_enrollment_journal_invalid')
+    journal = json.loads(file.read_text())
+    if (not isinstance(journal, dict) or journal.get('schema') != 'qmd-legacy-enrollment-v1'
+            or journal.get('phase') not in ('prepared', 'publishing', 'completed')
+            or not isinstance(journal.get('request'), dict)
+            or not isinstance(journal['request'].get('project'), str)
+            or type(journal.get('backupVerified')) is not bool
+            or not isinstance(journal.get('backupPath'), str)
+            or not isinstance(journal.get('requestSha256'), str)
+            or journal['requestSha256'] != hashlib.sha256(json.dumps(
+                journal['request'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()):
+        raise ValueError('legacy_enrollment_journal_invalid')
+    request = journal['request']
+    if journal['phase']=='completed' and journal['backupVerified'] is not True:
+        raise ValueError('legacy_enrollment_journal_invalid')
+    backup=base/('legacy-enrollment-backup-'+journal['requestSha256'][:24]+'.sqlite')
+    if journal['backupPath']!=str(backup):
+        raise ValueError('legacy_enrollment_journal_invalid')
+    if journal['backupVerified']:
+        if _private_file(backup).stat().st_size==0:
+            raise ValueError('legacy_enrollment_backup_invalid')
+    pointer = _private_file(base / 'active.json')
+    info = pointer.stat()
+    legacy=request.get('legacySelected')
+    pinned = legacy.get('pointer', {}) if isinstance(legacy,dict) else {}
+    if (request.get('generation') != selected['generation']
+            or request.get('pointerSha256') != hashlib.sha256(pointer.read_bytes()).hexdigest()
+            or [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+            != [pinned.get(key) for key in ('dev','ino','bytes','mtimeNs','ctimeNs')]):
+        raise ValueError('legacy_enrollment_selected_store_changed')
+    grant_path = base / LEGACY_ENROLL_GRANT
+    if journal['phase'] != 'completed':
+        return request['project'], None
+    grant_file = _private_file(grant_path)
+    if grant_file.stat().st_size > 65536:
+        raise ValueError('legacy_enrollment_grant_invalid')
+    grant = json.loads(grant_file.read_text())
+    if (not isinstance(grant, dict) or set(grant) != {'schema', 'requestSha256'}
+            or grant['schema'] != 'qmd-legacy-enrollment-grant-v1'
+            or grant['requestSha256'] != journal['requestSha256']):
+        raise ValueError('legacy_enrollment_grant_invalid')
+    return request['project'], request
 
 def _scope_policy(generation,prepared):
     sha=prepared.get('scopePolicySha256')
@@ -46,7 +104,33 @@ def _assert_activated(selected,home=None):
 def check_project(scope,selected=None,*,home=None):
     selected=selected or select(home)
     approved=selected.get('approvedProjects')
-    if approved is None:return  # Compatibility for already reviewed stores.
+    if approved is None:
+        # Old selected stores predate scope-policy.json. Preserve their
+        # *registered* owners, but never let a freshly published settings.json
+        # turn into permission to add a new collection to the shared DB.
+        # Registration for a new owner now needs a separately reviewed
+        # transition. This check precedes register_config and worker writes.
+        import config as qmd_config
+        owner=qmd_config.find_project_config(str(scope))['projectRoot']
+        base=_unlinked_root(home)
+        pending, grant=_legacy_enrollment(base, selected)
+        if owner == pending and grant is None:
+            raise ValueError('project_shared_migration_not_approved')
+        registry=_registry(base)
+        existing={name: row for name,row in registry.items()
+                  if row['scope']==owner}
+        if not existing:
+            raise ValueError('project_shared_migration_not_approved')
+        wanted=_collection_owners(owner,qmd_config.find_project_config(owner)['config'])
+        if wanted!=existing:
+            raise ValueError('project_shared_migration_not_approved')
+        if owner == pending:
+            import install_update
+            settings=Path(owner)/'.auto-context/settings.json'
+            if (install_update.file_sha(settings) != grant.get('settingsSha256')
+                    or sorted(wanted) != grant.get('collectionNames')):
+                raise ValueError('project_shared_migration_not_approved')
+        return
     _assert_activated(selected,home)
     import config as qmd_config
     owner=qmd_config.find_project_config(str(scope))['projectRoot']
@@ -62,7 +146,13 @@ def approved_owner_registry(home=None):
     """
     selected=select(home)
     approved=selected.get('approvedProjects')
-    if approved is None:raise ValueError('plugin_qmd_legacy_store_unscoped')
+    if approved is None:
+        project, grant=_legacy_enrollment(_unlinked_root(home),selected)
+        if grant is None:
+            raise ValueError('plugin_qmd_legacy_store_unscoped')
+        registry=_registry(_unlinked_root(home))
+        return {project:grant['settingsSha256']}, {
+            name:row for name,row in registry.items() if row['scope']==project}
     _assert_activated(selected,home)
     return dict(approved),_registry(_unlinked_root(home))
 
@@ -78,9 +168,16 @@ def approved_owner_revision(home=None):
     """
     selected=select(home)
     approved=selected.get('approvedProjects')
-    if approved is None:raise ValueError('plugin_qmd_legacy_store_unscoped')
-    _assert_activated(selected,home)
+    if approved is None:
+        project, grant=_legacy_enrollment(_unlinked_root(home),selected)
+        if grant is None:
+            raise ValueError('plugin_qmd_legacy_store_unscoped')
+        approved={project:grant['settingsSha256']}
+    else:
+        _assert_activated(selected,home)
     registry,identity=_registry_with_identity(_unlinked_root(home))
+    if selected.get('approvedProjects') is None:
+        registry={name:row for name,row in registry.items() if row['scope']==project}
     if identity is None:
         return dict(approved),registry,None
     material={'generation':selected['generation'],'approved':sorted(approved.items()),
@@ -332,7 +429,16 @@ def register_config(scope, config, *, home=None):
     base = _unlinked_root(home)
     scope = Path(scope).resolve(strict=True)
     check_project(scope,selected,home=home)
-    _reserve_owners(base, _collection_owners(scope, config))
+    wanted=_collection_owners(scope, config)
+    if selected.get('approvedProjects') is None:
+        pending,grant=_legacy_enrollment(base,selected)
+        if str(scope)!=pending:
+            existing=_registry(base)
+            if any(existing.get(name)!=owner for name,owner in wanted.items()):
+                raise ValueError('project_shared_migration_not_approved')
+        elif grant is None:
+            raise ValueError('project_shared_migration_not_approved')
+    _reserve_owners(base, wanted)
     return selected
 
 

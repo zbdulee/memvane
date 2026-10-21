@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { removeTemp } from './helpers/temp.mjs';
 import {
   existsSync,
@@ -56,6 +56,30 @@ function writeConfig(dir, collections, collectionPaths = {}) {
   }));
 }
 
+// The prepared store is a legacy (unscoped) selection, so the setup guard admits
+// only an owner whose registry rows already equal its current config. Seed those
+// rows inside the isolated HOME with the same derivation check_project uses; a
+// config the gate would reject (e.g. a missing root) makes this throw.
+const SEED_OWNER = `
+import sys
+sys.path.insert(0, 'core')
+import config as qmd_config
+import qmd_shared_store as store
+home, project = sys.argv[1], sys.argv[2]
+owner = qmd_config.find_project_config(project)['projectRoot']
+wanted = store._collection_owners(owner, qmd_config.find_project_config(owner)['config'])
+if not wanted:
+    raise SystemExit('no owner rows to seed')
+store._reserve_owners(store._unlinked_root(home), wanted)
+`;
+
+function seedOwner(envInfo, dir) {
+  execFileSync("python3", ["-c", SEED_OWNER, envInfo.base, dir], {
+    encoding: "utf8",
+    env: envInfo.env,
+  });
+}
+
 function runSync(cwd, envInfo, args = []) {
   const out = execFileSync("python3", ["core/sync.py", "--cwd", cwd, "--json", ...args], {
     encoding: "utf8",
@@ -90,6 +114,7 @@ test("first run creates snapshot and queues collection once; second run is uncha
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["sync-smoke"], { "sync-smoke": "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "one\n");
+  seedOwner(envInfo, dir);
   try {
     const first = runSync(dir, envInfo);
     assert.equal(first.reason, "synced");
@@ -120,6 +145,7 @@ test("baseline-only records state without queue, then update and delete enqueue 
   writeConfig(dir, ["story"], { story: "docs" });
   const file = join(dir, "docs", "a.md");
   writeFileSync(file, "one\n");
+  seedOwner(envInfo, dir);
   try {
     const baseline = runSync(dir, envInfo, ["--baseline-only"]);
     assert.equal(baseline.reason, "baseline");
@@ -149,6 +175,7 @@ test("multiple changed files in same collection enqueue one line", () => {
   const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
+  seedOwner(envInfo, dir);
   try {
     writeFileSync(join(dir, "docs", "a.md"), "a\n");
     writeFileSync(join(dir, "docs", "b.md"), "b\n");
@@ -170,6 +197,7 @@ test("two changed collections enqueue two sorted lines", () => {
   writeConfig(dir, ["zeta", "alpha"], { alpha: "a", zeta: "z" });
   writeFileSync(join(dir, "a", "one.md"), "a\n");
   writeFileSync(join(dir, "z", "one.md"), "z\n");
+  seedOwner(envInfo, dir);
   try {
     const result = runSync(dir, envInfo);
     assert.equal(result.created, 2);
@@ -190,6 +218,7 @@ test("dry-run reports changes without queue or snapshot", () => {
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
+  seedOwner(envInfo, dir);
   try {
     const result = runSync(dir, envInfo, ["--dry-run"]);
     assert.equal(result.reason, "dry_run");
@@ -202,14 +231,39 @@ test("dry-run reports changes without queue or snapshot", () => {
   }
 });
 
-test("missing collection root is reported and not queued", () => {
+test("missing collection root fails closed at the owner gate and is not queued", () => {
   const envInfo = makeEnv();
   const dir = makeProject(envInfo);
   writeConfig(dir, ["missing"], { missing: "docs" });
   try {
-    const result = runSync(dir, envInfo);
-    assert.equal(result.reason, "unchanged");
-    assert.deepEqual(result.warnings, [{ collection: "missing", reason: "missing_root" }]);
+    // No owner rows can exist for this config: the gate derives them from the
+    // resolved root, so a missing root is never an approved existing owner.
+    const res = spawnSync("python3", ["core/sync.py", "--cwd", dir, "--json"], {
+      encoding: "utf8",
+      env: envInfo.env,
+    });
+    assert.equal(res.status, 1);
+    assert.deepEqual(JSON.parse(res.stdout.trim()), { ok: false, reason: "setup_required" });
+    assert.equal(existsSync(envInfo.queue), false);
+    assert.equal(existsSync(envInfo.state), false);
+
+    // The sync-unit missing-root report, isolated from the CLI's setup gate.
+    const unit = execFileSync("python3", ["-c", `
+import json, sys
+from pathlib import Path
+sys.path.insert(0, 'core')
+import sync
+root = sys.argv[1]
+snapshot, totals, changed, files, warnings = sync.build_snapshot(
+    root, None, [('missing', Path(root) / 'docs')], None)
+print(json.dumps({'totals': totals, 'changed': changed, 'warnings': warnings}))
+`, dir], { encoding: "utf8", env: envInfo.env });
+    const parsed = JSON.parse(unit.trim());
+    assert.deepEqual(parsed.warnings, [{ collection: "missing", reason: "missing_root" }]);
+    assert.deepEqual(parsed.changed, {});
+    assert.equal(parsed.totals.created, 0);
+    assert.equal(parsed.totals.updated, 0);
+    assert.equal(parsed.totals.deleted, 0);
     assert.equal(existsSync(envInfo.queue), false);
   } finally {
     removeTemp(envInfo.base);
@@ -243,6 +297,7 @@ test("active lock reports sync_busy without removing lock", () => {
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
+  seedOwner(envInfo, dir);
   mkdirSync(join(envInfo.base, "lock.d"));
   writeFileSync(join(envInfo.base, "lock.d", "pid"), String(process.pid));
   try {
@@ -263,6 +318,7 @@ test("stale lock from dead pid is removed and sync proceeds", () => {
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
+  seedOwner(envInfo, dir);
   mkdirSync(join(envInfo.base, "lock.d"));
   writeFileSync(join(envInfo.base, "lock.d", "pid"), "99999999");
   try {
@@ -283,6 +339,7 @@ test("stale lock with unexpected content is not recursively deleted", () => {
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
+  seedOwner(envInfo, dir);
   const lockDir = join(envInfo.base, "lock.d");
   mkdirSync(lockDir);
   // stale pid (dead) so release path triggers, plus an unexpected precious file.
@@ -308,6 +365,7 @@ test("pid-less fresh lock stays busy, but old pid-less lock is recovered", () =>
   mkdirSync(join(dir, "docs"), { recursive: true });
   writeConfig(dir, ["story"], { story: "docs" });
   writeFileSync(join(dir, "docs", "a.md"), "a\n");
+  seedOwner(envInfo, dir);
   const lockDir = join(envInfo.base, "lock.d");
   mkdirSync(lockDir);
   try {

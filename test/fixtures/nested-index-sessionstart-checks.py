@@ -58,6 +58,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-nested-index-', dir=repository) as 
         'test/fixtures/prepare-shared-qmd-store.py'), str(home)],
         cwd=repository, capture_output=True, text=True, check=False)
     assert prepared.returncode == 0, prepared.stderr
+    # This legacy fixture represents a grandfathered, already registered
+    # owner. Fresh owners require the reviewed enrollment transition.
+    qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+        qmd_shared_store._collection_owners(novel,
+            json.loads(settings.read_text())))
     def production_route(*args):
         with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': ''}), \
              patch.object(sys, 'argv', ['qmd_route.py', *map(str, args)]):
