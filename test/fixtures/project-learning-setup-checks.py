@@ -269,6 +269,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   assert setup.start_synthetic_budget(qa_root,qa_project,qa_policy)['status']=='ready'
   assert setup.synthetic_budget_status(qa_root,qa_project,qa_policy)['status']=='ready'
   assert setup.start_synthetic_budget(qa_root,qa_project,qa_policy)['status']=='ready'
+  from context_learning import automatic_staging
+  deadline=json.loads((qa_root/setup.BUDGET).read_text())['deadlineUnixMs']/1000
+  with patch.object(setup,'synthetic_budget_status',return_value={'status':'ready'}),\
+       patch.object(automatic_staging.time,'time',return_value=deadline-.5),\
+       patch.object(automatic_staging,'VerifiedLayaTrainer',side_effect=AssertionError('model started')):
+   try:automatic_staging._trainer(qa_policy,None,root=qa_root)
+   except automatic_staging.ResourceDeferred as exc:
+    assert 'synthetic_training_budget_exhausted' in str(exc)
+   else:raise AssertionError('synthetic deadline admitted a model')
   qa_settings=(qa_project/'.auto-context/settings.json').read_bytes()
   save(qa_project/'.auto-context/settings.json',{**json.loads(qa_settings),'topN':3})
   expect('settings_changed',lambda:setup.recover(qa_project,qa_root))
