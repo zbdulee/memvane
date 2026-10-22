@@ -842,7 +842,8 @@ test('hierarchical recall applies rawFallbackMinScore to raw backfill results', 
     const selection = readFileSync(logPath, 'utf8')
       .trim().split('\n').map(line => JSON.parse(line))
       .find(e => e.event === 'qmd_recall_selection');
-    assert.equal(selection.selected, 0);
+    assert.equal(selection.selected_count, 0);
+    assert.deepEqual(selection.selected, []);
     assert.equal(selection.dropped_min_score, 1, '컷 탈락 수는 그대로 기록');
     assert.equal(selection.rank_fallback_used, false, '컷 자체를 무효화하면 안 된다');
     assert.equal(selection.min_score, 0.7, 'active min_score는 rawFallbackMinScore');

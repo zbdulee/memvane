@@ -280,6 +280,41 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
     return context
 
 
+def _log_selection(decision: dict, chosen: list) -> None:
+    """File-only `qmd_recall_selection` line for a served Laya recall.
+
+    Mirrors the QMD route line (release QA §6): `selected[]` lists exactly the
+    injected documents with their project-relative path. A no-op unless
+    QMD_RECALL_LOG is set; never writes stdout and never changes the result.
+    """
+    if not os.environ.get("QMD_RECALL_LOG"):
+        return
+    project = decision.get("projectRoot")
+    root = project if "collections" in decision else decision.get("sourceRoot")
+    entries = []
+    for row in chosen:
+        try:
+            path = str(Path(root, _relative_path(row["path"], root)).relative_to(project))
+        except Exception:
+            path = str(row.get("path")) if isinstance(row, dict) else ""
+        entries.append({"file": path, "path": path})
+    _write_selection_log(project, "selected" if entries else "no_results_after_filter", entries)
+
+
+def _write_selection_log(project_root, reason: str, entries: list) -> None:
+    """Append one file-only `qmd_recall_selection` line; never raises or prints."""
+    log_path = os.environ.get("QMD_RECALL_LOG")
+    if not log_path:
+        return
+    try:
+        import recall
+        recall.set_log_project_root(project_root)
+        recall.log_recall_event(log_path, reason, route="laya",
+                                selected=entries, selected_count=len(entries))
+    except Exception:
+        pass
+
+
 def host_payload(host: str, context: str) -> dict:
     if host in ("claude", "codex"):
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
@@ -1165,6 +1200,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in locations.items()
                                                if path in chosen_paths})
+    _log_selection(decision, chosen)
     return host_payload(host, context)
 
 
@@ -1177,6 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
         _, action, host, payload_file, fallback_cwd = args
     else:
         return 2
+    project_root = None
     try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
@@ -1190,6 +1227,8 @@ def main(argv: list[str] | None = None) -> int:
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = select_route(cwd, action=action)
+        if isinstance(decision, dict) and isinstance(decision.get("projectRoot"), str):
+            project_root = decision["projectRoot"]
         if decision != selection:
             _fail("selected_route_changed")
         response = serve_selected(action, host, decision, payload)
@@ -1204,6 +1243,10 @@ def main(argv: list[str] | None = None) -> int:
         code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
                 else "selected_proof_or_query_failed")
         print(f"[laya-index] {code}; QMD fallback refused", file=sys.stderr)
+        if action == "recall":
+            # A refused recall still leaves its reason (release QA §6: a missing
+            # line would read as "the hook did not run").
+            _write_selection_log(project_root, code, [])
         if action == "topical-stop":
             print("{}")
         return 3

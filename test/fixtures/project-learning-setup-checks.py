@@ -231,7 +231,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   observed=[]
   class FakeTrainer:
    def __init__(self,argv,**kwargs):
-    assert kwargs['max_rss_mib']==3072 and kwargs['require_monitor'] is True
+    assert kwargs['max_rss_mib']==setup.SYNTHETIC_MAX_RSS_MIB==3584 and kwargs['require_monitor'] is True
    def call(self,mode,request,result_path,*,cwd):
     observed.append((mode,request))
     assert mode=='predict' and request['artifact_path']==str(qa_base)
@@ -280,7 +280,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   assert qa_plan['bindingSha256']==setup.proposal_sha256(qa_binding)
   assert qa_plan['policy']['baseArtifact']==str(qa_base)
   assert qa_plan['teacherConsent'] is None
-  assert qa_plan['policy']['maxRssMib']==3072 and qa_plan['policy']['batchMax']==100
+  assert qa_plan['policy']['maxRssMib']==3584 and qa_plan['policy']['batchMax']==100
   assert qa_plan['settings']['contextLearning']['capture'] is True
   assert qa_plan['settings']['contextLearning']['liveSelection'] is False
   assert qa_plan['settings']['sharedLearning']['autoApply'] is False
@@ -376,7 +376,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
    init_plan=setup.plan_synthetic_bindings(init_project,init_root,**inputs)
    assert snapshot()==clean
    assert init_plan['files']['live-selector.json']['trainerArgv']==[str(python),str(adapter),str(model)]
-   assert init_plan['files']['live-selector.json']['maxRssMib']==3072
+   assert init_plan['files']['live-selector.json']['maxRssMib']==3584
    assert init_plan['files']['active-checkpoint.json']['artifact_path']==str(base_artifact)
    assert init_plan['model']['identitySha256']==identity
    digest=setup.proposal_sha256(init_plan)

@@ -36,6 +36,9 @@ NAME='project-learning-setup.json'
 SCHEMA='qmd-project-learning-setup-v1'
 SYNTHETIC_STAGED='synthetic-staged'
 SYNTHETIC_RESERVE='reviewed-synthetic-qa-floor'
+# Reviewed synthetic-QA process RSS ceiling (user-approved 3.5 GiB). The 35 % free
+# headroom, CPU 1, 768 MiB floor and every other synthetic bound are unchanged.
+SYNTHETIC_MAX_RSS_MIB=3584
 CALIBRATION='synthetic-memory-calibration.json'
 BUDGET='synthetic-run-budget.json'
 BACKUPS='project-learning-backups'
@@ -291,7 +294,7 @@ def _guard_calibration(evidence,*,root,project,model_identity_sha,runtime_sha,ad
                    ('observedPeakRssKib','resourceSamples','calibrationPid','guardChildPid',
                     'startedAtUnixMs','finishedAtUnixMs'))
             or not evidence['startedAtUnixMs']<evidence['finishedAtUnixMs']<=evidence['startedAtUnixMs']+420000
-            or evidence['resourceSamples']<2 or evidence['observedPeakRssKib']>3072*1024
+            or evidence['resourceSamples']<2 or evidence['observedPeakRssKib']>SYNTHETIC_MAX_RSS_MIB*1024
             or not isinstance(evidence['guardNonce'],str) or len(evidence['guardNonce'])!=48):
         raise ValueError('setup_synthetic_calibration_required')
     run=Path(evidence['guardRun'])
@@ -368,8 +371,8 @@ def calibrate_synthetic(project,root):
         raise ValueError('setup_synthetic_mps_profile_required')
     from context_learning.local_cycle import LocalTrainer
     from context_learning.shared import resource_report
-    calibration_policy={'maxRssMib':3072,'minAvailableMib':768,'maxLoadPerCpu':.75}
-    trainer=LocalTrainer(argv,max_seconds=300,max_rss_mib=3072,require_monitor=True,
+    calibration_policy={'maxRssMib':SYNTHETIC_MAX_RSS_MIB,'minAvailableMib':768,'maxLoadPerCpu':.75}
+    trainer=LocalTrainer(argv,max_seconds=300,max_rss_mib=SYNTHETIC_MAX_RSS_MIB,require_monitor=True,
         pressure_probe=lambda **options:resource_report(calibration_policy,detailed=True,**options))
     sample={'request_id':'synthetic-calibration','input_sha256':'0'*64,
         'prompt':'Which synthetic town has the blue bridge?',
@@ -387,7 +390,7 @@ def calibrate_synthetic(project,root):
     finished=max(started+1,int(time.time()*1000))
     if (not isinstance(result.get('predictions'),list) or len(result['predictions'])!=1
             or type(resources.get('observed_peak_rss_kib'))is not int
-            or resources['observed_peak_rss_kib']<=0 or resources['observed_peak_rss_kib']>3072*1024
+            or resources['observed_peak_rss_kib']<=0 or resources['observed_peak_rss_kib']>SYNTHETIC_MAX_RSS_MIB*1024
             or type(resources.get('resource_samples'))is not int or resources['resource_samples']<2
             or resources.get('configured_cpu_threads')!=1):
         raise ValueError('setup_synthetic_calibration_incomplete')
@@ -418,7 +421,7 @@ def _measured_memory(profile,evidence,*,root,project,model_identity_sha,runtime_
     peak=math.ceil(guard['peakRssKib']/1024)
     if (profile['fixedMib']!=max(math.ceil(peak*1.5),peak+512)
             or profile['perPairMib']!=128
-            or profile['fixedMib']+profile['perPairMib']>3072
+            or profile['fixedMib']+profile['perPairMib']>SYNTHETIC_MAX_RSS_MIB
             or profile.get('estimateSource')!='reviewed-forward-envelope:'+proposal_sha256(evidence)):
         raise ValueError('setup_synthetic_measured_profile_required')
     return evidence
@@ -496,7 +499,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         _measured_memory(profile,memory_evidence,root=root,project=project,
             model_identity_sha=identity,runtime_sha=file_sha(resolved),adapter_sha=file_sha(adapter))
         # maxGoldCalls=0: no teacher budget even if a consent file later appears.
-        policy.update(maxRssMib=3072,minAvailableMib=768,maxLoadPerCpu=.75,maxGoldCalls=0,
+        policy.update(maxRssMib=SYNTHETIC_MAX_RSS_MIB,minAvailableMib=768,maxLoadPerCpu=.75,maxGoldCalls=0,
                       batchMax=100,adaptiveMemory=profile,targetHeadroomFraction=.35)
         teacher=None
     elif memory_profile is not None or memory_evidence is not None:
@@ -717,7 +720,7 @@ def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
             'artifact':{'path':str(artifact),'sha256':artifact_sha},
             'files':{'live-selector.json':{'schema':'qmd-live-selector-v1',
                          'trainerArgv':[str(runtime_path),str(adapter),str(model)],
-                         'timeoutSeconds':30,'maxRssMib':3072},
+                         'timeoutSeconds':30,'maxRssMib':SYNTHETIC_MAX_RSS_MIB},
                      'active-checkpoint.json':{'artifact_path':str(artifact),
                          'artifact_sha256':artifact_sha,'cycle_id':'base'}}}
 
