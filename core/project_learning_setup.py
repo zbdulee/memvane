@@ -41,6 +41,11 @@ BUDGET='synthetic-run-budget.json'
 BACKUPS='project-learning-backups'
 CONFIG_NAMES=('shared-policy.json',project_scope.NAME,'project-teacher-consent.json',
               learning_profile.NAME,learning_profile.INSTALL)
+BINDINGS='synthetic-binding-init.json'
+BINDING_SCHEMA='qmd-synthetic-binding-init-v1'
+BINDING_TARGETS=('live-selector.json','active-checkpoint.json')
+BINDING_TEMP='.synthetic-binding-'
+LOCK_NAME='project-learning-setup.lock'
 
 
 def proposal_sha256(value):
@@ -138,6 +143,20 @@ def synthetic_local_only(root,project,policy):
             or plan.get('teacherConsent') is not None
             or (root/'project-teacher-consent.json').exists()
             or (root/'project-teacher-consent.json').is_symlink()):
+        raise ValueError('setup_synthetic_scope_changed')
+    # Frequent path: private journal and targets only, no runtime probe or
+    # model hashing; the activated plan must name this exact binding.
+    accepted,binding=_require_bound(project,root)
+    evidence=plan.get('memoryEvidence') if isinstance(plan.get('memoryEvidence'),dict) else {}
+    if (plan.get('bindingSha256')!=accepted
+            or reviewed.get('trainerArgv')!=binding['files']['live-selector.json']['trainerArgv']
+            or reviewed.get('baseArtifact')!=binding['artifact'].get('path')
+            or plan.get('artifactSha256')!=binding['artifact'].get('sha256')
+            or plan.get('modelIdentitySha256')!=binding['model'].get('identitySha256')
+            or plan.get('runtime')!={k:binding['runtime'].get(k) for k in ('path','resolved','sha256')}
+            or evidence.get('runtimeSha256')!=binding['runtime'].get('sha256')
+            or evidence.get('adapterSha256')!=binding['adapter'].get('sha256')
+            or evidence.get('modelIdentitySha256')!=binding['model'].get('identitySha256')):
         raise ValueError('setup_synthetic_scope_changed')
     selected=require_profile(root,policy,'local_train')
     if (selected.get('choice')!='local-staged' or selected.get('autoApply') is not False
@@ -325,6 +344,8 @@ def calibrate_synthetic(project,root):
         raise ValueError('setup_model_test_guard_required')
     if (root/CALIBRATION).exists() or (root/CALIBRATION).is_symlink():
         raise ValueError('setup_existing_calibration')
+    # Exact reviewed binding plus a fresh runtime probe before any model call.
+    _require_bound(project,root,fresh=True)
     started=int(time.time()*1000)
     live=read_private_json(_path(root/'live-selector.json',private=True))
     argv=live.get('trainerArgv')
@@ -406,6 +427,9 @@ def _measured_memory(profile,evidence,*,root,project,model_identity_sha,runtime_
 def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1',
             mode='default',memory_profile=None,memory_evidence=None):
     project,root=_namespace(project,root,mode=mode)
+    # Synthetic setup consumes only the exact reviewed binding; ordinary
+    # default enrollment never requires one.
+    bound=_require_bound(project,root,fresh=True)[0] if mode==SYNTHETIC_STAGED else None
     if (type(expires_at_unix_ms)is not int or type(not_before_unix_ms)is not int
         or not 0<not_before_unix_ms<expires_at_unix_ms<=not_before_unix_ms+project_scope.MAX_LIFETIME_MS
         or not time.time()*1000<expires_at_unix_ms<=time.time()*1000+project_scope.MAX_LIFETIME_MS):
@@ -421,6 +445,11 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     if journal.exists():
         previous=read_private_json(_path(journal,private=True))
         if previous.get('phase')!='recovered':raise ValueError('setup_existing_transaction')
+    bindings=root/BINDINGS
+    if bindings.exists() or bindings.is_symlink():
+        # A half-published synthetic binding is never a reviewable input.
+        if read_private_json(_path(bindings,private=True)).get('phase')!='bound':
+            raise ValueError('setup_binding_in_progress')
     live=read_private_json(_path(root/'live-selector.json',private=True))
     argv=live.get('trainerArgv')
     if not isinstance(argv,list) or len(argv)!=3 or any(not isinstance(p,str) or not Path(p).is_absolute() for p in argv):
@@ -472,7 +501,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         teacher=None
     elif memory_profile is not None or memory_evidence is not None:
         raise ValueError('setup_mode_invalid')
-    return {**({'mode':mode} if mode==SYNTHETIC_STAGED else {}),
+    return {**({'mode':mode,'bindingSha256':bound} if mode==SYNTHETIC_STAGED else {}),
             'schema':SCHEMA,'projectRoot':str(project),'namespaceRoot':str(root),
             'expiresAtUnixMs':expires_at_unix_ms,'notBeforeUnixMs':not_before_unix_ms,'cohortId':cohort_id,
             'sourceSettingsSha256':file_sha(settings_path),'namespaceFiles':inventory,
@@ -643,6 +672,219 @@ def recover(project,root):
         return {'status':'recovered','backupRoot':str(backup),'dataPreserved':True,'checkpointChanged':False}
 
 
+def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
+    """Read-only exact identity of one synthetic QA runtime/model/base binding.
+
+    Probes runtime metadata only (no model load, inference or training). The
+    base artifact must be the one prepare-local-laya-base wrote into this root.
+    """
+    project,root=_namespace(project,root,mode=SYNTHETIC_STAGED)
+    runtime_path=Path(runtime)
+    if not runtime_path.is_absolute():raise ValueError('setup_runtime_invalid')
+    try:resolved=runtime_path.resolve(strict=True);info=resolved.stat()
+    except OSError as exc:raise ValueError('setup_runtime_invalid') from exc
+    # Same owner/single-link rule as prepare; a venv symlink stays bound by path.
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1
+            or info.st_mode&0o022 or not os.access(resolved,os.X_OK)):
+        raise ValueError('setup_runtime_invalid')
+    from context_learning.runtime_setup import probe_runtime
+    probe=probe_runtime(str(runtime_path))
+    runtime_identity=probe.get('runtime_identity_sha256') if isinstance(probe,dict) else None
+    if (not isinstance(probe,dict) or probe.get('status')!='metadata_compatible'
+            or not isinstance(runtime_identity,str)
+            or len(runtime_identity)!=64 or any(c not in '0123456789abcdef' for c in runtime_identity)):
+        raise ValueError('setup_runtime_invalid')
+    adapter=_path(adapter)
+    installs=project_scope._installed_binding(project_scope._installations())
+    if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
+        raise ValueError('setup_adapter_invalid')
+    model=_path(model_dir,directory=True)
+    from context_learning.laya_adapter import MODEL_FILES,ADAPTER_VERSION
+    for name in MODEL_FILES:_path(model/name)
+    identity=model_identity(model)
+    artifact=_path(base_artifact,private=True)
+    if (artifact!=root/('laya-base-'+identity+'.artifact')
+            or read_private_json(artifact)!={'schema_version':1,'kind':'laya_base_head',
+                'base_model_sha256':identity,'adapter_version':ADAPTER_VERSION}):
+        raise ValueError('setup_base_artifact_invalid')
+    artifact_sha=file_sha(artifact)
+    return {'schema':BINDING_SCHEMA,'mode':SYNTHETIC_STAGED,
+            'projectRoot':str(project),'namespaceRoot':str(root),
+            'runtime':{'path':str(runtime_path),'resolved':str(resolved),'sha256':file_sha(resolved),
+                       'identitySha256':runtime_identity},
+            'adapter':{'path':str(adapter),'sha256':file_sha(adapter)},
+            'model':{'path':str(model),'identitySha256':identity},
+            'artifact':{'path':str(artifact),'sha256':artifact_sha},
+            'files':{'live-selector.json':{'schema':'qmd-live-selector-v1',
+                         'trainerArgv':[str(runtime_path),str(adapter),str(model)],
+                         'timeoutSeconds':30,'maxRssMib':3072},
+                     'active-checkpoint.json':{'artifact_path':str(artifact),
+                         'artifact_sha256':artifact_sha,'cycle_id':'base'}}}
+
+
+def _require_bound(project,root,*,fresh=False):
+    """Synthetic-only: the reviewed binding journal and its targets still hold.
+
+    Never called for the ordinary default mode. Every caller fails closed on a
+    missing, unfinished or altered journal or target. fresh=True (calibration
+    and prepare) also re-derives every bound input, including a fresh runtime
+    probe, so a changed runtime dependency fails before any model call or setup
+    write. The frequent runtime path skips the probe and model hashing; its
+    existing runtime/adapter/model file checks remain at the call site.
+    """
+    project=Path(project).resolve(strict=True);root=Path(root).resolve(strict=True)
+    path=root/BINDINGS
+    if not path.exists() and not path.is_symlink():raise ValueError('setup_synthetic_binding_required')
+    try:journal=read_private_json(_path(path,private=True))
+    except (OSError,ValueError,TypeError) as exc:raise ValueError('setup_synthetic_binding_changed') from exc
+    if isinstance(journal,dict) and journal.get('phase')=='intent':raise ValueError('setup_binding_in_progress')
+    plan=journal.get('plan') if isinstance(journal,dict) else None
+    files=plan.get('files') if isinstance(plan,dict) else None
+    if (not isinstance(journal,dict) or set(journal)!={'schema','phase','acceptedSha256','plan','written'}
+            or journal['schema']!=BINDING_SCHEMA or journal['phase']!='bound'
+            or not isinstance(plan,dict) or plan.get('schema')!=BINDING_SCHEMA
+            or plan.get('mode')!=SYNTHETIC_STAGED
+            or plan.get('projectRoot')!=str(project) or plan.get('namespaceRoot')!=str(root)
+            or journal['acceptedSha256']!=proposal_sha256(plan)
+            or not isinstance(files,dict) or set(files)!=set(BINDING_TARGETS)):
+        raise ValueError('setup_synthetic_binding_changed')
+    expected={name:hashlib.sha256((canonical(value)+'\n').encode()).hexdigest() for name,value in files.items()}
+    try:
+        if (journal['written']!=expected
+                or files['live-selector.json'].get('trainerArgv')!=[plan['runtime']['path'],
+                    plan['adapter']['path'],plan['model']['path']]
+                or files['active-checkpoint.json'].get('artifact_path')!=plan['artifact']['path']
+                or files['active-checkpoint.json'].get('artifact_sha256')!=plan['artifact']['sha256']):
+            raise ValueError('setup_synthetic_binding_changed')
+        for name in BINDING_TARGETS:
+            target=_path(root/name,private=True)
+            if file_sha(target)!=expected[name] or read_private_json(target)!=files[name]:
+                raise ValueError('setup_synthetic_binding_changed')
+    except (OSError,ValueError,TypeError,KeyError,AttributeError) as exc:
+        raise ValueError('setup_synthetic_binding_changed') from exc
+    if fresh and _binding_inputs(project,root,runtime=plan['runtime']['path'],
+            adapter=plan['adapter']['path'],model_dir=plan['model']['path'],
+            base_artifact=plan['artifact']['path'])!=plan:
+        raise ValueError('setup_synthetic_binding_inputs_changed')
+    return journal['acceptedSha256'],plan
+
+
+def _require_fresh(root,plan,*extra):
+    allowed={Path(plan['artifact']['path']).name,LOCK_NAME,*extra}
+    if not {p.name for p in root.iterdir()}<=allowed:raise ValueError('setup_binding_root_not_fresh')
+
+
+def plan_synthetic_bindings(project,root,*,runtime,adapter,model_dir,base_artifact):
+    """Read-only proposal; bind_synthetic accepts only its exact digest."""
+    plan=_binding_inputs(project,root,runtime=runtime,adapter=adapter,
+                         model_dir=model_dir,base_artifact=base_artifact)
+    root=Path(plan['namespaceRoot'])
+    if (root/BINDINGS).exists() or (root/BINDINGS).is_symlink():
+        raise ValueError('setup_binding_in_progress')
+    _require_fresh(root,plan)
+    return plan
+
+
+def _binding_temp(root,name,accepted_sha256):
+    # Deterministic per target and accepted digest; the name alone is not
+    # ownership evidence, _reclaim_temp also requires the exact planned bytes.
+    return root/(BINDING_TEMP+name+'.'+accepted_sha256+'.tmp')
+
+
+def _publish_new(path,raw,temp):
+    # O_EXCL never reuses a leftover temp; link() never replaces a target.
+    try:fd=os.open(temp,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600)
+    except FileExistsError as exc:raise ValueError('setup_binding_temp_unbound') from exc
+    try:
+        with os.fdopen(fd,'wb') as stream:
+            stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        try:os.link(temp,path)
+        except FileExistsError as exc:raise ValueError('setup_binding_changed') from exc
+    # Created exclusively by this call, so unwinding may remove it.
+    finally:temp.unlink(missing_ok=True)
+    _sync(path.parent)
+
+
+def _reclaim_temp(temp,target,raw):
+    """Remove an interrupted temp only if it is provably this transaction's.
+
+    Evidence is the journal-bound name plus byte-exact planned content, and
+    either a single link or exactly one extra link that is the target itself
+    (crash between link and unlink). A partial, foreign or tampered file is
+    never deleted: resume fails closed and leaves it for inspection.
+    """
+    try:info=os.lstat(temp)
+    except FileNotFoundError:return
+    linked=False
+    if info.st_nlink==2:
+        try:linked=os.path.samestat(os.lstat(target),info)
+        except FileNotFoundError:linked=False
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077
+            or info.st_size!=len(raw) or not (info.st_nlink==1 or linked)):
+        raise ValueError('setup_binding_temp_unbound')
+    fd=os.open(temp,os.O_RDONLY|os.O_NOFOLLOW)
+    with os.fdopen(fd,'rb') as stream:
+        if not os.path.samestat(os.fstat(stream.fileno()),info) or stream.read(len(raw)+1)!=raw:
+            raise ValueError('setup_binding_temp_unbound')
+    temp.unlink();_sync(temp.parent)
+
+
+def bind_synthetic(plan,*,accepted_sha256,fault=lambda _:None):
+    """Journaled two-file publication into a fresh synthetic QA root.
+
+    Writes only live-selector.json, active-checkpoint.json and its journal. No
+    policy, teacher consent, profile, settings, calibration or budget is
+    written; QMD, teacher, inference and training are never started.
+    """
+    if (not isinstance(plan,dict) or plan.get('schema')!=BINDING_SCHEMA
+            or plan.get('mode')!=SYNTHETIC_STAGED):
+        raise ValueError('setup_binding_plan_invalid')
+    if accepted_sha256!=proposal_sha256(plan):raise ValueError('setup_acceptance_required')
+    def current():
+        return _binding_inputs(plan['projectRoot'],plan['namespaceRoot'],
+            runtime=plan['runtime']['path'],adapter=plan['adapter']['path'],
+            model_dir=plan['model']['path'],base_artifact=plan['artifact']['path'])
+    # Checked before the lock file is created: a stale plan writes nothing.
+    if current()!=plan:raise ValueError('setup_reviewed_inputs_changed')
+    root=Path(plan['namespaceRoot'])
+    raw={name:(canonical(value)+'\n').encode() for name,value in plan['files'].items()}
+    expected={name:hashlib.sha256(data).hexdigest() for name,data in raw.items()}
+    with _locked(root):
+        if current()!=plan:raise ValueError('setup_reviewed_inputs_changed')
+        path=root/BINDINGS
+        if path.exists() or path.is_symlink():
+            journal=read_private_json(_path(path,private=True))
+            if (not isinstance(journal,dict) or journal.get('schema')!=BINDING_SCHEMA
+                    or journal.get('acceptedSha256')!=accepted_sha256 or journal.get('plan')!=plan
+                    or journal.get('written')!=expected or journal.get('phase') not in ('intent','bound')):
+                raise ValueError('setup_binding_changed')
+            # Only this transaction's exact temps are removed; any other file,
+            # including a prefix-matching one, is kept and fails freshness.
+            for name in BINDING_TARGETS:
+                _reclaim_temp(_binding_temp(root,name,accepted_sha256),root/name,raw[name])
+            _require_fresh(root,plan,BINDINGS,*BINDING_TARGETS)
+        else:
+            _require_fresh(root,plan)
+            journal={'schema':BINDING_SCHEMA,'phase':'intent','acceptedSha256':accepted_sha256,
+                     'plan':plan,'written':expected}
+            _write(path,journal);fault('intent')
+        for name in BINDING_TARGETS:
+            target=root/name
+            if target.exists() or target.is_symlink():
+                if file_sha(_path(target,private=True))!=expected[name]:
+                    raise ValueError('setup_binding_changed')
+                continue
+            if journal['phase']=='bound':raise ValueError('setup_binding_changed')
+            _publish_new(target,raw[name],_binding_temp(root,name,accepted_sha256))
+            fault('published:'+name)
+        if current()!=plan:raise ValueError('setup_binding_inputs_changed')
+        status='already_bound' if journal['phase']=='bound' else 'bound'
+        if status=='bound':journal['phase']='bound';_write(path,journal)
+        return {'status':status,'namespaceRoot':str(root),'acceptedSha256':accepted_sha256,
+                'teacherConsent':None,'liveSelection':False,'promotion':'disabled',
+                'training':'not_started'}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='operation',required=True)
@@ -653,12 +895,19 @@ def main():
     p=sub.add_parser('calibrate-synthetic');p.add_argument('project');p.add_argument('root')
     p=sub.add_parser('activate');p.add_argument('plan');p.add_argument('--accepted-sha256',required=True)
     p=sub.add_parser('recover');p.add_argument('project');p.add_argument('root')
+    p=sub.add_parser('plan-synthetic-bindings');p.add_argument('project');p.add_argument('root')
+    p.add_argument('--runtime',required=True);p.add_argument('--adapter',required=True)
+    p.add_argument('--model-dir',required=True);p.add_argument('--base-artifact',required=True)
+    p=sub.add_parser('bind-synthetic');p.add_argument('plan');p.add_argument('--accepted-sha256',required=True)
     args=parser.parse_args()
     if args.operation=='prepare':value=prepare(args.project,args.root,expires_at_unix_ms=args.expires_at_unix_ms,not_before_unix_ms=args.not_before_unix_ms,
         mode=args.mode,memory_profile=read_private_json(_path(args.memory_profile_json,private=True)) if args.memory_profile_json else None,
         memory_evidence=read_private_json(_path(args.memory_evidence_json,private=True)) if args.memory_evidence_json else None)
     elif args.operation=='calibrate-synthetic':value=calibrate_synthetic(args.project,args.root)
     elif args.operation=='activate':value=activate(read_private_json(_path(args.plan)),accepted_sha256=args.accepted_sha256)
+    elif args.operation=='plan-synthetic-bindings':value=plan_synthetic_bindings(args.project,args.root,
+        runtime=args.runtime,adapter=args.adapter,model_dir=args.model_dir,base_artifact=args.base_artifact)
+    elif args.operation=='bind-synthetic':value=bind_synthetic(read_private_json(_path(args.plan)),accepted_sha256=args.accepted_sha256)
     else:value=recover(args.project,args.root)
     print(canonical(value))
 
