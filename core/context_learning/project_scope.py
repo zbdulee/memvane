@@ -84,21 +84,40 @@ def _settings_scope(project):
     return result
 
 
-def _installations():
-    from .history_activation import _discover_host_roots
+def _installations(project=None):
+    """Project-effective enabled roots from each official host CLI run in the
+    project; disabled historical installs elsewhere in the account are ignored.
+    Without a project, the previous account-global inventory is kept as is."""
+    from .history_activation import _discover_host_roots,_project_host_roots
     rows=[]
-    roots=_discover_host_roots(Path.home().resolve())
+    if project is None:
+        roots=_discover_host_roots(Path.home().resolve())
+    else:
+        try:
+            roots=_project_host_roots(Path.home().resolve(),_path(project,directory=True))
+        except ValueError as exc:
+            raise ValueError('project_scope_installation_invalid') from exc
     for host in ('claude','codex'):
         paths=roots.get(host,[])
         if len(paths)!=1:raise ValueError('project_scope_installation_invalid')
         root=Path(paths[0]).resolve(strict=True)
         adapter=root/'core/context_learning/laya_adapter.py'
-        from . import adapter_binding
-        try:
-            found=adapter_binding._official_cache(adapter,Path.home())
-            adapter_binding._installed_current(*found[:3],Path.home(),None)
-        except ValueError:
-            adapter_binding._local_binding(adapter,Path.home(),None,execution=True)
+        if project is None:
+            # Preserve the historical account-wide official-marketplace proof.
+            from . import adapter_binding
+            try:
+                found=adapter_binding._official_cache(adapter,Path.home())
+                adapter_binding._installed_current(*found[:3],Path.home(),None)
+            except ValueError:
+                adapter_binding._local_binding(adapter,Path.home(),None,execution=True)
+        else:
+            # The project resolver already verified the host CLI selection and
+            # Claude's install record. The caller immediately checks every
+            # installed source/hook byte in _installed_binding, including the
+            # selected Codex cache. This permits an exact QA marketplace id
+            # without treating an unselected account plugin as executable.
+            _path(root,directory=True)
+            _path(adapter)
         rows.append({'host':host,'root':str(root)})
     return rows
 
@@ -147,24 +166,27 @@ def _installed_binding(rows):
     return result
 
 
-def _registry_binding():
+def _registry_binding(project):
     """Small host controls, including absence; never hash the active state DB."""
     relatives=('.claude/settings.json','.claude/settings.local.json',
                '.claude/plugins/known_marketplaces.json','.claude/plugins/installed_plugins.json',
                '.codex/config.toml','.codex/plugins/installed_plugins.json',
                '.codex/plugins/known_marketplaces.json','.codex/plugins/marketplaces.json',
                '.codex/plugins/config.json')
+    project_relatives=('.claude/settings.json','.claude/settings.local.json',
+                       '.codex/config.toml')
     rows={}
-    for relative in relatives:
-        path=Path.home()/relative
+    for key,path in ([(relative,Path.home()/relative) for relative in relatives]
+                     + [('project/'+relative,Path(project)/relative)
+                        for relative in project_relatives]):
         if any(p.is_symlink() for p in (path,*path.parents)):
             raise ValueError('project_scope_registry_unsafe')
-        if not path.exists():rows[relative]=None;continue
+        if not path.exists():rows[key]=None;continue
         path=_path(path)
         if path.stat().st_size>4*1024*1024:raise ValueError('project_scope_registry_invalid')
         before=_stat_identity(path);value=file_sha(path)
         if before!=_stat_identity(path):raise ValueError('project_scope_registry_changed')
-        rows[relative]=value
+        rows[key]=value
     return rows
 
 
@@ -215,7 +237,7 @@ def _binding(project,root,policy,installs):
     python=_path(Path(disk['trainerArgv'][0]).resolve(strict=True));model=_path(disk['trainerArgv'][2],directory=True)
     from .laya_adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
-    return {'settingsScope':settings,'hostRegistry':_registry_binding(),'policySha256':file_sha(root/'shared-policy.json'),
+    return {'settingsScope':settings,'hostRegistry':_registry_binding(project),'policySha256':file_sha(root/'shared-policy.json'),
             'installations':installed,'codeSha256':code_identity(),
             'pythonPath':disk['trainerArgv'][0],'pythonResolvedPath':str(python),'pythonSha256':file_sha(python),
             'modelDir':str(model),'modelIdentitySha256':_model_identity(root,model),
@@ -237,7 +259,7 @@ def proposal(project,root,policy,*,expires_at_unix_ms,not_before_unix_ms,cohort_
             'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10}
     return {'schema':SCHEMA,'scope':SCOPE,'projectRoot':str(project),'namespaceRoot':str(root),
             'operations':OPERATIONS,'cohort':cohort,'expiresAtUnixMs':expires_at_unix_ms,
-            'binding':_binding(project,root,policy,_installations())}
+            'binding':_binding(project,root,policy,_installations(project))}
 
 
 def activate(project,root,policy,*,accepted_sha256,expires_at_unix_ms,not_before_unix_ms,cohort_id='general-v1'):
@@ -267,7 +289,10 @@ def require(root,policy,operation,*,fresh_inventory=False):
     project=_path(value['projectRoot'],directory=True)
     if type(fresh_inventory)is not bool:raise ValueError('project_scope_inventory_invalid')
     installs=[{k:r[k] for k in ('host','root')} for r in value['binding']['installations']]
-    if fresh_inventory and _installations()!=installs:
+    # A directory-source Claude marketplace can change its source pointer
+    # without changing the account registry or the previously hashed root.
+    # Re-resolve the project-effective host inventory on every grant use.
+    if _installations(project)!=installs:
         raise ValueError('project_scope_installation_changed')
     if value['binding']!=_binding(project,Path(root),policy,installs):
         raise ValueError('project_scope_binding_changed')

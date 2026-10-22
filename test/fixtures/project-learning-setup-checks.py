@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  for name in ('laya-inference-binding.json','laya-inference-manifest.json','laya-inference-proof.json'):save(root/name,{'original':name})
  original_settings=(project/'.auto-context/settings.json').read_bytes();original_pointer=(root/'active-checkpoint.json').read_bytes()
  expiry=int(time.time()*1000)+3600000;cutoff=int(time.time()*1000)
- with patch.object(Path,'home',return_value=home),patch('context_learning.history_activation._discover_host_roots',return_value=installs),patch('context_learning.adapter_binding._codex_installed',return_value=codex):
+ with patch.object(Path,'home',return_value=home),patch('context_learning.history_activation._project_host_roots',return_value=installs),patch('context_learning.adapter_binding._codex_installed',return_value=codex):
   # Preparation must reject runtime identities that scoped activation refuses,
   # before writing a journal, policy, settings or namespace data.
   live_path=root/'live-selector.json';original_live=live_path.read_bytes()

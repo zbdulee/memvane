@@ -137,6 +137,17 @@ elif sys.argv[1]=='app-server':
 else:
  raise SystemExit('unexpected external model command')
 '''); codex.chmod(0o700)
+    # Project-effective installation checks use Claude's official read-only
+    # listing too. Keep this fixture at the host boundary; it never starts a
+    # Claude model session and cannot invent a selected adapter in product code.
+    claude = bin_dir/'claude'
+    claude.write_text('#!'+sys.executable+'\n'+'''import sys
+from pathlib import Path
+if sys.argv[1:]==['plugin','list','--json']:
+ print((Path.home()/'claude-inventory.json').read_text())
+else:
+ raise SystemExit('unexpected Claude model command')
+'''); claude.chmod(0o700)
     version = json.loads((REPO/'package.json').read_text())['version']
     installs = {}
     for host in ('claude', 'codex'):
@@ -171,6 +182,8 @@ else:
         'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}})
     save(home/'.claude/plugins/installed_plugins.json', {'plugins':{
         'qmd-auto-context@qmd-auto-context-marketplace':[{'version':version,'installPath':str(installs['claude'])}]}})
+    save(home/'claude-inventory.json', [{'id':'qmd-auto-context@qmd-auto-context-marketplace',
+        'version':version,'installPath':str(installs['claude']),'enabled':True}])
     save(home/'inventory.json', {'installed':[{'pluginId':'qmd-auto-context@qmd-auto-context-marketplace',
         'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace',
         'version':version,'installed':True,'enabled':True,

@@ -359,7 +359,7 @@ def calibrate_synthetic(project,root):
     artifact=_path(pointer['artifact_path'])
     if file_sha(artifact)!=pointer.get('artifact_sha256'):
         raise ValueError('setup_checkpoint_changed')
-    installs=project_scope._installed_binding(project_scope._installations())
+    installs=project_scope._installed_binding(project_scope._installations(project))
     if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     from context_learning.runtime_setup import probe_runtime
@@ -465,7 +465,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     adapter=_path(argv[1]);model=_path(argv[2],directory=True)
     from context_learning.laya_adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
-    installs=project_scope._installed_binding(project_scope._installations())
+    installs=project_scope._installed_binding(project_scope._installations(project))
     if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     pointer=read_private_json(_path(root/'active-checkpoint.json',private=True))
@@ -695,7 +695,7 @@ def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
             or len(runtime_identity)!=64 or any(c not in '0123456789abcdef' for c in runtime_identity)):
         raise ValueError('setup_runtime_invalid')
     adapter=_path(adapter)
-    installs=project_scope._installed_binding(project_scope._installations())
+    installs=project_scope._installed_binding(project_scope._installations(project))
     if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     model=_path(model_dir,directory=True)
