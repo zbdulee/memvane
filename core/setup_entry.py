@@ -395,7 +395,8 @@ def main(argv=None):
                                           'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
-                                          'restore-index-origin','retire-index-origin'))
+                                          'restore-index-origin','retire-index-origin',
+                                          'seal-host-copy'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -451,7 +452,8 @@ def main(argv=None):
                            'index-build-status','index-build-rescan',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
-                           'restore-index-origin','retire-index-origin'):
+                           'restore-index-origin','retire-index-origin',
+                           'seal-host-copy'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action == 'plan-index-origin':
@@ -511,6 +513,27 @@ def main(argv=None):
                         raise ValueError('index_origin_retire_approval_required')
                     result = product.retire_drifted_origin(
                         project_root=args.project, state_root=state)
+                elif args.action == 'seal-host-copy':
+                    # Run from the other host's installed copy: seal it in place
+                    # against the journal-bound owner; it never selects a route.
+                    from laya_install_journal import inspect_journal
+                    from laya_product_bundle import (inspect_full_plugin_candidate,
+                                                     seal_companion_host_copy)
+                    recorded = inspect_journal(journal)
+                    identity = recorded.get('selected') or recorded.get('pending')
+                    route = json.loads(product._read_private(state / 'reviewed-route.json', 8192))
+                    if not isinstance(identity, dict) or not isinstance(route, dict):
+                        raise ValueError('host_copy_owner_unselected')
+                    if route.get('projectRoot') != str(Path(args.project).resolve()):
+                        raise ValueError('host_copy_project_mismatch')
+                    owner = inspect_full_plugin_candidate(identity.get('pluginRoot'))
+                    if any(owner[key] != identity.get(key) for key in
+                           ('sourceCommit', 'bundleManifestSha256', 'vectorProfile')):
+                        raise ValueError('host_copy_owner_changed')
+                    proof = seal_companion_host_copy(owner['pluginRoot'], installed)
+                    result = {'status': 'host_copy_sealed', 'ownerRoot': owner['pluginRoot'],
+                              **{key: proof[key] for key in
+                                 ('pluginRoot', 'sourceCommit', 'bundleManifestSha256')}}
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
                     with product._install_lock(state):

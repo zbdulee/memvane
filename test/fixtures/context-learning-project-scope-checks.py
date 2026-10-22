@@ -282,6 +282,49 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   expect('record_changed',resolve)
   records();listing['claude']=claude_list()
   assert resolve()['claude']==[claude_cache]
+  # The Claude listing is account-wide: an enabled project install recorded for
+  # another project is not loaded here and never makes this project ambiguous.
+  other=base/'other-project-a';other.mkdir(mode=0o700)
+  foreign={**official,'projectPath':str(other)}
+  records([official,foreign])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  assert resolve()['claude']==[claude_cache]
+  local_other={**foreign,'scope':'local'};records([official,foreign,local_other])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign},{'id':OFFICIAL,'enabled':True,**local_other}]
+  assert resolve()['claude']==[claude_cache]
+  # Only foreign installs: nothing is effective here.
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('claude_ambiguous',resolve)
+  # A foreign claim with no account record for that project fails closed.
+  records([official]);listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('record_changed',resolve)
+  # Two rows for this project, or this project plus an enabled user install, stay ambiguous.
+  records([official,foreign]);listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**official}]
+  expect('claude_ambiguous',resolve)
+  listing['claude']=claude_list(stale_enabled=True)+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('claude_ambiguous',resolve)
+  # A project-bound row without a path, or an unknown scope, is invalid.
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,'scope':'project','version':VER,'installPath':str(claude_cache)}]
+  expect('claude_invalid',resolve)
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,**official,'scope':'workspace'}]
+  expect('claude_invalid',resolve)
+  # Identity, not spelling: this project's own install listed under another
+  # spelling of the same directory (APFS folds case) is never treated as foreign.
+  variant=str(project).replace('/project','/PROJECT')
+  if os.path.exists(variant) and variant!=str(project):
+   alias={**official,'projectPath':variant};records([alias])
+   listing['claude']=claude_list(stale_enabled=True)[1:2]+[{'id':OFFICIAL,'enabled':True,**alias}]
+   expect('claude_ambiguous',resolve)
+  # An enabled install recorded for a missing project cannot be proven foreign.
+  gone={**official,'projectPath':str(base/'deleted-project')};records([official,gone])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**gone}]
+  expect('record_changed',resolve)
+  # A stale record for a deleted project does not mask a valid foreign record.
+  records([official,foreign,{**gone,'scope':'project'}])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  assert resolve()['claude']==[claude_cache]
+  records();listing['claude']=claude_list()
+  assert resolve()['claude']==[claude_cache]
   # Freshness: a later CLI answer with a changed root is a different inventory.
   listing['codex']={'installed':[{'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'0.3-new','installed':True,'enabled':True}]}
   expect('codex_record_missing',resolve)

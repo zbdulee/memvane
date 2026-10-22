@@ -455,6 +455,19 @@ def _project_listing(argv, account, project):
     return json.loads(listed.stdout)
 
 
+def _same_directory(raw, project, *, strict=True):
+    """Directory identity, not spelling: APFS folds case and Unicode form, so
+    two different strings can name one project. A recorded path that cannot be
+    examined is never assumed to be another project (strict); as a mere
+    candidate record it simply does not match (strict=False)."""
+    try:
+        return os.path.samestat(os.stat(raw), os.stat(project))
+    except (OSError, TypeError, ValueError) as exc:
+        if not strict:
+            return False
+        raise ValueError('history_project_claude_record_changed') from exc
+
+
 def _project_claude_root(account, project):
     value = _project_listing(('claude', 'plugin', 'list', '--json'), account, project)
     if isinstance(value, dict):
@@ -462,6 +475,7 @@ def _project_claude_root(account, project):
     if not isinstance(value, list):
         raise ValueError('history_project_claude_invalid')
     enabled = []
+    foreign = []
     for row in value:
         ident = row.get('id', row.get('pluginId')) if isinstance(row, dict) else None
         if not isinstance(ident, str):
@@ -470,8 +484,19 @@ def _project_claude_root(account, project):
             continue
         if type(row.get('enabled')) is not bool:
             raise ValueError('history_project_claude_invalid')
-        if row['enabled']:
+        if not row['enabled']:
+            continue
+        # The listing is account-wide: a project/local install belongs only to
+        # its own projectPath, which the host never loads for this project.
+        # A row without a project binding stays a candidate that the account
+        # record below must match exactly, as before.
+        scope, recorded = row.get('scope'), row.get('projectPath')
+        if recorded is None and scope in (None, 'user'):
             enabled.append(row)
+        elif scope in ('project', 'local') and isinstance(recorded, str) and recorded:
+            (enabled if _same_directory(recorded, project) else foreign).append(row)
+        else:
+            raise ValueError('history_project_claude_invalid')
     # Never choose among enabled roots: the host would run each of them.
     if len(enabled) != 1:
         raise ValueError('history_project_claude_ambiguous')
@@ -482,7 +507,19 @@ def _project_claude_root(account, project):
             or not isinstance(install, str)):
         raise ValueError('history_project_claude_invalid')
     plugins = account / '.claude/plugins'
-    records = _claude_inventory(plugins)['plugins'].get(ident)
+    inventory = _claude_inventory(plugins)['plugins']
+    for other in foreign:
+        # A row is skipped only when an account record really binds that same
+        # install to its other project; an unrecorded claim fails closed.
+        items = inventory.get(other.get('id', other.get('pluginId')))
+        if not isinstance(items, list) or not any(
+                isinstance(item, dict) and item.get('scope') == other.get('scope')
+                and item.get('installPath') == other.get('installPath')
+                and isinstance(item.get('projectPath'), str)
+                and _same_directory(item['projectPath'], other['projectPath'], strict=False)
+                for item in items):
+            raise ValueError('history_project_claude_record_changed')
+    records = inventory.get(ident)
     if not isinstance(records, list):
         raise ValueError('history_project_claude_record_missing')
     matches = []
@@ -495,7 +532,7 @@ def _project_claude_root(account, project):
         # A project-bound record must name this project, by resolved path.
         recorded = item.get('projectPath')
         if recorded is not None and (not isinstance(recorded, str)
-                                     or Path(recorded).resolve() != project):
+                                     or not _same_directory(recorded, project)):
             raise ValueError('history_project_claude_record_changed')
         matches.append(item)
     if len(matches) != 1:

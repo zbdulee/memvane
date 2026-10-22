@@ -706,6 +706,74 @@ def prepare_full_plugin_candidate(source_root, plugin_root, *, commit_id,
     return inspect_full_plugin_candidate(target)
 
 
+def seal_companion_host_copy(owner_root, plugin_root):
+    """Seal another host's exact cached copy of an owner-sealed bundle in place.
+
+    The owner root must already be sealed by installer adoption. Every file in
+    the companion must equal the owner's sealed artifact in bytes, size and
+    permission mode, with the same owner/no-group-write/no-link rules as
+    adoption; nothing is copied, re-moded or trusted from the copy itself. Only
+    then is the owner's manifest written verbatim (same bundle identity) beside
+    an ownership manifest naming this root and its own inode identities.
+    Existing companion metadata is accepted only when it is this exact seal.
+    """
+    owner = inspect_full_plugin_candidate(owner_root)
+    companion = _private(plugin_root)
+    if companion == Path(owner['pluginRoot']):
+        _fail('companion_is_owner_root')
+    metadata = companion / '.laya-product'
+    if metadata.exists() or metadata.is_symlink():
+        proof = inspect_full_plugin_candidate(companion)
+        if any(proof[key] != owner[key] for key in
+               ('sourceCommit', 'bundleManifestSha256', 'vectorProfile', 'includedFiles')):
+            _fail('installed_candidate_already_owned')
+        return proof
+    manifest_raw, _ = _read(Path(owner['pluginRoot']) / '.laya-product' / 'manifest.json', MAX_FILE)
+    if _sha(manifest_raw) != owner['bundleManifestSha256']:
+        _fail('bundle_manifest_mismatch')
+    artifacts = json.loads(manifest_raw)['artifacts']
+    actual = set()
+    for directory, dirs, files in os.walk(companion, followlinks=False):
+        current = Path(directory)
+        info = current.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o022 or
+                any((current / child).is_symlink() for child in dirs)):
+            _fail('unsafe_installed_directory')
+        _skip_host_in_use(companion, current, dirs)
+        if current == companion and '.git' in dirs:
+            dirs.remove('.git')
+        for name in files:
+            actual.add(str((current / name).relative_to(companion)))
+    if actual != set(artifacts):
+        _fail('installed_file_set_not_exact_bundle')
+    device = companion.stat().st_dev
+    entries = {}
+    for name, artifact in artifacts.items():
+        _, live = _read(companion / name, MAX_FILE)
+        if (live['dev'] != device or (companion / name).stat().st_uid != os.getuid() or
+                live['mode'] & 0o022 or
+                {'sha256': live['sha256'], 'bytes': live['bytes'], 'mode': live['mode']} != artifact):
+            _fail('installed_blob_not_exact_bundle')
+        entries[name] = live
+    os.mkdir(metadata, 0o700)
+    _write(metadata / 'manifest.json', manifest_raw)
+    _write(metadata / 'ownership-manifest.json', _canonical(
+        {'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(companion),
+         'bundleManifestSha256': owner['bundleManifestSha256'], 'entries': entries}))
+    for directory in (metadata, companion):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    proof = inspect_full_plugin_candidate(companion)
+    if any(proof[key] != owner[key] for key in
+           ('sourceCommit', 'bundleManifestSha256', 'vectorProfile', 'includedFiles')):
+        _fail('bundle_manifest_mismatch')
+    return proof
+
+
 def inspect_full_plugin_candidate(plugin_root):
     """Recheck exact installed file set, bytes, inode and owner metadata."""
     root = _private(plugin_root)
