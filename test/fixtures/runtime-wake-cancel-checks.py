@@ -27,7 +27,9 @@ def forbidden(*_a, **_k):
 
 
 results = {}
-with tempfile.TemporaryDirectory(prefix='wake-cancel-', dir='/private/tmp') as name, \
+# Platform temp dir (Linux /tmp, macOS /var/folders); `base` below is canonicalized so the
+# fixture's no-symlink path checks run on the real, link-free location.
+with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
         patch.object(runtime_work, 'default_root', forbidden):
     base = Path(name).resolve()
     home = base / 'home'; home.mkdir(mode=0o700)
