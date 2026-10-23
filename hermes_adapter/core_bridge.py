@@ -50,6 +50,7 @@ def _cwd(cwd: Optional[str] = None, **kwargs: Any) -> str:
 def _env() -> Dict[str, str]:
     env = os.environ.copy()
     env["QMD_ENGINE"] = "hermes"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     if not env.get("QMD_RECALL_LOG"):
         cache_dir = env.get("QMD_CACHE_DIR") or str(Path.home() / ".cache" / "qmd")
         env["QMD_RECALL_LOG"] = str(Path(cache_dir) / "qmd-hermes-hook.log")

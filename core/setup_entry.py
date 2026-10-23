@@ -18,6 +18,9 @@ import sqlite3
 import sys
 import tempfile
 
+# Direct skill/CLI setup calls do not pass through the hook shell environment.
+sys.dont_write_bytecode = True
+
 import config as project_config
 import install_update as coordinator
 import qmd_route

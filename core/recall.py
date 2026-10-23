@@ -3245,6 +3245,7 @@ def _main():
         # "좁혔지만 여전히 0건"이 구분되지 않는다.
         lex_df=lex_df,
         lex_terms_absent=lex_terms_absent,
+        keyword_span=built_terms.get("keywordSpan", "full"),
         lex_query=lex_searches[0]["query"] if lex_searches else "",
         # 원문 경로(`sources[].path`) 주입. 무흔적 실패 금지 — 링크가 하나도 안 붙었을 때
         # 이유(미존재/루트 밖/한 줄 아님/중복/상한/파싱 실패/경로 없음)를 로그만으로 판정한다.

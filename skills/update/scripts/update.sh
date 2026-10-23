@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"

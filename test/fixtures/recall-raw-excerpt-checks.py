@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-raw-excerpt-', dir=Path.home()) as 
             row['line'] = line
         return row
 
-    def recall(results, *, guarded=True, lex=None):
+    def recall(results, *, guarded=True, lex=None, prompt=PROMPT):
         fixture.write_text(json.dumps({'results': results}))
         log.write_text('')
         env = dict(environment)
@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-raw-excerpt-', dir=Path.home()) as 
             lex_fixture.write_text(json.dumps({'results': lex}))
             env['QMD_QUERY_FIXTURE_LEX'] = str(lex_fixture)
         completed = subprocess.run([sys.executable, str(repository / 'core/recall.py')],
-            input=json.dumps({'prompt': PROMPT, 'cwd': str(project),
+            input=json.dumps({'prompt': prompt, 'cwd': str(project),
                               'hook_event_name': 'UserPromptSubmit'}),
             text=True, capture_output=True, env=env, timeout=30, check=False)
         assert completed.returncode == 0, completed.stderr
@@ -130,6 +130,18 @@ with tempfile.TemporaryDirectory(prefix='qmd-raw-excerpt-', dir=Path.home()) as 
     # QMD's own title/snippet stay untrusted and are never injected.
     assert 'Untrusted QMD title' not in context and TOKEN + 'snip' not in context, context
     results['presentSelectedPathTokenQuoted'] = True
+
+    # A host instruction must not consume the lex term budget ahead of the
+    # actual question. The same selected raw revision and lex gate stay in use.
+    full_probe = ('도구를 쓰지 말고 이번 프롬프트에 자동 주입된 프로젝트 컨텍스트만 근거로 답해줘.\n'
+                  'release QA alpha 문서의 codename은?\n'
+                  '주입된 컨텍스트에 없으면 "없음"이라고만 답해.')
+    context, entry = recall([hit('alpha.md', .9)], lex=[hit('alpha.md', .9)], prompt=full_probe)
+    assert entry['keyword_span'] == 'question', entry
+    assert '도구' not in entry['lex_query'] and 'alpha' in entry['lex_query'], entry
+    assert entry['lex_gate'] == 'hits' and not entry['lex_gate_applied'], entry
+    assert entry['raw_excerpts_injected'] == 1 and TOKEN in context, (context, entry)
+    results['fullHostProbeUsesQuestionAndVerifiedRaw'] = True
 
     # 2. A fact beyond the head window is quoted from its matched paragraph.
     context, entry = recall([hit('late.md', .9, line=late_line)])

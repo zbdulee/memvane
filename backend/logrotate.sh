@@ -14,6 +14,7 @@
 # 크기 미달이면 아무것도 안 한다. 세대는 `.1` 하나만 유지하므로 총량은 대상당 ~2×MAX 로
 # 유계다 — 계획서 §5 처럼 장기 수집을 할 때는 `.1` 이 덮이는 시점에 그 앞 세대가 사라진다.
 set -u
+export PYTHONDONTWRITEBYTECODE=1
 HOME="${HOME:-/Users/$(/usr/bin/id -un)}"
 PORT="${QMD_DAEMON_PORT:-8584}"
 if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then

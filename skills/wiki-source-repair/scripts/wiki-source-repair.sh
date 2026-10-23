@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 # 사용법:
 #   wiki-source-repair.sh <cwd> list [limit]                      # limit = 소실 파일 수

@@ -12,6 +12,9 @@ set -u
 [ -n "${QMD_SANDBOX:-}" ] && exit 0
 [ -n "${GEMINI_SANDBOX:-}" ] && exit 0
 
+# Backend Python imports must not mutate the exact installed plugin tree.
+export PYTHONDONTWRITEBYTECODE=1
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 PORT="${QMD_DAEMON_PORT:-8584}"
 if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then

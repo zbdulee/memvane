@@ -8,7 +8,8 @@ test('raw recall quotes only the guard-verified revision and both routes list se
     { encoding: 'utf8', timeout: 120000 }));
   assert.deepEqual(result, {
     changedAbsent: true, deletedAbsent: true, deniedAbsent: true, excludedAbsent: true,
-    hostileLinesFramed: true, layaSelectionLogged: true, lexGatedStripped: true,
+    fullHostProbeUsesQuestionAndVerifiedRaw: true, hostileLinesFramed: true,
+    layaSelectionLogged: true, lexGatedStripped: true,
     matchPositionedExcerpt: true,
     optOutAbsent: true, presentSelectedPathTokenQuoted: true, quoteRecheckFailsClosed: true,
     unguardedNotQuoted: true,
