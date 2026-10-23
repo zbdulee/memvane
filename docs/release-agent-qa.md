@@ -597,7 +597,9 @@ diff "$EVID/candidate-blobs.txt" "$EVID/installed-blobs-$HOST.txt" > "$EVID/iden
 
 ## 6. Evidence and search-result proof
 
-Probe prompt (one turn; replace `<question>`):
+Probe prompt (one turn; replace `<question>`). This observes what the
+installed host received. For a raw-only fact the expected no-tools answer
+is `없음`, even when the correct source locator was selected:
 
 > 도구를 쓰지 말고 이번 프롬프트에 자동 주입된 프로젝트 컨텍스트만 근거로 답해줘.
 > `<question>` 주입된 컨텍스트에 없으면 "없음"이라고만 답해.
@@ -615,20 +617,30 @@ Probe prompt (one turn; replace `<question>`):
 | Q-agent | release QA agent note marker는? | `AGENT_NOTE` |
 
 Token strings come from the fixture manifest (`show`). They contain a random
-per-fixture id, so a model cannot guess them, and an index from an earlier
-fixture cannot satisfy them.
+per-fixture id, so an earlier fixture cannot satisfy them. Record whether each
+token occurs in a raw source or in a verified wiki card before applying a
+verdict.
 
-- **Present(T)** requires all of the following:
-  1. The `qmd_recall_selection` line for that turn has `reason: "selected"`,
-     its `project_root` equals the scenario checkout, and `selected[]` includes
-     the file that currently contains T.
-  2. The host transcript excerpt of the injected context contains T.
-  3. The probe answer contains T.
-- **Absent(T)** requires all of the following:
-  1. No selected path whose current or previous content holds T.
-  2. T is not in the injected context.
-  3. The answer does not contain T.
-- An answer containing T is never sufficient on its own.
+- **Present(T) for a raw-source token** means the selected route and fresh
+  `qmd_recall_selection` line identify the current, index-verified source path
+  containing T, in the correct `project_root`. The injected context contains
+  the source locator/title but **does not quote raw source body or T**. A
+  source-only answer is not required in another prompt. In this no-tools
+  probe, the answer should omit T.
+- **Present(T) for a verified wiki-card token** additionally requires the
+  selected card's bounded summary in the injected context to contain T and
+  its verified source locator to be correct. A no-tools answer containing T
+  is useful host evidence, but the selected card and injected bytes are the
+  plugin proof; the answer alone is insufficient.
+- **Absent(T)** means no selected current source or card carrying T, no T in
+  the injected context, and no unsupported answer containing T. An old or
+  excluded source must not be served as current. For a raw-only token, T's
+  absence from context is expected even when its current source is selected.
+- A selected path by itself does not prove that its source revision is current;
+  retain the index/generation and scope evidence required by the scenario.
+- In a **separate optional prompt that permits tools**, record whether the
+  host agent chooses to Read the selected source and what it answers. That is
+  host-agent behavior, not a plugin release condition.
 - A missing log line means the hook did not run. Treat it as `FAIL` unless a
   sandbox or headless host is documented.
 - For each fresh host session, use a unique QA run/session marker and a fresh
@@ -804,7 +816,8 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
     A QMD bootstrap PASS never implies Laya setup, training or model-use PASS.
   - Nothing outside the fixture, the QA account's plugin runtime roots and the
     host plugin directories is written.
-  - Present(`ALPHA_MAIN`) within T_FRESH. No hook timeout or failure.
+  - Present(`ALPHA_MAIN`) within T_FRESH by the raw-source definition above.
+    No hook timeout or failure.
 - **FAIL if:**
   - The gate does not stop the edit.
   - Install reports `completed` without scoped-search proof.
@@ -829,8 +842,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - Clean state.
   - The previous public release (N-1) is installed from the public
     marketplace, with its identity recorded per section 5.
-  - The fixture was opted in and indexed under N-1, and Q-alpha is Present
-    under N-1.
+  - The fixture was opted in and indexed under N-1. Record the selected file,
+    installed identity and consistent backup before updating; N-1 need not
+    auto-inject or answer a token found only in the raw source.
   - The RQA-INST-03 preparation steps are done.
 - **Steps:**
   1. Keep one N-1 session open (the "old session").
@@ -847,7 +861,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Expected:**
   - The installed identity equals the candidate.
   - The check-update report is read-only.
-  - Present(`ALPHA_MAIN`).
+  - Present(`ALPHA_MAIN`) under the raw-source definition after update.
   - Settings, wiki and index preserved (RQA-INST-03).
   - The old session caused no damage.
 - **Evidence:** both identities, notices, check-update and apply outputs,
@@ -946,12 +960,12 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Steps:**
   1. Start a fresh session in `project/`. Expected: both SessionStart hooks
      run without failure.
-  2. Probe Q-alpha. Expected: Present(`ALPHA_MAIN`), with
+  2. Probe Q-alpha. Expected: raw-source Present(`ALPHA_MAIN`), with
      `reason: "selected"` and selected `docs/qa/alpha.md`.
   3. Ask "docs/qa/agent-note.md 파일을 만들고 내용은 'The agent note marker is
      <AGENT_NOTE>.' 한 줄로 해줘". Expected: the gate allows the edit;
      posttool, index, compile and topical-event run without failure.
-  4. Probe Q-agent until T_FRESH. Expected: Present(`AGENT_NOTE`).
+  4. Probe Q-agent until T_FRESH. Expected: raw-source Present(`AGENT_NOTE`).
   5. Ask "Bash로 docs/qa/agent-note.md를 삭제해줘". Expected: the Bash
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).

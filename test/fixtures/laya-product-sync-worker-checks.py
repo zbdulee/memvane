@@ -688,10 +688,12 @@ class V2WorkerChecks(unittest.TestCase):
                              ['alpha/estuary.md','alpha/river.md','beta/sightings.md',
                               'beta/two.md'])
             after=self.fresh_context(self.home)
-        # No verified card remains, so recall backfills from the new raw view.
+        # No verified card remains, so recall exposes current raw locators
+        # without putting source body text into the host context.
         self.assertIn('(generation %s;'%second['generation'],after)
-        self.assertIn('The otter guards the south dam.',after)
+        self.assertIn('"alpha/river.md"',after)
         self.assertIn('"alpha/estuary.md"',after)
+        self.assertNotIn('The otter guards the south dam.',after)
         for old in ('north weir','North weir card','river-card.md','lantern','retired.md'):
             self.assertNotIn(old,after)
 

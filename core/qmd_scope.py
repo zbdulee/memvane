@@ -28,8 +28,8 @@ def scoped_hits(rows, scope_root, config, collections, index_path, drops=None,
     `drops`, when given, receives one objective reason count per dropped row.
     Only returned rows are examined; the project is never scanned.
     `with_revision` adds the private `_verified_path`/`_verified_revision`
-    of the exact indexed bytes just checked, so a caller may quote that
-    revision and nothing newer (recall re-hashes before quoting).
+    of the exact indexed bytes just checked. Recall uses the verified path
+    for the selected-file log; neither value authorizes raw-body injection.
     """
     if not isinstance(rows, list):
         return []
