@@ -24,7 +24,9 @@ def index(row):
 
 def update(row):
     import update_hook_queue
-    update_hook_queue.worker(row['target'])
+    # A clean first install keeps its job for a later SessionStart; ACK only
+    # this wake revision (a newer one re-offered meanwhile survives).
+    if update_hook_queue.worker(row['target'])==update_hook_queue.SETUP_REQUIRED:return True
     return not (update_hook_queue._private_queue()/(row['target']+'.job.json')).exists()
 
 
