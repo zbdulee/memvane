@@ -377,8 +377,7 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     qmd = Path(proof['qmd'])
     package = qmd.parent.parent
     node = Path(proof['node'])
-    module_pkg = package / 'node_modules' / 'node-llama-cpp'
-    native_pkg = package / 'node_modules' / '@node-llama-cpp' / 'mac-arm64-metal'
+    module_pkg, native_pkg = _llama_packages(package)
     module = module_pkg / 'dist' / 'index.js'
     for package_file, expected in ((package / 'package.json', '2.5.3'),
                                    (module_pkg / 'package.json', '3.18.1'),
@@ -540,6 +539,45 @@ def _check_record_replacement_binding(identity, plan, provider_manifest):
             provider_manifest.get('modelSha256') != evidence.get('modelSha256') or
             provider_manifest.get('dimension') != evidence.get('dimension')):
         _fail('replacement_model_origin_mismatch')
+
+
+_LLAMA_MODULE = ('node-llama-cpp',)
+_LLAMA_NATIVE = ('@node-llama-cpp', 'mac-arm64-metal')
+
+
+def _llama_packages(package):
+    """Locate node-llama-cpp as Node resolves it from the QMD package.
+
+    Only two layouts are accepted: nested under QMD's own node_modules, or
+    hoisted by npm ci to the node_modules that holds the scoped QMD package.
+    Both packages must sit in exactly one of them; a mixed, partial or
+    shadowing layout (where Node could load a different native build) fails.
+    """
+    def entry(base, parts):
+        path = base.joinpath(*parts)
+        return path, path.exists() or path.is_symlink()
+    bases = [package / 'node_modules']
+    scope = package.parent
+    if scope.name.startswith('@') and scope.parent.name == 'node_modules':
+        if scope.is_symlink() or package.is_symlink():
+            _fail('provider_review_package_symlink')
+        bases.append(scope.parent)
+    found = []
+    for base in bases:
+        present = [entry(base, _LLAMA_MODULE)[1], entry(base, _LLAMA_NATIVE)[1]]
+        if any(present):
+            found.append((base, all(present)))
+    if len(found) != 1 or not found[0][1]:
+        _fail('provider_review_package_layout_unsupported')
+    base = found[0][0]
+    module_pkg = entry(base, _LLAMA_MODULE)[0]
+    native_pkg = entry(base, _LLAMA_NATIVE)[0]
+    if entry(module_pkg / 'node_modules', _LLAMA_NATIVE)[1]:
+        _fail('provider_review_package_layout_unsupported')
+    for path in (base, module_pkg, module_pkg / 'dist', native_pkg.parent, native_pkg):
+        if path.is_symlink() or not path.is_dir():
+            _fail('provider_review_package_symlink')
+    return module_pkg, native_pkg
 
 
 def _read_private_or_package(path):

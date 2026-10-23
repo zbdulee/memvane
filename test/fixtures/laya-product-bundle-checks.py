@@ -729,6 +729,91 @@ print(json.dumps(result))'''
                 model_path=str(model), dimension=3)
             self.assertNotEqual(changed['proposalSha256'], first['proposalSha256'])
 
+    def test_local_provider_review_accepts_npm_ci_hoisted_layout_only_unambiguously(self):
+        # Official pinned `npm ci` hoists node-llama-cpp and its Metal build to
+        # the generation's top-level node_modules beside @tobilu/qmd.
+        proof = self.candidate('plugin-v1', self.commit1)
+        top = self.root / 'qmd-generation/node_modules'
+        package = top / '@tobilu/qmd'
+        (package / 'bin').mkdir(parents=True)
+        (package / 'bin/qmd').write_text('synthetic executable')
+        (package / 'package.json').write_text('{"version":"2.5.3"}')
+        def llama(base, module_version='3.18.1', native_version='3.18.1'):
+            module_pkg = base / 'node-llama-cpp'
+            (module_pkg / 'dist').mkdir(parents=True)
+            (module_pkg / 'package.json').write_text(json.dumps({'version': module_version}))
+            (module_pkg / 'dist/index.js').write_text('export const synthetic = true;')
+            native_pkg = base / '@node-llama-cpp/mac-arm64-metal'
+            (native_pkg / 'bins').mkdir(parents=True)
+            (native_pkg / 'package.json').write_text(json.dumps({'version': native_version}))
+            (native_pkg / 'bins/llama-addon.node').write_bytes(b'synthetic native')
+            (native_pkg / 'bins/libllama.dylib').write_bytes(b'synthetic dylib')
+            return module_pkg, native_pkg
+        module_pkg, native_pkg = llama(top)
+        model = self.root / 'embeddinggemma-300M-Q8_0.gguf'
+        model.write_bytes(b'GGUFsynthetic model')
+        runtime = {'proof': {'version': '2.5.3', 'qmd': str(package / 'bin/qmd'),
+                             'node': str(self.node)},
+                   'generation': 'synthetic-runtime'}
+        def review():
+            return product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(model), dimension=3)
+        def blocked(reason):
+            with self.assertRaisesRegex(product_install.InstallBlocked, reason):
+                review()
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Darwin'),
+              mock.patch('platform.machine', return_value='arm64')):
+            hoisted = review()
+            manifest = hoisted['reviewedProvider']['providerManifest']
+            self.assertEqual(manifest['moduleEntryPath'], str(module_pkg / 'dist/index.js'))
+            closure = hoisted['reviewedProvider']['dependencyClosure']
+            self.assertEqual(sorted(item['path'] for item in closure),
+                             sorted(str(native_pkg / name) for name in
+                                    ('bins/libllama.dylib', 'bins/llama-addon.node')))
+            self.assertEqual(review(), hoisted)
+            # The pinned native hash still binds the reviewed digest.
+            (native_pkg / 'bins/llama-addon.node').write_bytes(b'changed native')
+            self.assertNotEqual(review()['proposalSha256'], hoisted['proposalSha256'])
+            # A shadowing native build inside the hoisted module is refused.
+            shadow = module_pkg / 'node_modules/@node-llama-cpp/mac-arm64-metal'
+            shadow.mkdir(parents=True)
+            blocked('provider_review_package_layout_unsupported')
+            shutil.rmtree(module_pkg / 'node_modules')
+            # Mixed: a nested copy beside the hoisted one is ambiguous.
+            nested = package / 'node_modules'
+            (nested / 'node-llama-cpp').mkdir(parents=True)
+            blocked('provider_review_package_layout_unsupported')
+            shutil.rmtree(nested)
+            # Partial hoisting (native absent) and wholly absent packages fail.
+            shutil.move(str(native_pkg), str(self.root / 'native-aside'))
+            blocked('provider_review_package_layout_unsupported')
+            shutil.move(str(module_pkg), str(self.root / 'module-aside'))
+            blocked('provider_review_package_layout_unsupported')
+            # Symlinked hoisted package is refused, not followed.
+            (top / 'node-llama-cpp').symlink_to(self.root / 'module-aside',
+                                                target_is_directory=True)
+            shutil.move(str(self.root / 'native-aside'), str(native_pkg))
+            blocked('provider_review_package_symlink')
+            (top / 'node-llama-cpp').unlink()
+            shutil.move(str(self.root / 'module-aside'), str(module_pkg))
+            # Exact versions are still required in the hoisted layout.
+            (module_pkg / 'package.json').write_text('{"version":"3.18.2"}')
+            blocked('provider_review_package_version_changed')
+            (module_pkg / 'package.json').write_text('{"version":"3.18.1"}')
+            self.assertEqual(len(review()['reviewedProvider']['dependencyClosure']), 2)
+        # The original nested layout keeps working (covered above as well),
+        # but only when the QMD package is not itself a symlink.
+        linked = self.root / 'qmd-generation/node_modules/@tobilu/qmd-link'
+        linked.symlink_to(package, target_is_directory=True)
+        runtime['proof']['qmd'] = str(linked / 'bin/qmd')
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Darwin'),
+              mock.patch('platform.machine', return_value='arm64')):
+            blocked('provider_review_package_symlink')
+
     def test_production_attestation_needs_journal_bound_review_digest(self):
         proof = self.candidate('plugin-v1', self.commit1)
         manifest = self.provider_manifest(proof)
