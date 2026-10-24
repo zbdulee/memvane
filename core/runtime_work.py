@@ -253,6 +253,18 @@ def main(argv):
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
         import runtime_wake_cancel
         print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
+    if argv[:1]==['cancel-update-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
+        # Official per-UID queue only; ownership is proven from the QA fixture and private update job.
+        import runtime_update_cancel
+        if os.environ.get('QMD_UPDATE_HOOK_QUEUE_DIR') is not None:
+            print(json.dumps({'status':'refused','reason':'non_official_update_queue'}));return 3
+        try:revision=int(argv[4])
+        except ValueError:revision=None
+        result=runtime_update_cancel.cancel(argv[2],revision,argv[6])
+        print(json.dumps(result,sort_keys=True,default=str));return 0 if result['status']!='refused' else 3
+    if argv[:1]==['update-wake-status'] and len(argv)==3 and argv[1]=='--project':
+        import runtime_update_cancel
+        print(json.dumps(runtime_update_cancel.status(argv[2]),sort_keys=True,default=str));return 0
     if argv==['index-pending']:
         from dirty_queue import queue_path
         path=queue_path()

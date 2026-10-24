@@ -64,9 +64,12 @@ def _project(raw):
     return project
 
 
-def ownership_proof(project_raw):
-    """Read-only proof that the wake target is an owned, inactive QA build."""
-    project = _project(project_raw)
+def fixture_proof(project):
+    """Release-QA fixture markers around ``project``; returns the fixture id.
+
+    Shared by every QA wake cancel (``runtime_update_cancel`` too), so the
+    meaning of "this project belongs to a release-QA fixture" stays one rule.
+    """
     fixture = project.parent
     for name in ('MANIFEST.json', '.qa-fixture-owner'):
         _private_file(fixture / name, private=False)
@@ -81,6 +84,13 @@ def ownership_proof(project_raw):
             or not isinstance(marker, dict) or marker.get('uid') != os.getuid()
             or marker.get('fixtureId') != manifest.get('fixtureId')):
         _refuse('fixture_marker_invalid')
+    return manifest['fixtureId']
+
+
+def ownership_proof(project_raw):
+    """Read-only proof that the wake target is an owned, inactive QA build."""
+    project = _project(project_raw)
+    fixture_id = fixture_proof(project)
     import laya_initial_build as initial_build
     try:
         record = initial_build.lookup(project)
@@ -111,7 +121,7 @@ def ownership_proof(project_raw):
     decision = select_route(str(project), action='update')
     if (decision.get('state'), decision.get('reason')) != ('legacy', 'no_route_record'):
         _refuse('project_route_not_original_qmd')
-    proof = {'project': str(project), 'fixtureId': manifest['fixtureId'],
+    proof = {'project': str(project), 'fixtureId': fixture_id,
              'installId': identity['installId'], 'stateRoot': str(state),
              'journalPath': str(journal_path), 'buildPhase': record.get('phase'),
              'journalEpoch': journal.get('epoch')}
