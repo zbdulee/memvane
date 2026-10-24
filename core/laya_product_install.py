@@ -1574,7 +1574,28 @@ def _unused_store_proof(identity, *, allow_work=False):
                 present = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' "
                     "AND name NOT LIKE 'sqlite_%'")}
-                if present - set(tables) - _UNUSED_METADATA_TABLES[key]:
+                dynamic = set()
+                if allow_work and key == 'candidateDb':
+                    from laya_index_a import _gen_fts_ddl
+                    # A partly built generation owns an FTS5 table and its
+                    # shadow tables. Verify the exact allocated set and DDL;
+                    # unrelated schema drift still refuses. Do not require a
+                    # fixed user_version here: the snapshot/replay check below
+                    # must also catch a changed SQLite header.
+                    ordinals = [row[0] for row in db.execute('SELECT ord FROM gen_index')]
+                    if any(type(n) is not int or n <= 0 for n in ordinals):
+                        _fail('unused_build_store_schema_unrecognized')
+                    dynamic = {name for name in present if re.fullmatch(
+                        r'gen_fts_[1-9][0-9]*(?:_(?:data|idx|content|docsize|config))?',
+                        name)}
+                    expected = {f'gen_fts_{n}{suffix}' for n in ordinals for suffix in
+                                ('', '_data', '_idx', '_content', '_docsize', '_config')}
+                    if dynamic != expected or any(db.execute(
+                            'SELECT sql FROM sqlite_master WHERE type=? AND name=?',
+                            ('table', f'gen_fts_{n}')).fetchone() != (_gen_fts_ddl(f'gen_fts_{n}'),)
+                            for n in ordinals):
+                        _fail('unused_build_store_schema_unrecognized')
+                if present - set(tables) - _UNUSED_METADATA_TABLES[key] - dynamic:
                     _fail('unused_build_store_schema_unrecognized')
                 counts = {name: db.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0]
                           for name in tables if name in present}

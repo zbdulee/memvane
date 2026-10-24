@@ -169,6 +169,38 @@ class AbandonCase(unittest.TestCase):
         self.assertIsNotNone(self.revision('laya-sync', self.other))
         self.assertIsNotNone(self.revision('update'))
 
+    def test_partly_built_generation_fts_is_backed_up_without_deleting_content(self):
+        self.partly_built()
+        index = LayaIndexA(self.identity['candidateDb'])
+        try:
+            self.assertEqual(index.stage('g-synthetic', SCOPE,
+                                         [('wiki/topic.md', 'verified wiki card', True)]),
+                             'prepared')
+        finally:
+            index.close()
+        result = self.abandon_inactive()
+        self.assertEqual(result['buildPhase'], 'retired')
+        for path in (Path(self.identity['candidateDb']),
+                     self.state / product.INACTIVE_RETIREMENT / 'candidate.sqlite'):
+            with closing(sqlite3.connect(path)) as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM gen_index').fetchone()[0], 1)
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM gen_fts_1').fetchone()[0], 1)
+
+    def test_partly_built_generation_still_refuses_unrecognized_table(self):
+        self.partly_built()
+        index = LayaIndexA(self.identity['candidateDb'])
+        try:
+            index.stage('g-synthetic', SCOPE, [('wiki/topic.md', 'wiki card', True)])
+        finally:
+            index.close()
+        with closing(sqlite3.connect(self.identity['candidateDb'])) as db:
+            db.execute('CREATE TABLE unexpected_work (body TEXT)')
+            db.commit()
+        with self.assertRaisesRegex(product.InstallBlocked,
+                                    'unused_build_store_schema_unrecognized'):
+            self.abandon_inactive()
+        self.assertIsNotNone(initial_build.lookup(self.project))
+
     def test_original_unused_path_still_refuses_partial(self):
         self.partly_built()
         with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_not_registered'):
