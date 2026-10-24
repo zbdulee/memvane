@@ -450,6 +450,9 @@ assert not attempts,attempts
         assert answer['status'] in ('waiting_fresh_train','waiting_train_cohort'), answer
         assert (namespace/'active-checkpoint.json').read_bytes()==pointer
         progress('insufficient_training_preserves_checkpoint',project)
+    checkpoint_before_drain = {
+        str(namespace): (namespace/'active-checkpoint.json').read_bytes()
+        for _,namespace,_ in projects}
     receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
     # Hooks never spawn the worker; only the runtime dispatcher may.
     worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
@@ -484,12 +487,17 @@ assert not attempts,attempts
     receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
     worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
     # Compute admission can defer one child while another project trains.
-    # That yields another owned process, but never another completed cycle.
+    # Coalesced wake revisions may each observe the same insufficient cohort;
+    # these are read-only training admissions, not another paid teacher cycle.
     assert len(worker_receipts)>=len(projects) and all(row['home']==str(home) for row in worker_receipts),worker_receipts
     for _,namespace,_ in projects:
         assert json.loads((namespace/shared.FULL_WORKER_STATE).read_text())['acked'] is True
         outcomes=[json.loads(line)['status'] for line in (namespace/'worker.log').read_text().splitlines()]
-        assert outcomes.count('waiting_fresh_train')==1,outcomes
+        assert outcomes.count('waiting_fresh_train')>=1 and set(outcomes)<={
+            'deferred_resource','waiting_fresh_train'},outcomes
+        assert (namespace/'active-checkpoint.json').read_bytes()==checkpoint_before_drain[str(namespace)]
+        with shared._db(namespace) as db:
+            assert db.execute("SELECT count(*) FROM project_gold_attempts WHERE stage='committed'").fetchone()==(4,)
     progress('private_retry_queue_drained')
     assert not any(name in sys.modules for name in ('torch','transformers','laya'))
     assert not os.environ.get('QMD_SETUP_GUARD_FIXTURE')
