@@ -1294,6 +1294,8 @@ def finalize_initial_build(*, project_root, state_root):
         identity = record['identity']
         if identity['projectRoot'] != str(project_root):
             _fail('initial_build_project_mismatch')
+        if record['phase'] == 'retired':
+            _fail('initial_build_retired')
         if record['phase'] == 'blocked':
             return {'status': 'initial_build_blocked', 'blocked': record['blocked']}
         cutover = inspect_bound_cutover(identity['journalPath'])
@@ -1513,6 +1515,332 @@ def retire_drifted_origin(*, project_root, state_root):
             'nextRequires': 'new_install_id_and_state_root'}
 
 
+UNUSED_RETIREMENT = 'unused-build-retirement'
+UNUSED_RECEIPT_SCHEMA = 'laya-unused-build-retirement-v1'
+# Tables whose rows would mean the build already read source or wrote vectors.
+# A missing table counts as empty; a store that cannot be read refuses.
+_UNUSED_ZERO_TABLES = (
+    ('candidateDb', ('generations', 'content', 'membership', 'head', 'candidate_seals',
+                     'receipts', 'pins', 'gen_index', 'vector_profiles', 'vector_chunks',
+                     'vector_chunk_sets', 'gen_vector_rows', 'gen_vector_seals',
+                     'exclusions', 'content_fts', 'content_fts_idx',
+                     'content_fts_content', 'content_fts_docsize')),
+    ('queueDb', ('jobs',)),
+    ('catalogDb', ('scans', 'active', 'current', 'scan_dirs', 'scan_files',
+                   'vector_fill')),
+    ('bindingStore', ('bindings',)),
+)
+_UNUSED_METADATA_TABLES = {
+    'candidateDb': {'schema_meta', 'content_fts_data', 'content_fts_config'},
+    'queueDb': {'queue_meta'},
+    'catalogDb': {'meta'},
+    'bindingStore': {'meta'},
+}
+
+
+def _ro_sqlite(path):
+    import sqlite3
+    source = Path(path)
+    if not source.is_absolute() or source.is_symlink() or not source.is_file():
+        _fail('unused_build_store_unavailable')
+    # A WAL-mode database with no sidecars cannot always be opened mode=ro by
+    # the system SQLite. With no WAL present, immutable reads the complete
+    # single-file snapshot without creating sidecars; a present WAL must be
+    # read through SQLite's normal read-only WAL path or fail closed.
+    wal = Path(str(source) + '-wal')
+    shm = Path(str(source) + '-shm')
+    mode = '?mode=ro' if wal.exists() or shm.exists() else '?immutable=1'
+    return sqlite3.connect(source.as_uri() + mode, uri=True, timeout=.5)
+
+
+def _unused_store_proof(identity):
+    """Read-only, WAL-aware proof that no source or vector row was written.
+
+    A present WAL is read through SQLite's normal read-only path; a store
+    without sidecars is read as an immutable single-file snapshot. Any SQLite
+    error or integrity failure refuses: unreadable is never read as empty.
+    """
+    import sqlite3
+    from contextlib import closing
+    proof = {}
+    for key, tables in _UNUSED_ZERO_TABLES:
+        try:
+            with closing(_ro_sqlite(identity[key])) as db:
+                if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                    _fail('unused_build_store_check_failed')
+                present = {row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%'")}
+                if present - set(tables) - _UNUSED_METADATA_TABLES[key]:
+                    _fail('unused_build_store_schema_unrecognized')
+                counts = {name: db.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0]
+                          for name in tables if name in present}
+        except sqlite3.Error:
+            _fail('unused_build_store_unreadable')
+        if any(counts.values()):
+            _fail('unused_build_has_work')
+        wal = Path(identity[key] + '-wal')
+        proof[key] = {'counts': counts,
+                      'walBytes': wal.stat().st_size if wal.exists() else 0}
+    return proof
+
+
+def _sha256_file(path):
+    """Streaming digest of one owned, private, single-link regular file."""
+    source = Path(path)
+    if source.is_symlink():
+        _fail('unsafe_install_input')
+    fd = os.open(source, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('unsafe_install_input')
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(fd, 1 << 20)
+            if not block:
+                return digest.hexdigest()
+            digest.update(block)
+    finally:
+        os.close(fd)
+
+
+def _snapshot_sqlite(source, target):
+    """Create one self-contained SQLite snapshot, verified by quick_check."""
+    import sqlite3
+    from contextlib import closing
+    try:
+        with closing(_ro_sqlite(source)) as src:
+            # VACUUM INTO reads a consistent SQLite snapshot and produces a
+            # standalone file. backup() of WAL-mode stores leaves a -shm
+            # sidecar on this host, which cannot be sealed as one file.
+            src.execute('VACUUM main INTO ?', (str(target),))
+        if Path(str(target) + '-wal').exists() or Path(str(target) + '-shm').exists():
+            _fail('unused_build_backup_failed')
+        with closing(sqlite3.connect(Path(target).as_uri() + '?immutable=1', uri=True)) as check:
+            ok = check.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+    except sqlite3.Error:
+        _fail('unused_build_backup_failed')
+    if not ok:
+        _fail('unused_build_backup_failed')
+    os.chmod(target, 0o600)
+    return _sha256_file(target)
+
+
+def _receipt_matches(final, identity, install_id, commit_id, *, current_bytes):
+    """True only for a complete receipt of exactly this build; else refuse.
+
+    ``current_bytes`` are the live record/pointer bytes to compare with the
+    receipt (None to skip: after retirement the record has legitimately moved).
+    """
+    try:
+        receipt = json.loads(_read_private(final / 'receipt.json', 65536))
+    except (OSError, ValueError, InstallBlocked):
+        _fail('unused_build_receipt_invalid')
+    files = receipt.get('files') if isinstance(receipt, dict) else None
+    if (not isinstance(files, dict) or receipt.get('schema') != UNUSED_RECEIPT_SCHEMA or
+            receipt.get('installId') != install_id or receipt.get('commitId') != commit_id or
+            receipt.get('projectRoot') != identity['projectRoot'] or
+            receipt.get('stateRoot') != identity['stateRoot'] or
+            set(files) != {'journal.sqlite', 'candidate.sqlite', 'queue.sqlite',
+                           'catalog.sqlite', 'binding.sqlite', 'initial-build.json',
+                           'build-pointer.json', 'reviewed-route.json'}):
+        _fail('unused_build_receipt_mismatch')
+    for name, digest in files.items():
+        if _sha256_file(final / name) != digest:
+            _fail('unused_build_receipt_mismatch')
+    if current_bytes is not None and any(
+            hashlib.sha256(current_bytes[name]).hexdigest() != files[name]
+            for name in current_bytes):
+        _fail('unused_build_receipt_mismatch')
+    return receipt
+
+
+def abandon_unused_initial_build(*, project_root, state_root, install_id, commit_id,
+                                 wake_revision=None, queue=None):
+    """Retire a registered initial build that never started; deletes nothing.
+
+    For an owned synthetic-QA install whose build is still ``registered``
+    (unsealed, no progress/freshness/block), journal ``candidate_ready`` with
+    no selected route or first write, and whose stores hold no source or
+    vector row, this ends the build so a fresh install can register. Under
+    the install lock and then the build owner (the order finalize/rescan and
+    the wake cancel use), each step verified-or-resumed by a repeat:
+
+    1. Prove identity and emptiness (``runtime_wake_cancel.ownership_proof``:
+       fixture markers, canonical pointer, journal, project still plain QMD;
+       the caller's install id and commit; the reviewed route bytes; a
+       read-only WAL-aware zero-row proof of every store).
+    2. Write a verified private receipt directory in the state root first:
+       online SQLite backups of the journal and the four stores plus the
+       exact record, pointer and route bytes (no-clobber, atomic rename).
+    3. A pending ``laya-sync`` wake is cancelled by the official CAS
+       (``runtime_wake_cancel.cancel_locked``) under these same locks. A wake
+       row needs its ``wake_revision``; a running or newer one refuses before
+       any record/pointer change. Nothing but the project's own selected
+       route or an install step enqueues this kind, and both are excluded
+       (QMD selected; install lock held), so none can reappear.
+    4. CAS the record to terminal ``retired`` (a worker that knows it ACKs,
+       an older one fails closed on the unknown phase), then release the
+       project pointer (``retire_project_pointer``, archived first).
+
+    Old state files, QMD, sources and backups all remain. Sealed, bound,
+    building, blocked, selected or first-write builds are never touched.
+    """
+    import laya_initial_build as initial_build
+    import runtime_wake_cancel as wake_cancel
+    from laya_install_journal import inspect_journal
+    project = _checked_project(project_root)
+    state = _private_parent(state_root)
+    if (state != Path(state_root) or type(install_id) is not str or
+            not re.fullmatch(r'[0-9a-f]{32}', install_id) or state.name != install_id or
+            state.parent != Path.home() / '.local' / 'state' / 'laya'):
+        _fail('unused_build_state_not_canonical')
+    if type(commit_id) is not str or not re.fullmatch(r'[0-9a-f]{40}', commit_id):
+        _fail('unused_build_commit_invalid')
+    if wake_revision is not None and (type(wake_revision) is not int or wake_revision <= 0):
+        _fail('unused_build_wake_revision_invalid')
+    import time
+    final = state / UNUSED_RETIREMENT
+    if final.is_symlink():
+        _fail('unused_build_receipt_invalid')
+    with _install_lock(state), initial_build.owner(state) as owned:
+        if not owned:
+            _fail('initial_build_busy')
+        record = initial_build.read(state)
+        if record is None:
+            _fail('initial_build_missing')
+        identity = record['identity']
+        journal = state / 'install-journal.sqlite'
+        if (identity['projectRoot'] != str(project) or identity['stateRoot'] != str(state) or
+                identity['journalPath'] != str(journal) or identity['installId'] != install_id):
+            _fail('unused_build_identity_mismatch')
+        if record['phase'] == 'retired':
+            # Replay after the record moved: finish the pointer, nothing else.
+            receipt = _receipt_matches(final, identity, install_id, commit_id,
+                                       current_bytes=None)
+            return {'status': 'unused_build_retired', 'replayed': True,
+                    'receipt': str(final / 'receipt.json'),
+                    'buildPointer': initial_build.retire_project_pointer(identity),
+                    'buildPhase': 'retired', 'recordEpoch': record['epoch'],
+                    'receiptRecordEpoch': receipt.get('recordEpoch'),
+                    'changesApplied': 0, 'nextRequires': 'new_install_id_and_state_root'}
+        if record['phase'] != 'registered':
+            _fail('unused_build_not_registered')
+        if any(record[key] is not None for key in ('progress', 'sealed', 'freshness', 'blocked')):
+            _fail('unused_build_has_progress')
+        try:
+            ownership = wake_cancel.ownership_proof(str(project))
+        except wake_cancel.CancelRefused as exc:
+            _fail('unused_build_' + str(exc))
+        if (ownership['installId'] != install_id or ownership['stateRoot'] != str(state) or
+                initial_build.read(state) != record):
+            _fail('unused_build_identity_mismatch')
+        pointer_path = initial_build.pointer_path(str(project),
+                                                  initial_build._pointer_dir(create=False))
+        pointer_bytes = _read_private(pointer_path, 65536)
+        expected_pointer = {'schema': initial_build.POINTER_SCHEMA,
+                            'projectRoot': identity['projectRoot'],
+                            'stateRoot': identity['stateRoot'],
+                            'installId': identity['installId']}
+        if json.loads(pointer_bytes) != expected_pointer:
+            _fail('unused_build_pointer_mismatch')
+        pending = inspect_journal(journal)
+        entry = pending['pending'] if isinstance(pending['pending'], dict) else {}
+        if (pending['state'] != 'candidate_ready' or pending['selected'] is not None or
+                pending['newWriteSeen'] or pending['projectRoot'] != str(project) or
+                pending['scopeId'] != identity['scopeId'] or
+                pending['pendingRouteSha256'] != identity['routeSha256'] or
+                pending['providerAttestationSha256'] is not None or
+                pending['providerFileIdentitySha256'] is not None or
+                entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
+            _fail('unused_build_journal_changed')
+        route_bytes = _read_private(identity['routeFile'], 8192)
+        if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
+            _fail('initial_build_route_changed')
+        stores = _unused_store_proof(identity)
+        record_bytes = _read_private(initial_build.record_path(state),
+                                     initial_build.MAX_RECORD_BYTES)
+        live = {'initial-build.json': record_bytes, 'build-pointer.json': pointer_bytes,
+                'reviewed-route.json': route_bytes}
+        wake_status = wake_cancel.status(str(project), queue=queue)
+        wake = wake_status['wake']
+        if wake is None and wake_status.get('overflow'):
+            _fail('unused_build_wake_overflow_present')
+        if wake is not None and wake_revision is None:
+            _fail('unused_build_wake_revision_required')
+        if not final.exists():
+            temp = Path(tempfile.mkdtemp(prefix='.unused-retire-', dir=state))
+            try:
+                files = {'initial-build.json': record_bytes, 'build-pointer.json': pointer_bytes,
+                         'reviewed-route.json': route_bytes}
+                for name, raw in files.items():
+                    fd = os.open(temp / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, 'wb') as out:
+                        out.write(raw)
+                        out.flush()
+                        os.fsync(out.fileno())
+                digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+                for name, source in (('journal.sqlite', journal),
+                                     ('candidate.sqlite', identity['candidateDb']),
+                                     ('queue.sqlite', identity['queueDb']),
+                                     ('catalog.sqlite', identity['catalogDb']),
+                                     ('binding.sqlite', identity['bindingStore'])):
+                    digests[name] = _snapshot_sqlite(source, temp / name)
+                receipt = {'schema': UNUSED_RECEIPT_SCHEMA, 'installId': install_id,
+                           'commitId': commit_id, 'projectRoot': identity['projectRoot'],
+                           'stateRoot': identity['stateRoot'], 'recordEpoch': record['epoch'],
+                           'journalEpoch': pending['epoch'], 'stores': stores,
+                           'wakeRevision': wake_revision, 'files': digests,
+                           'createdNs': time.time_ns()}
+                fd = os.open(temp / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'wb') as out:
+                    out.write(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode())
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.rename(temp, final)
+                fd = os.open(state, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            except BaseException:
+                import shutil
+                shutil.rmtree(temp, ignore_errors=True)
+                raise
+        # A pre-existing receipt (interrupted run) must be this exact build's.
+        _receipt_matches(final, identity, install_id, commit_id, current_bytes=live)
+        cancelled = None
+        if wake is not None:
+            import sqlite3
+            try:
+                cancelled = wake_cancel.cancel_locked(str(project), wake_revision, str(final),
+                                                      ownership, queue=queue)
+            except wake_cancel.CancelRefused as exc:
+                _fail('unused_build_wake_' + str(exc))
+            except sqlite3.OperationalError:
+                _fail('unused_build_wake_queue_busy')
+        # Last look before the first mutation of the record: nothing moved.
+        current_stores = _unused_store_proof(identity)
+        try:
+            current_ownership = wake_cancel.ownership_proof(str(project))
+        except wake_cancel.CancelRefused:
+            _fail('unused_build_changed')
+        if (initial_build.read(state) != record or current_stores != stores or
+                current_ownership['sha256'] != ownership['sha256']):
+            _fail('unused_build_changed')
+        record = initial_build.advance(record, phase='retired')
+        pointer = initial_build.retire_project_pointer(identity)
+    return {'status': 'unused_build_retired', 'replayed': False,
+            'receipt': str(final / 'receipt.json'), 'stateRoot': str(state),
+            'wake': None if cancelled is None else
+            {key: cancelled[key] for key in ('status', 'revision') if key in cancelled},
+            'buildPointer': pointer, 'buildPhase': record['phase'],
+            'changesApplied': 1, 'nextRequires': 'new_install_id_and_state_root',
+            'next': ['plan-index-origin', 'review-index-provider', 'prepare-index-origin']}
+
+
 def retired_build_pointer(project_root):
     """Read-only: the retired build still holding this project's wake pointer.
 
@@ -1532,6 +1860,10 @@ def retired_build_pointer(project_root):
         state = Path(identity['stateRoot'])
         if identity['journalPath'] != str(state / 'install-journal.sqlite'):
             return None
+        if record['phase'] == 'retired':
+            # An interrupted abandon of an unused build: the replay finishes it.
+            return {'nextAction': 'abandon-index-build', 'stateRoot': str(state),
+                    'reason': 'retired_build_pointer_registered'}
         row = inspect_bound_cutover(state / 'install-journal.sqlite')
     except Exception:  # a hint only; the real refusal stays the caller's
         return None

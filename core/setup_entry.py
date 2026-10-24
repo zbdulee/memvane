@@ -399,6 +399,7 @@ def main(argv=None):
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin','retire-index-origin',
+                                          'abandon-index-build',
                                           'seal-host-copy'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
@@ -448,6 +449,8 @@ def main(argv=None):
     parser.add_argument('--approve-index-origin-activation', action='store_true')
     parser.add_argument('--approve-index-origin-restore', action='store_true')
     parser.add_argument('--approve-index-origin-retire', action='store_true')
+    parser.add_argument('--approve-index-build-abandon', action='store_true')
+    parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
     try:
         if args.action in ('plan-index-origin','review-index-provider',
@@ -456,6 +459,7 @@ def main(argv=None):
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin','retire-index-origin',
+                           'abandon-index-build',
                            'seal-host-copy'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
@@ -516,6 +520,15 @@ def main(argv=None):
                         raise ValueError('index_origin_retire_approval_required')
                     result = product.retire_drifted_origin(
                         project_root=args.project, state_root=state)
+                elif args.action == 'abandon-index-build':
+                    # An unused registered build (no source read, nothing written);
+                    # the pending laya-sync wake is cancelled by revision. Deletes nothing.
+                    if not args.approve_index_build_abandon:
+                        raise ValueError('index_build_abandon_approval_required')
+                    result = product.abandon_unused_initial_build(
+                        project_root=args.project, state_root=state,
+                        install_id=args.install_id, commit_id=args.commit,
+                        wake_revision=args.wake_revision)
                 elif args.action == 'seal-host-copy':
                     # Run from the other host's installed copy: seal it in place
                     # against the journal-bound owner; it never selects a route.

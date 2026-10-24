@@ -96,7 +96,7 @@ def ownership_proof(project_raw):
     journal_path = Path(identity.get('journalPath', ''))
     _private_file(journal_path)
     if (identity.get('projectRoot') != str(project) or journal_path.parent != state
-            or record.get('phase') == 'bound'):
+            or record.get('phase') in ('bound', 'retired')):
         _refuse('initial_build_not_inactive')
     from laya_install_journal import inspect_journal
     try:
@@ -219,46 +219,56 @@ def cancel(project_raw, revision, backup_dir, *, queue=None, clock=time.time):
             proof = ownership_proof(project_raw)
             if proof['sha256'] != first['sha256']:
                 _refuse('proof_changed')
-            from runtime_work import WakeQueue
-            queue = queue or WakeQueue()
-            key = wake_policy.wake_key(KIND, proof['project'])
-            with queue.connect() as db:
-                current = _row(db, key)
-            if current is None:
-                return {'status': 'unchanged', 'reason': 'wake_absent', 'proof': proof}
-            if current['kind'] != KIND or current['target'] != proof['project']:
-                _refuse('wake_identity_mismatch')
-            if current['revision'] != revision:
-                _refuse('revision_changed')
-            if current['status'] != 'pending':
-                _refuse('wake_not_pending')
-            backup = _backup(queue, backup_dir, key, current)
-            with queue.connect() as db:
-                db.execute('BEGIN IMMEDIATE')
-                db.execute(AUDIT_TABLE)
-                removed = db.execute(
-                    "DELETE FROM wakes WHERE id=? AND kind=? AND target=? AND revision=? AND status='pending' "
-                    "AND due=? AND attempts=? AND reason IS ?",
-                    (key, KIND, proof['project'], revision, current['due'], current['attempts'],
-                     current['reason'])).rowcount
-                if removed != 1:
-                    db.rollback()
-                    _refuse('wake_changed_before_delete')
-                if ownership_proof(project_raw)['sha256'] != proof['sha256']:
-                    db.rollback()
-                    _refuse('proof_changed')
-                overflow = db.execute('DELETE FROM wake_overflow WHERE id=?', (key,)).rowcount
-                db.execute('INSERT INTO wake_cancellations (at,wake_id,kind,target,revision,attempts,reason,due,'
-                           'overflow_removed,proof_sha256,backup_path,backup_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                           (clock(), key, KIND, proof['project'], revision, current['attempts'], current['reason'],
-                            current['due'], overflow, proof['sha256'], backup['path'], backup['sha256']))
-        after = status(proof['project'], queue=queue)
-        return {'status': 'applied', 'revision': revision, 'overflowRemoved': overflow,
-                'removedRow': {name: current[name] for name in ROW_VERSION},
-                'backup': {k: backup[k] for k in ('path', 'sha256', 'quickCheck')},
-                'proof': proof, 'after': after}
+            return cancel_locked(project_raw, revision, backup_dir, proof,
+                                 queue=queue, clock=clock)
     except CancelRefused as exc:
         return {'status': 'refused', 'reason': str(exc)}
     except sqlite3.OperationalError as exc:
         # Busy or locked: nothing committed; inspect with ``build-wake-status``.
         return {'status': 'refused', 'reason': 'queue_busy', 'detail': type(exc).__name__}
+
+
+def cancel_locked(project_raw, revision, backup_dir, proof, *, queue=None, clock=time.time):
+    """The queue half of ``cancel``; the caller holds the install lock and the
+    build owner (``_state_locks`` order) and passes the proof it took under
+    them. It raises ``CancelRefused``/``sqlite3.OperationalError`` instead of
+    answering, so a composing operation stops before its own first write.
+    """
+    from runtime_work import WakeQueue
+    queue = queue or WakeQueue()
+    key = wake_policy.wake_key(KIND, proof['project'])
+    with queue.connect() as db:
+        current = _row(db, key)
+    if current is None:
+        return {'status': 'unchanged', 'reason': 'wake_absent', 'proof': proof}
+    if current['kind'] != KIND or current['target'] != proof['project']:
+        _refuse('wake_identity_mismatch')
+    if current['revision'] != revision:
+        _refuse('revision_changed')
+    if current['status'] != 'pending':
+        _refuse('wake_not_pending')
+    backup = _backup(queue, backup_dir, key, current)
+    with queue.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute(AUDIT_TABLE)
+        removed = db.execute(
+            "DELETE FROM wakes WHERE id=? AND kind=? AND target=? AND revision=? AND status='pending' "
+            "AND due=? AND attempts=? AND reason IS ?",
+            (key, KIND, proof['project'], revision, current['due'], current['attempts'],
+             current['reason'])).rowcount
+        if removed != 1:
+            db.rollback()
+            _refuse('wake_changed_before_delete')
+        if ownership_proof(project_raw)['sha256'] != proof['sha256']:
+            db.rollback()
+            _refuse('proof_changed')
+        overflow = db.execute('DELETE FROM wake_overflow WHERE id=?', (key,)).rowcount
+        db.execute('INSERT INTO wake_cancellations (at,wake_id,kind,target,revision,attempts,reason,due,'
+                   'overflow_removed,proof_sha256,backup_path,backup_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                   (clock(), key, KIND, proof['project'], revision, current['attempts'], current['reason'],
+                    current['due'], overflow, proof['sha256'], backup['path'], backup['sha256']))
+    after = status(proof['project'], queue=queue)
+    return {'status': 'applied', 'revision': revision, 'overflowRemoved': overflow,
+            'removedRow': {name: current[name] for name in ROW_VERSION},
+            'backup': {k: backup[k] for k in ('path', 'sha256', 'quickCheck')},
+            'proof': proof, 'after': after}

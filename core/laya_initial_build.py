@@ -31,6 +31,12 @@ Phases (``PHASES``):
   before activation the binding is retired and the record stays ``bound``
   for good; ``retire_project_pointer`` releases the project pointer so a
   fresh install (its own state root and record) can register.
+* ``retired``: an explicit, audited abandon of a build that never did any
+  work (still ``registered``, nothing read or written; see
+  ``laya_product_install.abandon_unused_initial_build``). Terminal and
+  written before the project pointer is released. A worker that knows it
+  ACKs; a worker that predates it fails closed on the unknown phase
+  (``initial_build_record_invalid``), so it can never step or publish.
 
 Freshness is separate from ``sealed``: ``request_freshness`` records a time T
 and requests a catalog scan. ``freshness_satisfied`` is true only when the
@@ -61,7 +67,7 @@ POINTER_SCHEMA = 'laya-initial-build-pointer-v1'
 RECORD = 'initial-build.json'
 LOCK = 'initial-build.lock'
 POINTERS = 'initial-builds'
-PHASES = ('registered', 'building', 'sealed', 'blocked', 'bound')
+PHASES = ('registered', 'building', 'sealed', 'blocked', 'bound', 'retired')
 MAX_RECORD_BYTES = 65536
 IDENTITY_FIELDS = frozenset((
     'projectRoot', 'stateRoot', 'installId', 'scopeId', 'collections',
@@ -315,9 +321,10 @@ RETIRED_POINTER = 'retired-build-pointer.json'
 def retire_project_pointer(identity):
     """Release the project's wake pointer of a retired build; deletes no store.
 
-    The caller holds the build ``owner`` and has already retired the build's
-    QMD binding while the record stays ``bound`` (so a wake never steps it
-    again). The exact pointer bytes are first archived, no-clobber, as
+    The caller holds the build ``owner``. The record is either ``bound`` with
+    its QMD binding retired, or terminal ``retired`` because no work started;
+    in both cases a wake cannot step it. The exact pointer bytes are first
+    archived, no-clobber, as
     ``RETIRED_POINTER`` in the build's state root. Then only a pointer that
     is exactly this build's is moved aside within the pointer directory and
     removed; a pointer a later install registered is never touched (it is
@@ -437,6 +444,8 @@ def advance(record, **changes):
         _fail('initial_build_stale_cas')
     if current['phase'] == 'bound' and changes.get('phase', 'bound') != 'bound':
         _fail('initial_build_already_bound')
+    if current['phase'] == 'retired':
+        _fail('initial_build_retired')
     updated = {**current, **changes, 'epoch': current['epoch'] + 1,
                'updatedNs': time.time_ns()}
     _validate(updated)
@@ -466,7 +475,7 @@ def transition(record, result, sealed=None):
     its reason and path; ``pending`` and ``deferred`` are ``building``.
     Returns the keyword changes for ``advance`` (empty when nothing changed).
     """
-    if record['phase'] == 'bound':
+    if record['phase'] in ('bound', 'retired'):
         return {}
     state = result.get('state')
     if sealed is not None:
@@ -549,6 +558,8 @@ def request_freshness(record, catalog):
     """
     if record['phase'] == 'bound':
         _fail('initial_build_already_bound')
+    if record['phase'] == 'retired':
+        _fail('initial_build_retired')
     requested = time.time_ns()
     if catalog.request_scan().get('status') == 'busy':
         _fail('catalog_busy')

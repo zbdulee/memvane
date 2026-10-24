@@ -555,6 +555,10 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
     build record under the build owner lock.
     """
     identity = record['identity']
+    if record['phase'] == 'retired':
+        # An explicitly abandoned, never-started build: nothing to step; ACK.
+        return {'state': 'unchanged', 'reason': 'initial_build_retired',
+                'initialBuild': 'retired'}
     if record['phase'] == 'bound':
         return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
     if record['phase'] == 'sealed':
@@ -582,6 +586,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         record = initial_build.read(identity['stateRoot'])
         if record is None or record['identity'] != identity:
             raise IndexContractError('initial_build_identity_changed')
+        if record['phase'] == 'retired':
+            return {'state': 'unchanged', 'reason': 'initial_build_retired',
+                    'initialBuild': 'retired'}
         if record['phase'] == 'bound':
             return {'state': 'unchanged', 'reason': 'initial_build_bound',
                     'initialBuild': 'bound'}
