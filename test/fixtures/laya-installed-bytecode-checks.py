@@ -80,6 +80,15 @@ class InstalledBytecodeChecks(unittest.TestCase):
                         'inspect', '--project', str(project)],
                        env=env, cwd=project, check=True, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=30)
+        # Direct maintenance/status entrypoints also load installed modules.
+        # They must not add bytecode to the sealed plugin cache.
+        status = subprocess.run([str(python), str(installed / 'core/runtime_work.py'),
+                                 'build-wake-status', '--project', str(project)],
+                                env=env, cwd=project, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=30)
+        self.assertIn(status.returncode, (0, 75), status.stderr.decode(errors='replace'))
+        self.assertEqual([str(p.relative_to(installed)) for p in installed.rglob('*')
+                          if p.name == '__pycache__' or p.suffix in ('.pyc', '.pyo')], [])
         # Manual skill entrypoints bypass run-hook. Their setup check imports
         # installed core modules even when the project is still unconfigured.
         manager = home / 'manager.sh'

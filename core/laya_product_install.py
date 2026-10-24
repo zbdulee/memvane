@@ -1517,6 +1517,8 @@ def retire_drifted_origin(*, project_root, state_root):
 
 UNUSED_RETIREMENT = 'unused-build-retirement'
 UNUSED_RECEIPT_SCHEMA = 'laya-unused-build-retirement-v1'
+INACTIVE_RETIREMENT = 'inactive-build-retirement'
+INACTIVE_RECEIPT_SCHEMA = 'laya-inactive-build-retirement-v1'
 # Tables whose rows would mean the build already read source or wrote vectors.
 # A missing table counts as empty; a store that cannot be read refuses.
 _UNUSED_ZERO_TABLES = (
@@ -1553,8 +1555,8 @@ def _ro_sqlite(path):
     return sqlite3.connect(source.as_uri() + mode, uri=True, timeout=.5)
 
 
-def _unused_store_proof(identity):
-    """Read-only, WAL-aware proof that no source or vector row was written.
+def _unused_store_proof(identity, *, allow_work=False):
+    """Read-only, WAL-aware proof of store rows and active claims.
 
     A present WAL is read through SQLite's normal read-only path; a store
     without sidecars is read as an immutable single-file snapshot. Any SQLite
@@ -1566,6 +1568,7 @@ def _unused_store_proof(identity):
     for key, tables in _UNUSED_ZERO_TABLES:
         try:
             with closing(_ro_sqlite(identity[key])) as db:
+                db.execute('BEGIN')
                 if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                     _fail('unused_build_store_check_failed')
                 present = {row[0] for row in db.execute(
@@ -1575,13 +1578,33 @@ def _unused_store_proof(identity):
                     _fail('unused_build_store_schema_unrecognized')
                 counts = {name: db.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0]
                           for name in tables if name in present}
+                if allow_work and key == 'queueDb' and 'jobs' in present:
+                    active = db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('pending','leased')").fetchone()[0]
+                    if active:
+                        _fail('inactive_build_claim_active')
+                db.execute('COMMIT')
         except sqlite3.Error:
             _fail('unused_build_store_unreadable')
-        if any(counts.values()):
+        if not allow_work and any(counts.values()):
             _fail('unused_build_has_work')
         wal = Path(identity[key] + '-wal')
-        proof[key] = {'counts': counts,
-                      'walBytes': wal.stat().st_size if wal.exists() else 0}
+        if allow_work:
+            try:
+                source_info = Path(identity[key]).stat()
+                wal_info = wal.stat() if wal.exists() else None
+            except OSError:
+                _fail('unused_build_store_unavailable')
+            proof[key] = {'counts': counts,
+                          'walBytes': wal_info.st_size if wal_info else 0,
+                          'sourceIdentity': [source_info.st_dev, source_info.st_ino,
+                                             source_info.st_size, source_info.st_mtime_ns,
+                                             source_info.st_ctime_ns],
+                          'walIdentity': ([wal_info.st_dev, wal_info.st_ino,
+                                           wal_info.st_size, wal_info.st_mtime_ns,
+                                           wal_info.st_ctime_ns] if wal_info else None)}
+        else:
+            proof[key] = {'counts': counts,
+                          'walBytes': wal.stat().st_size if wal.exists() else 0}
     return proof
 
 
@@ -1628,7 +1651,8 @@ def _snapshot_sqlite(source, target):
     return _sha256_file(target)
 
 
-def _receipt_matches(final, identity, install_id, commit_id, *, current_bytes):
+def _receipt_matches(final, identity, install_id, commit_id, *, current_bytes,
+                     schema=UNUSED_RECEIPT_SCHEMA):
     """True only for a complete receipt of exactly this build; else refuse.
 
     ``current_bytes`` are the live record/pointer bytes to compare with the
@@ -1639,7 +1663,7 @@ def _receipt_matches(final, identity, install_id, commit_id, *, current_bytes):
     except (OSError, ValueError, InstallBlocked):
         _fail('unused_build_receipt_invalid')
     files = receipt.get('files') if isinstance(receipt, dict) else None
-    if (not isinstance(files, dict) or receipt.get('schema') != UNUSED_RECEIPT_SCHEMA or
+    if (not isinstance(files, dict) or receipt.get('schema') != schema or
             receipt.get('installId') != install_id or receipt.get('commitId') != commit_id or
             receipt.get('projectRoot') != identity['projectRoot'] or
             receipt.get('stateRoot') != identity['stateRoot'] or
@@ -1688,6 +1712,28 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
     Old state files, QMD, sources and backups all remain. Sealed, bound,
     building, blocked, selected or first-write builds are never touched.
     """
+    return _abandon_initial_build(project_root=project_root, state_root=state_root,
+                                  install_id=install_id, commit_id=commit_id,
+                                  wake_revision=wake_revision, queue=queue,
+                                  allow_started=False)
+
+
+def abandon_inactive_initial_build(*, project_root, state_root, install_id, commit_id,
+                                   wake_revision=None, queue=None):
+    """Archive an unselected QA candidate, including a partially built one.
+
+    All private stores are backed up and retained. A selected route, first
+    write, bound cutover, active claim, running wake, or changed owner refuses.
+    This is separate from the registered-only unused-build contract.
+    """
+    return _abandon_initial_build(project_root=project_root, state_root=state_root,
+                                  install_id=install_id, commit_id=commit_id,
+                                  wake_revision=wake_revision, queue=queue,
+                                  allow_started=True)
+
+
+def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
+                           wake_revision, queue, allow_started):
     import laya_initial_build as initial_build
     import runtime_wake_cancel as wake_cancel
     from laya_install_journal import inspect_journal
@@ -1702,7 +1748,11 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
     if wake_revision is not None and (type(wake_revision) is not int or wake_revision <= 0):
         _fail('unused_build_wake_revision_invalid')
     import time
-    final = state / UNUSED_RETIREMENT
+    final = state / (INACTIVE_RETIREMENT if allow_started else UNUSED_RETIREMENT)
+    other = state / (UNUSED_RETIREMENT if allow_started else INACTIVE_RETIREMENT)
+    if other.exists() or other.is_symlink():
+        _fail('unused_build_conflicting_receipt')
+    receipt_schema = INACTIVE_RECEIPT_SCHEMA if allow_started else UNUSED_RECEIPT_SCHEMA
     if final.is_symlink():
         _fail('unused_build_receipt_invalid')
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -1719,16 +1769,19 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
         if record['phase'] == 'retired':
             # Replay after the record moved: finish the pointer, nothing else.
             receipt = _receipt_matches(final, identity, install_id, commit_id,
-                                       current_bytes=None)
-            return {'status': 'unused_build_retired', 'replayed': True,
+                                       current_bytes=None, schema=receipt_schema)
+            return {'status': 'inactive_build_retired' if allow_started else 'unused_build_retired',
+                    'replayed': True,
                     'receipt': str(final / 'receipt.json'),
                     'buildPointer': initial_build.retire_project_pointer(identity),
                     'buildPhase': 'retired', 'recordEpoch': record['epoch'],
                     'receiptRecordEpoch': receipt.get('recordEpoch'),
                     'changesApplied': 0, 'nextRequires': 'new_install_id_and_state_root'}
-        if record['phase'] != 'registered':
+        if record['phase'] != 'registered' and (not allow_started or record['phase'] not in
+                                                ('building', 'blocked')):
             _fail('unused_build_not_registered')
-        if any(record[key] is not None for key in ('progress', 'sealed', 'freshness', 'blocked')):
+        if not allow_started and any(record[key] is not None for key in
+                                     ('progress', 'sealed', 'freshness', 'blocked')):
             _fail('unused_build_has_progress')
         try:
             ownership = wake_cancel.ownership_proof(str(project))
@@ -1752,14 +1805,18 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
                 pending['newWriteSeen'] or pending['projectRoot'] != str(project) or
                 pending['scopeId'] != identity['scopeId'] or
                 pending['pendingRouteSha256'] != identity['routeSha256'] or
-                pending['providerAttestationSha256'] is not None or
-                pending['providerFileIdentitySha256'] is not None or
+                (not allow_started and pending['providerAttestationSha256'] is not None) or
+                (not allow_started and pending['providerFileIdentitySha256'] is not None) or
                 entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
             _fail('unused_build_journal_changed')
+        if allow_started:
+            from laya_qmd_cutover import inspect_bound_cutover
+            if inspect_bound_cutover(journal) is not None:
+                _fail('inactive_build_cutover_started')
         route_bytes = _read_private(identity['routeFile'], 8192)
         if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
             _fail('initial_build_route_changed')
-        stores = _unused_store_proof(identity)
+        stores = _unused_store_proof(identity, allow_work=True) if allow_started else _unused_store_proof(identity)
         record_bytes = _read_private(initial_build.record_path(state),
                                      initial_build.MAX_RECORD_BYTES)
         live = {'initial-build.json': record_bytes, 'build-pointer.json': pointer_bytes,
@@ -1788,7 +1845,7 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
                                      ('catalog.sqlite', identity['catalogDb']),
                                      ('binding.sqlite', identity['bindingStore'])):
                     digests[name] = _snapshot_sqlite(source, temp / name)
-                receipt = {'schema': UNUSED_RECEIPT_SCHEMA, 'installId': install_id,
+                receipt = {'schema': receipt_schema, 'installId': install_id,
                            'commitId': commit_id, 'projectRoot': identity['projectRoot'],
                            'stateRoot': identity['stateRoot'], 'recordEpoch': record['epoch'],
                            'journalEpoch': pending['epoch'], 'stores': stores,
@@ -1810,7 +1867,10 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
                 shutil.rmtree(temp, ignore_errors=True)
                 raise
         # A pre-existing receipt (interrupted run) must be this exact build's.
-        _receipt_matches(final, identity, install_id, commit_id, current_bytes=live)
+        receipt = _receipt_matches(final, identity, install_id, commit_id,
+                                   current_bytes=live, schema=receipt_schema)
+        if allow_started and receipt.get('stores') != stores:
+            _fail('unused_build_store_changed')
         cancelled = None
         if wake is not None:
             import sqlite3
@@ -1822,17 +1882,23 @@ def abandon_unused_initial_build(*, project_root, state_root, install_id, commit
             except sqlite3.OperationalError:
                 _fail('unused_build_wake_queue_busy')
         # Last look before the first mutation of the record: nothing moved.
-        current_stores = _unused_store_proof(identity)
+        current_stores = (_unused_store_proof(identity, allow_work=True) if allow_started
+                          else _unused_store_proof(identity))
         try:
             current_ownership = wake_cancel.ownership_proof(str(project))
         except wake_cancel.CancelRefused:
             _fail('unused_build_changed')
         if (initial_build.read(state) != record or current_stores != stores or
+                inspect_journal(journal) != pending or
                 current_ownership['sha256'] != ownership['sha256']):
             _fail('unused_build_changed')
-        record = initial_build.advance(record, phase='retired')
+        if allow_started and inspect_bound_cutover(journal) is not None:
+            _fail('inactive_build_cutover_started')
+        clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
+        record = initial_build.advance(record, phase='retired', **clear) if allow_started else initial_build.advance(record, phase='retired')
         pointer = initial_build.retire_project_pointer(identity)
-    return {'status': 'unused_build_retired', 'replayed': False,
+    return {'status': 'inactive_build_retired' if allow_started else 'unused_build_retired',
+            'replayed': False,
             'receipt': str(final / 'receipt.json'), 'stateRoot': str(state),
             'wake': None if cancelled is None else
             {key: cancelled[key] for key in ('status', 'revision') if key in cancelled},
@@ -1861,8 +1927,11 @@ def retired_build_pointer(project_root):
         if identity['journalPath'] != str(state / 'install-journal.sqlite'):
             return None
         if record['phase'] == 'retired':
-            # An interrupted abandon of an unused build: the replay finishes it.
-            return {'nextAction': 'abandon-index-build', 'stateRoot': str(state),
+            # An interrupted abandon may have archived a partial candidate.
+            action = ('abandon-inactive-index-build' if
+                      (state / INACTIVE_RETIREMENT / 'receipt.json').is_file() else
+                      'abandon-index-build')
+            return {'nextAction': action, 'stateRoot': str(state),
                     'reason': 'retired_build_pointer_registered'}
         row = inspect_bound_cutover(state / 'install-journal.sqlite')
     except Exception:  # a hint only; the real refusal stays the caller's

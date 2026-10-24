@@ -134,6 +134,127 @@ class AbandonCase(unittest.TestCase):
         args.update(over)
         return product.abandon_unused_initial_build(**args)
 
+    def abandon_inactive(self, **over):
+        args = {'project_root': str(self.project), 'state_root': str(self.state),
+                'install_id': INSTALL, 'commit_id': COMMIT,
+                'wake_revision': self.revision(), 'queue': self.queue}
+        args.update(over)
+        return product.abandon_inactive_initial_build(**args)
+
+    def partly_built(self):
+        initial_build.advance(initial_build.read(self.state), phase='building',
+                              progress={'state': 'pending'},
+                              freshness={'requestedNs': 123})
+        self.journal['providerAttestationSha256'] = 'a' * 64
+        self.journal['providerFileIdentitySha256'] = 'b' * 64
+        with closing(sqlite3.connect(self.identity['candidateDb'])) as db:
+            db.execute("INSERT INTO content(hash, body) VALUES('wiki-only-hash','wiki card')")
+            db.commit()
+
+    def test_partly_built_inactive_candidate_is_archived_without_deleting_content(self):
+        self.partly_built()
+        result = self.abandon_inactive()
+        self.assertEqual((result['status'], result['buildPhase']),
+                         ('inactive_build_retired', 'retired'))
+        self.assertIsNone(initial_build.lookup(self.project))
+        with closing(sqlite3.connect(self.identity['candidateDb'])) as db:
+            self.assertEqual(db.execute('SELECT body FROM content').fetchone()[0], 'wiki card')
+        receipt = self.state / product.INACTIVE_RETIREMENT
+        self.assertEqual(json.loads((receipt / 'receipt.json').read_text())['schema'],
+                         product.INACTIVE_RECEIPT_SCHEMA)
+        with closing(sqlite3.connect(receipt / 'candidate.sqlite')) as db:
+            self.assertEqual(db.execute('PRAGMA quick_check').fetchone()[0], 'ok')
+            self.assertEqual(db.execute('SELECT body FROM content').fetchone()[0], 'wiki card')
+        self.assertEqual(self.abandon_inactive(wake_revision=None)['replayed'], True)
+        self.assertIsNotNone(self.revision('laya-sync', self.other))
+        self.assertIsNotNone(self.revision('update'))
+
+    def test_original_unused_path_still_refuses_partial(self):
+        self.partly_built()
+        with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_not_registered'):
+            self.abandon()
+
+    def test_original_unused_receipt_replays_without_new_proof_fields(self):
+        # A receipt written by the older registered-only command must still
+        # replay after an upgrade; the new proof fields belong only to the
+        # separate inactive-candidate recovery command.
+        with mock.patch.object(initial_build, 'advance', side_effect=RuntimeError('interrupted')):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                self.abandon()
+        receipt = self.state / product.UNUSED_RETIREMENT / 'receipt.json'
+        stored = json.loads(receipt.read_text())
+        self.assertNotIn('sourceIdentity', stored['stores']['candidateDb'])
+        self.assertEqual(self.abandon()['status'], 'unused_build_retired')
+
+    def test_inactive_recovery_refuses_sealed_candidate_and_other_receipt(self):
+        self.partly_built()
+        initial_build.advance(initial_build.read(self.state), phase='sealed',
+                              sealed={key: 'a' * 64 for key in initial_build.SEALED_FIELDS})
+        with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_not_registered'):
+            self.abandon_inactive()
+        initial_build.advance(initial_build.read(self.state), phase='building', sealed=None)
+        other = self.state / product.UNUSED_RETIREMENT
+        other.mkdir(mode=0o700)
+        with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_conflicting_receipt'):
+            self.abandon_inactive()
+
+    def test_partly_built_refuses_selection_first_write_and_bound_ledger(self):
+        import laya_qmd_cutover
+        self.partly_built()
+        for key, value in [('selected', {'installId': INSTALL}), ('newWriteSeen', True)]:
+            old = self.journal[key]
+            self.journal[key] = value
+            with self.assertRaises(product.InstallBlocked):
+                self.abandon_inactive()
+            self.journal[key] = old
+        with mock.patch.object(laya_qmd_cutover, 'inspect_bound_cutover', return_value={'phase':'prepared'}):
+            with self.assertRaisesRegex(product.InstallBlocked, 'inactive_build_cutover_started'):
+                self.abandon_inactive()
+        self.assertEqual(initial_build.read(self.state)['phase'], 'building')
+        self.assertFalse((self.state / product.INACTIVE_RETIREMENT).exists())
+
+    def test_partly_built_refuses_active_claim_and_wake_race(self):
+        self.partly_built()
+        with closing(sqlite3.connect(self.identity['queueDb'])) as db:
+            db.execute("INSERT INTO jobs VALUES('c','s','g','m','d',1,NULL,'pending',NULL,NULL)")
+            db.commit()
+        with self.assertRaisesRegex(product.InstallBlocked, 'inactive_build_claim_active'):
+            self.abandon_inactive()
+        with closing(sqlite3.connect(self.identity['queueDb'])) as db:
+            db.execute("UPDATE jobs SET state='acked' WHERE claim='c'")
+            db.commit()
+        with self.queue.connect() as db:
+            db.execute("UPDATE wakes SET status='running' WHERE id=?", (self.key,))
+        with self.assertRaises(product.InstallBlocked):
+            self.abandon_inactive()
+        self.assertEqual(initial_build.read(self.state)['phase'], 'building')
+
+    def test_partly_built_wal_backup_and_same_count_drift_refusal(self):
+        self.partly_built()
+        db = sqlite3.connect(self.identity['candidateDb'])
+        try:
+            db.execute('PRAGMA journal_mode=WAL')
+            db.execute('PRAGMA wal_autocheckpoint=0')
+            db.execute('PRAGMA user_version=2')
+            db.commit()
+            self.assertTrue(Path(self.identity['candidateDb'] + '-wal').exists())
+            with self.assertRaises(product.InstallBlocked):
+                self.abandon_inactive(wake_revision=self.revision() + 1)
+            receipt = self.state / product.INACTIVE_RETIREMENT
+            with closing(sqlite3.connect(receipt / 'candidate.sqlite')) as backed:
+                self.assertEqual(backed.execute('PRAGMA quick_check').fetchone()[0], 'ok')
+                self.assertEqual(backed.execute('SELECT body FROM content').fetchone()[0],
+                                 'wiki card')
+                self.assertEqual(backed.execute('PRAGMA user_version').fetchone()[0], 2)
+            db.execute('PRAGMA user_version=3')
+            db.commit()
+            with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_store_changed'):
+                self.abandon_inactive()
+            self.assertEqual(initial_build.read(self.state)['phase'], 'building')
+            self.assertIsNotNone(initial_build.lookup(self.project))
+        finally:
+            db.close()
+
     def untouched(self, reason=None):
         """Registered record, pointer and the other wakes intact; no receipt move."""
         record = initial_build.read(self.state)
