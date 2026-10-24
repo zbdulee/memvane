@@ -458,10 +458,29 @@ assert not attempts,attempts
     from runtime_work import drain
     # The dispatcher starts one owned worker per pending request and keeps its
     # wake until that worker settles; teacher work was already committed above.
-    for _ in range(4):
-        drained=drain(WakeQueue(),max_seconds=15,max_runs=8)
-        if drained['status']=='drained':break
-    assert drained['status']=='drained',drained
+    # A child may finish while a different, detached dispatcher owns the UID
+    # lease. In that case our drain result is only a snapshot, not the final
+    # queue outcome. Wait for the durable ACK rather than requiring this caller
+    # to be the dispatcher that observes the empty queue.
+    deadline=time.monotonic()+120
+    drain_results=[]
+    queue=WakeQueue()
+    while time.monotonic()<deadline:
+        drained=drain(queue,max_seconds=min(15,max(1,deadline-time.monotonic())),max_runs=8)
+        drain_results.append(drained)
+        drain_results=drain_results[-16:]
+        if not queue.pending() and all(
+            json.loads((namespace/shared.FULL_WORKER_STATE).read_text())['acked']
+            for _,namespace,_ in projects):
+            break
+        if drained['status']=='busy':time.sleep(1)
+    else:
+        pending=[{key:row[key] for key in ('kind','status','attempts','reason')}
+                 for row in queue.pending()]
+        states=[json.loads((namespace/shared.FULL_WORKER_STATE).read_text())
+                for _,namespace,_ in projects]
+        raise AssertionError({'pending':pending,'workerStates':states,
+                              'drainResults':drain_results})
     receipts=[json.loads(path.read_text()) for path in (home/'.uid-home-fixture/receipts').glob('*.json')]
     worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
     # Compute admission can defer one child while another project trains.
