@@ -171,7 +171,8 @@ class BoundCase(BUILD['BuildCase']):
         LayaIndexA(candidate, create=True).close()
         incarnation = product._empty_or_bound_candidate(candidate, SCOPE)
         product._publish_claim_queue(queue, incarnation)
-        product.prepare_capacity_stores(candidate, self.roots, SCOPE, incarnation)
+        product.prepare_capacity_stores(candidate, {'wiki': self.roots['wiki']},
+                                        SCOPE, incarnation)
         route = {'schema': ROUTE_V2, 'status': 'active', 'projectRoot': str(self.project),
                  'settingsSha256': _sha(self.settings.read_bytes()),
                  'dbPath': str(candidate), 'queuePath': str(queue),
@@ -197,7 +198,7 @@ class BoundCase(BUILD['BuildCase']):
 
     def bound(self, docs=4, wiki=2):
         """Register, build, request freshness, re-seal and bind."""
-        self.corpus(docs)
+        self.corpus(docs, collection='docs')
         for i in range(wiki):
             self.write(f'wiki/w{i}.md', f'# Wiki {i}\nwiki body {i}\n')
         self.qmd_source()
@@ -369,7 +370,7 @@ class BoundCutoverFlowTests(BoundCase):
 
 class BoundCutoverCrashTests(BoundCase):
     def sealed_fresh(self):
-        self.corpus(3)
+        self.corpus(3, collection='docs')
         self.write('wiki/w0.md', '# W\nwiki\n')
         self.qmd_source()
         self.register()
@@ -568,7 +569,8 @@ class BoundCutoverProofTests(BoundCase):
 
     def test_changed_catalog_snapshot_refuses(self):
         self.bound()
-        catalog = LayaSourceCatalog(self.row()['catalogDb'], self.roots, SCOPE)
+        catalog = LayaSourceCatalog(self.row()['catalogDb'],
+                                    {'wiki': self.roots['wiki']}, SCOPE)
         self.addCleanup(catalog.close)
         self.assertNotEqual(catalog.request_scan().get('status'), 'busy')
         self.refused('cutover_candidate_evidence_mismatch')

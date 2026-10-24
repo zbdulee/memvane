@@ -212,6 +212,7 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
                                        _source_for_collection,
                                        RECORD, QMD_SELECTION_MARKER)
     from laya_index_source_port import scan_collections
+    from laya_index_host_route import wiki_index_roots
     from laya_index_vector import qmd_markdown_title
     from laya_qmd_migration import QMD_253, inspect_qmd_collections
 
@@ -293,12 +294,17 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
         if (file.sha256 != sha or file.text != body or
                 title != qmd_markdown_title(file.text, path)):
             _fail('qmd_current_source_changed')
+    wiki_scan = scan_collections(wiki_index_roots(collections), scope, InitialIndex(),
+                                 max_files=SYNC_ORIGIN_MAX_FILES,
+                                 max_bytes=SYNC_ORIGIN_MAX_BYTES)
     plan = {'schema': 'laya-qmd-origin-plan-v1', 'projectRoot': str(project),
             'settingsSha256': settings_sha, 'sourceDb': source_db,
             'sourceFormat': QMD_253, 'sourceDigest': inventory['digest'],
-            'scopeId': scope, 'sourceManifest': scan.manifest,
+            'scopeId': scope, 'sourceManifest': wiki_scan.manifest,
             'collections': collections,
-            'sourceFiles': [[file.path, file.sha256] for file in scan.files],
+            'sourceFiles': [[file.path, file.sha256] for file in wiki_scan.files],
+            'sourceEvidenceManifest': scan.manifest,
+            'sourceEvidenceFiles': [[file.path, file.sha256] for file in scan.files],
             'deletedSinceQmd': len(active) - len(current),
             'qmdStoreGeneration': selected.get('generation'),
             'qmdManagedRuntime': runtime['QMD_PACKAGE_BIN']}
@@ -590,6 +596,10 @@ def _read_private_or_package(path):
 def _plan_scan(plan):
     """Reproduce the reviewed source snapshot without opening the model."""
     from laya_index_source_port import scan_collections
+    from laya_index_host_route import wiki_index_roots
+    if ('sourceEvidenceManifest' not in plan or
+            'sourceEvidenceFiles' not in plan):
+        _fail('reviewed_origin_plan_legacy')
     roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
     class FreshIndex:
         def list_exclusions(self, _scope):
@@ -597,11 +607,18 @@ def _plan_scan(plan):
     scan = scan_collections(roots, plan['scopeId'], FreshIndex(),
                             max_files=SYNC_ORIGIN_MAX_FILES,
                             max_bytes=SYNC_ORIGIN_MAX_BYTES)
-    if (scan.manifest != plan['sourceManifest'] or
-            [[item.path, item.sha256] for item in scan.files] != plan['sourceFiles'] or
+    if (scan.manifest != plan['sourceEvidenceManifest'] or
+            [[item.path, item.sha256] for item in scan.files] != plan['sourceEvidenceFiles'] or
             any(not item.eligible for item in scan.files)):
         _fail('reviewed_source_changed')
-    return scan
+    wiki_scan = scan_collections(wiki_index_roots(plan['collections']), plan['scopeId'],
+                                 FreshIndex(), max_files=SYNC_ORIGIN_MAX_FILES,
+                                 max_bytes=SYNC_ORIGIN_MAX_BYTES)
+    if (wiki_scan.manifest != plan['sourceManifest'] or
+            [[item.path, item.sha256] for item in wiki_scan.files] != plan['sourceFiles'] or
+            any(not item.eligible for item in wiki_scan.files)):
+        _fail('reviewed_wiki_source_changed')
+    return wiki_scan
 
 
 def _candidate_prepared(path, generation, scope, manifest, source_digest,
@@ -988,7 +1005,9 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             # a second run, so stores created after it could never be
             # completed by a re-run. A failed run leaves them, and a re-run
             # without the flag then fails as capacity_store_unexpected.
-            prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
+            from laya_index_host_route import wiki_index_roots
+            prepare_capacity_stores(candidate, wiki_index_roots(plan['collections']),
+                                    plan['scopeId'], incarnation)
         if (plan_qmd_origin(project_root, background=False)['proposalSha256']
                 != expected_proposal_sha256):
             _fail('origin_changed_before_bind')
@@ -1133,7 +1152,9 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
                 _fail('partial_queue_requires_recovery')
     else:
         _publish_claim_queue(queue, incarnation)
-    catalog, store = prepare_capacity_stores(candidate, roots, plan['scopeId'], incarnation)
+    from laya_index_host_route import wiki_index_roots
+    catalog, store = prepare_capacity_stores(candidate, wiki_index_roots(plan['collections']),
+                                             plan['scopeId'], incarnation)
     # The route's generation is the install identity token; the bound index
     # generation it will serve is chosen by the build and bound at finalize.
     generation = 'g-' + hashlib.sha256(
@@ -1194,12 +1215,13 @@ def initial_build_status(state_root):
     import laya_initial_build as initial_build
     from contextlib import closing
     from laya_source_catalog import LayaSourceCatalog
+    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
     record = initial_build.read(state)
     if record is None:
         _fail('initial_build_missing')
     identity = record['identity']
-    roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
+    roots = wiki_index_roots(identity['collections'])
     with closing(LayaSourceCatalog(identity['catalogDb'], roots, identity['scopeId'])) as catalog:
         scan = catalog.status()
     return {'status': 'initial_build', 'phase': record['phase'],
@@ -1214,6 +1236,7 @@ def request_initial_build_rescan(state_root):
     import laya_initial_build as initial_build
     from contextlib import closing
     from laya_source_catalog import LayaSourceCatalog
+    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
@@ -1222,7 +1245,7 @@ def request_initial_build_rescan(state_root):
         if record is None:
             _fail('initial_build_missing')
         identity = record['identity']
-        roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
+        roots = wiki_index_roots(identity['collections'])
         with closing(LayaSourceCatalog(identity['catalogDb'], roots,
                                        identity['scopeId'])) as catalog:
             record = initial_build.request_freshness(record, catalog)
@@ -1260,6 +1283,7 @@ def finalize_initial_build(*, project_root, state_root):
     from laya_qmd_cutover import (SCHEMA_V3, SOURCE_DRIFT, bind_qmd_origin_bound,
                                   inspect_bound_cutover)
     from laya_source_catalog import LayaSourceCatalog
+    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
@@ -1290,6 +1314,7 @@ def finalize_initial_build(*, project_root, state_root):
         if record['phase'] == 'bound' and cutover is None:
             _fail('initial_build_bound_without_cutover')
         roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
+        index_roots = wiki_index_roots(identity['collections'])
         # A prepared bound cutover was written only after this sealed evidence
         # was proved fresh, and a bound or binding build never moves: replay.
         if cutover is None and not initial_build.freshness_satisfied(record):
@@ -1297,7 +1322,7 @@ def finalize_initial_build(*, project_root, state_root):
                 return {'status': 'freshness_pending', 'phase': record['phase'],
                         'progress': record['progress'],
                         'wake': _request_build_wake(identity['projectRoot'])}
-            with closing(LayaSourceCatalog(identity['catalogDb'], roots,
+            with closing(LayaSourceCatalog(identity['catalogDb'], index_roots,
                                            identity['scopeId'])) as catalog:
                 record = initial_build.request_freshness(record, catalog)
             return {'status': 'freshness_pending', 'phase': record['phase'],
@@ -1318,7 +1343,7 @@ def finalize_initial_build(*, project_root, state_root):
         _check_record_replacement_binding(identity, plan,
                                           approval.get('providerManifest'))
         sealed = record['sealed']
-        with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
+        with LayaIndexRuntime(source_root=index_roots, scope=identity['scopeId'],
                               db_path=identity['candidateDb'],
                               queue_path=identity['queueDb'],
                               db_incarnation=identity['dbIncarnation'],

@@ -516,7 +516,7 @@ class ResponseChecks(unittest.TestCase):
             source.write_text('new source', encoding='utf-8')
             self.assertFalse(response._verified_wiki_row(card, decision))
 
-    def test_v2_hierarchy_backfills_raw_when_wiki_unverified(self):
+    def test_v2_hierarchy_never_backfills_raw_when_wiki_unverified(self):
         index = FakeIndex()
         runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
         decision = {'projectRoot': '/synthetic/project',
@@ -538,10 +538,10 @@ class ResponseChecks(unittest.TestCase):
             found, title_only = response.query_selected_v2(
                 runtime, 'find chapter', VECTOR_PROFILE, VECTOR_PROFILE,
                 lambda *_: None, decision)
-        self.assertEqual([item['path'] for item in found], ['raw/chapter.md'])
+        self.assertEqual(found, [])
         self.assertEqual(title_only, frozenset())
         self.assertEqual([call.args[6] for call in phase.call_args_list],
-                         [('wiki',), ('raw',)])
+                         [('wiki',)])
         self.assertTrue(index.released)
 
     # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
@@ -637,7 +637,7 @@ class ResponseChecks(unittest.TestCase):
             tampered = self.span_card(revision, 'sourceSpans: []\n')
             for card, expect_path, expect_locations in (
                     (good, 'wiki/card.md', {'wiki/card.md': ('docs/a.md#L2-L2',)}),
-                    (tampered, 'docs/a.md', {})):
+                    (tampered, None, {})):
                 with self.subTest(expect=expect_path):
                     runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
                     located = {}
@@ -648,7 +648,8 @@ class ResponseChecks(unittest.TestCase):
                         found, _title_only = response.query_selected_v2(
                             runtime, 'find port', VECTOR_PROFILE, VECTOR_PROFILE,
                             lambda *_: None, decision, source_locations=located)
-                    self.assertEqual([item['path'] for item in found], [expect_path])
+                    self.assertEqual([item['path'] for item in found],
+                                     [expect_path] if expect_path else [])
                     self.assertEqual(located, expect_locations)
 
     def test_render_source_locations_are_metadata_not_quoted_body(self):

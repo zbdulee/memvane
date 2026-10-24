@@ -19,7 +19,7 @@ from resource_deferred import ResourceDeferred
 from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
-from laya_index_host_route import select_route
+from laya_index_host_route import select_route, wiki_index_roots
 from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
                                 _collection_roots, capacity_store_paths)
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
@@ -247,7 +247,11 @@ def _route_source(decision):
                    for item in declared)
             or {item['name']: item.get('sourceRoot') for item in declared} != dict(bound)):
         raise IndexContractError('selected_collection_roots_mismatch')
-    return bound
+    try:
+        wiki = wiki_index_roots(declared)
+    except ValueError as exc:
+        raise IndexContractError('selected_wiki_source_invalid') from exc
+    return _collection_roots(wiki)
 
 
 def run(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
@@ -618,7 +622,7 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
             fresh = resource_report(EMBED_POLICY, detailed=True)
             return controller.check(EMBED_POLICY, fresh)['ready']
 
-        roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
+        roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
                 stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))

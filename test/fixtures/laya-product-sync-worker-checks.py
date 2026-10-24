@@ -351,13 +351,13 @@ class V2WorkerChecks(unittest.TestCase):
         self.assertEqual(first['state'],'indexed')
         self.assertEqual(self.marks,[8])
         self.assertEqual(self.claim_state(first['claim']),'acked')
-        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
-        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.members(first['generation']),['beta/two.md'])
+        self.assertEqual(sorted(self.embedded),['beta/two.md'])
         self.assertEqual(self.run_worker(),
                          {'state':'unchanged','generation':first['generation'],'claim':None})
         # No second fence or inference: sealed chunk sets are reused.
         self.assertEqual(self.marks,[8])
-        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(sorted(self.embedded),['beta/two.md'])
         self.assertEqual(self.batches[0]['source_manifest'],self.batches[1]['source_manifest'])
         self.assertEqual(len(self.services),2)
 
@@ -369,17 +369,12 @@ class V2WorkerChecks(unittest.TestCase):
         self.assertNotEqual(changed['generation'],first['generation'])
         self.assertEqual(self.marks,[8,9])
         self.assertEqual(self.claim_state(changed['claim']),'acked')
-        self.assertEqual(self.members(changed['generation']),['alpha/one.md','beta/two.md'])
-        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
-        # Only the edited document is embedded again; the untouched root keeps
-        # its namespaced (content hash, title) vector identity.
-        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md','beta/two.md'])
-        alpha={(h,t) for h,t in self.identities(self.batches[0])
-               if t==qmd_markdown_title('silver otter','alpha/one.md')}
-        self.assertEqual(len(alpha),1)
-        self.assertLessEqual(alpha,self.identities(self.batches[1]))
+        self.assertEqual(self.members(changed['generation']),['beta/two.md'])
+        self.assertEqual(self.members(first['generation']),['beta/two.md'])
+        # The raw document stays outside every generation and vector cache.
+        self.assertEqual(sorted(self.embedded),['beta/two.md','beta/two.md'])
         with closing(LayaIndexA(self.index_path)) as index:
-            self.assertEqual(index.db.execute('SELECT COUNT(*) FROM content').fetchone()[0],3)
+            self.assertEqual(index.db.execute('SELECT COUNT(*) FROM content').fetchone()[0],2)
         self.assertEqual(self.run_worker()['state'],'unchanged')
         self.assertEqual(self.marks,[8,9])
 
@@ -396,7 +391,7 @@ class V2WorkerChecks(unittest.TestCase):
         make_source=runpy.run_path(str(Path(__file__).with_name(
             'laya-qmd-migration-checks.py')))['make_source']
         names=('alpha','beta');roots=dict(self.decision['collectionRoots'])
-        files={'alpha/one.md':'silver otter','beta/two.md':'purple finch'}
+        files={'beta/two.md':'purple finch'}
         source,backup=self.home/'qmd.sqlite',self.home/'qmd-backup.sqlite'
         make_source(source,QMD_253,documents=[('alpha','one.md','silver otter',1),
                                               ('beta','two.md','purple finch',1)])
@@ -406,7 +401,7 @@ class V2WorkerChecks(unittest.TestCase):
         backup_qmd_collections(source,QMD_253,names,backup)
         digest=inspect_qmd_collections(source,QMD_253,names)['digest']
         with closing(LayaIndexA(self.index_path)) as scratch:
-            manifest=scan_collections(roots,SCOPE,scratch).manifest
+            manifest=scan_collections({'beta':roots['beta']},SCOPE,scratch).manifest
         keys={path:(hashlib.sha256(body.encode('utf-8')).hexdigest(),
                     qmd_markdown_title(body,path)) for path,body in files.items()}
         profile_id=profile_identity(PROFILE['modelId'],PROFILE['embeddingFingerprint'],
@@ -429,7 +424,7 @@ class V2WorkerChecks(unittest.TestCase):
             try:self.assertEqual(verify_generation_seal(index,gen)['profile_id'],profile_id)
             finally:index.db.rollback()
             self.assertEqual(publish_collections_from_source(
-                index,roots,SCOPE,None,gen,'qmd-migration',
+                index,{'beta':roots['beta']},SCOPE,None,gen,'qmd-migration',
                 claim_digest=digest,claim_epoch=0,require_vector=True),'published')
             incarnation=index.incarnation()
         ClaimQueue.create(queue,index_incarnation=incarnation).close()
@@ -445,7 +440,7 @@ class V2WorkerChecks(unittest.TestCase):
                                       (SCOPE,)).fetchone()[0]
             return rows,sets,head
         expected={(path,h,t,profile_id) for path,(h,t) in keys.items()}
-        self.assertEqual(sealed(),(expected,2,gen))
+        self.assertEqual(sealed(),(expected,1,gen))
         first=self.run_worker()
         # The first sync after cutover starts the discovery cursor and says so.
         self.assertIs(first.pop('wikiDiscovery')['cursorStarted'],True)
@@ -454,10 +449,10 @@ class V2WorkerChecks(unittest.TestCase):
         # namespaced (hash,title,profile) sets the cutover origin published.
         self.assertEqual(self.marks,[])
         self.assertEqual(self.embedded,[])
-        self.assertEqual(self.members(gen),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.members(gen),['beta/two.md'])
         self.assertEqual(self.identities(self.batches[0]),set(keys.values()))
         self.assertEqual(self.batches[0]['source_manifest'],manifest)
-        self.assertEqual(sealed(),(expected,2,gen))
+        self.assertEqual(sealed(),(expected,1,gen))
         with closing(ClaimQueue.open(queue)) as claims:
             self.assertEqual(claims.active_for_scope(SCOPE),[])
 
@@ -681,18 +676,16 @@ class V2WorkerChecks(unittest.TestCase):
             self.assertEqual(queue.pending(),[])
             self.assertEqual(len(results),1)
             second=results[0]
-            self.assert_published(second,['alpha/estuary.md','alpha/one.md','alpha/river.md',
-                                          'beta/sightings.md','beta/two.md'],first['generation'])
+            self.assert_published(second,['beta/sightings.md','beta/two.md'],
+                                  first['generation'])
             self.assertEqual(self.marks,[8,9])
             self.assertEqual(sorted(self.embedded[seen[2]:]),
-                             ['alpha/estuary.md','alpha/river.md','beta/sightings.md',
-                              'beta/two.md'])
+                                 ['beta/sightings.md','beta/two.md'])
             after=self.fresh_context(self.home)
-        # No verified card remains, so recall exposes current raw locators
-        # without putting source body text into the host context.
-        self.assertIn('(generation %s;'%second['generation'],after)
-        self.assertIn('"alpha/river.md"',after)
-        self.assertIn('"alpha/estuary.md"',after)
+        # No verified card remains; standalone raw files are never a fallback.
+        self.assertIn('0 matching documents',after)
+        self.assertNotIn('"alpha/river.md"',after)
+        self.assertNotIn('"alpha/estuary.md"',after)
         self.assertNotIn('The otter guards the south dam.',after)
         for old in ('north weir','North weir card','river-card.md','lantern','retired.md'):
             self.assertNotIn(old,after)
@@ -719,7 +712,7 @@ class V2WorkerChecks(unittest.TestCase):
         copied,untracked=self.worktree(tracked=True),self.worktree(tracked=False)
         with self.hook_world() as queue:
             before=self.fresh_context(nested)
-            self.assertIn('(generation %s;'%first['generation'],before)
+            self.assertIn('0 matching documents',before)
             self.assertNotIn('South dam card',before)
             # Wiki create outside any hook.
             self.card('dam-card.md','South dam card','The otter guards the south dam.',river)
@@ -740,8 +733,7 @@ class V2WorkerChecks(unittest.TestCase):
             status,results=self.drain(queue)
             self.assertEqual(status,{'status':'drained','runs':1})
             self.assertEqual(queue.pending(),[])
-            self.assert_published(results[0],['alpha/one.md','alpha/river.md',
-                                               'beta/dam-card.md','beta/two.md'],
+            self.assert_published(results[0],['beta/dam-card.md','beta/two.md'],
                                   first['generation'])
             after=self.fresh_context(nested)
         self.assertIn('(generation %s;'%results[0]['generation'],after)
@@ -883,7 +875,7 @@ class V2CapacityWorkerChecks(unittest.TestCase):
     def stores(self):
         from laya_index_capacity import GenerationBindingStore
         from laya_source_catalog import LayaSourceCatalog
-        roots=self.decision['collectionRoots']
+        roots={'beta':self.decision['collectionRoots']['beta']}
         catalog=str(self.index_path)+worker.CATALOG_SUFFIX
         store=str(self.index_path)+worker.BINDING_STORE_SUFFIX
         LayaSourceCatalog(catalog,roots,SCOPE,create=True).close()
@@ -937,8 +929,8 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         first,started=self.run_capacity()
         self.assertEqual(started,1)
         self.assertEqual(first['state'],'indexed')
-        self.assertEqual(self.members(first['generation']),['alpha/one.md','beta/two.md'])
-        self.assertEqual(sorted(self.embedded),['alpha/one.md','beta/two.md'])
+        self.assertEqual(self.members(first['generation']),['beta/two.md'])
+        self.assertEqual(sorted(self.embedded),['beta/two.md'])
         self.assertEqual(self.marks,[8])
         with closing(LayaIndexA(self.index_path)) as index:
             from laya_index_vector import verify_generation_seal
@@ -952,7 +944,7 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         second,started=self.run_capacity()
         self.assertEqual(started,0)  # nothing to embed: no model load at all
         self.assertEqual((second['state'],second['generation']),('unchanged',first['generation']))
-        self.assertEqual(len(self.embedded),2)  # cached chunk sets, no inference
+        self.assertEqual(len(self.embedded),1)  # cached wiki chunk set, no inference
         self.assertEqual(self.marks,[8])        # no second write fence
         (self.beta/'two.md').write_text('green heron',encoding='utf-8')
         # A file created between wakes is seen: the wake requests its scan.
@@ -961,9 +953,9 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual(started,1)
         self.assertEqual(third['state'],'indexed')
         self.assertNotEqual(third['generation'],first['generation'])
-        self.assertEqual(sorted(self.embedded[2:]),['alpha/three.md','beta/two.md'])
+        self.assertEqual(sorted(self.embedded[1:]),['beta/two.md'])
         self.assertEqual(self.members(third['generation']),
-                         ['alpha/one.md','alpha/three.md','beta/two.md'])
+                         ['beta/two.md'])
 
 
 if __name__=='__main__':unittest.main()

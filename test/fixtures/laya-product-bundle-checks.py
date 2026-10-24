@@ -455,6 +455,11 @@ print(json.dumps(result))'''
         bundle._skip_host_in_use(installed, installed, dirs)
         self.assertEqual(dirs, [])
 
+    def test_old_origin_plan_needs_new_review_before_source_scan(self):
+        with self.assertRaisesRegex(product_install.InstallBlocked,
+                                    'reviewed_origin_plan_legacy'):
+            product_install._plan_scan({'collections': []})
+
     def test_owned_origin_plan_binds_both_qmd_collections_without_model(self):
         wiki = self.auto / 'wiki'
         wiki.mkdir()
@@ -486,6 +491,8 @@ print(json.dumps(result))'''
             plan = product_install.plan_qmd_origin(self.project, background=False)
             self.assertEqual(plan['status'], 'review_required')
             self.assertEqual(plan['sourceFiles'],
+                             [['wiki/summary.md', documents[1][2]]])
+            self.assertEqual(plan['sourceEvidenceFiles'],
                              [['docs/chapter.md', documents[0][2]],
                               ['wiki/summary.md', documents[1][2]]])
             self.assertFalse(self.route_path.exists())

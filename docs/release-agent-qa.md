@@ -301,12 +301,12 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | 행 | 설치 후보에서 확인할 실제 결과 |
 |---|---|
 | LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | 선택된 프로젝트의 QMD 설정·원문·위키·색인 범위를 read-only inventory로 고정하고, 일관된 백업을 별도 DB로 복원해 비교한 뒤 새 후보를 재색인·검증한다. 불일치/중단 시 이전 선택이 유지된다. |
-| LI-SCOPE | opt-out, worktree 분리, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
+| LI-MIG | 선택된 프로젝트의 QMD 설정·원문·위키·색인 범위를 read-only inventory로 고정하고, 일관된 백업을 별도 DB로 복원해 비교한다. 새 Laya 후보에는 **위키 문서만** membership·본문·FTS·벡터로 재색인하고 원본 원문은 출처·최신성 증거로만 확인한다. 불일치/중단 시 이전 선택이 유지된다. |
+| LI-SCOPE | opt-out, worktree 분리, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
 | LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
 | LI-COEXIST | 별도 global QMD를 그대로 보존하고, 플러그인 소유가 증명된 QMD runtime만 복원 가능한 격리 후보로 분류한다. 불확실한 소유권은 보존하고 영구 삭제는 별도 결정한다. |
-| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 문서·질의 차원과 profile, 재색인 전량 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
-| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합, 정확한 식별자/EP, 위키/원문 분기, lex probe, minScore/topN, 결과 포맷을 설치 후보의 새 Claude/Codex 세션에서 비교한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
+| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
+| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
 
 모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
 
@@ -621,21 +621,30 @@ per-fixture id, so an earlier fixture cannot satisfy them. Record whether each
 token occurs in a raw source or in a verified wiki card before applying a
 verdict.
 
-- **Present(T) for a raw-source token** means the selected route and fresh
-  `qmd_recall_selection` line identify the current, index-verified source path
-  containing T, in the correct `project_root`. The injected context contains
-  the source locator/title but **does not quote raw source body or T**. A
-  source-only answer is not required in another prompt. In this no-tools
-  probe, the answer should omit T.
+All scenario rows below that say `Present(T)` or `Absent(T)` for a raw-only
+marker use the legacy QMD meaning while QMD is selected. After a Laya v2
+cutover, evaluate the selected, current wiki card and verified locator instead;
+raw-only markers must not create independent Laya hits. Do not relax the
+scenario's installation, sync, freshness, scope, backup or recovery checks.
+
+- **Present(T) for a raw-source token** applies only to the legacy QMD
+  bootstrap/update path. Its selected route and fresh `qmd_recall_selection`
+  line identify the current, index-verified source path in the correct
+  `project_root`; the injected context contains a locator/title but no raw
+  body or T. On a selected Laya v2 route, raw files are not independent
+  indexed/searchable documents: a raw-only T must be absent from results and
+  automatic context. Source freshness and the verified locator are checked
+  through the selected wiki card, not a raw search hit.
 - **Present(T) for a verified wiki-card token** additionally requires the
   selected card's bounded summary in the injected context to contain T and
   its verified source locator to be correct. A no-tools answer containing T
   is useful host evidence, but the selected card and injected bytes are the
   plugin proof; the answer alone is insufficient.
-- **Absent(T)** means no selected current source or card carrying T, no T in
+- **Absent(T)** means no selected current wiki card carrying T, no T in
   the injected context, and no unsupported answer containing T. An old or
-  excluded source must not be served as current. For a raw-only token, T's
-  absence from context is expected even when its current source is selected.
+  excluded source must not be served as current. A raw-only token must not
+  create a selected Laya result; the original file may still exist in QMD or
+  as a verified source of a wiki card.
 - A selected path by itself does not prove that its source revision is current;
   retain the index/generation and scope evidence required by the scenario.
 - In a **separate optional prompt that permits tools**, record whether the
@@ -816,8 +825,10 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
     A QMD bootstrap PASS never implies Laya setup, training or model-use PASS.
   - Nothing outside the fixture, the QA account's plugin runtime roots and the
     host plugin directories is written.
-  - Present(`ALPHA_MAIN`) within T_FRESH by the raw-source definition above.
-    No hook timeout or failure.
+  - On the QMD bootstrap route, Present(`ALPHA_MAIN`) within T_FRESH by the
+    legacy raw-source definition above. On a selected Laya route, verify the
+    current wiki card and its source locator instead; a token found only in
+    the raw file must not be returned. No hook timeout or failure.
 - **FAIL if:**
   - The gate does not stop the edit.
   - Install reports `completed` without scoped-search proof.
@@ -861,7 +872,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Expected:**
   - The installed identity equals the candidate.
   - The check-update report is read-only.
-  - Present(`ALPHA_MAIN`) under the raw-source definition after update.
+  - After update, verify a current wiki card and its source locator on the
+    selected Laya route. A raw-only `ALPHA_MAIN` token is absent from Laya
+    results; its source remains in the preserved QMD inventory and backup.
   - Settings, wiki and index preserved (RQA-INST-03).
   - The old session caused no damage.
 - **Evidence:** both identities, notices, check-update and apply outputs,
@@ -960,12 +973,16 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Steps:**
   1. Start a fresh session in `project/`. Expected: both SessionStart hooks
      run without failure.
-  2. Probe Q-alpha. Expected: raw-source Present(`ALPHA_MAIN`), with
-     `reason: "selected"` and selected `docs/qa/alpha.md`.
+  2. Probe Q-alpha. On QMD, expect the verified raw locator. On selected
+     Laya, expect a current wiki card and its verified `docs/qa/alpha.md`
+     locator if a card covers that source; never require the raw-only token
+     or a standalone raw hit.
   3. Ask "docs/qa/agent-note.md 파일을 만들고 내용은 'The agent note marker is
      <AGENT_NOTE>.' 한 줄로 해줘". Expected: the gate allows the edit;
      posttool, index, compile and topical-event run without failure.
-  4. Probe Q-agent until T_FRESH. Expected: raw-source Present(`AGENT_NOTE`).
+  4. Probe Q-agent until T_FRESH. On QMD, expect the verified raw locator;
+     on selected Laya, expect a current wiki card and verified locator after
+     compile. Until a card exists, no raw fallback is expected.
   5. Ask "Bash로 docs/qa/agent-note.md를 삭제해줘". Expected: the Bash
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).
@@ -1317,9 +1334,11 @@ selected Laya Index engine" until a separate decision changes that.
   - No new queue or ledger entries.
   - No extractor or verifier invocation.
   - Card bytes unchanged.
-  - Before deletion, the raw document's new content is Present within
-    T_FRESH. After deletion, it is Absent. File indexing still works while
-    wiki compile remains OFF, including across retry and deletion.
+  - On QMD, the raw document's changed locator is current within T_FRESH and
+    disappears after deletion. On Laya v2, wiki indexing still works, but
+    the changed raw-only content creates no Laya document or search hit;
+    the unchanged card is never presented as a fresh revision of that source.
+    Compile remains OFF across retry and deletion.
 - **Evidence:** wiki listings before and after, probes, absence of compile
   activity in the logs.
 - **Timeout:** T_SCENARIO.

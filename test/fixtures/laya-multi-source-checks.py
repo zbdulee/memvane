@@ -8,6 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
+from laya_index_host_route import wiki_index_roots
 from laya_index_source_port import (publish_collections_from_source,
                                     scan_collections,
                                     search_collections_verified,
@@ -60,6 +61,40 @@ class MultiSourceTests(unittest.TestCase):
         self.wiki.rename(self.project / '.auto-context' / 'moved-wiki')
         with self.assertRaisesRegex(IndexContractError, 'index_stale'):
             scan_collections(self.roots, 'scope-a', self.index)
+
+    def test_selected_v2_indexes_wiki_excerpt_and_locator_but_no_raw_document(self):
+        raw_only = 'RAW_ONLY_X'
+        (self.raw / 'raw.md').write_text(raw_only + '\nSHARED_Y\n', encoding='utf-8')
+        (self.wiki / 'card.md').write_text(
+            '# Card\nSHARED_Y\n↳ docs/plans/raw.md#L2\n', encoding='utf-8')
+        collections = [
+            {'name': 'plans', 'role': 'raw', 'sourceRoot': str(self.raw)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}]
+        roots = wiki_index_roots(collections)
+        self.assertEqual(roots, {'wiki': str(self.wiki)})
+        source = scan_collections(roots, 'scope-a', self.index)
+        self.assertEqual([file.path for file in source.files], ['wiki/card.md'])
+        stage_collections_from_source(self.index, roots, 'scope-a', 'g-wiki',
+                                      base=None, claim_digest='a' * 64,
+                                      claim_epoch=0)
+        rows = self.index.db.execute('SELECT path FROM membership').fetchall()
+        self.assertEqual(rows, [('wiki/card.md',)])
+        bodies = [row[0] for row in self.index.db.execute('SELECT body FROM content')]
+        self.assertEqual(len(bodies), 1)
+        self.assertIn('SHARED_Y', bodies[0])
+        self.assertIn('docs/plans/raw.md#L2', bodies[0])
+        self.assertNotIn(raw_only, bodies[0])
+        self.assertEqual(self.index.db.execute('SELECT COUNT(*) FROM content_fts').fetchone()[0], 1)
+        publish_collections_from_source(self.index, roots, 'scope-a', None,
+                                        'g-wiki', 'claim-wiki', claim_digest='a' * 64,
+                                        claim_epoch=0)
+        token, _ = self.index.pin('scope-a')
+        try:
+            self.assertEqual(self.index.search_many(token, (raw_only,), 5)[0], [])
+            found = self.index.search_many(token, ('SHARED_Y',), 5)[0]
+            self.assertEqual([item['path'] for item in found], ['wiki/card.md'])
+        finally:
+            self.index.release(token)
 
 
 if __name__ == '__main__':

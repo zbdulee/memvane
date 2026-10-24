@@ -179,8 +179,8 @@ class HostCapacityTests(HostCapacityCase):
                                       binding_store=self.runtime.binding_store)
             decision = {'projectRoot': str(self.raw.parent),
                         'collectionRoots': {'raw': str(self.raw), 'wiki': str(self.raw)},
-                        'collections': [{'name': 'raw', 'role': 'raw'},
-                                        {'name': 'wiki', 'role': 'wiki'}],
+                        'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': str(self.raw)},
+                                        {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.raw)}],
                         'recallSettings': {'recallStrategy': 'hierarchical',
                                            'lexicalPatterns': [], 'minScore': 0,
                                            'rawFallbackMinScore': 0, 'skipPaths': []}}
@@ -199,8 +199,8 @@ class HostCapacityTests(HostCapacityCase):
                                   binding_store=self.runtime.binding_store)
         decision = {'projectRoot': str(self.raw.parent),
                     'collectionRoots': {'raw': str(self.raw), 'wiki': str(self.raw)},
-                    'collections': [{'name': 'raw', 'role': 'raw'},
-                                    {'name': 'wiki', 'role': 'wiki'}],
+                    'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': str(self.raw)},
+                                    {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.raw)}],
                     'recallSettings': {'recallStrategy': 'hierarchical',
                                        'lexicalPatterns': [], 'minScore': 0,
                                        'rawFallbackMinScore': 0, 'skipPaths': []}}
@@ -222,8 +222,8 @@ class HostCapacityTests(HostCapacityCase):
         runtime = SimpleNamespace(index=self.runtime.index, scope=SCOPE,
                                   binding_store=self.runtime.binding_store)
         decision = {'collectionRoots': {'raw': str(self.raw), 'wiki': str(self.raw)},
-                    'collections': [{'name': 'raw', 'role': 'raw'},
-                                    {'name': 'wiki', 'role': 'wiki'}],
+                    'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': str(self.raw)},
+                                    {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.raw)}],
                     'recallSettings': {'recallStrategy': 'hierarchical',
                                        'lexicalPatterns': [], 'minScore': 0,
                                        'rawFallbackMinScore': 0, 'skipPaths': []}}
@@ -255,7 +255,10 @@ class ServeRuntimeTests(unittest.TestCase):
         decision = {'pluginRoot': str(CORE.parent), 'projectRoot': str(base),
                     'scopeId': SCOPE, 'dbPath': str(db), 'queuePath': str(base / 'q'),
                     'dbIncarnation': 'e' * 32, 'collectionRoots': roots,
-                    'collections': [], 'recallSettings': settings,
+                    'collections': [{'name': name, 'role': name,
+                                     'sourceRoot': root}
+                                    for name, root in roots.items()],
+                    'recallSettings': settings,
                     'vectorProfile': {}}
         proof = {'productRouteAllowed': True, 'providerManifest': {}, 'vectorProfile': {}}
         opened = {}
@@ -283,13 +286,13 @@ class ServeRuntimeTests(unittest.TestCase):
 
     def test_stores_open_all_roots_and_both_stores(self):
         opened, roots, db = self.serve(True)
-        self.assertEqual(opened['source_root'], roots)
+        self.assertEqual(opened['source_root'], {'wiki': roots['wiki']})
         self.assertEqual((opened['catalog_path'], opened['binding_store_path']),
                          (db + '.catalog.sqlite', db + '.bindings.sqlite'))
 
     def test_without_stores_the_runtime_is_unchanged(self):
         opened, roots, _db = self.serve(False)
-        self.assertEqual(opened['source_root'], next(iter(roots.values())))
+        self.assertEqual(opened['source_root'], roots['wiki'])
         self.assertNotIn('catalog_path', opened)
 
     def test_returned_mismatch_wakes_sync_but_read_budget_reports_unavailable(self):
@@ -306,8 +309,14 @@ class ServeRuntimeTests(unittest.TestCase):
                         'dbPath': str(project / 'index.sqlite'),
                         'queuePath': str(project / 'queue.sqlite'),
                         'dbIncarnation': 'e' * 32,
-                        'collectionRoots': {'raw': str(project / 'raw')},
-                        'collections': [], 'recallSettings': settings,
+                        'collectionRoots': {'raw': str(project / 'raw'),
+                                            'wiki': str(project / 'wiki')},
+                        'collections': [
+                            {'name': 'raw', 'role': 'raw',
+                             'sourceRoot': str(project / 'raw')},
+                            {'name': 'wiki', 'role': 'wiki',
+                             'sourceRoot': str(project / 'wiki')}],
+                        'recallSettings': settings,
                         'vectorProfile': {}}
             proof = {'productRouteAllowed': True, 'providerManifest': {},
                      'vectorProfile': {}, 'selectionEpoch': 0}

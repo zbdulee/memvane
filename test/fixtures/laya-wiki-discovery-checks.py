@@ -181,7 +181,7 @@ class DiscoveryChecks(unittest.TestCase):
         self.run_worker()
         for name in ('a.md', 'b.md'):
             (self.alpha / name).write_text('# %s\nnew raw\n' % name, encoding='utf-8')
-        self.assertEqual(self.run_worker()['state'], 'indexed')
+        self.assertEqual(self.run_worker()['state'], 'unchanged')
         self.assertEqual(sorted(self.state()['pending']), ['alpha/a.md', 'alpha/b.md'])
 
     def source_rows(self):
@@ -206,7 +206,7 @@ class DiscoveryChecks(unittest.TestCase):
         self.assertEqual(self.state()['pending'], {})
         (self.alpha / 'one.md').write_text('silver otter upstream', encoding='utf-8')
         second = self.run_worker()
-        self.assertEqual(second['state'], 'indexed')
+        self.assertEqual(second['state'], 'unchanged')
         self.assertEqual(self.state()['pending'],
                          {'alpha/one.md': self.sha(self.alpha / 'one.md')})
         return first, second
@@ -235,8 +235,7 @@ class DiscoveryChecks(unittest.TestCase):
             self.assertEqual((status, failures), ({'status': 'drained', 'runs': 1}, []))
             second = results[0]
             self.assertEqual(second['state'], 'indexed')
-            self.assertEqual(self.members(second['generation']),
-                             ['alpha/new.md', 'alpha/one.md', 'beta/two.md'])
+            self.assertEqual(self.members(second['generation']), ['beta/two.md'])
             # A stale-recall wake is no grant: revisions wait, nothing is queued.
             expected = {'alpha/new.md': self.sha(new), 'alpha/one.md': self.sha(one)}
             self.assertEqual((self.state()['baseGen'], self.state()['pending']),
@@ -329,18 +328,66 @@ class DiscoveryChecks(unittest.TestCase):
         with patch.object(discovery, 'drain_after_sync',
                           return_value={'state': 'drained', 'reason': None}):
             second = self.run_worker()
-        self.assertEqual(second['state'], 'indexed')
+        self.assertEqual(second['state'], 'unchanged')
         self.assertFalse(self.paths()[0].exists())
         with self.hook_world() as queue:
             self.bash()
             _status, results, failures = self.drain_all(queue)
         self.assertEqual((failures, results[0]['state']), ([], 'unchanged'))
-        # Not baseGen=G2: G2's sealed base_gen (G1) proves the G1->G2 change.
-        self.assertEqual(self.source_rows(),
-                         [('alpha/one.md', 'post_sync_source', self.sha(self.alpha / 'one.md'))])
+        # A deleted raw cursor cannot prove an earlier source revision. Normal
+        # cutover seeds it before route activation; this synthetic deletion is
+        # surfaced as cursorStarted rather than guessing from wiki membership.
+        self.assertEqual(self.source_rows(), [])
         self.assertEqual((self.state()['baseGen'], self.state()['pending']),
                          (second['generation'], {}))
-        self.assertNotEqual(first['generation'], second['generation'])
+        self.assertEqual(first['generation'], second['generation'])
+
+    def test_installed_route_missing_source_snapshot_fails_closed(self):
+        self.selected_route()
+        self.run_worker()
+        self.paths()[0].unlink()
+        Path(self.decision['journalPath']).touch()
+        (self.alpha / 'one.md').write_text('silver otter changed', encoding='utf-8')
+        result = self.run_worker()
+        self.assertEqual(result['wikiDiscovery'],
+                         {'state': 'blocked', 'reason': 'snapshot_missing'})
+        self.assertFalse(self.paths()[0].exists())
+        self.assertEqual(self.source_rows(), [])
+
+    def test_preactivation_seed_detects_first_raw_edit_without_raw_membership(self):
+        self.selected_route()
+        first = self.run_worker()
+        old_hash = self.sha(self.alpha / 'one.md')
+        self.paths()[0].unlink()
+        Path(self.decision['journalPath']).touch()
+        discovery.seed_source_snapshot(self.decision, {'alpha/one.md': old_hash})
+        (self.alpha / 'one.md').write_text('silver otter first edit', encoding='utf-8')
+        result = self.run_worker()
+        self.assertEqual(result['state'], 'unchanged')
+        self.assertEqual(result['generation'], first['generation'])
+        self.assertEqual(self.state()['pending'],
+                         {'alpha/one.md': self.sha(self.alpha / 'one.md')})
+        self.assertEqual(self.members(result['generation']), ['beta/two.md'])
+
+    def test_preactivation_seed_retains_lagging_qmd_inventory_for_later_discovery(self):
+        self.selected_route()
+        self.run_worker()
+        self.paths()[0].unlink()
+        old_hash = self.sha(self.alpha / 'one.md')
+        (self.alpha / 'one.md').write_text('changed after QMD inventory', encoding='utf-8')
+        self.assertEqual(discovery.seed_source_snapshot(
+            self.decision, {'alpha/one.md': old_hash}), {'alpha/one.md': old_hash})
+        self.assertEqual(self.state()['rawSnapshot'], {'alpha/one.md': old_hash})
+
+    def test_preactivation_seed_refuses_raw_corpus_over_discovery_scan_cap(self):
+        self.selected_route()
+        self.run_worker()
+        self.paths()[0].unlink()
+        for number in range(200):
+            (self.alpha / ('extra-%03d.md' % number)).write_text('x', encoding='utf-8')
+        with self.assertRaisesRegex(discovery.DiscoveryBlocked, 'raw_source_stale'):
+            discovery.seed_source_snapshot(self.decision, {})
+        self.assertFalse(self.paths()[0].exists())
 
     def publish_blocked(self, change):
         """Publish one generation while discovery blocks before its first journal."""
@@ -349,7 +396,7 @@ class DiscoveryChecks(unittest.TestCase):
         grants.chmod(0o600)
         change()
         result = self.run_worker()
-        self.assertEqual(result['state'], 'indexed')
+        self.assertIn(result['state'], ('indexed', 'unchanged'))
         self.assertEqual(result['wikiDiscovery'], {'state': 'blocked', 'reason': 'state_corrupt'})
         self.assertFalse(self.paths()[0].exists())
         grants.unlink()
@@ -360,9 +407,14 @@ class DiscoveryChecks(unittest.TestCase):
         self.selected_route()
         one, three = self.alpha / 'one.md', self.alpha / 'three.md'
         g1 = self.publish_blocked(lambda: None)
-        g2 = self.publish_blocked(lambda: one.write_text('silver otter G2', encoding='utf-8'))
-        g3 = self.publish_blocked(
-            lambda: three.write_text('# Three\nThe otter naps.\n', encoding='utf-8'))
+        def change_one():
+            one.write_text('silver otter G2', encoding='utf-8')
+            (self.beta / 'two.md').write_text('wiki G2', encoding='utf-8')
+        def change_three():
+            three.write_text('# Three\nThe otter naps.\n', encoding='utf-8')
+            (self.beta / 'two.md').write_text('wiki G3', encoding='utf-8')
+        g2 = self.publish_blocked(change_one)
+        g3 = self.publish_blocked(change_three)
         with closing(LayaIndexA(self.index_path)) as index:
             bases = [index.db.execute('SELECT base_gen FROM candidate_seals WHERE gen=?',
                                       (gen,)).fetchone()[0] for gen in (g1, g2, g3)]
@@ -380,9 +432,9 @@ class DiscoveryChecks(unittest.TestCase):
                          ([], 'unchanged', head))
         # Base is G2, one publish back: the G2->G3 change (three.md) is found.
         # The G1->G2 edit of one.md predates it and is not backfilled.
-        self.assertEqual(self.source_rows(), [expected[1]])
+        self.assertEqual(self.source_rows(), [])
         self.assertEqual((self.state()['baseGen'], self.state()['pending']), (head, {}))
-        self.assertEqual(self.compile_wakes, [str(self.home)])
+        self.assertEqual(self.compile_wakes, [])
 
     def test_absent_cursor_does_not_depend_on_lineage_length(self):
         head, expected = self.three_blocked_publishes()
@@ -396,7 +448,7 @@ class DiscoveryChecks(unittest.TestCase):
         self.assertNotEqual(results[0]['wikiDiscovery']['state'], 'blocked')
         self.assertIs(results[0]['wikiDiscovery']['cursorStarted'], True)
         self.assertEqual((failures, results[0]['generation']), ([], head))
-        self.assertEqual(self.source_rows(), [expected[1]])
+        self.assertEqual(self.source_rows(), [])
         self.assertEqual((self.state()['baseGen'], self.state()['pending']), (head, {}))
 
     def test_deleted_cursor_restarts_one_step_back_and_is_reported(self):
@@ -409,7 +461,7 @@ class DiscoveryChecks(unittest.TestCase):
             _status, results, failures = self.drain_all(queue)
         self.assertEqual(failures, [])
         self.assertIs(results[0]['wikiDiscovery']['cursorStarted'], True)
-        self.assertEqual([row[0] for row in self.source_rows()], ['alpha/one.md'])
+        self.assertEqual(self.source_rows(), [])
         # Later runs have a cursor again and report nothing extra.
         with self.hook_world() as queue:
             self.bash()
@@ -497,7 +549,7 @@ class DiscoveryChecks(unittest.TestCase):
             self.make_due(queue)
             _status, results, failures = self.drain_all(queue)
         self.assertEqual((failures, results[0]['state']), ([], 'unchanged'))
-        self.assertNotEqual(results[0]['generation'], first['generation'])
+        self.assertEqual(results[0]['generation'], first['generation'])
         self.assertEqual(self.source_rows(),
                          [('alpha/one.md', 'post_sync_source', self.sha(self.alpha / 'one.md'))])
         self.assertEqual((self.state()['pending'], self.grants()['sync']), ({}, 0))
@@ -567,7 +619,7 @@ class DiscoveryChecks(unittest.TestCase):
         with self.hook_world() as queue, patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
             self.bash()
             _status, results, failures = self.drain_all(queue)
-            self.assertEqual((failures, results[0]['state']), ([], 'indexed'))
+            self.assertEqual((failures, results[0]['state']), ([], 'unchanged'))
             self.assertEqual([row[0] for row in self.source_rows()], ['alpha/a.md'])
             self.assertEqual(list(self.state()['pending']), ['alpha/b.md'])
             # The capped grant is used up: a grantless wake does not continue.
@@ -662,7 +714,7 @@ class DiscoveryChecks(unittest.TestCase):
                     self.assertEqual(target.read_bytes(), valid)
                 else:
                     self.assertEqual(path.read_bytes(), data)
-        self.assertNotEqual(seen[0], first['generation'])
+        self.assertEqual(seen[0], first['generation'])
         self.assertEqual(self.source_rows(), [])
         # Nothing was reset: restoring the cursor still discovers G1->G2.
         path.unlink()
@@ -680,6 +732,7 @@ class DiscoveryChecks(unittest.TestCase):
         self.run_worker()
         with self.hook_world() as queue:
             (self.alpha / 'one.md').write_text('silver otter edited', encoding='utf-8')
+            (self.beta / 'two.md').write_text('wiki changed', encoding='utf-8')
             status, _out, err = self.hook('index', {
                 'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
                 'tool_input': {'file_path': str(self.alpha / 'one.md')}})
@@ -726,6 +779,7 @@ class DiscoveryChecks(unittest.TestCase):
             # A later, unrelated out-of-band change woken by stale recall only.
             three = self.alpha / 'three.md'
             three.write_text('# Three\nThe otter naps.\n', encoding='utf-8')
+            (self.beta / 'two.md').write_text('wiki changed', encoding='utf-8')
             self.assert_refused(self.home, 'index_stale_sync_queued')
             status, results, failures = self.drain_all(queue)
         self.assertEqual((status, failures), ({'status': 'drained', 'runs': 1}, []))

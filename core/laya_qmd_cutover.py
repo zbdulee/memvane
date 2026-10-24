@@ -476,10 +476,11 @@ def _check_bound_evidence(row, restore):
                 _fail('cutover_queue_binding_mismatch')
         return
     import laya_initial_build
+    from laya_index_host_route import wiki_index_roots
     from laya_index_runtime import LayaIndexRuntime, capacity_store_paths
     if capacity_store_paths(row['candidateDb']) != (row['catalogDb'], row['bindingStore']):
         _fail('cutover_capacity_store_mismatch')
-    with LayaIndexRuntime(source_root=roots, scope=row['scope'],
+    with LayaIndexRuntime(source_root=wiki_index_roots(row['collections']), scope=row['scope'],
                           db_path=row['candidateDb'], queue_path=row['queueDb'],
                           db_incarnation=row['candidateIncarnation'],
                           catalog_path=row['catalogDb'],
@@ -574,7 +575,9 @@ def _check_evidence(row, *, restore=False):
                 receipt != (row['scope'],row['indexGeneration'],row['sourceManifest'],row['sourceDigest'],0) or
                 vector['profile_id'] != row['vectorProfileId']):
             _fail('cutover_candidate_evidence_mismatch')
-        if _source_manifest(index, roots, row['scope'], multi) != row['sourceManifest']:
+        from laya_index_host_route import wiki_index_roots
+        index_roots = wiki_index_roots(row['collections']) if multi else roots
+        if _source_manifest(index, index_roots, row['scope'], multi) != row['sourceManifest']:
             _fail('cutover_source_manifest_changed')
     with closing(ClaimQueue.open(row['queueDb'])) as queue:
         if queue.binding() != row['candidateIncarnation']:
@@ -744,7 +747,9 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
             len({str(Path(p)) for p in (source_db, backup_db, candidate_db, queue_db)}) != 4):
         _fail('cutover_source_root_mismatch')
     with closing(LayaIndexA(candidate_db)) as index:
-        if _source_manifest(index, source_root, scope, multi) != source_manifest:
+        from laya_index_host_route import wiki_index_roots
+        index_roots = wiki_index_roots(route['collections']) if multi else source_root
+        if _source_manifest(index, index_roots, scope, multi) != source_manifest:
             _fail('cutover_source_manifest_changed')
         index.db.execute('BEGIN')
         try:
@@ -757,7 +762,8 @@ def bind_qmd_origin(*, project_root, journal_path, route_bytes, source_db,
             _fail('cutover_vector_profile_mismatch')
         if multi:
             result = publish_collections_from_source(
-                index, source_root, scope, None, index_generation, claim,
+                index, wiki_index_roots(route['collections']), scope, None,
+                index_generation, claim,
                 claim_digest=source_digest, claim_epoch=0, require_vector=True)
         else:
             result = publish_from_source(
@@ -1214,6 +1220,27 @@ def activate_qmd_origin(project_root, journal_path, route_bytes):
             approval['providerFileIdentitySha256'] != row['providerFileIdentitySha256'] or
             approval['pendingRouteSha256'] != row['routeSha256']):
         _fail('cutover_attestation_changed')
+    # The selected v2 index contains wiki cards only. Seed the separate raw
+    # path/hash discovery cursor while QMD is still selected, before any route
+    # publication. This sidecar has no source bodies and cannot serve search.
+    route = json.loads(route_bytes)
+    from laya_index_host_route import SCHEMA_V2 as HOST_ROUTE_V2
+    if route.get('schema') == HOST_ROUTE_V2:
+        import laya_wiki_discovery
+        names, _roots = _source_binding(row)
+        inventory = inspect_qmd_collections(row['sourceDb'], row['sourceFormat'], names)
+        if inventory['digest'] != row['sourceDigest']:
+            _fail('cutover_source_changed')
+        raw_names = {item['name'] for item in route['collections']
+                     if item['role'] == 'raw'}
+        baseline = {path: sha for path, _title, sha, active_doc, _body
+                    in inventory['documents']
+                    if active_doc and path.split('/', 1)[0] in raw_names}
+        laya_wiki_discovery.seed_source_snapshot({
+            **route,
+            'collectionRoots': {item['name']: item['sourceRoot']
+                                for item in route['collections']},
+        }, baseline)
     row = _change(ledger_path, row['epoch'], 'prepared', 'switching')
     # The marker no longer classifies as legacy once ``switching``. A QMD
     # write that landed after the proof above makes the bound generation

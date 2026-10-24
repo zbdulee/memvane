@@ -143,7 +143,8 @@ class BuildCase(unittest.TestCase):
         LayaIndexA(candidate, create=True).close()
         incarnation = product._empty_or_bound_candidate(candidate, SCOPE)
         product._publish_claim_queue(self.state / product.BUILD_QUEUE, incarnation)
-        product.prepare_capacity_stores(candidate, self.roots, SCOPE, incarnation)
+        product.prepare_capacity_stores(candidate, {'wiki': self.roots['wiki']},
+                                        SCOPE, incarnation)
         identity = self.identity(dbIncarnation=incarnation)
         initial_build.create_or_verify(identity)
         initial_build.register_project(identity)
@@ -154,7 +155,7 @@ class BuildCase(unittest.TestCase):
         path.write_text(text, encoding='utf-8')
         return path
 
-    def corpus(self, n, collection='docs'):
+    def corpus(self, n, collection='wiki'):
         for i in range(n):
             self.write(f'{collection}/f{i:03d}.md', f'# F{i}\nbody {i}\n')
 
@@ -192,7 +193,8 @@ class BuildCase(unittest.TestCase):
 
     def catalog(self):
         record = self.record()
-        catalog = LayaSourceCatalog(record['identity']['catalogDb'], self.roots, SCOPE)
+        catalog = LayaSourceCatalog(record['identity']['catalogDb'],
+                                    {'wiki': self.roots['wiki']}, SCOPE)
         self.addCleanup(catalog.close)
         return catalog
 
@@ -201,7 +203,7 @@ class BuildProgressTests(BuildCase):
     def test_registered_build_progresses_in_bounded_wakes_to_a_sealed_candidate(self):
         self.corpus(12)
         for i in range(3):
-            self.write(f'wiki/f{i:03d}.md', f'# Wiki {i}\nwiki body {i}\n')
+            self.write(f'wiki/extra{i:03d}.md', f'# Wiki {i}\nwiki body {i}\n')
         self.register()
         self.assertEqual(self.record()['phase'], 'registered')
         with mock.patch.object(worker, 'MAX_CAPACITY_ROUNDS', 1):
@@ -219,8 +221,8 @@ class BuildProgressTests(BuildCase):
         self.assertEqual((sealed['files'], sealed['vectorRows']), (15, 15))
         self.assertEqual(sealed['vectorProfileId'], PROFILE_ID)
         self.assertEqual(sorted(FakeProvider.calls),
-                         sorted(f'docs/f{i:03d}.md' for i in range(12)) +
-                         sorted(f'wiki/f{i:03d}.md' for i in range(3)))
+                         sorted([f'wiki/f{i:03d}.md' for i in range(12)] +
+                                [f'wiki/extra{i:03d}.md' for i in range(3)]))
         self.assertEqual(len(self.members(sealed['generation'])), 15)
         # A sealed build ACKs without another model start or publish.
         calls, log = list(FakeProvider.calls), list(self.service_log)
@@ -243,7 +245,7 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(len(FakeProvider.calls), 211)
 
     def test_one_synchronous_scan_bound_routes_to_background_not_refusal(self):
-        self.corpus(201)
+        self.corpus(201, collection='docs')
         class Empty:
             def list_exclusions(self, _scope):
                 return []
@@ -260,7 +262,7 @@ class BuildProgressTests(BuildCase):
 
     def test_large_single_file_is_hashed_by_one_admitted_step(self):
         self.corpus(4)
-        big = self.write('docs/zz-big.md', '# Big\n' + 'word ' * 800 + '\n')
+        big = self.write('wiki/zz-big.md', '# Big\n' + 'word ' * 800 + '\n')
         size = big.stat().st_size
         self.register()
         real = worker.sync_step
@@ -276,30 +278,30 @@ class BuildProgressTests(BuildCase):
             self.assertEqual((deferred['state'], deferred['reason']),
                              ('deferred', 'laya_build_resource_pressure'))
             active = self.catalog().status()['active']
-            self.assertEqual(active['deferred_path'], 'docs/zz-big.md')
+            self.assertEqual(active['deferred_path'], 'wiki/zz-big.md')
             self.assertIsNone(self.head())
             self.assertEqual(self.service_log, [], 'no model start under pressure')
             self.coordinator.ready = True
             answers = self.until_settled()
         self.assertIn((1, size), budgets)
         self.assertEqual(answers[-1]['initialBuild'], 'sealed')
-        self.assertIn('docs/zz-big.md', self.members(self.record()['sealed']['generation']))
+        self.assertIn('wiki/zz-big.md', self.members(self.record()['sealed']['generation']))
 
     def test_member_over_the_provider_text_limit_blocks_visibly(self):
         # Remaining gap: the reviewed provider embeds one document per
         # request, capped at 5,000,000 UTF-8 bytes. Hashing such a file is a
         # bounded single-file step; embedding it is not possible yet.
         self.corpus(1)
-        self.write('docs/huge.md', '# Huge\n' + 'x' * (vc.PROVIDER_MAX_TEXT_BYTES + 1))
+        self.write('wiki/huge.md', '# Huge\n' + 'x' * (vc.PROVIDER_MAX_TEXT_BYTES + 1))
         self.register()
         answers = self.until_settled()
         self.assertEqual((answers[-1]['state'], answers[-1]['reason'], answers[-1]['path']),
-                         ('blocked', 'vector_member_rejected', 'docs/huge.md'))
+                         ('blocked', 'vector_member_rejected', 'wiki/huge.md'))
         record = self.record()
         self.assertEqual(record['phase'], 'blocked')
-        self.assertEqual(record['blocked']['path'], 'docs/huge.md')
+        self.assertEqual(record['blocked']['path'], 'wiki/huge.md')
         self.assertIsNone(self.head())
-        self.assertNotIn('docs/huge.md', FakeProvider.calls)
+        self.assertNotIn('wiki/huge.md', FakeProvider.calls)
 
     def test_pressure_defers_before_model_start_and_resumes(self):
         self.corpus(3)
@@ -400,7 +402,7 @@ class FreshnessAndRecoveryTests(BuildCase):
 
     def test_partial_catalog_never_publishes_or_deletes(self):
         sealed = self.sealed_build(6)['sealed']
-        (self.docs / 'f000.md').unlink()
+        (self.wiki / 'f000.md').unlink()
         initial_build.request_freshness(self.record(), self.catalog())
         real = worker.sync_step
 
@@ -417,7 +419,7 @@ class FreshnessAndRecoveryTests(BuildCase):
         self.assertEqual(final['initialBuild'], 'sealed')
         fresh = self.record()['sealed']
         self.assertNotEqual(fresh['generation'], sealed['generation'])
-        self.assertNotIn('docs/f000.md', self.members(fresh['generation']))
+        self.assertNotIn('wiki/f000.md', self.members(fresh['generation']))
         # The superseded generation is retained, never deleted.
         self.assertEqual(len(self.members(sealed['generation'])), 6)
 
@@ -449,12 +451,12 @@ class FreshnessAndRecoveryTests(BuildCase):
 
     def test_explicit_rescan_clears_a_source_block(self):
         self.corpus(1)
-        (self.docs / 'link.md').symlink_to(self.docs / 'f000.md')
+        (self.wiki / 'link.md').symlink_to(self.wiki / 'f000.md')
         self.register()
         blocked = self.until_settled()[-1]
         self.assertEqual((blocked['state'], self.record()['phase']), ('blocked', 'blocked'))
         self.assertEqual(self.wake()['state'], 'blocked', 'a retry alone does not rescan')
-        (self.docs / 'link.md').unlink()
+        (self.wiki / 'link.md').unlink()
         rescan = product.request_initial_build_rescan(self.state)
         self.assertEqual(rescan['status'], 'rescan_requested')
         self.assertEqual(self.until_settled()[-1]['initialBuild'], 'sealed')
@@ -534,7 +536,7 @@ class RecordAndInstallerTests(BuildCase):
         self.assertEqual(FakeProvider.calls, [])
         # The runtime wake reaches the build through the unchanged entrypoint.
         self.journal['pendingRouteSha256'] = record['identity']['routeSha256']
-        self.write('docs/a.md', '# A\nalpha\n')
+        self.write('wiki/a.md', '# A\nalpha\n')
         answers = []
         for _ in range(50):
             answers.append(worker.run(self.project, coordinator=self.coordinator, report={},
@@ -542,7 +544,7 @@ class RecordAndInstallerTests(BuildCase):
             if answers[-1]['state'] != 'pending':
                 break
         self.assertEqual(answers[-1]['initialBuild'], 'sealed')
-        self.assertEqual(FakeProvider.calls, ['docs/a.md'])
+        self.assertEqual(FakeProvider.calls, ['wiki/a.md'])
 
     def test_run_without_a_registered_build_keeps_the_refusal(self):
         with self.assertRaisesRegex(IndexContractError, 'selected_route_unavailable'):

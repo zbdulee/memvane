@@ -660,7 +660,7 @@ def _verified_wiki_row(row: dict, decision: dict,
     An optional ``sourceSpans`` list must be complete and current: each span is
     bound to one of the card's revisions and re-hashed against the same full
     source bytes the revision check reads. A malformed or stale present list
-    rejects the card (raw backfill remains); an absent list is a legacy
+    rejects the card (without a raw fallback); an absent list is a legacy
     file-level card. Verified locators go to ``source_locations[path]``.
     """
     located = _verified_wiki_locations(row, decision, pending_sources)
@@ -736,18 +736,18 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                       approved_profile: dict, approved_provider,
                       decision: dict, *, source_locations: dict | None = None,
                       ) -> tuple[list[dict], frozenset[str]]:
-    """Wiki first, raw backfill on one pin; no model work in the hook.
+    """Return verified wiki cards on one pin; no model work in the hook.
 
     ``source_locations`` (optional, caller-owned) receives verified span
-    locators for the returned wiki rows only; it stays empty on raw backfill.
+    locators for the returned wiki rows only.
     """
     _provider_ready(prompt, route_profile, approved_profile, approved_provider)
-    roots = decision['collectionRoots']
+    from laya_index_host_route import wiki_index_roots
+    roots = wiki_index_roots(decision['collections'])
     settings = decision['recallSettings']
     roles = {item['name']: item['role'] for item in decision['collections']}
     wiki = tuple(name for name in sorted(roots) if roles[name] == 'wiki')
-    raw = tuple(name for name in sorted(roots) if roles[name] == 'raw')
-    if (not wiki or not raw or settings['recallStrategy'] != 'hierarchical'):
+    if (not wiki or settings['recallStrategy'] != 'hierarchical'):
         _fail('selected_recall_settings_unsupported')
     token, _generation = runtime.index.pin(runtime.scope)
     candidates = None
@@ -786,11 +786,7 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             if source_locations is not None:
                 source_locations.update(located)
             return delivered
-        rows, _ = _v2_phase(
-            runtime, token, prompt, route_profile, approved_provider, roots,
-            raw, tuple(settings['lexicalPatterns']),
-            settings['rawFallbackMinScore'], tuple(settings['skipPaths']), candidates)
-        return deliver(rows, frozenset())
+        return deliver([], frozenset())
     finally:
         if candidates is not None:
             candidates.close()
@@ -1151,13 +1147,13 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             or patterns not in ([], ["ep"])):
         _fail("selected_recall_settings_unsupported")
     from laya_index_runtime import capacity_store_paths
+    from laya_index_host_route import wiki_index_roots
     capacity = capacity_store_paths(decision["dbPath"]) if v2 else None
     if capacity is not None:
-        # The catalog binds every collection root; never one of them.
-        source_root = decision['collectionRoots']
+        source_root = wiki_index_roots(decision['collections'])
         stores = {'catalog_path': capacity[0], 'binding_store_path': capacity[1]}
     else:
-        source_root = (next(iter(decision['collectionRoots'].values())) if v2
+        source_root = (next(iter(wiki_index_roots(decision['collections']).values())) if v2
                        else decision['sourceRoot'])
         stores = {}
     locations: dict[str, tuple[str, ...]] = {}
