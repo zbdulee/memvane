@@ -131,6 +131,10 @@ class DiscoveryChecks(unittest.TestCase):
                 raise
             return results[-1]
 
+        def sync_wake(row):
+            result = handler(Path(row['target']))
+            return result['state'] in ('indexed', 'unchanged')
+
         def compile_wake(row):
             self.compile_wakes.append(row['target'])
             return True
@@ -138,8 +142,8 @@ class DiscoveryChecks(unittest.TestCase):
         def idle(_seconds):
             raise _Idle()
         try:
-            with patch.object(worker, 'run', side_effect=handler), \
-                    patch.dict(runtime_handlers.HANDLERS, {'laya-compile': compile_wake}):
+            with patch.dict(runtime_handlers.HANDLERS, {'laya-sync': sync_wake,
+                                                         'laya-compile': compile_wake}):
                 status = runtime_work.drain(queue, ready=lambda: True, sleep=idle)
         except _Idle:
             status = {'status': 'waiting'}
