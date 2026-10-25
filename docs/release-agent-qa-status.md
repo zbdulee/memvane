@@ -1,4 +1,48 @@
-# Release agent QA status — f89 baseline; next candidate pending
+# Release agent QA status — b1188c2 minimum main-merge gate
+
+## Current scoped result (2026-10-25)
+
+The exact product candidate is
+[`b1188c2281bb5221fdaf64f2131e18fdd1b0a6cc`](https://github.com/zbdulee/qmd-auto-context/commit/b1188c2281bb5221fdaf64f2131e18fdd1b0a6cc)
+in draft PR [#23](https://github.com/zbdulee/qmd-auto-context/pull/23).
+[CI run 40196920336](https://github.com/zbdulee/qmd-auto-context/actions/runs/40196920336)
+completed successfully at that exact SHA. The local product tree remains that
+candidate; a later docs-only commit needs its own required CI and a product
+tree comparison before main merge. This is the user's minimum main-merge QA
+scope, not a claim that every formal 25-row release scenario passed.
+
+| Retained merge outcome | Observed evidence and limit |
+| --- | --- |
+| Installed search | The exact candidate's Claude and Codex host sessions selected the current Laya wiki card and verified source locator. The N-1 restored-QMD fresh Claude session also answered Q-alpha. Keep selected Laya and restored QMD routes distinct. |
+| `LI-MIG` | Controlled qmdqa inventory, consistent backup/DB integrity, wiki-only Laya membership and selected search preserved raw sources and QMD. This is isolated synthetic QA, not an operating-account migration. |
+| `LI-RECOVER` | Official QMD restore before a first selected write and owned forward recovery after a selected write were observed in separate branches. Exact-candidate focused tests cover four crash/ACK replay cases; they are synthetic checks, not claims of installed forced crashes or power loss. |
+| `LI-COEXIST` | Separate qmdqa external-QMD DB path and backup remained unchanged; an uncertain ownership/environment conflict was classified with `changesApplied:0`. No operating dulee DB was inspected or modified. |
+| `RQA-INST-02/03/04` | The actual public N-1 fixture preserved settings and originals through the supported shared-install update and QMD restoration. Separate fixture C stopped the executing setup process at `enrolling` without a false completion, resumed the identical request to `completed`, then served a verified wiki card and source in a fresh Claude session. The entire host was not stopped; no host-interruption claim is made. |
+
+Fixture C's synthetic source `docs/qa/alpha.md` has SHA-256
+`a94693278f6af07db1a0492a25886ad39a61e07ac7ee0f340410e65d6075b15e`.
+The official manual card was verified by Claude against its source revision;
+the direct QMD hook and fresh hosted Claude answer both contained the codename
+and source path. Final state: `compile.mode=off`, verification queue 0,
+`shared-install-journal.json` at `completed`, and QMD DB quick-check `ok`.
+Private operator evidence: `qmdqa-run/b118-inst04-c-manual-card-20261025.log`,
+`qmdqa-run/b118-inst04-c-claude-one-verify-20261025.log`,
+`qmdqa-run/b118-inst04-c-restore-off-index-20261025.log`,
+`qmdqa-run/b118-inst04-c-verified-direct-hook-20261025.log`,
+`qmdqa-run/b118-inst04-c-verified-claude-host-20261025.log`, and
+`qmdqa-run/b118-inst04-c-final-gate-audit-20261025.log`. The separate
+additional hosted/provider QA ledger is **7/10 used** (one verifier and one
+fresh host call here); historical 30/30, 6/6 and 2/2 ledgers remain intact.
+No learning or new payment was performed.
+
+For this main merge, the user deferred exactly five assertions: `RQA-GIT-01`,
+`RQA-GIT-03`, only the paid duplicate-call part of `RQA-WIKI-01`,
+`RQA-WIKI-03`, and `RQA-RES-02`. They are **DEFERRED BY USER, not PASS**.
+The other `RQA-WIKI-01` assertions remain in scope. The four data-safety
+rows above were not waived. The exact evidence supports the scoped merge
+decision; the full formal release matrix retains its own verdict rules.
+
+## Historical f89 and intermediate-candidate record
 
 This is a status record, not a release approval. It tracks the 25 IDs in
 [the QA contract](release-agent-qa.md) without treating partial evidence as
@@ -100,7 +144,7 @@ not match the documented three-line probe and its existing test. These are
 review findings, not new blanket QA gates or completed host verdicts; the
 linked review retains the original report and the code-based corrections.
 
-## Current outcome
+## Historical f89 outcome
 
 Exact candidate caches in the synthetic QA account matched 937 committed
 files on Claude and Codex; the new Codex ID's nine hooks were trusted for the
@@ -139,7 +183,7 @@ from execution on the next candidate. The training-only `RQA-RES-02` row stays
 No operating account, manuscript or operating DB was changed for this f89
 status record.
 
-The table uses `PARTIAL` only as a planning label. Formal verdicts remain
+The historical f89 table uses `PARTIAL` only as a planning label. Formal verdicts remain
 `PASS`, `FAIL`, `BLOCKED` or `NOT RUN` under the contract; a partial item
 must be recorded as non-PASS in the final run record. The evidence column
 identifies reusable preparation, not proof of the whole row.
@@ -150,7 +194,7 @@ identifies reusable preparation, not proof of the whole row.
 | RQA-INST-01 | PARTIAL | Clean-start gate and candidate load | Both-host managed opt-in and selected search |
 | RQA-INST-02 | NOT RUN | Pinned N-1 identity/first-session evidence | Same-ID N-1 to next-candidate update and preservation |
 | RQA-INST-03 | NOT RUN | Fixture settings inventory | Changed/retained settings through update |
-| RQA-INST-04 | PARTIAL | Older inactive QA build retirement | Actual rollback and first-write forward recovery |
+| RQA-INST-04 | PARTIAL | N-1 prewrite QMD restore; synthetic shared-install interruption/replay below | Ordinary install preservation and fresh-session search; actual host interruption claim remains unproved; first-write forward recovery |
 | RQA-HOOK-01 | PARTIAL | Claude hook load/selection | Complete Claude search/edit/delete sequence |
 | RQA-HOOK-02 | PARTIAL | Codex hook load/selection | Complete Codex search/edit/delete sequence |
 | RQA-SYNC-01 | PARTIAL | QMD source hashes and sync baseline snapshot | Actual add/edit/delete convergence and search |
@@ -172,7 +216,35 @@ identifies reusable preparation, not proof of the whole row.
 | LI-VECTOR | NOT RUN | Model identity and L0 capacity tests | Wiki-only vector coverage and admission on installed host |
 | LI-RECALL | NOT RUN | QMD manual wiki selection/locator and card evidence | Selected Laya wiki retrieval, injection and locator on both hosts |
 
-## Next candidate and main merge gate — no verdict yet
+**RQA-INST-04 path correction and later evidence.** The N-1 preserving
+installation used `setup`'s `plan-install` / `install` route and has a
+`shared-install-journal.json` at `completed`, not an
+`install-update-journal.json` (`qmdqa-run/b118-nminus1-coordinator-journals-20261025.log`).
+The latter journal and `rollback` / `prepare` / `activate` apply only to a
+separately reviewed topical-card/shadow or runtime installation. A new
+QMD-origin plan after official prewrite `qmd_restored` was rejected with
+`project_selection_already_exists`, `changesApplied:0`; the retained marker
+is a safety boundary, not an identical shared-install retry
+(`qmdqa-run/b118-nminus1-official-restore-20261025.log`,
+`qmdqa-run/b118-nminus1-reapply-plan-20261025.log`). The protected N-1
+fixture still had DB quick-check `ok` and all nine source-file hashes
+unchanged (`qmdqa-run/b118-nminus1-postrestore-protected-proof-20261025.log`).
+
+Separate fixture C **synthetically** stopped the executing setup parent with
+SIGTERM during `enrolling`; its journal stayed `enrolling`, not falsely
+`completed` (`qmdqa-run/b118-inst04-c-controlled-interrupt-20261025.log`,
+`qmdqa-run/b118-inst04-c-interrupted-status-20261025.log`). Identical digest
+replay reached `qmd_ready`, journal `completed`, two indexed documents and
+DB quick-check `ok`; settings, raw and wiki sources were preserved
+(`qmdqa-run/b118-inst04-c-identical-resume-20261025.log`,
+`qmdqa-run/b118-inst04-c-preservation-proof-20261025.log`). This is focused
+abrupt-stop/replay evidence, **not** proof of an actual host-process stop.
+The later verified-card direct hook and fresh Claude session supplied the
+previously missing fixture-C search assertion; see the current scoped result
+above. Do not replace shared-install forward recovery with a shadow-installer
+rollback.
+
+## Earlier main-merge planning snapshot (superseded by current result)
 
 The [execution plan](qa-parallel-plan.md) retains all **25 IDs**. The user has now deferred five specific assertions from this main-merge decision: RQA-GIT-01, RQA-GIT-03, RQA-WIKI-01 paid duplicate-call work only, RQA-WIKI-03 and RQA-RES-02. Record them DEFERRED BY USER for merge, not PASS. RQA-WIKI-01's other assertions remain in scope. RQA-GIT-02, mandatory T1/T1-node/T1-py host cells, and RQA-INST-04, LI-MIG, LI-RECOVER and LI-COEXIST remain required. Formal release still follows the full contract unless separately decided.
 The user reserved exactly two additional hosted calls, one Claude and one Codex, separate from the exhausted 30/30 and 6/6 ledgers. Compile mode stays OFF before sealing to avoid automatic paid work. No result is presumed.
@@ -234,8 +306,11 @@ substitutes for controlled qmdqa migration/recovery branches.
    the resident owner is ready. Record cold `preparing` or pressure deferral as
    non-PASS for retrieval, without calling normal queue wait a failure by itself.
 3. Share an N-1 fixture across `RQA-INST-02/03/04`: observe update and settings
-   preservation, then separately prove rollback before first selected write
-   and forward recovery after it. In the same controlled migration chain,
+   preservation through the actual shared-install path, including same-request
+   resume and fresh-session search. Separately prove official QMD-origin
+   restore before first selected write and forward recovery after it; use
+   shadow-installer rollback/re-apply only when that distinct path was
+   actually prepared. In the same controlled migration chain,
    prove wiki-only membership, QMD/raw preservation, coexistence, vector seal
    and scope. Keep the four named data-safety rows mandatory.
 4. Reuse fixture setup for distinct source/Git/worktree/wiki/R2 and late-worker

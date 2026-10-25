@@ -11,6 +11,18 @@ scenario captures objective evidence. Record each run with
 For the current candidate and an auditable mapping of all 25 scenario IDs,
 see the [QA status](release-agent-qa-status.md). The dated implementation
 notes below are historical; they are not the latest QA verdict.
+The 2026-10-25 minimum main-merge run used exact product candidate
+`b1188c2281bb5221fdaf64f2131e18fdd1b0a6cc` and its passing
+[CI run 40196920336](https://github.com/zbdulee/qmd-auto-context/actions/runs/40196920336).
+For `RQA-INST-04`, a synthetic fixture stopped the executing setup process
+during `enrolling`, resumed the identical shared-install request, and then
+served an officially verified synthetic wiki card plus source in a fresh
+Claude session. Its final state was `compile.mode=off`, verification queue 0,
+shared journal `completed` and DB quick-check `ok`; additional QA calls used
+7/10 bounded slots. This is process-interruption and new-session evidence,
+not a whole-host interruption or power-loss claim. The status record maps
+the other required data-safety evidence and the five user-deferred assertions;
+none of those deferrals is a PASS or a waiver of the four safety rows.
 The [Claude QA change review](qa-reviews/2026-10-25-claude-qa-change-review.md)
 records code-level findings separately from row verdicts.
 The [architecture flow charts](architecture/flows/README.md) explain the
@@ -965,24 +977,43 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 
 ### RQA-INST-04 Rollback and recovery
 
-- **Purpose:** check that an applied update can be rolled back without
-  losing data, and that an interrupted setup never reports false success.
+- **Purpose:** check the recovery contract of the installer actually used by
+  the update: preserve old data and selection, and never report an
+  interrupted setup as complete. The ordinary preserving installer and
+  separate shadow installer have different rollback contracts; neither
+  path is waived by this distinction.
 - **Owner:** install. **Hosts:** Claude Code, Codex.
-- **Preconditions:** RQA-INST-02 state. Record a hash snapshot of settings,
-  wiki and the `setup` skill's status report before the apply.
+- **Preconditions:** RQA-INST-02 state. Record the selected route, installer
+  journal/status, and hashes of settings, wiki and original DB/source
+  before applying. Keep the same reviewed request and an old session.
 
-**Part A: rollback.**
+**Part A: update, restoration and repeat under the supported installer.**
 
-1. Ask "직전 적용을 되돌려줘".
-2. Expected: the skill reports pointer and settings restoration, or names
-   the concurrent change that blocks it.
-3. Start a fresh session and probe Q-alpha. Expected: Present, served by the
-   restored selection.
-4. Settings and wiki hashes equal the pre-apply snapshot. The original DB,
-   wiki and models are not deleted.
-5. Ask "준비된 설치를 적용해줘" again. Expected: idempotent re-apply, then
-   Present again in a fresh session.
-6. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
+1. For the ordinary preserving `plan-install` / `install` route, verify the
+   same reviewed request and `shared-install-journal.json`. Repeat that
+   request through the setup skill if necessary; expected: a bounded defer,
+   named recovery state, or QMD-ready/completed result without loss of
+   settings, wiki, source or original DB. A selected shared store/enrollment
+   is preserved and resumed forward, not automatically rolled back.
+2. If this updated project selected a Laya QMD-origin route, request its
+   official restore **before** its first selected write. Expected: QMD is
+   selected, original DB and backups remain intact, and a fresh session can
+   search the restored selection. After a selected write, automatic rollback
+   must be refused and owned forward recovery must work. Distinct LI-RECOVER
+   assertions may reuse the same receipts. Never delete the retained
+   selection marker or treat a new origin plan after `restored_qmd` as an
+   identical installer retry.
+3. Recheck pre-apply settings/wiki/source hashes, original DB integrity,
+   selected route, status and Q-alpha in a fresh session. A repeated ordinary
+   install must preserve those originals; it does not itself reselect Laya.
+4. Only if a separately reviewed topical-card/shadow or runtime preparation
+   used `plan` / `prepare` / `activate` and has an
+   `install-update-journal.json`, ask "직전 적용을 되돌려줘" and then
+   "준비된 설치를 적용해줘" with that same request. Require pointer/settings
+   restoration, unchanged old data and fresh-session search after each
+   transition, or the named concurrent-change/recovery block. An ordinary
+   shared-install result cannot pass this separate path.
+5. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
    fresh session. Expected: no hook failure, and either a working state or
    one setup notice. If the host cannot pin a version, mark this step
    `NOT RUN` with the reason.
@@ -990,15 +1021,25 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part B: interrupted recovery.**
 
 1. Use a fresh fixture C and opt it in.
-2. Start the setup install ("검토한 설치를 진행해줘").
-3. As soon as the skill reports that preparation started, terminate the host
-   process. Do not signal plugin children individually.
-4. Start a fresh session and ask "이 프로젝트 auto-context 설치 상태 보여줘".
-   Expected: an in-progress, resumable or `recovery_required` state. Never
-   `completed`.
-5. Repeat the identical request. Expected: it resumes to completion, or
-   stays `recovery_required` with a named reason. Never a silent partial
-   success.
+2. Start the ordinary preserving setup install ("검토한 설치를 진행해줘")
+   through its official `install` route and record the request digest.
+3. Once its journal enters an incomplete phase such as `enrolling`, stop
+   the process executing that setup request abruptly. Do not signal an
+   unrelated shared worker or plugin child. Stopping the entire host is a
+   distinct integration observation, required to claim host interruption
+   but not to prove the install journal's abrupt-stop safety. Record which
+   process was stopped.
+4. In a fresh invocation/session, inspect the shared install journal before
+   retry. Expected: an incomplete/deferred or named recovery phase, never
+   false `completed` for the interrupted request.
+5. Repeat the identical reviewed request. Expected: QMD-ready or overall
+   completed with the same request digest, or a named deferred/recovery
+   state. Verify original DB integrity, settings and source/wiki hashes,
+   and Q-alpha from a fresh session on the selected route. Never accept
+   silent partial success. A synthetic parent-process test supports the
+   recovery mechanism but alone does not prove installed host behavior.
+   The dated `b1188c2` fixture adds a separate fresh Claude session after
+   verified-card indexing; it does not assert that the whole host was stopped.
 
 - **Evidence:** status outputs before and after, hash comparisons, probes.
 - **Timeout:** T_ROLLBACK per request; 60 min overall.
