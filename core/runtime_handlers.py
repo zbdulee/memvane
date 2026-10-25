@@ -31,14 +31,14 @@ def update(row):
 
 
 def laya_sync(row):
-    from laya_product_sync_worker import run
-    result=run(Path(row['target']))
+    from laya_runtime_dispatch import run
+    result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
     return result['state'] in ('indexed','unchanged')
 
 
 def laya_compile(row):
-    from wiki_selected_laya import run
-    result=run(Path(row['target']))
+    from laya_runtime_dispatch import run
+    result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
     return result['state']=='drained'
 
 

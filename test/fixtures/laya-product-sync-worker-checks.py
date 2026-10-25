@@ -146,9 +146,9 @@ class WorkerChecks(unittest.TestCase):
         service.stop.assert_called_once_with()
 
     def test_runtime_wake_retains_deferred_selected_sync(self):
-        with patch('laya_product_sync_worker.run',return_value={'state':'deferred'}):
+        with patch('laya_runtime_dispatch.run',return_value={'state':'deferred'}):
             self.assertFalse(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
-        with patch('laya_product_sync_worker.run',return_value={'state':'unchanged'}):
+        with patch('laya_runtime_dispatch.run',return_value={'state':'unchanged'}):
             self.assertTrue(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
 
     # RQA-RACE-01 Part B QA-only barrier. A synthetic fixture marker stands in
@@ -621,22 +621,19 @@ class V2WorkerChecks(unittest.TestCase):
         self.assertEqual(self.recall(cwd),(3,'','[laya-index] %s; QMD fallback refused\n'%code))
 
     def drain(self,queue):
-        """Explicitly run the pending wake through runtime_handlers.laya_sync."""
-        real_run=worker.run;results=[];errors=[]
-        def handler(project):
+        """Run the real synthetic worker behind the sealed-dispatch seam."""
+        results=[];errors=[]
+        def handler(kind,project,**_options):
             try:
-                self.assertEqual(project,self.home)
-                # The handler imports worker.run at call time; run_worker
-                # then needs the real function back for its own call.
-                with patch.object(worker,'run',real_run):
-                    results.append(self.run_worker())
+                self.assertEqual((kind,project),('laya-sync',str(self.home)))
+                results.append(self.run_worker())
                 return results[-1]
             except BaseException as exc:
                 errors.append(exc);raise
         def no_wait(_seconds):
             raise AssertionError('drain retried the wake')
         try:
-            with patch.object(worker,'run',side_effect=handler):
+            with patch('laya_runtime_dispatch.run',side_effect=handler):
                 status=runtime_work.drain(queue,ready=lambda:True,sleep=no_wait)
         finally:
             if errors:raise errors[0]
@@ -833,7 +830,7 @@ class CapacityWorkerChecks(unittest.TestCase):
             result=worker.run(self.project,coordinator=controller,start_service=start)
         self.assertEqual(result,backlog)
         self.assertEqual(len(seen['steps']),worker.MAX_CAPACITY_ROUNDS)
-        with patch('laya_product_sync_worker.run',return_value=backlog):
+        with patch('laya_runtime_dispatch.run',return_value=backlog):
             self.assertFalse(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
 
     def test_one_store_without_the_other_fails_before_model_start(self):

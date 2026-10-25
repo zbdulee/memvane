@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -32,6 +33,7 @@ POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
 KINDS=wake_policy.KINDS
 RETRY=wake_policy.RETRY
 MAX_WAKES=wake_policy.MAX_WAKES
+HANDOFF_SECONDS=180
 
 
 def Coordinator(*args,**kwargs):
@@ -186,7 +188,11 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
             with queue.connect() as db:
                 changed=db.execute("UPDATE wakes SET status='running' WHERE id=? AND revision=? AND status='pending'",(row['id'],row['revision'])).rowcount
             if not changed:continue
-            try:done=execute(row);error=None
+            # A delegated Laya child retains this exact UID lease if its
+            # dispatcher dies, then closes it on completion. Other handlers
+            # and the persistent row schema remain unchanged.
+            served={**row,'leaseFd':fd} if row['kind'] in ('laya-sync','laya-compile') else row
+            try:done=execute(served);error=None
             except Exception as exc:done=False;error=exc
             runs+=1
             with queue.connect() as db:
@@ -216,11 +222,57 @@ def wake():
     finally:os.close(fd)
 
 
+def _handoff():
+    """One bounded contender lets a new bundle take over an old UID worker.
+
+    The old worker may self-rewake while a selected project uses newer code.
+    The separate handoff lock limits contenders without touching its lease or
+    changing the common queue. Only an explicit new Laya request starts this.
+    """
+    queue=WakeQueue()
+    fd=_lock(queue.root/'runtime-worker-handoff.lock')
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return False
+        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'handoff',str(fd)],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            close_fds=True,pass_fds=(fd,),start_new_session=True)
+        return True
+    finally:os.close(fd)
+
+
+def _handoff_worker(queue,handoff_fd):
+    lease_path=queue.root/'runtime-worker.lock'
+    lease=_lock(lease_path)
+    try:
+        def expired(_signum,_frame):
+            raise TimeoutError('runtime_handoff_expired')
+        prior=signal.signal(signal.SIGALRM,expired)
+        try:
+            signal.setitimer(signal.ITIMER_REAL,HANDOFF_SECONDS)
+            try:fcntl.flock(lease,fcntl.LOCK_EX)
+            except TimeoutError:return
+        finally:
+            signal.setitimer(signal.ITIMER_REAL,0)
+            signal.signal(signal.SIGALRM,prior)
+        # A queued kernel waiter gets the old owner's released lease before
+        # that owner can self-rewake. drain preserves the shared revision ACK.
+        _drain_and_rewake(queue,lease)
+    finally:
+        if lease is not None:
+            try:os.close(lease)
+            except OSError:pass
+        os.close(handoff_fd)
+
+
 def request(kind,target='',*,start=True):
     # Fixture runs must never create runtime files/children in the real UID home.
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1' or os.environ.get('QMD_SANDBOX'):return
     offered=WakeQueue().offer(kind,target)
-    if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':wake()
+    if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':
+        started=wake()
+        if not started and kind in ('laya-sync','laya-compile') and offered=='queued':
+            _handoff()
     # A retained wake is durable and promoted when a slot frees; only a
     # dropped one needs the caller's own request file and the next hook.
     return {'status':{'queued':'queued','retained':'deferred_queue_capacity_retained',
@@ -278,6 +330,12 @@ def main(argv):
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')
         _drain_and_rewake(queue,fd);return 0
+    if argv[:1]==['handoff'] and len(argv)==2:
+        queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)
+        expected=(queue.root/'runtime-worker-handoff.lock').stat()
+        if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):
+            raise ValueError('runtime_handoff_lease_changed')
+        _handoff_worker(queue,fd);return 0
     return 2
 
 

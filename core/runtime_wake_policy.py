@@ -32,6 +32,30 @@ IDLE_WAIT_SECS = 5
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 CLEANUP_DEFERRED_REASON = 'resource_deferred'
+DISPATCH_REASONS = frozenset((
+    'kind_invalid', 'target_invalid', 'target_unavailable',
+    'target_journal_changed', 'target_identity_invalid',
+    'target_entry_unavailable', 'target_entry_invalid',
+    'target_launch_failed', 'target_child_failed', 'target_result_invalid',
+    'target_deferred'))
+
+
+class DispatchFailure(ValueError):
+    """A bounded, non-sensitive Laya wake failure for the durable ACK ledger."""
+
+    def __init__(self, code, commit=None, bundle=None):
+        if code not in DISPATCH_REASONS:
+            raise ValueError('invalid_dispatch_reason')
+        if commit is not None and (not isinstance(commit, str) or len(commit) != 40
+                                   or any(c not in '0123456789abcdef' for c in commit)):
+            raise ValueError('invalid_dispatch_identity')
+        if bundle is not None and (not isinstance(bundle, str) or len(bundle) != 64
+                                   or any(c not in '0123456789abcdef' for c in bundle)):
+            raise ValueError('invalid_dispatch_identity')
+        self.code = code
+        self.commit = commit
+        self.bundle = bundle
+        super().__init__(code)
 
 
 def validate_wake(kind, target):
@@ -98,6 +122,8 @@ def retry_delay(attempts):
 
 
 def failure_reason(error):
+    if isinstance(error, DispatchFailure):
+        return 'dispatch:' + error.code + ':' + (error.commit or 'none') + ':' + (error.bundle or 'none')
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
