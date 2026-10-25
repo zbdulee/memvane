@@ -174,7 +174,8 @@ identifies reusable preparation, not proof of the whole row.
 
 ## Next candidate and main merge gate — no verdict yet
 
-The [execution plan](qa-parallel-plan.md) retains all **25 IDs** and its existing proposal groups 18 distinct rows as a main-merge floor. Six mandatory rows and the T1-node/T1-py cells are proposed for a later stage, but **no row-specific deferral has been approved**. Formal release still requires the contract's mandatory matrix. `RQA-INST-04`, `LI-MIG`, `LI-RECOVER` and `LI-COEXIST` remain non-waivable.
+The [execution plan](qa-parallel-plan.md) retains all **25 IDs**. The user has now deferred five specific assertions from this main-merge decision: RQA-GIT-01, RQA-GIT-03, RQA-WIKI-01 paid duplicate-call work only, RQA-WIKI-03 and RQA-RES-02. Record them DEFERRED BY USER for merge, not PASS. RQA-WIKI-01's other assertions remain in scope. RQA-GIT-02, mandatory T1/T1-node/T1-py host cells, and RQA-INST-04, LI-MIG, LI-RECOVER and LI-COEXIST remain required. Formal release still follows the full contract unless separately decided.
+The user reserved exactly two additional hosted calls, one Claude and one Codex, separate from the exhausted 30/30 and 6/6 ledgers. Compile mode stays OFF before sealing to avoid automatic paid work. No result is presumed.
 The `cb3b857` source commit has a full guarded L0 result. `cc649e7` adds the
 sealed cross-version dispatch and fixture update; its exact-head CI is
 pending, and the final artifact still needs installed Claude/Codex identity
@@ -185,10 +186,7 @@ records f89 history, **not** a PASS table for the pending candidate. Preserve ea
 expected outcome while sharing fixture setup, source hashes and host turns.
 
 The user has authorized the necessary QA calls, push/main merge and current
-Mini operational installation, but none is a recorded result. In the absence
-of explicit row/cell deferral decisions, a main merge recommendation follows
-only after every mandatory row and T1/T1-node/T1-py cell has its required PASS
-evidence, with optional hardware recorded under the contract's support wording. A failed, blocked or unobserved required result
+Mini operational installation, but none is a recorded result. The five user-approved deferrals remain non-PASS while every retained merge assertion and T1/T1-node/T1-py cell still needs its own evidence, with optional hardware recorded under the contract's support wording. A failed, blocked or unobserved required result
 keeps its non-PASS status. Normal cold provider preparation and resource
 waiting are reported separately; neither is `LI-RECALL` PASS. The installed
 Claude and Codex selected search must succeed after readiness, with current
@@ -247,10 +245,8 @@ substitutes for controlled qmdqa migration/recovery branches.
    gate decision. Complete mandatory T1-node/T1-py cells and optional
    hardware disposition. No global queue-zero or forced agent raw-file Read is
    added.
-5. Map every mandatory ID and cell to an exact-candidate PASS receipt
-   before recommending merge under the unchanged contract. The 18-row
-   staged-merge proposal does not apply unless its six row-specific and
-   T1-node/T1-py decisions are explicitly recorded. After publication, compare
+5. Map every retained main-merge ID and cell to an exact-candidate PASS receipt
+   before recommending merge; retain each user-deferred assertion as non-PASS. The five approved deferrals are recorded as non-PASS follow-up; worktree isolation and T1-node/T1-py cells remain required. After publication, compare
    public installed bytes and repeat core smoke as required by the contract. Record
    current Mini and later MacBook use against their own hardware and settings.
 
