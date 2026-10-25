@@ -2108,7 +2108,10 @@ def restore_origin_selection(*, project_root, state_root):
                     'changesApplied': 1}
         after = observed()
     if tuple(after.values()) in settled and not os.path.lexists(auto / ROUTE):
-        return {'status': 'qmd_restored', **after, 'changesApplied': 1}
+        from laya_embed_resident import wait_for_release
+        stopped = wait_for_release(state / 'runtime' / 'laya-embed.sock')
+        return {'status': 'qmd_restored', **after, 'changesApplied': 1,
+                **({} if stopped else {'embedServiceCleanup': 'pending'})}
     if after['cutoverPhase'] == 'active' and before['cutoverPhase'] == 'switching':
         # Recovery found the activation committed; a repeated restore decides.
         return {'status': 'recovery_required', 'reason': 'activation_settled_forward',

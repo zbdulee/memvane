@@ -223,6 +223,26 @@ def _selected(project):
     return decision, proof
 
 
+def _selected_service(decision, manifest, admit, start_service):
+    """Borrow the installed warm owner; retain injectable transient fixtures.
+
+    The detached owner cannot acquire the provider admission lane while this
+    sync holds it. A cold wake defers here; the next durable wake starts the
+    owner outside this lane.
+    """
+    if start_service is start_owned_embed_service:
+        from laya_embed_resident import AttachedService, probe
+        # This callback runs with the provider lane held. Starting its new
+        # owner here could race that lane on a model failure between prewarm
+        # and embedding; the next durable sync wake starts it outside the lane.
+        status = probe(manifest)
+        if status == 'ready':
+            return AttachedService()
+        raise ResourceDeferred('laya_service_identity_transition' if status == 'mismatch'
+                               else 'laya_service_preparing')
+    return start_service(manifest, admit=admit)
+
+
 def _route_source(decision):
     """Choose the runtime source binding before any provider or model start.
 
@@ -296,6 +316,17 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
             provider.profile['embedding_fingerprint'] != profile['embeddingFingerprint'] or
             provider.profile['dimension'] != profile['dimension']):
         raise IndexContractError('selected_provider_profile_mismatch')
+    if start_service is start_owned_embed_service:
+        # Activation's selected wake must warm the model even when the sealed
+        # candidate has no changed documents. The bounded dispatcher only
+        # starts the independent owner and retries after it becomes ready.
+        from laya_embed_resident import ensure_running
+        if verify_selected_route(decision) != proof:
+            raise IndexContractError('selected_provider_proof_changed')
+        try:
+            ensure_running(decision['projectRoot'], proof['providerManifest'])
+        except ResourceDeferred as exc:
+            return {'state': 'deferred', 'reason': str(exc)}
     controller = coordinator or Coordinator()
     observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
     if capacity is not None:
@@ -315,7 +346,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                 fresh = resource_report(EMBED_POLICY, detailed=True)
                 return controller.check(EMBED_POLICY, fresh)['ready']
 
-            service = start_service(validated_manifest, admit=admit)
+            service = _selected_service(decision, validated_manifest, admit, start_service)
             try:
                 if verify_selected_route(decision) != proof:
                     raise IndexContractError('selected_proof_changed')
@@ -458,7 +489,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                 def admit():
                     fresh = resource_report(EMBED_POLICY, detailed=True)
                     return controller.check(EMBED_POLICY, fresh)['ready']
-                service = start_service(validated, admit=admit)
+                service = _selected_service(decision, validated, admit, start_service)
                 stack.callback(service.stop)
                 state['service'] = service
                 if not proof_ok():

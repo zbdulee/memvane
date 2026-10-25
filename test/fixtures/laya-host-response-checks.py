@@ -122,6 +122,12 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
 
 
 class ResponseChecks(unittest.TestCase):
+    def setUp(self):
+        import laya_embed_resident
+        admission = patch.object(laya_embed_resident, 'admit_query')
+        admission.start()
+        self.addCleanup(admission.stop)
+
     def assert_rejected(self, code, rows, decision=DECISION):
         with self.assertRaises(response.HostResponseError) as caught:
             response.render_context(decision, rows)
@@ -200,7 +206,9 @@ class ResponseChecks(unittest.TestCase):
         import laya_install_journal
         import laya_index_runtime
         import laya_local_embed_provider
+        import laya_embed_resident
         import config
+        from resource_deferred import ResourceDeferred
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
                     "projectRoot": "/synthetic/project",
@@ -221,7 +229,15 @@ class ResponseChecks(unittest.TestCase):
              patch.object(response, "query_selected_hybrid", return_value=[row()]) as queried:
             payload = response.serve_selected("recall", "codex", decision,
                                              {"prompt": "find alpha"})
-        built.assert_called_once_with(proof["providerManifest"])
+            with patch.object(laya_embed_resident, 'admit_query',
+                              side_effect=ResourceDeferred('pressure')):
+                with self.assertRaisesRegex(response.HostResponseError,
+                                            '^selected_provider_resource_deferred$'):
+                    response.serve_selected('recall', 'codex', decision,
+                                            {'prompt': 'find alpha'})
+        self.assertEqual(built.call_count, 2)
+        self.assertTrue(all(call.args == (proof['providerManifest'],)
+                            for call in built.call_args_list))
         self.assertIs(queried.call_args.args[4], provider)
         context = payload["hookSpecificOutput"]["additionalContext"]
         self.assertIn("docs/a.md", context)
@@ -966,6 +982,44 @@ class ResponseChecks(unittest.TestCase):
                          [('laya-sync', '/synthetic/project', 'pending')])
         self.assertEqual(wakes[0]['revision'], 5)
 
+    def test_cold_provider_wakes_owner_without_qmd_fallback(self):
+        import laya_install_journal
+        import laya_embed_resident
+        import runtime_work
+        decision = v2_decision()
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=V2_PROOF), \
+             patch.object(laya_embed_resident, 'read_owner_state', return_value=None), \
+             patch.object(runtime_work, 'request', return_value={'status': 'queued'}) as wake:
+            with self.assertRaisesRegex(response.HostResponseError,
+                                        '^selected_provider_preparing$'):
+                response._request_provider_start(decision, V2_PROOF)
+        wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+
+    def test_provider_failure_and_identity_transition_have_distinct_codes(self):
+        import laya_install_journal
+        import laya_embed_resident
+        import runtime_work
+        decision = v2_decision()
+        state = {'terminal': True, 'reason': 'attestation_invalid'}
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=V2_PROOF), \
+             patch.object(laya_embed_resident, 'read_owner_state', return_value=state), \
+             patch.object(runtime_work, 'request') as wake:
+            with self.assertRaisesRegex(response.HostResponseError,
+                                        '^selected_provider_start_failed$'):
+                response._request_provider_start(decision, V2_PROOF)
+        wake.assert_not_called()
+        with patch.object(laya_install_journal, 'verify_selected_route',
+                          return_value=V2_PROOF), \
+             patch.object(laya_embed_resident, 'read_owner_state', return_value=None), \
+             patch.object(runtime_work, 'request', return_value={'status': 'queued'}) as wake:
+            with self.assertRaisesRegex(response.HostResponseError,
+                                        '^selected_provider_identity_transition$'):
+                response._request_provider_start(decision, V2_PROOF,
+                                                 transition=True)
+        wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+
     def test_main_reports_stale_sync_codes_with_exit_3_and_no_fallback(self):
         import contextlib
         import io
@@ -980,6 +1034,8 @@ class ResponseChecks(unittest.TestCase):
                      'index_stale_sync_queued'),
                     (response.HostResponseError('index_stale_sync_unavailable'),
                      'index_stale_sync_unavailable'),
+                    (response.HostResponseError('selected_provider_preparing'),
+                     'selected_provider_preparing'),
                     (IndexContractError('vector_deadline_exceeded'),
                      'vector_deadline_exceeded'),
                     (IndexContractError('vector_budget_exceeded'),

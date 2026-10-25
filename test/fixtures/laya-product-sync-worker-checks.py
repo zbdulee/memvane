@@ -100,6 +100,20 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual(calls,[('start',self.proof['providerManifest'])])
         service.stop.assert_called_once_with()
 
+    def test_selected_wake_prewarms_before_a_no_change_scan(self):
+        import laya_embed_resident
+        self.decision['projectRoot'] = str(self.project)
+        controller, service, _calls, _start, patches = self.wiring()
+        with self._patches(patches), \
+             patch.object(laya_embed_resident, 'ensure_running',
+                          side_effect=ResourceDeferred('laya_service_preparing')) as warm:
+            result = worker.run(self.project, coordinator=controller,
+                                start_service=worker.start_owned_embed_service)
+        self.assertEqual(result, {'state': 'deferred', 'reason': 'laya_service_preparing'})
+        warm.assert_called_once_with(str(self.project), self.proof['providerManifest'])
+        self.assertEqual(controller.lanes, [])
+        service.stop.assert_not_called()
+
     def test_stale_selected_proof_stops_owned_service_before_sync(self):
         def forbidden(*_args,**_kwargs):self.fail('stale route reached sync')
         controller,service,_calls,start,patches=self.wiring(

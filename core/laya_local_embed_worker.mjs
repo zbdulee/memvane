@@ -41,7 +41,7 @@ async function load(config) {
 const MEMBER_REFUSALS = new Set(['provider_context_exceeded', 'provider_chunks_invalid',
                                  'chunk_recursion_limit', 'token_truncation_fallback']);
 
-async function embed(config, state, request) {
+async function embed(config, state, request, yieldQueries = async () => {}) {
   if (!validRequest(request)) throw Error('provider_request_invalid');
   const {model, context, contextSize} = state;
   async function vectorFor(text) {
@@ -64,6 +64,9 @@ async function embed(config, state, request) {
     for (const chunk of chunks) {
       const vector = await vectorFor(`title: ${title || 'none'} | text: ${chunk.text}`);
       rows.push({seq: rows.length, pos: chunk.pos, vector});
+      // A document never holds the one model lane across every chunk when a
+      // foreground query is waiting. No concurrent context calls are made.
+      await yieldQueries();
     }
     return {chunks: rows};
   }
@@ -126,9 +129,45 @@ if (!serving) {
     providerArtifactSha256: config.providerArtifactSha256,
     embeddingFingerprint: config.embeddingFingerprint,
   };
-  // One model context is shared. Serialize requests; busy queries return a
-  // bounded failure so a document batch cannot quietly hold the hook.
-  let busy = false;
+  // One model context is shared. At most seven complete requests wait behind
+  // the active request; maxConnections below bounds open clients separately.
+  const pending = [];
+  let running = false;
+  const failure = {...identity, ok: false, result: null};
+  async function answer(socket, request, yieldQueries) {
+    try {
+      const result = await embed(config, state, request, yieldQueries);
+      socket.end(JSON.stringify({...identity, ok: true, result}));
+    } catch (error) {
+      const refused = error instanceof Error && MEMBER_REFUSALS.has(error.message)
+        ? {refused: error.message} : {};
+      socket.end(JSON.stringify({...failure, ...refused}));
+    }
+  }
+  async function runQueued() {
+    if (running) return;
+    running = true;
+    try {
+      while (pending.length) {
+        const next = pending.findIndex(job => job.request.kind === 'query');
+        const [job] = pending.splice(next < 0 ? 0 : next, 1);
+        if (job.socket.destroyed) continue;
+        const yieldQueries = async () => {
+          // Give sockets completed during native inference a chance to queue.
+          await new Promise(resolve => setImmediate(resolve));
+          while (true) {
+            const at = pending.findIndex(row => row.request.kind === 'query');
+            if (at < 0) break;
+            const [query] = pending.splice(at, 1);
+            if (query.socket.destroyed) continue;
+            await answer(query.socket, query.request);
+          }
+        };
+        await answer(job.socket, job.request,
+                     job.request.kind === 'document_chunks' ? yieldQueries : undefined);
+      }
+    } finally { running = false; }
+  }
   const server = createServer({allowHalfOpen: true}, socket => {
     // Client timeout/disconnect is ordinary; an unhandled socket error would
     // otherwise terminate the resident model process.
@@ -141,20 +180,26 @@ if (!serving) {
       if (bytes > 5_100_000) { socket.destroy(); return; }
       pieces.push(chunk);
     });
-    socket.on('end', async () => {
-      if (busy) { socket.end(JSON.stringify({...identity, ok: false, result: null})); return; }
-      busy = true;
+    socket.on('end', () => {
+      // Readiness is an identity-only probe; it never enters the model lane.
+      // The owner and all installed clients use this before attaching.
+      let request;
       try {
-        const data = new TextDecoder('utf-8', {fatal: true})
-          .decode(Buffer.concat(pieces));
-        const request = JSON.parse(data.trim());
-        const result = await embed(config, state, request);
-        socket.end(JSON.stringify({...identity, ok: true, result}));
-      } catch (error) {
-        const refused = error instanceof Error && MEMBER_REFUSALS.has(error.message)
-          ? {refused: error.message} : {};
-        socket.end(JSON.stringify({...identity, ok: false, result: null, ...refused}));
-      } finally { busy = false; }
+        request = JSON.parse(new TextDecoder('utf-8', {fatal: true})
+          .decode(Buffer.concat(pieces)).trim());
+      } catch { socket.end(JSON.stringify(failure)); return; }
+      if (request !== null && typeof request === 'object' &&
+          !Array.isArray(request) && Object.keys(request).length === 1 &&
+          request.kind === 'status') {
+        socket.end(JSON.stringify({...identity, status: 'ready'}));
+        return;
+      }
+      if (!validRequest(request) || pending.length >= 7) {
+        socket.end(JSON.stringify(failure));
+        return;
+      }
+      pending.push({socket, request});
+      void runQueued();
     });
   });
   server.maxConnections = 8;

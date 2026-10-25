@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,7 @@ from laya_index_a import IndexContractError
 from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
 from laya_local_embed_service import start_owned_embed_service
+from laya_embed_resident import probe
 
 
 def sha(path):
@@ -278,7 +280,7 @@ class ProviderChecks(unittest.TestCase):
             provider('otter', profile)
         with self.fake_service([{'vector': [1, 0]}], manifest={
                 **self.manifest, 'approvedProviderId': 'wrong-owner'}):
-            with self.assertRaisesRegex(IndexContractError, 'provider_result_invalid'):
+            with self.assertRaisesRegex(IndexContractError, 'provider_identity_mismatch'):
                 provider('otter', profile)
 
     def test_explicit_owner_start_and_admission_with_synthetic_module(self):
@@ -319,6 +321,9 @@ export async function getLlama() {
         lease = Lease()
         service = start_owned_embed_service(manifest, admit=lambda: lease)
         try:
+            self.assertEqual(probe(manifest), 'ready')
+            self.assertEqual(probe({**manifest, 'embeddingFingerprint': 'f' * 64}),
+                             'mismatch')
             with self.assertRaisesRegex(IndexContractError, 'provider_already_running'):
                 start_owned_embed_service(manifest, admit=lambda: True)
             self.assertEqual(provider.embed_document('small'), [1, 0])
@@ -329,6 +334,7 @@ export async function getLlama() {
             service.stop()
             service.stop()
         self.assertFalse(self.sock.exists())
+        self.assertEqual(probe(manifest), 'absent')
         self.assertTrue(lease.released)
         self.assertIsNotNone(service.process.poll())
 
@@ -396,6 +402,72 @@ export async function getLlama() {
         block = re.search(r'MEMBER_REFUSALS = new Set\(\[(.*?)\]\)', source, re.S).group(1)
         self.assertEqual(frozenset(re.findall(r"'([a-z_]+)'", block)),
                          laya_local_embed_provider.MEMBER_REFUSALS)
+
+    def test_waiting_query_runs_between_document_chunks(self):
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('Node unavailable')
+        events = self.root / 'embed-events.txt'
+        stub = self.root / 'queued-module.mjs'
+        stub.write_text('''
+import {appendFileSync} from 'node:fs';
+const events = EVENT_PATH;
+export async function getLlama() {
+  return {async loadModel() { return {
+    trainContextSize: 2048,
+    tokenize: text => new Uint32Array(String(text).length),
+    async createEmbeddingContext() { return {
+      async getEmbeddingFor(text) {
+        appendFileSync(events, text.startsWith('task:') ? 'Q\\n' : 'D\\n');
+        await new Promise(resolve => setTimeout(resolve, 80));
+        return {vector: [1, 0]};
+      },
+      async dispose() {} }; },
+    async dispose() {}
+  }; }, async dispose() {} };
+}
+'''.replace('EVENT_PATH', json.dumps(str(events))), encoding='utf-8')
+        manifest = dict(self.manifest, nodePath=os.path.realpath(node),
+                        nodeSha256=sha(Path(os.path.realpath(node))),
+                        moduleEntryPath=str(stub), moduleEntrySha256=sha(stub),
+                        recipeId='qmd-regex-token-chunks-candidate-v1')
+        manifest['embeddingFingerprint'] = recipe_fingerprint(
+            model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
+            runtime_id=manifest['runtimeId'], recipe_id=manifest['recipeId'],
+            provider_sha256=manifest['providerArtifactSha256'],
+            worker_sha256=manifest['workerSha256'], node_sha256=manifest['nodeSha256'],
+            module_entry_sha256=manifest['moduleEntrySha256'],
+            closure_sha256=manifest['dependencyClosureSha256'])
+        provider = ReviewedLocalQmdProvider(manifest)
+        profile = dict(profileId=provider.profile['profile_id'],
+                       modelId=provider.profile['model_id'],
+                       embeddingFingerprint=provider.profile['embedding_fingerprint'],
+                       dimension=2, metric='cosine')
+        service = start_owned_embed_service(manifest, admit=lambda: True)
+        answer = []
+        def document():
+            try:
+                answer.append(provider.embed_document_chunks('# T\n' + 'z' * 3000,
+                                                             path='docs/T.md'))
+            except BaseException as exc:
+                answer.append(exc)
+        thread = threading.Thread(target=document)
+        try:
+            thread.start()
+            deadline = time.monotonic() + 3
+            while (not events.exists() or not events.read_text()) and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(events.exists() and events.read_text().startswith('D\n'))
+            self.assertEqual(provider('otter', profile)['vector'], [1, 0])
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(answer), 1)
+            self.assertIsInstance(answer[0], list)
+            self.assertGreater(len(answer[0]), 1)
+            self.assertEqual(events.read_text().splitlines()[1], 'Q')
+        finally:
+            thread.join(timeout=5)
+            service.stop()
 
     def test_worker_stays_local_and_preserves_default_format(self):
         node = shutil.which('node')

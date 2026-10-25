@@ -904,6 +904,50 @@ def _request_stale_sync(decision: dict, proof: dict):
     _fail("index_stale_sync_queued")
 
 
+def _request_provider_start(decision: dict, proof: dict, *, transition=False):
+    """A cold/mismatched socket wakes the off-hook owner, never a hook model."""
+    from laya_install_journal import verify_selected_route
+    from laya_embed_resident import _failure_decision, read_owner_state
+    if verify_selected_route(decision) != proof:
+        _fail('selected_proof_changed')
+    try:
+        _failure_decision(proof['providerManifest'])
+    except Exception as exc:
+        from laya_index_a import IndexContractError
+        from resource_deferred import ResourceDeferred
+        if type(exc) is IndexContractError and str(exc) == 'provider_start_failed':
+            _fail('selected_provider_start_failed')
+        if not isinstance(exc, ResourceDeferred):
+            raise HostResponseError('selected_provider_state_invalid') from exc
+    try:
+        state = read_owner_state(proof['providerManifest'])
+    except Exception as exc:
+        raise HostResponseError('selected_provider_state_invalid') from exc
+    if state is not None and state['terminal']:
+        _fail('selected_provider_start_failed')
+    try:
+        import runtime_work
+        result = runtime_work.request('laya-sync', decision['projectRoot'])
+    except Exception:
+        result = None
+    refreshed = verify_selected_route(decision)
+    stable = lambda row: {key: value for key, value in row.items()
+                          if key != 'selectionEpoch'}
+    if (stable(refreshed) != stable(proof) or
+            refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
+        _fail('selected_proof_changed')
+    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
+        _fail('selected_provider_wake_failed')
+    if transition:
+        _fail('selected_provider_identity_transition')
+    if state is not None and state['reason'] == 'resource_deferred':
+        _fail('selected_provider_resource_deferred')
+    if state is not None and state['reason'] in (
+            'startup_failed', 'worker_exited', 'unexpected'):
+        _fail('selected_provider_retry_wait')
+    _fail('selected_provider_preparing')
+
+
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,
                            start: bool = True) -> None:
     """The hook's sync wake and its checks; raises on any refusal.
@@ -1135,6 +1179,14 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if not isinstance(manifest, dict):
         _fail("vector_provider_missing")
     provider = ReviewedLocalQmdProvider(manifest)
+    from laya_embed_resident import admit_query
+    try:
+        admit_query()
+    except Exception as exc:
+        from resource_deferred import ResourceDeferred
+        if isinstance(exc, ResourceDeferred):
+            _fail('selected_provider_resource_deferred')
+        raise
     settings = config.load_project_config(decision["projectRoot"])
     v2 = "collections" in decision
     selected_settings = decision.get('recallSettings', settings)
@@ -1178,6 +1230,10 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         # only for a verified content mismatch; every other failure is unchanged.
         from laya_source_catalog import CatalogPending, ReturnedCandidateDiverged
         from laya_index_a import IndexContractError
+        if type(exc) is IndexContractError and str(exc) in (
+                'provider_unavailable', 'provider_identity_mismatch'):
+            _request_provider_start(decision, proof,
+                                    transition=str(exc) == 'provider_identity_mismatch')
         if (type(exc) is CatalogPending and exc.reason == 'returned_unverified'):
             _fail('source_unavailable')
         returned_stale = (type(exc) is IndexContractError and
