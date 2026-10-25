@@ -8,6 +8,47 @@ scenario captures objective evidence. Record each run with
 [the run record template](templates/release-agent-qa-run.md). The
 [release checklist](release.md) links here.
 
+For the current candidate and an auditable mapping of all 25 scenario IDs,
+see the [QA status](release-agent-qa-status.md). The dated implementation
+notes below are historical; they are not the latest QA verdict.
+The [Claude QA change review](qa-reviews/2026-10-25-claude-qa-change-review.md)
+records code-level findings separately from row verdicts.
+The [architecture flow charts](architecture/flows/README.md) explain the
+implemented paths and boundaries; they are not L1 verdicts.
+
+## Outcome-first scope
+
+This contract protects five user-visible outcomes. One host session or one
+backup may provide evidence for several scenario IDs; do not repeat an
+identical action once its exact artifact, project, source revision and owning
+domain are proved. Keep every ID in the run record, including non-PASS rows.
+
+| Outcome | Observable minimum | Explicit non-goal |
+|---|---|---|
+| Install and settings | Exact installed bytes and loaded hooks, scoped setup decision, retained settings | A matching version string alone, or a direct core script call |
+| Source to wiki | Consented change reaches a verified current card, with source revision and locator; duplicate triggers do not cause duplicate paid work | All asynchronous queues globally empty before other QA |
+| Search and injection | Both hosts select the current wiki card, inject bounded wiki text and a verified source locator; Laya has no independent raw document hit | Force the agent to open a raw file or answer a raw-only token without tools |
+| Data migration and recovery | QMD/source/backup preservation, wiki-only Laya seal, scoped cutover, rollback before first write and forward recovery afterward | Delete an old store merely because a new candidate exists |
+| Boundaries | No cross-project results, normal work stays responsive, unsupported cells are reported honestly | Treat an optional hardware cell as tested on the available Mini |
+
+**Queue interpretation.** `pending` is ordinary asynchronous work unless a
+scenario needs that exact source revision to converge within its own timeout.
+For such a scenario, compare the queued revision (if recorded), current source
+hash, verified card provenance and selected index. A revisionless legacy row
+cannot by itself prove a newer revision is missing. `worker_failed` retries,
+an exceeded scenario deadline or a stale selected card are separate failures.
+No global `queue_count=0` precondition exists. A sync snapshot is not a wiki
+compile ACK, and an empty queue is not a search result.
+
+**Evidence reuse.** Keep source-level CI, immutable model provenance, QMD
+inventory, consistent backup and synthetic guard results as preflight where
+their inputs are unchanged. An old candidate's complete L1 `PASS` never
+transfers to a different artifact hash. Batch fixes before final QA, then run
+the exact installed identity/core smoke and only the affected scenario
+assertions under section 11. Do not launch a separate model turn for each ID
+when one trace proves several. No data-safety row is waived by this economy:
+LI-MIG, LI-RECOVER, LI-COEXIST and RQA-INST-04 remain mandatory.
+
 ## Status of this document
 
 **2026-10-20 `40e500c` Claude 프로젝트 설치 smoke (L1 PASS 아님):**
@@ -635,6 +676,11 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
   indexed/searchable documents: a raw-only T must be absent from results and
   automatic context. Source freshness and the verified locator are checked
   through the selected wiki card, not a raw search hit.
+- `Present(T)` in older scenario steps is a legacy label for **located
+  current source** in this raw case. It does not mean that raw-only T is
+  automatically injected or spoken by the host. Record the source revision
+  and selected locator instead. For a wiki-card T, apply the wiki-card
+  definition below.
 - **Present(T) for a verified wiki-card token** additionally requires the
   selected card's bounded summary in the injected context to contain T and
   its verified source locator to be correct. A no-tools answer containing T
@@ -1482,9 +1528,14 @@ Two rules apply:
 - **Binding.** Every scenario record carries `artifactManifestSha256`. A
   result applies only to that hash.
 - **Change detection.** Any change to the candidate tree after QA produces a
-  new hash and invalidates every result for the old hash. This covers code,
-  skills, hooks, manifests, locks, docs and version strings. List the changed
-  paths with `git diff --name-only <qa-commit> <new-commit>`.
+  new hash, so old full-row `PASS` verdicts cannot be relabelled as final
+  artifact results. This covers code, skills, hooks, manifests, locks, docs
+  and version strings. List changed paths with
+  `git diff --name-only <qa-commit> <new-commit>`. Retain unchanged source,
+  model and backup evidence as preparation; use the impact map below to
+  repeat only the necessary installed-host assertions. Accumulate fixes into
+  a reviewed candidate before this rerun instead of repeating the entire
+  gate for every intermediate commit.
 - **Rerun set.** Always the core smoke (RQA-ID-00 + RQA-HOOK-01 +
   RQA-HOOK-02), plus every scenario mapped from the changed paths:
 
