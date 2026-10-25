@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 설치와 호스트 hook 경로</title>
+<style>
+:root{--bg:#fbfbfd;--fg:#1c1f26;--mu:#4a5160;--ln:#d9dde5;--card:#fff;--ac:#1f5fbf;--auto:#e6f0ff;--autoF:#16408a;--usr:#fff1db;--usrF:#7a4500;--now:#e5f6ea;--nowF:#14602f;--warn:#fdeaea;--warnF:#8a1c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#14161b;--fg:#e9ebf0;--mu:#b3b9c6;--ln:#323744;--card:#1c1f26;--ac:#8fb6ff;--auto:#1d2b45;--autoF:#bcd3ff;--usr:#3a2c14;--usrF:#ffd79a;--now:#163322;--nowF:#a9e6bd;--warn:#3d1c1c;--warnF:#ffb9b9}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:760px;margin:0 auto;padding:20px 18px 48px}
+nav{font-size:15px;margin-bottom:12px}
+a{color:var(--ac)}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--ac);outline-offset:2px;border-radius:4px}
+h1{font-size:1.5rem;line-height:1.35;margin:.2em 0 .4em}
+h2{font-size:1.2rem;margin:2em 0 .6em}
+.lead{font-size:1.08rem;background:var(--card);border:1px solid var(--ln);border-left:5px solid var(--ac);padding:12px 14px;border-radius:8px}
+ol.steps{list-style:none;padding:0;margin:18px 0;counter-reset:s}
+ol.steps>li{counter-increment:s;position:relative;background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:12px 14px 12px 54px;margin-bottom:12px}
+ol.steps>li::before{content:counter(s);position:absolute;left:14px;top:12px;width:28px;height:28px;border-radius:50%;background:var(--ac);color:var(--bg);font-weight:700;text-align:center;line-height:28px}
+.k{font-size:.82rem;font-weight:700;color:var(--mu);letter-spacing:.02em}
+.t{font-weight:700;margin:2px 0 4px}
+.b{display:inline-block;font-size:.82rem;font-weight:600;padding:1px 8px;border-radius:99px;margin:0 4px 4px 0}
+.ba{background:var(--auto);color:var(--autoF)}.bu{background:var(--usr);color:var(--usrF)}.bn{background:var(--now);color:var(--nowF)}.bw{background:var(--warn);color:var(--warnF)}
+ul{padding-left:1.2em;margin:.3em 0}
+li{margin:.2em 0}
+code{font:.9em ui-monospace,Menlo,Consolas,monospace;background:var(--auto);color:var(--autoF);padding:0 4px;border-radius:4px}
+.br{display:grid;gap:8px;margin-top:6px}
+.br div{border:1px solid var(--ln);border-radius:8px;padding:8px 10px}
+details{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:10px 14px;margin:10px 0}
+summary{cursor:pointer;font-weight:700}
+dl dt{font-weight:700;margin-top:12px}
+dl dd{margin:2px 0 0 0;color:var(--mu)}
+.note{color:var(--mu);font-size:.95rem}
+footer{margin-top:32px;border-top:1px solid var(--ln);padding-top:12px;font-size:.92rem;color:var(--mu)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+@media (min-width:640px){.br{grid-template-columns:repeat(3,1fr)}}
+</style>
+</head>
+<body>
+<main>
+<nav aria-label="문서 이동"><a href="README.html">← 전체 목차로 돌아가기</a></nav>
+
+<h1>01 설치와 호스트 hook 경로</h1>
+<p class="lead">사용자가 Claude Code나 Codex에서 평소처럼 작업하면, 호스트가 hook 이벤트를 자동으로 플러그인에 보내고 플러그인은 그 자리에서 응답 경로를 고릅니다.</p>
+
+<section aria-labelledby="flow">
+<h2 id="flow">정상 흐름 한눈에 보기</h2>
+<ol class="steps">
+<li>
+<div class="k">입력</div>
+<div class="t">호스트가 hook 이벤트를 보냅니다</div>
+<span class="b ba">자동</span><span class="b bn">즉시</span>
+<p>action, engine, payload(stdin)가 <code>hooks/run-hook</code>으로 들어옵니다.</p>
+</li>
+<li>
+<div class="k">처리 ① 가드</div>
+<div class="t">sandbox·headless면 바로 끝냅니다</div>
+<span class="b ba">자동</span><span class="b bn">즉시</span>
+<p><code>QMD_SANDBOX</code>나 headless 실행이면 아무 작업 없이 종료합니다. Codex의 <code>CODEX_SANDBOX</code> 환경에서는 편집 차단용 <code>gate</code> action만 이 조기 종료에서 제외합니다.</p>
+</li>
+<li>
+<div class="k">처리 ② 판정</div>
+<div class="t"><a href="#g-route">route</a>(응답 경로)를 판정합니다</div>
+<span class="b ba">자동</span><span class="b bn">즉시</span>
+<p>payload를 임시 파일에 보관한 뒤, 프로젝트의 <a href="#g-autoctx">.auto-context</a>에 있는 route 기록과 <a href="#g-marker">selection marker</a>를 <strong>읽기만</strong> 해서 경로를 정합니다.</p>
+</li>
+<li>
+<div class="k">처리 ③ 분기</div>
+<div class="t">판정 결과에 따라 세 갈래로 나뉩니다</div>
+<span class="b ba">자동</span><span class="b bn">즉시·동기</span>
+<div class="br">
+<div><strong><a href="#g-candidate">candidate</a></strong><br>셸을 <a href="#g-laya">Laya</a> 응답 프로세스로 교체해 바로 응답합니다.</div>
+<div><strong><a href="#g-blocked">blocked</a>·판정 실패</strong><br><span class="b bw">exit 3</span> 거부합니다. <a href="#g-qmd">QMD</a>로 대신 넘기지 않습니다.</div>
+<div><strong><a href="#g-legacy">legacy</a></strong><br><a href="#g-guard">설치·합성 호출 검사</a>를 통과하면 기존 QMD 경로로 갑니다. 막히면 작업 없이 끝냅니다.</div>
+</div>
+</li>
+<li>
+<div class="k">결과</div>
+<div class="t">호스트가 응답이나 종료 코드를 받습니다</div>
+<span class="b ba">자동</span><span class="b bn">즉시</span>
+<p>stdout 응답 또는 종료 코드(0·3 등)가 호스트로 돌아갑니다. hook은 route 기록이나 marker를 <strong>바꾸지 않습니다</strong>.</p>
+</li>
+<li>
+<div class="k">다음 동작</div>
+<div class="t">경로를 바꾸려면 설치자 명령을 직접 실행합니다</div>
+<span class="b bu">사용자 선택</span><span class="b bn">hook 밖에서 실행</span>
+<p>route를 게시·철회하는 일은 <a href="#g-offhook">off-hook 설치자</a> 명령만 할 수 있고, 명시적인 승인 플래그가 필요합니다. 설치 이력은 <a href="#g-journal">설치 journal</a>에 기록됩니다.</p>
+</li>
+</ol>
+<p class="note">이 경로에는 큐 대기 단계가 없습니다. 모든 판정과 응답은 hook 호출 안에서 동기로 끝납니다.</p>
+</section>
+
+<section aria-labelledby="scope">
+<h2 id="scope">자동 경로가 닿지 않는 곳</h2>
+<ul>
+<li><code>engine=gemini</code>는 받아들이지만, Gemini·Antigravity의 자동 coverage가 보장되지는 않습니다.</li>
+<li>공식 Antigravity의 자동 posttool·index·compile은 공식 <a href="#g-adapter">payload adapter</a>가 생길 때까지 <strong>비활성</strong>입니다.</li>
+<li><code>agy-local-hook-install.sh</code>는 오래된 hook을 정리만 하고, 자동 hook을 설치하지 않습니다.</li>
+<li>Hermes는 <code>run-hook</code>을 거치지 않는 별도 Python plugin이며, <code>post_tool_call</code>을 <a href="#g-observer">관찰만</a> 합니다.</li>
+</ul>
+</section>
+
+<section aria-labelledby="more">
+<h2 id="more">자세히 보기</h2>
+
+<details>
+<summary>오류와 복구</summary>
+<ul>
+<li><strong>blocked 또는 판정 실패</strong>: <code>exit 3</code>으로 거부하며 QMD fallback은 없습니다. 복구는 설치자 명령(흐름 05 문서)의 activate·recover·restore action으로 합니다.</li>
+<li><strong>legacy에서 검사 차단</strong>: <code>exit 0</code>, 작업 없이 끝납니다.</li>
+<li><strong>sandbox·headless 감지</strong>: 플러그인 파일 처리 전에 종료합니다. <code>topical-stop</code>은 빈 JSON 객체 <code>{}</code>를 출력합니다.</li>
+<li><strong><a href="#g-uq">update-queued</a></strong>: 소유자가 요청한 <a href="#g-cutover">history cutover</a>를 확인만 하고, 실패는 무시합니다. history를 고르거나 프로젝트 콘텐츠를 건드리지 않습니다.</li>
+<li><strong>설치 계획 거부</strong>: <code>.auto-context</code> 아래에 route 기록이나 QMD selection marker가 이미 있으면 설치자가 계획을 거부합니다.</li>
+</ul>
+</details>
+
+<details>
+<summary>내부 파일과 저장 위치</summary>
+<ul>
+<li>프로젝트 <code>.auto-context</code>: route 기록, selection marker (hook은 읽기 전용)</li>
+<li>설치 state root: <code>install-journal.sqlite</code>, <code>runtime/laya-embed.sock</code></li>
+<li>ledger·marker·route 파일 이름은 <code>core/laya_qmd_cutover.py</code>에 정의됩니다. 놓이는 디렉터리는 발췌만으로 확정되지 않습니다.</li>
+<li><a href="#g-trial">local trial marker</a>가 있으면 <code>QMD_AUTO_COMPILE_DISABLED</code>를 export합니다. runtime env 파일에서는 검증된 대입만 export합니다.</li>
+</ul>
+</details>
+
+<details>
+<summary>코드 근거 (커밋 f89b141)</summary>
+<ul>
+<li><a href="../../../../hooks/run-hook#L19-L33"><code>hooks/run-hook:19-33</code></a> sandbox·headless 가드, Codex <code>gate</code> 예외</li>
+<li><a href="../../../../hooks/run-hook#L46-L83"><code>hooks/run-hook:46-83</code></a> payload 보관, <code>classify-hook</code> 판정, <code>exec</code> 교체, <code>exit 3</code>. <code>exec</code> 덕분에 호스트 timeout이 대기 셸이 아닌 작업 자체를 끝냅니다.</li>
+<li><a href="../../../../hooks/run-hook#L85-L90"><code>hooks/run-hook:85-90</code></a> <code>update-queued</code> → <code>context_learning_host_ack.py</code></li>
+<li><a href="../../../../hooks/run-hook#L92-L106"><code>hooks/run-hook:92-106</code></a> trial marker, runtime env export</li>
+<li><a href="../../../../hooks/run-hook#L108-L135"><code>hooks/run-hook:108-135</code></a> <code>setup_guard.py</code>, <code>synthetic_invocation_gate.py</code>. 135행 이후 dispatch는 하나의 단계로만 표시했습니다.</li>
+<li><a href="../../../../core/setup_entry.py#L388-L455"><code>core/setup_entry.py:388-455</code></a> 설치자 action과 <code>--approve-*</code> 플래그</li>
+<li><a href="../../../../core/setup_entry.py#L456-L492"><code>core/setup_entry.py:456-492</code></a> index-origin action을 <code>laya_product_install</code>에 위임</li>
+<li><a href="../../../../core/laya_product_install.py#L219-L227"><code>core/laya_product_install.py:219-227</code></a> 기존 route·marker가 있으면 계획 거부</li>
+<li><a href="../../../../core/laya_product_install.py#L876-L880"><code>core/laya_product_install.py:876-880</code></a> journal과 소켓 경로</li>
+<li><a href="../../../../core/laya_qmd_cutover.py#L41-L47"><code>core/laya_qmd_cutover.py:41-47</code></a> ledger·marker·route 파일 이름</li>
+<li><a href="../../../../scripts/agy-local-hook-install.sh"><code>scripts/agy-local-hook-install.sh</code></a> stale hook 정리만</li>
+</ul>
+</details>
+
+<details>
+<summary>구현됨 vs 미검증 QA</summary>
+<ul>
+<li><span class="b bn">통과</span> f89b141의 source-level CI</li>
+<li><span class="b bn">있음</span> synthetic QA 증거: <a href="../../../release-agent-qa.md">release-agent-qa.md</a>. 단, 실제 호스트의 route 선택이 통과했다는 뜻은 아닙니다.</li>
+<li><span class="b bw">미통과</span> 실제 Claude·Codex·Gemini 호스트에서 <code>candidate</code> 경로를 확인하는 QA</li>
+<li><span class="b bw">범위 밖</span> 공식 Antigravity 자동 경로 (payload adapter 전까지)</li>
+<li><span class="b bw">미표기</span> 설치자 action의 실제 명령 형태(래퍼·인자 조합)는 발췌에 없습니다.</li>
+</ul>
+</details>
+</section>
+
+<section aria-labelledby="glossary">
+<h2 id="glossary">이 프로젝트의 용어</h2>
+<dl>
+<dt id="g-route">route</dt><dd>hook 이벤트를 어느 경로로 처리할지 정한 값. legacy·candidate·blocked 중 하나. <code>laya_index_host_route.py classify-hook</code></dd>
+<dt id="g-candidate">candidate</dt><dd>Laya 응답 경로로 처리하는 route. 셸을 동기 응답 프로세스로 교체. <code>laya_host_response.py serve-stdin</code></dd>
+<dt id="g-blocked">blocked</dt><dd>처리를 거부하는 route. 판정 실패도 같은 결과(<code>exit 3</code>)이며 QMD fallback 없음.</dd>
+<dt id="g-legacy">legacy</dt><dd>기존 QMD 경로로 진행하는 route. 가드 통과 후 기존 backend로 dispatch.</dd>
+<dt id="g-qmd">QMD</dt><dd>기존 backend 경로. legacy일 때만 사용. 관련 변수 <code>QMD_SANDBOX</code>, <code>QMD_AUTO_COMPILE_DISABLED</code></dd>
+<dt id="g-laya">Laya</dt><dd>candidate route가 응답을 맡기는 새 경로. hook에서는 <code>core/laya_host_response.py</code>로 진입.</dd>
+<dt id="g-autoctx">.auto-context</dt><dd>프로젝트 안에서 route 기록과 selection marker가 놓이는 위치. hook은 읽기만 함.</dd>
+<dt id="g-marker">selection marker</dt><dd>QMD 선택 상태를 나타내는 표시 파일. 설치자만 변경. <code>laya_qmd_cutover.py</code></dd>
+<dt id="g-guard">setup_guard · synthetic gate</dt><dd>legacy action이 backend로 가기 전 통과해야 하는 설치 상태 검사와 합성 호출 차단 검사. <code>setup_guard.py</code>, <code>synthetic_invocation_gate.py</code></dd>
+<dt id="g-offhook">off-hook 설치자</dt><dd>hook 밖에서 사용자가 실행하는 설치 명령. plan·prepare·activate·recover·restore action, <code>--approve-*</code> 필요. <code>core/setup_entry.py</code></dd>
+<dt id="g-journal">설치 journal</dt><dd>설치 state root 아래의 설치 이력 DB. <code>install-journal.sqlite</code></dd>
+<dt id="g-uq">update-queued</dt><dd>history cutover 요청을 확인만 하는 hook action. legacy 가드 대상에서 제외. <code>context_learning_host_ack.py</code></dd>
+<dt id="g-cutover">history cutover</dt><dd>소유자가 요청한 history 전환. hook은 이를 확인만 하고 직접 수행하지 않음.</dd>
+<dt id="g-trial">local trial marker</dt><dd>로컬 시험 상태 표시. 있으면 자동 compile을 끔(<code>QMD_AUTO_COMPILE_DISABLED</code>).</dd>
+<dt id="g-adapter">payload adapter</dt><dd>공식 Antigravity payload를 받아들이기 위한 변환기. 아직 없어 자동 경로 비활성.</dd>
+<dt id="g-observer">observer-only</dt><dd>Hermes plugin이 <code>post_tool_call</code>을 관찰만 하고 route·enqueue·compile 경로에 참여하지 않는다는 뜻.</dd>
+</dl>
+</section>
+
+<footer>
+<p>출처: 기존 검증 문서 「01 설치와 호스트 hook 경로」 (구현 근거 커밋 f89b141). 이 페이지는 그 문서만을 사실 자료로 재구성한 로컬 원본입니다.</p>
+<p><a href="README.html">← 전체 목차</a></p>
+</footer>
+</main>
+</body>
+</html>

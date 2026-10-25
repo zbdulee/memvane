@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>05 QMD 이관과 복구</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1d1f23;--mut:#555b66;--line:#dedad2;--card:#fff;--acc:#1f5fbf;--auto:#e5f1e8;--autoT:#1f5b32;--user:#fdecd8;--userT:#7a3f00;--now:#e7eefb;--nowT:#1d4688;--q:#efe7fa;--qT:#53308a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 -apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:860px;margin:0 auto;padding:20px 18px 48px}
+nav{font-size:15px;margin-bottom:8px}
+a{color:var(--acc)}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--acc);outline-offset:2px;border-radius:4px}
+h1{font-size:1.6rem;line-height:1.3;margin:.2em 0 .4em}
+h2{font-size:1.2rem;margin:1.8em 0 .6em}
+.lead{font-size:1.1rem;background:var(--card);border-left:5px solid var(--acc);padding:12px 16px;border-radius:6px;margin:0 0 10px}
+.status{font-size:15px;color:var(--mut);margin:0 0 16px}
+ol.steps{list-style:none;padding:0;margin:0;counter-reset:s}
+ol.steps>li{counter-increment:s;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px 12px 58px;margin:0 0 12px;position:relative}
+ol.steps>li::before{content:counter(s);position:absolute;left:14px;top:14px;width:32px;height:32px;border-radius:50%;background:var(--acc);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.t{font-weight:700;font-size:1.05rem;margin:0 0 4px}
+.tag{display:inline-block;font-size:14px;font-weight:600;padding:1px 8px;border-radius:99px;margin:0 4px 4px 0}
+.auto{background:var(--auto);color:var(--autoT)}.user{background:var(--user);color:var(--userT)}.now{background:var(--now);color:var(--nowT)}.q{background:var(--q);color:var(--qT)}
+dl{margin:6px 0 0;display:grid;grid-template-columns:5.2em 1fr;gap:2px 10px}
+dt{color:var(--mut);font-size:15px;padding-top:1px}
+dd{margin:0}
+code{font:15px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f0ede6;padding:0 4px;border-radius:4px}
+ul{padding-left:1.2em}li{margin:2px 0}
+details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:0 0 10px;padding:0 14px}
+summary{cursor:pointer;font-weight:700;padding:12px 0}
+details[open] summary{border-bottom:1px solid var(--line);margin-bottom:8px}
+.g dt{font-weight:700;color:var(--fg)}
+.g{grid-template-columns:1fr}.g dd{margin:0 0 10px}
+.src{font-size:15px;color:var(--mut);border-top:1px solid var(--line);margin-top:28px;padding-top:12px}
+@media(max-width:480px){body{font-size:16px}main{padding:14px 12px 40px}ol.steps>li{padding:12px 12px 10px 50px}ol.steps>li::before{left:10px;width:30px;height:30px}dl{grid-template-columns:1fr}dt{padding-top:6px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<main>
+<nav aria-label="상위 목차"><a href="README.html">← 전체 흐름 목차</a></nav>
+
+<section aria-labelledby="h-main">
+<h1 id="h-main">05 · QMD 이관과 복구</h1>
+<p class="lead">프로젝트 소유자가 지금 쓰는 <a href="#g-qmd">QMD</a> 색인을 <a href="#g-laya">Laya</a> 위키 색인으로 바꾸려고, 설치자 명령으로 이관을 계획하고 빌드가 끝나면 직접 승인해 전환합니다.</p>
+<p class="status">hook이 아니라 설치자 명령으로만 진행됩니다(<a href="#g-offhook">off-hook</a>). 아래는 구현된 코드 경로이며, 실제 호스트의 <a href="#g-cutover">cutover</a>·복구 QA는 아직 완료되지 않았습니다.</p>
+<p class="status">표시: <span class="tag user">사용자 선택</span><span class="tag auto">자동</span><span class="tag now">즉시</span><span class="tag q">큐 대기</span></p>
+
+<ol class="steps">
+<li>
+<p class="t">이관 계획 세우기</p>
+<span class="tag user">사용자 선택</span><span class="tag now">즉시</span>
+<dl>
+<dt>행동</dt><dd>설치자가 이관 계획을 요청합니다.</dd>
+<dt>처리</dt><dd>QMD를 읽기 전용으로 보고 검토 제안을 만듭니다. 원고 본문은 넣지 않습니다.</dd>
+<dt>결과</dt><dd>본문 없는 검토 제안. QMD는 계속 선택된 채 색인합니다.</dd>
+<dt>다음</dt><dd>provider 검토로 넘어갑니다.</dd>
+</dl>
+</li>
+<li>
+<p class="t">provider 검토</p>
+<span class="tag user">사용자 선택</span><span class="tag now">즉시</span>
+<dl>
+<dt>행동</dt><dd>설치자가 검색 모델과 실행 환경의 제안을 검토합니다.</dd>
+<dt>처리</dt><dd>계획에 쓸 provider를 검토합니다.</dd>
+<dt>결과</dt><dd>검토한 plan·provider hash가 다음 단계의 기준이 됩니다.</dd>
+<dt>다음</dt><dd>초기 빌드 준비.</dd>
+</dl>
+</li>
+<li>
+<p class="t">비활성 초기 빌드 등록</p>
+<span class="tag user">사용자 선택</span><span class="tag now">등록 즉시</span><span class="tag q">빌드는 큐 대기</span>
+<dl>
+<dt>행동</dt><dd>설치자가 비활성 후보 빌드를 준비합니다.</dd>
+<dt>처리</dt><dd>활성화는 하지 않고 초기 빌드만 등록합니다. 검토한 hash가 바뀌었으면 거부합니다.</dd>
+<dt>결과</dt><dd>백그라운드 빌드 작업이 대기열에 올라갑니다.</dd>
+<dt>다음</dt><dd>worker가 빌드를 진행합니다.</dd>
+</dl>
+</li>
+<li>
+<p class="t">비동기 빌드 → <a href="#g-sealed">sealed</a></p>
+<span class="tag auto">자동</span><span class="tag q">비동기</span>
+<dl>
+<dt>처리</dt><dd>worker가 빌드합니다. route는 선택하지 않습니다. bind가 정착되지 않았거나 owner가 busy면 <a href="#g-deferred">deferred</a>로 두고 다시 시도합니다.</dd>
+<dt>저장</dt><dd><a href="#g-candidate">candidate</a> catalog binding store</dd>
+<dt>다음</dt><dd>sealed가 되면 finalize 가능.</dd>
+</dl>
+</li>
+<li>
+<p class="t">finalize로 bind</p>
+<span class="tag user">사용자 선택</span><span class="tag now">즉시</span>
+<dl>
+<dt>행동</dt><dd>설치자 명령 <code>finalize-index-origin</code></dd>
+<dt>처리</dt><dd>봉인된 빌드를 cutover에 묶습니다(<a href="#g-bind">bind</a>).</dd>
+<dt>저장</dt><dd><a href="#g-ledger"><code>qmd-cutover.json</code> ledger</a>와 <a href="#g-marker">selection marker</a></dd>
+<dt>다음</dt><dd>bind 뒤 QMD가 바뀌었으면 <a href="#g-retired">retired</a>, 새 <a href="#g-generation">generation</a> 필요.</dd>
+</dl>
+</li>
+<li>
+<p class="t">명시 승인으로 활성화</p>
+<span class="tag user">명시 승인 필요</span><span class="tag now">게시 즉시</span><span class="tag q">sync는 wake 요청</span>
+<dl>
+<dt>행동</dt><dd>설치자 명령 <code>activate-index-origin</code> + 승인 플래그</dd>
+<dt>처리</dt><dd>ledger, fresh bound generation, QMD 증거를 확인합니다. 하나라도 맞지 않으면 거부하고 QMD 선택을 유지합니다.</dd>
+<dt>저장</dt><dd><a href="#g-route"><code>laya-index-route.json</code></a> 게시</dd>
+<dt>다음</dt><dd>sync <a href="#g-wake">wake</a>를 한 번 요청합니다. 선택된 설치의 별도 <a href="#g-owner">모델 소유 프로세스</a>가 차가우면 off-hook 경로에서 준비하고 작업을 보류합니다. 준비 후 위키를 색인해도 모델은 유지됩니다. wake 요청·준비 중은 검색 성공이 아닙니다. 이후 QMD 변경은 보고만 합니다.</dd>
+</dl>
+</li>
+</ol>
+</section>
+
+<section aria-labelledby="h-keep">
+<h2 id="h-keep">이관 중에도 지켜지는 것</h2>
+<ul>
+<li>QMD source는 논리적으로 바뀌지 않습니다. 단, 일관 backup이나 읽기 reservation 중 SQLite WAL sidecar(<code>-wal</code>·<code>-shm</code>)가 생길 수 있습니다.</li>
+<li>원본 QMD DB와 backup은 삭제되지 않습니다.</li>
+<li>별도로 설치된 global QMD는 이 흐름의 대상이 아닙니다.</li>
+<li>계획은 모델·backup·candidate·plugin cache를 건드리지 않습니다.</li>
+</ul>
+</section>
+
+<section aria-labelledby="h-more">
+<h2 id="h-more">오류·복구·근거 (펼쳐 보기)</h2>
+
+<details>
+<summary>되돌리기(restore)와 중단 정리(recover)</summary>
+<ul>
+<li><b>recover</b> <code>recover-index-origin</code>: 중단된 cutover를 정리하고 ledger에 반영합니다. 결과가 <code>active</code>면 sync wake를 요청합니다.</li>
+<li><b>restore</b> <code>restore-index-origin</code>: 첫 <a href="#g-selwrite">selected write</a> 이전에만 가능합니다. <a href="#g-restored">restored_qmd</a>로 CAS를 한 번 수행하며 재시도하지 않습니다.</li>
+<li>CAS 성공: QMD origin으로 복귀합니다. 이번 cutover가 게시한 route 파일만 철회합니다. 모델 소유 프로세스의 정리는 소켓 부재와 owner lock 해제 <strong>둘 다</strong> 확인합니다. 정리가 남으면 <code>embedServiceCleanup: pending</code>을 별도로 보고하며, 복원 완료를 모델 정리 완료로 과장하지 않습니다.</li>
+<li>CAS 실패: <a href="#g-rr">recovery_required</a>를 보고합니다. QMD·backup·candidate·ledger·marker는 그대로 둡니다.</li>
+<li>첫 selected write 이후: QMD로 되돌리지 않고 <a href="#g-forward">전진 복구 규칙</a>을 적용합니다.</li>
+<li>marker는 중단된 selected route가 legacy로 조용히 넘어가지 않도록 막습니다.</li>
+</ul>
+</details>
+
+<details>
+<summary>거부되는 경우</summary>
+<ul>
+<li>계획: 이미 selection이 있음, settings가 canonical이 아님, raw+wiki 구성이 아님, 루트가 겹침, QMD가 managed·selected 상태가 아님.</li>
+<li>prepare: 검토한 plan·provider hash가 바뀜.</li>
+<li>초기 빌드: 프로젝트가 이미 선택된 상태면 오류.</li>
+<li>finalize 이후 QMD digest 변경: 다시 bind하지 않고 retired, 새 generation 요구.</li>
+<li>activate: ledger 없음, retired, 증거 불일치 → 거부, QMD 선택 유지.</li>
+<li>route 게시 전 <a href="#g-baseline">raw baseline</a>이 바뀌면 재계획을 요구합니다.</li>
+<li>선택 후 모델 기동이 자원상 보류되거나 제한 재시도 끝에 실패하면 해당 요청을 검색 PASS로 세지 않습니다. 모델은 OS 부팅 서비스로 등록되지 않습니다.</li>
+</ul>
+</details>
+
+<details>
+<summary>관련 파일 이름</summary>
+<ul>
+<li>QMD DB(플러그인이 선택한 것) · QMD backup</li>
+<li>candidate catalog binding store</li>
+<li><code>qmd-cutover.json</code> ledger · selection marker</li>
+<li><code>laya-index-route.json</code></li>
+</ul>
+<p>정확한 디렉터리 위치는 발췌로 확정되지 않아 파일 이름만 적었습니다.</p>
+</details>
+
+<details>
+<summary>코드 근거 (커밋 f89b141)</summary>
+<ul>
+<li><a href="../../../../core/setup_entry.py#L390-L403">core/setup_entry.py:390-403</a>, <a href="../../../../core/setup_entry.py#L449-L453">:449-453</a> — action 목록, 활성화·restore·retire·abandon 승인 플래그</li>
+<li><a href="../../../../core/laya_product_install.py#L188-L207">core/laya_product_install.py:188-207</a> — 본문 없는 계획</li>
+<li><a href="../../../../core/laya_product_install.py#L219-L255">:219-255</a> — 계획 거부 조건</li>
+<li><a href="../../../../core/laya_product_install.py#L827-L848">:827-848</a>, <a href="../../../../core/laya_product_install.py#L866-L890">:866-890</a> — prepare</li>
+<li><a href="../../../../core/laya_product_sync_worker.py#L542-L608">core/laya_product_sync_worker.py:542-608</a> — 초기 빌드, deferred</li>
+<li><a href="../../../../core/laya_qmd_cutover.py#L1-L14">core/laya_qmd_cutover.py:1-14</a> — 읽기 전용, WAL sidecar, marker</li>
+<li><a href="../../../../core/laya_qmd_cutover.py#L41-L83">:41-83</a> — phase, digest 변경 시 새 generation</li>
+<li><a href="../../../../core/laya_product_install.py#L2001-L2035">core/laya_product_install.py:2001-2035</a> — activate</li>
+<li><a href="../../../../core/laya_product_install.py#L2038-L2044">:2038-2044</a> — recover</li>
+<li><a href="../../../../core/laya_product_install.py#L2047-L2065">:2047-2065</a> — restore</li>
+<li><a href="../../../../core/laya_wiki_discovery.py#L541-L569">core/laya_wiki_discovery.py:541-569</a> — raw baseline seed</li>
+</ul>
+</details>
+
+<details>
+<summary>구현됨 vs 미검증</summary>
+<ul>
+<li><b>구현 경로:</b> 기존 이관·recover·restore 경로와 현재 후보의 별도 임베딩 모델 owner·복원 정리 확인. 새 모델 owner는 최종 후보 검증 전이므로 설치 후 동작 통과를 뜻하지 않습니다.</li>
+<li><b>synthetic QA:</b> <a href="../../../release-agent-qa.md">release-agent-qa.md</a>. 운영 cutover·활성화·recover·restore·실제 route 선택의 통과를 뜻하지 않습니다.</li>
+<li><b>미검증:</b> 실제 호스트의 QA cutover와 복구. 운영 전환은 이 QA의 실행 결과가 아닙니다.</li>
+<li><b>계획 단계:</b> 플러그인 소유 QMD runtime의 ownership manifest 정리와 데이터 이전. 운영 경로 변경은 아직 없습니다.</li>
+</ul>
+</details>
+</section>
+
+<section aria-labelledby="h-g">
+<h2 id="h-g">이 프로젝트의 용어</h2>
+<dl class="g">
+<dt id="g-qmd">QMD</dt><dd>이관 전 프로젝트가 선택해 쓰던 기존 색인 origin. 대상은 플러그인이 관리·선택한 QMD DB뿐이며 global QMD는 제외. <code>laya_qmd_cutover.py</code></dd>
+<dt id="g-laya">Laya 색인</dt><dd>이관 후 선택되는 Laya 위키 전용 색인 origin. 원문 파일 본문을 별도로 저장하는 곳으로 보지 않습니다.</dd>
+<dt id="g-offhook">off-hook (설치자 명령)</dt><dd>hook이 아니라 설치자가 직접 실행하는 명령 경계. <code>*-index-origin</code>, <code>review-index-provider</code></dd>
+<dt id="g-cutover">cutover</dt><dd>QMD에서 Laya로 색인 origin을 바꾸는 한 번의 전환. phase는 <code>prepared</code>·<code>switching</code>·<code>active</code>·<code>restoring</code>·<code>restored</code>·<code>retired</code>.</dd>
+<dt id="g-sealed">sealed</dt><dd>비동기 초기 빌드가 끝나 finalize할 수 있는 상태. <code>run_initial_build</code></dd>
+<dt id="g-deferred">deferred</dt><dd>bind 미정착 또는 owner busy로 빌드를 미룬 상태. wake를 유지해 재시도.</dd>
+<dt id="g-candidate">candidate</dt><dd>초기 빌드 결과가 담기는 catalog binding store. 활성화 전에는 선택되지 않음.</dd>
+<dt id="g-bind">bind / finalize</dt><dd>sealed 빌드를 cutover에 묶는 단계(v3 bind prepared). <code>finalize-index-origin</code></dd>
+<dt id="g-generation">generation</dt><dd>bind된 빌드 세대. 활성화에는 fresh bound generation이 필요.</dd>
+<dt id="g-retired">retired</dt><dd>bind 후 QMD digest가 바뀌어 더 쓸 수 없는 cutover. 새 generation 필요.</dd>
+<dt id="g-ledger">ledger</dt><dd>cutover 상태 기록 파일 <code>qmd-cutover.json</code>.</dd>
+<dt id="g-marker">selection marker</dt><dd>중단된 selected route가 legacy로 조용히 넘어가지 않게 막는 표식.</dd>
+<dt id="g-route">route 파일</dt><dd>활성화 때 게시되는 <code>laya-index-route.json</code>. restore 시 이 cutover가 게시한 것만 철회.</dd>
+<dt id="g-wake">wake</dt><dd>sync worker에 작업을 알리는 요청. 활성화 시 한 번.</dd>
+<dt id="g-owner">임베딩 모델 소유 프로세스</dt><dd>선택된 설치의 로컬 모델을 별도로 로드해 유지하는 프로세스. 동일 사용자·설치·provider·모델 fingerprint가 맞을 때만 재사용하며, 동기화가 끝나도 유지됩니다. Laya SQLite 검색 서버나 OS 부팅 서비스가 아닙니다.</dd>
+<dt id="g-selwrite">selected write</dt><dd>Laya route가 선택된 뒤의 쓰기. 첫 발생 이후 restore 불가.</dd>
+<dt id="g-restored">restored_qmd</dt><dd>restore가 CAS로 기록하는 대상 상태. 재시도 없음.</dd>
+<dt id="g-rr">recovery_required</dt><dd>restore CAS 실패 시 보고되는 관측 결과. 파일은 모두 보존.</dd>
+<dt id="g-forward">전진 복구 규칙</dt><dd>첫 selected write 이후 QMD로 되돌리지 않고 적용되는 기존 복구 규칙.</dd>
+<dt id="g-baseline">raw baseline</dt><dd>route 게시 전에 seed되는 raw 기준선. 바뀌면 재계획. <code>laya_wiki_discovery.py</code></dd>
+<dt>qmdChangedAfterActivation</dt><dd>활성화 이후 QMD가 바뀐 것을 보고만 하는 항목.</dd>
+</dl>
+</section>
+
+<p class="src">출처: Claude 작성 초안(커밋 f89b141 기준)을 현재 후보의 <code>laya_embed_resident.py</code>·<code>laya_product_install.py</code> 구현과 대조해 보완했습니다. 실제 호스트의 QA cutover·복구는 아직 검증되지 않았습니다.</p>
+</main>
+</body>
+</html>
