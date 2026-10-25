@@ -58,7 +58,8 @@ test('결과 선택 시 reason="selected" 기록', () => {
     const ev = selectionEvents(logPath);
     assert.equal(ev.length, 1, 'selection 이벤트 한 줄');
     assert.equal(ev[0].reason, 'selected');
-    assert.ok(ev[0].selected > 0, 'selected > 0');
+    assert.ok(ev[0].selected_count > 0, 'selected > 0');
+    assert.equal(ev[0].selected.length, ev[0].selected_count);
     assert.ok(ev[0].candidates > 0, 'candidates > 0');
   });
 });
@@ -73,7 +74,8 @@ test('minScore가 모든 후보를 컷하면 결과를 완전히 차단한다 (�
     assert.equal(ev.length, 1);
     assert.equal(ev[0].reason, 'no_results_after_filter');
     assert.ok(ev[0].dropped_min_score > 0, 'minScore 탈락 수가 잡혀야 함');
-    assert.equal(ev[0].selected, 0);
+    assert.equal(ev[0].selected_count, 0);
+    assert.deepEqual(ev[0].selected, []);
     assert.equal(ev[0].rank_fallback_used, false, '컷 자체를 무효화하면 안 된다');
   });
 });
@@ -93,7 +95,8 @@ test('컷 통과 후보가 hard filter로 전멸하면 컷 밖 eligible 1건을 
     assert.doesNotMatch(out, /skipme/, 'skip 대상은 어떤 경로로도 surface 금지');
     const ev = selectionEvents(logPath);
     assert.equal(ev[0].reason, 'selected');
-    assert.equal(ev[0].selected, 1, '정확히 1건만 rescue');
+    assert.equal(ev[0].selected_count, 1, '정확히 1건만 rescue');
+    assert.equal(ev[0].selected.length, 1);
     assert.equal(ev[0].dropped_skip, 1);
     assert.equal(ev[0].dropped_min_score, 1, '최초 순위 컷 탈락 수는 그대로 기록');
     assert.equal(ev[0].rank_fallback_used, true);

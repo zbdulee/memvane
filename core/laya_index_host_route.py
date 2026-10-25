@@ -48,6 +48,27 @@ ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "postto
 MAX_HOOK_BYTES = 2 * 1024 * 1024
 
 
+def wiki_index_roots(collections):
+    """The selected v2 index contains wiki cards, never standalone raw files.
+
+    Keep the full route's raw root for source-revision and locator checks.
+    This mapping alone is passed to the index, catalog, and vector runtime.
+    """
+    if (not isinstance(collections, list) or len(collections) != 2 or
+            any(not isinstance(item, dict) or
+                    set(item) != COLLECTION_FIELDS for item in collections)):
+        raise ValueError('selected_collections_invalid')
+    roles = [item['role'] for item in collections]
+    if sorted(roles) != ['raw', 'wiki']:
+        raise ValueError('selected_collection_roles_invalid')
+    wiki = next(item for item in collections if item['role'] == 'wiki')
+    if (not isinstance(wiki['name'], str) or
+            not COLLECTION_NAME.fullmatch(wiki['name']) or
+            not _canonical_absolute(wiki['sourceRoot'])):
+        raise ValueError('selected_wiki_root_invalid')
+    return {wiki['name']: wiki['sourceRoot']}
+
+
 def _decision(state: str, reason: str, **details: str) -> dict:
     return {"state": state, "reason": reason, **details}
 

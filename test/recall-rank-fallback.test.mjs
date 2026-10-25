@@ -53,7 +53,8 @@ test('hierarchical: wiki rescue가 raw backfill보다 먼저 시도된다 (raw �
   assert.equal(rawQueries(r).length, 0, 'wiki rescue가 성공하면 raw는 질의조차 하지 않는다');
   const s = selection(r);
   assert.equal(s.reason, 'selected');
-  assert.equal(s.selected, 1, '정확히 1건');
+  assert.equal(s.selected_count, 1, '정확히 1건');
+  assert.equal(s.selected.length, 1);
   assert.equal(s.rank_fallback_used, true);
   assert.equal(s.fallback_phase, 'wiki');
   assert.equal(s.rescued_original_rank, 2);
@@ -90,7 +91,8 @@ test('hierarchical: raw phase도 컷 통과 후보가 전멸하면 1건 rescue',
   assert.doesNotMatch(r.stdout, /raw\.md/, 'skip 대상은 구제 대상이 아니다');
   const s = selection(r);
   assert.equal(s.reason, 'selected');
-  assert.equal(s.selected, 1, 'raw phase도 정확히 1건만 살린다');
+  assert.equal(s.selected_count, 1, 'raw phase도 정확히 1건만 살린다');
+  assert.equal(s.selected.length, 1);
   assert.equal(s.rank_fallback_used, true);
   assert.equal(s.fallback_phase, 'raw');
   assert.equal(s.rescued_original_rank, 2);

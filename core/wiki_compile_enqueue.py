@@ -7,8 +7,10 @@ it never stores source content or calls an extractor/LLM.
 
 import json
 import fcntl
+import hashlib
 import os
 import shutil
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -122,6 +124,26 @@ def compile_candidates(project_root, config, compile_cfg, changed_files, *, trig
     return candidates
 
 
+def _stable_revision(path):
+    """Hash one eligible source before enqueue; reject a concurrent replacement."""
+    before = path.stat()
+    if not stat.S_ISREG(before.st_mode):
+        raise OSError('sync_source_not_regular')
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        opened = os.fstat(handle.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError('sync_source_changed_during_hash')
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+        after = os.fstat(handle.fileno())
+    named = path.stat()
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    if identity(before) != identity(after) or identity(after) != identity(named):
+        raise OSError('sync_source_changed_during_hash')
+    return digest.hexdigest()
+
+
 def enqueue_changed_sources(project_root, config, changed_files,
                             *, session_start=False):
     """sync가 감지한 변경 .md를 compile source-queue에도 넣는다.
@@ -144,12 +166,22 @@ def enqueue_changed_sources(project_root, config, changed_files,
         trigger=trigger)
     if not candidates:
         return intent.enqueue_result("no_sources")
+    cap = compile_max_files()
+    # Manual sync's stat-only scan has no revision. Hash only rows eligible for
+    # this wake, so an enqueue-before-snapshot failure can recognize a still-live
+    # same-revision row on retry without hashing every file in a large pull.
+    if not session_start:
+        for _, _, record in candidates[:cap]:
+            if intent.revision_key(record) is None:
+                path = Path(project_root) / record['source']['path']
+                record[intent.REVISION_FIELD] = _stable_revision(path)
     # 상한 값(env)은 여기서 읽고 분할 규칙만 순수 계획에 맡긴다.
-    # revision 없는 행(수동 sync)은 합칠 키가 없으므로 큐를 읽지 않는 기존 경로 그대로다.
+    # Unhashed legacy rows are still kept: an old job has no proof that its
+    # source is the same revision, so never silently suppress it.
     if any(intent.revision_key(record) for _, _, record in candidates):
-        plan = _append_unqueued(queue_path, candidates, compile_max_files())
+        plan = _append_unqueued(queue_path, candidates, cap)
     else:
-        plan = intent.plan_enqueue(candidates, compile_max_files())
+        plan = intent.plan_enqueue(candidates, cap)
         _append_jsonl(queue_path, plan["records"])
     if plan["records"] or plan["result"].get("wakePending"):
         import wiki_selected_laya

@@ -105,8 +105,24 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   save(home/'.claude/settings.json',{'enabledPlugins':{'qmd-auto-context@qmd-auto-context-marketplace':False}})
   expect('changed',lambda:scope.require(root,policy,'local_train'))
   (home/'.claude/settings.json').unlink()
+  # Project host settings are part of the accepted binding even if absent at
+  # proposal time; a later local enablement change cannot reuse the grant.
+  local_config=project/'.codex/config.toml';local_config.parent.mkdir(exist_ok=True)
+  local_config.write_text('[plugins]\n');local_config.chmod(0o600)
+  expect('changed',lambda:scope.require(root,policy,'local_train'))
+  local_config.unlink()
   with patch.object(scope,'_installations',return_value=[]):
    expect('changed',lambda:scope.require(root,policy,'local_train',fresh_inventory=True))
+   expect('changed',lambda:scope.require(root,policy,'local_train'))
+  # Fresh inventory is asked for this project, and an unchanged answer passes.
+  current=[{'host':host,'root':str(installs[host][0])} for host in ('claude','codex')];seen=[]
+  with patch.object(scope,'_installations',side_effect=lambda *args:seen.append(args) or current):
+   assert scope.require(root,policy,'local_train',fresh_inventory=True)==row
+   assert scope.require(root,policy,'local_train')==row
+  assert seen==[(project,),(project,)],seen
+  # A different effective root is a changed installation, never a renewal.
+  with patch.object(scope,'_installations',return_value=[{'host':'claude','root':str(installs['codex'][0])},current[1]]):
+   expect('installation_changed',lambda:scope.require(root,policy,'local_train',fresh_inventory=True))
   # An edited threshold is never a fresh execution approval.
   path=root/scope.NAME;original=json.loads(path.read_text())
   lowered=json.loads(path.read_text());lowered['proposal']['cohort']['minQualityTrainCases']=1
@@ -185,4 +201,165 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
  assert not automatic_staging._quality_ready(train[:99],validation,grant['cohort'])[0]
  assert not automatic_staging._quality_ready(train,validation[:49],grant['cohort'])[0]
  assert not automatic_staging._quality_ready(train,validation[10:],grant['cohort'])[0]
+# Project-effective host roots: the official CLIs are asked from the project,
+# disabled historical installs never block, every enabled entry still counts.
+from types import SimpleNamespace
+from context_learning import history_activation as ha
+with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as folder:
+ base=Path(folder).resolve();project=base/'project';project.mkdir(mode=0o700);home=base/'home'
+ plugins=home/'.claude/plugins';VER='0.2-test';OFFICIAL='qmd-auto-context@qmd-auto-context-marketplace';STALE='qmd-auto-context@stale-qa'
+ claude_cache=plugins/'cache/qmd-auto-context-marketplace/qmd-auto-context'/VER;claude_cache.mkdir(parents=True)
+ stale_cache=plugins/'cache/stale-qa/qmd-auto-context/0.0-qa';stale_cache.mkdir(parents=True)
+ codex_root=home/'.codex/plugins/cache/qmd-auto-context-marketplace/qmd-auto-context'/VER;codex_root.mkdir(parents=True)
+ # An old QA directory marketplace reached through a symlinked temp parent.
+ real=base/'real-tmp';linked=base/'linked-tmp';linked.symlink_to(real)
+ save(real/'stale-market/.claude-plugin/marketplace.json',{'plugins':[{'name':'qmd-auto-context','version':'0.0-qa','source':'./plugins/qmd-auto-context'}]})
+ save(plugins/'known_marketplaces.json',{'qmd-auto-context-marketplace':{'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}},
+                                         'stale-qa':{'source':{'source':'directory','path':str(linked/'stale-market')}}})
+ official={'scope':'project','projectPath':str(project),'version':VER,'installPath':str(claude_cache)}
+ stale={'scope':'user','version':'0.0-qa','installPath':str(stale_cache)}
+ def records(official_rows=None):
+  save(plugins/'installed_plugins.json',{'version':2,'plugins':{OFFICIAL:official_rows or [official],STALE:[stale]}})
+ records()
+ def claude_list(official_enabled=True,stale_enabled=False,**extra):
+  return [{'id':OFFICIAL,'enabled':official_enabled,**official,**extra},
+          {'id':STALE,'enabled':stale_enabled,**stale},{'id':'unrelated@market','enabled':True}]
+ def codex_list(*enabled):
+  rows=[('qmd-auto-context-marketplace',VER),('old-qa','0.0-qa')]
+  return {'installed':[{'name':'qmd-auto-context','marketplaceName':m,'version':v,'installed':True,'enabled':i in enabled}
+                       for i,(m,v) in enumerate(rows)]}
+ listing={};calls=[]
+ trusted=base/'trusted-bin';trusted.mkdir(mode=0o700)
+ for name in ('claude','codex'):
+  executable=trusted/name;executable.write_text('stub');executable.chmod(0o700)
+ def fake_run(argv,**kw):
+  name=Path(argv[0]).name
+  calls.append((name,kw.get('cwd'),kw['env'].get('HOME')))
+  assert kw['env']['PATH']==str(trusted)
+  out=listing[name]
+  if isinstance(out,int):return SimpleNamespace(returncode=out,stdout='',stderr='')
+  return SimpleNamespace(returncode=0,stdout=json.dumps(out),stderr='')
+ resolve=lambda:ha._project_host_roots(home,project)
+ with patch('context_learning.history_activation.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
+  for name in ('CLAUDE_CONFIG_DIR','CODEX_HOME'):os.environ.pop(name,None)
+  # Single effective root per host; the stale marketplace is never read.
+  listing.update(claude=claude_list(),codex=codex_list(0))
+  assert resolve()=={'claude':[claude_cache],'codex':[codex_root]}
+  assert calls==[('claude',str(project),str(home)),('codex',str(project),str(home))],calls
+  # A project-planted CLI earlier in PATH is never selected or inherited by
+  # the host CLI's env-based interpreter.
+  planted=project/'bin';planted.mkdir(mode=0o700)
+  for name in ('claude','codex','node'):
+   executable=planted/name;executable.write_text('planted');executable.chmod(0o700)
+  with patch.dict(os.environ,{'PATH':str(planted)+os.pathsep+str(trusted)}):
+   assert resolve()=={'claude':[claude_cache],'codex':[codex_root]}
+  # The account-global inventory keeps rejecting that stale marketplace.
+  expect('history_claude_marketplace_invalid',lambda:ha._claude_load_roots(home))
+  # Multiple enabled roots are ambiguous; a matching one is never picked.
+  listing['claude']=claude_list(stale_enabled=True)
+  expect('claude_ambiguous',resolve)
+  listing['claude']=claude_list(official_enabled=False)
+  expect('claude_ambiguous',resolve)
+  # An enabled invalid root (the stale directory itself) fails closed.
+  listing['claude']=claude_list(official_enabled=False,stale_enabled=True)
+  expect('history_claude_marketplace_invalid',resolve)
+  listing['claude']=claude_list(official_enabled='yes')
+  expect('claude_invalid',resolve)
+  listing['claude']=claude_list();listing['codex']=codex_list(0,1)
+  expect('codex_ambiguous',resolve)
+  listing['codex']=codex_list()
+  expect('codex_ambiguous',resolve)
+  listing['codex']={'installed':[{'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'../x','installed':True,'enabled':True}]}
+  expect('codex_invalid',resolve)
+  listing['codex']=codex_list(0)
+  # Missing, duplicated or foreign-project installation records fail closed.
+  listing['claude']=claude_list(version='0.3-other')
+  expect('record_missing',resolve)
+  records([official,dict(official)]);listing['claude']=claude_list()
+  expect('record_missing',resolve)
+  elsewhere={**official,'projectPath':str(base/'other-project')};records([elsewhere])
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,'version':VER,'installPath':str(claude_cache)}]
+  expect('record_changed',resolve)
+  records();listing['claude']=claude_list()
+  assert resolve()['claude']==[claude_cache]
+  # The Claude listing is account-wide: an enabled project install recorded for
+  # another project is not loaded here and never makes this project ambiguous.
+  other=base/'other-project-a';other.mkdir(mode=0o700)
+  foreign={**official,'projectPath':str(other)}
+  records([official,foreign])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  assert resolve()['claude']==[claude_cache]
+  local_other={**foreign,'scope':'local'};records([official,foreign,local_other])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign},{'id':OFFICIAL,'enabled':True,**local_other}]
+  assert resolve()['claude']==[claude_cache]
+  # Only foreign installs: nothing is effective here.
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('claude_ambiguous',resolve)
+  # A foreign claim with no account record for that project fails closed.
+  records([official]);listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('record_changed',resolve)
+  # Two rows for this project, or this project plus an enabled user install, stay ambiguous.
+  records([official,foreign]);listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**official}]
+  expect('claude_ambiguous',resolve)
+  listing['claude']=claude_list(stale_enabled=True)+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  expect('claude_ambiguous',resolve)
+  # A project-bound row without a path, or an unknown scope, is invalid.
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,'scope':'project','version':VER,'installPath':str(claude_cache)}]
+  expect('claude_invalid',resolve)
+  listing['claude']=[{'id':OFFICIAL,'enabled':True,**official,'scope':'workspace'}]
+  expect('claude_invalid',resolve)
+  # Identity, not spelling: this project's own install listed under another
+  # spelling of the same directory (APFS folds case) is never treated as foreign.
+  variant=str(project).replace('/project','/PROJECT')
+  if os.path.exists(variant) and variant!=str(project):
+   alias={**official,'projectPath':variant};records([alias])
+   listing['claude']=claude_list(stale_enabled=True)[1:2]+[{'id':OFFICIAL,'enabled':True,**alias}]
+   expect('claude_ambiguous',resolve)
+  # An enabled install recorded for a missing project cannot be proven foreign.
+  gone={**official,'projectPath':str(base/'deleted-project')};records([official,gone])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**gone}]
+  expect('record_changed',resolve)
+  # A stale record for a deleted project does not mask a valid foreign record.
+  records([official,foreign,{**gone,'scope':'project'}])
+  listing['claude']=claude_list()+[{'id':OFFICIAL,'enabled':True,**foreign}]
+  assert resolve()['claude']==[claude_cache]
+  records();listing['claude']=claude_list()
+  assert resolve()['claude']==[claude_cache]
+  # Freshness: a later CLI answer with a changed root is a different inventory.
+  listing['codex']={'installed':[{'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'0.3-new','installed':True,'enabled':True}]}
+  expect('codex_record_missing',resolve)
+  (codex_root.parent/'0.3-new').mkdir()
+  assert resolve()['codex']==[codex_root.parent/'0.3-new']
+  listing['codex']=codex_list(0)
+  # CLI failure or a redirected host config home is not an inventory.
+  listing['claude']=1
+  expect('inventory_unavailable',resolve)
+  listing['claude']=claude_list()
+  with patch.dict(os.environ,{'CLAUDE_CONFIG_DIR':str(base/'elsewhere')}):
+   expect('redirected',resolve)
+ # project_scope maps any discovery failure or non-single answer to invalid.
+ with patch.object(ha,'_project_host_roots',side_effect=ValueError('history_project_claude_ambiguous')):
+  expect('project_scope_installation_invalid',lambda:scope._installations(project))
+ with patch.object(ha,'_project_host_roots',return_value={'claude':[claude_cache,stale_cache],'codex':[codex_root]}):
+  expect('project_scope_installation_invalid',lambda:scope._installations(project))
+ # A project-selected QA marketplace is attested by host inventory plus the
+ # exact installed source/hook bytes; the old official-id-only check remains
+ # available solely on the account-global path.
+ qa_roots={}
+ for host in ('claude','codex'):
+  target=home/('.'+host)/'plugins/cache/qmd-laya-fixture-qa/qmd-auto-context'/VER
+  target.parent.mkdir(parents=True,exist_ok=True)
+  target.mkdir()
+  shutil.copytree(Path(scope.__file__).parents[1],target/'core',ignore=shutil.ignore_patterns('__pycache__'))
+  shutil.copytree(Path(scope.__file__).parents[2]/'hooks',target/'hooks')
+  save(target/('.'+host+'-plugin/plugin.json'),{'name':'qmd-auto-context','version':VER})
+  qa_roots[host]=[target]
+ with patch.object(Path,'home',return_value=home),patch.object(ha,'_project_host_roots',return_value=qa_roots):
+  selected=scope._installations(project)
+  assert selected==[{'host':host,'root':str(qa_roots[host][0])} for host in ('claude','codex')]
+  assert len(scope._installed_binding(selected))==2
+  hook=qa_roots['claude'][0]/'hooks/run-hook';saved=hook.read_bytes()
+  hook.write_bytes(saved+b'\n# tampered\n')
+  expect('code_changed',lambda:scope._installed_binding(selected))
+  hook.write_bytes(saved)
 print('general scope checks passed')

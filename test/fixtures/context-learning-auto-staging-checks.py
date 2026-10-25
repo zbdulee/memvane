@@ -247,10 +247,14 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
              'load_per_cpu': 0.1, 'total_mib':16384,'observed_at_mono':time.monotonic(),
              'query_status':{'memory_pressure':'ok'},
              'memory_pressure':{'level':'normal','system_free_percent':70}}
+    def fresh_ready(*_args, **_kwargs):
+        # This synthetic fixture can run for more than the two-second runtime
+        # observation lifetime on CI. Keep each mocked observation fresh.
+        return {**ready, 'observed_at_mono': time.monotonic()}
     with patch.object(resource_coordination,'default_root',return_value=coord), patch.object(shared, '_db', local_db), patch.object(
             shared, '_case_active',
             side_effect=lambda *_args: runtime_state['source_active']), patch.object(
-            shared, 'resource_report', return_value=ready), patch.object(
+            shared, 'resource_report', side_effect=fresh_ready), patch.object(
             shared, '_historical_trainer_policy', return_value=False), patch.object(
             automatic_staging, 'require_operation', side_effect=operation), patch(
             'context_learning.runtime_authorization.require_operation',
@@ -446,7 +450,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
         runtime_state['revoked'] = True
         with patch.object(synthetic_teacher, '_db', local_db), patch.object(
                 synthetic_teacher, '_case_active', return_value=True), patch.object(
-                synthetic_teacher, 'resource_report', return_value=ready), patch.object(
+                synthetic_teacher, 'resource_report', side_effect=fresh_ready), patch.object(
                 synthetic_scope, '_synthetic_bundle'), patch.object(
                 synthetic_teacher, 'policy_for',
                 return_value=teacher_policy), patch.object(

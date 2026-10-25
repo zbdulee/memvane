@@ -9,8 +9,11 @@ import fcntl
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +109,12 @@ class PolicyDecisions(unittest.TestCase):
         self.assertEqual(policy.settle(2, done=None, now=10), {'ack': False, 'due': 30, 'reason': 'pending'})
         self.assertEqual(policy.settle(0, done=False, error=RuntimeError('x'), now=10),
                          {'ack': False, 'due': 15, 'reason': 'RuntimeError'})
+        deferred = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64)
+        self.assertEqual(policy.settle(0, done=False, error=deferred, now=10),
+                         {'ack': False, 'due': 15,
+                          'reason': 'dispatch:target_deferred:' + 'a' * 40 + ':' + 'c' * 64})
+        with self.assertRaises(ValueError):
+            policy.DispatchFailure('private/path', 'a' * 40)
 
 
 class DrainThroughSeam(unittest.TestCase):
@@ -131,6 +140,105 @@ class DrainThroughSeam(unittest.TestCase):
         with sqlite3.connect(self.queue.path) as db:
             columns = [row[1] for row in db.execute('PRAGMA table_info(wakes)')]
         self.assertEqual(columns, ['id', 'kind', 'target', 'revision', 'status', 'due', 'attempts', 'reason'])
+
+    def test_new_laya_request_contends_for_old_uid_worker_without_new_queue(self):
+        lease = runtime._lock(self.root / 'runtime-worker.lock')
+        self.addCleanup(os.close, lease)
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        spawned = []
+        with patch.object(runtime, 'default_root', return_value=self.root), \
+             patch.object(runtime.subprocess, 'Popen', side_effect=lambda *args, **kw: spawned.append((args, kw))):
+            result = runtime.request('laya-sync', '/synthetic/a')
+        self.assertEqual(result, {'status': 'queued'})
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0][0][0][3], 'handoff')
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_handoff_waiter_takes_released_uid_lease(self):
+        owner = runtime._lock(self.root / 'runtime-worker.lock')
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handoff = runtime._lock(self.root / 'runtime-worker-handoff.lock')
+        released = threading.Timer(.05, lambda: os.close(owner))
+        released.start()
+        observed = []
+        try:
+            with patch.object(runtime, '_drain_and_rewake',
+                              side_effect=lambda queue, fd: observed.append(queue.root)):
+                runtime._handoff_worker(self.queue, handoff)
+        finally:
+            released.join()
+        self.assertEqual(observed, [self.root])
+
+    def test_old_self_rewake_and_new_waiter_in_separate_processes(self):
+        lock = self.root / 'runtime-worker.lock'
+        ready, taken = self.root / 'old-ready', self.root / 'new-took-lease'
+        old_code = '''import fcntl,os,sys,time
+fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600)
+fcntl.flock(fd,fcntl.LOCK_EX)
+open(sys.argv[2],'w').close()
+time.sleep(.4)
+os.close(fd)
+for _ in range(5):
+    fd=os.open(sys.argv[1],os.O_RDWR)
+    try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError: pass
+    else: time.sleep(.03)
+    os.close(fd)
+'''
+        new_code = '''import sys
+sys.path.insert(0,sys.argv[1])
+import runtime_work as runtime
+from pathlib import Path
+root=Path(sys.argv[2]); queue=runtime.WakeQueue(root)
+fd=runtime._lock(root/'runtime-worker-handoff.lock')
+runtime._drain_and_rewake=lambda _queue,_fd: Path(sys.argv[3]).write_text('new')
+runtime._handoff_worker(queue,fd)
+'''
+        old = subprocess.Popen([sys.executable, '-B', '-c', old_code,
+                                str(lock), str(ready)], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE)
+        new = None
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(ready.exists())
+            new = subprocess.Popen([sys.executable, '-B', '-c', new_code,
+                                    str(CORE), str(self.root), str(taken)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _, errors = new.communicate(timeout=5)
+            self.assertEqual(new.returncode, 0, errors.decode())
+            self.assertEqual(taken.read_text(), 'new')
+            _, errors = old.communicate(timeout=5)
+            self.assertEqual(old.returncode, 0, errors.decode())
+        finally:
+            for child in (new, old):
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=2)
+
+    def test_failed_laya_dispatch_retains_revision_and_fixed_reason(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        original = self.rows()[0]['revision']
+        def failed(_row):
+            raise policy.DispatchFailure('target_child_failed', 'b' * 40, 'd' * 64)
+        self.drain(failed)
+        retained = self.rows()[0]
+        self.assertEqual(retained['revision'], original)
+        self.assertEqual(retained['attempts'], 1)
+        self.assertEqual(retained['reason'], 'dispatch:target_child_failed:' + 'b' * 40 + ':' + 'd' * 64)
+
+    def test_laya_handler_receives_existing_uid_lease_for_owned_child(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        observed = []
+        def handler(row):
+            info = os.fstat(row['leaseFd'])
+            expected = (self.root / 'runtime-worker.lock').stat()
+            observed.append((info.st_dev, info.st_ino))
+            self.assertEqual(observed[-1], (expected.st_dev, expected.st_ino))
+            return True
+        self.assertEqual(self.drain(handler), {'status': 'drained', 'runs': 1})
+        self.assertEqual(len(observed), 1)
 
     def test_put_rejects_through_policy_and_reports_capacity(self):
         with self.assertRaises(ValueError):

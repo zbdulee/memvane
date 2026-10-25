@@ -91,7 +91,21 @@ def main():
     if foreign:
         try:
             routed, _refused = change_owner.route_changes(foreign, edit_cwd)
-            change_owner.enqueue_routed(routed, edit_cwd)
+            from laya_index_host_route import select_route
+            legacy, laya = {}, []
+            for scope, owners in routed.items():
+                state = select_route(scope, action='index').get('state')
+                if state == 'legacy':
+                    legacy[scope] = owners
+                elif state == 'candidate':
+                    laya.extend(owners)
+                # A blocked route cannot fall back to the old QMD dirty queue.
+            if legacy:
+                change_owner.enqueue_routed(legacy, edit_cwd)
+            if laya:
+                import laya_owner_projection
+                laya_owner_projection.route_external(
+                    laya, str(edit_cwd), selected_root=project_root)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             pass
     return 0

@@ -9,6 +9,6 @@ test('selected host recall verifies capacity candidates without a full source sc
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 8 tests/);
+  assert.match(result.stderr, /Ran 12 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

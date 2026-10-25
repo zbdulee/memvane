@@ -294,7 +294,7 @@ def _bind_attestation(journal_path, identity, proof):
     return digest, _provider_file_identity(record)
 
 
-def preflight_product_candidate(journal_path):
+def preflight_product_candidate(journal_path, *, require_executing=False):
     """Review the pending installed provider before publishing a QMD cutover.
 
     The returned digest is an expectation to persist before the route becomes
@@ -307,6 +307,8 @@ def preflight_product_candidate(journal_path):
     if identity.get('bundleKind') != 'full_plugin':
         _fail('product_full_plugin_required')
     proof = _inspect_identity(identity)
+    if require_executing:
+        _verified_executing_root(identity, proof)
     attestation, digest = _attestation(journal_path)
     if not production_provider_approved(
             proof.get('vectorProfile'), proof, attestation,
@@ -334,6 +336,23 @@ def _executing_from_candidate(plugin_root):
     # flow and source-port imports cannot silently come from another checkout.
     if not sys.path or Path(sys.path[0]).resolve(strict=False) != core:
         _fail('future_import_path_unbound')
+
+
+def _verified_executing_root(selected, owner_proof):
+    """Prove this host's sealed copy against the journal-bound owner copy."""
+    root = Path(__file__).resolve().parent.parent
+    if str(root) != selected['pluginRoot']:
+        try:
+            local = inspect_full_plugin_candidate(root)
+        except BundleEvidenceError as exc:
+            raise JournalEvidenceError('executing_code_outside_bundle') from exc
+        if (local['pluginRoot'] != str(root) or
+                any(local[key] != owner_proof[key] for key in
+                    ('sourceCommit', 'bundleManifestSha256',
+                     'vectorProfile', 'includedFiles'))):
+            _fail('executing_bundle_not_selected')
+    _executing_from_candidate(root)
+    return str(root)
 
 
 def _project(route):
@@ -694,7 +713,7 @@ def cas_restore_qmd(journal_path, expected_epoch, expected_new_route_sha):
     return _cas(journal_path, expected_epoch, restore)
 
 
-def verify_selected_route(decision):
+def _verify_selected_route(decision, *, dispatch_target=False):
     """Read-only product proof for a host-validated candidate decision.
 
     The caller must still construct LayaIndexRuntime, which rechecks DB and
@@ -778,8 +797,11 @@ def verify_selected_route(decision):
             db.rollback()
             raise
     full = row['selected']['bundleKind'] == 'full_plugin'
-    if full:
-        _executing_from_candidate(row['selected']['pluginRoot'])
+    # The UID queue may be held by another installed version. Its dispatcher
+    # needs the sealed target identity before it can enter that version's code;
+    # a host/query/worker still requires the executing-root proof below.
+    executing_root = (_verified_executing_root(row['selected'], proof)
+                      if full and not dispatch_target else None)
     attestation, observed_sha = _attestation(path) if full else (None, None)
     sealed_sha = row['provider_attestation_sha']
     if sealed_sha is not None and observed_sha != sealed_sha:
@@ -805,6 +827,8 @@ def verify_selected_route(decision):
             'productRouteAllowed': approved,
             'journalPath': str(path), 'selectionEpoch': row['epoch'],
             'pluginRoot': row['selected']['pluginRoot'], 'sourceCommit': proof['sourceCommit'],
+            **({'executingPluginRoot': executing_root}
+               if full and not dispatch_target else {}),
             'bundleManifestSha256': proof['bundleManifestSha256'],
             'ownershipManifestSha256': proof['ownershipManifestSha256'],
             'installId': route['installId'], 'generation': route['generation'],
@@ -812,6 +836,19 @@ def verify_selected_route(decision):
             'dbIncarnation': route['dbIncarnation'],
             'vectorProfile': proof.get('vectorProfile'),
             **({'providerManifest': provider_manifest} if approved else {})}
+
+
+def verify_selected_route(decision):
+    """Full selected-route proof, including the currently executing bundle."""
+    return _verify_selected_route(decision)
+
+
+def verify_dispatch_target(decision):
+    """Read-only owner proof for choosing a child; never authorizes work here."""
+    proof = _verify_selected_route(decision, dispatch_target=True)
+    if proof['productRouteAllowed'] is not True:
+        _fail('dispatch_target_unapproved')
+    return proof
 
 
 def verify_worker_attestation(decision):

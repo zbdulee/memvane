@@ -77,10 +77,10 @@ def main():
     if has_skip_marker(cwd):
         _snapshot_allowed_edit(payload)
         return 0
-    hint = " (collections가 비어 pending입니다)" if not config.get("collections") else ""
-    msg = (f"⛔ qmd-auto-context: 이 프로젝트는 인덱싱 미설정(pending){hint}이라 편집이 보류됩니다. "
-           f"사용자에게 묻고 'update.sh --recommend {cwd}'로 추천 확인 후 "
-           f"--optin --recommended (또는 --optin/--optout/--skip)를 실행하세요. Read·검색은 허용됩니다.")
+    msg = ("⛔ qmd-auto-context: 이 프로젝트의 검색 인덱스 사용 여부가 아직 결정되지 않아 편집을 보류합니다. "
+           "사용자에게 자연어로 추천 범위 확인, 원하는 범위로 켜기, 끄기, 또는 2시간 미루기 중 선택을 요청하세요. "
+           "설치된 setup 스킬로 상태와 범위를 확인할 수 있습니다. 사용자 선택 전 다른 편집 경로로 재시도하지 마세요. "
+           "읽기·검색은 가능합니다.")
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

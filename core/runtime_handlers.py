@@ -24,19 +24,21 @@ def index(row):
 
 def update(row):
     import update_hook_queue
-    update_hook_queue.worker(row['target'])
+    # A clean first install keeps its job for a later SessionStart; ACK only
+    # this wake revision (a newer one re-offered meanwhile survives).
+    if update_hook_queue.worker(row['target'])==update_hook_queue.SETUP_REQUIRED:return True
     return not (update_hook_queue._private_queue()/(row['target']+'.job.json')).exists()
 
 
 def laya_sync(row):
-    from laya_product_sync_worker import run
-    result=run(Path(row['target']))
+    from laya_runtime_dispatch import run
+    result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
     return result['state'] in ('indexed','unchanged')
 
 
 def laya_compile(row):
-    from wiki_selected_laya import run
-    result=run(Path(row['target']))
+    from laya_runtime_dispatch import run
+    result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
     return result['state']=='drained'
 
 
@@ -49,12 +51,15 @@ def learning(row):
     if setup_guard.status(project)['status']!='ready':return False
     cfg=config.find_project_config(str(project))['config'];root=shared._safe_root(cfg,project)
     if root is None:return True
-    # Resource retries must not launch a teacher or create fresh captures.
     from context_learning.history_lifecycle import worker_lease
     with worker_lease():
         if setup_guard.status(project)['status']!='ready':return False
-        result=shared.run_training_pending(root,project)
-    return wake_policy.handler_done(result['status'])
+        # A hook-persisted full (teacher+trainer) request, else a training-only
+        # retry (no teacher, no fresh captures), runs only in its owned child;
+        # this dispatcher returns at once so index/update wakes keep priority.
+        # The wake stays until that request settles.
+        step=shared.learning_worker_step(root,project,row['revision'])
+    return step['status'] not in ('running','started')
 
 
 def auto(row):

@@ -250,6 +250,14 @@ class ReviewedLocalQmdProvider:
             raise IndexContractError('provider_unavailable') from exc
         try:
             envelope = json.loads(output.decode('utf-8'))
+            if (isinstance(envelope, dict) and
+                    all(isinstance(envelope.get(key), str) for key in
+                        ('approvedProviderId', 'providerArtifactSha256',
+                         'embeddingFingerprint')) and
+                    any(envelope[key] != m[key] for key in
+                        ('approvedProviderId', 'providerArtifactSha256',
+                         'embeddingFingerprint'))):
+                _fail('provider_identity_mismatch')
             # A document the worker refuses on content alone (too many chunks,
             # a chunk over the context) is named, so the fill can stop
             # retrying it. Busy and other failures stay provider_result_invalid.
@@ -297,10 +305,10 @@ class ReviewedLocalQmdProvider:
             _blob(response['vector'], m['dimension'])
             return response['vector']
         except IndexContractError as exc:
-            # IndexContractError is a ValueError: let only the new member code
-            # through. Everything else (a malformed reply, or _blob's
+            # IndexContractError is a ValueError: let only actionable member
+            # and identity codes through. Everything else (or _blob's
             # invalid_vector) keeps its old provider_result_invalid name.
-            if str(exc) == 'provider_member_refused':
+            if str(exc) in ('provider_member_refused', 'provider_identity_mismatch'):
                 raise
             raise IndexContractError('provider_result_invalid') from exc
         except (TypeError, ValueError, json.JSONDecodeError) as exc:

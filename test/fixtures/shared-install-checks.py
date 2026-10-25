@@ -93,6 +93,23 @@ db.commit();db.close()
  def test_plan_is_readonly_and_approval_is_required_before_copy(self):
   code,row=self.entry('plan-install');self.assertEqual(code,0,row);self.assertFalse((self.project/'.auto-context/settings.json').exists())
   code,row=self.entry(flags=self.options);self.assertNotEqual(code,0);self.assertFalse((self.project/'.auto-context/settings.json').exists());self.preserved()
+ def test_selected_legacy_store_without_model_proof_blocks_install(self):
+  settings=self.project/'.auto-context/settings.json'
+  settings.write_text(json.dumps(self.settings)+'\n')
+  self.legacy_selected_store()
+  before=settings.read_bytes();selected=S.select();index=Path(selected['INDEX_PATH'])
+  import sqlite3
+  with sqlite3.connect(index) as db:
+   physical_before=db.execute('SELECT name,path,pattern FROM store_collections').fetchall()
+  for action in ('plan-install','install'):
+   code,row=self.entry(action)
+   self.assertNotEqual(code,0,row)
+   self.assertEqual(row['status'],'blocked',row)
+   self.assertIn('legacy_embedding_model_proof_required',row['blockers'])
+   self.assertEqual(settings.read_bytes(),before)
+  with sqlite3.connect(index) as db:
+   self.assertEqual(db.execute('SELECT name,path,pattern FROM store_collections').fetchall(),physical_before)
+  self.assertFalse((self.project/'.auto-context/shared-install-journal.json').exists())
  def test_interrupted_enqueue_resumes_same_tuple_without_reindexing_completed_work(self):
   self.assertEqual(self.entry()[0],0);first=S.select()['generation'];q=dirty_queue.queue_path();before=q.read_bytes()
   code,row=self.entry();self.assertEqual(code,0,row);self.assertEqual(S.select()['generation'],first);self.assertEqual(q.read_bytes(),before);self.assertEqual(row['workerAttempts'],0);self.preserved()

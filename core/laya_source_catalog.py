@@ -95,7 +95,7 @@ DEFAULT_VERIFY_STATS = 10_000
 # bound is dropped (``file_budget``/``query_budget``), never deleted; if no
 # candidate survives the phase raises ``CatalogPending``. Callers may pass
 # larger explicit values.
-DEFAULT_CANDIDATE_FILE_BYTES = 1_000_000
+DEFAULT_CANDIDATE_FILE_BYTES = 5_000_000
 DEFAULT_CANDIDATE_QUERY_BYTES = 5_000_000
 DEFAULT_CANDIDATE_QUERY_FILES = 200
 DEFAULT_REFILL_FACTOR = 4
@@ -174,6 +174,10 @@ class CatalogPending(IndexContractError):
         super().__init__(STALE)
         self.reason = detail['reason']
         self.detail = detail
+
+
+class ReturnedCandidateDiverged(SourceStale):
+    """A returned row no longer matches the pinned generation's source."""
 
 
 @dataclass(frozen=True)
@@ -658,9 +662,12 @@ class LayaSourceCatalog:
         dfd = opener.open_dir(rel)
         before = os.fstat(dfd)
         names = sorted(os.listdir(dfd))
+        # One listing is atomic and held in memory, so the entry bound applies
+        # to it. Rows are durable per step, so the scan total is only counted:
+        # a corpus-wide entry cap would be a corpus-size refusal.
         state['entries'] += len(names)
-        if state['entries'] > MAX_ENTRIES:
-            raise _Blocked('source_invalid', 'too many entries')
+        if len(names) > MAX_ENTRIES:
+            raise _Blocked('source_invalid', f'too many entries in one directory: {rel}')
         for name in names:
             if name.startswith('.'):
                 continue
@@ -1038,6 +1045,27 @@ class LayaSourceCatalog:
         finally:
             opener.close()
         check(snapshot)
+
+    def snapshot_started_ns(self, snapshot: CatalogSnapshot) -> int:
+        """When the scan that produced the current ``snapshot`` was requested.
+
+        A scan lists and hashes only after it starts, so a snapshot whose scan
+        started at or after a time T reflects no source state older than T
+        (up to the scan's own mutation checks). This is the freshness fact an
+        activation gate needs; ``finished_ns`` alone is not, because a scan
+        that started before T may finish after it. A pending newer scan is
+        allowed, as in ``require_complete``.
+        """
+        def read():
+            if not self._is_current(snapshot, True):
+                return None
+            row = self.db.execute('SELECT started_ns FROM scans WHERE seq=?',
+                                  (snapshot.seq,)).fetchone()
+            return None if row is None else row[0]
+        started = self._read(read)
+        if type(started) is not int:
+            _raise_stale('catalog snapshot changed')
+        return started
 
     def members(self, snapshot: CatalogSnapshot, exclusions: Exclusions, *,
                 after: str = '', limit: int = _PAGE,
@@ -1646,6 +1674,31 @@ class CandidateQuery:
                 'candidates': len(dropped),
                 'dropped': dict(sorted(Counter(dropped.values()).items()))})
         return valid[:limit]
+
+    def require_returned_verified(self) -> None:
+        """Refuse a partial answer after checking returned candidates only.
+
+        An unreturned new file is index lag, not evidence that a returned row
+        is stale. Exclusions may remove rows; every other drop withholds the
+        complete answer. Source mismatches request sync at the host boundary;
+        read and size limits report unavailable source without a futile scan.
+        """
+        self._require_open()
+        if self._failed:
+            _raise_stale('candidate query already failed')
+        dropped = {reason: count for reason, count in self.stats['dropped'].items()
+                   if reason != 'excluded' and count}
+        if not dropped:
+            return
+        self._failed = True
+        unavailable = frozenset(('file_budget', 'query_budget', 'unreadable'))
+        if set(dropped) <= unavailable:
+            raise CatalogPending({'reason': 'returned_unverified',
+                                  'dropped': dropped,
+                                  'scope': self.binding.scope,
+                                  'generation': self.binding.generation})
+        raise IndexContractError(STALE) from ReturnedCandidateDiverged(
+            'returned source differs from the pinned generation')
 
     def finish(self) -> Dict[str, Any]:
         """Re-check seal, incarnation and live root identities; then close."""

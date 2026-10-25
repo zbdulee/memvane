@@ -1,4 +1,6 @@
-import sqlite3,struct,sys,unittest
+import json,platform,sqlite3,struct,sys,tempfile,unittest
+from pathlib import Path
+from unittest.mock import Mock
 sys.path.insert(0,'core')
 try:import vector_integrity as V
 except ImportError:raise SystemExit('physical_vector_audit_missing')
@@ -40,4 +42,42 @@ class Vectors(unittest.TestCase):
  def test_transaction_rollback_restores_invalidation(self):
   self.db.execute('DELETE FROM vectors_vec WHERE hash_seq="good_1"');self.db.commit();self.db.execute('BEGIN IMMEDIATE');V.invalidate(self.db,['own'],'model','fp',3);self.db.rollback()
   self.assertEqual(self.db.execute('SELECT count(*) FROM content_vectors WHERE hash="good"').fetchone()[0],2)
+
+class ExtensionLocation(unittest.TestCase):
+ def setUp(self):
+  self.temp=tempfile.TemporaryDirectory(prefix='vector-extension-');self.addCleanup(self.temp.cleanup)
+  base=Path(self.temp.name)/'node_modules';self.package=base/'@tobilu/qmd'
+  (self.package/'bin').mkdir(parents=True)
+  (self.package/'package.json').write_text(json.dumps({'version':'2.5.3'}))
+  self.runtime={'proof':{'qmd':str(self.package/'bin/qmd')}}
+  system={'Darwin':('darwin','dylib'),'Linux':('linux','so')}[platform.system()]
+  arch={'arm64':'arm64','aarch64':'arm64','x86_64':'x64'}[platform.machine()]
+  extension='sqlite-vec-'+system[0]+'-'+arch+'/vec0.'+system[1]
+  self.nested=self.package/'node_modules'/extension
+  self.hoisted=base/extension
+  self.db=Mock()
+  self.db.execute.return_value.fetchone.return_value=('CREATE VIRTUAL TABLE vectors_vec USING vec0(embedding float[3])',)
+ def create(self,path):
+  path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture');path.chmod(0o600)
+ def test_package_local_extension_is_loaded(self):
+  self.create(self.nested)
+  V.load_vectors(self.db,self.runtime)
+  self.db.load_extension.assert_called_once_with(str(self.nested))
+ def test_hoisted_extension_is_loaded_when_local_is_absent(self):
+  self.create(self.hoisted)
+  V.load_vectors(self.db,self.runtime)
+  self.db.load_extension.assert_called_once_with(str(self.hoisted))
+ def test_unsafe_local_extension_does_not_fall_back(self):
+  self.create(self.hoisted)
+  self.nested.parent.mkdir(parents=True,exist_ok=True)
+  self.nested.symlink_to(self.hoisted)
+  with self.assertRaisesRegex(ValueError,'unsafe_vector_extension'):
+   V.load_vectors(self.db,self.runtime)
+  self.db.load_extension.assert_not_called()
+ def test_missing_python_sqlite_extension_api_fails_clearly(self):
+  self.create(self.nested)
+  self.db.enable_load_extension=None
+  with self.assertRaisesRegex(ValueError,'python_sqlite_extension_loading_unavailable'):
+   V.load_vectors(self.db,self.runtime)
+  self.db.load_extension.assert_not_called()
 if __name__=='__main__':unittest.main(verbosity=2)

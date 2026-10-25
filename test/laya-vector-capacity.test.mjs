@@ -9,6 +9,6 @@ test('capacity vector fill is step-bounded, resumable and seals before publish',
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 24 tests/);
+  assert.match(result.stderr, /Ran 25 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

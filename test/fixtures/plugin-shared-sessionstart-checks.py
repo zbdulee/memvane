@@ -15,13 +15,14 @@ sys.path.insert(0, str(Path.cwd() / 'core'))
 import config
 import dirty_queue
 import qmd_route
+import qmd_shared_store
 import resolve_paths
 import runtime_work
 import sync
 import compile_paths
 import update_hook_queue
 
-with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp:
+with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir=Path.cwd().parent) as temp:
     home = Path(temp).resolve()
     base = home / 'novel'
     base.mkdir()
@@ -41,6 +42,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
         'test/fixtures/prepare-shared-qmd-store.py', str(home)],
         cwd=Path.cwd(), capture_output=True, text=True, check=False)
     assert prepared.returncode == 0, prepared.stderr
+    # SessionStart here uses two grandfathered owners of the legacy store.
+    for story in stories:
+        config_row = json.loads((story / '.auto-context/settings.json').read_text())
+        qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+            qmd_shared_store._collection_owners(story, config_row))
     # runtime_work intentionally uses the OS UID home, not HOME. Keep the
     # selected-store/setup path real while suppressing only test child wake
     # writes, which would otherwise reach the user's live runtime-wakes DB.
@@ -137,6 +143,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
     allowed['collectionRoles']['story-0-source'] = 'source'
     allowed['compile'] = {'mode': 'auto-wiki', 'triggers': ['session_start_source']}
     settings.write_text(json.dumps(allowed))
+    # This synthetic case begins at an already registered source owner; the
+    # session exercise must not implicitly enroll a new legacy collection.
+    qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+        qmd_shared_store._collection_owners(stories[0], allowed))
     before_queue = stories[0] / compile_paths.rel(compile_paths.SOURCE_QUEUE)
     old_env = os.environ.copy()
     original_risky = resolve_paths.is_risky_path
@@ -188,4 +198,88 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-start-', dir='/tmp') as temp
     failed = json.loads((home / 'queue' / (retry_key + '.status.json')).read_text())
     assert failed['status'] == 'failed' and failed['searchReady'] is False
     assert retry_job.is_file()
-    print('shared-sessionstart-ok')
+
+# Clean install: no project settings and no selected plugin store. The worker
+# reports setup_required, KEEPS the job for a later SessionStart and returns
+# the explicit result; the update handler ACKs only that wake. Every other
+# store error, unreadable settings, and a configured project still fail closed.
+import runtime_handlers
+import setup_guard
+with tempfile.TemporaryDirectory(prefix='qmd-clean-start-', dir=Path.cwd().parent) as temp:
+    home = Path(temp).resolve()
+    project = home / 'fresh-project'
+    project.mkdir()
+    queue = home / 'queue'
+    clean_env = {**os.environ, 'HOME': str(home), 'QMD_SETUP_GUARD_FIXTURE': '',
+                 'QMD_RECALL_LOG': '', 'QMD_UPDATE_HOOK_QUEUE_DIR': str(queue)}
+    key = hashlib.sha256(str(project).encode()).hexdigest()[:32]
+    job = queue / (key + '.job.json')
+    status_path = queue / (key + '.status.json')
+    settings_dir = project / '.auto-context'
+    def write_job():
+        queue.mkdir(mode=0o700, exist_ok=True)
+        job.write_text(json.dumps({'schema': 'qmd-update-hook-job-v1', 'cwd': str(project)}))
+        job.chmod(0o600)
+    def expect_raise(message):
+        try:
+            update_hook_queue.worker(key)
+        except ValueError as exc:
+            assert str(exc) == message, exc
+        else:
+            raise AssertionError(message + ' did not fail closed')
+        assert job.is_file() and not status_path.exists()
+    assert not qmd_shared_store.root(home).exists()
+    with mock.patch.dict(os.environ, clean_env, clear=True), mock.patch.object(
+            runtime_work, 'request', side_effect=AssertionError('no retry wake')):
+        assert config.find_project_config(str(project))['configFormat'] == 'none'
+        assert setup_guard.status(str(project))['status'] == 'ready'
+        try:
+            qmd_route.project_paths(str(project))
+        except ValueError as exc:
+            assert str(exc) == 'plugin_qmd_store_not_ready', exc
+        else:
+            raise AssertionError('clean state unexpectedly has a selected store')
+        write_job()
+        assert update_hook_queue.worker(key) == update_hook_queue.SETUP_REQUIRED
+        clean = json.loads(status_path.read_text())
+        assert clean['status'] == 'setup_required', clean
+        assert clean['reason'] == 'plugin_qmd_store_not_selected', clean
+        assert job.is_file(), 'clean install must keep the job for a later SessionStart'
+        assert not qmd_shared_store.root(home).exists()
+        # The wake handler ACKs this setup-required wake although the job stays.
+        assert runtime_handlers.update({'target': key, 'revision': 1}) is True
+        assert job.is_file()
+        status_path.unlink()
+        # An unsafe/corrupt store is not a first install: it must still raise.
+        with mock.patch.object(qmd_route, 'project_paths',
+                               side_effect=ValueError('unsafe_plugin_qmd_store')):
+            expect_raise('unsafe_plugin_qmd_store')
+        # Unreadable settings read as configFormat 'none' must not pass, even
+        # if the top-level guard were bypassed.
+        settings_dir.mkdir()
+        (settings_dir / 'settings.json').write_text('{not json')
+        assert config.find_project_config(str(project))['configFormat'] == 'none'
+        assert setup_guard.status(str(project))['status'] == 'setup_required'
+        assert update_hook_queue.worker(key) is None
+        assert runtime_handlers.update({'target': key, 'revision': 2}) is False
+        assert job.is_file()
+        status_path.unlink()
+        with mock.patch.object(setup_guard, 'status', return_value={'status': 'ready'}):
+            expect_raise('plugin_qmd_store_not_ready')
+        # A configured project without its store is not a first install either.
+        (settings_dir / 'settings.json').write_text(json.dumps({
+            'indexing': True, 'collections': ['fresh-wiki'],
+            'collectionPaths': {'fresh-wiki': 'wiki'}}))
+        with mock.patch.object(setup_guard, 'status', return_value={'status': 'ready'}):
+            expect_raise('plugin_qmd_store_not_ready')
+            # After setup selects a store, the retained job is processed by
+            # the next wake. The store route and updater are synthetic stubs.
+            updater = home / 'fake-update.sh'
+            updater.write_text('#!/bin/sh\nexit 0\n')
+            updater.chmod(0o700)
+            with mock.patch.dict(os.environ, {'QMD_CORE_UPDATE_SCRIPT': str(updater)}), \
+                    mock.patch.object(qmd_route, 'project_paths', return_value={'selected': True}):
+                assert runtime_handlers.update({'target': key, 'revision': 3}) is True
+        assert json.loads(status_path.read_text())['status'] == 'completed'
+        assert not job.exists()
+print('shared-sessionstart-ok')

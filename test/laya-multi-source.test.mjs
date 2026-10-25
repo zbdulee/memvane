@@ -9,5 +9,5 @@ test('multi collection source mapping keeps one sealed generation', () => {
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 3 tests/);
+  assert.match(result.stderr, /Ran 5 tests/);
 });

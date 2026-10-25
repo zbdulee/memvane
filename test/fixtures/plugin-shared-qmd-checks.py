@@ -85,6 +85,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-plugin-shared-', dir='/tmp') as tem
         'indexSchemaSha256': inspected['schemaSha256']}))
     proof.chmod(0o600)
     assert qmd_shared_store.activate_empty(gen, home=home)['INDEX_PATH'] == str(index)
+    # The old selected generation has no scope policy. These two stories
+    # represent registrations made before scoped enrollment was introduced.
+    for story in stories:
+        existing = config.find_project_config(str(story))['config']
+        qmd_shared_store._reserve_owners(base,
+            qmd_shared_store._collection_owners(story, existing))
     for story in stories:
         assert qmd_route.project_paths(story, isolated=True)['INDEX_PATH'] == str(index)
         found = config.find_project_config(str(story))
@@ -123,11 +129,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-plugin-shared-', dir='/tmp') as tem
     collision['collections'] = ['novel-story-0-wiki']
     collision['collectionPaths'] = {'novel-story-0-wiki': 'wiki'}
     denied(lambda: qmd_shared_store.register_config(stories[1], collision, home=home),
-           'plugin_qmd_collection_collision')
+           'project_shared_migration_not_approved')
     source_collision = {**collision,
                         'collectionRoles': {'novel-story-0-wiki': 'source'}}
     denied(lambda: qmd_shared_store.register_config(stories[1], source_collision, home=home),
-           'plugin_qmd_collection_collision')
+           'project_shared_migration_not_approved')
 
     own = stories[0]
     foreign = stories[1]
@@ -154,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-plugin-shared-', dir='/tmp') as tem
     (own / 'new-wiki').mkdir()
     (own / 'new-wiki/card.md').write_text('different unindexed synthetic card\n')
     denied(lambda: qmd_shared_store.register_config(own, moved, home=home),
-           'plugin_qmd_collection_path_change_requires_migration')
+           'project_shared_migration_not_approved')
     assert not qmd_scope.scoped_hits(rows[:1], own, moved, {'novel-story-0-wiki'}, index)
     assert not qmd_shared_store.owned_collections(own, moved, home=home)
     (own / 'wiki/card.md').write_text('changed before reindex\n')

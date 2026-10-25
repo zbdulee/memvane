@@ -9,12 +9,15 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
 import setup_entry
+import setup_readiness
 import qmd_runtime
 import qmd_shared_store
+import shared_qmd_setup
 
 
 class SharedSetup(unittest.TestCase):
@@ -103,13 +106,441 @@ db.commit();db.close()
         self.assertFalse((qmd_shared_store.root()/'active.json').exists())
         self.assertFalse((qmd_runtime.managed_root()/'active.json').exists())
 
+    def legacy_selected_store(self):
+        """A readable selected store created before model/scope bootstrap proofs."""
+        code,result=self.cli('prepare-store');self.assertEqual(code,0,result)
+        with patch('shared_qmd_setup.coordinator._daemon_identity',return_value=None):
+            code,activated=self.cli('activate-store',
+                ['--approve-store-activation','--old-host-sessions-restarted'])
+        self.assertEqual(code,0,activated)
+        root=qmd_shared_store.root();generation=Path(result['generation'])
+        prepared_path=generation/'prepared.json';prepared=json.loads(prepared_path.read_text())
+        prepared.pop('scopePolicySha256')
+        prepared_path.write_text(json.dumps(prepared,sort_keys=True));prepared_path.chmod(0o600)
+        (generation/'scope-policy.json').unlink()
+        (generation/'bootstrap-proof.json').unlink()
+        (root/'bootstrap-journal.json').unlink()
+        # A selected generation can contain content. Never infer that it is
+        # disposable merely because its bootstrap receipts are older.
+        with contextlib.closing(sqlite3.connect(generation/'index.sqlite')) as db, db:
+            db.execute("INSERT INTO content VALUES (?,?)",('legacy-hash','old selected content'))
+        self.assertEqual(qmd_shared_store.select()['generation'],str(generation))
+        self.assertEqual(setup_readiness.qmd_model_reason(),
+                         'qmd_embedding_model_proof_required')
+        return {'generation':generation, 'pointer':root/'active.json',
+                'pointerBytes':(root/'active.json').read_bytes(),
+                'indexBytes':(generation/'index.sqlite').read_bytes(),
+                'configBytes':(generation/'config/index.yml').read_bytes(),
+                'preparedBytes':prepared_path.read_bytes(),
+                'runtimePointerBytes':(qmd_runtime.managed_root()/'active.json').read_bytes()}
+
+    def replacement_options(self):
+        options=self.options.copy()
+        options[options.index('reuse')]='active'
+        for flag in ('--qmd-entry','--node'):
+            position=options.index(flag)
+            del options[position:position+2]
+        options.extend(['--expected-embedding-model-sha256',
+                        hashlib.sha256(self.model.read_bytes()).hexdigest(),
+                        '--expected-embedding-model-bytes',str(self.model.stat().st_size)])
+        return options
+
+    def accepted_replacement_options(self,options):
+        code,planned=self.cli('plan-replacement-store',options)
+        self.assertEqual(code,0,planned)
+        self.assertEqual(planned['status'],'ready_to_prepare')
+        return options+['--accepted-replacement-request-sha256',planned['requestSha256']]
+
+    def assert_legacy_preserved(self,old):
+        self.assertEqual(old['pointer'].read_bytes(),old['pointerBytes'])
+        self.assertEqual((old['generation']/'index.sqlite').read_bytes(),old['indexBytes'])
+        self.assertEqual((old['generation']/'config/index.yml').read_bytes(),old['configBytes'])
+        self.assertEqual((old['generation']/'prepared.json').read_bytes(),old['preparedBytes'])
+        self.assertEqual((qmd_runtime.managed_root()/'active.json').read_bytes(),
+                         old['runtimePointerBytes'])
+        self.assertEqual(qmd_shared_store.select()['generation'],str(old['generation']))
+        self.assertEqual(self.original.read_bytes(),b'existing global database - preserve')
+        self.assertEqual((self.project/'.auto-context/settings.json').read_bytes(),
+                         self.original_settings)
+
+    def test_legacy_replacement_missing_explicit_model_stages_nothing(self):
+        old=self.legacy_selected_store();options=self.replacement_options()
+        root=qmd_shared_store.root();before=set((root/'generations').iterdir())
+        model_flag=options.index('--embedding-model-file')
+        missing_path=options[:model_flag]+options[model_flag+2:]
+        code,missing=self.cli('plan-replacement-store',missing_path)
+        self.assertEqual(code,1,missing)
+        self.assertEqual(missing['status'],'blocked')
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        accepted=self.accepted_replacement_options(options)
+        self.model.unlink()
+        for action,flags in (('plan-replacement-store',options),
+                             ('prepare-replacement-store',accepted)):
+            code,result=self.cli(action,flags)
+            self.assertEqual(code,1,result)
+            self.assertIn('local_embedding_model_required',
+                          result.get('blockers',[result.get('reason')]))
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_model_identity_mismatch_stages_nothing(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options();before=set((root/'generations').iterdir())
+        accepted=self.accepted_replacement_options(options)[-1]
+        for flag,value in (('--expected-embedding-model-sha256','0'*64),
+                           ('--expected-embedding-model-bytes',str(self.model.stat().st_size+1))):
+            changed=options.copy();changed[changed.index(flag)+1]=value
+            for action,flags in (('plan-replacement-store',changed),
+                                 ('prepare-replacement-store',changed+[
+                                     '--accepted-replacement-request-sha256',accepted])):
+                code,result=self.cli(action,flags)
+                self.assertEqual(code,1,result)
+                self.assertEqual(result['status'],'blocked')
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_rejects_different_model_name_with_same_bytes(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        before=set((root/'generations').iterdir())
+        alternate=self.home/'different.gguf'
+        alternate.write_bytes(self.model.read_bytes());alternate.chmod(0o600)
+        options=self.replacement_options()
+        options[options.index('--embedding-model-file')+1]=str(alternate)
+        for action in ('plan-replacement-store','prepare-replacement-store'):
+            code,result=self.cli(action,options)
+            self.assertEqual(code,1,result)
+            self.assertIn('replacement_model_identifier_mismatch',result['blockers'])
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_wrong_accepted_digest_stages_nothing(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options();before=set((root/'generations').iterdir())
+        code,result=self.cli('prepare-replacement-store',options+[
+            '--accepted-replacement-request-sha256','0'*64])
+        self.assertEqual(code,1,result)
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_requires_selected_managed_runtime(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options()
+        options[options.index('active')]='reuse'
+        before=set((root/'generations').iterdir())
+        code,result=self.cli('plan-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertEqual(result['status'],'blocked')
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_dimension_mismatch_stages_nothing(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options()
+        options[options.index('--expected-dimension')+1]='512'
+        before=set((root/'generations').iterdir())
+        code,result=self.cli('plan-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertIn('replacement_dimension_768_required',result['blockers'])
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_same_name_other_absolute_model_is_not_selected(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        different_dir=self.home/'other-model-dir';different_dir.mkdir()
+        alternate=different_dir/self.model.name
+        alternate.write_bytes(self.model.read_bytes());alternate.chmod(0o600)
+        options=self.replacement_options()
+        options[options.index('--embedding-model-file')+1]=str(alternate)
+        before=set((root/'generations').iterdir())
+        code,result=self.cli('plan-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertIn('replacement_model_identifier_mismatch',result['blockers'])
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_runtime_wrapper_flip_before_journal(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        before=set((root/'generations').iterdir())
+        selected=qmd_runtime.select()
+        changed={**selected,'wrapper':str(self.home/'different-wrapper')}
+        with patch('shared_qmd_setup.qmd_runtime.select',return_value=changed):
+            code,result=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_pointer_identity_changes_before_acceptance(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        before=set((root/'generations').iterdir())
+        replacement=root/'pointer-test-replacement.json'
+        replacement.write_bytes(old['pointerBytes']);replacement.chmod(0o600)
+        os.replace(replacement,old['pointer'])
+        # Identical pointer bytes from a different inode are not the same
+        # selected lifetime for an already accepted request.
+        code,result=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_scope_settings_drift_before_journal(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        before=set((root/'generations').iterdir())
+        settings=self.project/'.auto-context/settings.json'
+        changed=b'{"indexing":true,"collections":[],"topN":4}\n'
+        settings.write_bytes(changed)
+        code,result=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,result)
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assertEqual(settings.read_bytes(),changed)
+        self.assertEqual(old['pointer'].read_bytes(),old['pointerBytes'])
+        self.assertEqual((old['generation']/'index.sqlite').read_bytes(),old['indexBytes'])
+        self.assertEqual((old['generation']/'config/index.yml').read_bytes(),old['configBytes'])
+        self.assertEqual(self.original.read_bytes(),b'existing global database - preserve')
+
+    def test_legacy_replacement_explicit_supersession_archives_old_inactive(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options()
+        accepted=self.accepted_replacement_options(options)
+        code,first=self.cli('prepare-replacement-store',accepted)
+        self.assertEqual(code,0,first)
+        first_generation=Path(first['generation'])
+        first_index=(first_generation/'index.sqlite').read_bytes()
+        previous_journal=(root/'replacement-bootstrap-journal.json').read_bytes()
+        pointer_replacement=root/'pointer-same-bytes-new-lifetime.json'
+        pointer_replacement.write_bytes(old['pointerBytes'])
+        pointer_replacement.chmod(0o600)
+        os.replace(pointer_replacement,old['pointer'])
+        later=self.accepted_replacement_options(options)
+        self.assertNotEqual(later[-1],accepted[-1])
+        code,rejected=self.cli('prepare-replacement-store',later)
+        self.assertEqual(code,1,rejected)
+        self.assertEqual((root/'replacement-bootstrap-journal.json').read_bytes(),
+                         previous_journal)
+        code,second=self.cli('prepare-replacement-store',later+[
+            '--replace-inactive-store-preparation'])
+        self.assertEqual(code,0,second)
+        self.assertEqual(second['status'],'prepared_inactive_replacement')
+        self.assertIs(second['cutoverReady'],False)
+        self.assertNotEqual(second['generation'],first['generation'])
+        self.assertEqual((first_generation/'index.sqlite').read_bytes(),first_index)
+        archived=root/'journal-archive'/('replacement-'+hashlib.sha256(
+            previous_journal).hexdigest()+'.json')
+        self.assertEqual(archived.read_bytes(),previous_journal)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_uuid_collision_cannot_reuse_selected_generation(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        before=set((root/'generations').iterdir())
+        selected_uuid=uuid.UUID(hex=old['generation'].name[2:])
+        next_uuid=uuid.uuid4()
+        with patch('shared_qmd_setup.uuid.uuid4',side_effect=[selected_uuid,next_uuid]):
+            code,failed=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,failed)
+        self.assertEqual(failed['status'],'failed_preparing')
+        self.assertEqual(failed['reason'],'replacement_generation_collides_with_selected')
+        self.assertIs(failed['cutoverReady'],False)
+        self.assertEqual(set((root/'generations').iterdir()),before)
+        self.assertFalse((root/'bootstrap-journal.json').exists())
+        journal=json.loads((root/'replacement-bootstrap-journal.json').read_text())
+        self.assertEqual(journal['phase'],'failed_preparing')
+        self.assertIsNone(journal.get('generation'))
+        self.assertNotEqual(journal.get('building',{}).get('generation'),
+                            str(old['generation']))
+        code,status=self.cli('replacement-store-status',[])
+        self.assertEqual(code,1,status)
+        self.assertEqual(status['status'],'failed_preparing')
+        self.assertIs(status['cutoverReady'],False)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_proves_new_inactive_generation(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.replacement_options()
+        accepted=self.accepted_replacement_options(options)
+        self.assertFalse((root/'replacement-bootstrap-journal.json').exists())
+        self.assert_legacy_preserved(old)
+        code,result=self.cli('prepare-replacement-store',accepted)
+        self.assertEqual(code,0,result)
+        self.assertEqual(result['status'],'prepared_inactive_replacement')
+        self.assertIs(result['cutoverReady'],False)
+        replacement=Path(result['generation'])
+        self.assertNotEqual(replacement,old['generation'])
+        proof=json.loads((replacement/'bootstrap-proof.json').read_text())
+        policy=json.loads((replacement/'scope-policy.json').read_text())
+        journal=json.loads((root/'replacement-bootstrap-journal.json').read_text())
+        self.assertTrue(proof['searchProved'])
+        self.assertEqual(proof['modelPath'],str(self.model))
+        self.assertEqual(proof['modelSha256'],hashlib.sha256(self.model.read_bytes()).hexdigest())
+        self.assertEqual(proof['dimension'],768)
+        self.assertEqual(policy['projects'][str(self.project)],
+                         hashlib.sha256(self.original_settings).hexdigest())
+        self.assertEqual(journal['phase'],'prepared_inactive_replacement')
+        self.assertEqual(journal['proof'],proof)
+        self.assertEqual(journal['generation'],str(replacement))
+        self.assertEqual(qmd_shared_store.select()['generation'],str(old['generation']))
+        code,status=self.cli('replacement-store-status',[])
+        self.assertEqual(code,0,status)
+        self.assertEqual(status['status'],'prepared_inactive_replacement')
+        self.assertIs(status['cutoverReady'],False)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_activate_store_cannot_select_replacement(self):
+        old=self.legacy_selected_store()
+        options=self.accepted_replacement_options(self.replacement_options())
+        code,prepared=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,0,prepared)
+        with patch('shared_qmd_setup.coordinator._daemon_identity',return_value=None):
+            code,legacy=self.cli('activate-store',
+                ['--approve-store-activation','--old-host-sessions-restarted'])
+        self.assertEqual(code,0,legacy)
+        self.assertEqual(legacy['status'],'not_prepared')
+        self.assertNotEqual(qmd_shared_store.select()['generation'],
+                            prepared['generation'])
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_rejects_model_drift_without_switch(self):
+        old=self.legacy_selected_store()
+        options=self.accepted_replacement_options(self.replacement_options())
+        code,result=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,0,result)
+        replacement=Path(result['generation']);proof=(replacement/'bootstrap-proof.json').read_bytes()
+        self.model.write_bytes(b'GGUF' + b'changed model bytes')
+        code,retry=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,retry)
+        self.assertEqual((replacement/'bootstrap-proof.json').read_bytes(),proof)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_interruption_retries_without_activation(self):
+        old=self.legacy_selected_store()
+        options=self.accepted_replacement_options(self.replacement_options())
+        with patch('shared_qmd_setup._build',side_effect=ValueError('synthetic_replacement_interruption')):
+            code,failed=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,failed)
+        self.assertEqual(failed['status'],'failed_preparing')
+        self.assert_legacy_preserved(old)
+        code,retry=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,0,retry)
+        self.assertEqual(retry['status'],'prepared_inactive_replacement')
+        self.assertIs(retry['cutoverReady'],False)
+        self.assertNotEqual(retry['generation'],str(old['generation']))
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_embed_checkpoint_resumes_same_new_generation(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        (self.home/'fail-embed').touch()
+        code,failed=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,failed)
+        self.assertEqual(failed['status'],'failed_preparing')
+        journal=json.loads((root/'replacement-bootstrap-journal.json').read_text())
+        self.assertEqual(journal['building']['inFlight'],'embed')
+        interrupted=journal['building']['generation']
+        self.assertNotEqual(interrupted,str(old['generation']))
+        self.assert_legacy_preserved(old)
+        (self.home/'fail-embed').unlink()
+        code,retry=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,0,retry)
+        self.assertEqual(retry['status'],'prepared_inactive_replacement')
+        self.assertEqual(retry['generation'],interrupted)
+        self.assertIs(retry['cutoverReady'],False)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_failed_checkpoint_requires_explicit_restart(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        (self.home/'fail-embed').touch()
+        code,failed=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,failed)
+        self.assertEqual(failed['status'],'failed_preparing')
+        (self.home/'fail-embed').unlink()
+        journal_path=root/'replacement-bootstrap-journal.json'
+        failed_journal=json.loads(journal_path.read_text())
+        first_generation=Path(failed_journal['building']['generation'])
+        first_index=(first_generation/'index.sqlite').read_bytes()
+        # The old checkpoint is no longer resumable. A normal retry must not
+        # silently replace its candidate, even for the same accepted request.
+        (first_generation/'config/index.yml').unlink()
+        code,rejected=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,rejected)
+        self.assertEqual(rejected['status'],'failed_preparing')
+        before_restart=journal_path.read_bytes()
+        code,restarted=self.cli('prepare-replacement-store',options+[
+            '--replace-inactive-store-preparation'])
+        self.assertEqual(code,0,restarted)
+        self.assertEqual(restarted['status'],'prepared_inactive_replacement')
+        self.assertIs(restarted['cutoverReady'],False)
+        self.assertNotEqual(restarted['generation'],str(first_generation))
+        self.assertEqual((first_generation/'index.sqlite').read_bytes(),first_index)
+        archived=root/'journal-archive'/('replacement-'+hashlib.sha256(
+            before_restart).hexdigest()+'.json')
+        self.assertEqual(archived.read_bytes(),before_restart)
+        self.assert_legacy_preserved(old)
+
+    def test_legacy_replacement_empty_checkpoint_fails_closed_then_restarts(self):
+        old=self.legacy_selected_store();root=qmd_shared_store.root()
+        options=self.accepted_replacement_options(self.replacement_options())
+        (self.home/'fail-embed').touch()
+        code,failed=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,failed)
+        (self.home/'fail-embed').unlink()
+        journal_path=root/'replacement-bootstrap-journal.json'
+        journal=json.loads(journal_path.read_text())
+        first_generation=Path(journal['building']['generation'])
+        first_index=(first_generation/'index.sqlite').read_bytes()
+        journal['building']={}
+        journal['buildingSha256']=shared_qmd_setup.coordinator.digest({})
+        journal_path.write_text(json.dumps(journal,sort_keys=True)+'\n')
+        journal_path.chmod(0o600)
+        code,rejected=self.cli('prepare-replacement-store',options)
+        self.assertEqual(code,1,rejected)
+        self.assertEqual(rejected['status'],'failed_preparing')
+        self.assertIn('bootstrap_checkpoint_changed',rejected['reason'])
+        self.assertEqual((first_generation/'index.sqlite').read_bytes(),first_index)
+        before_restart=journal_path.read_bytes()
+        code,restarted=self.cli('prepare-replacement-store',options+[
+            '--replace-inactive-store-preparation'])
+        self.assertEqual(code,0,restarted)
+        self.assertEqual(restarted['status'],'prepared_inactive_replacement')
+        self.assertIs(restarted['cutoverReady'],False)
+        self.assertNotEqual(restarted['generation'],str(first_generation))
+        self.assertEqual((first_generation/'index.sqlite').read_bytes(),first_index)
+        archived=root/'journal-archive'/('replacement-'+hashlib.sha256(
+            before_restart).hexdigest()+'.json')
+        self.assertEqual(archived.read_bytes(),before_restart)
+        self.assert_legacy_preserved(old)
+
     def test_inspect_without_store_is_read_only(self):
         result=setup_entry.discover(self.project)
         self.assertEqual(result['discovered']['sharedStoreStatus'],'not_prepared')
+        self.assertEqual(result['discovered']['pythonExecutable'],sys.executable)
+        self.assertIs(result['discovered']['sqliteExtensionLoading'],
+                      setup_entry.sqlite_extension_loading_available())
         self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
         update=setup_entry.check_update(self.project)
         self.assertIn('plugin_qmd_store_not_ready',update['reasons'])
         self.assertFalse(qmd_runtime.managed_root().parent.parent.exists())
+
+    def test_sqlite_extension_capability_probe_is_read_only(self):
+        class Unavailable: pass
+        class Available:
+            def enable_load_extension(self, enabled): pass
+            def load_extension(self, path): pass
+        self.assertFalse(setup_entry.sqlite_extension_loading_available(Unavailable))
+        self.assertTrue(setup_entry.sqlite_extension_loading_available(Available))
+        self.assert_preserved()
 
     def test_unsupported_platform_remains_blocked_without_staging(self):
         with patch('install_update.supported_platform', return_value=False):

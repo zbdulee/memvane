@@ -1191,6 +1191,61 @@ def _run_verify_pass(
             pass
 
 
+COMPILE_RUN_LOCK = ".compile-run.lock"
+RUN_LOCK_BUSY_RETRY_SECS = 30
+
+
+def try_run_lock(root: Path) -> int | None:
+    """Project-wide non-blocking single flight for one compile run, else None.
+
+    A PostToolUse both queues the selected `laya-compile` wake and kicks
+    `backend_manager kick-wiki-compile`, and kicks from a subdirectory cwd use a
+    different kick lock. Without this lock a second worker's
+    `recover_pending_refreshes` re-enqueues an event the first worker is still
+    extracting; the revision proof correctly fails closed under that pending
+    event, so the same revision was paid for twice. The second worker exits
+    before recovery and keeps every queue row. Kernel flock is released on
+    crash, so a restart is never blocked by a dead owner.
+    """
+    base = cp.compile_dir(root, create=True)
+    if base is None:
+        raise OSError("unsafe compile directory for run lock")
+    fd = os.open(base / COMPILE_RUN_LOCK,
+                 os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise OSError("unsafe compile run lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _busy_report(root: Path, queue: Path) -> dict:
+    """Busy result; asks the kick path for one retry only while work remains.
+
+    The running owner claimed its snapshot before rows appended later, so a
+    kick that loses the lock must not be the last wake for those rows. The
+    durable `laya-compile` wake already retries from its own queue check.
+    """
+    try:
+        waiting = queue.exists() and queue.stat().st_size > 0
+    except OSError:
+        waiting = True
+    if not waiting:
+        waiting = bool(wiki_freshness.unresolved_pending_refreshes(root))
+    report = {"processed": 0, "remaining": 0, "busy": True}
+    if waiting:
+        report["wakeAfterSeconds"] = RUN_LOCK_BUSY_RETRY_SECS
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
@@ -1214,7 +1269,22 @@ def main():
     queue = _safe_queue_path(root, DEFAULT_SOURCE_QUEUE)
     if queue is None:
         return 0
+    try:
+        run_lock = try_run_lock(root)
+    except OSError:
+        return 0  # unsafe lock path: keep the queue, never run unguarded
+    if run_lock is None:
+        if args.json:
+            print(json.dumps(_busy_report(root, queue), ensure_ascii=False))
+        return 0
+    try:
+        return _main_locked(args, root, config, compile_cfg, queue, selected_route)
+    finally:
+        os.close(run_lock)
 
+
+def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
+                 selected_route) -> int:
     recover_pending_refreshes(root, config, queue)
 
     claimed = claim_queue(queue)

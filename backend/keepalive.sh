@@ -11,6 +11,7 @@
 # 서버를 더 바쁘게 만들어 /health 까지 막는다. 그래서:
 #  (1) single-flight: 이전 핑이 아직 돌면 skip (mkdir atomic lock)
 #  (2) health 가 즉답할 때만 선택적 vec warm 핑 (busy/down 이면 skip)
+export PYTHONDONTWRITEBYTECODE=1
 PORT="${QMD_DAEMON_PORT:-8584}"
 URL="http://localhost:${PORT}"
 if [ "${QMD_SETUP_GUARD_FIXTURE:-}" != 1 ]; then

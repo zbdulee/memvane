@@ -28,9 +28,8 @@ QMD setup and v2 runtime routing are available on macOS arm64. On other hosts,
 v2 stays `setup_required` and preserves existing global QMD binaries, settings,
 and data; a global CLI does not enable v2 routing. Projects remain inactive
 until you explicitly opt in.
-Managed QMD accepts Node 22 or 24 LTS. Node 26 Current is in the test matrix;
-its native QMD compatibility still needs a Node 26 probe. Node 20 is end of life;
-upgrade to Node 22 or 24 LTS before managed setup.
+Managed QMD accepts Node 22 or 24 LTS and Node 26 Current. For a new Mac,
+prefer Node 22 or 24 LTS; Node 20 is rejected by managed setup.
 
 | Host | Installation route | Runtime support |
 |---|---|---|
@@ -44,15 +43,23 @@ continue below.
 
 ## 설치
 
-먼저 사용하는 에이전트에 플러그인을 설치합니다. 훅이 실행할 `python3`은
-3.9 이상이어야 합니다. 설치 후 에이전트에게 “이 프로젝트 auto-context 설치
-상태 보여줘”라고 요청하면 `setup` 스킬이 기존 설정·wiki·QMD·Laya·색인
-상태를 읽기 전용으로 확인합니다. macOS arm64에서는 검토한 요청에 따라
-QMD 2.5.3을 격리된 관리형 세대에 준비하거나 호환되는 기존 설치를
-재사용할 수 있습니다. 준비와 적용은 별도 요청이며 기존 DB와 설정을 보존합니다.
-관리형 QMD에는 Node 22·24 LTS를 권장합니다. Node 26 Current는 시험 대상이며
-실제 native QMD 호환성 검증은 남아 있습니다. 수명이 끝난 Node 20은 관리형
-설치·재사용에서 거부하므로 Node 22 또는 24 LTS로 올린 뒤 준비하세요.
+### MacBook에서 시작하기
+
+1. **준비:** Apple Silicon Mac에서 사용할 Claude Code 또는 Codex를 설치하고
+   로그인합니다. 훅이 실행할 Python 3.9 이상과 Node 22·24 LTS(또는 지원되는
+   Node 26 Current)를 준비합니다. Node 20은 관리형 설치에서 거부됩니다.
+   새 컴퓨터에는 QMD 2.5.3과 로컬 임베딩 모델도 필요합니다. 플러그인 설치만으로
+   모델이 생기거나 다운로드되지는 않으므로, 아래 `setup` 점검에서 실제 출처와
+   실행·다운로드 범위를 확인합니다. 물리 벡터 검증에는 SQLite 확장 로딩이
+   가능한 Python이 추가로 필요할 수 있으며 `setup`이 이를 검사합니다.
+2. **플러그인 설치:** 사용할 호스트의 아래 명령을 실행합니다. **현재 PR의
+   변경이 `main`에 병합되기 전에는 이 명령이 공개 `main` 버전을 설치합니다.**
+   PR 시험용 후보를 이 명령으로 설치했다고 간주하지 마세요.
+3. **프로젝트 설정:** 대상 프로젝트를 호스트에서 열고 플러그인과 표시된 훅
+   명령을 검토·신뢰합니다. 이어서 에이전트에게 “이 프로젝트 auto-context
+   설치 상태 보여줘”라고 요청합니다. 읽기 전용 계획에서 대상 문서·기존 DB
+   보존·QMD/모델 준비 범위를 확인한 뒤에만 설치 적용과 프로젝트 opt-in을
+   요청합니다. 설치 후 새 호스트 세션을 시작합니다.
 
 Linux 및 다른 아키텍처에서는 v2 관리형 설치와 런타임 라우팅을 지원하지
 않습니다. v1에서 플러그인을 자동 갱신하더라도 `setup_required` 상태를
@@ -60,21 +67,26 @@ Linux 및 다른 아키텍처에서는 v2 관리형 설치와 런타임 라우�
 별도로 설치해도 v2 라우팅이 활성화되지는 않습니다. 관리형 신규 설치나 기존 버전 갱신에는
 패키지 실행 범위와 원본 데이터 보존 계획을 먼저 검토해야 합니다.
 
-호스트별 플러그인 설치 명령은 다음과 같습니다.
+대상 프로젝트 디렉터리에서 사용할 호스트의 명령만 실행합니다. Claude의
+`--scope project`는 해당 프로젝트 설정에 설치합니다. Codex CLI의
+`plugin add`에는 프로젝트 scope 옵션이 없으므로, 설치 뒤 대상 프로젝트의
+공식 플러그인 화면에서 활성화 범위와 훅 신뢰를 별도로 확인합니다.
 
 ```bash
-# Claude Code
-/plugin marketplace add zbdulee/qmd-auto-context
-/plugin install qmd-auto-context
+# Claude Code: 대상 프로젝트에서 실행
+claude plugin marketplace add zbdulee/qmd-auto-context --scope project
+claude plugin install qmd-auto-context@qmd-auto-context-marketplace --scope project
 
-# Codex
+# Codex: marketplace와 플러그인 등록 후 대상 프로젝트에서 신뢰 검토
 codex plugin marketplace add zbdulee/qmd-auto-context --sparse .agents/plugins
 codex plugin add qmd-auto-context@qmd-auto-context-marketplace
-
-# Hermes Agent
-hermes plugins install zbdulee/qmd-auto-context
-hermes plugins enable qmd-auto-context
 ```
+
+Codex CLI에서는 `/plugins`에서 설치 상태를 볼 수 있습니다. 훅을 자동으로
+모두 신뢰하거나 다른 프로젝트까지 권한을 넓히지 말고, 대상 프로젝트에서
+실제 표시된 명령만 검토하세요. Hermes Agent는 별도로
+`hermes plugins install zbdulee/qmd-auto-context` 후
+`hermes plugins enable qmd-auto-context`를 사용합니다.
 
 제품 설치는 각 에이전트의 plugin/marketplace 흐름을 사용합니다. 이 저장소는
 사용자용 `install.sh` 또는 `uninstall.sh`를 제공하지 않습니다.
@@ -86,6 +98,34 @@ hermes plugins enable qmd-auto-context
 전환을 보류합니다. Laya runtime 준비만으로 학습은 활성화되지 않습니다.
 실제 설치·전환 범위와 현재 제한은
 [관리형 설치 계약](docs/install-update-contract-20261006.md)에 정리했습니다.
+
+### 기존 설치 업데이트·복구
+
+기존 사용자는 업데이트 전에 “이 프로젝트 auto-context 업데이트 계획과
+백업·복구 경로를 먼저 보여줘”라고 요청하세요. 호스트의 marketplace 갱신과
+플러그인 코드 갱신은 프로젝트 DB 이관이나 Laya 검색 경로 전환을 끝내지
+않습니다. Claude Code의 프로젝트 설치본은 다음 명령으로 갱신합니다.
+
+```bash
+claude plugin marketplace update qmd-auto-context-marketplace
+claude plugin update qmd-auto-context@qmd-auto-context-marketplace --scope project
+```
+
+Codex는 `codex plugin marketplace upgrade qmd-auto-context-marketplace` 후
+`/plugins`에서 설치본을 확인하고 호스트가 제공하는 갱신 절차를 따릅니다.
+새 실행 코드의 훅 신뢰를 다시 검토하고
+새 세션에서 `setup`의 읽기 전용 업데이트 확인을 거친 뒤 변경된 데이터
+범위에만 적용을 요청하세요. 기존 설정·QMD DB·wiki·백업을 직접 삭제하거나
+자동 이관 성공으로 간주하지 마세요.
+
+문제가 생기면 “이 프로젝트의 적용 상태와 공식 복구 가능 여부를 확인해줘”라고
+요청하세요. 첫 새 쓰기 이후에는 단순 되돌리기 대신 공식 forward recovery가
+필요할 수 있습니다. 플러그인 자체를 제거할 때는 호스트의 공식 명령인
+`claude plugin uninstall qmd-auto-context@qmd-auto-context-marketplace --scope project`
+또는 `codex plugin remove qmd-auto-context@qmd-auto-context-marketplace`를
+사용합니다. 제거는 플러그인
+설치 해제이며 프로젝트 데이터 복구가 아닙니다. Codex 설치는 다른 프로젝트에도
+영향을 줄 수 있으므로 제거 전에 사용 범위를 확인하세요.
 
 ## 프로젝트에서 켜기
 
@@ -102,6 +142,19 @@ qmd auto-context는 프로젝트별 opt-in 방식입니다. 설정이 없는 프
 큰 저장소에서는 `docs/current`, `docs/plans`, `docs`처럼 좁은 문서 경로를
 우선 기억 대상으로 잡습니다.
 설정 값을 직접 조정해야 한다면 [설정 레퍼런스](docs/settings.md)를 참고하세요.
+
+첫 확인은 에이전트에게 “이 프로젝트 문서 한 건이 검색되는지와 출처 링크를
+보여줘”라고 요청하세요. Wiki Compile을 켰다면 “위키 카드 한 건을 만들고
+검증 상태와 원문 위치 링크를 확인해줘”라고 요청할 수 있습니다. 생성·검증·색인
+작업은 비동기 큐에 잠시 대기할 수 있습니다. 큐 전체가 비어야 정상인 것은
+아니며, 확인하려는 카드가 아직 검색되지 않으면 그 카드의 상태를 확인하세요.
+Laya 경로를 별도로 승인해 선택한 경우에는 위키 카드만 Laya 검색·주입 대상이고,
+원문 파일 자체를 자동 주입하지 않습니다. 위키 카드 안의 발췌와 원문 링크는
+정상 콘텐츠입니다. 선택된 설치의 로컬 임베딩 모델은 별도 프로세스가
+유지해 후속 동기화·질의에 재사용합니다. Laya의 SQLite 검색 자체는
+질문마다 실행되며 상주 검색 서버나 OS 부팅 서비스가 아닙니다. 모델 준비 중이나
+자원 압박으로 질의가 보류되면 그 요청은 검색 성공으로 보지 말고 상태를
+확인하세요.
 
 끄고 싶을 때도 명령어를 외울 필요 없이 이렇게 요청하면 됩니다.
 

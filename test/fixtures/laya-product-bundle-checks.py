@@ -17,7 +17,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
-from laya_index_a import LayaIndexA
+from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 import laya_index_host_route as host
 import laya_install_journal as journal
@@ -97,7 +97,8 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_package.py', 'laya_install_binding.py',
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
-                 'laya_host_response.py')
+                 'laya_host_response.py', 'laya_owner_projection.py',
+                 'laya_initial_build.py')
         (self.source / 'core').mkdir()
         for name in names:
             shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)
@@ -388,6 +389,77 @@ print(json.dumps(result))'''
                 self.source, installed, commit_id=self.commit1,
                 vector_profile=self.vector_profile)
 
+    def test_host_pid_marker_is_bounded_metadata_in_adoption_and_readback(self):
+        installed = self.install / 'host-plugin'
+        shutil.copytree(self.source, installed,
+                        ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(installed):
+            Path(directory).chmod(0o700)
+        markers = installed / '.in_use'
+        markers.mkdir(mode=0o700)
+        marker = markers / '51026'
+        marker.write_bytes(b'host marker\n')
+        proof = bundle.adopt_host_loaded_plugin(
+            self.source, installed, commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        self.assertNotIn('.in_use/51026', proof['includedFiles'])
+        self.assertEqual(bundle.inspect_full_plugin_candidate(installed), proof)
+        marker.chmod(0o666)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.chmod(0o600)
+        marker.write_bytes(b'x' * 4097)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.write_bytes(b'host marker\n')
+        (markers / 'helper.py').write_text('pass\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / 'helper.py').unlink()
+        (markers / '2').symlink_to(marker)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '2').unlink()
+        (markers / '01').write_bytes(b'odd PID')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '01').unlink()
+        (markers / '2').mkdir()
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        (markers / '2').rmdir()
+        markers.chmod(0o775)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_in_use_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        markers.chmod(0o700)
+        run_hook = installed / 'hooks' / 'run-hook'
+        run_hook.write_bytes(run_hook.read_bytes() + b'\n# changed executable\n')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(installed)
+        run_hook.write_bytes((self.source / 'hooks' / 'run-hook').read_bytes())
+        # Restoring bytes does not restore inode/mtime ownership evidence.
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.unlink()
+        markers.rmdir()
+        dirs = ['.in_use']
+        bundle._skip_host_in_use(installed, installed, dirs)
+        self.assertEqual(dirs, [])
+
+    def test_old_origin_plan_needs_new_review_before_source_scan(self):
+        with self.assertRaisesRegex(product_install.InstallBlocked,
+                                    'reviewed_origin_plan_legacy'):
+            product_install._plan_scan({'collections': []})
+
     def test_owned_origin_plan_binds_both_qmd_collections_without_model(self):
         wiki = self.auto / 'wiki'
         wiki.mkdir()
@@ -416,9 +488,11 @@ print(json.dumps(result))'''
               mock.patch('qmd_route.project_paths', return_value=selection),
               mock.patch('laya_qmd_migration.inspect_qmd_collections',
                          return_value=inventory)):
-            plan = product_install.plan_qmd_origin(self.project)
+            plan = product_install.plan_qmd_origin(self.project, background=False)
             self.assertEqual(plan['status'], 'review_required')
             self.assertEqual(plan['sourceFiles'],
+                             [['wiki/summary.md', documents[1][2]]])
+            self.assertEqual(plan['sourceEvidenceFiles'],
                              [['docs/chapter.md', documents[0][2]],
                               ['wiki/summary.md', documents[1][2]]])
             self.assertFalse(self.route_path.exists())
@@ -427,12 +501,12 @@ print(json.dumps(result))'''
                 'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}}))
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'unsupported_selected_compile_settings'):
-                product_install.plan_qmd_origin(self.project)
+                product_install.plan_qmd_origin(self.project, background=False)
             self.settings.write_text(json.dumps(settings))
             raw.write_text('# First chapter\nChanged.\n', encoding='utf-8')
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'qmd_current_source_changed'):
-                product_install.plan_qmd_origin(self.project)
+                product_install.plan_qmd_origin(self.project, background=False)
 
     def test_owned_origin_prepares_backup_vector_candidate_and_retries_without_model(self):
         wiki = self.auto / 'wiki'
@@ -493,7 +567,8 @@ print(json.dumps(result))'''
                   'user_qmd_roots': [self.user_qmd],
                   'coordinator': Controller(),
                   'start_service': lambda *_args, **_kw: Service(),
-                  'provider_factory': Provider}
+                  'provider_factory': Provider,
+                  'background': False}
         with (mock.patch('qmd_route.binary_info', return_value=runtime),
               mock.patch('qmd_route.project_paths', return_value=selection),
               mock.patch('laya_product_install.review_local_provider',
@@ -501,7 +576,7 @@ print(json.dumps(result))'''
                                        'reviewedProvider': review}),
               mock.patch('context_learning.shared.resource_report',
                          return_value={'synthetic': True})):
-            plan = product_install.plan_qmd_origin(self.project)
+            plan = product_install.plan_qmd_origin(self.project, background=False)
             kwargs['expected_proposal_sha256'] = plan['proposalSha256']
             raw.write_text('# Chapter\nChanged.\n', encoding='utf-8')
             with self.assertRaisesRegex(product_install.InstallBlocked,
@@ -626,12 +701,125 @@ print(json.dumps(result))'''
                 model_path=str(model), dimension=3)
             self.assertEqual(first, second)
             self.assertEqual(len(first['reviewedProvider']['dependencyClosure']), 2)
+            cache = self.root / 'models'
+            cache.mkdir()
+            cached_model = cache / 'hf_ggml-org_embeddinggemma-300M-Q8_0.gguf'
+            cached_model.write_bytes(model.read_bytes())
+            cached = product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(cached_model), dimension=3)
+            cached_manifest = cached['reviewedProvider']['providerManifest']
+            self.assertEqual(cached_manifest['modelPath'], str(cached_model))
+            self.assertEqual(cached_manifest['modelSha256'], hashlib.sha256(model.read_bytes()).hexdigest())
+            self.assertNotEqual(cached['proposalSha256'], first['proposalSha256'])
+            partial = cache / (cached_model.name + '.ipull')
+            partial.write_bytes(model.read_bytes())
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'provider_review_model_identity_invalid'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1,
+                    model_path=str(partial), dimension=3)
+            linked_cache = self.root / 'models-link'
+            linked_cache.symlink_to(cache, target_is_directory=True)
+            with self.assertRaisesRegex(IndexContractError,
+                                        'provider_artifact_path_invalid'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1,
+                    model_path=str(linked_cache / cached_model.name), dimension=3)
             native.write_bytes(b'changed synthetic native')
             changed = product_install.review_local_provider(
                 source_root=self.source, plugin_root=proof['pluginRoot'],
                 state_root=self.install, commit_id=self.commit1,
                 model_path=str(model), dimension=3)
             self.assertNotEqual(changed['proposalSha256'], first['proposalSha256'])
+
+    def test_local_provider_review_accepts_npm_ci_hoisted_layout_only_unambiguously(self):
+        # Official pinned `npm ci` hoists node-llama-cpp and its Metal build to
+        # the generation's top-level node_modules beside @tobilu/qmd.
+        proof = self.candidate('plugin-v1', self.commit1)
+        top = self.root / 'qmd-generation/node_modules'
+        package = top / '@tobilu/qmd'
+        (package / 'bin').mkdir(parents=True)
+        (package / 'bin/qmd').write_text('synthetic executable')
+        (package / 'package.json').write_text('{"version":"2.5.3"}')
+        def llama(base, module_version='3.18.1', native_version='3.18.1'):
+            module_pkg = base / 'node-llama-cpp'
+            (module_pkg / 'dist').mkdir(parents=True)
+            (module_pkg / 'package.json').write_text(json.dumps({'version': module_version}))
+            (module_pkg / 'dist/index.js').write_text('export const synthetic = true;')
+            native_pkg = base / '@node-llama-cpp/mac-arm64-metal'
+            (native_pkg / 'bins').mkdir(parents=True)
+            (native_pkg / 'package.json').write_text(json.dumps({'version': native_version}))
+            (native_pkg / 'bins/llama-addon.node').write_bytes(b'synthetic native')
+            (native_pkg / 'bins/libllama.dylib').write_bytes(b'synthetic dylib')
+            return module_pkg, native_pkg
+        module_pkg, native_pkg = llama(top)
+        model = self.root / 'embeddinggemma-300M-Q8_0.gguf'
+        model.write_bytes(b'GGUFsynthetic model')
+        runtime = {'proof': {'version': '2.5.3', 'qmd': str(package / 'bin/qmd'),
+                             'node': str(self.node)},
+                   'generation': 'synthetic-runtime'}
+        def review():
+            return product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                model_path=str(model), dimension=3)
+        def blocked(reason):
+            with self.assertRaisesRegex(product_install.InstallBlocked, reason):
+                review()
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Darwin'),
+              mock.patch('platform.machine', return_value='arm64')):
+            hoisted = review()
+            manifest = hoisted['reviewedProvider']['providerManifest']
+            self.assertEqual(manifest['moduleEntryPath'], str(module_pkg / 'dist/index.js'))
+            closure = hoisted['reviewedProvider']['dependencyClosure']
+            self.assertEqual(sorted(item['path'] for item in closure),
+                             sorted(str(native_pkg / name) for name in
+                                    ('bins/libllama.dylib', 'bins/llama-addon.node')))
+            self.assertEqual(review(), hoisted)
+            # The pinned native hash still binds the reviewed digest.
+            (native_pkg / 'bins/llama-addon.node').write_bytes(b'changed native')
+            self.assertNotEqual(review()['proposalSha256'], hoisted['proposalSha256'])
+            # A shadowing native build inside the hoisted module is refused.
+            shadow = module_pkg / 'node_modules/@node-llama-cpp/mac-arm64-metal'
+            shadow.mkdir(parents=True)
+            blocked('provider_review_package_layout_unsupported')
+            shutil.rmtree(module_pkg / 'node_modules')
+            # Mixed: a nested copy beside the hoisted one is ambiguous.
+            nested = package / 'node_modules'
+            (nested / 'node-llama-cpp').mkdir(parents=True)
+            blocked('provider_review_package_layout_unsupported')
+            shutil.rmtree(nested)
+            # Partial hoisting (native absent) and wholly absent packages fail.
+            shutil.move(str(native_pkg), str(self.root / 'native-aside'))
+            blocked('provider_review_package_layout_unsupported')
+            shutil.move(str(module_pkg), str(self.root / 'module-aside'))
+            blocked('provider_review_package_layout_unsupported')
+            # Symlinked hoisted package is refused, not followed.
+            (top / 'node-llama-cpp').symlink_to(self.root / 'module-aside',
+                                                target_is_directory=True)
+            shutil.move(str(self.root / 'native-aside'), str(native_pkg))
+            blocked('provider_review_package_symlink')
+            (top / 'node-llama-cpp').unlink()
+            shutil.move(str(self.root / 'module-aside'), str(module_pkg))
+            # Exact versions are still required in the hoisted layout.
+            (module_pkg / 'package.json').write_text('{"version":"3.18.2"}')
+            blocked('provider_review_package_version_changed')
+            (module_pkg / 'package.json').write_text('{"version":"3.18.1"}')
+            self.assertEqual(len(review()['reviewedProvider']['dependencyClosure']), 2)
+        # The original nested layout keeps working (covered above as well),
+        # but only when the QMD package is not itself a symlink.
+        linked = self.root / 'qmd-generation/node_modules/@tobilu/qmd-link'
+        linked.symlink_to(package, target_is_directory=True)
+        runtime['proof']['qmd'] = str(linked / 'bin/qmd')
+        with (mock.patch('qmd_runtime.select', return_value=runtime),
+              mock.patch('platform.system', return_value='Darwin'),
+              mock.patch('platform.machine', return_value='arm64')):
+            blocked('provider_review_package_symlink')
 
     def test_production_attestation_needs_journal_bound_review_digest(self):
         proof = self.candidate('plugin-v1', self.commit1)

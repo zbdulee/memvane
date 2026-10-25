@@ -1709,13 +1709,13 @@ def format_context(results: list[dict], prefix_style: str = "full", collection_r
         else:
             lines.append(f"- {prefix}{filepath}{suffix}")
 
-        summary = result.get("_wiki_summary", "")
+        summary = result.get("_wiki_summary", "") if is_wiki_tag else ""
         if summary:
             has_summary = True
             lines.extend(quote_body_lines(summary))
         # 원문 경로는 본문 뒤에 온다(요약 → 필요시 drill-down 순서). 값은 이미 존재·루트·
         # 프레임 검증을 통과한 표시 경로다(resolve_source_path).
-        for source_path in result.get("_wiki_sources", ()):
+        for source_path in result.get("_wiki_sources", ()) if is_wiki_tag else ():
             has_sources = True
             lines.append(f"{SOURCE_LINE_PREFIX}{source_path}")
     if has_untrusted:
@@ -1870,6 +1870,21 @@ def summarize_shadow_results(results: list[dict], limit: int = SHADOW_TOP_N) -> 
             entry["trusted"] = bool(result.get("_wiki_trusted", False))
         top.append(entry)
     return {"status": "ok", "count": len(results), "top": top}
+
+
+def selected_entry(result: dict, project_root: str) -> dict:
+    """One `qmd_recall_selection.selected[]` entry: QMD URI and display path."""
+    uri = str(result.get("file", ""))
+    path = qmd_uri_to_filepath(uri)
+    verified = result.get("_verified_path")
+    if isinstance(verified, str):
+        try:
+            path = Path(verified).relative_to(Path(project_root).resolve()).as_posix()
+        except (OSError, ValueError):
+            pass
+    elif result.get("_wiki_display_path"):
+        path = str(result["_wiki_display_path"])
+    return {"file": uri, "path": path}
 
 
 def build_rank_index(results: list[dict]) -> dict[str, int]:
@@ -2302,12 +2317,18 @@ def _main():
     def guard_hits(rows, guarded_collections):
         nonlocal index_guard_checked
         if index_guard_path is None:
+            # Fixture metadata is untrusted even when no selected index exists.
+            for row in rows if isinstance(rows, list) else ():
+                if isinstance(row, dict):
+                    for key in ("_verified_path", "_verified_revision", "_raw_excerpt"):
+                        row.pop(key, None)
             return rows
         if isinstance(rows, list):
             index_guard_checked += min(len(rows), qmd_scope.MAX_CHECKED_ROWS)
         return qmd_scope.scoped_hits(rows, found_config.get('projectRoot') or cwd,
                                      config, set(guarded_collections),
-                                     index_guard_path, drops=index_guard_drops)
+                                     index_guard_path, drops=index_guard_drops,
+                                     with_revision=True)
 
     if fixture_path:
         results = load_fixture(fixture_path)
@@ -2939,9 +2960,9 @@ def _main():
 
     # ── lex 게이트 ────────────────────────────────────────────────────────────
     # 상세 근거는 위 `lex_probe_searches` 블록 주석 참고. 여기서는 배치 규칙만:
-    # (1) **recall 실행당 최대 1회**만 질의한다. hierarchical의 raw backfill 결과에는
-    #     wiki 메타(`_wiki_summary`/`_wiki_sources`)가 붙지 않아 게이트할 대상이 없고,
-    #     따라서 프로브는 wiki 후보를 낸 phase에서만 돌아 phase마다 곱해지지 않는다.
+    # (1) **recall 실행당 최대 1회**만 질의한다. 게이트 대상은 최종 선택의 wiki 메타
+    #     (`_wiki_summary`/`_wiki_sources`)이며, 프로브는
+    #     최종 선택 위에서 한 번만 돌아 phase마다 곱해지지 않는다.
     # (2) 게이트할 것이 없으면 질의 자체를 하지 않는다(`not_needed` — 추가 왕복 0).
     # (3) 판정은 로깅 **전**에 끝낸다 — `bodies_injected`/`sources_injected`가 실제
     #     주입을 반영해야 "조용한 동작 변경"이 되지 않는다.
@@ -2964,7 +2985,8 @@ def _main():
     #     "물었는데 0건"은 다른 세계이므로 `lex_hits`는 프로브를 실제로 보낸 경로에서만
     #     숫자이고(그 밖에는 null), 발동 여부는 각 분기가 직접 정한다. 파생 플래그로
     #     뭉치면 프로브 히트율 집계가 "질의하지 않은 실행"을 0건 히트로 읽는다.
-    gate_targets = [r for r in final_results if r.get("_wiki_summary") or r.get("_wiki_sources")]
+    gate_targets = [r for r in final_results
+                    if r.get("_wiki_summary") or r.get("_wiki_sources")]
     lex_hits: int | None = None
     lex_gate = "not_needed"
     lex_gate_applied = False
@@ -3137,6 +3159,7 @@ def _main():
         # "좁혔지만 여전히 0건"이 구분되지 않는다.
         lex_df=lex_df,
         lex_terms_absent=lex_terms_absent,
+        keyword_span=built_terms.get("keywordSpan", "full"),
         lex_query=lex_searches[0]["query"] if lex_searches else "",
         # 원문 경로(`sources[].path`) 주입. 무흔적 실패 금지 — 링크가 하나도 안 붙었을 때
         # 이유(미존재/루트 밖/한 줄 아님/중복/상한/파싱 실패/경로 없음)를 로그만으로 판정한다.
@@ -3173,7 +3196,11 @@ def _main():
         index_guard_dropped=sum(index_guard_drops.values()),
         index_guard_drop_reasons=index_guard_drops,
         dropped_top_n=dropped_top_n,
-        selected=len(final_results),
+        # `selected` lists exactly the injected documents; `path` is
+        # project-relative when the guard verified the file.
+        selected=[selected_entry(r, found_config.get("projectRoot") or cwd)
+                  for r in final_results],
+        selected_count=len(final_results),
         min_score=active_min_score,
         top_n_limit=top_n,
         max_score=max((r.get("score", 0) for r in results), default=0),

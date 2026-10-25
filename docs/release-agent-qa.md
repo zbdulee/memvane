@@ -8,7 +8,262 @@ scenario captures objective evidence. Record each run with
 [the run record template](templates/release-agent-qa-run.md). The
 [release checklist](release.md) links here.
 
+For the current candidate and an auditable mapping of all 25 scenario IDs,
+see the [QA status](release-agent-qa-status.md). The dated implementation
+notes below are historical; they are not the latest QA verdict.
+The 2026-10-25 minimum main-merge run used exact product candidate
+`b1188c2281bb5221fdaf64f2131e18fdd1b0a6cc` and its passing
+[CI run 40196920336](https://github.com/zbdulee/qmd-auto-context/actions/runs/40196920336).
+For `RQA-INST-04`, a synthetic fixture stopped the executing setup process
+during `enrolling`, resumed the identical shared-install request, and then
+served an officially verified synthetic wiki card plus source in a fresh
+Claude session. Its final state was `compile.mode=off`, verification queue 0,
+shared journal `completed` and DB quick-check `ok`; additional QA calls used
+7/10 bounded slots. This is process-interruption and new-session evidence,
+not a whole-host interruption or power-loss claim. The status record maps
+the other required data-safety evidence and the five user-deferred assertions;
+none of those deferrals is a PASS or a waiver of the four safety rows.
+The [Claude QA change review](qa-reviews/2026-10-25-claude-qa-change-review.md)
+records code-level findings separately from row verdicts.
+The [architecture flow charts](architecture/flows/README.md) explain the
+implemented paths and boundaries; they are not L1 verdicts.
+
+## Outcome-first scope
+
+This contract protects five user-visible outcomes. One host session or one
+backup may provide evidence for several scenario IDs; do not repeat an
+identical action once its exact artifact, project, source revision and owning
+domain are proved. Keep every ID in the run record, including non-PASS rows.
+
+| Outcome | Observable minimum | Explicit non-goal |
+|---|---|---|
+| Install and settings | Exact installed bytes and loaded hooks, scoped setup decision, retained settings | A matching version string alone, or a direct core script call |
+| Source to wiki | Consented change reaches a verified current card, with source revision and locator; duplicate triggers do not cause duplicate paid work | All asynchronous queues globally empty before other QA |
+| Search and injection | Both hosts select the current wiki card, inject bounded wiki text and a verified source locator; Laya has no independent raw document hit | Force the agent to open a raw file or answer a raw-only token without tools |
+| Data migration and recovery | QMD/source/backup preservation, wiki-only Laya seal, scoped cutover, rollback before first write and forward recovery afterward | Delete an old store merely because a new candidate exists |
+| Boundaries | No cross-project results, normal work stays responsive, unsupported cells are reported honestly | Treat an optional hardware cell as tested on the available Mini |
+
+**Queue interpretation.** `pending` is ordinary asynchronous work unless a
+scenario needs that exact source revision to converge within its own timeout.
+For such a scenario, compare the queued revision (if recorded), current source
+hash, verified card provenance and selected index. A revisionless legacy row
+cannot by itself prove a newer revision is missing. `worker_failed` retries,
+an exceeded scenario deadline or a stale selected card are separate failures.
+No global `queue_count=0` precondition exists. A sync snapshot is not a wiki
+compile ACK, and an empty queue is not a search result.
+
+**Evidence reuse.** Keep source-level CI, immutable model provenance, QMD
+inventory, consistent backup and synthetic guard results as preflight where
+their inputs are unchanged. An old candidate's complete L1 `PASS` never
+transfers to a different artifact hash. Batch fixes before final QA, then run
+the exact installed identity/core smoke and only the affected scenario
+assertions under section 11. Do not launch a separate model turn for each ID
+when one trace proves several. No data-safety row is waived by this economy:
+LI-MIG, LI-RECOVER, LI-COEXIST and RQA-INST-04 remain mandatory.
+
 ## Status of this document
+
+**2026-10-20 `40e500c` Claude 프로젝트 설치 smoke (L1 PASS 아님):**
+사용자가 승인한 기존 합성 QA 프로젝트에 후보
+`40e500cb44e32ab62e05f14d75113dd4d59d3534`를 Claude 공식 CLI로
+project scope 설치했다. 별도 `qmd-laya-40e500c-qa` marketplace를 등록하고
+이전 `4dde371` project entry를 비활성화했다. 사용자 전역 설치는 유지되며
+이 QA 프로젝트에서만 비활성 상태다. 설치 cache와 **실제 Claude가 실행한
+marketplace source 경로** 모두 Git tree의 915/915 파일 내용·실행 권한과
+일치했다(guard `7f6478a5e78c46d688429660aaf961e7`,
+`239e566a186e4966affbc7f4b3d9b20e`, 각각 passed/settled).
+새 Claude Opus 세션에서 SessionStart의 `topical-reconcile`·`update-queued`,
+UserPromptSubmit의 `recall`, Stop의 `topical-stop`이 모두 그 source의
+`hooks/run-hook`에서 exit 0으로 실행됐다. 이전 entry의 hook 실행은
+관측되지 않았다(guard `1d6759402beb4a66bfe2366cdb1aff4e`,
+passed/settled). 응답은 합성 표식 `QA_LOAD_40E500C`였고, 실제
+`claude-opus-5-5` 사용량은 input 2, output 14, cache create 65,787,
+cache read 0, thinking 0 token, web 0회였다. 증거는
+`laya-l1-gate-4dde371-qa/evidence-40e500c/`의
+`installed-identity.json`, `loaded-identity.json`,
+`claude-load-evidence.json`, `claude-load-debug.log`에 있다.
+합성 프로젝트에는 `.auto-context` 설정이 없어 setup notice
+`settings_not_ready`가 정상 표시됐고, 새 hook trust를 승인하거나
+provider를 활성화하지 않았다. 이 smoke는 전용 OS 계정/VM의 정식 L1,
+설치 소유 journal·DB/queue incarnation, 실제 QMD 이관·검색·학습,
+Codex hook 검증을 충족하지 않는다. 해당 행은 `NOT RUN`이다.
+현재 exact head의 Node 22/24/26 CI는
+[run 39448832807](https://github.com/zbdulee/qmd-auto-context/actions/runs/39448832807)에서 성공했다.
+이 기록을 소스에 반영하면 Git tree가 바뀌므로, 위 설치의 exact identity와
+CI는 계속 **커밋 `40e500c`에만** 귀속된다.
+
+**2026-10-20 설치 후 읽기 전용·합성 게이트 추적:** 실제 로드된
+marketplace source에서 `select_route()`는 `legacy/no_route_record`를 반환했다.
+이 합성 프로젝트에는 Laya route, 설치 journal, index DB, claim queue가
+없다. `update-queued` hook 자체는 exit 0이었으나, 비설정 프로젝트의
+background update status는 `failed`이고 등록 안내를 남겼다. 따라서
+hook 로드는 확인했지만 검색·설치·큐의 제품 동작으로 세지 않는다.
+package/journal/DB/queue 및 두 후보의 중단·복구 합성 검사는 2/2 통과했다
+(guard `669202a15e1545a69a18cf0475d4b165`, passed/settled).
+fixture 자체는 `FORMAL_RELEASE_L1=NOT_RUN`으로 표시한다.
+
+**2026-10-21 후속 제품 연결 (새 릴리스 후보 아직 미확정):**
+기존 selected shared QMD의 `bootstrap-proof.json` 부재를 사실대로
+유지하면서, 별도 비활성 replacement 세대의 실제 QMD 검색·벡터
+증명을 Laya 후보 모델의 입력으로 연결했다. 읽기 전용
+`replacement_model_evidence()`는 journal·GGUF 경로/SHA/크기·768차원·
+managed QMD runtime·선택된 옛 포인터의 inode와 SHA·원본 DB 경로·
+프로젝트 설정 SHA를 다시 검증한다. Provider proposal과 초기 빌드
+기록, v3 cutover ledger는 이 evidence digest를 결속한다. 설치 준비와
+cutover 직전에는 현재 증거와 QMD 원문·위키 백업, 새 세대 seal,
+provider attestation을 재검사한다. 이전 QMD 벡터를 새 모델에서
+나온 것으로 주장하거나 복사하지 않는다. 옛 QMD와 별도 global
+QMD 및 백업은 보존한다. 선택된 old QMD의 setup readiness는
+여전히 proof-required다.
+
+Claude Opus의 좁은 설계 검토는 guard
+`42267a987e194d438610cd09195ea2fa` (`passed/settled:true`,
+`claude-opus-5-5` modelUsage input 2/output 5,468/cache create 1,533/
+cache read 2,061/thinking 3,214/web 0)에서 공유 QMD 포인터를 또
+바꾸는 두 번째 cutover를 피하고, 기존 QMD→Laya v3 프로젝트 전환에
+비활성 모델 증거를 묶도록 제안했다. 첫 합성 focused run
+`7ea7ddb0fa6b48708f99ac382e684d0d`는 shared QMD 45건과
+v3 bound 검사는 통과했으나 새 fixture의 오류명 기대와 기존
+initial-build fixture mock 연결 두 곳이 실패했다. 이를 수정한
+재검사 `1b7d8cfebfdd473b86ad1378bf10c88d`에서 initial-build
+21건과 새 replacement/v3 증거 10건이 모두 PASS,
+`passed/settled:true`였다. 추가 합성 15건을 포함한 focused run
+`5f1c75ac27ba418ab391be8635d38685`도 PASS,
+`passed/settled:true`였다. 첫 전체 suite는 시스템 Python에
+PyYAML이 없어 wiki 두 건이 실패했다. 기존 venv의 PyYAML
+site-packages만 `PYTHONPATH`에 더한 별도 47건 검사는
+`5ff1d58e922f408684255dd8e3140231`에서 PASS했고, 전체
+재검사 `a0d0ecbf89784b50bcd52346cebc91da`는 1,650건 중
+1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)이었다.
+이는 이후 리뷰 수정 이전 소스이므로 최종 전체 회귀는 다시 필요하다.
+이전 head `753bc2f`의 CI [39514146609](https://github.com/zbdulee/qmd-auto-context/actions/runs/39514146609)는
+Node 22·24·26 모두 성공했지만 이 변경의 CI가 아니다.
+Claude Opus는 `bb1087dd4ee942408fd681016387ba91`와
+`cc61044ea0a94c829ec29b36dd83770e`에서 replacement 증거와
+cutover를 독립 검토했다. 이어 `a0003238320e48a186ec56dbfa5a461d`
+(`model-test`, `passed/settled:true`, modelUsage input 2/output 8,705/
+cache create 6,323/read 2,061/thinking 6,303/web 0)은
+prepared 결속의 증명 상실 뒤 철회, drift 철회의 CAS→record
+중단 재생, 직접 route 변경 호출의 직렬화, sealed build pointer의
+마무리를 지적했다. 이를 고친 후 `9826a1c547d449718baa15f84ac700a1`
+(`model-test`, `passed/settled:true`, modelUsage input 2/output 11,494/
+cache create 8,333/read 2,061/thinking 9,531/web 0)은 앞선
+세 경계의 수정을 확인하고, 동일 digest의 QMD inode 교체와
+terminal 은퇴 뒤 나중 설치가 진행된 경우의 재생을 추가 지적했다.
+마지막 수정은 `source_identity_changed`를 ledger/receipt에 남기고,
+이미 terminal인 ledger의 record·marker 정리를 이전 journal이나
+나중 route에 종속시키지 않는다. 자체 marker와 route가 동시에
+있으면 불확실성으로 거부한다. 이 마지막 변경의 합성 22건은
+`ffc328d95e774d65b1d5f05fc82ec33a`에서 PASS,
+`passed/settled:true`였다. 앞선 focused run
+`f8bcd376898643dda30180e5df9d665f`는 새 fixture가 나중 marker를
+비정규 JSON으로 써서 1건 실패했으며 제품은 올바르게 거부했다.
+fixture만 canonical 형식으로 고쳐 재실행했다. 최종 전체 suite는
+기존 venv의 PyYAML import 경로만 제공해 guard
+`6d5361a6a0234ca4ba1ebe5607e770c5`에서 1,650건 중
+1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)였다.
+새 exact-head CI, installed-candidate LI-MIG/LI-RECOVER/LI-RECALL은
+별도로 기록해야 한다. 실제 운영 이관·provider 활성화·main 병합·
+Mini 설치는 이 합성 결과로 수행하지 않았다.
+
+최종 코드 응답에서 Claude Opus는 추가 P1/P2를 찾지 않았다
+(`claude-opus-5-5` modelUsage input 2/output 8,379/cache create 9,078/
+read 2,061/thinking 6,918/web 0). 다만 결과 파일이 작성된 직후
+도구 대기가 중단되어 해당 실행의 원래 checkpoint는
+`running/settled:false`였다. 기록된 supervisor·자식 PID 4개와
+프로세스 그룹의 부재를 읽기 전용으로 확인한 뒤, 해당 가드 실행
+`5eace2009a9847478d4e73784f0f0382`만 `stopped/settled:true`,
+`completed:false`로 정리했다. 이를 `passed` 검증으로 기록하지 않는다.
+소스의 최종 전체 회귀와 CI는 별도로 확인한다.
+
+원래 328,576,992바이트 GGUF가 필요한 기술적 이유는 **기존 검색
+행태와 동일 모델이라는 주장 및 parity 분석**이다. 같은 이름이나
+다른 크기의 GGUF는 동일 모델 증거가 아니다. 더구나 원래 파일을
+찾더라도 QMD의 이전 벡터 fingerprint만으로 그 파일에서 각 벡터가
+나왔음을 암호학적으로 증명할 수 없으므로 기존 벡터를 이관하지
+않는다. 별도로 정확히 검토·승인된 GGUF는 그 자체의 SHA/크기로
+새 Laya 문서·질의 벡터를 만들 수 있지만, 이전 모델로 취급하거나
+미실행 retrieval parity를 PASS로 기록하지 않는다.
+
+선택된 플러그인 shared QMD 세대의 읽기 전용 선택은 성공했지만
+`bootstrap-proof.json`, `bootstrap-journal.json`, `scope-policy.json`이
+없고 현재 선택된 cache에서 GGUF를 찾지 못했다. 실제 Claude 로드 경로와
+canonical private state 경로로 provider 검토를 재시도한 결과, 세대의
+`bootstrap-proof.json`을 읽는 지점에서 차단되어 proposal digest는 없다
+(guard `6b6ba2132b6b41cea09e3331c696fed5`, passed/settled;
+검토 결과는 **blocked**). `qmd_model_reason()`도
+`qmd_embedding_model_proof_required`를 반환한다. 이전 smoke의
+328,576,992바이트 모델과 별도로 발견된 333,590,944바이트 GGUF의
+동일성은 입증되지 않아 대체하지 않았다. 기존 선택 세대에 증명 파일을
+임의 생성하는 것은 정상 복구가 아니다. 새 `plan-replacement-store`와
+`prepare-replacement-store`는 선택된 pointer·managed runtime·설정된
+모델 이름·프로젝트 scope의 입력 동일성을 확인하고, 사용자가 명시한 GGUF
+경로·SHA256·크기와 승인한 계획 digest에 결속된 별도 journal에 빈 비활성
+세대의 실제 QMD vector/search 증명을 남긴다. 합성 fixture에서는 기존
+선택 세대와 원본 journal·DB·설정의 보존, 빠진/다른 모델의 차단,
+pointer 변경·세대 ID 충돌·중단 뒤 재개를 확인했다. Claude Opus의
+독립 리뷰가 짚은 replacement journal supersession과 runtime wrapper
+결속을 보강한 뒤 합성 검사는 43/43 PASS
+(guard `84594f6be1c64d9d8c2a9f7e5414c42f`, `passed/settled:true`)였다.
+보강 후 인접 설치·공유 저장소·cutover 검사는
+39/39 PASS (guard `904dc9f6a4144aa88ec1bad525857fc9`,
+`passed/settled:true`)였다. 같은 요청의 실패 journal 재시작과 runtime
+pointer 직접 결속을 추가한 뒤 합성 검사는 45/45 PASS
+(guard `eba1930e922e48c78de2aa667c489361`, `passed/settled:true`)였다.
+이 마지막 좁은 변경 뒤 인접 39건은 재실행하지 않았으며, 전체 exact-commit
+CI가 아직 필요하다. 이 경로는 운영
+세대의 proof를 위조하지 않으며 새 세대를 선택하거나 기존 QMD 자료를
+이관하지 않는다. 현재 설치된 `40e500c`에는 이 새 경로가 없고, 이
+문서의 기존 설치 smoke와 CI는 새 후보를 검증하지 않는다. 동일성이
+확인된 원래 모델의 명시 경로, 실제 데이터 백업·이관·복구 검증 및
+그 준비 경로 자체에는 당시 product cutover가 없었고, 위의 후속
+제품 연결이 기존 QMD→Laya v3 project route를 활용한다.
+명시 모델 경로만으로 provider 제안을 얻어도 shared QMD의 setup readiness
+증명 누락은 별개로 남는다.
+
+Claude Opus 구현 제안은 guard `cc546f5e31c04cd4b3e2d55fddce037f`
+(`passed/settled:true`, modelUsage input 2/output 7,332/cache create 1,582/
+cache read 2,061/thinking 1,778/web 0)에서 받았다. 첫 코드 리뷰는 guard
+`7831210978c54262ac574c86c05ebaa0`
+(`passed/settled:true`, modelUsage input 2/output 12,635/cache create 15,340/
+cache read 2,061/thinking 9,920/web 0)에서 journal liveness와 runtime
+결속 결함을 찾았다. 전체 diff 후속 리뷰는 guard
+`3b23e22c5593415a8d37f5206ae8cd42`에서 180초 시간초과로
+`failed/settled:true`이며 검토 결론이 없다. 좁힌 후속 리뷰는 guard
+`df9cceae50434068bab568a945529863` (`passed/settled:true`, input 2/
+output 6,439/cache create 5,756/cache read 2,061/thinking 4,406/web 0)에서
+같은 요청의 실패 checkpoint 재시작 결함을 찾았다. 수정 후 마지막 좁힌
+리뷰는 guard `8c1dd37a30be42e789544c925a4fe124` (`passed/settled:true`,
+input 2/output 4,554/cache create 4,665/cache read 2,061/thinking 3,707/
+web 0)에서 **보여 준 수정 범위에 P1/P2가 없다고** 판정했다. 이는 전체
+릴리스 후보의 독립 승인이나 설치 QA가 아니다.
+
+첫 후속 PR head `e1fc313`의 CI run `39511702028`에서 Node 22가 실패했다.
+`shared-install-resilience`의 설치 중단 fixture가 기존 두 인자 `_save`
+호출을 모의하는데, 새 공통 `_build`가 legacy 경로까지 세 인자로 호출한
+회귀였다. Legacy 호출 형태를 복원하고 replacement 경로에만 journal 이름을
+추가했다. 정확한 실패 케이스와 shared QMD 45건은 단일 가드
+`4408de69e3fe44cf8927e212d60772dc`에서 Node 5/5 PASS,
+`passed/settled:true`로 재검증했다. 이 수정은 `e1fc313` 뒤의 소스
+변경이므로 새 exact-commit CI가 필요하다.
+
+이 복구 변경은 기존 `RQA-RES-02`의 별도 안전 범위 학습 검증을 바꾸지
+않는다. 다중 PC 시험이나 검색·embedding의 별도 부하 큐는 새 필수
+릴리스 게이트로 추가하지 않았다.
+
+| 분류 | `40e500c` 현재 결과 |
+|---|---|
+| 완료 | exact head CI Node 22/24/26, Claude project-scope 설치·실제 로드 identity 915/915, 위의 합성 검사·읽기 전용 상태 확인. |
+| 실패/차단 | 비설정 합성 프로젝트의 update worker status `failed`(예상된 등록 안내); 실제 provider 검토는 proof 부재로 차단, digest 없음. 운영 전환 실패를 의미하지는 않는다. |
+| 미실행 | 전용 환경의 정식 L1, Codex 설치 훅·신뢰·RQA-HOOK-02, 설치 소유 journal/DB/queue incarnation, 실제 QMD 이관·검색 동등성, 자원 압력 아래 학습 재개, main 병합·정식 릴리스·Mini 설치·운영 활성화. |
+| 사용자 한시 면제 | 이번 후보의 Mini 관리자 로그인 필요 QA만 `USER_WAIVED/NOT RUN`; 다른 필수 행은 면제되지 않았다. |
+
+합성 자료만 전달한 Claude Opus 독립 검토는 guard
+`365569afbaa54a568d2c02a1e9da000d`에서 passed/settled였고 실제
+`modelUsage`는 input 2, output 2,947, cache create 2,805, cache read 649,
+thinking 1,405 token, web 0회였다. 검토의 “정식 릴리스 승인이 없었다”는
+판정은 이전 사용자 승인 기록과 맞지 않아 채택하지 않았다. 출처·상태 요약은
+합성 QA 폴더의 `evidence-40e500c/read-only-gate-inventory.json`에 남겼다.
 
 **2026-10-18 설치 후보 중간 기록:** draft PR #12의 `c18067edcc02057efe26956aa5ea8a210a646c7e`를
 전체 Git tree 862개 파일 그대로 별도 Claude/Codex 로컬 marketplace에 설치했다.
@@ -99,12 +354,12 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | 행 | 설치 후보에서 확인할 실제 결과 |
 |---|---|
 | LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | 선택된 프로젝트의 QMD 설정·원문·위키·색인 범위를 read-only inventory로 고정하고, 일관된 백업을 별도 DB로 복원해 비교한 뒤 새 후보를 재색인·검증한다. 불일치/중단 시 이전 선택이 유지된다. |
-| LI-SCOPE | opt-out, worktree 분리, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
+| LI-MIG | 선택된 프로젝트의 QMD 설정·원문·위키·색인 범위를 read-only inventory로 고정하고, 일관된 백업을 별도 DB로 복원해 비교한다. 새 Laya 후보에는 **위키 문서만** membership·본문·FTS·벡터로 재색인하고 원본 원문은 출처·최신성 증거로만 확인한다. 불일치/중단 시 이전 선택이 유지된다. |
+| LI-SCOPE | opt-out, worktree 분리, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
 | LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
 | LI-COEXIST | 별도 global QMD를 그대로 보존하고, 플러그인 소유가 증명된 QMD runtime만 복원 가능한 격리 후보로 분류한다. 불확실한 소유권은 보존하고 영구 삭제는 별도 결정한다. |
-| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 문서·질의 차원과 profile, 재색인 전량 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
-| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합, 정확한 식별자/EP, 위키/원문 분기, lex probe, minScore/topN, 결과 포맷을 설치 후보의 새 Claude/Codex 세션에서 비교한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
+| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
+| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
 
 모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
 
@@ -131,6 +386,29 @@ Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선�
 학습 작업의 운영 부하 큐와 admission·중지/재개 검증은 아래 `RQA-RES-02`의
 필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
 않는다.
+
+**2026-10-20 후속 L0 기록 (설치 후보 QA 아님):** 비활성 초기 빌드와
+QMD 결속 전환/복구, 기존 승인 소유자의 Laya 경로, durable 학습 child 및
+overflow wake를 소스와 합성 fixture에 연결했다. 전체 `npm test` 출력은
+1,648건 중 1,639 PASS·9 SKIP·0 FAIL이었지만 실행 도구 시간 한계로
+guard supervisor가 정산 전에 종료됐다. 소유 프로세스가 모두 종료됐음을
+검사하고 해당 checkpoint를 `stopped`/`settled`/`completed:false`로 기록했다.
+동일한 273개 test 파일을 직렬 guard 6회로 재실행해 1,645건 중
+1,636 PASS·9 SKIP·0 FAIL을 얻었고, Node가 자동 발견하는 helper 파일
+3개도 별도 guard에서 모두 PASS였다. 정산된 범위 합계는 1,648건 중
+1,639 PASS·9 SKIP·0 FAIL이며 **하나의 정산된 full-suite 실행은 아니다**.
+세부 run ID와 Opus 사용량은
+[후속 통합 기록](plans/2026-10-20-laya-index-followup-integration.md)에 있다.
+이 기록은 `LI-*` 또는 `RQA-*` 설치 후보 행을 통과시키지 않는다.
+후속 독립 Opus 소스 리뷰는 v3 선택 검색이 **반환된** 외부 수정 후보를
+조용히 버려 짧거나 빈 결과를 정상으로 제공할 수 있음을 확인했다. 이는
+반환 후보의 현재 파일 검증 정책과 어긋난다. 미반환 새 파일은 색인 지연으로
+별도 취급하며 매 검색의 전체 코퍼스 증명은 확정 정책이 아니다. QMD digest 변경 뒤
+같은 Laya 세대를 재결속할 위험, 제품 복구 진입점 부재, 전체 벡터 seal을
+질의 기한 전에 재검사하던 지연 문제도 지적했다. 반환 후보의 명시적 실패,
+drift 거부·제품 복구 진입점, 벡터 검사 기한은 합성 수정과 직렬 가드로
+확인했다. 큰 세대의 벡터 가용성과 drift 후 재빌드, 설치 후보 QA는 남았다.
+이 기록은 L1 행을 변경하지 않는다.
 
 ## 1. Source verification and installed-candidate QA are separate
 
@@ -372,7 +650,9 @@ diff "$EVID/candidate-blobs.txt" "$EVID/installed-blobs-$HOST.txt" > "$EVID/iden
 
 ## 6. Evidence and search-result proof
 
-Probe prompt (one turn; replace `<question>`):
+Probe prompt (one turn; replace `<question>`). This observes what the
+installed host received. For a raw-only fact the expected no-tools answer
+is `없음`, even when the correct source locator was selected:
 
 > 도구를 쓰지 말고 이번 프롬프트에 자동 주입된 프로젝트 컨텍스트만 근거로 답해줘.
 > `<question>` 주입된 컨텍스트에 없으면 "없음"이라고만 답해.
@@ -390,20 +670,44 @@ Probe prompt (one turn; replace `<question>`):
 | Q-agent | release QA agent note marker는? | `AGENT_NOTE` |
 
 Token strings come from the fixture manifest (`show`). They contain a random
-per-fixture id, so a model cannot guess them, and an index from an earlier
-fixture cannot satisfy them.
+per-fixture id, so an earlier fixture cannot satisfy them. Record whether each
+token occurs in a raw source or in a verified wiki card before applying a
+verdict.
 
-- **Present(T)** requires all of the following:
-  1. The `qmd_recall_selection` line for that turn has `reason: "selected"`,
-     its `project_root` equals the scenario checkout, and `selected[]` includes
-     the file that currently contains T.
-  2. The host transcript excerpt of the injected context contains T.
-  3. The probe answer contains T.
-- **Absent(T)** requires all of the following:
-  1. No selected path whose current or previous content holds T.
-  2. T is not in the injected context.
-  3. The answer does not contain T.
-- An answer containing T is never sufficient on its own.
+All scenario rows below that say `Present(T)` or `Absent(T)` for a raw-only
+marker use the legacy QMD meaning while QMD is selected. After a Laya v2
+cutover, evaluate the selected, current wiki card and verified locator instead;
+raw-only markers must not create independent Laya hits. Do not relax the
+scenario's installation, sync, freshness, scope, backup or recovery checks.
+
+- **Present(T) for a raw-source token** applies only to the legacy QMD
+  bootstrap/update path. Its selected route and fresh `qmd_recall_selection`
+  line identify the current, index-verified source path in the correct
+  `project_root`; the injected context contains a locator/title but no raw
+  body or T. On a selected Laya v2 route, raw files are not independent
+  indexed/searchable documents: a raw-only T must be absent from results and
+  automatic context. Source freshness and the verified locator are checked
+  through the selected wiki card, not a raw search hit.
+- `Present(T)` in older scenario steps is a legacy label for **located
+  current source** in this raw case. It does not mean that raw-only T is
+  automatically injected or spoken by the host. Record the source revision
+  and selected locator instead. For a wiki-card T, apply the wiki-card
+  definition below.
+- **Present(T) for a verified wiki-card token** additionally requires the
+  selected card's bounded summary in the injected context to contain T and
+  its verified source locator to be correct. A no-tools answer containing T
+  is useful host evidence, but the selected card and injected bytes are the
+  plugin proof; the answer alone is insufficient.
+- **Absent(T)** means no selected current wiki card carrying T, no T in
+  the injected context, and no unsupported answer containing T. An old or
+  excluded source must not be served as current. A raw-only token must not
+  create a selected Laya result; the original file may still exist in QMD or
+  as a verified source of a wiki card.
+- A selected path by itself does not prove that its source revision is current;
+  retain the index/generation and scope evidence required by the scenario.
+- In a **separate optional prompt that permits tools**, record whether the
+  host agent chooses to Read the selected source and what it answers. That is
+  host-agent behavior, not a plugin release condition.
 - A missing log line means the hook did not run. Treat it as `FAIL` unless a
   sandbox or headless host is documented.
 - For each fresh host session, use a unique QA run/session marker and a fresh
@@ -579,7 +883,10 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
     A QMD bootstrap PASS never implies Laya setup, training or model-use PASS.
   - Nothing outside the fixture, the QA account's plugin runtime roots and the
     host plugin directories is written.
-  - Present(`ALPHA_MAIN`) within T_FRESH. No hook timeout or failure.
+  - On the QMD bootstrap route, Present(`ALPHA_MAIN`) within T_FRESH by the
+    legacy raw-source definition above. On a selected Laya route, verify the
+    current wiki card and its source locator instead; a token found only in
+    the raw file must not be returned. No hook timeout or failure.
 - **FAIL if:**
   - The gate does not stop the edit.
   - Install reports `completed` without scoped-search proof.
@@ -604,8 +911,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - Clean state.
   - The previous public release (N-1) is installed from the public
     marketplace, with its identity recorded per section 5.
-  - The fixture was opted in and indexed under N-1, and Q-alpha is Present
-    under N-1.
+  - The fixture was opted in and indexed under N-1. Record the selected file,
+    installed identity and consistent backup before updating; N-1 need not
+    auto-inject or answer a token found only in the raw source.
   - The RQA-INST-03 preparation steps are done.
 - **Steps:**
   1. Keep one N-1 session open (the "old session").
@@ -622,7 +930,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Expected:**
   - The installed identity equals the candidate.
   - The check-update report is read-only.
-  - Present(`ALPHA_MAIN`).
+  - After update, verify a current wiki card and its source locator on the
+    selected Laya route. A raw-only `ALPHA_MAIN` token is absent from Laya
+    results; its source remains in the preserved QMD inventory and backup.
   - Settings, wiki and index preserved (RQA-INST-03).
   - The old session caused no damage.
 - **Evidence:** both identities, notices, check-update and apply outputs,
@@ -667,24 +977,43 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 
 ### RQA-INST-04 Rollback and recovery
 
-- **Purpose:** check that an applied update can be rolled back without
-  losing data, and that an interrupted setup never reports false success.
+- **Purpose:** check the recovery contract of the installer actually used by
+  the update: preserve old data and selection, and never report an
+  interrupted setup as complete. The ordinary preserving installer and
+  separate shadow installer have different rollback contracts; neither
+  path is waived by this distinction.
 - **Owner:** install. **Hosts:** Claude Code, Codex.
-- **Preconditions:** RQA-INST-02 state. Record a hash snapshot of settings,
-  wiki and the `setup` skill's status report before the apply.
+- **Preconditions:** RQA-INST-02 state. Record the selected route, installer
+  journal/status, and hashes of settings, wiki and original DB/source
+  before applying. Keep the same reviewed request and an old session.
 
-**Part A: rollback.**
+**Part A: update, restoration and repeat under the supported installer.**
 
-1. Ask "직전 적용을 되돌려줘".
-2. Expected: the skill reports pointer and settings restoration, or names
-   the concurrent change that blocks it.
-3. Start a fresh session and probe Q-alpha. Expected: Present, served by the
-   restored selection.
-4. Settings and wiki hashes equal the pre-apply snapshot. The original DB,
-   wiki and models are not deleted.
-5. Ask "준비된 설치를 적용해줘" again. Expected: idempotent re-apply, then
-   Present again in a fresh session.
-6. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
+1. For the ordinary preserving `plan-install` / `install` route, verify the
+   same reviewed request and `shared-install-journal.json`. Repeat that
+   request through the setup skill if necessary; expected: a bounded defer,
+   named recovery state, or QMD-ready/completed result without loss of
+   settings, wiki, source or original DB. A selected shared store/enrollment
+   is preserved and resumed forward, not automatically rolled back.
+2. If this updated project selected a Laya QMD-origin route, request its
+   official restore **before** its first selected write. Expected: QMD is
+   selected, original DB and backups remain intact, and a fresh session can
+   search the restored selection. After a selected write, automatic rollback
+   must be refused and owned forward recovery must work. Distinct LI-RECOVER
+   assertions may reuse the same receipts. Never delete the retained
+   selection marker or treat a new origin plan after `restored_qmd` as an
+   identical installer retry.
+3. Recheck pre-apply settings/wiki/source hashes, original DB integrity,
+   selected route, status and Q-alpha in a fresh session. A repeated ordinary
+   install must preserve those originals; it does not itself reselect Laya.
+4. Only if a separately reviewed topical-card/shadow or runtime preparation
+   used `plan` / `prepare` / `activate` and has an
+   `install-update-journal.json`, ask "직전 적용을 되돌려줘" and then
+   "준비된 설치를 적용해줘" with that same request. Require pointer/settings
+   restoration, unchanged old data and fresh-session search after each
+   transition, or the named concurrent-change/recovery block. An ordinary
+   shared-install result cannot pass this separate path.
+5. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
    fresh session. Expected: no hook failure, and either a working state or
    one setup notice. If the host cannot pin a version, mark this step
    `NOT RUN` with the reason.
@@ -692,15 +1021,25 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part B: interrupted recovery.**
 
 1. Use a fresh fixture C and opt it in.
-2. Start the setup install ("검토한 설치를 진행해줘").
-3. As soon as the skill reports that preparation started, terminate the host
-   process. Do not signal plugin children individually.
-4. Start a fresh session and ask "이 프로젝트 auto-context 설치 상태 보여줘".
-   Expected: an in-progress, resumable or `recovery_required` state. Never
-   `completed`.
-5. Repeat the identical request. Expected: it resumes to completion, or
-   stays `recovery_required` with a named reason. Never a silent partial
-   success.
+2. Start the ordinary preserving setup install ("검토한 설치를 진행해줘")
+   through its official `install` route and record the request digest.
+3. Once its journal enters an incomplete phase such as `enrolling`, stop
+   the process executing that setup request abruptly. Do not signal an
+   unrelated shared worker or plugin child. Stopping the entire host is a
+   distinct integration observation, required to claim host interruption
+   but not to prove the install journal's abrupt-stop safety. Record which
+   process was stopped.
+4. In a fresh invocation/session, inspect the shared install journal before
+   retry. Expected: an incomplete/deferred or named recovery phase, never
+   false `completed` for the interrupted request.
+5. Repeat the identical reviewed request. Expected: QMD-ready or overall
+   completed with the same request digest, or a named deferred/recovery
+   state. Verify original DB integrity, settings and source/wiki hashes,
+   and Q-alpha from a fresh session on the selected route. Never accept
+   silent partial success. A synthetic parent-process test supports the
+   recovery mechanism but alone does not prove installed host behavior.
+   The dated `b1188c2` fixture adds a separate fresh Claude session after
+   verified-card indexing; it does not assert that the whole host was stopped.
 
 - **Evidence:** status outputs before and after, hash comparisons, probes.
 - **Timeout:** T_ROLLBACK per request; 60 min overall.
@@ -721,12 +1060,16 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Steps:**
   1. Start a fresh session in `project/`. Expected: both SessionStart hooks
      run without failure.
-  2. Probe Q-alpha. Expected: Present(`ALPHA_MAIN`), with
-     `reason: "selected"` and selected `docs/qa/alpha.md`.
+  2. Probe Q-alpha. On QMD, expect the verified raw locator. On selected
+     Laya, expect a current wiki card and its verified `docs/qa/alpha.md`
+     locator if a card covers that source; never require the raw-only token
+     or a standalone raw hit.
   3. Ask "docs/qa/agent-note.md 파일을 만들고 내용은 'The agent note marker is
      <AGENT_NOTE>.' 한 줄로 해줘". Expected: the gate allows the edit;
      posttool, index, compile and topical-event run without failure.
-  4. Probe Q-agent until T_FRESH. Expected: Present(`AGENT_NOTE`).
+  4. Probe Q-agent until T_FRESH. On QMD, expect the verified raw locator;
+     on selected Laya, expect a current wiki card and verified locator after
+     compile. Until a card exists, no raw fallback is expected.
   5. Ask "Bash로 docs/qa/agent-note.md를 삭제해줘". Expected: the Bash
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).
@@ -1078,9 +1421,11 @@ selected Laya Index engine" until a separate decision changes that.
   - No new queue or ledger entries.
   - No extractor or verifier invocation.
   - Card bytes unchanged.
-  - Before deletion, the raw document's new content is Present within
-    T_FRESH. After deletion, it is Absent. File indexing still works while
-    wiki compile remains OFF, including across retry and deletion.
+  - On QMD, the raw document's changed locator is current within T_FRESH and
+    disappears after deletion. On Laya v2, wiki indexing still works, but
+    the changed raw-only content creates no Laya document or search hit;
+    the unchanged card is never presented as a fresh revision of that source.
+    Compile remains OFF across retry and deletion.
 - **Evidence:** wiki listings before and after, probes, absence of compile
   activity in the logs.
 - **Timeout:** T_SCENARIO.
@@ -1224,9 +1569,14 @@ Two rules apply:
 - **Binding.** Every scenario record carries `artifactManifestSha256`. A
   result applies only to that hash.
 - **Change detection.** Any change to the candidate tree after QA produces a
-  new hash and invalidates every result for the old hash. This covers code,
-  skills, hooks, manifests, locks, docs and version strings. List the changed
-  paths with `git diff --name-only <qa-commit> <new-commit>`.
+  new hash, so old full-row `PASS` verdicts cannot be relabelled as final
+  artifact results. This covers code, skills, hooks, manifests, locks, docs
+  and version strings. List changed paths with
+  `git diff --name-only <qa-commit> <new-commit>`. Retain unchanged source,
+  model and backup evidence as preparation; use the impact map below to
+  repeat only the necessary installed-host assertions. Accumulate fixes into
+  a reviewed candidate before this rerun instead of repeating the entire
+  gate for every intermediate commit.
 - **Rerun set.** Always the core smoke (RQA-ID-00 + RQA-HOOK-01 +
   RQA-HOOK-02), plus every scenario mapped from the changed paths:
 

@@ -66,7 +66,7 @@
 | `skipPaths` | `[]` | recall 결과에서 제외할 경로 substring입니다. **인덱싱 대상은 줄이지 않습니다** → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
 | `allowRoots` | `[]` | 프로젝트 밖 절대경로 collection을 허용할 root 목록입니다. 보통 비워 둡니다. |
 | `prefixStyle` | `"full"` | recall 출력 prefix 스타일입니다(`full`·`tag`). |
-| `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
+| `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. raw 결과는 원문 본문을 자동 주입하지 않습니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
 | `injectSourcePathsPerCard` | `3` | 카드 1장당 주입할 원문 경로(`sources[].path`) 수입니다. `0`=끔, 10으로 클램프 → [원문 경로 주입](#원문-경로-주입) |
 | `events` | `["sessionStart","userPromptSubmit","postToolUse"]` | 자동 동작을 켤 이벤트 목록입니다 → [Events](#events) |
 | `sessionStartSync` | `true` | SessionStart에서 허용된 collection의 생성·수정·삭제를 스냅샷과 비교해 인덱스 큐에 반영합니다. 키를 생략하면 `true`, 명시한 `false`는 그대로 유지합니다. bool이 아닌 값은 OFF로 처리하고 `session_start_sync_invalid`로 알립니다. OFF이면 `session_start_source` 동의가 있어도 이 경로의 위키 큐 등록은 실행되지 않습니다. ON이어도 위키 큐 등록에는 `compile.mode`와 `session_start_source` 동의가 따로 필요하며 학습 동의는 바꾸지 않습니다. → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |

@@ -9,6 +9,6 @@ test('Laya Index v6 title-bound exact vector contract uses disposable SQLite', (
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 11 tests/);
+  assert.match(result.stderr, /Ran 15 tests/);
   assert.doesNotMatch(result.stderr, /skipped=/);
 });

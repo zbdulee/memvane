@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기능별 아키텍처 흐름도 — 전체 목차</title>
+<style>
+:root{--bg:#f7f8fa;--card:#fff;--ink:#1b1f24;--sub:#4a5260;--line:#d6dbe2;--acc:#1d5fd1;--auto:#0f6b3a;--auto-bg:#e3f4ea;--user:#8a4b00;--user-bg:#fdf0dc;--q:#5b3fa8;--q-bg:#eee8fb;--warn:#8f1d1d;--warn-bg:#fbe7e7}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:960px;margin:0 auto;padding:20px 16px 48px}
+a{color:var(--acc)}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--acc);outline-offset:3px;border-radius:6px}
+nav.top{font-size:15px;margin-bottom:8px}
+h1{font-size:1.6rem;line-height:1.35;margin:.2em 0 .4em}
+h2{font-size:1.25rem;margin:2em 0 .6em}
+.lead{font-size:1.1rem;background:var(--card);border-left:5px solid var(--acc);padding:12px 16px;border-radius:8px;margin:0 0 16px}
+ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+ol.steps>li{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:2.2rem 1fr;gap:4px 12px}
+.n{grid-row:span 3;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--acc);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.st{font-weight:700;font-size:1.05rem}
+.tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:14px;font-weight:600;padding:2px 9px;border-radius:999px}
+.auto{background:var(--auto-bg);color:var(--auto)}
+.user{background:var(--user-bg);color:var(--user)}
+.q{background:var(--q-bg);color:var(--q)}
+.warn{background:var(--warn-bg);color:var(--warn)}
+dl.flow{margin:4px 0 0;display:grid;grid-template-columns:4.2em 1fr;gap:2px 8px;font-size:16px}
+dl.flow dt{color:var(--sub);font-weight:600}
+dl.flow dd{margin:0}
+.cards{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+a.card{display:block;text-decoration:none;color:inherit;background:var(--card);border:2px solid var(--line);border-radius:14px;padding:18px}
+a.card:hover,a.card:focus-visible{border-color:var(--acc)}
+a.card b{display:block;color:var(--acc);font-size:1.12rem;margin-bottom:4px}
+a.card span{color:var(--sub);font-size:16px}
+.note{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 14px;font-size:16px;margin:16px 0}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:10px 0}
+summary{cursor:pointer;font-weight:700}
+details ul{padding-left:1.2em;margin:.6em 0}
+code{font:15px/1.4 ui-monospace,Menlo,monospace;background:#eef1f5;padding:1px 5px;border-radius:4px}
+dl.gl dt{font-weight:700;margin-top:12px}
+dl.gl dd{margin:2px 0 0 0;color:var(--sub)}
+dl.gl dt:target{background:#fff6c7}
+footer{font-size:15px;color:var(--sub);margin-top:2em;border-top:1px solid var(--line);padding-top:12px}
+@media (max-width:420px){body{font-size:16px}ol.steps>li{grid-template-columns:1fr}.n{grid-row:auto}dl.flow{grid-template-columns:1fr}dl.flow dt{margin-top:4px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<main>
+<nav class="top" aria-label="상단"><a href="README.html">전체 목차</a></nav>
+
+<section aria-labelledby="t-now">
+<h1 id="t-now">기능별 아키텍처 흐름도 — 전체 목차</h1>
+<p class="lead">개발자가 플러그인 사용에 동의하고 자동 위키 생성이 켜진 프로젝트의 원문을 고치면, 변경이 위키 카드로 정리됩니다. 색인과 검색·주입은 이어지는 별도 단계입니다.</p>
+<p class="note">번호는 읽기 순서입니다. 1–3은 주요 사용 흐름이고, 학습(4)과 이관(5)은 각각 별도로 선택하는 흐름입니다.</p>
+
+<ol class="steps">
+<li><span class="n" aria-hidden="true">1</span>
+<span class="st">설치·동의와 호스트 훅</span>
+<span class="tags"><span class="tag user">사용자 선택</span></span>
+<dl class="flow"><dt>입력</dt><dd>설치 후 <a href="#g-consent">프로젝트 동의</a>, <a href="#g-hook">훅</a> 신뢰</dd>
+<dt>처리</dt><dd><a href="#g-host">호스트</a> 이벤트가 훅을 실행</dd>
+<dt>결과</dt><dd>이후 단계가 훅으로 시작될 수 있음</dd>
+<dt>다음</dt><dd>원문 변경을 기다림 → 2</dd></dl></li>
+
+<li><span class="n" aria-hidden="true">2</span>
+<span class="st">원문 변경 → 위키 카드</span>
+<span class="tags"><span class="tag auto">자동 감지</span><span class="tag q">큐 대기 (비동기)</span></span>
+<dl class="flow"><dt>입력</dt><dd>원문 파일 변경</dd>
+<dt>처리</dt><dd>변경 감지 → 비동기 추출·검증, <a href="#g-queue">큐</a> 경유</dd>
+<dt>결과</dt><dd><a href="#g-card">위키 카드</a> (발췌·원문 위치 링크 포함)</dd>
+<dt>다음</dt><dd>위키 색인 → 3</dd></dl></li>
+
+<li><span class="n" aria-hidden="true">3</span>
+<span class="st">위키 색인·검색·주입</span>
+<span class="tags"><span class="tag auto">위키만 색인</span><span class="tag user">원문 열람은 호스트 선택</span></span>
+<dl class="flow"><dt>입력</dt><dd>위키 카드</dd>
+<dt>처리</dt><dd><a href="#g-laya">Laya</a> 위키 전용 저장·검색</dd>
+<dt>결과</dt><dd>선택된 카드와 출처 링크를 <a href="#g-inject">주입</a></dd>
+<dt>다음</dt><dd>학습(4)이나 이관(5)이 필요하면 각각 별도로 참고</dd></dl></li>
+
+<li><span class="n" aria-hidden="true">4</span>
+<span class="st">학습</span>
+<span class="tags"><span class="tag user">자원 승인 필요</span><span class="tag warn">완료 주장 아님</span></span>
+<dl class="flow"><dt>입력</dt><dd>합성 준비</dd>
+<dt>처리</dt><dd>자원 승인 → 학습·모델 선택 (별도 단계)</dd>
+<dt>결과</dt><dd>승인된 단계까지만 진행</dd>
+<dt>다음</dt><dd>검색·이관의 필수 선행 단계는 아님</dd></dl></li>
+
+<li><span class="n" aria-hidden="true">5</span>
+<span class="st">이관·전환·백업·복구</span>
+<span class="tags"><span class="tag warn">운영 전환 완료 아님</span></span>
+<dl class="flow"><dt>입력</dt><dd>기존 <a href="#g-qmd">QMD</a> 데이터</dd>
+<dt>처리</dt><dd>QMD 원본 보존, <a href="#g-cand">위키 전용 후보</a> 작성</dd>
+<dt>결과</dt><dd><a href="#g-first">최초 쓰기</a> 전후 각각 복구 경로</dd>
+<dt>다음</dt><dd>문제 시 복구 분기 (05 페이지)</dd></dl></li>
+</ol>
+<p class="note">이 자료는 설계·구현 이해용입니다. 아직 끝나지 않은 실제 호스트 QA의 통과 증명이 아닙니다.</p>
+</section>
+
+<section aria-labelledby="t-pages">
+<h2 id="t-pages">어떤 질문에 어느 페이지를 열까</h2>
+<nav class="cards" aria-label="흐름도 페이지">
+<a class="card" href="01-install-host-hooks.html"><b>01 설치·설정과 호스트 훅</b><span>“설치 후 동의와 훅 신뢰는 어떻게 되고, 어떤 호스트 이벤트가 훅을 실행하나요?”</span></a>
+<a class="card" href="02-source-to-wiki.html"><b>02 원문 변경에서 위키 카드까지</b><span>“원문을 고치면 언제, 어떤 큐를 거쳐 위키 카드가 생기나요?”</span></a>
+<a class="card" href="03-wiki-index-search.html"><b>03 위키 색인·검색·주입</b><span>“Laya는 무엇을 저장·검색하고, 에이전트에게 무엇이 주입되나요?”</span></a>
+<a class="card" href="04-learning.html"><b>04 학습</b><span>“합성 준비, 자원 승인, 학습·모델 선택은 어떻게 나뉘나요?”</span></a>
+<a class="card" href="05-migration-recovery.html"><b>05 이관·전환·백업·복구</b><span>“QMD에서 옮길 때 원본은 어떻게 보존되고, 실패하면 어떻게 되돌리나요?”</span></a>
+</nav>
+</section>
+
+<section aria-labelledby="t-more">
+<h2 id="t-more">경계·검증 상태 (펼쳐 보기)</h2>
+<details><summary>데이터 경계: 원문 · 위키 카드 · QMD · Laya</summary>
+<ul>
+<li>원문 파일: 위키 생성과 출처·최신성 확인의 입력입니다.</li>
+<li>위키 카드: 정리된 발췌와 원문 위치 링크를 그대로 담습니다.</li>
+<li>Laya: 독립 문서 색인·검색에는 위키만 들어갑니다. 원문은 별도로 색인되지 않습니다.</li>
+<li>선택된 Laya 설치는 별도 프로세스에 임베딩 모델을 유지합니다. SQLite 검색은 질문마다 Python에서 실행하며 상주 검색 서버가 아닙니다. 모델 준비·자원 보류는 검색 성공이 아닙니다.</li>
+<li>QMD: 이관 시 원본을 보존하며, Laya 위키 색인과는 별개입니다.</li>
+<li>호스트 에이전트가 링크를 열어 원문을 읽을지는 플러그인 밖의 결정이며, 플러그인 통과 조건이 아닙니다.</li>
+</ul></details>
+<details><summary>교정 시 확인된 사항</summary>
+<ul>
+<li>Antigravity 자동 훅은 현재 비활성 상태입니다.</li>
+<li>원문은 Laya 검색에 별도 색인되지 않습니다.</li>
+<li>비동기 큐의 <code>dropped</code> 의미를 확인했습니다. 자세한 뜻은 02 페이지를 보세요.</li>
+<li>상대 코드 링크와 미완료 호스트 QA 표시를 확인했습니다.</li>
+</ul></details>
+<details><summary>상위 문서와 QA 기준</summary>
+<ul>
+<li><a href="../../../architecture.md">상위 아키텍처</a> — 전체 구현 설명</li>
+<li><a href="../../../release-agent-qa-status.md">QA 현황</a> — 현재 검증 상태</li>
+<li><a href="../../../release-agent-qa.md">QA 계약</a> — 행별 기준</li>
+<li><a href="../../../qa-reviews/2026-10-25-claude-qa-change-review.md">Claude QA 변경 리뷰</a> — 코드 리뷰 기록</li>
+</ul></details>
+</section>
+
+<section aria-labelledby="t-gl">
+<h2 id="t-gl">이 프로젝트의 용어</h2>
+<dl class="gl">
+<dt id="g-host">호스트</dt><dd>플러그인을 실행하는 에이전트 환경(예: Antigravity). 이벤트로 훅을 부르고, 원문 링크를 열지 스스로 정합니다.</dd>
+<dt id="g-hook">훅</dt><dd>호스트 이벤트에 반응해 실행되는 플러그인 진입점. 사용자가 신뢰해야 실행됩니다. 상세: 01 페이지.</dd>
+<dt id="g-consent">프로젝트 동의</dt><dd>프로젝트 단위로 플러그인 사용을 허락하는 사용자 선택. 상세: 01 페이지.</dd>
+<dt id="g-card">위키 카드</dt><dd>원문에서 추출·검증해 만든 정리 문서. 발췌와 원문 위치 링크를 포함하며, Laya에 색인되는 유일한 대상입니다.</dd>
+<dt id="g-queue">큐</dt><dd>추출·검증을 비동기로 처리하는 대기열. 상태 <code>dropped</code>가 있으며 뜻은 02 페이지 참조. 임의의 전체 비움을 보장하지 않습니다.</dd>
+<dt id="g-laya">Laya</dt><dd>위키 전용 저장·검색 색인. 원문 본문을 저장·검색·주입하지 않습니다. 상세: 03 페이지.</dd>
+<dt>임베딩 모델 소유 프로세스</dt><dd>선택된 설치의 로컬 모델을 유지하는 별도 프로세스. 같은 사용자·설치·provider·모델 지문에만 재사용됩니다. OS 부팅 서비스나 Laya 검색 서버는 아닙니다. 상세: 03 페이지.</dd>
+<dt id="g-inject">주입</dt><dd>검색에서 선택된 위키 카드와 출처 링크를 호스트 에이전트 맥락에 넣는 단계.</dd>
+<dt id="g-qmd">QMD</dt><dd>이관 전 기존 저장소. 이관·전환 중에도 원본이 보존됩니다. 상세: 05 페이지.</dd>
+<dt id="g-cand">위키 전용 후보</dt><dd>이관 시 QMD 원본과 별도로 만드는, 위키만 담는 전환 후보.</dd>
+<dt id="g-first">최초 쓰기</dt><dd>전환 대상에 처음 기록하는 시점. 그 전과 후의 복구 방법이 다릅니다.</dd>
+<dt id="g-guard">guard</dt><dd>작성·교정 결과를 확인하는 검증 기록. 아래 출처의 식별자로 표시됩니다.</dd>
+</dl>
+</section>
+
+<footer>
+<p><strong>출처:</strong> <a href="../README.md">기능별 아키텍처 흐름도</a>(Markdown/Mermaid, 2026-10-25 기준 구현 코드와 QA 계약을 읽고 Claude Opus 5.5 작성, Codex 검토) 및 <a href="../01-install-host-hooks.md">01</a> · <a href="../02-source-to-wiki.md">02</a> · <a href="../03-wiki-index-search.md">03</a> · <a href="../04-learning.md">04</a> · <a href="../05-migration-recovery.md">05</a>. 모델 소유 프로세스 설명은 이후 후보 코드를 대조해 Codex가 보완했습니다.</p>
+<p>작성 근거: 후보 <code>f89b141d783d8420acc961837c686e6a52b3bbb1</code>, 작성 guard <code>29913c2777d24f9985fb51d870cc2ce3</code>, 교정 guard <code>8eb1e1a332624302ac03ac90779fae09</code> (passed/settled).</p>
+</footer>
+</main>
+</body>
+</html>

@@ -292,6 +292,98 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertIsNone(worker._read_proof_card_bounded(card, 1000))  # now oversized by fstat
         self.assertEqual(worker._read_proof_card_bounded(card, card.stat().st_size)[:1], b'x')
 
+    def run_main(self):
+        out = io.StringIO()
+        with patch.object(sys, 'argv', ['wiki_compile_worker.py', '--cwd', str(self.root),
+                                        '--json', '--flush-all']), redirect_stdout(out):
+            self.assertEqual(worker.main(), 0)
+        return json.loads(out.getvalue())
+
+    def overlapping_worker_extractions(self):
+        """A posttool edit is mid-extraction when a second trigger starts a worker.
+
+        The second worker runs inside the first one's paid call: the same kernel
+        flock conflict two processes would see, without threads or children.
+        """
+        queue = self.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
+        pending = wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude')
+        job = {**self.job('post_tool_source'),
+               'pendingRefresh': {key: pending[key] for key in ('eventId', 'ts', 'engine')}}
+        queue.write_text(json.dumps(job) + '\n', encoding='utf-8')
+        nested = []
+
+        def extractor(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            if len(self.extractor_calls) == 1:
+                nested.append(self.run_main())  # e.g. laya-compile wake beside a kick
+            return {'candidates': [{'title': 'Source decision', 'summary': 'Cards cite source.'}]}, None, 0
+
+        def compile_echo(root, candidate):
+            result = self.fake_compile(root, candidate)
+            result['sourceRefreshEventId'] = candidate.get('sourceRefreshEventId')
+            return result
+        with patch('setup_guard.status', return_value={'status': 'ready'}), \
+             patch.object(worker, '_run_verify_pass'), \
+             patch.object(worker, 'run_extractor', side_effect=extractor), \
+             patch.object(worker, 'compile_candidate', side_effect=compile_echo):
+            first = self.run_main()
+            after = self.run_main()  # a later wake once the owner finished
+        return queue, nested, first, after
+
+    def test_overlapping_worker_does_not_reextract_inflight_pending_revision(self):
+        queue, nested, first, after = self.overlapping_worker_extractions()
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
+        # Busy without recovery; the in-flight event is still unresolved, so the
+        # kick path is asked for one retry instead of losing its wake.
+        self.assertEqual(nested, [{'processed': 0, 'remaining': 0, 'busy': True,
+                                   'wakeAfterSeconds': worker.RUN_LOCK_BUSY_RETRY_SECS}])
+        self.assertEqual(first['processed'], 1)
+        self.assertEqual(after['processed'], 0)
+        self.assertEqual(queue.read_text(encoding='utf-8'), '')
+        self.assertEqual(wiki_freshness.unresolved_pending_refreshes(self.root), [])
+
+    def test_overlapping_worker_without_run_lock_pays_twice(self):
+        # Control for the test above: the pre-lock behavior really re-extracts.
+        with patch.object(worker, 'try_run_lock',
+                          side_effect=lambda _root: os.open(os.devnull, os.O_RDONLY)):
+            _queue, nested, _first, _after = self.overlapping_worker_extractions()
+        self.assertEqual(nested[0]['processed'], 1)  # the overlap recovered E1 and paid again
+        self.assertGreaterEqual(len(self.extractor_calls), 2)
+
+    def test_busy_worker_keeps_rows_and_requests_one_retry(self):
+        queue = self.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
+        queue.write_text(json.dumps(self.job('session_start')) + '\n', encoding='utf-8')
+        owner = worker.try_run_lock(self.root)
+        self.assertIsNotNone(owner)
+        try:
+            with patch('setup_guard.status', return_value={'status': 'ready'}):
+                report = self.run_main()
+        finally:
+            os.close(owner)
+        self.assertEqual(report['wakeAfterSeconds'], worker.RUN_LOCK_BUSY_RETRY_SECS)
+        self.assertEqual(self.extractor_calls, [])
+        self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 1)
+        # Lock released (as on owner exit or crash): the retained row now runs.
+        with patch('setup_guard.status', return_value={'status': 'ready'}), \
+             patch.object(worker, '_run_verify_pass'):
+            self.assertEqual(self.run_main()['processed'], 1)
+        self.assertEqual(len(self.extractor_calls), 1)
+
+    def test_run_lock_rejects_hardlink_and_loose_mode(self):
+        base = self.root / '.auto-context' / 'compile'
+        original = base / 'original.lock'
+        original.write_text('owned', encoding='utf-8')
+        lock = base / worker.COMPILE_RUN_LOCK
+        os.link(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+        self.assertEqual(original.read_text(encoding='utf-8'), 'owned')
+        lock.unlink()
+        original.chmod(0o644)
+        os.rename(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+
     def test_legacy_route_keeps_existing_path(self):
         self.compile_verified_once()
         self.bound = None

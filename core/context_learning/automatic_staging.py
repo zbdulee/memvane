@@ -32,6 +32,22 @@ def _project(root, grant):
 
 
 def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_fd=None):
+    deadline=None
+    if root is not None:
+        import project_learning_setup
+        if project_learning_setup._synthetic_marker(root,policy):
+            setup=project_learning_setup.read_private_json(
+                project_learning_setup._path(Path(root)/project_learning_setup.NAME,private=True))
+            project=Path(setup['plan']['projectRoot'])
+            budget=project_learning_setup.synthetic_budget_status(root,project,policy)
+            if budget['status']!='ready':
+                raise ResourceDeferred('synthetic_training_budget_exhausted',{'reason':budget['status']})
+            receipt=project_learning_setup.read_private_json(
+                project_learning_setup._path(Path(root)/project_learning_setup.BUDGET,private=True))
+            remaining=(receipt['deadlineUnixMs']-time.time()*1000)/1000-2
+            if remaining<1:
+                raise ResourceDeferred('synthetic_training_budget_exhausted',{'reason':'time_exhausted'})
+            deadline=time.monotonic()+remaining
     if factory is not None:
         trainer=factory(policy)
         trainer.learning_control=control;trainer.inherited_fds=fds;trainer.coordination_fd=coordination_fd
@@ -41,6 +57,7 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
         raise ValueError('invalid_shared_trainer')
     from .shared import resource_report
     trainer = VerifiedLayaTrainer(policy['trainerArgv'], proof_cache_dir=root,
+        deadline=deadline,
         max_seconds=policy['safetySeconds'], max_rss_mib=policy['maxRssMib'],
         pressure_probe=lambda **options: resource_report(policy, detailed=True, admission=False,**options), require_monitor=True)
     # Automatic training cannot silently renew a compatibility smoke receipt.
@@ -107,6 +124,11 @@ def _prepare_staged(root,policy,grant):
     from .laya_adapter import EDIT_INPUT_VIEW, model_identity
     from .learning_queue import LearningQueue
     root = Path(root)
+    import project_learning_setup
+    synthetic=project_learning_setup.synthetic_local_only(root,_project(root,grant),policy)
+    if synthetic:
+        budget=project_learning_setup.synthetic_budget_status(root,_project(root,grant),policy)
+        if budget['status']!='ready':return budget
     if policy.get('modelInputView') != EDIT_INPUT_VIEW:
         return {'status':'multilingual_policy_required'}
     if (root/'experimental-checkpoint.json').exists():
@@ -123,6 +145,11 @@ def _prepare_staged(root,policy,grant):
             if _case_active(root,(r[7],r[1],r[3])):result.append(r)
         return result
     cohort_train=active(cohort_train);validation=active(validation)
+    if synthetic:
+        empty=sum(not json.loads(row[5])['selected_ids'] for row in validation)
+        candidate_count=sum(len(json.loads(row[3])['candidates']) for row in cohort_train)
+        if len(validation)>50 or empty>10 or candidate_count>100:
+            return {'status':'synthetic_training_budget_exhausted'}
     if len(cohort_train)<grant['cohort']['minTrainCases']:
         return {'status':'waiting_fresh_train','train':len(cohort_train),'required':grant['cohort']['minTrainCases']}
     family=digest(canonical([policy['trainerArgv'][0],model_identity(policy['trainerArgv'][2]),
@@ -134,11 +161,23 @@ def _prepare_staged(root,policy,grant):
         if not profile['localTrain']:return {'status':'disabled'}
         minimum=profile['minFreshTrainCases']
     queue=LearningQueue(root)
+    if synthetic:
+        with queue.connect() as db:
+            queue.schema(db)
+            ids=[row[0] for row in db.execute(
+                'SELECT job_id FROM learning_jobs WHERE namespace=? ORDER BY rowid',(queue.scope,))]
+        if len(ids)>1:return {'status':'synthetic_training_budget_exhausted'}
+        existing=queue.get(ids[0]) if ids else None
+        if existing and (existing['status']=='blocked' or existing['attempts']>=5):
+            return {'status':'synthetic_training_budget_exhausted'}
     from .project_scope import SCOPE
-    job=queue.plan(cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
-                   family=family,minimum=minimum,maximum=policy['batchMax'],
-                   roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE)
+    job=(existing if synthetic and existing else queue.plan(
+        cohort_train,approval=proposal_sha256(grant),cohort=grant['cohort']['id'],
+        family=family,minimum=minimum,maximum=policy['batchMax'],
+        roles=['train']*len(cohort_train),cumulative=grant.get('scope')==SCOPE))
     if job is None:return {'status':'waiting_fresh_batch','threshold':minimum}
+    if synthetic and (len(job['members'])>100 or job['approval']!=proposal_sha256(grant)):
+        return {'status':'synthetic_training_budget_exhausted'}
     with _db(root) as db:
         previous=db.execute('SELECT status FROM cycles WHERE cycle_id=?',(job['id'],)).fetchone()
     if previous and previous[0]=='applied':return {'status':'already_applied','cycle_id':job['id']}
@@ -147,6 +186,8 @@ def _prepare_staged(root,policy,grant):
         return {'status':'staged_source_revoked','cycle_id':job['id']}
     if job['status']=='blocked':
         return {'status':'staged_source_revoked' if job['reason']=='source_revoked' else 'learning_job_blocked','cycle_id':job['id']}
+    if synthetic and sum(len(json.loads(row[3])['candidates']) for row in train)>100:
+        return {'status':'synthetic_training_budget_exhausted'}
     return root,queue,job,train,validation,cohort_train
 
 

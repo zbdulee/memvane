@@ -1146,7 +1146,7 @@ PY
   # Invalid pointers fail closed instead of falling back to the user's DB.
   local selected_qmd_env
   selected_qmd_env="$(python3 "$_QMD_CORE_DIR/qmd_route.py" resolve-env "$workdir")" || {
-    log "ABORT: project QMD index pointer invalid"
+    log "ABORT: selected QMD route unavailable or project ownership not approved"
     exit 0
   }
   if [ -n "$selected_qmd_env" ]; then
@@ -1493,21 +1493,9 @@ main() {
   resolved=$(echo "$config_json" | bash "$0" --resolve-only --cwd "$workdir" 2>/dev/null || echo '{}')
   reason=$(echo "$resolved" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason") or "")' 2>/dev/null || echo "")
   if [ "$reason" = "pending" ]; then
-    suggested=$(echo "$resolved" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("prompt") or {}).get("suggestedRoot",""))' 2>/dev/null || echo "")
-    [ -z "$suggested" ] && suggested="$workdir"
-    helper="bash $(cd "$(dirname "$0")" && pwd)/update.sh"
-    # pending_guide: 미설정 프로젝트 안내 메시지 (Task 8의 deny reason과 명령 세트 공유 위해 함수화)
-    pending_guide() {
-      local h="$1" s="$2" w="$3"
-      echo "[qmd] 이 폴더는 아직 검색 인덱스에 등록되지 않았습니다."
-      echo "      다음 중 하나를 선택하세요:"
-      printf '  1) 추천 확인:       %s --recommend %q\n'        "$h" "$w"
-      printf '  2) 추천 즉시 적용:  %s --optin --recommended %q\n' "$h" "$s"
-      printf '  3) 직접 작성:       %q/.auto-context/settings.json 파일을 작성한 뒤 다음 세션에 자동 적용\n' "$w"
-      printf '  4) 거절:            %s --optout %q\n'            "$h" "$w"
-      printf '  5) 임시 건너뜀(2h):  %s --skip %q\n'              "$h" "$w"
-    }
-    pending_guide "$helper" "$suggested" "$workdir"
+    echo "[qmd] 이 폴더는 아직 검색 인덱스에 등록되지 않았습니다."
+    echo "      사용자에게 자연어로 추천 범위 확인, 원하는 문서 범위로 켜기, 끄기, 또는 2시간 미루기 중 선택을 요청하세요."
+    echo "      설치된 setup 스킬로 현재 상태와 추천 범위를 확인할 수 있습니다."
     exit 0
   fi
   if [ "$reason" = "optout" ] || [ "$reason" = "risky" ]; then

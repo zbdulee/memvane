@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Shared qmd CLI path resolution for non-interactive hook environments.
 
+# Standalone workers and manual wrappers also import from the installed tree.
+export PYTHONDONTWRITEBYTECODE=1
+
 qmd_candidate_dirs() {
   [ -n "${QMD_BIN:-}" ] && dirname "$QMD_BIN"
 

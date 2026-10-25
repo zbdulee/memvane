@@ -7,6 +7,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path.cwd() / 'core'))
+import qmd_shared_store
+
 repository = Path.cwd()
 with tempfile.TemporaryDirectory(prefix='qmd-shared-enrollment-', dir=repository) as name:
     home = Path(name).resolve()
@@ -24,6 +27,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-shared-enrollment-', dir=repository
         str(repository / 'test/fixtures/prepare-shared-qmd-store.py'), str(home)],
         env=env, capture_output=True, text=True)
     assert prepared.returncode == 0, prepared.stderr
+    # These are existing legacy owners retrying registration. New owners
+    # cannot become approved by placing settings on disk.
+    for story in stories:
+        config = json.loads((story / '.auto-context/settings.json').read_text())
+        qmd_shared_store._reserve_owners(qmd_shared_store.root(home),
+            qmd_shared_store._collection_owners(story, config))
     route = repository / 'core/qmd_route.py'
     def call(*args):
         return subprocess.run([sys.executable, str(route), *args], env=env,

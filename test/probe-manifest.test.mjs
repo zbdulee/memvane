@@ -15,7 +15,7 @@ test('codex marketplace.json: qmd-auto-context plugin 항목', () => {
   assert.ok(Array.isArray(m.plugins), 'plugins 배열 존재');
   const p = m.plugins.find(x => x.name === 'qmd-auto-context');
   assert.ok(p, 'qmd-auto-context plugin 항목');
-  assert.equal(p.version, '0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning', 'codex marketplace version');
+  assert.equal(p.version, '0.36.0', 'codex marketplace version');
 });
 
 test('runtime authorization pins the installed plugin version', () => {
@@ -54,7 +54,7 @@ test('codex marketplace.json: git source 객체 + policy + category 스키마', 
 test('agy 루트 plugin.json: name qmd-auto-context', () => {
   const p = JSON.parse(readFileSync('plugin.json', 'utf8'));
   assert.equal(p.name, 'qmd-auto-context');
-  assert.equal(p.version, '0.35.2-dev.20261017-claude-handoff-v53-rc48-general-project-learning');
+  assert.equal(p.version, '0.36.0');
   assert.doesNotMatch(p.description, /Task \d|install\.sh|uninstall\.sh/);
 });
 

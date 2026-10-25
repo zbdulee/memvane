@@ -53,7 +53,8 @@ def _preferences(raw,root,choice):
     shared['autoApply']=apply
     return cfg,enabled,apply
 
-def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False):
+def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False,
+             staged_no_selection=False):
     project=Path(project);root=Path(root)
     if (choice not in CHOICES or mode not in ('new','preserve') or not project.is_absolute()
             or any(p.is_symlink() for p in (project,root,*project.parents,*root.parents))):raise ValueError('profile_scope_invalid')
@@ -66,10 +67,15 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
     from .project_scope import present as general_scope_present
     if type(enable_learning)is not bool or (enable_learning and not general_scope_present(root)):
         raise ValueError('profile_explicit_enable_scope_required')
+    if type(staged_no_selection)is not bool or (staged_no_selection and
+            (choice!='local-staged' or not enable_learning)):
+        raise ValueError('profile_staged_scope_required')
     preferences=deepcopy(raw)
     if enable_learning:
         preferences.setdefault('contextLearning',{}).update(capture=True,autoCycle=True)
         preferences.setdefault('sharedLearning',{})['enabled']=True
+    if staged_no_selection:
+        preferences.setdefault('contextLearning',{})['liveSelection']=False
     cfg,train,apply=_preferences(preferences,root,choice)
     from .shared import _policy,_safe_root
     import config
@@ -136,7 +142,8 @@ def selection_root(cfg,project):
     if root is None or not selection_enabled(root,project):return None
     return root
 
-def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,enable_learning=False,fault=lambda _:None):
+def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
+             enable_learning=False,staged_no_selection=False,fault=lambda _:None):
     root=resident._private_state(Path(root));project=Path(project).resolve(strict=True)
     # This same project settings lock is used by setup/install writers.
     import install_update
@@ -148,9 +155,13 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,enabl
             old=read_private_json(path) if path.exists() or path.is_symlink() else None
             if old and old['acceptedSha256']==accepted_sha256:
                 row=old['proposal']
-                if digest(row)!=accepted_sha256 or (row['choice'],row['mode'],row['expiresAtUnixMs'])!=(choice,mode,expires_at_unix_ms) or (enable_learning and row['settings']['contextLearning'].get('capture') is not True):raise ValueError('profile_acceptance_changed')
+                if (digest(row)!=accepted_sha256 or (row['choice'],row['mode'],row['expiresAtUnixMs'])!=(choice,mode,expires_at_unix_ms)
+                        or (enable_learning and row['settings']['contextLearning'].get('capture') is not True)
+                        or (staged_no_selection and row['settings']['contextLearning'].get('liveSelection') is not False)):
+                    raise ValueError('profile_acceptance_changed')
             else:
-                row=proposal(project,root,choice=choice,mode=mode,expires_at_unix_ms=expires_at_unix_ms,enable_learning=enable_learning)
+                row=proposal(project,root,choice=choice,mode=mode,expires_at_unix_ms=expires_at_unix_ms,
+                    enable_learning=enable_learning,staged_no_selection=staged_no_selection)
                 if accepted_sha256!=digest(row):raise ValueError('profile_acceptance_required')
             from .shared import _policy
             if row['projectRoot']!=str(project) or row['namespaceRoot']!=str(root):raise ValueError('profile_scope_invalid')

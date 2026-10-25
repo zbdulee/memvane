@@ -282,14 +282,14 @@ class RuntimeChecks(unittest.TestCase):
             inside.append(True)
             try:yield
             finally:inside.pop()
-        def train(*a):
-            self.assertEqual(inside,[True]);return {'status':'staged'}
+        def step(*a):
+            self.assertEqual(inside,[True]);return {'status':'settled'}
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.root), \
              patch.object(setup_guard,'status',return_value={'status':'ready'}), \
              patch.object(history_lifecycle,'worker_lease',lease), \
-             patch.object(shared,'run_training_pending',side_effect=train):
-            self.assertTrue(runtime.dispatch({'kind':'learning','target':str(self.root)}))
+             patch.object(shared,'learning_worker_step',side_effect=step):
+            self.assertTrue(runtime.dispatch({'kind':'learning','target':str(self.root),'revision':1}))
 
     def test_cleanup_retry_resolves_its_own_index_route(self):
         import setup_guard,qmd_route

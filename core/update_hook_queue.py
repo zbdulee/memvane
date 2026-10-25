@@ -23,6 +23,19 @@ def _private_queue():
     return root
 
 
+SETUP_REQUIRED = 'setup_required_store_not_selected'
+
+
+def _no_project_config_candidate(cwd):
+    """find_project_config reads unreadable settings as 'none'; recheck files."""
+    import config as qmd_config
+    for directory in qmd_config._project_search_dirs(cwd):
+        for candidate, _, _ in qmd_config._candidate_configs(directory):
+            if candidate.exists() or candidate.is_symlink():
+                return False
+    return True
+
+
 def _write(path, value):
     fd, tmp = tempfile.mkstemp(prefix='.update-', dir=path.parent)
     try:
@@ -264,7 +277,26 @@ def worker(key):
                     output.write(f'{time.time():.3f} setup required; job retained\n'); output.flush()
                     return
                 import qmd_route
-                selected = qmd_route.project_paths(cwd)
+                try:
+                    selected = qmd_route.project_paths(cwd)
+                except ValueError as exc:
+                    # A genuine first install has no project config and no
+                    # selected plugin store: that is setup-required, not a
+                    # worker failure. Any configured project, or any other
+                    # store error (unsafe/corrupt/unapproved), still fails closed.
+                    found = qmd_config.find_project_config(cwd)
+                    if (str(exc) != 'plugin_qmd_store_not_ready' or found.get('configFormat') != 'none'
+                            or (found.get('config') or {}).get('collections')
+                            or not _no_project_config_candidate(cwd)
+                            or setup_guard.status(cwd)['status'] != 'ready'):
+                        raise
+                    _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',
+                        'cwdHash': key, 'status': 'setup_required',
+                        'reason': 'plugin_qmd_store_not_selected', 'at': time.time()})
+                    output.write(f'{time.time():.3f} setup required: plugin store not selected; job retained\n'); output.flush()
+                    # The job stays for a later SessionStart after setup. The
+                    # result lets the wake handler ACK only this revision.
+                    return SETUP_REQUIRED
                 if not selected['selected']:
                     manager = os.environ.get('QMD_BACKEND_MANAGER') or str(Path(__file__).with_name('backend_manager.sh'))
                     for action in ('ensure', 'warm', 'rotate'):

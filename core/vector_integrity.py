@@ -13,13 +13,23 @@ def load_vectors(db,runtime):
  if not re.search(r'\bUSING\s+vec0\b',sql[0],re.I):return  # Relational stand-in in synthetic tests.
  package=Path(runtime['proof']['qmd']).parent.parent
  if json.loads((package/'package.json').read_text()).get('version')!='2.5.3':raise ValueError('unproved_vector_runtime')
- modules=package.parent.parent if package.parent.name=='@tobilu' else package.parent
+ # Node resolves a package-local dependency before a hoisted one. The
+ # supported QMD 2.5.3 install keeps sqlite-vec under its own node_modules;
+ # a hoisted package is also valid when that local dependency is absent.
+ modules=(package.parent.parent if package.parent.name=='@tobilu' else package.parent)
  system={'Darwin':('darwin','dylib'),'Linux':('linux','so')}.get(platform.system())
  arch={'arm64':'arm64','aarch64':'arm64','x86_64':'x64'}.get(platform.machine())
  if not system or not arch:raise ValueError('physical_vector_extension_unavailable')
- path=modules/('sqlite-vec-'+system[0]+'-'+arch)/('vec0.'+system[1])
+ extension='sqlite-vec-'+system[0]+'-'+arch
+ filename='vec0.'+system[1]
+ candidates=(package/'node_modules'/extension/filename,
+             modules/extension/filename)
+ path=next((item for item in candidates if item.exists() or item.is_symlink()),None)
+ if path is None:raise ValueError('physical_vector_extension_unavailable')
  info=path.lstat()
  if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_uid not in (0,os.getuid()) or info.st_mode&0o022:raise ValueError('unsafe_vector_extension')
+ if not callable(getattr(db,'enable_load_extension',None)) or not callable(getattr(db,'load_extension',None)):
+  raise ValueError('python_sqlite_extension_loading_unavailable')
  db.enable_load_extension(True)
  try:db.load_extension(str(path))
  finally:db.enable_load_extension(False)

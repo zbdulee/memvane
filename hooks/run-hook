@@ -32,6 +32,10 @@ if [ "$_qmd_sandbox" = 1 ]; then
   exit 0
 fi
 
+# The installed plugin is re-attested as an exact commit during setup. Python
+# imports from this writable host cache must never add __pycache__ files.
+export PYTHONDONTWRITEBYTECODE=1
+
 # 1) 플러그인 루트 결정 — 변수 우선, 없으면 스크립트 위치 기준(hooks/run-hook → 루트)
 ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"
 if [ -z "$ROOT" ]; then

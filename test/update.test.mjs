@@ -358,6 +358,7 @@ test('update core: worker migration keeps missing legacy collection without an a
       collections: ['gone'],
       collectionPaths: { gone: 'missing' },
     }));
+    const legacyBytes = readFileSync(join(work, '.auto-context.json'));
     writeFileSync(join(bin, 'qmd'), [
       '#!/usr/bin/env sh',
       `log="${qmdLog}"`,
@@ -378,14 +379,14 @@ test('update core: worker migration keeps missing legacy collection without an a
       },
     });
 
-    const cfg = JSON.parse(readFileSync(join(work, '.auto-context', 'settings.json'), 'utf8'));
-    assert.deepEqual(cfg.collections, ['gone']);
-    assert.deepEqual(cfg.collectionPaths, { gone: 'missing' });
-    // The migration run skips prune; ownership registration is the gate that stops it.
+    // The selected-route ownership gate aborts before migration, so the legacy
+    // config stays byte-identical and no canonical settings are written.
+    assert.deepEqual(readFileSync(join(work, '.auto-context.json')), legacyBytes);
+    assert.equal(existsSync(join(work, '.auto-context', 'settings.json')), false);
     withLog(hookLog, () => {
       const hook = readFileSync(hookLog, 'utf8');
       assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
-      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+      assert.match(hook, /ABORT: selected QMD route unavailable or project ownership not approved/);
     });
     const register = spawnSync('python3', ['core/qmd_route.py', 'register-config', work], {
       encoding: 'utf8',
@@ -443,11 +444,11 @@ test('update core: missing root prune refuses symlinked .auto-context directory'
     assert.deepEqual(gateResult(fakeHome, `import config
 print(json.dumps(list(config._safe_project_settings_dir(sys.argv[1]))))`, [work]),
     [null, 'unsafe_settings_dir']);
-    // Prune never touches the symlinked settings, and registration still blocks the missing root.
+    // Prune never touches the symlinked settings, and the ownership gate still blocks the missing root.
     withLog(hookLog, () => {
       const hook = readFileSync(hookLog, 'utf8');
       assert.doesNotMatch(hook, /PRUNE MISSING COLLECTION/);
-      assert.match(hook, /ABORT: shared QMD collection ownership conflict/);
+      assert.match(hook, /ABORT: selected QMD route unavailable or project ownership not approved/);
     });
     assert.equal(existsSync(qmdLog), false, 'symlinked settings block QMD writes');
   } finally {
@@ -808,7 +809,7 @@ test('update core: --sandbox 인자 → 무출력 exit 0', () => {
 });
 
 // BUG-2 regression: collection add가 "already exists" + exit 1 반환해도 update/embed는 실행돼야 함
-test('pending: 안내 메시지에 --recommend/--optin --recommended/.auto-context/settings.json/--optout/--skip 5개 포함', () => {
+test('pending: SessionStart는 내부 명령 대신 자연어 선택과 setup 스킬을 안내', () => {
   // pending 폴더(config 없음)를 stdin으로 전달해 main() 경로의 pending 분기를 실행.
   // qmd, curl 등 외부 명령이 없어도 pending 분기는 메시지만 출력하고 종료하므로 PATH stub 불필요.
   const work = repoTemp('qmd-pending-msg');
@@ -827,11 +828,10 @@ test('pending: 안내 메시지에 --recommend/--optin --recommended/.auto-conte
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, QMD_CACHE_DIR: CACHE_DIR },
     });
 
-    assert.ok(out.includes('--recommend'), `--recommend 없음: ${out}`);
-    assert.ok(out.includes('--optin --recommended'), `--optin --recommended 없음: ${out}`);
-    assert.ok(out.includes('.auto-context/settings.json'), `.auto-context/settings.json 없음: ${out}`);
-    assert.ok(out.includes('--optout'), `--optout 없음: ${out}`);
-    assert.ok(out.includes('--skip'), `--skip 없음: ${out}`);
+    for (const choice of ['자연어', '추천 범위 확인', '켜기', '끄기', '2시간 미루기', 'setup 스킬']) {
+      assert.ok(out.includes(choice), `${choice} 없음: ${out}`);
+    }
+    assert.doesNotMatch(out, /update\.sh|--(?:recommend|optin|optout|skip)\b|\.auto-context\/settings\.json/);
   } finally {
     removeTemp(work);
   }

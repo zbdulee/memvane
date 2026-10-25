@@ -65,6 +65,48 @@ test('keywords 상한 5', () => {
   assert.ok(r.keywords.length <= 5);
 });
 
+test('multi-line host instruction does not replace the actual question in lex search', () => {
+  const prompt = [
+    '도구를 쓰지 말고 이번 프롬프트에 자동 주입된 프로젝트 컨텍스트만 근거로 답해줘.',
+    'release QA alpha 문서의 codename은?',
+    '주입된 컨텍스트에 없으면 "없음"이라고만 답해.',
+  ].join('\n');
+  const built = kw(prompt);
+  const lex = recallLexQuery(prompt, { collections: ['qa'] });
+  assert.equal(built.keywordSpan, 'question');
+  assert.match(lex, /release|alpha|codename/i);
+  assert.doesNotMatch(lex, /도구|쓰지|말고|컨텍스트|없으면/);
+  assert.ok(built.keywords.some(t => /release|alpha|codename/i.test(t)));
+});
+
+test('host instruction identifiers cannot contaminate the selected question', () => {
+  const prompt = '도구를 쓰지 말고 `MCP/Tool.py` 컨텍스트만 써.\r\nrelease QA alpha 문서의 codename은?';
+  const r = kw(prompt);
+  assert.equal(r.keywordSpan, 'question');
+  assert.ok(!r.identifiers.some(t => /MCP|Tool/i.test(t)), JSON.stringify(r));
+  assert.doesNotMatch(r.lexQueries[0], /MCP|Tool/i);
+});
+
+test('multi-line question selection leaves ambiguous and ordinary requests unchanged', () => {
+  const ambiguous = '도구를 쓰지 말고 컨텍스트만 써.\n첫째 질문은?\n둘째 질문은?';
+  const ordinary = '원문에서 중요한 맥락을 설명해.\nrelease QA alpha 문서의 codename은?';
+  for (const prompt of [ambiguous, ordinary]) {
+    assert.equal(kw(prompt).keywordSpan, 'full');
+    assert.deepEqual(kw(prompt).keywords, kw(prompt.replaceAll('\n', ' ')).keywords);
+  }
+  const codeQuestion = 'Use only tool context.\nhttps://example.test/?a=1\nrelease QA alpha codename?';
+  assert.equal(kw(codeQuestion).keywordSpan, 'question');
+  assert.equal(kw('Use only tool context.\nhttps://example.test/?a=1').keywordSpan, 'full');
+  const productName = 'auto-context tool 설정 문제\nrelease QA alpha codename?';
+  assert.equal(kw(productName).keywordSpan, 'full');
+  const bothQuestions = '도구 없이 컨텍스트 주입되는 이유가 뭐야?\nrecall hook 로그 어디서 봐?';
+  assert.equal(kw(bothQuestions).keywordSpan, 'full');
+  const ep = 'EP012 도구를 쓰지 말고 컨텍스트만 써.\nrelease QA alpha 문서의 codename은?';
+  assert.equal(kw(ep, ['ep']).keywordSpan, 'question');
+  assert.ok(kw(ep, ['ep']).epTerms.length > 0);
+  assert.deepEqual(kw(ep, ['ep']).epTerms, kw(ep.replaceAll('\n', ' '), ['ep']).epTerms);
+});
+
 // --- 식별자(정확 토큰) 추출: lex 검색이 정확 토큰에 매칭되게 하는 입력 측 경로 ---
 
 test('백틱 코드스팬 내용이 식별자로 추출된다', () => {

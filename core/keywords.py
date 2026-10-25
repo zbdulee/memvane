@@ -277,6 +277,35 @@ def extract_keywords(text: str) -> list[str]:
             break
     return keywords
 
+
+def _keyword_question_span(prompt: str) -> tuple[str, str]:
+    """Keep a host instruction ahead of a single explicit question out of lex.
+
+    This only handles the bounded, unambiguous multi-line form. Other prompts
+    keep their existing token order; in particular, a pasted document or two
+    questions must not silently turn into a different search request.
+    """
+    lines = [line.strip() for line in prompt.splitlines() if line.strip()]
+    if not 2 <= len(lines) <= 8:
+        return prompt, "full"
+    lead = lines[0].lower()
+    if "?" in lead or "？" in lead:
+        return prompt, "full"
+    ko_instruction = ("도구" in lead and "컨텍스트" in lead
+                      and ("말고" in lead or "없이" in lead))
+    en_instruction = (re.search(r"\btools?\b", lead) is not None
+                      and re.search(r"(?<!-)\bcontext\b", lead) is not None
+                      and re.search(r"\b(?:only|without|no)\b", lead) is not None)
+    if not (ko_instruction or en_instruction):
+        return prompt, "full"
+    questions = [line for line in lines[1:] if line.endswith(("?", "？"))]
+    if len(questions) != 1:
+        return prompt, "full"
+    question = questions[0]
+    if len(extract_keywords(question)) < 2:
+        return prompt, "full"
+    return question, "question"
+
 # EP 변형을 **독립 lex search** 로 내보낼 개수 상한.
 #
 # qmd 는 하나의 lex 문자열 안의 positive term 을 AND 로 결합하므로 EP 변형
@@ -507,8 +536,9 @@ def build_lexical_terms(prompt: str, patterns: list[str]) -> dict:
 
     ``lexicalTerms`` 는 (EP 변형 포함) 전체 term 목록으로 기존 계약을 유지한다.
     """
-    keywords = extract_keywords(prompt)
-    identifiers = extract_identifiers(prompt)
+    keyword_prompt, keyword_span = _keyword_question_span(prompt)
+    keywords = extract_keywords(keyword_prompt)
+    identifiers = extract_identifiers(keyword_prompt)
 
     ep_terms: list[str] = []
     lexical_terms: list[str] = []
@@ -547,6 +577,7 @@ def build_lexical_terms(prompt: str, patterns: list[str]) -> dict:
     general_query = " ".join(select_general_terms(general_terms))
 
     return {
+        "keywordSpan": keyword_span,
         "keywords": keywords,
         "identifiers": identifiers,
         "lexicalTerms": deduped,

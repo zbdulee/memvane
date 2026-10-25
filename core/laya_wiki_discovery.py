@@ -1,13 +1,12 @@
-"""Selected v2 raw -> wiki source discovery from published A-int generations.
+"""Selected v2 raw -> wiki source discovery from private source evidence.
 
-A pull, checkout or other out-of-band raw change reaches a selected route only
-as a new full-membership generation, often published by a stale-recall wake
-before any SessionStart. After a successful sync (indexed or unchanged) the
-off-hook worker compares the immutable membership of the last discovered
-generation (without a cursor: the head's earliest sealed ancestor, a
-bounded walk) with the current head, raw role only, and hands the changed
-revisions to the existing `wiki_compile_enqueue.enqueue_changed_sources` and
-its trigger policy. Deleted paths are dropped; wiki-only changes are ignored.
+The Laya index contains wiki cards only. After a successful sync (indexed or
+unchanged), the off-hook worker scans bounded raw roots and compares path/hash
+pairs with a private cursor; raw bodies never enter Laya membership, FTS or
+vectors. Cutover seeds the cursor from the proved QMD inventory before route
+activation. Changed revisions go to the existing
+`wiki_compile_enqueue.enqueue_changed_sources` trigger policy. Deleted paths
+are dropped; wiki-only changes are ignored.
 
 Consent is never inferred from a laya-sync wake. A selected host hook records a
 grant only for SessionStart (`session_start`) or a successful file-change event
@@ -29,16 +28,17 @@ blocked run ends its wake, so it retires the active grants it observed; its
 revisions stay pending. The worker never removes a provisional id.
 
 State is two small JSON files beside the bound claim queue, named by scope and
-DB incarnation: the cursor (`baseGen`, roots, pending `{path: sha256}`, spent
+DB incarnation: the cursor (`baseGen`, `rawSnapshot` and pending `{path: sha256}`, spent
 grant ids; never source bytes) and the active and provisional grant ids. Both are 0600,
 no-follow and bounded, replaced atomically under one lock. Order: cursor
 journal -> enqueue -> ACK (cursor + spent ids, one replace) -> grant removal,
 so a crash re-enqueues (the live-queue key coalesces it), never loses a
 revision, and a failed removal can never let a spent grant pay for the
 deferred tail. Unknown or corrupt state fails closed: nothing is enqueued and
-nothing is reset to a fresh baseline. A missing cursor (first run, a new DB
-incarnation, or a deleted file) starts one publish back from head and is
-reported as `cursorStarted`, because changes before that are not discovered.
+nothing is reset to a fresh baseline. A selected installed route requires its
+pre-activation cursor; losing that cursor blocks discovery. Standalone
+synthetic routes without an installation journal may start at the current raw
+snapshot and report `cursorStarted`, without claiming earlier changes.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ import stat
 import time
 import uuid
 
-STATE_SCHEMA = 'laya-wiki-discovery-v1'
+STATE_SCHEMA = 'laya-wiki-discovery-v2'
 GRANTS_SCHEMA = 'laya-wiki-discovery-grants-v3'
 # Processing order: the sync grant accepts the wider existing trigger set.
 GRANT_KINDS = ('sync', 'session_start')
@@ -61,8 +61,7 @@ MAX_PENDING = 4096
 MAX_MEMBERS = 50_000
 MAX_GRANT_COUNT = 1000
 MAX_LINEAGE = 4096
-# Without a cursor, discovery diffs head against its sealed base this many
-# publishes back (see _read_view).
+# Standalone synthetic routes can start without a pre-activation cursor.
 FIRST_RUN_LINEAGE_STEPS = 1
 HOOK_LOCK_SECONDS = 1.0
 WORKER_LOCK_SECONDS = 5.0
@@ -71,7 +70,7 @@ _HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 _GENERATION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
 _STATE_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'collectionRoots',
-                         'rawCollections', 'baseGen', 'pending', 'spentGrants'})
+                         'rawCollections', 'baseGen', 'rawSnapshot', 'pending', 'spentGrants'})
 _GRANT_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'grants', 'provisional'})
 
 
@@ -114,7 +113,7 @@ def _paths(decision):
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
             or info.st_mode & 0o022):
         raise DiscoveryBlocked('state_dir_unsafe')
-    stem = '%s.wiki-discovery-%s-%s' % (queue.name, scope, incarnation)
+    stem = '%s.wiki-discovery-v2-%s-%s' % (queue.name, scope, incarnation)
     return (queue.parent / (stem + '.json'), queue.parent / (stem + '.grants.json'),
             queue.parent / (queue.name + '.wiki-discovery.lock'))
 
@@ -386,11 +385,12 @@ def observe_grants(decision):
         return {'grants': None, 'reason': str(exc)}
 
 
-def _state_doc(decision, base, pending, spent=()):
+def _state_doc(decision, base, raw_snapshot, pending, spent=()):
     scope, incarnation, _queue, roots, raw = _binding(decision)
     return {'schema': STATE_SCHEMA, 'scopeId': scope, 'dbIncarnation': incarnation,
             'collectionRoots': roots, 'rawCollections': raw,
-            'baseGen': base, 'pending': dict(sorted(pending.items())),
+            'baseGen': base, 'rawSnapshot': dict(sorted(raw_snapshot.items())),
+            'pending': dict(sorted(pending.items())),
             'spentGrants': sorted(spent)}
 
 
@@ -412,8 +412,12 @@ def _validate_state(value, decision):
     if value['collectionRoots'] != roots or value['rawCollections'] != raw:
         raise DiscoveryBlocked('state_roots_changed')
     pending = value['pending']
+    snapshot = value['rawSnapshot']
     if (not _grant_ids(value.get('spentGrants', []), len(GRANT_KINDS) * MAX_GRANT_COUNT)
             or not isinstance(value['baseGen'], str) or not _GENERATION.fullmatch(value['baseGen'])
+            or not isinstance(snapshot, dict) or len(snapshot) > MAX_MEMBERS
+            or any(not _raw_path(path, raw) or not isinstance(sha, str)
+                   or not _HEX64.fullmatch(sha) for path, sha in snapshot.items())
             or not isinstance(pending, dict) or len(pending) > MAX_PENDING
             or any(not _raw_path(path, raw) or not isinstance(sha, str)
                    or not _HEX64.fullmatch(sha) for path, sha in pending.items())):
@@ -470,17 +474,11 @@ def _lineage_root(db, scope, head, steps=None):
 
 
 def _read_view(decision, base):
-    """Head, a proved base and both raw memberships in one read snapshot.
+    """Prove the selected wiki generation and its sealed lineage in one read.
 
-    Without a cursor the base is head's sealed base one publish back
-    (FIRST_RUN_LINEAGE_STEPS), so the change that published head is still
-    discovered, including the first publish after an upgrade. Walking to the
-    scope's first generation instead made an upgrade a paid compile of every
-    raw file changed since then, and blocked for good past MAX_LINEAGE
-    publishes. The accepted cost: when the very first drain is blocked before
-    its journal while several publishes land, changes older than the last of
-    them are not discovered (no backfill, as for manual sync). A first,
-    baseless head is its own base.
+    The source change cursor is separate from membership. A synthetic route
+    without a cursor checks one sealed predecessor for structural continuity;
+    this generation is not used as a raw source baseline.
     """
     from laya_index_a import LayaIndexA
     scope, incarnation, _queue, _roots, _raw = _binding(decision)
@@ -518,24 +516,57 @@ class _PendingOverflow(Exception):
         self.count = count
 
 
-def _advance(pending, base_rows, head_rows, raw):
-    """Pending raw revisions at head: changed since base, or still unprocessed.
+def _raw_snapshot(decision, raw):
+    """Scan bounded raw roots without adding raw bodies to Laya membership.
 
-    Over MAX_PENDING (a pull or reformat touching thousands of files) the
-    burst is not kept: ``_PendingOverflow`` tells the caller to move the
-    cursor to head with nothing pending. Raising instead blocked discovery for good,
-    because every later run recomputed the same set from the same base.
+    Only names and hashes leave this function. The source port checks every
+    path without following symlinks and refuses an unstable file. Its bounded
+    200-file/5-MB scan is off-hook, like the existing origin source proof.
     """
-    old = {path: sha for path, sha, _eligible in base_rows if _raw_path(path, raw)}
-    result = {}
-    for path, sha, eligible in head_rows:
-        if not _raw_path(path, raw) or not eligible:
-            continue  # wiki role, deleted or revoked: never a compile source
-        if path in pending or old.get(path) != sha:
-            result[path] = sha
-    if len(result) > MAX_PENDING:
-        raise _PendingOverflow(len(result))
-    return result
+    from laya_index_a import IndexContractError, LayaIndexA
+    from laya_index_source_port import scan_collections
+    index = LayaIndexA(decision['dbPath'])
+    try:
+        if index.incarnation() != decision['dbIncarnation']:
+            raise DiscoveryBlocked('db_incarnation_changed')
+        roots = {name: decision['collectionRoots'][name] for name in raw}
+        scan = scan_collections(roots, decision['scopeId'], index)
+        return {file.path: file.sha256 for file in scan.files if file.eligible}
+    except IndexContractError as exc:
+        raise DiscoveryBlocked('raw_source_stale') from exc
+    finally:
+        index.close()
+
+
+def seed_source_snapshot(decision, baseline):
+    """Pre-activation baseline for an exact, still-inactive v2 candidate.
+
+    Cutover calls this before publishing its route and rechecks source proof
+    afterward. A failed activation retains the inert snapshot; another
+    activation with changed source must re-plan instead of silently reseeding.
+    """
+    state_path, _grants, lock = _paths(decision)
+    _scope, _inc, _queue, _roots, raw = _binding(decision)
+    if (not isinstance(baseline, dict) or len(baseline) > MAX_MEMBERS
+            or any(not _raw_path(path, raw) or not isinstance(sha, str)
+                   or not _HEX64.fullmatch(sha) for path, sha in baseline.items())):
+        raise DiscoveryBlocked('baseline_invalid')
+    with _locked(lock, WORKER_LOCK_SECONDS):
+        # A background origin plan can accept more raw files than the bounded
+        # discovery scan. Refuse *before* route publication rather than select
+        # a candidate whose source cursor can never advance. The QMD inventory
+        # may lag the source files: retain that baseline so the next selected
+        # sync discovers the intervening revisions instead of hiding them.
+        _raw_snapshot(decision, raw)
+        existing = _read(state_path)
+        if existing is not None:
+            _validate_state(existing, decision)
+            if existing['rawSnapshot'] != baseline:
+                raise DiscoveryBlocked('baseline_changed')
+            return existing['rawSnapshot']
+        head, _base, _base_rows, _head_rows = _read_view(decision, None)
+        _write(state_path, _state_doc(decision, head, baseline, {}))
+        return baseline
 
 
 def _changed_files(pending, roots):
@@ -614,6 +645,10 @@ def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, r
 def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw):
     recheck()
     state = _read(state_path)
+    if state is None and os.path.isfile(decision['journalPath']):
+        # A real selected route is seeded before activation. Losing that
+        # cursor must not silently declare existing source edits as baseline.
+        raise DiscoveryBlocked('snapshot_missing')
     if state is not None:
         _validate_state(state, decision)
     spent = set(state.get('spentGrants', ())) if state is not None else set()
@@ -626,11 +661,21 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
               for kind in GRANT_KINDS}
     live = [kind for kind in GRANT_KINDS if usable[kind]]
     used = {grant for kind in live for grant in usable[kind]}
-    head, base, base_rows, head_rows = _read_view(
+    head, base, _base_rows, _head_rows = _read_view(
         decision, state['baseGen'] if state is not None else None)
+    snapshot = _raw_snapshot(decision, raw)
     before = state['pending'] if state is not None else {}
     try:
-        pending = before if base == head else _advance(before, base_rows, head_rows, raw)
+        if state is None:
+            # A route created without pre-activation seeding cannot prove an
+            # earlier raw snapshot; report cursorStarted and baseline here.
+            pending = {}
+        else:
+            old = state['rawSnapshot']
+            pending = {path: sha for path, sha in snapshot.items()
+                       if path in before or old.get(path) != sha}
+            if len(pending) > MAX_PENDING:
+                raise _PendingOverflow(len(pending))
         overflow = None
     except _PendingOverflow as exc:
         pending, overflow = None, exc.count
@@ -639,13 +684,14 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
         # revisions are not compiled (no backfill); cards built from older
         # bytes fail the freshness check and are not served. Spend the
         # observed grants with the cursor, as a normal ACK does.
-        _write(state_path, _state_doc(decision, head, {}, used))
+        _write(state_path, _state_doc(decision, head, snapshot, {}, used))
         _drop(grants_path, decision, used, provisional=False)
         return _outcome('drained', 'pending_over_cap_skipped', generation=head,
                         pending=0, skipped=overflow)
-    if state is None or base != head or pending != before:
+    if (state is None or base != head or pending != before
+            or state['rawSnapshot'] != snapshot):
         # Journal first: a crash after this keeps every revision.
-        _write(state_path, _state_doc(decision, head, pending))
+        _write(state_path, _state_doc(decision, head, snapshot, pending))
     if not pending:
         _drop(grants_path, decision, used, provisional=False)
         return _outcome('drained', generation=head, pending=0)
@@ -670,7 +716,7 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
         # ACK and spend in one replace. One enqueue per run is the per-wake
         # cap; it uses every observed grant, so the deferred tail waits for a
         # new one even if the removal below fails and the wake is retried.
-        _write(state_path, _state_doc(decision, head, pending, used))
+        _write(state_path, _state_doc(decision, head, snapshot, pending, used))
         _drop(grants_path, decision, used, provisional=False)
         return _outcome('pending' if pending else 'drained',
                         'capped' if pending else None, generation=head,

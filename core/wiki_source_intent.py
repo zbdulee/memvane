@@ -6,14 +6,16 @@ looks at and in what order, and how the per-wake cap splits picked records from
 deferred files. They live here as functions of their arguments only: no
 filesystem, queue, clock, environment or config import. Gating, per-file
 eligibility (`_source_record`), the cap value (`QMD_SYNC_COMPILE_MAX`) and the
-queue append stay with the enqueue module, so queue bytes are unchanged.
+queue append stay with the enqueue module. Manual sync now attaches a content
+revision there; other row fields and trigger labels remain unchanged.
 
 Content revision is optional. Hashed scans (SessionStart sync, the file-change
-worker) put `revisions` in `changedFiles`; manual sync and PostToolUse do not,
-and their rows carry no revision and are never coalesced. `revision_key` only
-lets the enqueue module skip a row identical to one *still in the live queue*;
+worker) put `revisions` in `changedFiles`; manual sync hashes eligible source
+rows at enqueue, while PostToolUse has no revision. `revision_key` only lets
+the enqueue module skip a row identical to one *still in the live queue*;
 rows the worker already claimed or drained are not visible to it, so this is
-not cross-run processed dedup.
+not cross-run processed dedup. Legacy manual-sync rows without a revision are
+also kept rather than guessed to match a newer file.
 """
 
 # 큐 행에 원문 revision을 남기는 필드. hash가 있는 경로의 행에만 붙는다.

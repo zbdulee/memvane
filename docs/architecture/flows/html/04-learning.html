@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 학습 파이프라인 — 실제 동작 한눈에 보기</title>
+<style>
+:root{--bg:#fbfbf9;--fg:#1d1f23;--mut:#4a505a;--line:#d9dce1;--card:#fff;--acc:#1f5fbf;--auto:#e6f0ff;--autoF:#173f80;--user:#fff1d6;--userF:#7a4a00;--now:#e5f5ea;--nowF:#1d5c33;--warn:#fdeaea;--warnF:#8a1f1f;--qa:#f1ecfb;--qaF:#4b2f86}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;word-break:keep-all;overflow-wrap:anywhere}
+main{max-width:860px;margin:0 auto;padding:20px 18px 56px}
+nav.top{font-size:15px;margin-bottom:12px}
+a{color:var(--acc)}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--acc);outline-offset:2px;border-radius:4px}
+h1{font-size:1.6rem;line-height:1.3;margin:.2em 0 .4em}
+h2{font-size:1.25rem;margin:2em 0 .6em}
+h3{font-size:1.05rem;margin:1.2em 0 .4em}
+p{margin:.5em 0}
+.lead{font-size:1.1rem;background:var(--card);border:1px solid var(--line);border-left:5px solid var(--acc);padding:14px 16px;border-radius:8px}
+.note{font-size:15px;color:var(--mut)}
+code{font:.9em ui-monospace,SFMono-Regular,Menlo,monospace;background:#eef0f3;padding:1px 5px;border-radius:4px}
+ol.steps{list-style:none;padding:0;margin:18px 0;counter-reset:s}
+ol.steps>li{counter-increment:s;position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 14px 14px 58px;margin:0 0 12px;min-width:0}
+ol.steps>li::before{content:counter(s);position:absolute;left:14px;top:14px;width:32px;height:32px;border-radius:50%;background:var(--acc);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center}
+.st{font-weight:700;font-size:1.05rem;margin:0 0 4px}
+.k{display:inline-block;font-size:13px;color:var(--mut);font-weight:700;min-width:3.6em}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px}
+.b{font-size:13px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.auto{background:var(--auto);color:var(--autoF)}
+.user{background:var(--user);color:var(--userF)}
+.now{background:var(--now);color:var(--nowF)}
+.stop{background:var(--warn);color:var(--warnF)}
+.qa{background:var(--qa);color:var(--qaF)}
+.box{border:1px solid var(--line);border-radius:10px;padding:12px 16px;background:var(--card);margin:12px 0}
+.box.v{border-left:5px solid var(--qaF)}
+ul{padding-left:1.2em;margin:.4em 0}
+li{margin:.25em 0}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0;padding:0 14px}
+summary{cursor:pointer;font-weight:700;padding:12px 0}
+details[open]{padding-bottom:12px}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{border-top:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+dl.g dt{font-weight:700;margin-top:12px;scroll-margin-top:12px}
+dl.g dd{margin:2px 0 0 0;color:var(--mut)}
+dl.g dt:target{background:var(--user);border-radius:4px}
+footer{margin-top:32px;font-size:14px;color:var(--mut);border-top:1px solid var(--line);padding-top:12px}
+@media (max-width:480px){body{font-size:16px}main{padding:16px 14px 48px}ol.steps>li{padding:12px 12px 12px 50px}ol.steps>li::before{left:10px;width:30px;height:30px}h1{font-size:1.4rem}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<main>
+<nav class="top" aria-label="상위 목차"><a href="README.html">← 전체 흐름 목차</a></nav>
+
+<section aria-labelledby="t">
+<h1 id="t">04 학습 파이프라인</h1>
+<p class="lead">사용자가 setup에서 학습 방식을 고르고 프로젝트를 등록해 두면, 백그라운드 <a href="#g-worker">project worker</a>(등록 프로젝트 전용 학습 실행기)가 조건을 하나씩 확인하고, 모두 확실할 때만 <strong>제한된 양</strong>을 학습합니다.</p>
+<p class="note">학습은 색인·검색과 분리되어 있습니다. 하나라도 불확실하면 학습하지 않고 상태만 반환합니다.</p>
+
+<ol class="steps" aria-label="학습 흐름 단계">
+<li>
+<p class="st">학습 방식 선택</p>
+<div class="tags"><span class="b user">사용자 선택</span><span class="b qa">연결 미검증</span></div>
+<p><span class="k">입력</span>setup에서 <a href="#g-choice">학습 정책</a>을 고릅니다: 현재 상태 유지, 로컬 자동 적용, 로컬 단계적 적용, 또는 끄기입니다.</p>
+<p><span class="k">결과</span>이 선택이 <a href="#g-setup">learning setup</a> 파일과 어떻게 연결되는지는 확인하지 못했습니다.</p>
+</li>
+<li>
+<p class="st">설정·준비 확인</p>
+<div class="tags"><span class="b auto">자동</span><span class="b now">즉시 판정</span></div>
+<p><span class="k">처리</span>capture·autoCycle·indexing 설정과 <a href="#g-safe">safe root</a>를 봅니다. setup 단계가 <code>activated</code>인지도 봅니다.</p>
+<p><span class="k">멈춤</span>실패하면 <a href="#g-disabled"><code>disabled</code></a> 또는 <a href="#g-sip"><code>setup_in_progress</code></a>를 반환합니다.</p>
+</li>
+<li>
+<p class="st">자원 확인</p>
+<div class="tags"><span class="b auto">자동</span><span class="b now">비차단 — 기다리지 않음</span></div>
+<p><span class="k">처리</span>프로젝트 lock을 기다리지 않고 잡아 봅니다. 이어서 <a href="#g-res">resource report</a>와 <a href="#g-lt"><code>local_train</code> scope</a>를 확인합니다.</p>
+<p><span class="k">멈춤</span>lock이 점유 중이면 <a href="#g-busy"><code>busy</code></a>, 자원이 부족하면 <a href="#g-def"><code>deferred_resource</code></a>를 반환합니다.</p>
+</li>
+<li>
+<p class="st">동의·예산 확인</p>
+<div class="tags"><span class="b auto">자동</span><span class="b user">동의는 사용자 소유</span></div>
+<p><span class="k">처리</span><a href="#g-syn">synthetic local-only</a>면 예산만 봅니다. 아니면 <a href="#g-teacher">teacher</a> 대기 사례, 동의, <a href="#g-quota">weekly quota</a>를 봅니다.</p>
+<p><span class="k">멈춤</span>불확실하면 새 로컬 모델 호출로 가지 않고 <code>busy</code>·<code>deferred_*</code>·<a href="#g-consent"><code>consent_required</code></a>를 반환합니다.</p>
+</li>
+<li>
+<p class="st">제한 학습 실행과 기록</p>
+<div class="tags"><span class="b auto">자동</span><span class="b qa">실제 학습 QA 미실행</span></div>
+<p><span class="k">처리</span><code>run_training_pending</code>이 정해진 양만 실행합니다.</p>
+<p><span class="k">저장</span>진행 위치는 <a href="#g-head">두 head slot</a>의 <a href="#g-cursor">cursor</a>에, 결과 상태는 <code>project-last-status.json</code>에 남습니다. 결과가 <a href="#g-applied"><code>applied</code>·<code>already_applied</code></a>일 때만 <a href="#g-ckpt">checkpoint 선택 pointer</a>가 바뀐 것으로 표시됩니다.</p>
+</li>
+<li>
+<p class="st">다음 실행·중단 후 재개</p>
+<div class="tags"><span class="b auto">자동</span></div>
+<p><span class="k">다음</span>중단 후 다시 들어오면 cursor에서 이어갑니다. 이미 완전히 커밋된 cursor는 모델을 다시 돌리지 않고 <a href="#g-rc"><code>recover_completed</code></a>로 완료를 확인합니다.</p>
+</li>
+</ol>
+
+<div class="box v" role="note">
+<p><strong>구현됨 ≠ 검증됨.</strong> 위 단계는 구현된 코드 경로입니다. 실제 학습은 QA에서 실행하지 않았습니다. 학습이 통과했다거나, 결과가 recall에 반영된다거나, 운영에 적용되었다고 볼 수 없습니다.</p>
+</div>
+<div class="box" role="note">
+<p><strong>혼동 주의.</strong> 이 흐름은 원문 파일, 생성 위키 카드, QMD, Laya 위키 전용 색인의 저장·검색 경로가 아닙니다. 선택된 Laya 설치의 상주 임베딩 모델 소유 프로세스도 학습 worker가 아닙니다. 학습은 별도의 학습 상태 root와 checkpoint만 다룹니다.</p>
+</div>
+</section>
+
+<section aria-labelledby="more">
+<h2 id="more">자세히 보기</h2>
+
+<details>
+<summary>멈춤 상태 한눈에 보기</summary>
+<table>
+<thead><tr><th>상태</th><th>언제</th><th>학습 여부</th></tr></thead>
+<tbody>
+<tr><td><code>disabled</code> / <code>setup_in_progress</code></td><td>설정 플래그·safe root 실패, setup 미활성</td><td>안 함</td></tr>
+<tr><td><code>busy</code></td><td><code>project-worker.lock</code> 점유 중 등</td><td>안 함</td></tr>
+<tr><td><code>deferred_resource</code> 등 <code>deferred_*</code></td><td>resource report 부족·보류, 예산 미준비</td><td>안 함</td></tr>
+<tr><td><code>consent_required</code></td><td>teacher 동의 또는 quota 불확실</td><td>안 함</td></tr>
+</tbody>
+</table>
+<p class="note">각 상태는 즉시 반환됩니다. 다음 시도 시점은 이 페이지 범위 밖입니다.</p>
+</details>
+
+<details>
+<summary>중단·복구가 안전한 이유</summary>
+<ul>
+<li>cursor는 두 head slot과 <code>group-plan.json</code>·<code>cursor.json</code>을 씁니다. 쓰기가 중간에 끊겨도 이미 커밋된 head를 덮어쓰지 않습니다.</li>
+<li>완료 영수증은 request·artifact hash에 고정됩니다. publish 작업이 아닙니다.</li>
+<li>완전히 커밋된 cursor만 모델 실행 없이 완료로 처리합니다.</li>
+</ul>
+</details>
+
+<details>
+<summary>저장 위치</summary>
+<ul>
+<li><strong>학습 상태 root</strong>: cursor, plan(<code>group-plan.json</code>), head (사유 기록 포함)</li>
+<li><strong><code>project-last-status.json</code></strong>: 마지막 실행 결과 상태</li>
+<li><strong><code>project-learning-setup.json</code></strong>: setup phase. <code>activated</code>가 아니면 준비 안 됨</li>
+<li><strong>checkpoint 선택 pointer</strong>: <code>applied</code>일 때 갱신 (코드 발췌 범위 밖, 아키텍처 지도 근거)</li>
+</ul>
+</details>
+
+<details>
+<summary>코드 근거 (커밋 f89b141)</summary>
+<ul>
+<li><code>core/context_learning/project_worker.py:1</code> — 등록 프로젝트용 bounded worker. login service 아님.</li>
+<li><code>…/project_worker.py:7-12</code> — setup phase가 <code>activated</code>인지 확인.</li>
+<li><code>…/project_worker.py:15-24</code> — <code>contextLearning.capture</code>·<code>autoCycle</code>, <code>indexing</code>, safe root 검사.</li>
+<li><code>…/project_worker.py:27-38</code> — 비차단 lock, resource report, <code>local_train</code> scope.</li>
+<li><code>…/project_worker.py:39-57</code> — synthetic 예산, teacher 대기 사례, weekly quota.</li>
+<li><code>…/project_worker.py:58-65</code> — <code>run_training_pending</code>, 상태 기록, <code>activeCheckpointChanged</code>.</li>
+<li><code>core/context_learning/training_cursor.py:13-33</code> — 완료 영수증.</li>
+<li><code>…/training_cursor.py:49-111</code> — <code>UpdateCursor</code>, 두 head slot.</li>
+<li><code>…/training_cursor.py:114-115</code> — 커밋된 cursor 완료 처리.</li>
+<li><code>core/setup_entry.py:395</code>, <code>:435-439</code> — learning profile action, <code>--learning-choice</code>.</li>
+<li><code>core/runtime_work.py:37-57</code> — coordinator 실제 구현은 <code>context_learning.resource_coordination</code>. foreground demand 표시는 compute lock을 잡지 않음.</li>
+<li><code>hooks/run-hook:85-90</code> — SessionStart는 소유자가 요청한 history cutover를 확인만 함. history를 선택하지 않음.</li>
+</ul>
+</details>
+
+<details>
+<summary>QA 증거와 미검증 항목</summary>
+<ul>
+<li>QA 기록: <code>docs/release-agent-qa.md</code>. 실제 학습은 실행하지 않았습니다.</li>
+<li>학습 결과의 recall 반영은 검증하지 않았습니다.</li>
+<li>checkpoint 선택 pointer(<code>live_select</code>)는 발췌 범위 밖입니다.</li>
+<li>learning profile action ↔ <code>project-learning-setup.json</code> 연결은 확인하지 못했습니다.</li>
+</ul>
+</details>
+</section>
+
+<section aria-labelledby="gl">
+<h2 id="gl">이 프로젝트의 용어</h2>
+<dl class="g">
+<dt id="g-worker">project worker</dt><dd>명시 등록된 프로젝트만 제한된 양으로 학습하는 비동기 실행기. <code>core/context_learning/project_worker.py</code></dd>
+<dt id="g-choice">learning choice</dt><dd>setup에서 고르는 학습 방식(<code>preserve</code>·<code>local-auto-apply</code>·<code>local-staged</code>·<code>off</code>). <code>--learning-choice</code>, <code>core/setup_entry.py</code></dd>
+<dt id="g-setup">learning setup</dt><dd>프로젝트 학습 준비 상태. phase가 <code>activated</code>여야 진행. <code>project-learning-setup.json</code></dd>
+<dt id="g-safe">safe root</dt><dd>학습이 허용된 안전한 프로젝트 경로 조건. <code>project_worker.py:15-24</code></dd>
+<dt id="g-res">resource report</dt><dd>학습 전에 확인하는 자원 상태 보고. <code>context_learning.resource_coordination</code></dd>
+<dt id="g-lt">local_train scope</dt><dd>로컬 학습이 허용되는 자원 범위. <code>project_worker.py:27-38</code></dd>
+<dt id="g-syn">synthetic local-only</dt><dd>로컬 합성 데이터만 쓰는 모드. teacher 대신 예산만 확인.</dd>
+<dt id="g-teacher">teacher</dt><dd>학습 사례를 제공하는 쪽. 사용자 동의가 필요. 대기 사례를 확인.</dd>
+<dt id="g-quota">weekly quota</dt><dd>teacher 경로의 주간 사용 한도.</dd>
+<dt id="g-cursor">cursor</dt><dd>학습 진행 위치 기록. <code>cursor.json</code>, <code>UpdateCursor</code>, <code>training_cursor.py</code></dd>
+<dt id="g-head">두 head slot</dt><dd>cursor를 번갈아 쓰는 두 칸. 중단돼도 커밋된 head 보존.</dd>
+<dt id="g-rc">recover_completed</dt><dd>커밋된 cursor를 모델 실행 없이 완료로 확인하는 재진입 처리.</dd>
+<dt id="g-applied">applied / already_applied</dt><dd>학습 결과 적용 상태. 이때만 <code>activeCheckpointChanged</code>가 참.</dd>
+<dt id="g-ckpt">checkpoint 선택 pointer</dt><dd>사용할 checkpoint를 가리키는 값. <code>live_select</code> (발췌 범위 밖)</dd>
+<dt id="g-disabled">disabled</dt><dd>설정 플래그가 꺼져 학습 안 함.</dd>
+<dt id="g-sip">setup_in_progress</dt><dd>setup이 아직 <code>activated</code>가 아님.</dd>
+<dt id="g-busy">busy</dt><dd><code>project-worker.lock</code> 점유 등으로 지금 실행 불가.</dd>
+<dt id="g-def">deferred_* / deferred_resource</dt><dd>자원·예산 사유로 보류.</dd>
+<dt id="g-consent">consent_required</dt><dd>teacher 동의나 quota가 불확실해 진행 안 함.</dd>
+</dl>
+</section>
+
+<footer>
+<p>출처: Claude 작성 초안은 「04 학습 파이프라인」(<code>docs/architecture/flows/04-learning.md</code>), 커밋 f89b141 코드 발췌, <code>docs/release-agent-qa.md</code>를 재구성했습니다. 학습과 별도 임베딩 모델 소유 프로세스의 구분은 이후 후보 코드와 대조해 Codex가 보완했습니다.</p>
+<p><a href="README.html">← 전체 흐름 목차로</a></p>
+</footer>
+</main>
+</body>
+</html>

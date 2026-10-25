@@ -40,6 +40,8 @@ ARTIFACTS = (
     'laya_index_capacity.py',
     'laya_vector_capacity.py',
     'laya_index_host_route.py',
+    'laya_owner_projection.py',
+    'laya_initial_build.py',
     'laya_qmd_cutover.py',
     'laya_qmd_migration.py',
     'laya_package.py',
@@ -493,7 +495,8 @@ def _plugin_paths(source, commit_id):
     selected = sorted(paths)
     if (not selected or any(name.startswith('/') or '..' in Path(name).parts or
                             '\\' in name or '.git' in Path(name).parts or
-                            '.laya-product' in Path(name).parts for name in selected) or
+                            '.laya-product' in Path(name).parts or
+                            Path(name).parts[:1] == ('.in_use',) for name in selected) or
             not {'hooks/run-hook', 'core/laya_index_runtime.py',
                  'core/laya_index_vector.py',
                  'core/laya_local_embed_provider.py',
@@ -501,6 +504,8 @@ def _plugin_paths(source, commit_id):
                  'core/laya_local_embed_worker.mjs',
                  'core/laya_qmd_chunking.mjs',
                  'core/laya_index_host_route.py', 'core/laya_host_response.py',
+                 'core/laya_owner_projection.py',
+                 'core/laya_initial_build.py',
                  'core/laya_qmd_cutover.py', 'core/laya_qmd_migration.py',
                  'core/laya_product_sync_worker.py',
                  'core/laya_index_sync.py',
@@ -514,6 +519,40 @@ def _plugin_paths(source, commit_id):
                  '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(selected)):
         _fail('incomplete_plugin_commit')
     return {name: paths[name] for name in selected}
+
+
+def _skip_host_in_use(root, current, dirs):
+    """Accept only the host's bounded root PID markers, never plugin code."""
+    if current != root or '.in_use' not in dirs:
+        return
+    marker_dir = root / '.in_use'
+    try:
+        directory = marker_dir.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or
+                directory.st_uid != os.getuid() or
+                directory.st_dev != root.stat().st_dev or
+                stat.S_IMODE(directory.st_mode) & 0o022):
+            _fail('unsafe_host_in_use_metadata')
+        entries = list(os.scandir(marker_dir))
+        if len(entries) > 64:
+            _fail('unsafe_host_in_use_metadata')
+        for entry in entries:
+            if (not re.fullmatch(r'[1-9][0-9]{0,15}', entry.name, re.ASCII)):
+                _fail('unsafe_host_in_use_metadata')
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue  # The host may remove a PID marker while we inspect.
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                    info.st_dev != directory.st_dev or info.st_nlink != 1 or
+                    info.st_size > 4096 or stat.S_IMODE(info.st_mode) & 0o133):
+                _fail('unsafe_host_in_use_metadata')
+    except FileNotFoundError:
+        dirs.remove('.in_use')  # The host removed the transient directory.
+        return
+    except OSError as exc:
+        raise BundleEvidenceError('unsafe_host_in_use_metadata') from exc
+    dirs.remove('.in_use')
 
 
 def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
@@ -553,6 +592,7 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
                 stat.S_IMODE(info.st_mode) & 0o022 or
                 any((current / child).is_symlink() for child in dirs)):
             _fail('unsafe_installed_directory')
+        _skip_host_in_use(installed, current, dirs)
         if current == installed and '.git' in dirs:
             dirs.remove('.git')  # Host marketplace clones may retain Git metadata.
         for name in files:
@@ -666,6 +706,74 @@ def prepare_full_plugin_candidate(source_root, plugin_root, *, commit_id,
     return inspect_full_plugin_candidate(target)
 
 
+def seal_companion_host_copy(owner_root, plugin_root):
+    """Seal another host's exact cached copy of an owner-sealed bundle in place.
+
+    The owner root must already be sealed by installer adoption. Every file in
+    the companion must equal the owner's sealed artifact in bytes, size and
+    permission mode, with the same owner/no-group-write/no-link rules as
+    adoption; nothing is copied, re-moded or trusted from the copy itself. Only
+    then is the owner's manifest written verbatim (same bundle identity) beside
+    an ownership manifest naming this root and its own inode identities.
+    Existing companion metadata is accepted only when it is this exact seal.
+    """
+    owner = inspect_full_plugin_candidate(owner_root)
+    companion = _private(plugin_root)
+    if companion == Path(owner['pluginRoot']):
+        _fail('companion_is_owner_root')
+    metadata = companion / '.laya-product'
+    if metadata.exists() or metadata.is_symlink():
+        proof = inspect_full_plugin_candidate(companion)
+        if any(proof[key] != owner[key] for key in
+               ('sourceCommit', 'bundleManifestSha256', 'vectorProfile', 'includedFiles')):
+            _fail('installed_candidate_already_owned')
+        return proof
+    manifest_raw, _ = _read(Path(owner['pluginRoot']) / '.laya-product' / 'manifest.json', MAX_FILE)
+    if _sha(manifest_raw) != owner['bundleManifestSha256']:
+        _fail('bundle_manifest_mismatch')
+    artifacts = json.loads(manifest_raw)['artifacts']
+    actual = set()
+    for directory, dirs, files in os.walk(companion, followlinks=False):
+        current = Path(directory)
+        info = current.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o022 or
+                any((current / child).is_symlink() for child in dirs)):
+            _fail('unsafe_installed_directory')
+        _skip_host_in_use(companion, current, dirs)
+        if current == companion and '.git' in dirs:
+            dirs.remove('.git')
+        for name in files:
+            actual.add(str((current / name).relative_to(companion)))
+    if actual != set(artifacts):
+        _fail('installed_file_set_not_exact_bundle')
+    device = companion.stat().st_dev
+    entries = {}
+    for name, artifact in artifacts.items():
+        _, live = _read(companion / name, MAX_FILE)
+        if (live['dev'] != device or (companion / name).stat().st_uid != os.getuid() or
+                live['mode'] & 0o022 or
+                {'sha256': live['sha256'], 'bytes': live['bytes'], 'mode': live['mode']} != artifact):
+            _fail('installed_blob_not_exact_bundle')
+        entries[name] = live
+    os.mkdir(metadata, 0o700)
+    _write(metadata / 'manifest.json', manifest_raw)
+    _write(metadata / 'ownership-manifest.json', _canonical(
+        {'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(companion),
+         'bundleManifestSha256': owner['bundleManifestSha256'], 'entries': entries}))
+    for directory in (metadata, companion):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    proof = inspect_full_plugin_candidate(companion)
+    if any(proof[key] != owner[key] for key in
+           ('sourceCommit', 'bundleManifestSha256', 'vectorProfile', 'includedFiles')):
+        _fail('bundle_manifest_mismatch')
+    return proof
+
+
 def inspect_full_plugin_candidate(plugin_root):
     """Recheck exact installed file set, bytes, inode and owner metadata."""
     root = _private(plugin_root)
@@ -698,6 +806,8 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_local_embed_worker.mjs',
              'core/laya_qmd_chunking.mjs',
              'core/laya_index_host_route.py', 'core/laya_host_response.py',
+             'core/laya_owner_projection.py',
+             'core/laya_initial_build.py',
              'core/laya_qmd_cutover.py', 'core/laya_qmd_migration.py',
              'core/laya_product_sync_worker.py',
              'core/laya_index_sync.py',
@@ -710,7 +820,8 @@ def inspect_full_plugin_candidate(plugin_root):
              'locks/qmd-2.5.3/package-lock.json',
              '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(expected_files) or
             any(Path(name).is_absolute() or '..' in Path(name).parts or
-                '.git' in Path(name).parts or '.laya-product' in Path(name).parts
+                '.git' in Path(name).parts or '.laya-product' in Path(name).parts or
+                Path(name).parts[:1] == ('.in_use',)
                 for name in expected_files)):
         _fail('bundle_file_set_invalid')
     seen_files = set()
@@ -723,6 +834,7 @@ def inspect_full_plugin_candidate(plugin_root):
         for dirname in dirs:
             if (current / dirname).is_symlink():
                 _fail('unsafe_bundle_directory')
+        _skip_host_in_use(root, current, dirs)
         if current == root and '.git' in dirs:
             dirs.remove('.git')
         for filename in files:

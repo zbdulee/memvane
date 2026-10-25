@@ -1,5 +1,7 @@
 # qmd auto-context Architecture
 
+기능별 그림과 짧은 해설은 [아키텍처 흐름도 목차](architecture/flows/README.md)를 참고하세요.
+
 This document describes the current runtime architecture of `qmd-auto-context`.
 It is meant for maintainers who need to change the plugin safely. For user-facing
 setup and troubleshooting, start with `README.md`.

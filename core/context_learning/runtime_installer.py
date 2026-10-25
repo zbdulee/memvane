@@ -22,6 +22,9 @@ from .store import canonical
 
 UV_PIN = '0.12.20'
 PYPI_INDEX = 'https://pypi.org/simple'
+# Fixed product-owned limits; caller UV_CONCURRENT_* values are not inherited.
+UV_CONCURRENCY = {'UV_CONCURRENT_DOWNLOADS': '1', 'UV_CONCURRENT_INSTALLS': '1',
+                  'UV_CONCURRENT_CACHE_READS': '1', 'UV_CONCURRENT_BUILDS': '1'}
 SHA_RE = re.compile(r'[0-9a-f]{64}')
 REQ_RE = re.compile(r'([A-Za-z0-9_.-]+)==([A-Za-z0-9_.!+]+)(?:\s+--hash=sha256:([0-9a-f]{64}))+')
 
@@ -104,7 +107,7 @@ def _run(command, *, cwd, runner):
     env={k:os.environ[k] for k in ('PATH','LANG','TMPDIR') if k in os.environ}
     env.update(UV_NO_CONFIG='1',UV_CACHE_DIR=str(cwd/'cache'),
         UV_PYTHON_INSTALL_DIR=str(cwd/'python'),UV_INDEX_URL=PYPI_INDEX,
-        PYTHONDONTWRITEBYTECODE='1')
+        PYTHONDONTWRITEBYTECODE='1',**UV_CONCURRENCY)
     result=runner(command,cwd=cwd,env=env,capture_output=True,
         text=True,timeout=900,check=False)
     if result.returncode:raise ValueError('managed_install_step_failed')

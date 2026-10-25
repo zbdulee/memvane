@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
+from unittest import mock
 
 from context_learning.runtime_installer import (activate_generation,
     install_commands, rollback_generation, stage_generation)
@@ -28,8 +29,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     lock.write_text(''.join(f'{name}=={version} --hash=sha256:{"a"*64}\n'
         for name,version in MANAGED_DEPENDENCIES.items()))
     calls=[]
+    uv_envs=[]
     def runner(args, **kwargs):
         calls.append(args)
+        if 'env' in kwargs:
+            uv_envs.append((args, kwargs['env'], kwargs['timeout']))
         if args[1:] == ['--version']:
             return SimpleNamespace(returncode=0,stdout='uv 0.12.20 (synthetic)')
         if args[1:3] == ['python','install']:
@@ -46,8 +50,16 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
             'mps_available':True,'laya_direct_url':None}
     def probe(executable, *, managed_root):
         return probe_runtime(executable,managed_root=managed_root,runner=fake_runtime)
-    staged=stage_generation(root,uv,sha(uv),lock,sha(lock),runner=runner,probe=probe)
+    concurrency_keys=('UV_CONCURRENT_DOWNLOADS','UV_CONCURRENT_INSTALLS',
+                      'UV_CONCURRENT_CACHE_READS','UV_CONCURRENT_BUILDS')
+    with mock.patch.dict(os.environ,{key:'64' for key in concurrency_keys}):
+        staged=stage_generation(root,uv,sha(uv),lock,sha(lock),runner=runner,probe=probe)
     assert staged['status']=='staged_inactive' and not (root/'active.json').exists()
+    assert len(uv_envs)==3
+    for command,env,timeout in uv_envs:
+        assert all(env.get(key)=='1' for key in concurrency_keys)
+        assert env['UV_NO_CONFIG']=='1' and '--no-config' in command
+        assert timeout==900
     assert len(calls)==4 and calls[1][1:3]==['python','install']
     assert '--no-bin' in calls[1] and '--require-hashes' in calls[3]
     assert '--link-mode' in calls[3] and 'copy' in calls[3]

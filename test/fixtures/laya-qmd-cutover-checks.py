@@ -282,7 +282,7 @@ class QmdCutoverBoundaryTests(unittest.TestCase):
         (self.auto / 'settings.json').write_bytes(settings_bytes)
         names = ('docs', 'wiki')
         roots = {'docs': str(raw_root), 'wiki': str(wiki_root)}
-        files = {'docs/live.md': raw_body, 'wiki/card.md': wiki_body}
+        files = {'wiki/card.md': wiki_body}
         source, backup = self.root / 'qmd.sqlite', self.root / 'backup.sqlite'
         make_source(source, QMD_253, documents=[
             ('docs', 'live.md', raw_body, 1),
@@ -295,7 +295,7 @@ class QmdCutoverBoundaryTests(unittest.TestCase):
         candidate, queue_path = self.root / 'candidate.sqlite', self.root / 'queue.sqlite'
         scope, generation = 'a' * 32, 'gen-1'
         with closing(LayaIndexA(self.root / 'scan.sqlite', create=True)) as scan_index:
-            manifest = scan_collections(roots, scope, scan_index).manifest
+            manifest = scan_collections({'wiki': roots['wiki']}, scope, scan_index).manifest
         vector_batch = {
             'scope': scope, 'source_manifest': manifest,
             'qmd_source_digest': source_digest, 'model_id': 'synthetic-approved',

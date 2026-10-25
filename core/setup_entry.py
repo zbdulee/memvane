@@ -14,8 +14,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
+
+# Direct skill/CLI setup calls do not pass through the hook shell environment.
+sys.dont_write_bytecode = True
 
 import config as project_config
 import install_update as coordinator
@@ -44,6 +48,13 @@ def _sha_file(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sqlite_extension_loading_available(connection_type=None):
+    """Inspect this interpreter without loading a library or touching a DB."""
+    connection_type = sqlite3.Connection if connection_type is None else connection_type
+    return (callable(getattr(connection_type, 'enable_load_extension', None)) and
+            callable(getattr(connection_type, 'load_extension', None)))
 
 
 def discover(project, *, probe_laya=True):
@@ -91,7 +102,9 @@ def discover(project, *, probe_laya=True):
                              'routeSelected': paths['selected'],
                              'commonStoreSelected': bool(paths.get('shared')),
                              'sharedStoreStatus': store_status,
-                             'sharedStoreReason': store_reason},
+                             'sharedStoreReason': store_reason,
+                             'pythonExecutable': sys.executable,
+                             'sqliteExtensionLoading': sqlite_extension_loading_available()},
               'changesApplied': 0}
     return result
 
@@ -375,11 +388,19 @@ def select_learning(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
-                                          'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store','plan-install','install',
+                                          'plan-store', 'prepare-store', 'store-status', 'activate-store', 'enroll-store',
+                                          'plan-replacement-store', 'prepare-replacement-store', 'replacement-store-status',
+                                          'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll',
+                                          'plan-install','install',
                                           'plan-learning-profile','activate-learning-profile',
                                           'plan-index-origin','review-index-provider',
                                           'prepare-index-origin','index-origin-status',
-                                          'activate-index-origin','recover-index-origin'))
+                                          'index-build-status','index-build-rescan',
+                                          'finalize-index-origin',
+                                          'activate-index-origin','recover-index-origin',
+                                          'restore-index-origin','retire-index-origin',
+                                          'abandon-index-build','abandon-inactive-index-build',
+                                          'seal-host-copy'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -392,6 +413,10 @@ def main(argv=None):
     parser.add_argument('--approve-index-execution', action='store_true')
     parser.add_argument('--bootstrap-empty-wiki', action='store_true')
     parser.add_argument('--embedding-model-file')
+    parser.add_argument('--expected-embedding-model-sha256')
+    parser.add_argument('--expected-embedding-model-bytes', type=int)
+    parser.add_argument('--accepted-replacement-request-sha256')
+    parser.add_argument('--accepted-legacy-enrollment-sha256')
     parser.add_argument('--qmd-cpu', action='store_true')
     parser.add_argument('--qmd-backend', choices=('auto','cpu'))
     parser.add_argument('--replace-inactive-store-preparation', action='store_true')
@@ -422,15 +447,29 @@ def main(argv=None):
     parser.add_argument('--provider-dimension', type=int)
     parser.add_argument('--user-qmd-root', action='append')
     parser.add_argument('--approve-index-origin-activation', action='store_true')
+    parser.add_argument('--approve-index-origin-restore', action='store_true')
+    parser.add_argument('--approve-index-origin-retire', action='store_true')
+    parser.add_argument('--approve-index-build-abandon', action='store_true')
+    parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
+    parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
     try:
         if args.action in ('plan-index-origin','review-index-provider',
                            'prepare-index-origin','index-origin-status',
-                           'activate-index-origin','recover-index-origin'):
+                           'index-build-status','index-build-rescan',
+                           'finalize-index-origin',
+                           'activate-index-origin','recover-index-origin',
+                           'restore-index-origin','retire-index-origin',
+                           'abandon-index-build','abandon-inactive-index-build',
+                           'seal-host-copy'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action == 'plan-index-origin':
-                result = product.plan_qmd_origin(args.project)
+                result = product.plan_qmd_origin(args.project, background=True)
+                pending = product.retired_build_pointer(Path(args.project).resolve())
+                if pending is not None:
+                    # Finish the interrupted retirement before preparing.
+                    result['pendingRetirement'] = pending
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     source_root=args.source_root, plugin_root=installed,
@@ -447,7 +486,8 @@ def main(argv=None):
                     install_id=args.install_id,
                     user_qmd_roots=args.user_qmd_root,
                     model_path=args.provider_model_file,
-                    dimension=args.provider_dimension)
+                    dimension=args.provider_dimension,
+                    background=True)
             else:
                 state = product._private_parent(args.state_root)
                 journal = state / 'install-journal.sqlite'
@@ -455,16 +495,81 @@ def main(argv=None):
                     from laya_install_journal import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),
                               'routeFile': str(state / 'reviewed-route.json')}
+                    from laya_initial_build import read as read_build
+                    if read_build(state) is not None:
+                        result['initialBuild'] = product.initial_build_status(state)
+                elif args.action in ('index-build-status','index-build-rescan'):
+                    from laya_initial_build import read as read_build
+                    build = read_build(state)
+                    if build is None or build['identity']['projectRoot'] != str(Path(args.project).resolve()):
+                        raise ValueError('initial_build_project_mismatch')
+                    result = (product.initial_build_status(state)
+                              if args.action == 'index-build-status' else
+                              product.request_initial_build_rescan(state))
+                elif args.action == 'finalize-index-origin':
+                    result = product.finalize_initial_build(
+                        project_root=args.project, state_root=state)
+                elif args.action == 'restore-index-origin':
+                    # User-visible withdrawal to the preserved QMD; deletes no DB.
+                    if not args.approve_index_origin_restore:
+                        raise ValueError('index_origin_restore_approval_required')
+                    result = product.restore_origin_selection(
+                        project_root=args.project, state_root=state)
+                elif args.action == 'retire-index-origin':
+                    # A QMD change stranded the bound build; deletes no DB or store.
+                    if not args.approve_index_origin_retire:
+                        raise ValueError('index_origin_retire_approval_required')
+                    result = product.retire_drifted_origin(
+                        project_root=args.project, state_root=state)
+                elif args.action == 'abandon-index-build':
+                    # An unused registered build (no source read, nothing written);
+                    # the pending laya-sync wake is cancelled by revision. Deletes nothing.
+                    if not args.approve_index_build_abandon:
+                        raise ValueError('index_build_abandon_approval_required')
+                    result = product.abandon_unused_initial_build(
+                        project_root=args.project, state_root=state,
+                        install_id=args.install_id, commit_id=args.commit,
+                        wake_revision=args.wake_revision)
+                elif args.action == 'abandon-inactive-index-build':
+                    # QA-only recovery of a partly built, still unselected
+                    # candidate. All private stores are backed up and kept.
+                    if not args.approve_inactive_index_build_abandon:
+                        raise ValueError('inactive_index_build_abandon_approval_required')
+                    result = product.abandon_inactive_initial_build(
+                        project_root=args.project, state_root=state,
+                        install_id=args.install_id, commit_id=args.commit,
+                        wake_revision=args.wake_revision)
+                elif args.action == 'seal-host-copy':
+                    # Run from the other host's installed copy: seal it in place
+                    # against the journal-bound owner; it never selects a route.
+                    from laya_install_journal import inspect_journal
+                    from laya_product_bundle import (inspect_full_plugin_candidate,
+                                                     seal_companion_host_copy)
+                    recorded = inspect_journal(journal)
+                    identity = recorded.get('selected') or recorded.get('pending')
+                    route = json.loads(product._read_private(state / 'reviewed-route.json', 8192))
+                    if not isinstance(identity, dict) or not isinstance(route, dict):
+                        raise ValueError('host_copy_owner_unselected')
+                    if route.get('projectRoot') != str(Path(args.project).resolve()):
+                        raise ValueError('host_copy_project_mismatch')
+                    owner = inspect_full_plugin_candidate(identity.get('pluginRoot'))
+                    if any(owner[key] != identity.get(key) for key in
+                           ('sourceCommit', 'bundleManifestSha256', 'vectorProfile')):
+                        raise ValueError('host_copy_owner_changed')
+                    proof = seal_companion_host_copy(owner['pluginRoot'], installed)
+                    result = {'status': 'host_copy_sealed', 'ownerRoot': owner['pluginRoot'],
+                              **{key: proof[key] for key in
+                                 ('pluginRoot', 'sourceCommit', 'bundleManifestSha256')}}
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
                     with product._install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
                                 raise ValueError('index_origin_activation_approval_required')
-                            result = product.activate_qmd_origin(
+                            result = product.activate_origin_selection(
                                 Path(args.project), journal, route)
                         else:
-                            result = product.recover_qmd_origin(
+                            result = product.recover_origin_selection(
                                 Path(args.project), journal, route)
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         elif args.action=='activate-learning-profile':result=select_learning(args)
@@ -485,7 +590,8 @@ def main(argv=None):
                 except (OSError,ValueError,KeyError,TypeError) as exc:
                     result['learningProfile']={'status':'profile_review_required','reason':str(exc),'changesApplied':0}
                     result['status']='qmd_ready_learning_profile_review_required'
-        elif args.action.endswith('-store') or args.action == 'store-status':
+        elif args.action.endswith('-store') or args.action in ('store-status', 'replacement-store-status',
+                'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll'):
             import shared_qmd_setup
             result = shared_qmd_setup.run(args)
         else:
@@ -501,6 +607,18 @@ def main(argv=None):
                       'changesApplied': 0}
         else:
             result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
+            if (str(exc) == 'cutover_source_drift_requires_fresh_generation' and
+                    args.action in ('finalize-index-origin', 'activate-index-origin')):
+                # The bound generation is stale and never rebound: the way on.
+                result['nextAction'] = 'retire-index-origin'
+            if (str(exc) == 'initial_build_already_registered' and
+                    args.action == 'prepare-index-origin'):
+                import laya_product_install as product
+                pending = product.retired_build_pointer(Path(args.project).resolve())
+                if pending is not None:
+                    # Only the exact retired build's own pointer is named.
+                    result['nextAction'] = pending['nextAction']
+                    result['retireStateRoot'] = pending['stateRoot']
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing',

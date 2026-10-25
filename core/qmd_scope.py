@@ -21,11 +21,15 @@ def _count(drops, reason, amount=1):
         drops[reason] = drops.get(reason, 0) + amount
 
 
-def scoped_hits(rows, scope_root, config, collections, index_path, drops=None):
+def scoped_hits(rows, scope_root, config, collections, index_path, drops=None,
+                with_revision=False):
     """Drop a malformed, foreign, stale, or canonically out-of-scope QMD result.
 
     `drops`, when given, receives one objective reason count per dropped row.
     Only returned rows are examined; the project is never scanned.
+    `with_revision` adds the private `_verified_path`/`_verified_revision`
+    of the exact indexed bytes just checked. Recall uses the verified path
+    for the selected-file log; neither value authorizes raw-body injection.
     """
     if not isinstance(rows, list):
         return []
@@ -47,7 +51,7 @@ def scoped_hits(rows, scope_root, config, collections, index_path, drops=None):
     local = {} if drops is not None else None
     try:
         with sqlite_read.connect(index_path, timeout=.2) as db:
-            accepted = _checked_hits(db, rows, bases, local)
+            accepted = _checked_hits(db, rows, bases, local, with_revision)
     except (OSError, ValueError, sqlite3.Error):
         # An unreadable or schema-mismatched index proves nothing fresh.
         _count(drops, 'index_unavailable', len(rows))
@@ -57,9 +61,10 @@ def scoped_hits(rows, scope_root, config, collections, index_path, drops=None):
     return accepted
 
 
-def _checked_hits(db, rows, bases, drops=None):
+def _checked_hits(db, rows, bases, drops=None, with_revision=False):
     accepted = []
     revisions = {}
+    verified = {}
     for hit in rows:
         if not isinstance(hit, dict):
             _count(drops, 'malformed')
@@ -127,6 +132,7 @@ def _checked_hits(db, rows, bases, drops=None):
                             revisions[key] = 'oversize'
                         elif digest.hexdigest() == indexed[0][0]:
                             revisions[key] = True
+                            verified[key] = (str(source), indexed[0][0])
                         else:
                             # Current bytes differ from the indexed revision:
                             # an edit, checkout, or pull the index has not seen.
@@ -149,5 +155,7 @@ def _checked_hits(db, rows, bases, drops=None):
         line = hit.get('line')
         if type(line) is int and 1 <= line <= 100000:
             clean['line'] = line
+        if with_revision:
+            clean['_verified_path'], clean['_verified_revision'] = verified[key]
         accepted.append(clean)
     return accepted

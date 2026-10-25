@@ -28,7 +28,7 @@ const NAME=/^test_[a-z0-9_]{1,120}$/;
 const fixture=(args,timeout)=>spawnSync('python3',['test/fixtures/shared-install-checks.py',...args],
  {encoding:'utf8',timeout,env:{...process.env,QMD_SETUP_GUARD_FIXTURE:'',QMD_RECALL_LOG:'',PYTHONDONTWRITEBYTECODE:'1'}});
 for (const [name,group,cases] of [
- ['formal common install preserves v1, resumes failure and proves real hook routing','baseline',19],
+ ['formal common install preserves v1, resumes failure and proves real hook routing','baseline',20],
  ['source stability handles missed hooks, temporary edits and bounded retry','sources',4],
 ]) test(name,async t=>{
  const listed=fixture(['--list',group],LIST_TIMEOUT);

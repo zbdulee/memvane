@@ -184,8 +184,12 @@ def _policy(root):
             "batchMax", "targetExact", "trainerArgv", "baseArtifact",
             "maxRssMib", "minAvailableMib", "maxLoadPerCpu",
             "safetySeconds", "experimental"}
-    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {'modelInputView', 'adaptiveMemory'} or value["schema"] != SCHEMA or value["enabled"] is not True:
+    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {'modelInputView', 'adaptiveMemory', 'targetHeadroomFraction'} or value["schema"] != SCHEMA or value["enabled"] is not True:
         raise ValueError("invalid_shared_policy")
+    if ('targetHeadroomFraction' in value and
+            (type(value['targetHeadroomFraction']) not in (int,float) or
+             not .1<=value['targetHeadroomFraction']<=.5)):
+        raise ValueError('invalid_shared_headroom')
     if not isinstance(value["goldModel"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value["goldModel"]):
         raise ValueError("invalid_gold_model")
     uncapped_gold = value["maxGoldCalls"] is None
@@ -201,7 +205,25 @@ def _policy(root):
             raise ValueError("invalid_shared_budget")
     if not uncapped_gold and (type(value["maxGoldCalls"]) is not int
                               or not 2 <= value["maxGoldCalls"] <= 1000):
-        raise ValueError("invalid_shared_budget")
+        if value["maxGoldCalls"] != 0:
+            raise ValueError("invalid_shared_budget")
+        # Zero is reserved for an exact teacher-free QA transaction. The
+        # installing phase is needed while profile.activate calls _policy;
+        # runtime use still requires the activated phase in synthetic_local_only.
+        import project_learning_setup
+        path = root / project_learning_setup.NAME
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("invalid_shared_budget")
+        setup = read_private_json(path)
+        plan = setup.get("plan") if isinstance(setup, dict) else None
+        if (not isinstance(plan, dict)
+                or setup.get("phase") not in ("installing", "activated")
+                or plan.get("mode") != project_learning_setup.SYNTHETIC_STAGED
+                or setup.get("acceptedSha256") != project_learning_setup.proposal_sha256(plan)
+                or plan.get("policy") != value
+                or plan.get("teacherConsent") is not None
+                or (root / "project-teacher-consent.json").exists()):
+            raise ValueError("invalid_shared_budget")
     if value["batchMax"] < value["batchMin"] or type(value["targetExact"]) not in (int, float) or not .5 <= value["targetExact"] <= 1:
         raise ValueError("invalid_shared_cadence")
     if type(value["maxLoadPerCpu"]) not in (int, float) or not .1 <= value["maxLoadPerCpu"] <= 4:
@@ -2132,6 +2154,10 @@ def launch(config, project, *, parent_id=None, episode=None,
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         project_scope.require(root,_policy(root),'local_train')
+        import project_learning_setup
+        if project_learning_setup.synthetic_local_only(root,project,_policy(root)):
+            # Editing/capture must not start the expressly manual QA job.
+            return {'status':'manual_synthetic_training_required'}
     # A source/card edit has its own one-use hook tickets. SessionStart also
     # retries admission if the prior index worker died after its QMD ACK.
     from .learning_profile import present,SCHEMA
@@ -2162,46 +2188,341 @@ def launch(config, project, *, parent_id=None, episode=None,
         import runtime_work
         receipt=runtime_work.request('learning',str(Path(project).resolve()))
         return receipt or {'status':'deferred_resource'}
-    log_path = root / "worker.log"
-    fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    # General project and legacy source workers also run the capture/teacher
+    # phase. The hook only persists one coalescing full-worker request plus
+    # its durable wake; the runtime dispatcher starts the owned child through
+    # learning_worker_step, so a crash or reboot cannot drop the teacher phase.
+    job_id = "worker:" + secrets.token_hex(12)
+    queued_at = time.time()
+    pointer_path = root / "experimental-checkpoint.json"
+    version = (read_private_json(pointer_path).get("cycle_id", "base")
+               if pointer_path.exists() else "base")
+    metadata = {"job_id": job_id, "parent_id": parent_id,
+                "episode": episode, "op": "shared_worker",
+                "runtime_kind": "local_worker", "model_version": version}
+    job_telemetry.emit(root / "job-telemetry.jsonl", "queued",
+                       ts=queued_at, **metadata)
+    _atomic_json(root / FULL_WORKER_REQUEST, {
+        "schema": FULL_WORKER_SCHEMA, "nonce": secrets.token_hex(16),
+        "afterIndex": bool(after_index),
+        "job": {"QMD_JOB_ID": job_id, "QMD_JOB_PARENT_ID": parent_id or "",
+                "QMD_JOB_EPISODE": str(episode) if episode is not None else "",
+                "QMD_JOB_QUEUED_AT": str(queued_at),
+                "QMD_JOB_MODEL_VERSION": str(version)}})
+    import runtime_work
+    receipt = runtime_work.request('learning', str(Path(project).resolve()))
+    return receipt or {'status': 'deferred_resource'}
+
+
+# A newer request replaces the file (new nonce). Only the full-worker lease
+# holder (the dispatcher's step or the owned child) writes the state file, so
+# a settled nonce never hides a request written while the child was running.
+FULL_WORKER_SCHEMA = "qmd-shared-full-worker-request-v1"
+FULL_WORKER_REQUEST = "full-worker-request.json"
+FULL_WORKER_STATE = "full-worker-state.json"
+FULL_WORKER_LOCK = "full-worker.lock"
+# Starts that never recorded an outcome (crash, kill, reboot). Teacher calls
+# keep their own uncertain-send receipts, so a restart never replays a send.
+MAX_FULL_WORKER_STARTS = 3
+# Training-only retries share FULL_WORKER_LOCK, so one owned learning child
+# exists per shared root. Only the lease holder writes this one record.
+TRAINING_WORKER_SCHEMA = "qmd-shared-training-worker-v1"
+TRAINING_WORKER_STATE = "training-worker-state.json"
+# Full-request outcome whose deferred training phase continues as a
+# training-only request; its finished teacher phase is never rerun.
+TRAINING_HANDOFF = "training_handoff"
+_FULL_WORKER_JOB_KEYS = ("QMD_JOB_ID", "QMD_JOB_PARENT_ID", "QMD_JOB_EPISODE",
+                         "QMD_JOB_QUEUED_AT", "QMD_JOB_MODEL_VERSION")
+
+
+def _full_worker_request(root):
+    path = root / FULL_WORKER_REQUEST
+    if not path.exists() and not path.is_symlink():
+        return None
+    request = read_private_json(path)
+    job = request.get("job") if isinstance(request, dict) else None
+    if (not isinstance(job, dict) or request.get("schema") != FULL_WORKER_SCHEMA
+            or not re.fullmatch(r"[0-9a-f]{32}", str(request.get("nonce")))
+            or not isinstance(request.get("afterIndex"), bool)
+            or set(job) != set(_FULL_WORKER_JOB_KEYS)
+            or any(not isinstance(v, str) or len(v) > 256 or "\x00" in v
+                   for v in job.values())):
+        raise ValueError("invalid_full_worker_request")
+    return request
+
+
+def _valid_worker_state(state, *, training=False):
+    keys = {"nonce", "starts", "outcome", "acked"} | ({"schema", "revision"} if training else set())
+    return (isinstance(state, dict) and set(state) == keys
+            and isinstance(state["nonce"], str) and re.fullmatch(r"[0-9a-f]{32}", state["nonce"]) is not None
+            and type(state["starts"]) is int and 0 <= state["starts"] <= MAX_FULL_WORKER_STARTS
+            and (state["outcome"] is None or (isinstance(state["outcome"], str)
+                                              and 0 < len(state["outcome"]) <= 80))
+            and type(state["acked"]) is bool
+            and (not training or (state["schema"] == TRAINING_WORKER_SCHEMA
+                                  and type(state["revision"]) is int and state["revision"] >= 0)))
+
+
+def _full_worker_state(root, nonce):
+    path = root / FULL_WORKER_STATE
+    if path.exists() or path.is_symlink():
+        state = read_private_json(path)
+        if not _valid_worker_state(state):
+            raise ValueError("invalid_full_worker_state")
+        if state["nonce"] == nonce:
+            return state
+    return {"nonce": nonce, "starts": 0, "outcome": None, "acked": False}
+
+
+def _training_worker_state(root):
+    path = root / TRAINING_WORKER_STATE
+    if not path.exists() and not path.is_symlink():
+        return None
+    state = read_private_json(path)
+    if not _valid_worker_state(state, training=True):
+        raise ValueError("invalid_training_worker_state")
+    return state
+
+
+def _quarantine(root, name):
+    """Move one unreadable private record aside, kept for review.
+
+    Re-reading it on every wake would retry forever; a later valid request
+    (a new hook launch or training wake) writes a fresh record instead.
+    """
     try:
-        info = os.fstat(fd)
+        os.replace(root / name, root / (name + ".invalid"))
+    except FileNotFoundError:
+        pass
+
+
+def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
+    """Fixed argv only; the child inherits the lease FD for its whole life."""
+    if command not in ("run-owned-worker", "run-owned-training"):
+        raise ValueError("invalid_owned_worker_command")
+    log = os.open(root / "worker.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(log)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("unsafe_shared_log")
+        # A whitelist, so a gold-only or test override never reaches the child.
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER") if k in os.environ}
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
-                   TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
-        job_id = "worker:" + secrets.token_hex(12)
-        queued_at = time.time()
-        pointer_path = root / "experimental-checkpoint.json"
-        version = (read_private_json(pointer_path).get("cycle_id", "base")
-                   if pointer_path.exists() else "base")
-        metadata = {"job_id": job_id, "parent_id": parent_id,
-                    "episode": episode, "op": "shared_worker",
-                    "runtime_kind": "local_worker", "model_version": version}
-        job_telemetry.emit(root / "job-telemetry.jsonl", "queued",
-                           ts=queued_at, **metadata)
-        env.update(QMD_JOB_ID=job_id, QMD_JOB_PARENT_ID=parent_id or "",
-                   QMD_JOB_EPISODE=str(episode) if episode is not None else "",
-                   QMD_JOB_QUEUED_AT=str(queued_at), QMD_JOB_MODEL_VERSION=version)
+                   TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
         entry = Path(__file__).resolve().parents[1] / "context_learning_shared.py"
-        import runtime_work
-        receipt=runtime_work.request('learning',str(Path(project).resolve()),start=False)
-        if isinstance(receipt,dict) and receipt['status']=='deferred_queue_capacity':
-            runtime_work.hook_wake();return receipt
         try:
-            action = "run-project-after-index" if after_index else "run-project"
-            subprocess.Popen([sys.executable, str(entry), action, str(Path(project).resolve())],
-                             stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
-                             env=env, start_new_session=True, close_fds=True)
+            spawn([sys.executable, "-B", str(entry), command, str(project), str(lease_fd)],
+                  stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
+                  start_new_session=True, close_fds=True, pass_fds=(lease_fd,))
         except Exception:
             job_telemetry.emit(root / "job-telemetry.jsonl", "finished",
                                status="error", error_code="worker_spawn_failed",
-                               **metadata)
+                               job_id=job_id, op="shared_worker",
+                               runtime_kind="local_worker")
             raise
     finally:
+        os.close(log)
+
+
+def _full_step(root, project, fd, spawn):
+    """Advance one durable full (teacher+trainer) request without running it.
+
+    ``running``/``started`` keep the wake; ``settled``, ``invalid_*`` and
+    ``abandoned_after_restarts`` ACK it once; ``none`` means no unsettled
+    request. A settled ``TRAINING_HANDOFF`` continues as a training-only retry.
+    """
+    try:
+        request = _full_worker_request(root)
+    except (OSError, ValueError):
+        _quarantine(root, FULL_WORKER_REQUEST)
+        return {"status": "invalid_request"}
+    if request is None:
+        return {"status": "none"}
+    try:
+        state = _full_worker_state(root, request["nonce"])
+    except (OSError, ValueError):
+        # Unknown start count: never restart a teacher phase blindly. Queued
+        # cases stay in the ledger; the next hook launch writes a new nonce.
+        _quarantine(root, FULL_WORKER_STATE)
+        _atomic_json(root / FULL_WORKER_STATE, {"nonce": request["nonce"], "starts": 0,
+                                                "outcome": "abandoned_invalid_state", "acked": True})
+        return {"status": "invalid_state"}
+    if state["outcome"] is not None:
+        if state["acked"]:
+            return {"status": "none"}
+        _atomic_json(root / FULL_WORKER_STATE, {**state, "acked": True})
+        return {"status": "settled", "outcome": state["outcome"]}
+    if state["starts"] >= MAX_FULL_WORKER_STARTS:
+        # Queued cases stay in the ledger; the next hook launch retries.
+        _atomic_json(root / FULL_WORKER_STATE, {**state, "outcome": "abandoned_after_restarts",
+                                                "acked": True})
+        return {"status": "abandoned_after_restarts"}
+    # Counted before spawning: a crash between here and exit still counts.
+    state = {**state, "starts": state["starts"] + 1}
+    _atomic_json(root / FULL_WORKER_STATE, state)
+    _spawn_owned(root, project, "run-owned-worker", fd, spawn,
+                 job=request["job"], job_id=request["job"]["QMD_JOB_ID"])
+    return {"status": "started", "mode": "full", "starts": state["starts"]}
+
+
+def _training_step(root, project, revision, fd, spawn, *, handoff=False):
+    """Advance the training-only retry for one wake revision.
+
+    Runtime wake revisions are unique per queue, so a settled state answers
+    exactly the revision that last started it. Any other revision (a wake
+    re-put during or after that run) coalesces into one new request.
+    """
+    path = root / TRAINING_WORKER_STATE
+    try:
+        state = _training_worker_state(root)
+    except (OSError, ValueError):
+        _quarantine(root, TRAINING_WORKER_STATE)
+        return {"status": "invalid_state", "mode": "training"}
+    if state is None or state["outcome"] is not None:
+        if state is not None and state["revision"] == revision and not handoff:
+            if state["acked"]:
+                return {"status": "none"}
+            _atomic_json(path, {**state, "acked": True})
+            return {"status": "settled", "mode": "training", "outcome": state["outcome"]}
+        # A replaced settled record needs no separate ACK: this request covers it.
+        state = {"schema": TRAINING_WORKER_SCHEMA, "nonce": secrets.token_hex(16),
+                 "revision": revision, "starts": 0, "outcome": None, "acked": False}
+    elif state["starts"] >= MAX_FULL_WORKER_STARTS:
+        _atomic_json(path, {**state, "outcome": "abandoned_after_restarts", "acked": True})
+        return {"status": "abandoned_after_restarts", "mode": "training"}
+    state = {**state, "starts": state["starts"] + 1, "revision": revision}
+    _atomic_json(path, state)
+    _spawn_owned(root, project, "run-owned-training", fd, spawn,
+                 job={}, job_id="training-worker:" + state["nonce"])
+    return {"status": "started", "mode": "training", "starts": state["starts"]}
+
+
+def learning_worker_step(root, project, revision, *, spawn=None):
+    """Dispatcher step for one learning wake; never runs teacher or trainer.
+
+    One lease covers both modes, so at most one owned learning child exists
+    per shared root. A full (teacher+trainer) request goes first; otherwise
+    the wake is a training-only retry. ``running``/``started`` keep the wake.
+    """
+    from .resource_coordination import _lock
+    root, project = _validated_root(root), Path(project).resolve(strict=True)
+    if type(revision) is not int or revision < 0:
+        raise ValueError("invalid_runtime_revision")
+    fd = _lock(root / FULL_WORKER_LOCK)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"status": "running"}
+        spawn = spawn or subprocess.Popen
+        full = _full_step(root, project, fd, spawn)
+        handoff = full.get("outcome") == TRAINING_HANDOFF
+        if full["status"] != "none" and not handoff:
+            return full
+        return _training_step(root, project, revision, fd, spawn, handoff=handoff)
+    finally:
         os.close(fd)
-    return {"status": "launched"}
+
+
+def _owned_root(project):
+    import config
+    project = Path(project).resolve(strict=True)
+    cfg = config.find_project_config(str(project))["config"]
+    return project, cfg, _safe_root(cfg, project)
+
+
+def _check_owned_lease(root, fd):
+    info, expected = os.fstat(fd), (root / FULL_WORKER_LOCK).stat()
+    if (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino):
+        raise ValueError("full_worker_lease_changed")
+
+
+def _settle_owned(root, name, state, result, project, *, handoff=False):
+    """Record one child outcome under the lease; retries keep a durable wake."""
+    import runtime_wake_policy
+    status = result.get("status") if isinstance(result, dict) else None
+    status = status[:80] if isinstance(status, str) and status else "failed"
+    retry = status in runtime_wake_policy.RETRY
+    # Only a retryable result hands off; a finished cycle settles normally.
+    handoff = handoff and retry
+    if retry and not handoff:
+        # Completed without a crash: the restart budget starts over, and
+        # the request stays pending for the next admitted dispatch.
+        _atomic_json(root / name, {**state, "starts": 0, "outcome": None, "acked": False})
+    else:
+        _atomic_json(root / name, {**state, "outcome": TRAINING_HANDOFF if handoff else status,
+                                   "acked": False})
+    if not retry:
+        return result
+    import runtime_work
+    receipt = runtime_work.request('learning', str(project))
+    lost = isinstance(receipt, dict) and receipt.get("status") == "deferred_queue_capacity"
+    return {**result, "learning_retry": {"status": "wake_dropped_until_next_hook" if lost else
+                                         "training_only_handoff" if handoff else
+                                         "durable_wake_pending"}}
+
+
+def _run_owned_worker(project, lease_fd):
+    """Child body: full worker under the inherited lease, then settle once."""
+    project, cfg, root = _owned_root(project)
+    if root is None:
+        return {"status": "disabled"}
+    fd = int(lease_fd)
+    _check_owned_lease(root, fd)
+    try:
+        # Same open file description as the spawner's lock: succeeds only for
+        # the inherited owner, never for a stray process with a fresh open.
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        request = _full_worker_request(root)
+        if request is None:
+            return {"status": "idle"}
+        try:
+            result = run(root, project=project, sync_config=cfg,
+                         wait_for_lock=request["afterIndex"])
+        except ResourceDeferred as exc:
+            result = {"status": "deferred_resource", "reason": str(exc)[:80]}
+        except Exception as exc:
+            result = {"status": "failed", "reason": str(exc)[:80]}
+        state = _full_worker_state(root, request["nonce"])
+        # A deferral after the teacher phase finished (a cycle result exists)
+        # retries training only, so the teacher phase is never entered again.
+        return _settle_owned(root, FULL_WORKER_STATE, state, result, project,
+                             handoff=isinstance(result, dict) and "cycle" in result)
+    finally:
+        os.close(fd)
+
+
+def _run_owned_training(project, lease_fd):
+    """Child body: local training/evaluation retry only, then settle once.
+
+    Never calls ``run``: no teacher, observation, capture or enrollment.
+    Pressure yields inside the trainer at its committed group boundary and
+    returns ``deferred_resource``; the durable wake then waits for runtime
+    admission before a fresh child resumes from the committed cursor.
+    """
+    import setup_guard
+    project, _, root = _owned_root(project)
+    if root is None:
+        return {"status": "disabled"}
+    fd = int(lease_fd)
+    _check_owned_lease(root, fd)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state = _training_worker_state(root)
+        if state is None or state["outcome"] is not None:
+            return {"status": "idle"}
+        if setup_guard.status(project)["status"] != "ready":
+            result = {"status": "setup_in_progress"}
+        else:
+            try:
+                result = run_training_pending(root, project)
+            except ResourceDeferred as exc:
+                result = {"status": "deferred_resource", "reason": str(exc)[:80]}
+            except Exception as exc:
+                result = {"status": "failed", "reason": str(exc)[:80]}
+        return _settle_owned(root, TRAINING_WORKER_STATE, state, result, project)
+    finally:
+        os.close(fd)
 
 
 def wake_after_index(project):
@@ -2290,6 +2611,10 @@ def run_training_pending(root,project):
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
+    import project_learning_setup
+    if project_learning_setup.synthetic_local_only(root,project,policy):
+        budget=project_learning_setup.synthetic_budget_status(root,project,policy)
+        if budget['status']!='ready':return budget
     from . import project_scope
     if project_scope.present(root):
         from .project_worker import setup_ready
@@ -2297,12 +2622,13 @@ def run_training_pending(root,project):
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         if not setup_ready(root):return {'status':'setup_in_progress'}
-        from .general_teacher import read_weekly_quota
-        try:read_weekly_quota()
-        except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
-        except ValueError as exc:
-            return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
-                'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable'}
+        if not project_learning_setup.synthetic_local_only(root,project,policy):
+            from .general_teacher import read_weekly_quota
+            try:read_weekly_quota()
+            except ResourceDeferred as exc:return {'status':'deferred_resource','reason':str(exc)}
+            except ValueError as exc:
+                return {'status':'deferred_quota','reason':str(exc) if str(exc) in (
+                    'weekly_quota_checkpoint','weekly_quota_unavailable') else 'weekly_quota_unavailable'}
     from . import learning_profile
     selected_profile=learning_profile.present(root) or cfg.get('sharedLearning',{}).get('profile')==learning_profile.SCHEMA
     profile=None
@@ -2369,12 +2695,30 @@ def _profile_apply(root,policy,profile,result):
 
 
 def main(argv):
+    owned = {"run-owned-worker": _run_owned_worker, "run-owned-training": _run_owned_training}
+    if argv[:1] and argv[0] in owned and len(argv) == 3:
+        try:
+            result = owned[argv[0]](argv[1], argv[2])
+        except Exception as exc:
+            result = {"status": "failed", "reason": str(exc)[:80]}
+        print(canonical(result), flush=True)
+        return 1 if result["status"] == "failed" else 0
     if len(argv) != 2 or argv[0] not in ("run", "run-project", "run-project-after-index",
+                                          "start-synthetic-training",
                                           "launch-project", "wake-after-index",
                                           "status", "rollback"):
         return 2
     try:
-        if argv[0] == "wake-after-index":
+        if argv[0] == "start-synthetic-training":
+            import config,project_learning_setup,runtime_work
+            project=Path(argv[1]).resolve(strict=True)
+            cfg=config.find_project_config(str(project))['config']
+            root=_safe_root(cfg,project)
+            if root is None or not project_learning_setup.synthetic_local_only(root,project,_policy(root)):
+                raise ValueError('synthetic_training_setup_required')
+            budget=project_learning_setup.start_synthetic_budget(root,project,_policy(root))
+            result=(runtime_work.request('learning',str(project)) or {'status':'deferred_resource'}) if budget['status']=='ready' else budget
+        elif argv[0] == "wake-after-index":
             result = wake_after_index(argv[1])
         elif argv[0] == "launch-project":
             import config
