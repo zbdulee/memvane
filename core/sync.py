@@ -55,6 +55,7 @@ def read_state(path):
 
 
 EXIT_STATE_UNREADABLE = 3
+EXIT_RECOVERY_REQUIRED = 4
 
 
 class StateUnreadable(Exception):
@@ -100,8 +101,9 @@ def write_state_atomic(path, snapshot):
     """스냅샷/커서 상태를 원자적으로 쓴다. **반환값이 없고 실패는 예외로 전파된다.**
 
     이 함수는 "삼킨 반환값" 목록에 오를 수 없다 — 확인할 값이 없고 실패가 조용하지 않다.
-    호출부 분류는 전부 동일하다(**실패 방향이 안전**): 쓰기가 실패하면 상태가 전진하지
-    않으므로 다음 회차가 같은 범위를 다시 처리한다. 손해는 재처리이고 유실이 아니다.
+    쓰기가 실패하면 상태가 전진하지 않는다. 수동 wiki compile sync는 별도 pending
+    마커를 남겨 자동 재처리와 baseline 전진을 모두 막는다. 다른 호출부는 각자의
+    재처리 계약을 따른다.
     sync에서는 예외가 `run()`을 뚫고 나가 skill(`set -euo pipefail`)에서 실패로 보이며,
     백그라운드 스캐너(`wiki_source_scan`·`wiki_dedup_scan`)에서는 각자의 `main()`이 잡아
     로그에 `EXCEPTION`으로 남긴다.
@@ -112,6 +114,75 @@ def write_state_atomic(path, snapshot):
         json.dump(snapshot, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(tmp, path)
+
+
+def pending_marker_path(path):
+    return path.with_name(f'{path.name}.pending-compile')
+
+
+def pending_marker_state(path, project_root, state_file):
+    """Fail closed when a prior enqueue may have been claimed before snapshot ACK."""
+    if not os.path.lexists(path):
+        return 'absent'
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 4096):
+            return 'invalid'
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if data != {'schema': 1, 'projectRoot': project_root,
+                    'statePath': str(state_file)}:
+            return 'invalid'
+        return 'valid'
+    except (OSError, UnicodeError, ValueError):
+        return 'invalid'
+
+
+def write_pending_marker(path, project_root, state_file):
+    """Durably mark enqueue intent before any queue write or worker claim."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({'schema': 1, 'projectRoot': project_root,
+                          'statePath': str(state_file)}, sort_keys=True).encode('utf-8')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    created = os.fstat(fd)
+    try:
+        if os.write(fd, payload) != len(payload):
+            raise OSError('short_pending_marker_write')
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        # No enqueue has started if marker creation failed. Remove only this
+        # inode; if cleanup itself fails, the residue still blocks all syncs.
+        try:
+            current = path.lstat()
+            if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                path.unlink()
+                parent = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+        except OSError:
+            pass
+        raise
+
+
+def clear_pending_marker(path):
+    path.unlink()
+    parent = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
 
 
 def lock_path(explicit=None):
@@ -348,6 +419,15 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
         project_root = info["projectRoot"]
         config_path = info["configPath"]
         out_state = state_path(project_root, config_path, state_root=state_root)
+        marker = pending_marker_path(out_state)
+        marker_state = pending_marker_state(marker, project_root, out_state)
+        # Intent alone cannot prove which paid source jobs reached the queue or
+        # were claimed. Even baseline-only must not advance past uncertain work.
+        if marker_state != 'absent':
+            emit_json(json_output, {'ok': False, 'reason': 'sync_recovery_required',
+                                    'projectRoot': project_root, 'statePath': str(out_state),
+                                    'pendingPath': str(marker)})
+            return EXIT_RECOVERY_REQUIRED
 
         roots, refused_reason = resolve_collection_roots(project_root, config)
         if refused_reason or not roots:
@@ -412,6 +492,15 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
             reason = "dry_run"
         else:
             if changed:
+                # A worker can drain the source queue before a failed snapshot
+                # is retried. A live-queue revision check alone cannot prove
+                # whether that revision was already paid for. Leave this marker
+                # on failure. Intent alone is insufficient to advance a baseline.
+                guarded_compile = (not session_start and
+                    compile_enqueue.compile_gate(config,
+                        compile_enqueue.COMPILE_ACCEPTED_TRIGGERS) is not None)
+                if guarded_compile:
+                    write_pending_marker(marker, project_root, out_state)
                 # role `source`만 바뀐 sync는 dirty 큐에 넣을 것이 없다. 그래도 compile
                 # enqueue와 스냅샷 전진은 해야 한다 — 안 하면 그 변경이 매 sync마다
                 # 재검출되고 compile이 같은 파일을 반복 큐잉한다(유료 호출 반복).
@@ -431,6 +520,8 @@ def run(cwd, *, json_output=False, dry_run=False, baseline_only=False,
                     enqueue_wiki=lambda files: compile_enqueue.enqueue_changed_sources(
                         project_root, config, files, session_start=session_start),
                     persist=lambda value: write_state_atomic(out_state, value))
+                if guarded_compile:
+                    clear_pending_marker(marker)
                 reason = "synced"
             else:
                 reason = "unchanged"

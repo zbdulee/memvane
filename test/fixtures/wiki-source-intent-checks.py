@@ -189,7 +189,7 @@ class ProjectFixture(unittest.TestCase):
 
 
 class EnqueueThroughSeam(ProjectFixture):
-    """New `enqueue_changed_sources` must equal the legacy oracle byte for byte."""
+    """Legacy queue fields remain exact; manual sync adds only source revision."""
 
     def compare(self, config=None, *, session_start=False, cap=None):
         config = config or self.config
@@ -204,7 +204,18 @@ class EnqueueThroughSeam(ProjectFixture):
                                                 session_start=session_start)
             current_bytes = self.drain()
         self.assertEqual(current, legacy)
-        self.assertEqual(current_bytes, legacy_bytes)
+        if current_bytes is None or legacy_bytes is None:
+            self.assertEqual(current_bytes, legacy_bytes)
+        else:
+            current_rows = self.rows(current_bytes)
+            legacy_rows = self.rows(legacy_bytes)
+            for row in current_rows:
+                if not session_start:
+                    source = self.project / row['source']['path']
+                    self.assertEqual(row.pop('contentRevision'),
+                                     hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertEqual(current_rows, legacy_rows,
+                             'all existing queue fields and order stay unchanged')
         self.assertEqual(changed, self.changed, 'the change set is not mutated')
         self.assertEqual(self.source_digest(), sources, 'source files are never written')
         return current, current_bytes
@@ -339,17 +350,19 @@ class RevisionCoalescing(ProjectFixture):
         self.assertEqual(self.queue.read_bytes(), before)
         self.assertTrue(before.startswith(foreign), 'unrelated queue lines are left alone')
 
-    def test_new_revision_other_trigger_or_no_revision_still_appends(self):
+    def test_new_revision_or_trigger_appends_but_manual_live_retry_dedups(self):
         self.enqueue(self.hashed('r1'))
         self.assertEqual(self.enqueue(self.hashed('r2'))['queued'], 4)
         # The file-change event path hashes too but records post_sync_source.
         self.assertEqual(self.enqueue(self.hashed('r2'), session_start=False)['queued'], 4)
-        # Manual sync has no revision: it is never coalesced, even with itself.
-        for _ in range(2):
-            self.assertEqual(self.enqueue(copy.deepcopy(self.changed), session_start=False)['queued'], 4)
+        # Manual sync hashes the source. A still-live same-revision row is not
+        # appended a second time, but it retains an internal wake hint.
+        self.assertEqual(self.enqueue(copy.deepcopy(self.changed), session_start=False)['queued'], 4)
+        self.assertEqual(self.enqueue(copy.deepcopy(self.changed), session_start=False),
+                         self.SKIPPED_ALL)
         rows = self.rows(self.queue.read_bytes())
-        self.assertEqual(len(rows), 20)
-        self.assertEqual(sum('contentRevision' not in r for r in rows), 8)
+        self.assertEqual(len(rows), 16)
+        self.assertEqual(sum('contentRevision' not in r for r in rows), 0)
 
     def test_skipped_rows_use_cap_slots_but_are_not_deferred(self):
         only_a = {'docs': {'root': str(self.project / 'docs'), 'created': [],
@@ -492,13 +505,21 @@ class RevisionCoalescing(ProjectFixture):
                          [f"r1:{r['source']['path'].split('/', 1)[1]}" for r in legacy])
         self.assertEqual(current, legacy)
 
-    def test_unhashed_bytes_match_legacy_across_repeated_runs(self):
-        for _ in range(2):
-            legacy_enqueue(str(self.project), self.config, copy.deepcopy(self.changed))
-        legacy = self.drain()
-        for _ in range(2):
-            E.enqueue_changed_sources(str(self.project), self.config, copy.deepcopy(self.changed))
-        self.assertEqual(self.drain(), legacy)
+    def test_manual_rows_keep_legacy_fields_and_a_live_retry_dedups(self):
+        legacy_enqueue(str(self.project), self.config, copy.deepcopy(self.changed))
+        legacy = self.rows(self.drain())
+        E.enqueue_changed_sources(str(self.project), self.config, copy.deepcopy(self.changed))
+        before = self.queue.read_bytes()
+        current = self.rows(before)
+        for row in current:
+            source = self.project / row['source']['path']
+            self.assertEqual(row.pop('contentRevision'),
+                             hashlib.sha256(source.read_bytes()).hexdigest())
+        self.assertEqual(current, legacy)
+        self.assertEqual(E.enqueue_changed_sources(
+            str(self.project), self.config, copy.deepcopy(self.changed)),
+            self.SKIPPED_ALL)
+        self.assertEqual(self.queue.read_bytes(), before)
 
 
 if __name__ == '__main__':

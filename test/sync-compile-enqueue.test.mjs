@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -152,6 +153,160 @@ test("changed markdown is enqueued to the compile source queue with the sync tri
     assert.equal(second.reason, "unchanged");
     assert.equal(second.compileQueued, 0);
     assert.equal(compileRecords(dir).length, 2);
+  } finally {
+    cleanup(envInfo, dir);
+  }
+});
+
+test("failed manual sync blocks baseline recovery until queued work is proved", () => {
+  const envInfo = makeEnv();
+  const dir = makeProject(envInfo);
+  mkdirSync(join(dir, "docs"), { recursive: true });
+  writeSettings(dir);
+  seedOwner(envInfo, dir);
+  const source = join(dir, "docs", "a.md");
+  writeFileSync(source, "revision one\n");
+  try {
+    const failed = spawnSync("python3", ["-c", `
+import sys
+sys.path.insert(0, 'core')
+import sync
+def fail(_path, _snapshot):
+    raise OSError('synthetic snapshot denial')
+sync.write_state_atomic = fail
+sync.run(sys.argv[1], json_output=True)
+`, dir], { encoding: "utf8", env: envInfo.env });
+    assert.notEqual(failed.status, 0);
+    assert.equal(compileRecords(dir).length, 1);
+    const retried = spawnSync("python3", ["core/sync.py", "--cwd", dir, "--json"],
+      {encoding: "utf8", env: envInfo.env});
+    assert.equal(retried.status, 4, retried.stdout + retried.stderr);
+    assert.equal(JSON.parse(retried.stdout).reason, "sync_recovery_required");
+    assert.equal(compileRecords(dir).length, 1);
+    assert.equal(compileRecords(dir)[0].contentRevision,
+      createHash("sha256").update(readFileSync(source)).digest("hex"));
+    const baseline = spawnSync("python3", ["core/sync.py", "--cwd", dir,
+      "--baseline-only", "--json"], {encoding: "utf8", env: envInfo.env});
+    assert.equal(baseline.status, 4, baseline.stdout + baseline.stderr);
+    assert.equal(JSON.parse(baseline.stdout).reason, "sync_recovery_required");
+    assert.equal(existsSync(`${JSON.parse(retried.stdout).statePath}.pending-compile`), true);
+    assert.equal(compileRecords(dir).length, 1);
+    writeFileSync(join(dir, "docs", "b.md"), "later revision\n");
+    const later = spawnSync("python3", ["core/sync.py", "--cwd", dir,
+      "--baseline-only", "--json"], {encoding: "utf8", env: envInfo.env});
+    assert.equal(later.status, 4, later.stdout + later.stderr);
+    assert.equal(compileRecords(dir).length, 1, "later changes must not be absorbed");
+  } finally {
+    cleanup(envInfo, dir);
+  }
+});
+
+test("a claimed job after snapshot failure blocks automatic replay", () => {
+  const envInfo = makeEnv();
+  const dir = makeProject(envInfo);
+  mkdirSync(join(dir, "docs"), {recursive: true});
+  writeSettings(dir);
+  seedOwner(envInfo, dir);
+  writeFileSync(join(dir, "docs", "a.md"), "claimed revision\n");
+  const queue = compileQueuePath(dir);
+  const claimed = `${queue}.claimed.999999.synthetic`;
+  try {
+    const failed = spawnSync("python3", ["-c", `
+import sys
+sys.path.insert(0, 'core')
+import sync
+sync.write_state_atomic = lambda *_: (_ for _ in ()).throw(OSError('synthetic denial'))
+sync.run(sys.argv[1], json_output=True)
+`, dir], {encoding: "utf8", env: envInfo.env});
+    assert.notEqual(failed.status, 0);
+    const queued = readFileSync(queue, "utf8");
+    writeFileSync(claimed, queued);
+    rmSync(queue);
+    const retry = spawnSync("python3", ["core/sync.py", "--cwd", dir, "--json"],
+      {encoding: "utf8", env: envInfo.env});
+    assert.equal(retry.status, 4, retry.stdout + retry.stderr);
+    assert.equal(JSON.parse(retry.stdout).reason, "sync_recovery_required");
+    assert.equal(existsSync(queue), false, "claimed work must not be re-enqueued");
+    assert.equal(readFileSync(claimed, "utf8"), queued);
+  } finally {
+    cleanup(envInfo, dir);
+  }
+});
+
+test("a denied recovery marker write never enqueues a paid source", () => {
+  const envInfo = makeEnv();
+  const dir = makeProject(envInfo);
+  mkdirSync(join(dir, "docs"), {recursive: true});
+  writeSettings(dir);
+  seedOwner(envInfo, dir);
+  writeFileSync(join(dir, "docs", "a.md"), "new revision\n");
+  try {
+    const failed = spawnSync("python3", ["-c", `
+import sys
+sys.path.insert(0, 'core')
+import sync
+sync.write_pending_marker = lambda *_: (_ for _ in ()).throw(PermissionError('synthetic denial'))
+sync.run(sys.argv[1], json_output=True)
+`, dir], {encoding: "utf8", env: envInfo.env});
+    assert.notEqual(failed.status, 0);
+    assert.equal(existsSync(compileQueuePath(dir)), false);
+    assert.deepEqual(dirtyQueueLines(envInfo), []);
+  } finally {
+    cleanup(envInfo, dir);
+  }
+});
+
+test("a partial marker write failure leaves no residue or queued work", () => {
+  const envInfo = makeEnv();
+  const dir = makeProject(envInfo);
+  mkdirSync(join(dir, "docs"), {recursive: true});
+  writeSettings(dir);
+  seedOwner(envInfo, dir);
+  writeFileSync(join(dir, "docs", "a.md"), "new revision\n");
+  try {
+    const failed = spawnSync("python3", ["-c", `
+import os, sys
+sys.path.insert(0, 'core')
+import sync
+sync.os.fsync = lambda *_: (_ for _ in ()).throw(OSError('synthetic marker fsync denial'))
+sync.run(sys.argv[1], json_output=True)
+`, dir], {encoding: "utf8", env: envInfo.env});
+    assert.notEqual(failed.status, 0);
+    assert.equal(existsSync(compileQueuePath(dir)), false);
+    assert.deepEqual(dirtyQueueLines(envInfo), []);
+    const state = runSync(dir, envInfo, ["--dry-run"]);
+    assert.equal(existsSync(`${state.statePath}.pending-compile`), false);
+  } finally {
+    cleanup(envInfo, dir);
+  }
+});
+
+test("legacy claimed jobs survive a baseline recovery without replacement work", () => {
+  const envInfo = makeEnv();
+  const dir = makeProject(envInfo);
+  mkdirSync(join(dir, "docs"), {recursive: true});
+  writeSettings(dir);
+  seedOwner(envInfo, dir);
+  writeFileSync(join(dir, "docs", "a.md"), "legacy revision\n");
+  const queue = compileQueuePath(dir);
+  const claimed = `${queue}.claimed.999999.synthetic`;
+  try {
+    const first = runSync(dir, envInfo);
+    assert.equal(first.compileQueued, 1);
+    const legacy = JSON.parse(readFileSync(queue, "utf8"));
+    delete legacy.contentRevision;
+    writeFileSync(claimed, JSON.stringify(legacy) + "\n");
+    rmSync(queue);
+    // A previous attempt may have been claimed when the snapshot was lost.
+    // Official baseline-only must never invent a replacement paid job.
+    const {statePath} = first;
+    rmSync(statePath);
+    const baseline = runSync(dir, envInfo, ["--baseline-only"]);
+    assert.equal(baseline.reason, "baseline");
+    assert.equal(existsSync(queue), false);
+    assert.equal(readFileSync(claimed, "utf8"), JSON.stringify(legacy) + "\n");
+    assert.equal(runSync(dir, envInfo).reason, "unchanged");
+    assert.equal(existsSync(queue), false);
   } finally {
     cleanup(envInfo, dir);
   }

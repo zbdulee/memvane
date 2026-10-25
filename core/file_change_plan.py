@@ -120,6 +120,8 @@ def apply_change_set(index_targets, changed_files, snapshot, previous, *,
     precedes persistence. `enqueue_index=None` skips index work while the
     plan still reports its targets. `enqueue_wiki` is always called and must
     return the wiki owner's `{queued, deferred, deferredFiles, reason}` result.
+    Manual sync surrounds this sequence with a durable pending marker, so its
+    retry stops for review when persistence fails after enqueue.
     """
     if index_targets and enqueue_index is not None:
         enqueue_index(index_targets)

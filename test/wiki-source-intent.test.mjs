@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtempSync} from 'node:fs';
 import {join} from 'node:path';
 import {removeTemp} from './helpers/temp.mjs';
-test('wiki source-intent planning is pure and enqueue_changed_sources keeps its queue bytes, consent, cap and deferrals',()=>{
+test('wiki source-intent planning is pure and manual revisions preserve prior queue fields, consent, cap and deferrals',()=>{
  // Importing config fixes HOME-derived constants; keep them disposable.
  const home=mkdtempSync(join(process.cwd(),'qmd-wiki-source-intent-home-'));
  try{
