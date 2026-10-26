@@ -1546,10 +1546,34 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                     wiki_root: Path, candidate: dict, regenerate: bool) -> int:
     import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        from laya_source_exclusion import excluded_source
+        skips = selected[0]['recallSettings']['skipPaths']
+        sources = candidate.get('sources')
+        source_paths = []
+        if isinstance(sources, list):
+            source_paths = [item.get('path') for item in sources
+                            if isinstance(item, dict) and item.get('kind') == 'file']
+        source_paths.extend(item['path'] for item in source_revisions(candidate))
+        if any(excluded_source(path, skips) for path in source_paths):
+            print(json.dumps({'action': 'rejected', 'reason': 'source_folder_excluded'},
+                             ensure_ascii=False))
+            return 0
 
     suggested_type = candidate.get("suggestedType") if candidate.get("suggestedType") in ALLOWED_TYPES else "concept"
     identity_index = build_identity_index(wiki_root)
     target, target_reason, target_matches = resolve_target(root, wiki_root, candidate, suggested_type, identity_index)
+    if selected is not None and target is not None and target.exists():
+        from laya_source_exclusion import card_sources_allowed
+        try:
+            allowed_target = card_sources_allowed(
+                target.read_text(encoding='utf-8'), selected[0]['recallSettings']['skipPaths'])
+        except (OSError, UnicodeError):
+            allowed_target = False
+        if not allowed_target:
+            print(json.dumps({'action': 'rejected', 'reason': 'target_source_folder_excluded'},
+                             ensure_ascii=False))
+            return 0
     max_lines = int(compile_cfg.get("maxAutoPageLines", 120) or 120)
     lint = lint_candidate(candidate, target, max_lines)
     # 한 줄 라벨이므로 개행·탭을 소스에서 접는다(dump의 이스케이프는 안전망으로 남는다).

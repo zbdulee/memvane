@@ -743,6 +743,33 @@ def process_verify_job(
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "stale_job"})
         return True, False
 
+    if selected_route is not None:
+        # Old verify jobs may outlive a newly selected source-folder policy.
+        # Do not send an excluded raw source or a mixed-source card to a host
+        # model; keep its generated file recoverable and unverified.
+        from laya_source_exclusion import card_sources_allowed, excluded_source
+        skips = selected_route[0]['recallSettings']['skipPaths']
+        if skips:
+            job_revisions = job.get('sourceRevisions')
+            sources = job.get('sources')
+            normalized = [yaml_scalars.normalize_source_revision(item)
+                          for item in job_revisions] if isinstance(job_revisions, list) else []
+            unsafe = (not card_sources_allowed(text, skips) or not job_revisions or
+                      any(item is None or excluded_source(item['path'], skips)
+                          for item in normalized) or
+                      not isinstance(sources, list) or
+                      any(not isinstance(item, dict) or
+                          (item.get('kind') == 'file' and
+                           (not isinstance(item.get('path'), str) or
+                            excluded_source(item['path'], skips)))
+                          for item in sources))
+        else:
+            unsafe = False
+        if unsafe:
+            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                                   'reason': 'source_folder_excluded'})
+            return True, False
+
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
     snapshot_sources, freshness, span_evidence = snapshot_revision_evidence(
         root, config, job, max_chars)

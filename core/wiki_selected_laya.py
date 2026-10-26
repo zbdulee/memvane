@@ -99,6 +99,7 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
     if len(files) > 200:
         raise ValueError('selected_wiki_retrieval_capacity')
     matches = []
+    skip_paths = bound[0]['recallSettings']['skipPaths']
     total_bytes = 0
     for path in files:
         if path.is_symlink() or not path.is_file():
@@ -111,6 +112,13 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
         if size > 5_000_000 or total_bytes > 5_000_000:
             raise ValueError('selected_wiki_source_oversize')
         body = path.read_text(encoding='utf-8')
+        if skip_paths:
+            # Grounding and duplicate review must not feed a card from an
+            # excluded raw folder to a paid extractor. Mixed-source cards are
+            # withheld as a whole; no file is deleted or rewritten.
+            from laya_source_exclusion import card_sources_allowed
+            if not card_sources_allowed(body, skip_paths):
+                continue
         words = set(re.findall(r'\w+', body.casefold()))
         common = len(terms & words)
         if common:
@@ -152,7 +160,13 @@ def run(project: Path):
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:
         return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
+    # A selected policy may exclude a source after its old refresh event was
+    # recorded. Keep the ledger for reversible re-enrollment, but do not hold
+    # the selected compile wake open for a source the worker must not compile.
+    from laya_source_exclusion import excluded_source
+    active_unresolved = [item for item in unresolved if not excluded_source(
+        item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
     if ((source.exists() and source.stat().st_size) or
-            (verify.exists() and verify.stat().st_size) or unresolved):
+            (verify.exists() and verify.stat().st_size) or active_unresolved):
         return {'state': 'pending', 'processed': answer['processed']}
     return {'state': 'drained', 'processed': answer['processed']}

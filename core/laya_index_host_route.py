@@ -161,13 +161,17 @@ def _selected_settings_supported(raw: dict, cfg: dict, collection: str) -> bool:
 
 
 def _multi_settings_supported(raw: dict, cfg: dict, names: tuple[str, ...]) -> bool:
-    """Current multi-source policy: one raw + one wiki, zero score cutoffs."""
+    """Bind legacy QMD settings; selected Laya search is always wiki-only."""
     roles = raw.get('collectionRoles')
+    strategy = raw.get('recallStrategy', 'hierarchical')
+    skip_paths = raw.get('skipPaths', [])
     if (not isinstance(roles, dict) or set(roles) != set(names)
             or sorted(roles.values()) != ['raw', 'wiki']
-            or raw.get('recallStrategy', 'hierarchical') != 'hierarchical'
-            or cfg.get('recallStrategy') != 'hierarchical'
-            or raw.get('skipPaths', []) != [] or cfg.get('skipPaths') != []
+            or strategy not in ('hierarchical', 'wikiOnly')
+            or cfg.get('recallStrategy') != strategy
+            or not isinstance(skip_paths, list)
+            or any(not isinstance(path, str) or not path for path in skip_paths)
+            or cfg.get('skipPaths') != skip_paths
             or raw.get('allowRoots', []) != [] or cfg.get('allowRoots') != []
             or raw.get('lexicalPatterns', []) not in ([], ['ep'])
             or cfg.get('lexicalPatterns') not in ([], ['ep'])):

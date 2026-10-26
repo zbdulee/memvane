@@ -126,6 +126,40 @@ class HostRouteChecks(unittest.TestCase):
         self.assertEqual(decision['recallSettings']['recallStrategy'],
                          'hierarchical')
 
+    def test_v2_wiki_only_keeps_optional_source_exclusions(self):
+        (self.auto / 'wiki').mkdir()
+        private = Path(self.temp.name).resolve() / 'private-state'
+        private.mkdir(mode=0o700)
+        base = {'collections': ['docs', 'wiki'], 'indexing': True,
+                'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
+                'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+                'recallStrategy': 'wikiOnly', 'compile': {'mode': 'off'}}
+        for skip_paths in (None, ['build', 'without_skill']):
+            with self.subTest(skip_paths=skip_paths):
+                settings = dict(base)
+                if skip_paths is not None:
+                    settings['skipPaths'] = skip_paths
+                self.settings.write_text(json.dumps(settings))
+                record = self.record(schema=route.SCHEMA_V2,
+                                     journalPath=str(private / 'install-journal.sqlite'))
+                del record['collectionName'], record['sourceRoot']
+                record['collections'] = [
+                    {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
+                    {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
+                self.path.write_text(json.dumps(record))
+                decision = route.select_route(str(self.root))
+                self.assertEqual(decision['state'], 'candidate', decision)
+                self.assertEqual(decision['recallSettings']['recallStrategy'], 'wikiOnly')
+                self.assertEqual(decision['recallSettings']['skipPaths'], skip_paths or [])
+                self.assertEqual(route.wiki_index_roots(decision['collections']),
+                                 {'wiki': str(self.auto / 'wiki')})
+        settings['skipPaths'] = ['build', 3]
+        self.settings.write_text(json.dumps(settings))
+        record['settingsSha256'] = hashlib.sha256(self.settings.read_bytes()).hexdigest()
+        self.path.write_text(json.dumps(record))
+        self.assertEqual(route.select_route(str(self.root))['reason'],
+                         'selected_recall_settings_unsupported')
+
     def test_v2_current_auto_wiki_compile_remains_blocked(self):
         (self.auto / 'wiki').mkdir()
         self.settings.write_text(json.dumps({
@@ -148,6 +182,9 @@ class HostRouteChecks(unittest.TestCase):
             'collections': ['docs', 'wiki'], 'indexing': True,
             'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
             'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'wikiOnly',
+            'skipPaths': ['node_modules', '.git', 'dist', 'build', '-workspace',
+                          'with_skill', 'without_skill'],
             'compile': {'mode': 'auto-wiki',
                         'triggers': ['post_tool_source', 'post_sync_source', 'manual'],
                         'extractor': {'builtins': ['claude', 'codex', 'hermes']}}}))
