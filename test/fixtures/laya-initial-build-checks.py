@@ -42,13 +42,15 @@ PROFILE_ID = profile_identity(PROFILE['model_id'], PROFILE['embedding_fingerprin
 
 class FakeProvider:
     calls = []
+    budgets = []
 
     def __init__(self, _manifest=None):
         self.profile = {**PROFILE, 'profile_id': PROFILE_ID}
         self.manifest = {'recipeId': vc.CANDIDATE_RECIPE}
 
-    def embed_document_chunks(self, body, path):
+    def embed_document_chunks(self, body, path, *, timeout=120):
         FakeProvider.calls.append(path)
+        FakeProvider.budgets.append(timeout)
         return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}]
 
 
@@ -99,6 +101,7 @@ class BuildCase(unittest.TestCase):
                             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}]
         self.roots = {item['name']: item['sourceRoot'] for item in self.collections}
         FakeProvider.calls = []
+        FakeProvider.budgets = []
         self.coordinator = Coordinator()
         self.service_log = []
         self.journal = {'state': 'candidate_ready', 'pending': {'synthetic': True},
@@ -200,6 +203,23 @@ class BuildCase(unittest.TestCase):
 
 
 class BuildProgressTests(BuildCase):
+    def test_cached_backfill_gets_bounded_turn_while_model_work_yields(self):
+        self.corpus(1)
+        self.register()
+        observed = []
+
+        def cached(_runtime, _identity, _profile_id, **options):
+            observed.append(options['should_yield']())
+            return {'state': 'complete', 'reason': 'incremental_backfill_complete'}
+
+        with mock.patch('laya_incremental_docs.backfill_cached', cached), \
+                mock.patch.object(worker, '_higher_priority_wake', return_value=True):
+            result = self.wake()
+        self.assertEqual(observed, [False])
+        self.assertEqual((result['state'], result['reason']),
+                         ('deferred', 'laya_sync_yield_priority'))
+        self.assertEqual(FakeProvider.calls, [])
+
     def test_registered_build_progresses_in_bounded_wakes_to_a_sealed_candidate(self):
         self.corpus(12)
         for i in range(3):
@@ -243,6 +263,7 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(sealed['files'], 211)
         self.assertGreater(sealed['bytes'], 5_000_000)
         self.assertEqual(len(FakeProvider.calls), 211)
+        self.assertIn(270, FakeProvider.budgets)
 
     def test_one_synchronous_scan_bound_routes_to_background_not_refusal(self):
         self.corpus(201, collection='docs')
