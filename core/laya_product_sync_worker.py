@@ -828,9 +828,12 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         runtime, identity, identity['vectorProfileId'],
                         deadline=min(deadline, clock() + 15), clock=clock,
                         before_publish=before_publish,
-                        should_yield=lambda: _higher_priority_wake(controller))
+                        # Cached vectors need no model lane. Give this
+                        # at-most-15s metadata pass progress even while a
+                        # due QMD wake makes new embedding work yield.
+                        should_yield=lambda: False)
                     result = (backfill if backfill['reason'] in
-                              ('laya_sync_yield_priority', 'source_changed', 'scan_changed')
+                              ('laya_sync_yield_priority',)
                               else _build_rounds(runtime, AdmittedProvider(), before_publish,
                                                  controller, lambda: not proof_ok(), admitted,
                                                  deadline=deadline, clock=clock,
