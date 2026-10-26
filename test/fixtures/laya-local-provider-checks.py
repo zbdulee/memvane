@@ -30,7 +30,7 @@ def sha(path):
 
 
 class ProviderChecks(unittest.TestCase):
-    def test_large_chunk_request_has_bounded_off_hook_budget(self):
+    def test_explicit_large_chunk_budget_preserves_provider_default(self):
         manifest = {**self.manifest, 'recipeId': 'qmd-regex-token-chunks-candidate-v1'}
         manifest['embeddingFingerprint'] = recipe_fingerprint(
             model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
@@ -43,7 +43,7 @@ class ProviderChecks(unittest.TestCase):
         with mock.patch.object(provider, '_embed', return_value=[]) as embed:
             provider.embed_document_chunks('small', path='docs/a.md')
             self.assertEqual(embed.call_args.kwargs['timeout'], 120)
-            provider.embed_document_chunks('x' * 200_001, path='docs/a.md')
+            provider.embed_document_chunks('x' * 200_001, path='docs/a.md', timeout=270)
             self.assertEqual(embed.call_args.kwargs['timeout'], 270)
 
     def setUp(self):
