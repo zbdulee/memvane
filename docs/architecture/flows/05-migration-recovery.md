@@ -19,6 +19,8 @@ restore는 첫 selected write 이전에만 가능하며, 해당 cutover가 게�
 
 0.36.3에는 `plan-fresh-wiki-origin`·`prepare-fresh-wiki-origin`을 QMD 원본 이관과 구별된 명시적 경로로 추가합니다. 이 경로는 모델 파일·차원·provider와 새 private wiki 색인의 증거를 요구하며, 기존 QMD DB·설정·원문은 변경하지 않습니다. 독립 `fresh-wiki-cutover.json` 원장이 준비·활성화·중단 복구·첫 selected write 이전 철회를 추적하고, 그 이후에는 전진 복구만 허용합니다. 원본 QMD 벡터의 과거 모델을 증명하거나 재사용했다고 주장하지 않습니다. 코드 경로의 존재만으로 운영 이관이나 구 Codex 호환 검사가 통과한 것은 아닙니다. 실제 운영 적용 전에는 합성 설치·중단/재개·복원 검증과 기존 상태 백업 무결성 확인이 필요합니다.
 
+0.36.4에는 선택 경로의 raw 변경 감지 스캔 한도를 4,096 Markdown 파일·64MB로 높입니다. 위키만 색인하는 계약은 그대로이며 raw 본문은 벡터에 추가되지 않습니다. 기존 200파일·5MB 한도보다 큰 프로젝트도 검증하면서, 새 한도를 초과하면 선택 전에 명시적으로 거절하도록 유지합니다.
+
 ```mermaid
 flowchart TD
   subgraph OWN["설치자 off-hook 경계 소유자 명시 승인"]

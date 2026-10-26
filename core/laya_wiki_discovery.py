@@ -59,6 +59,12 @@ GRANT_KINDS = ('sync', 'session_start')
 MAX_FILE_BYTES = 1 << 20
 MAX_PENDING = 4096
 MAX_MEMBERS = 50_000
+# Raw source discovery retains one bounded scan in memory. The source-port
+# defaults (200 files / 5 MB) would block larger, otherwise valid projects at
+# activation and on every subsequent wake. This separate finite budget leaves
+# the indexed wiki catalog and vector budget unchanged.
+RAW_SCAN_MAX_FILES = 4096
+RAW_SCAN_MAX_BYTES = 64_000_000
 MAX_GRANT_COUNT = 1000
 MAX_LINEAGE = 4096
 # Standalone synthetic routes can start without a pre-activation cursor.
@@ -521,7 +527,7 @@ def _raw_snapshot(decision, raw):
 
     Only names and hashes leave this function. The source port checks every
     path without following symlinks and refuses an unstable file. Its bounded
-    200-file/5-MB scan is off-hook, like the existing origin source proof.
+    4096-file/64-MB scan is off-hook; the source port still checks each path.
     """
     from laya_index_a import IndexContractError, LayaIndexA
     from laya_index_source_port import scan_collections
@@ -530,7 +536,9 @@ def _raw_snapshot(decision, raw):
         if index.incarnation() != decision['dbIncarnation']:
             raise DiscoveryBlocked('db_incarnation_changed')
         roots = {name: decision['collectionRoots'][name] for name in raw}
-        scan = scan_collections(roots, decision['scopeId'], index)
+        scan = scan_collections(roots, decision['scopeId'], index,
+                                max_files=RAW_SCAN_MAX_FILES,
+                                max_bytes=RAW_SCAN_MAX_BYTES)
         return {file.path: file.sha256 for file in scan.files if file.eligible}
     except IndexContractError as exc:
         raise DiscoveryBlocked('raw_source_stale') from exc
