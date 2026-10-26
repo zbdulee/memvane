@@ -104,7 +104,8 @@ class LayaIndexRuntime:
     def __init__(self, *, source_root: str | Mapping[str, str], scope: str,
                  db_path: str, queue_path: str, db_incarnation: str,
                  catalog_path: str | None = None,
-                 binding_store_path: str | None = None):
+                 binding_store_path: str | None = None,
+                 wiki_only: bool = False):
         capacity = (catalog_path, binding_store_path)
         if capacity != (None, None) and (
                 not isinstance(source_root, Mapping)
@@ -131,6 +132,10 @@ class LayaIndexRuntime:
                 or _INCARNATION.fullmatch(db_incarnation) is None):
             raise IndexContractError('invalid_runtime_binding')
         self.source_root = source_root
+        if wiki_only and (not isinstance(source_root, MappingProxyType)
+                          or len(source_root) != 1):
+            raise IndexContractError('wiki_only_roots_invalid')
+        self.wiki_only = wiki_only
         self.scope = scope
         self.catalog = None
         self.binding_store = None
@@ -158,7 +163,8 @@ class LayaIndexRuntime:
         from laya_index_capacity import GenerationBindingStore
         from laya_source_catalog import LayaSourceCatalog
         roots = dict(self.source_root)
-        self.catalog = LayaSourceCatalog(catalog_path, roots, self.scope)
+        self.catalog = LayaSourceCatalog(catalog_path, roots, self.scope,
+                                         wiki_only=self.wiki_only)
         try:
             self.binding_store = GenerationBindingStore(
                 binding_store_path, scope=self.scope, db_incarnation=db_incarnation,
@@ -198,7 +204,8 @@ class LayaIndexRuntime:
         try:
             if isinstance(self.source_root, Mapping):
                 return search_collections_verified(self.index, self.source_root,
-                                                   token, fts_query, limit)
+                                                   token, fts_query, limit,
+                                                   wiki_only=self.wiki_only)
             return search_verified(self.index, self.source_root, token, fts_query, limit)
         finally:
             self.index.release(token)
@@ -334,7 +341,8 @@ class LayaIndexRuntime:
         """
         if not isinstance(job, dict) or job.get('scope') != self.scope:
             raise IndexContractError('claim_scope_mismatch')
-        source = (scan_collections(self.source_root, self.scope, self.index)
+        source = (scan_collections(self.source_root, self.scope, self.index,
+                                   wiki_only=self.wiki_only)
                   if isinstance(self.source_root, Mapping)
                   else scan(self.source_root, self.scope, self.index))
         if source.manifest != job.get('source_manifest'):

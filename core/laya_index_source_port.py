@@ -51,6 +51,41 @@ _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | _CLOEXEC
 _COLLECTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_WIKI_LOG_HEADER = '# Auto-context Wiki Log\n\n'
+
+
+def generated_wiki_log_text(body: str) -> bool:
+    """The exact header emitted when the compiler creates the root log.
+
+    A partially appended event must not turn this maintenance file into a
+    wiki card. The caller must also prove the path is the bound wiki root.
+    """
+    return isinstance(body, str) and body.startswith(_WIKI_LOG_HEADER)
+
+
+def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
+    """Filter only root metadata; a nested log.md is an ordinary wiki card."""
+    if len(wiki_roots) != 1:
+        return False
+    name = next(iter(wiki_roots))
+    return (path == name + '/index.md' or
+            (path == name + '/log.md' and generated_wiki_log_text(body)))
+
+
+def generated_wiki_log_file(dfd: int, name: str, expected: os.stat_result) -> bool:
+    """Classify a root log no-follow, before it consumes an embedding budget."""
+    fd = os.open(name, _FILE_FLAGS, dir_fd=dfd)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or _sig(before) != _sig(expected):
+            _raise_stale('wiki log changed before classification')
+        matched = os.read(fd, len(_WIKI_LOG_HEADER.encode('utf-8'))) == \
+            _WIKI_LOG_HEADER.encode('utf-8')
+        if _sig(os.fstat(fd)) != _sig(before):
+            _raise_stale('wiki log changed during classification')
+        return matched
+    finally:
+        os.close(fd)
 
 
 class SourceStale(Exception):
@@ -230,7 +265,8 @@ def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budge
 
 
 def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
-          root_dev: int, budget: _Budget, out: list) -> None:
+          root_dev: int, budget: _Budget, out: list,
+          wiki_only_root: bool = False) -> None:
     if depth > MAX_DEPTH:
         _raise_stale("too deep")
     names = sorted(os.listdir(dfd))
@@ -258,6 +294,9 @@ def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
         elif name.endswith(".md"):
             if not stat.S_ISREG(st.st_mode):
                 _raise_stale(f"not a regular file: {rel}")
+            if wiki_only_root and name == 'log.md':
+                if generated_wiki_log_file(dfd, name, st):
+                    continue
             out.append(_read_file(dfd, name, rel, st, budget))
     after = os.fstat(dfd)
     if _sig(after) != _sig(dst):
@@ -300,7 +339,8 @@ def scan(root: str, scope: str, index: Any,
 
 def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
                      max_files: int = 200,
-                     max_bytes: int = 5_000_000) -> CollectionSourceScan:
+                     max_bytes: int = 5_000_000, *,
+                     wiki_only: bool = False) -> CollectionSourceScan:
     """Scan explicit disjoint roots into one namespaced A-int generation.
 
     The route/cutover proof binds the physical roots. A-int's source manifest
@@ -311,6 +351,8 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
     if (not isinstance(roots, Mapping) or not 1 <= len(roots) <= 16
             or not isinstance(scope, str) or not scope):
         raise ValueError("invalid collection roots")
+    if wiki_only and len(roots) != 1:
+        raise ValueError('wiki-only scan requires one root')
     if any(not isinstance(name, str) or not _COLLECTION.fullmatch(name)
            for name in roots):
         raise ValueError("invalid collection name")
@@ -335,7 +377,7 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
         try:
             root_st = os.fstat(root_fd)
             _walk(root_fd, root_st, name + "/", 0, root_st.st_dev,
-                  budget, raw)
+                  budget, raw, wiki_only_root=wiki_only)
         except OSError as exc:
             _raise_stale("collection source unreadable", exc)
         finally:
@@ -455,7 +497,8 @@ def search_collections_verified(index: Any, roots: Mapping[str, str], token: Any
                                 fts_query: str, limit: int, *,
                                 collection_names: tuple[str, ...] | None = None,
                                 max_files: int = 200,
-                                max_bytes: int = 5_000_000) -> list[dict[str, Any]]:
+                                max_bytes: int = 5_000_000,
+                                wiki_only: bool = False) -> list[dict[str, Any]]:
     """Apply collection scope in SQL before LIMIT, then verify one pinned view."""
     limit = _positive_int("limit", limit)
     if collection_names is None:
@@ -469,7 +512,8 @@ def search_collections_verified(index: Any, roots: Mapping[str, str], token: Any
         names = collection_names
     seal = _seal(index, token)
     scope, gen, sealed_manifest, _ = seal
-    source = scan_collections(roots, scope, index, max_files, max_bytes)
+    source = scan_collections(roots, scope, index, max_files, max_bytes,
+                              wiki_only=wiki_only)
     if sealed_manifest != source.manifest:
         _raise_stale("collection manifest differs from view seal")
     rows = index.search(token, fts_query, limit,

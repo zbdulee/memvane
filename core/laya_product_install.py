@@ -1345,7 +1345,8 @@ def initial_build_status(state_root):
         _fail('initial_build_missing')
     identity = record['identity']
     roots = wiki_index_roots(identity['collections'])
-    with closing(LayaSourceCatalog(identity['catalogDb'], roots, identity['scopeId'])) as catalog:
+    with closing(LayaSourceCatalog(identity['catalogDb'], roots, identity['scopeId'],
+                                   wiki_only=True)) as catalog:
         scan = catalog.status()
     return {'status': 'initial_build', 'phase': record['phase'],
             'progress': record['progress'], 'blocked': record['blocked'],
@@ -1372,7 +1373,7 @@ def request_initial_build_rescan(state_root):
         identity = record['identity']
         roots = wiki_index_roots(identity['collections'])
         with closing(LayaSourceCatalog(identity['catalogDb'], roots,
-                                       identity['scopeId'])) as catalog:
+                                       identity['scopeId'], wiki_only=True)) as catalog:
             record = initial_build.request_freshness(record, catalog)
     return {'status': 'rescan_requested', 'phase': record['phase'],
             'freshness': record['freshness'],
@@ -1454,7 +1455,7 @@ def finalize_initial_build(*, project_root, state_root):
                         'progress': record['progress'],
                         'wake': _request_build_wake(identity['projectRoot'])}
             with closing(LayaSourceCatalog(identity['catalogDb'], index_roots,
-                                           identity['scopeId'])) as catalog:
+                                           identity['scopeId'], wiki_only=True)) as catalog:
                 record = initial_build.request_freshness(record, catalog)
             return {'status': 'freshness_pending', 'phase': record['phase'],
                     'freshness': record['freshness'],
@@ -1563,7 +1564,7 @@ def _finalize_fresh_wiki_locked(record, project_root, state):
                     'progress': record['progress'],
                     'wake': _request_build_wake(identity['projectRoot'])}
         with closing(LayaSourceCatalog(identity['catalogDb'], roots,
-                                       identity['scopeId'])) as catalog:
+                                       identity['scopeId'], wiki_only=True)) as catalog:
             record = initial_build.request_freshness(record, catalog)
         return {'status': 'freshness_pending', 'phase': record['phase'],
                 'freshness': record['freshness'],

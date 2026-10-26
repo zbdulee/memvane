@@ -97,7 +97,10 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     from keywords import build_lexical_terms, select_general_terms_explained
     from laya_incremental_docs import FILE, SCHEMA
     from laya_index_host_route import wiki_index_roots
+    from laya_index_source_port import auxiliary_wiki_row
     import wiki_freshness
+
+    wiki_roots = wiki_index_roots(decision['collections'])
 
     state_root = decision.get('previewStateRoot')
     if state_root is None:
@@ -309,6 +312,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
             body = fetched[path]
             row = {'scope': decision['scopeId'], 'generation': generation,
                    'path': path, 'hash': digest, 'body': body, 'score': score}
+            if auxiliary_wiki_row(path, body, wiki_roots):
+                return None
             if not _live_wiki(row, decision):
                 return None
             if not _verified_wiki_row(row, decision, pending_sources,
@@ -340,7 +345,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
         fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=20), prompt)
         rows = [row for row in fused if row['score'] >= decision['recallSettings']['minScore']
                 and not any(pattern in row['path'] for pattern in skip)
-                and row['path'].rsplit('/', 1)[-1] not in ('index.md', 'log.md')]
+                and not auxiliary_wiki_row(
+                    row['path'], row['body'], wiki_roots)]
         # Derive optional locators only for rows actually injected.
         for row in rows[:decision['recallSettings']['topN']]:
             _verified_wiki_row(row, decision, pending_sources, locations, skip)
