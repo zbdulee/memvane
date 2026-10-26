@@ -241,12 +241,18 @@ def _spawn_owner(project, manifest):
 def ensure_running(project, manifest):
     """Attach to an exact warm owner or request a detached cold start.
 
-    Call only after the selected route and installer proof have been checked.
+    Call only after the selected or pending preview route and its installer
+    proof have been checked.
     In particular, never wait for model loading inside a hook or a provider
     activity lease; the durable sync wake retries this operation later.
     """
     status = probe(manifest)
     if status == 'ready':
+        # An older finite build worker may own this same exact socket during
+        # a bundle upgrade. It will close on return, so never mistake it for
+        # the independent owner promised to preview queries between wakes.
+        if not owner_lock_held(manifest):
+            raise ResourceDeferred('laya_service_preparing')
         return AttachedService()
     if status == 'mismatch':
         raise ResourceDeferred('laya_service_identity_transition')
@@ -328,12 +334,42 @@ def wait_for_release(socket_path, timeout=3):
         time.sleep(.05)
 
 
+def _owned_route(project):
+    """Prove one selected or pending installation using its own route contract."""
+    from laya_product_sync_worker import _selected
+    try:
+        decision, proof = _selected(project)
+        return decision, proof, 'selected'
+    except IndexContractError as exc:
+        if str(exc) != 'selected_route_unavailable':
+            raise
+    from laya_index_host_route import select_route, verify_preview_route
+    decision = select_route(str(project), action='recall')
+    if (decision.get('state') != 'preview'
+            or decision.get('projectRoot') != str(project)):
+        raise IndexContractError('provider_owner_route_unavailable')
+    proof = verify_preview_route(decision)
+    if not isinstance(proof.get('providerManifest'), dict):
+        raise IndexContractError('provider_owner_identity_invalid')
+    return decision, proof, 'preview'
+
+
+def _owner_identity(decision, proof):
+    """Fields unchanged when this same pending installation is selected."""
+    keys = ('projectRoot', 'pluginRoot', 'installId', 'journalPath', 'scopeId',
+            'dbPath', 'dbIncarnation', 'bundleManifestSha256',
+            'ownershipManifestSha256', 'vectorProfile')
+    if any(decision.get(key) is None for key in keys):
+        raise IndexContractError('provider_owner_identity_invalid')
+    return tuple(decision[key] for key in keys) + (proof['providerManifest'],)
+
+
 def _serve(project, socket_path, fingerprint, owner_fd):
     """Run only in the detached child with its inherited installation lease."""
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
     from laya_local_embed_service import start_owned_embed_service
-    from laya_product_sync_worker import EMBED_POLICY, _selected
+    from laya_product_sync_worker import EMBED_POLICY
 
     project = Path(project)
     path = Path(socket_path)
@@ -350,16 +386,18 @@ def _serve(project, socket_path, fingerprint, owner_fd):
         fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return 2
-    decision, proof = _selected(project)
+    decision, proof, mode = _owned_route(project)
     manifest = proof['providerManifest']
     if (decision['projectRoot'] != str(project)
             or decision['pluginRoot'] != str(Path(__file__).resolve().parents[1])
             or manifest['serviceSocketPath'] != socket_path
             or manifest['embeddingFingerprint'] != fingerprint):
         raise IndexContractError('provider_owner_identity_invalid')
-    from laya_install_journal import verify_worker_attestation
-    if verify_worker_attestation(decision) != manifest:
-        raise IndexContractError('provider_attestation_invalid')
+    if mode == 'selected':
+        from laya_install_journal import verify_worker_attestation
+        if verify_worker_attestation(decision) != manifest:
+            raise IndexContractError('provider_attestation_invalid')
+    identity = _owner_identity(decision, proof)
     controller = Coordinator()
     with controller.activity('provider', EMBED_POLICY,
                              resource_report(EMBED_POLICY, detailed=True)):
@@ -368,34 +406,35 @@ def _serve(project, socket_path, fingerprint, owner_fd):
                                     resource_report(EMBED_POLICY, detailed=True))['ready']
         service = start_owned_embed_service(manifest, admit=admit)
     try:
-        def still_selected():
-            current, current_proof = _selected(project)
-            return (current['installId'] == decision['installId']
-                    and current['pluginRoot'] == decision['pluginRoot']
-                    and current['journalPath'] == decision['journalPath']
-                    and current_proof['providerManifest'] == manifest)
+        def still_owned():
+            current, current_proof, _mode = _owned_route(project)
+            return _owner_identity(current, current_proof) == identity
 
         # A restore can commit during the cold load. Recheck immediately
-        # after READY, then keep observing the selection while idle.
+        # after READY, then keep observing the same installation while idle.
         try:
-            if not still_selected():
-                return 0
+            owned = still_owned()
         except Exception:
-            return 0
-        prior = read_owner_state(manifest)
-        _write_state(manifest, 'ready', attempts=prior['attempts'] if prior else 0)
-        while service.process.poll() is None:
-            time.sleep(1)
-            try:
-                if not still_selected():
+            owned = False
+        if owned:
+            prior = read_owner_state(manifest)
+            _write_state(manifest, 'ready', attempts=prior['attempts'] if prior else 0)
+            while service.process.poll() is None:
+                time.sleep(1)
+                try:
+                    if not still_owned():
+                        break
+                except Exception:
+                    # A removed/blocked route may no longer own this model.
                     break
-            except Exception:
-                # A removed/blocked route may no longer own this model.
-                break
-        else:
-            raise IndexContractError('provider_worker_exited')
+            else:
+                raise IndexContractError('provider_worker_exited')
     finally:
         service.stop()
+    # Normal route withdrawal (including a bundle upgrade) is not a failed
+    # model start. Keep repeated official upgrades from consuming the finite
+    # same-fingerprint failure budget.
+    _write_state(manifest, 'starting', attempts=0)
     return 0
 
 

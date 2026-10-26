@@ -31,9 +31,18 @@ class ResidentChecks(unittest.TestCase):
 
     def test_warm_service_is_reused_without_new_owner(self):
         with patch('laya_embed_resident.probe', return_value='ready'), \
+             patch('laya_embed_resident.owner_lock_held', return_value=True), \
              patch('laya_embed_resident._spawn_owner') as spawn:
             handle = ensure_running('/synthetic/project', self.manifest)
             handle.stop()
+        spawn.assert_not_called()
+
+    def test_transient_warm_service_is_not_treated_as_resident(self):
+        with patch('laya_embed_resident.probe', return_value='ready'), \
+             patch('laya_embed_resident.owner_lock_held', return_value=False), \
+             patch('laya_embed_resident._spawn_owner') as spawn:
+            with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
+                ensure_running('/synthetic/project', self.manifest)
         spawn.assert_not_called()
 
     def test_cold_service_wakes_owner_and_defers_current_sync(self):
@@ -66,7 +75,11 @@ class ResidentChecks(unittest.TestCase):
             fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
             manifest = {**self.manifest, 'serviceSocketPath': str(socket)}
             decision = {'projectRoot': str(project), 'pluginRoot': str(Path(__file__).resolve().parents[2]),
-                        'installId': '1' * 32, 'journalPath': str(runtime / 'install-journal.sqlite')}
+                        'installId': '1' * 32, 'journalPath': str(runtime / 'install-journal.sqlite'),
+                        'scopeId': '2' * 32, 'dbPath': str(runtime / 'index.sqlite'),
+                        'dbIncarnation': '3' * 32, 'bundleManifestSha256': '4' * 64,
+                        'ownershipManifestSha256': '5' * 64,
+                        'vectorProfile': {'embeddingFingerprint': manifest['embeddingFingerprint']}}
             proof = {'providerManifest': manifest}
             service = Mock()
             service.process.poll.return_value = None
@@ -88,6 +101,63 @@ class ResidentChecks(unittest.TestCase):
                                             manifest['embeddingFingerprint'], fd), 0)
                 start.assert_called_once()
                 service.stop.assert_called_once()
+            finally:
+                os.close(fd)
+
+    def test_pending_owner_survives_selection_of_the_same_installation(self):
+        import laya_product_sync_worker as sync
+        import laya_index_host_route as route
+        import laya_local_embed_service as local
+        import context_learning.resource_coordination as coordination
+        import context_learning.shared as shared
+        with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
+            project = Path(root).resolve() / 'project'
+            project.mkdir()
+            runtime = Path(root).resolve() / 'runtime'
+            runtime.mkdir(mode=0o700)
+            socket = runtime / 'laya-embed.sock'
+            lock = runtime / 'laya-embed.sock.resident.lock'
+            fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+            manifest = {**self.manifest, 'serviceSocketPath': str(socket)}
+            identity = {'projectRoot': str(project),
+                        'pluginRoot': str(Path(__file__).resolve().parents[2]),
+                        'installId': '1' * 32,
+                        'journalPath': str(runtime / 'install-journal.sqlite'),
+                        'scopeId': '2' * 32, 'dbPath': str(runtime / 'index.sqlite'),
+                        'dbIncarnation': '3' * 32, 'bundleManifestSha256': '4' * 64,
+                        'ownershipManifestSha256': '5' * 64,
+                        'vectorProfile': {'embeddingFingerprint': manifest['embeddingFingerprint']}}
+            preview = {**identity, 'state': 'preview'}
+            selected = {**identity, 'state': 'candidate'}
+            proof = {'providerManifest': manifest}
+            service = Mock()
+            service.process.poll.return_value = None
+            class Controller:
+                @contextmanager
+                def activity(self, *_args):
+                    yield
+                def check(self, *_args):
+                    return {'ready': True}
+            try:
+                with patch.object(sync, '_selected', side_effect=[
+                        IndexContractError('selected_route_unavailable'),
+                        IndexContractError('selected_route_unavailable'),
+                        (selected, proof),
+                        IndexContractError('selected_route_unavailable')]) as selected_check, \
+                     patch.object(route, 'select_route', side_effect=[
+                         preview, preview, {'state': 'blocked'}]) as route_select, \
+                     patch.object(route, 'verify_preview_route', return_value=proof), \
+                     patch.object(local, 'start_owned_embed_service', return_value=service) as start, \
+                     patch.object(coordination, 'Coordinator', Controller), \
+                     patch.object(shared, 'resource_report', return_value={}), \
+                     patch('laya_embed_resident.time.sleep'):
+                    self.assertEqual(_serve(str(project), str(socket),
+                                            manifest['embeddingFingerprint'], fd), 0)
+                start.assert_called_once()
+                service.stop.assert_called_once()
+                self.assertEqual(selected_check.call_count, 4)
+                self.assertEqual(route_select.call_count, 3)
+                self.assertEqual(read_owner_state(manifest)['attempts'], 0)
             finally:
                 os.close(fd)
 

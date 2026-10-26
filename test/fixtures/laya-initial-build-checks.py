@@ -31,6 +31,7 @@ import laya_product_sync_worker as worker
 import laya_source_catalog
 from laya_source_catalog import LayaSourceCatalog
 import laya_vector_capacity as vc
+from resource_deferred import ResourceDeferred
 
 SCOPE = 'c' * 32
 INSTALL = '4' * 32
@@ -203,6 +204,29 @@ class BuildCase(unittest.TestCase):
 
 
 class BuildProgressTests(BuildCase):
+    def test_default_build_warms_pending_owner_and_borrows_it(self):
+        from laya_embed_resident import AttachedService
+        self.corpus(1)
+        self.register()
+        with mock.patch('laya_embed_resident.ensure_running',
+                        side_effect=ResourceDeferred('laya_service_preparing')) as owner:
+            first = worker.run_initial_build(
+                self.project, self.record(), coordinator=self.coordinator, report={},
+                start_service=worker.start_owned_embed_service)
+        self.assertEqual(first['reason'], 'laya_service_preparing')
+        owner.assert_called_once()
+        with mock.patch('laya_embed_resident.ensure_running',
+                        return_value=AttachedService()) as owner, \
+             mock.patch.object(worker, 'start_owned_embed_service',
+                               side_effect=AssertionError('transient model started')):
+            second = worker.run_initial_build(
+                self.project, self.record(), coordinator=self.coordinator, report={},
+                start_service=worker.start_owned_embed_service)
+        owner.assert_called_once()
+        self.assertIn(second['state'], ('pending', 'indexed', 'unchanged'))
+        self.assertEqual(self.service_log, [])
+        self.assertEqual(FakeProvider.calls, ['wiki/f000.md'])
+
     def test_cached_backfill_gets_bounded_turn_while_model_work_yields(self):
         self.corpus(1)
         self.register()

@@ -771,6 +771,14 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
+                if start_service is start_owned_embed_service:
+                    # Start the detached, installation-owned model outside
+                    # the provider lane. A pending preview query can then use
+                    # completed documents between finite build wakes.
+                    from laya_embed_resident import ensure_running
+                    if not proof_ok():
+                        raise IndexContractError('initial_build_proof_changed')
+                    state['service'] = ensure_running(project, approval['providerManifest'])
                 stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
 
                 def ensure_service():
