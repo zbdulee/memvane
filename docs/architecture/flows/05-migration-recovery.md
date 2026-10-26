@@ -15,6 +15,8 @@ restore는 첫 selected write 이전에만 가능하며, 해당 cutover가 게�
 
 위 흐름은 구현된 코드 경로입니다. 운영 환경에서의 cutover와 복구는 검증되지 않았습니다. 플러그인 소유 QMD runtime을 ownership manifest로 정리하는 작업은 아직 계획 단계입니다.
 
+0.36.2의 경로 변경은 raw 루트가 프로젝트 루트이고 wiki 루트가 그 안의 `.auto-context/wiki`인 경우만 허용합니다. 이때 동기 전체 루트 스캔 대신 wiki 전용 background 빌드를 사용합니다. **새 위키 전용 설치 계약을 추가한 것은 아닙니다.** 현재 `plan-index-origin`과 finalize/activate/restore는 계속 플러그인이 선택한 QMD 원본 DB, 해당 컬렉션, 백업·cutover 원장을 요구합니다. 옛 벡터를 재사용하지 않고 별도 Laya 세대를 만드는 설치·복구 경로는 후속 구현이며, 이 변경만으로 운영 프로젝트 이관을 완료했다고 판정할 수 없습니다.
+
 ```mermaid
 flowchart TD
   subgraph OWN["설치자 off-hook 경계 소유자 명시 승인"]

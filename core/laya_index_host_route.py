@@ -69,6 +69,33 @@ def wiki_index_roots(collections):
     return {wiki['name']: wiki['sourceRoot']}
 
 
+def selected_collection_roots(project_root, collections):
+    """Validate both source identities; only the wiki root is indexed.
+
+    The legacy raw project root may contain the plugin's hidden wiki folder.
+    The raw scanner skips that hidden folder, while selected Laya indexes the
+    explicitly named wiki root. Other overlapping roots remain unsafe.
+    """
+    wiki = wiki_index_roots(collections)
+    if len({item['name'] for item in collections}) != len(collections):
+        raise ValueError('selected_collection_names_duplicate')
+    roots = {}
+    for item in collections:
+        value = item['sourceRoot']
+        if not _canonical_absolute(value) or not Path(value).is_dir():
+            raise ValueError('selected_collection_root_invalid')
+        roots[item['name']] = value
+    raw_root = Path(next(item['sourceRoot'] for item in collections
+                         if item['role'] == 'raw'))
+    wiki_root = Path(next(iter(wiki.values())))
+    if raw_root == wiki_root or raw_root in wiki_root.parents or wiki_root in raw_root.parents:
+        project = Path(project_root)
+        if (raw_root != project or
+                wiki_root != project / '.auto-context' / 'wiki'):
+            raise ValueError('selected_collection_roots_overlap')
+    return roots
+
+
 def _decision(state: str, reason: str, **details: str) -> dict:
     return {"state": state, "reason": reason, **details}
 
@@ -414,11 +441,7 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
                         item['role'] not in ('raw', 'wiki')):
                     raise ValueError('route_collection_mismatch')
                 selected_collections.append(item)
-            roots = [item['sourceRoot'] for item in selected_collections]
-            if (len(set(roots)) != len(roots) or
-                    any(left.startswith(right + '/') or right.startswith(left + '/')
-                        for left, right in ((roots[0], roots[1]),))):
-                raise ValueError('route_collection_roots_overlap')
+            selected_collection_roots(root, selected_collections)
             wiki_root = next(item['sourceRoot'] for item in selected_collections
                              if item['role'] == 'wiki')
             if not _multi_compile_supported(raw_settings, cfg, root, wiki_root):
