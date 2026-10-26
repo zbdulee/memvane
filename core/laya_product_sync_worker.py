@@ -19,7 +19,8 @@ from resource_deferred import ResourceDeferred
 from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
-from laya_index_host_route import select_route, wiki_index_roots
+from laya_index_host_route import (select_route, selected_collection_roots,
+                                   wiki_index_roots)
 from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
                                 _collection_roots, capacity_store_paths)
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
@@ -246,9 +247,8 @@ def _selected_service(decision, manifest, admit, start_service):
 def _route_source(decision):
     """Choose the runtime source binding before any provider or model start.
 
-    v1 passes ``sourceRoot`` unchanged. v2 passes ``collectionRoots`` only
-    after the runtime's own disjoint-root check and a match against the
-    route's declared collections. LayaIndexRuntime checks the roots again.
+    v1 passes ``sourceRoot`` unchanged. v2 verifies both declared collection
+    roots, then passes only its wiki root to the runtime.
     """
     v2 = 'collections' in decision or 'collectionRoots' in decision
     if v2 and 'sourceRoot' in decision:
@@ -258,14 +258,20 @@ def _route_source(decision):
             raise IndexContractError('selected_route_source_missing')
         return decision['sourceRoot']
     roots = decision.get('collectionRoots')
-    bound = _collection_roots(roots) if isinstance(roots, Mapping) else None
-    if bound is None:
-        raise IndexContractError('selected_collection_roots_invalid')
     declared = decision.get('collections')
-    if (not isinstance(declared, list) or len(declared) != len(bound)
+    if not isinstance(roots, Mapping) or not roots:
+        raise IndexContractError('selected_collection_roots_invalid')
+    if (not isinstance(declared, list) or len(declared) != len(roots)
             or any(not isinstance(item, dict) or not isinstance(item.get('name'), str)
-                   for item in declared)
-            or {item['name']: item.get('sourceRoot') for item in declared} != dict(bound)):
+                   for item in declared)):
+        raise IndexContractError('selected_collection_roots_mismatch')
+    try:
+        bound = [{'name': item['name'], 'role': item['role'],
+                  'sourceRoot': roots[item['name']]} for item in declared]
+        selected_collection_roots(decision['projectRoot'], bound)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise IndexContractError('selected_collection_roots_invalid') from exc
+    if {item['name']: item['sourceRoot'] for item in declared} != dict(roots):
         raise IndexContractError('selected_collection_roots_mismatch')
     try:
         wiki = wiki_index_roots(declared)

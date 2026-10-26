@@ -209,6 +209,7 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
     import qmd_route
     from laya_index_host_route import (_multi_settings_supported,
                                        _multi_compile_supported,
+                                       selected_collection_roots,
                                        _source_for_collection,
                                        RECORD, QMD_SELECTION_MARKER)
     from laya_index_source_port import scan_collections
@@ -244,9 +245,18 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
         _fail('unsupported_selected_settings')
     roots = {name: _source_for_collection(project, cfg['collectionPaths'][name])
              for name in names}
-    if (roots[names[0]].startswith(roots[names[1]] + '/') or
-            roots[names[1]].startswith(roots[names[0]] + '/')):
-        _fail('overlapping_collection_roots')
+    collections = [{'name': name, 'role': roles[name], 'sourceRoot': roots[name]}
+                   for name in names]
+    try:
+        selected_collection_roots(project, collections)
+    except ValueError as exc:
+        raise InstallBlocked(str(exc)) from exc
+    # The synchronous adapter scans both roots; the selected background
+    # catalog indexes only wiki and safely skips the hidden wiki under raw.
+    raw_root = Path(next(roots[name] for name in names if roles[name] == 'raw'))
+    wiki_root_path = Path(next(roots[name] for name in names if roles[name] == 'wiki'))
+    if raw_root in wiki_root_path.parents:
+        background = True
     wiki_root = next(roots[name] for name in names if roles[name] == 'wiki')
     if not _multi_compile_supported(source_settings, cfg, project, wiki_root):
         _fail('unsupported_selected_compile_settings')
@@ -267,8 +277,6 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
     class InitialIndex:
         def list_exclusions(self, _scope):
             return []
-    collections = [{'name': name, 'role': roles[name], 'sourceRoot': roots[name]}
-                   for name in names]
     if background:
         return _background_plan(project, settings_sha, source_db, scope, collections,
                                 selected, runtime, inventory['digest'])

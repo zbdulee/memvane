@@ -305,6 +305,19 @@ class V2WorkerChecks(unittest.TestCase):
         return {'productRouteAllowed':True,'selectionEpoch':self.epoch,
                 'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
 
+    def test_nested_project_wiki_indexes_only_wiki(self):
+        wiki=self.home/'.auto-context'/'wiki'
+        wiki.mkdir(parents=True)
+        (wiki/'card.md').write_text('wiki-only card',encoding='utf-8')
+        self.decision['collections']=[
+            {'name':'alpha','role':'raw','sourceRoot':str(self.home)},
+            {'name':'beta','role':'wiki','sourceRoot':str(wiki)}]
+        self.decision['collectionRoots']={'alpha':str(self.home),'beta':str(wiki)}
+        result=self.run_worker()
+        self.assertEqual(result['state'],'indexed')
+        self.assertEqual(self.members(result['generation']),['beta/card.md'])
+        self.assertEqual(self.embedded,['beta/card.md'])
+
     def provider_class(self):
         test=self;selected=self.profile
         class Provider:

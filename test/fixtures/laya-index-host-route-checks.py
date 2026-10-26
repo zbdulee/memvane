@@ -126,6 +126,21 @@ class HostRouteChecks(unittest.TestCase):
         self.assertEqual(decision['recallSettings']['recallStrategy'],
                          'hierarchical')
 
+    def test_nested_project_wiki_root_is_the_only_allowed_overlap(self):
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        collections = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)},
+        ]
+        self.assertEqual(route.selected_collection_roots(self.root, collections),
+                         {'docs': str(self.root), 'wiki': str(wiki)})
+        other = self.root / 'docs' / 'nested'
+        other.mkdir()
+        collections[1] = {**collections[1], 'sourceRoot': str(other)}
+        with self.assertRaisesRegex(ValueError, 'selected_collection_roots_overlap'):
+            route.selected_collection_roots(self.root, collections)
+
     def test_v2_wiki_only_keeps_optional_source_exclusions(self):
         (self.auto / 'wiki').mkdir()
         private = Path(self.temp.name).resolve() / 'private-state'
