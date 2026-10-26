@@ -383,15 +383,22 @@ class DiscoveryChecks(unittest.TestCase):
             self.decision, {'alpha/one.md': old_hash}), {'alpha/one.md': old_hash})
         self.assertEqual(self.state()['rawSnapshot'], {'alpha/one.md': old_hash})
 
-    def test_preactivation_seed_refuses_raw_corpus_over_discovery_scan_cap(self):
+    def test_preactivation_seed_accepts_larger_raw_corpus_and_keeps_scan_cap(self):
         self.selected_route()
         self.run_worker()
         self.paths()[0].unlink()
-        for number in range(200):
-            (self.alpha / ('extra-%03d.md' % number)).write_text('x', encoding='utf-8')
-        with self.assertRaisesRegex(discovery.DiscoveryBlocked, 'raw_source_stale'):
-            discovery.seed_source_snapshot(self.decision, {})
-        self.assertFalse(self.paths()[0].exists())
+        for number in range(201):
+            (self.alpha / ('extra-%03d.md' % number)).write_text('x' * 30_000,
+                                                                  encoding='utf-8')
+        baseline = discovery._raw_snapshot(self.decision, {'alpha'})
+        self.assertGreater(len(baseline), 200)
+        self.assertEqual(discovery.seed_source_snapshot(self.decision, baseline), baseline)
+        with patch.object(discovery, 'RAW_SCAN_MAX_FILES', 200):
+            with self.assertRaisesRegex(discovery.DiscoveryBlocked, 'raw_source_stale'):
+                discovery.seed_source_snapshot(self.decision, baseline)
+        with patch.object(discovery, 'RAW_SCAN_MAX_BYTES', 5_000_000):
+            with self.assertRaisesRegex(discovery.DiscoveryBlocked, 'raw_source_stale'):
+                discovery.seed_source_snapshot(self.decision, baseline)
 
     def publish_blocked(self, change):
         """Publish one generation while discovery blocks before its first journal."""
