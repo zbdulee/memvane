@@ -79,7 +79,8 @@ from laya_index_source_port import (MAX_DEPTH, MAX_ENTRIES, STALE, SourceStale,
                                     _READ_CHUNK, _check_root, _load_exclusions,
                                     _node, _open_root_fd, _positive_int,
                                     _raise_stale, _require_platform, _safe_rel,
-                                    _seal, _sig, scan_collections)
+                                    _seal, _sig, scan_collections,
+                                    generated_wiki_log_file)
 
 APP_ID = 0x4c594343  # LYCC; distinct from the A-int database identity
 SCHEMA_VERSION = 1
@@ -424,8 +425,11 @@ class LayaSourceCatalog:
     """
 
     def __init__(self, path: Any, roots: Mapping[str, str], scope: str, *,
-                 create: bool = False):
+                 create: bool = False, wiki_only: bool = False):
         self.roots = _check_roots(roots)
+        if wiki_only and len(self.roots) != 1:
+            raise IndexContractError('wiki_only_roots_invalid')
+        self.wiki_only = wiki_only
         if not isinstance(scope, str) or not scope:
             raise TypeError('scope must be a non-empty str')
         self.scope = scope
@@ -741,6 +745,14 @@ class LayaSourceCatalog:
             elif name.endswith('.md'):
                 if not stat.S_ISREG(st.st_mode):
                     raise _Blocked('source_invalid', f'not a regular file: {path}')
+                if self.wiki_only and rel == collection + '/' and name == 'log.md':
+                    try:
+                        generated = generated_wiki_log_file(dfd, name, st)
+                    except IndexContractError:
+                        raise _Blocked('source_changed',
+                                       'wiki log changed during classification') from None
+                    if generated:
+                        continue
                 self.db.execute('INSERT INTO scan_files(seq,path,dir_rel,name,size,sig) '
                                 'VALUES(?,?,?,?,?,?)',
                                 (seq, path, rel, name, st.st_size, _sig_text(st)))
@@ -1457,7 +1469,8 @@ def search_catalog_verified(index: Any, catalog: LayaSourceCatalog, token: Any,
     catalog.verify_unchanged(snapshot, max_verify_stats)  # hint only, not proof
     # The proof: every root re-enumerated and every byte rehashed now.
     source = scan_collections(catalog.roots, scope, index,
-                              max_proof_files, max_proof_bytes)
+                              max_proof_files, max_proof_bytes,
+                              wiki_only=catalog.wiki_only)
     raw = hashlib.sha256()
     for f in source.files:
         raw.update(_raw_line(f.path, f.sha256, len(f.data)))

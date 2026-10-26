@@ -570,7 +570,8 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                                   db_path=decision['dbPath'], queue_path=decision['queuePath'],
                                   db_incarnation=decision['dbIncarnation'],
                                   catalog_path=capacity[0],
-                                  binding_store_path=capacity[1]) as runtime:
+                                  binding_store_path=capacity[1],
+                                  wiki_only='collections' in decision) as runtime:
                 publish_complete = None
                 if 'collections' in decision:
                     from laya_incremental_docs import publish_document
@@ -771,7 +772,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
-                if start_service is start_owned_embed_service:
+                if (start_service is start_owned_embed_service
+                        and identity.get('originMode') == 'fresh_wiki_only'):
                     # Start the detached, installation-owned model outside
                     # the provider lane. A pending preview query can then use
                     # completed documents between finite build wakes.
@@ -818,7 +820,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                                       queue_path=identity['queueDb'],
                                       db_incarnation=identity['dbIncarnation'],
                                       catalog_path=identity['catalogDb'],
-                                      binding_store_path=identity['bindingStore']) as runtime:
+                                      binding_store_path=identity['bindingStore'],
+                                      wiki_only=True) as runtime:
                     from laya_incremental_docs import backfill_cached, publish_document
 
                     def publish_complete(snapshot, path, sha, title, body, profile_id):

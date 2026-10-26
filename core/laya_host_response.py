@@ -790,6 +790,7 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
     """
     _provider_ready(prompt, route_profile, approved_profile, approved_provider)
     from laya_index_host_route import wiki_index_roots
+    from laya_index_source_port import auxiliary_wiki_row
     roots = wiki_index_roots(decision['collections'])
     settings = decision['recallSettings']
     roles = {item['name']: item['role'] for item in decision['collections']}
@@ -822,16 +823,18 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
         if pending is None:
             _fail('wiki_pending_refresh_unknown')
         pending_sources = frozenset(item['sourcePath'] for item in pending)
-        source_filter = (lambda row: _verified_wiki_row(
-            row, decision, pending_sources, source_skip_paths=tuple(settings['skipPaths']))) \
-            if settings['skipPaths'] else None
+        source_filter = lambda row: (
+            not auxiliary_wiki_row(row['path'], row['body'], roots) and
+            (not settings['skipPaths'] or _verified_wiki_row(
+                row, decision, pending_sources,
+                source_skip_paths=tuple(settings['skipPaths']))))
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
             (), candidates, source_filter, excluded_paths)
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
-                if row['path'].rsplit('/', 1)[-1] not in ('index.md', 'log.md')
+                if not auxiliary_wiki_row(row['path'], row['body'], roots)
                 and _verified_wiki_row(row, decision, pending_sources, located,
                                        tuple(settings['skipPaths']))]
         if rows:
@@ -1330,6 +1333,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
                               db_incarnation=decision["dbIncarnation"],
+                              wiki_only=v2 and not isinstance(source_root, str),
                               **stores) as runtime:
             if v2:
                 rows, title_only = query_selected_v2(

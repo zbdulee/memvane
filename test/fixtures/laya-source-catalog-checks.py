@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_source_catalog as catalog_mod
 from laya_index_a import IndexContractError, LayaIndexA
-from laya_index_source_port import scan_collections
+from laya_index_source_port import (auxiliary_wiki_row,
+                                    generated_wiki_log_text, scan_collections)
 from laya_source_catalog import (CatalogPending, LayaSourceCatalog, load_exclusions,
                                  publish_from_catalog, search_catalog_verified,
                                  stage_from_catalog)
@@ -54,9 +55,10 @@ class CatalogCase(unittest.TestCase):
         self.index = LayaIndexA(self.state / 'index.sqlite', create=True)
         self.addCleanup(self.index.close)
 
-    def open_catalog(self, create=False, roots=None, scope=SCOPE, name='catalog.sqlite'):
+    def open_catalog(self, create=False, roots=None, scope=SCOPE, name='catalog.sqlite',
+                     wiki_only=False):
         catalog = LayaSourceCatalog(self.state / name, roots or self.roots, scope,
-                                    create=create)
+                                    create=create, wiki_only=wiki_only)
         self.addCleanup(catalog.close)
         return catalog
 
@@ -160,6 +162,42 @@ class CatalogCase(unittest.TestCase):
 
 
 class CapacityTests(CatalogCase):
+    def test_only_generated_root_wiki_log_is_not_indexed(self):
+        roots = {'wiki': str(self.wiki)}
+        generated = ('# Auto-context Wiki Log\n\n'
+                     'Append notable wiki maintenance events here.\n' +
+                     '- 2026-06-30T01:45:00Z created concepts/a.md - A\n' * 20)
+        self.write(self.wiki, 'log.md', generated)
+        self.write(self.wiki, 'card.md', '# Card\nordinary knowledge\n')
+        self.write(self.wiki, 'nested/log.md', '# Nested Log\nordinary knowledge\n')
+        self.assertTrue(generated_wiki_log_text(generated))
+        self.assertTrue(auxiliary_wiki_row('wiki/log.md', generated, roots))
+        self.assertFalse(auxiliary_wiki_row('wiki/nested/log.md', generated, roots))
+        catalog = self.open_catalog(create=True, roots=roots, wiki_only=True)
+        self.assertEqual(catalog.request_scan()['status'], 'started')
+        self.assertEqual(drive(catalog, max_bytes=128)[-1]['status'], 'complete')
+        snapshot = catalog.require_complete()
+        self.assertEqual({row[0] for row in catalog.members(
+            snapshot, load_exclusions(self.index, SCOPE))},
+                         {'wiki/card.md', 'wiki/nested/log.md'})
+        source = scan_collections(roots, SCOPE, self.index, max_bytes=128,
+                                  wiki_only=True)
+        self.assertEqual(set(source.by_path),
+                         {'wiki/card.md', 'wiki/nested/log.md'})
+        self.assertEqual(self.catalog_manifest(catalog), source.manifest)
+        self.publish(catalog, 'generated-log-omitted', None)
+        self.assertEqual({row['path'] for row in self.search(
+            catalog, 'ordinary', max_proof_bytes=128)},
+                         {'wiki/card.md', 'wiki/nested/log.md'})
+        # A user-authored page at the same name is not excluded by filename.
+        normal = '# Useful log analysis\nordinary wiki knowledge\n'
+        self.write(self.wiki, 'log.md', normal)
+        self.assertFalse(auxiliary_wiki_row('wiki/log.md', normal, roots))
+        self.assertEqual(catalog.request_scan()['status'], 'started')
+        self.assertEqual(drive(catalog, max_bytes=128)[-1]['status'], 'complete')
+        self.assertIn('wiki/log.md', {row[0] for row in catalog.members(
+            catalog.require_complete(), load_exclusions(self.index, SCOPE))})
+
     def test_large_corpus_exceeds_both_budgets_over_bounded_steps(self):
         size = 30_000
         for d in range(13):
