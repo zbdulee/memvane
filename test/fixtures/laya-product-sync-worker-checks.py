@@ -57,6 +57,16 @@ class WorkerChecks(unittest.TestCase):
                     'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
         self.refreshed={**self.proof,'selectionEpoch':8}
 
+    def test_build_attempt_reason_is_fixed_and_non_sensitive(self):
+        self.assertEqual(worker._build_attempt_reason(
+            IndexContractError('provider_start_failed')), 'provider_start_failed')
+        self.assertEqual(worker._build_attempt_reason(
+            IndexContractError('private document path and content')), 'other_error')
+        try:
+            raise IndexContractError('provider_unavailable') from TimeoutError()
+        except IndexContractError as exc:
+            self.assertEqual(worker._build_attempt_reason(exc), 'provider_timeout')
+
     def wiring(self,*,verify=None,sync=None,activity=None,batch=None):
         batch=batch or {'synthetic':'complete'}
         controller=activity or Coordinator()
