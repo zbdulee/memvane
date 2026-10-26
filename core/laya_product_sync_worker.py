@@ -229,6 +229,33 @@ def _build_attempt_class(result=None, error=None):
     return 'other'
 
 
+_BUILD_PROVIDER_REASONS = frozenset({
+    'provider_already_running', 'provider_start_failed',
+    'provider_start_timeout', 'provider_socket_invalid',
+    'provider_socket_changed', 'provider_identity_mismatch',
+    'provider_result_invalid', 'provider_member_refused',
+    'provider_lock_invalid', 'provider_unavailable',
+})
+
+
+def _build_attempt_reason(error):
+    """Persist only reviewed fixed codes, never an exception's private text."""
+    if not isinstance(error, IndexContractError):
+        return 'other_error'
+    code = str(error)
+    if code not in _BUILD_PROVIDER_REASONS:
+        return 'other_error'
+    if code == 'provider_unavailable':
+        cause = error.__cause__
+        if isinstance(cause, TimeoutError):
+            return 'provider_timeout'
+        if isinstance(cause, (ConnectionRefusedError, FileNotFoundError)):
+            return 'provider_socket_unavailable'
+        if isinstance(cause, OSError):
+            return 'provider_io_error'
+    return code
+
+
 def _capacity_paths(decision):
     return capacity_store_paths(decision['dbPath'])
 
@@ -799,7 +826,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
             # existing retry semantics, while recording only a fixed class.
             progress = {**(record.get('progress') or {}),
                         'lastAttemptNs': time.time_ns(),
-                        'lastAttemptClass': _build_attempt_class(error=exc)}
+                        'lastAttemptClass': _build_attempt_class(error=exc),
+                        'lastAttemptReason': _build_attempt_reason(exc)}
             try:
                 initial_build.advance(record, progress=progress)
             except Exception:
