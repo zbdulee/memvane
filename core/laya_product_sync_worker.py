@@ -600,7 +600,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
     if record['phase'] == 'sealed':
         from laya_qmd_cutover import inspect_bound_cutover
-        if inspect_bound_cutover(identity['journalPath']) is not None:
+        from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+        if (inspect_bound_cutover(identity['journalPath']) is not None or
+                (Path(identity['stateRoot']) / FRESH_LEDGER).exists()):
             return _checked({'state': 'deferred', 'reason': 'initial_build_bind_unsettled',
                              'initialBuild': 'sealed'})
     if not _still_unselected(project):
@@ -631,7 +633,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     'initialBuild': 'bound'}
         if record['phase'] == 'sealed':
             from laya_qmd_cutover import inspect_bound_cutover
-            if inspect_bound_cutover(identity['journalPath']) is not None:
+            from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+            if (inspect_bound_cutover(identity['journalPath']) is not None or
+                    (Path(identity['stateRoot']) / FRESH_LEDGER).exists()):
                 # Finalize may have written the durable ledger and died before
                 # its project marker. The selector still says plain QMD then,
                 # but stepping this candidate could invalidate that binding.

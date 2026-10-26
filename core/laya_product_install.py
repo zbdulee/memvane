@@ -321,6 +321,73 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
     return {'status': 'review_required', 'proposalSha256': digest, **plan}
 
 
+def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
+    """Review a new wiki-only Laya generation without claiming QMD vector provenance.
+
+    No QMD database is read, copied, or selected by this mode. The legacy
+    project settings remain byte-for-byte unchanged; the installer will build
+    a separate private generation from the canonical wiki root.
+    """
+    import config
+    from laya_index_host_route import (_multi_settings_supported,
+                                       _multi_compile_supported,
+                                       selected_collection_roots,
+                                       _source_for_collection, _read_regular,
+                                       MAX_SETTINGS_BYTES, RECORD,
+                                       QMD_SELECTION_MARKER)
+    project = Path(project_root)
+    if (not project.is_absolute() or project.is_symlink() or
+            project.resolve(strict=True) != project):
+        _fail('invalid_project_root')
+    auto = project / '.auto-context'
+    if ((auto / RECORD).exists() or (auto / RECORD).is_symlink() or
+            (not _bound_marker and ((auto / QMD_SELECTION_MARKER).exists() or
+                                    (auto / QMD_SELECTION_MARKER).is_symlink()))):
+        _fail('project_selection_already_exists')
+    found = config.find_project_config(str(project))
+    settings = auto / 'settings.json'
+    if (found.get('configPath') != str(settings) or
+            found.get('projectRoot') != str(project) or settings.is_symlink()):
+        _fail('canonical_settings_required')
+    raw = _read_regular(settings, MAX_SETTINGS_BYTES)
+    settings_sha = hashlib.sha256(raw).hexdigest()
+    source_settings = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique)
+    cfg = config.load_project_config(str(project))
+    names = tuple(sorted(cfg.get('collections', ())))
+    roles = config.role_map(cfg)
+    if (cfg.get('indexing') is not True or len(names) != 2 or
+            sorted(roles.get(name) for name in names) != ['raw', 'wiki'] or
+            set(cfg.get('collectionPaths', {})) != set(names) or
+            not _multi_settings_supported(source_settings, cfg, names)):
+        _fail('unsupported_selected_settings')
+    collections = [{'name': name, 'role': roles[name],
+                    'sourceRoot': _source_for_collection(
+                        project, cfg['collectionPaths'][name])}
+                   for name in names]
+    try:
+        selected_collection_roots(project, collections)
+    except ValueError as exc:
+        raise InstallBlocked(str(exc)) from exc
+    raw_root = Path(next(item['sourceRoot'] for item in collections
+                         if item['role'] == 'raw'))
+    wiki_root = Path(next(item['sourceRoot'] for item in collections
+                          if item['role'] == 'wiki'))
+    if (raw_root != project or wiki_root != project / '.auto-context' / 'wiki'
+            or not _multi_compile_supported(source_settings, cfg, project,
+                                             str(wiki_root))):
+        _fail('fresh_wiki_origin_settings_unsupported')
+    info = project.stat()
+    seed = json.dumps(['fresh-wiki-only', str(project), info.st_dev,
+                       info.st_ino, settings_sha], separators=(',', ':')).encode()
+    plan = {'schema': 'laya-fresh-wiki-origin-plan-v1', 'mode': 'fresh_wiki_only',
+            'projectRoot': str(project), 'settingsSha256': settings_sha,
+            'scopeId': hashlib.sha256(seed).hexdigest()[:32],
+            'collections': collections, 'sourceInventory': 'durable_wiki_catalog_scan'}
+    digest = hashlib.sha256(json.dumps(plan, sort_keys=True,
+        ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return {'status': 'review_required', 'proposalSha256': digest, **plan}
+
+
 def _background_plan(project, settings_sha, source_db, scope, collections, selected,
                      runtime, observed_digest):
     from laya_qmd_migration import QMD_253
@@ -1060,6 +1127,50 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
                 'routeFile': str(route_file)}
 
 
+def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_root,
+                              commit_id, expected_proposal_sha256, install_id,
+                              accepted_provider_sha256, user_qmd_roots,
+                              model_path=None, dimension=None):
+    """Register an inactive wiki-only build; do not touch QMD or activate."""
+    if model_path is None or dimension is None:
+        _fail('fresh_wiki_model_proof_required')
+    if (not isinstance(expected_proposal_sha256, str) or
+            not re.fullmatch(r'[0-9a-f]{64}', expected_proposal_sha256) or
+            not isinstance(install_id, str) or
+            not re.fullmatch(r'[0-9a-f]{32}', install_id) or
+            not isinstance(accepted_provider_sha256, str) or
+            not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256) or
+            not isinstance(user_qmd_roots, list) or not user_qmd_roots):
+        _fail('invalid_origin_preparation_request')
+    if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
+        _fail('source_checkout_cannot_be_installed_root')
+    state = _prepare_state_root(state_root, install_id)
+    journal = state / 'install-journal.sqlite'
+    socket = state / 'runtime' / 'laya-embed.sock'
+    if len(str(socket).encode('utf-8')) > 100:
+        _fail('install_socket_path_too_long')
+    with _install_lock(state):
+        plan = plan_fresh_wiki_origin(project_root)
+        if plan['proposalSha256'] != expected_proposal_sha256:
+            _fail('reviewed_origin_plan_changed')
+        review = review_local_provider(
+            source_root=source_root, plugin_root=plugin_root,
+            state_root=state, commit_id=commit_id,
+            model_path=model_path, dimension=dimension)
+        if review['proposalSha256'] != accepted_provider_sha256:
+            _fail('reviewed_provider_proposal_changed')
+        # A replacement-model claim refers to an old QMD vector generation.
+        # This mode deliberately makes no such claim.
+        if review.get('replacementEvidenceSha256') is not None:
+            _fail('fresh_wiki_replacement_evidence_unsupported')
+        return _register_initial_build(
+            plan=plan, reviewed_provider=review['reviewedProvider'],
+            provider_proposal_sha256=accepted_provider_sha256,
+            source_root=source_root, plugin_root=plugin_root, state=state,
+            journal=journal, socket=socket, commit_id=commit_id,
+            install_id=install_id, user_qmd_roots=user_qmd_roots)
+
+
 def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
                       user_qmd_roots, state, journal, socket):
     """Adopt the host-loaded exact bundle and stage its provider attestation."""
@@ -1199,9 +1310,13 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
                 'routeSha256': hashlib.sha256(route_bytes).hexdigest(),
                 'attestationSha256': staged['attestationSha256'],
                 'vectorProfileId': profile['profileId'],
-                'sourceDb': plan['sourceDb'], 'sourceFormat': plan['sourceFormat'],
                 'proposalSha256': plan['proposalSha256'],
                 'providerProposalSha256': provider_proposal_sha256}
+    if plan.get('mode') == 'fresh_wiki_only':
+        identity['originMode'] = 'fresh_wiki_only'
+    else:
+        identity['sourceDb'] = plan['sourceDb']
+        identity['sourceFormat'] = plan['sourceFormat']
     if replacement_evidence_sha256 is not None:
         identity['replacementEvidenceSha256'] = replacement_evidence_sha256
     if identity['routeSha256'] != staged['pendingRouteSha256']:
@@ -1300,6 +1415,8 @@ def finalize_initial_build(*, project_root, state_root):
         if record is None:
             _fail('initial_build_missing')
         identity = record['identity']
+        if identity.get('originMode') == 'fresh_wiki_only':
+            return _finalize_fresh_wiki_locked(record, project_root, state)
         if identity['projectRoot'] != str(project_root):
             _fail('initial_build_project_mismatch')
         if record['phase'] == 'retired':
@@ -1403,6 +1520,87 @@ def finalize_initial_build(*, project_root, state_root):
             'generation': sealed['generation'], 'buildPhase': record['phase']}
 
 
+def _finalize_fresh_wiki_locked(record, project_root, state):
+    """Bind a fresh wiki build without inventing a QMD source or backup."""
+    import laya_initial_build as initial_build
+    import laya_fresh_wiki_origin as fresh
+    from contextlib import closing
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_runtime import LayaIndexRuntime
+    from laya_install_journal import inspect_journal
+    from laya_source_catalog import LayaSourceCatalog
+    identity = record['identity']
+    if identity['projectRoot'] != str(project_root):
+        _fail('initial_build_project_mismatch')
+    if record['phase'] == 'retired':
+        _fail('initial_build_retired')
+    if record['phase'] == 'blocked':
+        return {'status': 'initial_build_blocked', 'blocked': record['blocked']}
+    ledger_path = state / fresh.LEDGER
+    cutover = fresh._load(ledger_path) if ledger_path.exists() or ledger_path.is_symlink() else None
+    if cutover is not None and (record['sealed'] is None or
+            cutover['indexGeneration'] != record['sealed']['generation'] or
+            cutover['candidateDb'] != identity['candidateDb']):
+        _fail('fresh_wiki_selection_already_exists')
+    if cutover is not None and cutover['phase'] != 'prepared':
+        if record['phase'] != 'bound':
+            record = initial_build.advance(record, phase='bound')
+        return {'status': 'cutover_' + cutover['phase'],
+                'cutoverPhase': cutover['phase'],
+                'journalPath': identity['journalPath'],
+                'generation': cutover['indexGeneration'],
+                'buildPhase': record['phase']}
+    if record['phase'] == 'bound' and cutover is None:
+        _fail('initial_build_bound_without_cutover')
+    roots = wiki_index_roots(identity['collections'])
+    if cutover is None and not initial_build.freshness_satisfied(record):
+        if record['phase'] == 'building' and record['freshness'] is not None:
+            return {'status': 'freshness_pending', 'phase': record['phase'],
+                    'progress': record['progress'],
+                    'wake': _request_build_wake(identity['projectRoot'])}
+        with closing(LayaSourceCatalog(identity['catalogDb'], roots,
+                                       identity['scopeId'])) as catalog:
+            record = initial_build.request_freshness(record, catalog)
+        return {'status': 'freshness_pending', 'phase': record['phase'],
+                'freshness': record['freshness'],
+                'wake': _request_build_wake(identity['projectRoot'])}
+    plan = plan_fresh_wiki_origin(project_root, _bound_marker=cutover is not None)
+    if plan['proposalSha256'] != identity['proposalSha256']:
+        _fail('reviewed_origin_plan_changed')
+    journal = inspect_journal(identity['journalPath'])
+    if (journal['state'] != 'candidate_ready' or
+            journal['pendingRouteSha256'] != identity['routeSha256'] or
+            journal['newWriteSeen']):
+        _fail('initial_build_journal_changed')
+    approval = preflight_product_candidate(identity['journalPath'])
+    if approval['attestationSha256'] != identity['attestationSha256']:
+        _fail('initial_build_attestation_changed')
+    sealed = record['sealed']
+    with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
+                          db_path=identity['candidateDb'],
+                          queue_path=identity['queueDb'],
+                          db_incarnation=identity['dbIncarnation'],
+                          catalog_path=identity['catalogDb'],
+                          binding_store_path=identity['bindingStore']) as runtime:
+        live = initial_build.evidence(runtime, sealed['generation'],
+                                      identity['vectorProfileId'])
+    if live != sealed:
+        _fail('initial_build_candidate_changed')
+    route_bytes = _read_private(identity['routeFile'], 8192)
+    if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
+        _fail('initial_build_route_changed')
+    row = fresh.bind(project_root=Path(project_root),
+                     journal_path=identity['journalPath'],
+                     route_bytes=route_bytes, sealed=sealed, identity=identity)
+    if record['phase'] != 'bound':
+        record = initial_build.advance(record, phase='bound')
+    return {'status': 'cutover_' + row['phase'], 'cutoverPhase': row['phase'],
+            'journalPath': identity['journalPath'],
+            'candidateDb': identity['candidateDb'],
+            'routeFile': identity['routeFile'],
+            'generation': sealed['generation'], 'buildPhase': record['phase']}
+
+
 def retire_drifted_origin(*, project_root, state_root):
     """Retire a bound initial build whose QMD or replacement proof went stale.
 
@@ -1453,6 +1651,16 @@ def retire_drifted_origin(*, project_root, state_root):
                 identity['stateRoot'] != str(state) or
                 identity['journalPath'] != str(journal)):
             _fail('initial_build_project_mismatch')
+        if identity.get('originMode') == 'fresh_wiki_only':
+            import laya_fresh_wiki_origin as fresh
+            if record['phase'] != 'bound':
+                _fail('fresh_wiki_build_not_bound')
+            row = fresh.retire(project, journal)
+            pointer = initial_build.retire_project_pointer(identity)
+            return {'status': 'fresh_wiki_binding_retired', 'changesApplied': 1,
+                    'stateRoot': str(state), 'buildPointer': pointer,
+                    'cutoverPhase': row['phase'],
+                    'nextRequires': 'new_install_id_and_state_root'}
         row = inspect_bound_cutover(journal)
         if row is None:
             _fail('cutover_ledger_missing')
@@ -1840,7 +2048,9 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
             _fail('unused_build_journal_changed')
         if allow_started:
             from laya_qmd_cutover import inspect_bound_cutover
-            if inspect_bound_cutover(journal) is not None:
+            from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+            if (inspect_bound_cutover(journal) is not None or
+                    (state / FRESH_LEDGER).exists()):
                 _fail('inactive_build_cutover_started')
         route_bytes = _read_private(identity['routeFile'], 8192)
         if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
@@ -1921,7 +2131,8 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 inspect_journal(journal) != pending or
                 current_ownership['sha256'] != ownership['sha256']):
             _fail('unused_build_changed')
-        if allow_started and inspect_bound_cutover(journal) is not None:
+        if allow_started and (inspect_bound_cutover(journal) is not None or
+                (state / FRESH_LEDGER).exists()):
             _fail('inactive_build_cutover_started')
         clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
         record = initial_build.advance(record, phase='retired', **clear) if allow_started else initial_build.advance(record, phase='retired')
@@ -2020,6 +2231,13 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                                   inspect_bound_cutover)
     project = _checked_project(project_root)
     journal = Path(journal_path)
+    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+    if (journal.parent / FRESH_LEDGER).exists():
+        import laya_fresh_wiki_origin as fresh
+        row = fresh._load(journal.parent / FRESH_LEDGER)
+        _require_fresh_bound_generation(row, journal.parent)
+        row = fresh.activate(project, journal, route_bytes)
+        return {**row, 'syncWake': _request_build_wake(str(project))}
     row = inspect_bound_cutover(journal)
     if row is None:
         _fail('cutover_ledger_missing')
@@ -2046,7 +2264,13 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 def recover_origin_selection(project_root, journal_path, route_bytes):
     """Settle an interrupted cutover; an ``active`` result wakes the selected sync."""
     project = _checked_project(project_root)
-    row = recover_qmd_origin(project, Path(journal_path), route_bytes)
+    journal = Path(journal_path)
+    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+    if (journal.parent / FRESH_LEDGER).exists():
+        from laya_fresh_wiki_origin import recover
+        row = recover(project, journal, route_bytes)
+    else:
+        row = recover_qmd_origin(project, journal, route_bytes)
     if row['phase'] == 'active':
         return {**row, 'syncWake': _request_build_wake(str(project))}
     return row
@@ -2073,6 +2297,9 @@ def restore_origin_selection(*, project_root, state_root):
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     journal = state / 'install-journal.sqlite'
+    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
+    if (state / FRESH_LEDGER).exists():
+        return _restore_fresh_wiki_selection(project, state, journal)
     auto = project / '.auto-context'
 
     def observed():
@@ -2130,6 +2357,54 @@ def restore_origin_selection(*, project_root, state_root):
                 'changesApplied': int(after != before)}
     return {'status': 'recovery_required', 'reason': 'restore_unsettled', **after,
             'changesApplied': int(after != before)}
+
+
+def _restore_fresh_wiki_selection(project, state, journal):
+    import laya_fresh_wiki_origin as fresh
+    auto = project / '.auto-context'
+    def observed():
+        return {'cutoverPhase': fresh._load(state / fresh.LEDGER)['phase'],
+                'journalState': inspect_journal(journal)['state'],
+                'selection': fresh.classify_marker(project, auto / fresh.MARKER,
+                                                    auto / fresh.ROUTE)}
+    with _install_lock(state):
+        row = fresh._load(state / fresh.LEDGER)
+        if row['phase'] == 'retired':
+            return {'status': 'binding_retired', 'cutoverPhase': 'retired',
+                    'journalState': inspect_journal(journal)['state'],
+                    'changesApplied': 0}
+        route_bytes = _read_private(state / 'reviewed-route.json', 8192)
+        if (row['projectRoot'] != str(project) or row['journalPath'] != str(journal) or
+                hashlib.sha256(route_bytes).hexdigest() != row['routeSha256']):
+            _fail('restore_cutover_mismatch')
+        before = observed()
+        if tuple(before.values()) in (('prepared', 'candidate_ready', 'legacy'),
+                                      ('restored', 'restored_qmd', 'legacy')):
+            return {'status': 'legacy_selected', **before, 'changesApplied': 0}
+        try:
+            if row['phase'] == 'active':
+                fresh.restore(project, journal)
+            else:
+                fresh.recover(project, journal, route_bytes)
+        except fresh.FreshWikiBlocked as exc:
+            after = observed()
+            if str(exc) == 'fresh_wiki_rollback_forward_only':
+                return {'status': 'blocked', 'reason': 'rollback_forward_only',
+                        **after, 'changesApplied': int(after != before)}
+            if after == before:
+                raise
+            return {'status': 'recovery_required', 'reason': str(exc),
+                    **after, 'changesApplied': 1}
+        after = observed()
+    if tuple(after.values()) in (('prepared', 'candidate_ready', 'legacy'),
+                                 ('restored', 'restored_qmd', 'legacy')):
+        from laya_embed_resident import wait_for_release
+        stopped = wait_for_release(state / 'runtime' / 'laya-embed.sock')
+        return {'status': 'legacy_restored', **after,
+                'changesApplied': int(after != before),
+                **({} if stopped else {'embedServiceCleanup': 'pending'})}
+    return {'status': 'recovery_required', 'reason': 'restore_unsettled',
+            **after, 'changesApplied': int(after != before)}
 
 
 def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,
@@ -2229,6 +2504,9 @@ def main(argv=None):
     plan = sub.add_parser('plan-origin', help='inspect an owned two-collection QMD origin')
     plan.add_argument('--project-root', required=True)
     _origin_mode_arguments(plan)
+    fresh_plan = sub.add_parser('plan-fresh-wiki',
+                                help='review a new wiki-only generation without QMD vector reuse')
+    fresh_plan.add_argument('--project-root', required=True)
     review = sub.add_parser('review-provider',
                             help='inventory exact local Node/model/native artifacts')
     review.add_argument('--source-root', required=True)
@@ -2249,6 +2527,14 @@ def main(argv=None):
     prepare.add_argument('--dimension', type=int)
     prepare.add_argument('--user-qmd-root', action='append', required=True)
     _origin_mode_arguments(prepare)
+    fresh_prepare = sub.add_parser('prepare-fresh-wiki',
+                                   help='register an inactive new wiki-only build')
+    for key in ('project-root', 'source-root', 'state-root', 'commit',
+                'proposal-sha256', 'install-id', 'accepted-provider-sha256'):
+        fresh_prepare.add_argument('--' + key, required=True)
+    fresh_prepare.add_argument('--model-file')
+    fresh_prepare.add_argument('--dimension', type=int)
+    fresh_prepare.add_argument('--user-qmd-root', action='append', required=True)
     status = sub.add_parser('status', help='inspect the inactive or active install journal')
     status.add_argument('--state-root', required=True)
     build_status = sub.add_parser('build-status', help='inspect a registered initial build')
@@ -2284,6 +2570,8 @@ def main(argv=None):
     journal = state_root / 'install-journal.sqlite' if state_root else None
     if args.action == 'plan-origin':
         result = plan_qmd_origin(args.project_root, background=not args.synchronous_origin)
+    elif args.action == 'plan-fresh-wiki':
+        result = plan_fresh_wiki_origin(args.project_root)
     elif args.action == 'build-status':
         result = initial_build_status(args.state_root)
     elif args.action == 'build-rescan':
@@ -2305,6 +2593,15 @@ def main(argv=None):
             accepted_provider_sha256=args.accepted_provider_sha256,
             model_path=args.model_file, dimension=args.dimension,
             user_qmd_roots=args.user_qmd_root, background=not args.synchronous_origin)
+    elif args.action == 'prepare-fresh-wiki':
+        result = prepare_fresh_wiki_origin(
+            project_root=args.project_root, source_root=args.source_root,
+            plugin_root=root, state_root=args.state_root, commit_id=args.commit,
+            expected_proposal_sha256=args.proposal_sha256,
+            install_id=args.install_id,
+            accepted_provider_sha256=args.accepted_provider_sha256,
+            model_path=args.model_file, dimension=args.dimension,
+            user_qmd_roots=args.user_qmd_root)
     elif args.action == 'stage':
         result = stage_host_loaded_candidate(
             source_root=args.source_root, plugin_root=root,
