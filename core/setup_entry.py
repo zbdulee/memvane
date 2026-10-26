@@ -393,8 +393,10 @@ def main(argv=None):
                                           'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll',
                                           'plan-install','install',
                                           'plan-learning-profile','activate-learning-profile',
-                                          'plan-index-origin','review-index-provider',
-                                          'prepare-index-origin','index-origin-status',
+                                          'plan-index-origin','plan-fresh-wiki-origin',
+                                          'review-index-provider',
+                                          'prepare-index-origin','prepare-fresh-wiki-origin',
+                                          'index-origin-status',
                                           'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
@@ -454,8 +456,10 @@ def main(argv=None):
     parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
     try:
-        if args.action in ('plan-index-origin','review-index-provider',
-                           'prepare-index-origin','index-origin-status',
+        if args.action in ('plan-index-origin','plan-fresh-wiki-origin',
+                           'review-index-provider',
+                           'prepare-index-origin','prepare-fresh-wiki-origin',
+                           'index-origin-status',
                            'index-build-status','index-build-rescan',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
@@ -470,6 +474,8 @@ def main(argv=None):
                 if pending is not None:
                     # Finish the interrupted retirement before preparing.
                     result['pendingRetirement'] = pending
+            elif args.action == 'plan-fresh-wiki-origin':
+                result = product.plan_fresh_wiki_origin(args.project)
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     source_root=args.source_root, plugin_root=installed,
@@ -488,6 +494,17 @@ def main(argv=None):
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension,
                     background=True)
+            elif args.action == 'prepare-fresh-wiki-origin':
+                result = product.prepare_fresh_wiki_origin(
+                    project_root=args.project, source_root=args.source_root,
+                    plugin_root=installed, state_root=args.state_root,
+                    commit_id=args.commit,
+                    expected_proposal_sha256=args.accepted_origin_sha256,
+                    accepted_provider_sha256=args.accepted_provider_sha256,
+                    install_id=args.install_id,
+                    user_qmd_roots=args.user_qmd_root,
+                    model_path=args.provider_model_file,
+                    dimension=args.provider_dimension)
             else:
                 state = product._private_parent(args.state_root)
                 journal = state / 'install-journal.sqlite'

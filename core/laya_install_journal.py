@@ -713,6 +713,32 @@ def cas_restore_qmd(journal_path, expected_epoch, expected_new_route_sha):
     return _cas(journal_path, expected_epoch, restore)
 
 
+def cas_restore_fresh(journal_path, expected_epoch, expected_new_route_sha):
+    """Withdraw only a fresh-wiki route under its independent restoring ledger."""
+    def restore(path, row):
+        if (row['state'] != 'active' or row['previous'] is not None or
+                row['new_write_seen'] or row['selected'] is None or
+                row['selected_route_sha'] != expected_new_route_sha):
+            _fail('fresh_wiki_rollback_not_authorized')
+        from laya_fresh_wiki_origin import (LEDGER, MARKER, ROUTE, _check_marker,
+                                            _load)
+        ledger = _load(Path(path).parent / LEDGER)
+        if (ledger['phase'] != 'restoring' or ledger['journalPath'] != str(path) or
+                ledger['projectRoot'] != row['project_root'] or
+                ledger['routeSha256'] != expected_new_route_sha):
+            _fail('fresh_wiki_restore_ledger_mismatch')
+        auto = Path(row['project_root']) / '.auto-context'
+        _check_marker(ledger, auto / MARKER)
+        if (auto / ROUTE).exists() or (auto / ROUTE).is_symlink():
+            _fail('fresh_wiki_route_still_selected')
+        return {'state': 'restored_qmd', 'selected': None,
+                'selected_route_sha': None, 'pending': None,
+                'pending_route_sha': None, 'new_write_seen': 0,
+                'provider_attestation_sha': None,
+                'provider_file_identity': None}
+    return _cas(journal_path, expected_epoch, restore)
+
+
 def _verify_selected_route(decision, *, dispatch_target=False):
     """Read-only product proof for a host-validated candidate decision.
 

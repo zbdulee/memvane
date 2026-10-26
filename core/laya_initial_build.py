@@ -76,6 +76,7 @@ IDENTITY_FIELDS = frozenset((
     'vectorProfileId', 'sourceDb', 'sourceFormat', 'proposalSha256',
     'providerProposalSha256'))
 REPLACEMENT_IDENTITY_FIELDS = IDENTITY_FIELDS | {'replacementEvidenceSha256'}
+FRESH_WIKI_IDENTITY_FIELDS = (IDENTITY_FIELDS - {'sourceDb', 'sourceFormat'}) | {'originMode'}
 RECORD_FIELDS = frozenset(('schema', 'epoch', 'phase', 'identity', 'progress',
                            'sealed', 'freshness', 'blocked', 'updatedNs'))
 SEALED_FIELDS = frozenset(('generation', 'bindingDigest', 'sourceManifest',
@@ -178,9 +179,13 @@ def _write_json(path, value, *, replace):
 
 def _validate_identity(identity):
     if not isinstance(identity, dict) or set(identity) not in (
-            IDENTITY_FIELDS, REPLACEMENT_IDENTITY_FIELDS):
+            IDENTITY_FIELDS, REPLACEMENT_IDENTITY_FIELDS,
+            FRESH_WIKI_IDENTITY_FIELDS):
         _fail('initial_build_identity_invalid')
-    for key in IDENTITY_FIELDS - {'collections'}:
+    fresh = set(identity) == FRESH_WIKI_IDENTITY_FIELDS
+    if fresh and identity['originMode'] != 'fresh_wiki_only':
+        _fail('initial_build_identity_invalid')
+    for key in (FRESH_WIKI_IDENTITY_FIELDS if fresh else IDENTITY_FIELDS) - {'collections'}:
         if not isinstance(identity[key], str) or not identity[key]:
             _fail('initial_build_identity_invalid')
     for key in ('installId', 'scopeId', 'dbIncarnation'):
@@ -194,7 +199,7 @@ def _validate_identity(identity):
             not _HEX64.fullmatch(identity['replacementEvidenceSha256'])):
         _fail('initial_build_identity_invalid')
     for key in ('projectRoot', 'stateRoot', 'candidateDb', 'queueDb', 'catalogDb',
-                'bindingStore', 'journalPath', 'routeFile', 'sourceDb'):
+                'bindingStore', 'journalPath', 'routeFile') + (() if fresh else ('sourceDb',)):
         if not Path(identity[key]).is_absolute():
             _fail('initial_build_identity_invalid')
     stores = [identity[key] for key in ('candidateDb', 'queueDb', 'catalogDb',
