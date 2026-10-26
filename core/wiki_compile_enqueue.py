@@ -381,6 +381,12 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         inner_rel = rel_path
     if _is_hidden_source_path(inner_rel):
         return None
+    import wiki_selected_laya
+    selected_route = wiki_selected_laya.selected(Path(project_root))
+    if selected_route is not None:
+        from laya_source_exclusion import excluded_source
+        if excluded_source(rel_path, selected_route[0]['recallSettings']['skipPaths']):
+            return None
     record = {
         "ts": _utc_now(),
         "trigger": trigger,
@@ -392,8 +398,6 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
             "collection": collection,
         },
     }
-    import wiki_selected_laya
-    selected_route = wiki_selected_laya.selected(Path(project_root))
     if selected_route is not None:
         record['selectedRoute'] = wiki_selected_laya.route_identity(selected_route)
     return record

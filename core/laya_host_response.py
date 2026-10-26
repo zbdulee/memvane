@@ -23,6 +23,10 @@ MAX_BODY_CHARS = 1200
 MAX_PATH_CHARS = 512
 MAX_CONTEXT_BYTES = 32768
 HYBRID_LIST_LIMIT = 20
+# A-int supports at most 100 rows per query. When a selected source exclusion
+# is active, fetch up to that bound before RRF; if it cannot supply a complete
+# eligible list, report the limitation instead of silently returning no match.
+EXCLUSION_FETCH_LIMIT = 100
 RRF_K = 60
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -529,7 +533,8 @@ def _promote_exact_ep(rows: list[dict], prompt: str) -> list[dict]:
 
 
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
-              patterns, min_score, skip_paths, candidates=None):
+              patterns, min_score, skip_paths, candidates=None,
+              source_filter=None):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
     Without ``candidates`` every row is checked against one live scan of all
@@ -562,7 +567,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         vector_check = check
     prefixes = tuple(name + '/' for name in names)
 
-    def verified_batch(queries, limit, *, deadline_seconds):
+    def verified_batch(queries, limit, *, deadline_seconds, needed=HYBRID_LIST_LIMIT):
         if not queries:
             return []
         batches = runtime.index.search_many(token, tuple(queries), limit,
@@ -577,6 +582,11 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
             checked = check(rows)
             if any(not row['path'].startswith(prefixes) for row in checked):
                 _raise_stale('search escaped collection scope')
+            if source_filter is not None:
+                checked = [row for row in checked if source_filter(row)]
+                if len(rows) == limit and len(checked) < needed:
+                    _fail('selected_source_exclusion_candidate_limit')
+                checked = checked[:HYBRID_LIST_LIMIT]
             verified.append(checked)
         if _seal(runtime.index, token) != sealed:
             _raise_stale('view seal changed during collection search')
@@ -592,7 +602,9 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     active = [(term, atom) for term, atom in probe_terms if atom]
     if active and time.monotonic() < deadline:
         try:
-            probe_rows = verified_batch([atom for _term, atom in active], 1,
+            probe_rows = verified_batch([atom for _term, atom in active],
+                                        EXCLUSION_FETCH_LIMIT if source_filter else 1,
+                                        needed=1,
                                         deadline_seconds=max(0.000001,
                                                              deadline - time.monotonic()))
         except IndexContractError as exc:
@@ -627,16 +639,21 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         lexical.append((position, fts))
     for (position, _fts), rows in zip(
             lexical, verified_batch([fts for _position, fts in lexical],
-                                    HYBRID_LIST_LIMIT,
+                                    EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
                                     deadline_seconds=2.0)):
         lists.append(rows)
         lex_hits |= bool(rows)
         ep_hits |= position > 0 and bool(rows)
     vector_rows = _pinned_vector(runtime, token, ' '.join(prompt.split()), profile,
-                                 provider, HYBRID_LIST_LIMIT,
+                                 provider, EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
                                  collection_roots=roots, collection_names=names,
                                  verified_source=source, sealed_view=sealed,
                                  row_verifier=vector_check)
+    if source_filter is not None:
+        eligible = [row for row in vector_rows if source_filter(row)]
+        if len(vector_rows) == EXCLUSION_FETCH_LIMIT and len(eligible) < HYBRID_LIST_LIMIT:
+            _fail('selected_source_exclusion_candidate_limit')
+        vector_rows = eligible[:HYBRID_LIST_LIMIT]
     lists.append(vector_rows)
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
     filtered = [row for row in fused if row['score'] >= min_score and
@@ -654,7 +671,8 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
 
 def _verified_wiki_row(row: dict, decision: dict,
                        pending_sources: frozenset[str] = frozenset(),
-                       source_locations: dict | None = None) -> bool:
+                       source_locations: dict | None = None,
+                       source_skip_paths=()) -> bool:
     """Accept only compiler-proven wiki bytes whose raw revisions are current.
 
     An optional ``sourceSpans`` list must be complete and current: each span is
@@ -663,7 +681,8 @@ def _verified_wiki_row(row: dict, decision: dict,
     rejects the card (without a raw fallback); an absent list is a legacy
     file-level card. Verified locators go to ``source_locations[path]``.
     """
-    located = _verified_wiki_locations(row, decision, pending_sources)
+    located = _verified_wiki_locations(row, decision, pending_sources,
+                                       source_skip_paths)
     if located is None:
         return False
     if source_locations is not None and located:
@@ -672,11 +691,13 @@ def _verified_wiki_row(row: dict, decision: dict,
 
 
 def _verified_wiki_locations(row: dict, decision: dict,
-                             pending_sources: frozenset[str]) -> tuple[str, ...] | None:
+                             pending_sources: frozenset[str],
+                             source_skip_paths=()) -> tuple[str, ...] | None:
     import recall
     import source_spans
     import wiki_freshness
     import yaml_scalars
+    from laya_source_exclusion import excluded_source
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     if not body.startswith('---\n'):
         return None
@@ -706,6 +727,7 @@ def _verified_wiki_locations(row: dict, decision: dict,
     for revision in revisions:
         normalized = yaml_scalars.normalize_source_revision(revision)
         if (normalized is None or roles.get(normalized['collection']) != 'raw'
+                or excluded_source(normalized['path'], source_skip_paths)
                 or normalized['path'] in pending_sources):
             return None
         raw_root = Path(roots[normalized['collection']])
@@ -747,7 +769,9 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
     settings = decision['recallSettings']
     roles = {item['name']: item['role'] for item in decision['collections']}
     wiki = tuple(name for name in sorted(roots) if roles[name] == 'wiki')
-    if (not wiki or settings['recallStrategy'] != 'hierarchical'):
+    # The legacy QMD strategy is pinned for compatibility, not a Laya search
+    # mode: both accepted values use the same wiki-only collection roots.
+    if (not wiki or settings['recallStrategy'] not in ('hierarchical', 'wikiOnly')):
         _fail('selected_recall_settings_unsupported')
     token, _generation = runtime.index.pin(runtime.scope)
     candidates = None
@@ -765,20 +789,24 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                 candidates.require_returned_verified()
                 candidates.finish()
             return rows, title_only
-        rows, body_evidence = _v2_phase(
-            runtime, token, prompt, route_profile, approved_provider, roots,
-            wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
-            tuple(settings['skipPaths']), candidates)
         import wiki_freshness
         pending = wiki_freshness.unresolved_pending_refreshes_strict(
             Path(decision['projectRoot']))
         if pending is None:
             _fail('wiki_pending_refresh_unknown')
         pending_sources = frozenset(item['sourcePath'] for item in pending)
+        source_filter = (lambda row: _verified_wiki_row(
+            row, decision, pending_sources, source_skip_paths=tuple(settings['skipPaths']))) \
+            if settings['skipPaths'] else None
+        rows, body_evidence = _v2_phase(
+            runtime, token, prompt, route_profile, approved_provider, roots,
+            wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
+            (), candidates, source_filter)
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
                 if row['path'].rsplit('/', 1)[-1] not in ('index.md', 'log.md')
-                and _verified_wiki_row(row, decision, pending_sources, located)]
+                and _verified_wiki_row(row, decision, pending_sources, located,
+                                       tuple(settings['skipPaths']))]
         if rows:
             delivered = deliver(rows, (frozenset() if body_evidence else
                                        frozenset(row['path'] for row in rows)))

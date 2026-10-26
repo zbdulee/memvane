@@ -560,6 +560,89 @@ class ResponseChecks(unittest.TestCase):
                          [('wiki',)])
         self.assertTrue(index.released)
 
+    def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
+        import wiki_freshness
+        index = FakeIndex()
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
+        decision = v2_decision()
+        decision['recallSettings'] = {**decision['recallSettings'],
+                                      'recallStrategy': 'wikiOnly',
+                                      'skipPaths': ['build']}
+        with patch.object(response, '_v2_phase', return_value=([], False)) as phase, \
+             patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
+                          return_value=[]):
+            found, title_only = response.query_selected_v2(
+                runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
+                lambda *_: None, decision)
+        self.assertEqual((found, title_only), ([], frozenset()))
+        self.assertEqual(phase.call_args.args[5], {'wiki': '/synthetic/project/wiki'})
+        self.assertEqual(phase.call_args.args[6], ('wiki',))
+        self.assertEqual(phase.call_args.args[9], ())
+        self.assertTrue(index.released)
+
+    def test_v2_excludes_source_directories_without_matching_wiki_names(self):
+        import yaml_scalars
+        from laya_source_exclusion import excluded_source
+        self.assertTrue(excluded_source('docs/build/a.md', ['build']))
+        self.assertTrue(excluded_source('docs/team-workspace/a.md', ['-workspace']))
+        self.assertFalse(excluded_source('docs/build-notes.md', ['build']))
+        self.assertFalse(excluded_source('docs/a.md', []))
+        with tempfile.TemporaryDirectory(prefix='laya-source-exclusion-') as temp:
+            project = Path(temp).resolve()
+            (project / 'docs' / 'build').mkdir(parents=True)
+            (project / 'wiki').mkdir()
+            source = project / 'docs' / 'build' / 'a.md'
+            source.write_text('original', encoding='utf-8')
+            revision = {'kind': 'file', 'path': 'docs/build/a.md', 'collection': 'raw',
+                        'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                        'size': source.stat().st_size,
+                        'mtimeNs': source.stat().st_mtime_ns}
+            decision = v2_decision(str(project))
+            frontmatter = ('---\ntitle: Synthetic\nstatus: verified\n'
+                           'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                           + json.dumps(revision) + '\nverifiedBodyHash: {digest}\n'
+                           '---\n## Summary\nSource fact.\n')
+            digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
+            card = row(path='wiki/keep.md', body=frontmatter.replace('{digest}', digest))
+            self.assertTrue(response._verified_wiki_row(card, decision))
+            self.assertFalse(response._verified_wiki_row(
+                card, decision, source_skip_paths=('build',)))
+
+    def test_v2_refills_before_fusion_and_reports_exclusion_cap(self):
+        import keywords
+        import laya_index_source_port as source_port
+        runtime = SimpleNamespace(index=FakeIndex())
+        seal = (SCOPE, 'generation-7', 'manifest')
+        excluded = [row(path=f'wiki/excluded-{n}.md') for n in range(20)]
+        keep = row(path='wiki/keep.md')
+        with patch.object(source_port, '_seal', return_value=seal), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': [], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=excluded + [keep]) as vector:
+            found, _ = response._v2_phase(
+                runtime, 'token', 'find card', VECTOR_PROFILE,
+                lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (), source_filter=lambda item: item['path'] == keep['path'])
+            self.assertEqual([item['path'] for item in found], ['wiki/keep.md'])
+            self.assertEqual(vector.call_args.args[5], response.EXCLUSION_FETCH_LIMIT)
+        with patch.object(source_port, '_seal', return_value=seal), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': [], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=[
+                 row(path=f'wiki/excluded-{n}.md') for n in range(100)]):
+            with self.assertRaisesRegex(response.HostResponseError,
+                                        'selected_source_exclusion_candidate_limit'):
+                response._v2_phase(
+                    runtime, 'token', 'find card', VECTOR_PROFILE,
+                    lambda *_: None, {'wiki': '/synthetic/wiki'},
+                    ('wiki',), (), 0, (), source_filter=lambda _item: False)
+
     # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
     # Expected slices are literal bytes of SPAN_SOURCE, not recomputed by the
     # module under test.

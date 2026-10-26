@@ -63,7 +63,7 @@
 | `topN` | `3` | 주입할 최대 문서 수입니다. `minScore`가 이보다 강하게 자를 수 있습니다. |
 | `queryTimeout` | `5` | qmd query **1건**의 응답 대기(초)입니다. 전체 훅 예산이 아닙니다 → [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) |
 | `staleQueueThreshold` | `20` | dirty queue 적체 안내를 표시할 기준 줄 수입니다. |
-| `skipPaths` | `[]` | recall 결과에서 제외할 경로 substring입니다. **인덱싱 대상은 줄이지 않습니다** → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
+| `skipPaths` | `[]` | 기존 QMD에서는 recall 결과 경로 substring 필터입니다. 선택된 Laya에서는 원문 디렉터리 제외와 기존 위키 출처 보호에도 쓰입니다 → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
 | `allowRoots` | `[]` | 프로젝트 밖 절대경로 collection을 허용할 root 목록입니다. 보통 비워 둡니다. |
 | `prefixStyle` | `"full"` | recall 출력 prefix 스타일입니다(`full`·`tag`). |
 | `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. raw 결과는 원문 본문을 자동 주입하지 않습니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
@@ -406,6 +406,11 @@ recall이 그것을 씁니다). 반면 "등록 경로가 존재하지 않는다"
 반대입니다.
 
 ## Recall Strategy
+
+이 설정은 기존 QMD 검색에서 사용합니다. 별도로 선택한 Laya 경로는
+`recallStrategy` 값으로 검색 방식을 고르지 않고 항상 wiki 카드만
+색인·검색·주입합니다. 기존 프로젝트의 `hierarchical`·`wikiOnly` 값은
+설정 호환성 검증을 위해 읽으며, Laya에서 raw fallback을 켜지 않습니다.
 
 `recallStrategy: "flat"`이면 모든 `collections`를 한 번에 검색합니다.
 
@@ -1551,9 +1556,10 @@ wiki는 상위 3위까지, raw fallback은 상위 2위까지만 봅니다(순위
 }
 ```
 
-`skipPaths`는 **recall 결과 필터일 뿐입니다.** 이름이 인덱싱 제외를 암시하지만,
-`core/recall.py`가 데몬 응답을 걸러낼 때만 쓰이고 인덱싱 대상은 전혀 줄이지
-않습니다. indexing cleanup이나 파일 삭제 반영에도 관여하지 않습니다.
+기존 QMD에서 `skipPaths`는 **recall 결과 필터일 뿐입니다.**
+`core/recall.py`는 결과 경로의 substring으로 판정하며 인덱싱 대상을 줄이지
+않습니다. 구 Codex의 설정과 동작은 그대로입니다. 설정하지 않으면 추가 경로
+제외는 없습니다.
 
 여기 걸린 문자열은 결과 경로에 **substring으로 포함되면** 제외됩니다. 즉
 `dist`는 `frontend/dist/a.md`뿐 아니라 `distribution-plan.md`도 걸러냅니다.
@@ -1563,14 +1569,21 @@ ignore 파일이 아닙니다** — 플러그인은 `.auto-context-ignore`라는
 않으며, gitignore 류의 패턴 해석도 하지 않습니다. 경로에 그 문자열이 들어간
 결과를 recall에서 빼는 substring 필터가 전부입니다.
 
-`recallStrategy: "wikiOnly"`에서는 raw 문서를 대상으로 한 `skipPaths`가
-**아무 효과도 없습니다.** raw collection은 애초에 recall되지 않으므로 걸러낼
-결과 자체가 없습니다. `hierarchical`에서도 wiki 결과가 있는 동안에는 raw
-fallback이 실행되지 않아 같은 이유로 무의미합니다.
+선택된 **Laya**는 `recallStrategy` 값과 관계없이 위키만 색인·검색합니다.
+이 경로에서 `skipPaths`는 원문 **파일명이 아닌 부모 디렉터리 경로**에 substring이
+들어 있는지 판정해 새 위키 생성 후보를 제외합니다. 예를 들어 `build`는
+`docs/build/a.md`와 `docs/build-tools/a.md`를 제외하지만 `docs/build-notes.md`는
+제외하지 않습니다. 기존 QMD의 결과 경로 substring 의미와 다르므로 선택 전
+설정의 영향을 검토해야 합니다. 기존 위키에서 제외된 출처가 하나라도 발견되면
+카드 전체를 검색·주입에서 숨깁니다. 여러 출처를 가진 카드는 일부 내용만
+안전하게 분리할 수 없어 전부 숨기며, 원문과 위키 파일은 삭제하지 않습니다.
+제외 설정을 해제하면 원본 카드가 다시 검증 대상이 됩니다. 이미 색인된 벡터는
+즉시 물리 삭제되지 않지만 검색 검증 단계에서 결과가 차단됩니다. 동기화와
+재색인은 비동기로 반영될 수 있습니다.
 
 ### 인덱싱 범위를 줄이는 방법
 
-**인덱싱 대상을 줄이는 수단은 `collectionPaths`를 좁히는 것뿐입니다.**
+**기존 QMD의 인덱싱 대상을 줄이는 수단은 `collectionPaths`를 좁히는 것뿐입니다.**
 `core/update.sh`는 `qmd collection add "<경로>"`로 디렉터리만 넘기므로 glob이나
 ignore 파일 같은 축소 인수가 없고, `skipPaths`·`.auto-context-ignore`는 위에
 적은 대로 recall 결과 필터라 색인을 막지 못합니다.

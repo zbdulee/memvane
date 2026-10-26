@@ -3,6 +3,8 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 import sys
+import hashlib
+import json
 import tempfile
 import unittest
 
@@ -25,6 +27,7 @@ class SelectedWikiChecks(unittest.TestCase):
                 {'name': 'raw', 'role': 'raw', 'sourceRoot': str(self.root)},
                 {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)},
             ],
+            'recallSettings': {'skipPaths': []},
         }
         self.proof = {'productRouteAllowed': True}
 
@@ -50,6 +53,66 @@ class SelectedWikiChecks(unittest.TestCase):
                                          'starship archive', 3, 100, bound=bound)
         self.assertEqual([row[0].name for row in rows], ['one.md'])
         self.assertGreater(rows[0][1], 0)
+
+    def test_local_retrieval_withholds_mixed_source_excluded_card(self):
+        def revision(path):
+            body = path.encode()
+            return {'kind': 'file', 'path': path, 'collection': 'raw',
+                    'sha256': hashlib.sha256(body).hexdigest(),
+                    'size': len(body), 'mtimeNs': 1}
+        card = ('---\nsourceRevisions:\n  - ' +
+                json.dumps(revision('docs/keep/a.md')) + '\n  - ' +
+                json.dumps(revision('docs/build/b.md')) +
+                '\n---\n# Card\nstarship archive\n')
+        (self.wiki / 'mixed.md').write_text(card, encoding='utf-8')
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        with patch.object(selected, 'recheck'):
+            rows = selected.wiki_matches(self.root, self.wiki,
+                                         'starship archive', 3, 100,
+                                         bound=(self.decision, self.proof))
+        self.assertEqual(rows, [])
+
+    def test_old_verify_job_from_excluded_source_never_loads_model(self):
+        import wiki_verify_worker as verifier
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        job = {'targetPath': '.auto-context/wiki/mixed.md',
+               'sourceRevisions': [{'path': 'docs/build/a.md'}]}
+        with patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
+             patch.object(verifier, 'card_state', return_value=(
+                 '---\n---\n# Card\n', {'createdBy': 'qmd-auto-context'},
+                 'generated', '')), \
+             patch.object(verifier, 'snapshot_revision_evidence') as snapshot, \
+             patch.object(verifier, 'log_verdict') as log:
+            result = verifier.process_verify_job(
+                self.root, {}, {}, {}, job, self.root / 'verify.log')
+        self.assertEqual(result, (True, False))
+        self.assertEqual(log.call_args.args[1]['reason'], 'source_folder_excluded')
+        snapshot.assert_not_called()
+
+    def test_verify_rejects_excluded_card_revision_with_crlf(self):
+        import wiki_verify_worker as verifier
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        def revision(path):
+            return {'kind': 'file', 'path': path, 'collection': 'raw',
+                    'sha256': hashlib.sha256(path.encode()).hexdigest(),
+                    'size': len(path), 'mtimeNs': 1}
+        included = revision('docs/keep/a.md')
+        excluded = revision('docs/build/b.md')
+        card = ('---\r\nsourceRevisions:\r\n  - ' + json.dumps(included)
+                + '\r\n  - ' + json.dumps(excluded) + '\r\n---\r\n# Card\r\n')
+        job = {'targetPath': '.auto-context/wiki/mixed.md',
+               'sourceRevisions': [included],
+               'sources': [{'kind': 'file', 'path': included['path']}]}
+        with patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
+             patch.object(verifier, 'card_state', return_value=(
+                 card, {'createdBy': 'qmd-auto-context'}, 'generated', '')), \
+             patch.object(verifier, 'snapshot_revision_evidence') as snapshot, \
+             patch.object(verifier, 'log_verdict') as log:
+            result = verifier.process_verify_job(
+                self.root, {}, {}, {}, job, self.root / 'verify.log')
+        self.assertEqual(result, (True, False))
+        self.assertEqual(log.call_args.args[1]['reason'], 'source_folder_excluded')
+        snapshot.assert_not_called()
 
     def test_route_change_prevents_selected_wake(self):
         bound = (self.decision, self.proof)

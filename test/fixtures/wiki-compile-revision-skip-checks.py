@@ -21,6 +21,7 @@ import wiki_compile as wc
 import wiki_compile_worker as worker
 import wiki_freshness
 import wiki_selected_laya
+import wiki_compile_enqueue
 import yaml_scalars as ys
 
 
@@ -59,6 +60,7 @@ class RevisionSkipChecks(unittest.TestCase):
                 {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)},
             ],
             'collectionRoots': {'proj-docs': str(self.docs), 'proj-wiki': str(self.wiki)},
+            'recallSettings': {'skipPaths': []},
         }
         self.bound = (self.decision, {'productRouteAllowed': True})
         self.extractor_calls = []
@@ -154,6 +156,34 @@ class RevisionSkipChecks(unittest.TestCase):
         self.verify(self.cards[1])
         self.process('session_start')
         self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_selected_excluded_source_folder_skips_old_queued_job_before_model(self):
+        excluded = self.docs / 'build' / 'source.md'
+        excluded.parent.mkdir()
+        excluded.write_text('# Excluded\n', encoding='utf-8')
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        job = self.job('post_tool_source')
+        job['source']['path'] = 'docs/build/source.md'
+        self.assertEqual(worker.process_job(
+            self.root, self.config, self.config['compile'], job), (True, False, []))
+        self.assertEqual(self.extractor_calls, [])
+        ledger = worker.candidate_path(self.root, self.config['compile'])
+        self.assertEqual(json.loads(ledger.read_text().splitlines()[0])['reason'],
+                         'source_folder_excluded')
+
+    def test_selected_source_enqueue_checks_parent_folder_not_filename(self):
+        folder = self.docs / 'build'
+        folder.mkdir()
+        excluded = folder / 'source.md'
+        included = self.docs / 'build-notes.md'
+        excluded.write_text('# Excluded\n', encoding='utf-8')
+        included.write_text('# Included\n', encoding='utf-8')
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        self.assertIsNone(wiki_compile_enqueue._source_record(
+            str(excluded), str(self.root), str(self.root), self.config, 'claude'))
+        record = wiki_compile_enqueue._source_record(
+            str(included), str(self.root), str(self.root), self.config, 'claude')
+        self.assertEqual(record['source']['path'], 'docs/build-notes.md')
 
     def test_partial_failure_is_retried_even_after_a_sibling_is_verified(self):
         calls = []
