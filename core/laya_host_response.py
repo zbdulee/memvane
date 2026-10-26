@@ -824,7 +824,7 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             _fail('wiki_pending_refresh_unknown')
         pending_sources = frozenset(item['sourcePath'] for item in pending)
         source_filter = lambda row: (
-            not auxiliary_wiki_row(row['path'], row['body'], roots) and
+            not auxiliary_wiki_row(row['path'], row.get('body'), roots) and
             (not settings['skipPaths'] or _verified_wiki_row(
                 row, decision, pending_sources,
                 source_skip_paths=tuple(settings['skipPaths']))))
@@ -834,7 +834,7 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             (), candidates, source_filter, excluded_paths)
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
-                if not auxiliary_wiki_row(row['path'], row['body'], roots)
+                if not auxiliary_wiki_row(row['path'], row.get('body'), roots)
                 and _verified_wiki_row(row, decision, pending_sources, located,
                                        tuple(settings['skipPaths']))]
         if rows:
