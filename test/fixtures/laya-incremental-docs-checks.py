@@ -202,6 +202,61 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(self.provider.calls, ['wiki/a.md'])
         self.assertEqual(len(self.rows()), 1)
 
+    def test_upgraded_candidate_backfills_old_vectors_without_model(self):
+        self.write('a.md', '# A\nalpha\n')
+        self.write('b.md', '# B\nbeta\n')
+        self.snapshot()
+        old = capacity.vector_fill_step(self.runtime, self.provider)
+        self.assertEqual(old['state'], 'complete')
+        self.assertEqual(len(self.provider.calls), 2)
+        self.assertEqual(self.rows(), [])
+        original = incremental.publish_document
+
+        def interrupted(*args):
+            if args[3] == 'wiki/b.md':
+                raise RuntimeError('synthetic interruption')
+            return original(*args)
+
+        options = {'deadline': 100, 'clock': lambda: 0,
+                   'before_publish': lambda: None, 'should_yield': lambda: False}
+        with mock.patch.object(incremental, 'publish_document', side_effect=interrupted):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic interruption'):
+                incremental.backfill_cached(self.runtime, self.identity,
+                                            self.profile, **options)
+        self.assertEqual([row[0] for row in self.rows()], ['wiki/a.md'])
+        done = incremental.backfill_cached(self.runtime, self.identity,
+                                           self.profile, **options)
+        self.assertEqual(done['state'], 'complete')
+        self.assertEqual([row[0] for row in self.rows()], ['wiki/a.md', 'wiki/b.md'])
+        self.assertEqual(self.provider.calls, ['wiki/a.md', 'wiki/b.md'])
+
+    def test_backfill_requests_rescan_if_source_changed(self):
+        self.write('a.md', '# A\nalpha\n')
+        self.snapshot()
+        self.assertEqual(capacity.vector_fill_step(self.runtime, self.provider)['state'],
+                         'complete')
+        self.write('a.md', '# A\nchanged\n')
+        result = incremental.backfill_cached(
+            self.runtime, self.identity, self.profile, deadline=100,
+            clock=lambda: 0, before_publish=lambda: None,
+            should_yield=lambda: False)
+        self.assertEqual(result, {'state': 'pending', 'reason': 'source_changed'})
+        self.assertEqual(self.rows(), [])
+
+    def test_backfill_refuses_missing_cache_behind_fill_cursor(self):
+        self.write('a.md', '# A\nalpha\n')
+        self.snapshot()
+        self.assertEqual(capacity.vector_fill_step(self.runtime, self.provider)['state'],
+                         'complete')
+        with mock.patch.object(incremental.LayaVectorIndex, 'cached_chunk_set',
+                               return_value=None):
+            with self.assertRaisesRegex(Exception, 'incremental_cached_member_missing'):
+                incremental.backfill_cached(
+                    self.runtime, self.identity, self.profile, deadline=100,
+                    clock=lambda: 0, before_publish=lambda: None,
+                    should_yield=lambda: False)
+        self.assertEqual(self.rows(), [])
+
     def test_wrong_scope_cannot_publish(self):
         self.write('a.md', '# A\nalpha\n')
         self.snapshot()
