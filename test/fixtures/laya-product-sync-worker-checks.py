@@ -46,6 +46,11 @@ class Coordinator:
 
 
 class WorkerChecks(unittest.TestCase):
+    def test_large_initial_document_budget_uses_utf8_bytes(self):
+        self.assertFalse(worker._large_initial_document('x' * 200_000))
+        self.assertTrue(worker._large_initial_document('x' * 200_001))
+        self.assertTrue(worker._large_initial_document('한' * 70_000))
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.project=Path(self.temp.name).resolve();self.project.chmod(0o700)

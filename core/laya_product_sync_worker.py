@@ -53,6 +53,11 @@ MAX_CAPACITY_ROUNDS = 64
 BUILD_WAKE_SECONDS = 45
 
 
+def _large_initial_document(body):
+    """Keep the existing provider recipe; only extend a large build request."""
+    return isinstance(body, str) and len(body.encode('utf-8', 'surrogatepass')) > 200_000
+
+
 def _qa_invalid():
     raise IndexContractError('qa_sync_barrier_invalid')
 
@@ -792,6 +797,12 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         if not admitted():
                             raise ResourceDeferred('laya_build_resource_pressure')
                         ensure_service()
+                        # This call-site budget is below the worker's 300s
+                        # idle limit. The reviewed provider and embedding
+                        # recipe remain byte-identical to existing vectors.
+                        if _large_initial_document(body):
+                            return provider.embed_document_chunks(body, path,
+                                                                  timeout=270)
                         return provider.embed_document_chunks(body, path)
 
                 with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
