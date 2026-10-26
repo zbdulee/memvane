@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
@@ -29,6 +30,22 @@ def sha(path):
 
 
 class ProviderChecks(unittest.TestCase):
+    def test_large_chunk_request_has_bounded_off_hook_budget(self):
+        manifest = {**self.manifest, 'recipeId': 'qmd-regex-token-chunks-candidate-v1'}
+        manifest['embeddingFingerprint'] = recipe_fingerprint(
+            model_id=manifest['modelId'], model_sha256=manifest['modelSha256'],
+            runtime_id=manifest['runtimeId'], recipe_id=manifest['recipeId'],
+            provider_sha256=manifest['providerArtifactSha256'],
+            worker_sha256=manifest['workerSha256'], node_sha256=manifest['nodeSha256'],
+            module_entry_sha256=manifest['moduleEntrySha256'],
+            closure_sha256=manifest['dependencyClosureSha256'])
+        provider = ReviewedLocalQmdProvider(manifest)
+        with mock.patch.object(provider, '_embed', return_value=[]) as embed:
+            provider.embed_document_chunks('small', path='docs/a.md')
+            self.assertEqual(embed.call_args.kwargs['timeout'], 120)
+            provider.embed_document_chunks('x' * 200_001, path='docs/a.md')
+            self.assertEqual(embed.call_args.kwargs['timeout'], 270)
+
     def setUp(self):
         # macOS AF_UNIX has a short path limit; use a canonical short root.
         self.tmp = tempfile.TemporaryDirectory(prefix='lp-', dir='/tmp')

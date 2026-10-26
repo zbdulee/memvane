@@ -77,6 +77,12 @@ def _setup(db, identity):
         # A wiki filename query must work during the first and later fills.
         db.execute('CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts '
                    "USING fts5(path,title,body,tokenize='porter unicode61')")
+        # A candidate prepared by an older bundle can have complete cached
+        # vectors but no per-document read rows. This cursor is independent of
+        # the vector-fill cursor, which must never be rewound to backfill reads.
+        db.execute('''CREATE TABLE IF NOT EXISTS cached_backfill(
+            id INTEGER PRIMARY KEY CHECK(id=1), scan_id TEXT NOT NULL,
+            cursor TEXT NOT NULL)''')
         row = db.execute('SELECT * FROM meta').fetchall()
         if not row:
             db.execute('INSERT INTO meta VALUES(?,?,?,?,?,?,?)', expected)
@@ -162,3 +168,80 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
     finally:
         db.close()
     return {'status': 'published'}
+
+
+def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
+                    before_publish, should_yield):
+    """Publish older complete cached wiki members without re-embedding them.
+
+    The separate cursor and each document's publication are durable. A crash
+    between publication and cursor advance only replays an idempotent row.
+    Uncached members are left for the ordinary fill callback. Its cursor
+    restarts on a new catalog snapshot, while this cache-only pass resumes.
+    """
+    from laya_index_vector import LayaVectorIndex, qmd_markdown_title
+    from laya_source_catalog import load_exclusions
+    if (profile_id != identity['vectorProfileId'] or
+            runtime.scope != identity['scopeId'] or
+            runtime.index.incarnation() != identity['dbIncarnation'] or
+            str(runtime.index.path) != identity['candidateDb']):
+        _fail('incremental_document_identity_changed')
+    if runtime.catalog.status()['current'] is None:
+        return {'state': 'complete', 'reason': 'no_complete_snapshot'}
+    snapshot = runtime.catalog.require_complete()
+    exclusions = load_exclusions(runtime.index, runtime.scope)
+    vectors = LayaVectorIndex(runtime.index)
+    db = _open(identity['stateRoot'])
+    try:
+        _setup(db, identity)
+        prior = db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
+        # A newer complete scan starts its own vector-fill cursor from the
+        # beginning. Already published older paths remain usable until that
+        # normal fill replaces them, so keep this one-time backfill cursor.
+        cursor = prior[1] if prior is not None else ''
+        if prior is None or prior[0] != snapshot.scan_id:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT OR REPLACE INTO cached_backfill VALUES(1,?,?)',
+                       (snapshot.scan_id, cursor))
+            db.commit()
+        while True:
+            if clock() >= deadline:
+                return {'state': 'pending', 'reason': 'incremental_backfill'}
+            if should_yield():
+                return {'state': 'deferred', 'reason': 'laya_sync_yield_priority'}
+            try:
+                rows = runtime.catalog.members(snapshot, exclusions, after=cursor,
+                                               limit=64, allow_pending=True)
+            except IndexContractError:
+                return {'state': 'pending', 'reason': 'scan_changed'}
+            if not rows:
+                return {'state': 'complete', 'reason': 'incremental_backfill_complete'}
+            fill_cursor = runtime.catalog.vector_fill(snapshot, profile_id)['cursor']
+            for path, sha, eligible in rows:
+                if clock() >= deadline:
+                    return {'state': 'pending', 'reason': 'incremental_backfill'}
+                if should_yield():
+                    return {'state': 'deferred', 'reason': 'laya_sync_yield_priority'}
+                before_publish()
+                if eligible:
+                    try:
+                        body = runtime.catalog.read_verified(snapshot, path, sha).decode('utf-8')
+                    except IndexContractError:
+                        runtime.catalog.request_scan()
+                        return {'state': 'pending', 'reason': 'source_changed'}
+                    title = qmd_markdown_title(body, path)
+                    if vectors.cached_chunk_set(sha, title, profile_id) is not None:
+                        before_publish()
+                        publish_document(runtime, identity, snapshot, path, sha,
+                                         title, body, profile_id)
+                    elif fill_cursor and path <= fill_cursor:
+                        _fail('incremental_cached_member_missing')
+                # Never advance past a failed publication. A repeated member
+                # with a complete vector set is safe and requires no model.
+                before_publish()
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('UPDATE cached_backfill SET cursor=? WHERE id=1', (path,))
+                db.commit()
+                cursor = path
+    finally:
+        db.close()

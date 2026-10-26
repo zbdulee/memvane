@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -64,6 +65,11 @@ class WorkerChecks(unittest.TestCase):
             IndexContractError('private document path and content')), 'other_error')
         try:
             raise IndexContractError('provider_unavailable') from TimeoutError()
+        except IndexContractError as exc:
+            self.assertEqual(worker._build_attempt_reason(exc), 'provider_timeout')
+        # macOS system Python keeps socket.timeout distinct from TimeoutError.
+        try:
+            raise IndexContractError('provider_unavailable') from socket.timeout()
         except IndexContractError as exc:
             self.assertEqual(worker._build_attempt_reason(exc), 'provider_timeout')
 

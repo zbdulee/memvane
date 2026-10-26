@@ -337,7 +337,7 @@ class ReviewedLocalQmdProvider:
         """
         return self._embed('document', body, title)
 
-    def embed_document_chunks(self, body, path, *, timeout=120):
+    def embed_document_chunks(self, body, path, *, timeout=None):
         """Prepare QMD regex/token candidate chunks outside a blocking hook.
 
         Only a reviewed matching recipe may call this method. It does not
@@ -345,4 +345,12 @@ class ReviewedLocalQmdProvider:
         """
         if self.manifest['recipeId'] != 'qmd-regex-token-chunks-candidate-v1':
             _fail('provider_recipe_invalid')
+        # A long wiki can have hundreds of independently inferred chunks.
+        # Keep the 120s budget for ordinary documents; the off-hook large
+        # document budget remains finite and below the worker's 300s socket
+        # idle limit. Query hooks retain their separate 2s budget.
+        if timeout is None:
+            timeout = (270 if isinstance(body, str)
+                       and len(body.encode('utf-8', 'surrogatepass')) > 200_000
+                       else 120)
         return self._embed('document_chunks', body, path=path, timeout=timeout)

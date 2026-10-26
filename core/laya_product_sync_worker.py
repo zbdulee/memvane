@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sqlite3
 import stat
 import time
@@ -214,7 +215,7 @@ def _build_attempt_class(result=None, error=None):
     if error is not None:
         if (isinstance(error, IndexContractError)
                 and str(error) == 'provider_unavailable'
-                and isinstance(error.__cause__, TimeoutError)):
+                and isinstance(error.__cause__, (TimeoutError, socket.timeout))):
             return 'provider_timeout'
         if isinstance(error, IndexContractError) and str(error).startswith('provider_'):
             return 'provider_error'
@@ -247,7 +248,7 @@ def _build_attempt_reason(error):
         return 'other_error'
     if code == 'provider_unavailable':
         cause = error.__cause__
-        if isinstance(cause, TimeoutError):
+        if isinstance(cause, (TimeoutError, socket.timeout)):
             return 'provider_timeout'
         if isinstance(cause, (ConnectionRefusedError, FileNotFoundError)):
             return 'provider_socket_unavailable'
@@ -799,7 +800,7 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                                       db_incarnation=identity['dbIncarnation'],
                                       catalog_path=identity['catalogDb'],
                                       binding_store_path=identity['bindingStore']) as runtime:
-                    from laya_incremental_docs import publish_document
+                    from laya_incremental_docs import backfill_cached, publish_document
 
                     def publish_complete(snapshot, path, sha, title, body, profile_id):
                         if not proof_ok():
@@ -807,11 +808,26 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         publish_document(runtime, identity, snapshot, path, sha,
                                          title, body, profile_id)
 
-                    result = _build_rounds(runtime, AdmittedProvider(), before_publish,
-                                           controller, lambda: not proof_ok(), admitted,
-                                           deadline=clock() + BUILD_WAKE_SECONDS,
-                                           clock=clock,
-                                           on_document_complete=publish_complete)
+                    deadline = clock() + BUILD_WAKE_SECONDS
+                    # A bundle upgraded in place may already have a durable
+                    # vector-fill cursor beyond documents published by the
+                    # newer per-document read path. Reuse complete cached
+                    # sets first; this never invokes the embedding model.
+                    backfill = backfill_cached(
+                        runtime, identity, identity['vectorProfileId'],
+                        deadline=min(deadline, clock() + 15), clock=clock,
+                        before_publish=before_publish,
+                        should_yield=lambda: _higher_priority_wake(controller))
+                    result = (backfill if backfill['reason'] in
+                              ('laya_sync_yield_priority', 'source_changed', 'scan_changed')
+                              else _build_rounds(runtime, AdmittedProvider(), before_publish,
+                                                 controller, lambda: not proof_ok(), admitted,
+                                                 deadline=deadline, clock=clock,
+                                                 on_document_complete=publish_complete))
+                    if (backfill['state'] == 'pending' and
+                            backfill['reason'] == 'incremental_backfill' and
+                            result['state'] in ('indexed', 'unchanged')):
+                        result = backfill  # retain the wake until old docs are visible
                     sealed = None
                     if result['state'] in ('indexed', 'unchanged'):
                         sealed = initial_build.evidence(runtime, result.get('generation'),
