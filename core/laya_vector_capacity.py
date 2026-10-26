@@ -1,11 +1,11 @@
 """Step-bounded vector fill for the Laya capacity path.
 
-``vector_fill_step`` embeds the members of the catalog's current COMPLETE
-snapshot a few files at a time. Each file's chunk set is committed on its
-own (``LayaVectorIndex.insert_chunk_set``), and progress is a durable
-cursor in the catalog, so a later call resumes after the last committed
-file. Unchanged content is never embedded twice: the chunk-set cache is
-keyed by content hash and title, not by generation.
+``pending_vector_fill_step`` embeds individually hashed documents while a
+scan is still enumerating. ``vector_fill_step`` later fills and seals the
+catalog's COMPLETE snapshot. Each document's chunk set is committed on its
+own (``LayaVectorIndex.insert_chunk_set``), and both passes keep separate
+durable cursors. Unchanged content is never embedded twice: the chunk-set
+cache is keyed by content hash and title, not by generation.
 
 The seal of a generation is separate and needs no model:
 ``sync_step(require_vector=True)`` stages only after the fill is complete,
@@ -95,7 +95,8 @@ def fill_complete(runtime: Any, profile_id: str) -> bool:
 
 def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FILL_FILES,
                      max_bytes: int = DEFAULT_FILL_BYTES,
-                     should_yield: Optional[Callable[[], bool]] = None) -> Dict[str, Any]:
+                     should_yield: Optional[Callable[[], bool]] = None,
+                     on_document_complete: Optional[Callable[..., None]] = None) -> Dict[str, Any]:
     """Embed at most ``max_files`` uncached members; one body in memory at a time.
 
     Answers:
@@ -133,7 +134,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     from laya_source_catalog import PENDING_PHASES, load_exclusions
     if (type(max_files) is not int or max_files < 1
             or type(max_bytes) is not int or max_bytes < 1
-            or (should_yield is not None and not callable(should_yield))):
+            or (should_yield is not None and not callable(should_yield))
+            or (on_document_complete is not None and not callable(on_document_complete))):
         raise TypeError('invalid_vector_fill_step')
     catalog = getattr(runtime, 'catalog', None)
     if catalog is None:
@@ -214,6 +216,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 return record(False) or answer('blocked', 'vector_cache_damaged',
                                                cursor=cursor, path=path, detail=str(exc))
             if cached is not None:
+                if on_document_complete is not None:
+                    on_document_complete(snapshot, path, sha, title, text, profile_id)
                 out['cached'] += 1
                 stopped = counted(path, len(cached))
                 if stopped:
@@ -249,6 +253,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             # Chunk rows reference their content row; stage reuses it.
             runtime.index.ensure_content(sha, text)
             vectors.insert_chunk_set(sha, title, profile_id, rows)
+            # The callback may publish a separate read-only preview. Keep the
+            # cursor before this member until that atomic publication succeeds;
+            # a crash replays the now-cached complete chunk set.
+            if on_document_complete is not None:
+                on_document_complete(snapshot, path, sha, title, text, profile_id)
             out['embedded'] += 1
             stopped = counted(path, len(rows))
             if stopped:
@@ -257,3 +266,130 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             stopped = record(False)
             if stopped:
                 return stopped
+
+
+def pending_vector_fill_step(runtime: Any, provider: Any, *,
+                             max_files: int = DEFAULT_FILL_FILES,
+                             max_bytes: int = DEFAULT_FILL_BYTES,
+                             should_yield: Optional[Callable[[], bool]] = None,
+                             before_write: Optional[Callable[[], None]] = None,
+                             on_document_complete: Callable[..., None]) -> Dict[str, Any]:
+    """Publish fully embedded members of an unfinished catalog scan.
+
+    This feed never seals a generation or treats an empty page as scan
+    completion. A hash-commit ordinal, rather than a pathname, is the cursor:
+    later directory enumeration may discover an earlier pathname.
+    """
+    from laya_index_vector import LayaVectorIndex, qmd_markdown_title
+    from laya_source_catalog import load_exclusions
+    if (type(max_files) is not int or max_files < 1 or
+            type(max_bytes) is not int or max_bytes < 1 or
+            (should_yield is not None and not callable(should_yield)) or
+            (before_write is not None and not callable(before_write)) or
+            not callable(on_document_complete)):
+        raise TypeError('invalid_pending_vector_fill_step')
+    catalog = getattr(runtime, 'catalog', None)
+    if catalog is None:
+        raise IndexContractError('capacity_not_configured')
+    profile_id = provider_profile_id(provider)
+    profile = provider.profile
+    vectors = LayaVectorIndex(runtime.index)
+    profile_registered = False
+    exclusions = load_exclusions(runtime.index, runtime.scope)
+    out = {'embedded': 0, 'cached': 0, 'bytes': 0}
+
+    def answer(state, reason, **extra):
+        return {'state': state, 'reason': reason, 'profile_id': profile_id,
+                **out, **extra}
+
+    proof, _ = catalog.pending_hashed(exclusions, limit=1)
+    if proof is None:
+        return answer('pending', 'no_pending_scan')
+    cursor = catalog.pending_fill_progress(proof, profile_id)
+    member_limit = document_row_limit()
+
+    def record(ordinal):
+        if not catalog.set_pending_fill_progress(proof, profile_id, ordinal):
+            return answer('deferred', 'catalog_busy', cursor=cursor)
+        return None
+
+    while True:
+        current, page = catalog.pending_hashed(exclusions, after_ord=cursor,
+                                               limit=_PAGE)
+        if current != proof:
+            return answer('pending', 'scan_changed', cursor=cursor)
+        if not page:
+            return answer('pending', 'waiting_for_hashed_member', cursor=cursor)
+        for ordinal, path, sha, eligible in page:
+            if not eligible:
+                stopped = record(ordinal)
+                if stopped:
+                    return stopped
+                cursor = ordinal
+                continue
+            found = catalog.lookup(proof, path)
+            size = found[1] if found else 0
+            if out['bytes'] and out['bytes'] + size > max_bytes:
+                return answer('pending', 'pending_vector_backlog', cursor=cursor)
+            if out['embedded'] >= max_files or (should_yield and should_yield()):
+                return answer('pending', 'pending_vector_backlog', cursor=cursor)
+            try:
+                catalog.require_pending_member(proof, path, sha)
+                body = catalog.read_verified(proof, path, sha).decode('utf-8')
+            except IndexContractError:
+                catalog.request_scan()
+                return answer('pending', 'source_changed', cursor=cursor, path=path)
+            out['bytes'] += size
+            title = qmd_markdown_title(body, path)
+            if not profile_registered:
+                # Registration itself may write the candidate database. For a
+                # selected project, cross the existing first-write fence now.
+                if before_write is not None:
+                    before_write()
+                if vectors.register_profile(profile['model_id'],
+                                            profile['embedding_fingerprint'],
+                                            profile['dimension']) != profile_id:
+                    raise IndexContractError('vector_profile_mismatch')
+                profile_registered = True
+            try:
+                chunks = vectors.cached_chunk_set(sha, title, profile_id)
+            except IndexContractError as exc:
+                if str(exc) not in _DAMAGED_CACHE:
+                    raise
+                return answer('blocked', 'vector_cache_damaged',
+                              cursor=cursor, path=path, detail=str(exc))
+            if chunks is None:
+                refused = _provider_refuses(body, path)
+                if refused:
+                    return answer('blocked', 'vector_member_rejected',
+                                  cursor=cursor, path=path, detail=refused)
+                try:
+                    chunks = provider.embed_document_chunks(body, path=path)
+                except IndexContractError as exc:
+                    if str(exc) == 'provider_member_refused':
+                        return answer('blocked', 'vector_member_rejected',
+                                      cursor=cursor, path=path,
+                                      detail='provider_member_refused')
+                    if str(exc) != 'provider_result_invalid':
+                        raise
+                    return answer('deferred', 'provider_result_invalid',
+                                  cursor=cursor, path=path)
+                if not isinstance(chunks, list) or not chunks:
+                    return answer('blocked', 'vector_member_rejected',
+                                  cursor=cursor, path=path, detail='no_chunks')
+                if len(chunks) > member_limit:
+                    return answer('blocked', 'vector_member_rejected',
+                                  cursor=cursor, path=path,
+                                  detail='chunk_set_too_large')
+                runtime.index.ensure_content(sha, body)
+                vectors.insert_chunk_set(sha, title, profile_id, chunks)
+                out['embedded'] += 1
+            else:
+                out['cached'] += 1
+            # If this callback or its sidecar transaction fails, replay the
+            # complete chunk set on the next wake; do not advance the cursor.
+            on_document_complete(proof, path, sha, title, body, profile_id)
+            stopped = record(ordinal)
+            if stopped:
+                return stopped
+            cursor = ordinal

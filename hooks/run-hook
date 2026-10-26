@@ -62,7 +62,7 @@ case "$ACTION" in
         rm -f "$_laya_route_payload"
         trap - EXIT
         ;;
-      candidate)
+      candidate|preview)
         # Replace this shell with the synchronous writer/query process. A host
         # timeout then kills the work itself, not a waiting shell with an
         # orphaned Python child. The open stdin fd survives unlinking.
