@@ -455,6 +455,29 @@ print(json.dumps(result))'''
         bundle._skip_host_in_use(installed, installed, dirs)
         self.assertEqual(dirs, [])
 
+    def test_host_orphan_marker_is_metadata_but_never_an_unchecked_file(self):
+        installed = self.install / 'orphaned-host-plugin'
+        shutil.copytree(self.source, installed,
+                        ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(installed):
+            Path(directory).chmod(0o700)
+        marker = installed / '.orphaned_at'
+        marker.write_bytes(b'1793022545388')
+        proof = bundle.adopt_host_loaded_plugin(
+            self.source, installed, commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        self.assertNotIn('.orphaned_at', proof['includedFiles'])
+        self.assertEqual(bundle.inspect_full_plugin_candidate(installed), proof)
+        marker.write_bytes(b'not-a-host-mark')
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_orphan_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+        marker.write_bytes(b'1793022545388')
+        marker.chmod(0o666)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'unsafe_host_orphan_metadata'):
+            bundle.inspect_full_plugin_candidate(installed)
+
     def test_old_origin_plan_needs_new_review_before_source_scan(self):
         with self.assertRaisesRegex(product_install.InstallBlocked,
                                     'reviewed_origin_plan_legacy'):

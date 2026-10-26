@@ -555,6 +555,22 @@ def _skip_host_in_use(root, current, dirs):
     dirs.remove('.in_use')
 
 
+def _skip_host_orphan_marker(root, current, files):
+    """Accept Claude's bounded cache lifecycle marker, never plugin code."""
+    if current != root or '.orphaned_at' not in files:
+        return
+    try:
+        raw, info = _read(root / '.orphaned_at', 32)
+    except BundleEvidenceError as exc:
+        raise BundleEvidenceError('unsafe_host_orphan_metadata') from exc
+    if (info['dev'] != root.stat().st_dev or
+            (root / '.orphaned_at').stat().st_uid != os.getuid() or
+            info['mode'] & 0o022 or
+            not re.fullmatch(rb'[1-9][0-9]{12}', raw, re.ASCII)):
+        _fail('unsafe_host_orphan_metadata')
+    files.remove('.orphaned_at')
+
+
 def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
                              vector_profile=None):
     """Seal an already installed, exact-commit host plugin in place.
@@ -593,6 +609,7 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
                 any((current / child).is_symlink() for child in dirs)):
             _fail('unsafe_installed_directory')
         _skip_host_in_use(installed, current, dirs)
+        _skip_host_orphan_marker(installed, current, files)
         if current == installed and '.git' in dirs:
             dirs.remove('.git')  # Host marketplace clones may retain Git metadata.
         for name in files:
@@ -741,6 +758,7 @@ def seal_companion_host_copy(owner_root, plugin_root):
                 any((current / child).is_symlink() for child in dirs)):
             _fail('unsafe_installed_directory')
         _skip_host_in_use(companion, current, dirs)
+        _skip_host_orphan_marker(companion, current, files)
         if current == companion and '.git' in dirs:
             dirs.remove('.git')
         for name in files:
@@ -835,6 +853,7 @@ def inspect_full_plugin_candidate(plugin_root):
             if (current / dirname).is_symlink():
                 _fail('unsafe_bundle_directory')
         _skip_host_in_use(root, current, dirs)
+        _skip_host_orphan_marker(root, current, files)
         if current == root and '.git' in dirs:
             dirs.remove('.git')
         for filename in files:
