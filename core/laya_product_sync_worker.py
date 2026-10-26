@@ -651,6 +651,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
     build record under the build owner lock.
     """
     identity = record['identity']
+    if record['phase'] == 'upgrading':
+        return {'state': 'deferred', 'reason': 'inactive_bundle_upgrade',
+                'initialBuild': 'upgrading'}
     if record['phase'] == 'retired':
         # An explicitly abandoned, never-started build: nothing to step; ACK.
         return {'state': 'unchanged', 'reason': 'initial_build_retired',
@@ -682,6 +685,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         if not owned:
             return {'state': 'deferred', 'reason': 'initial_build_busy'}
         record = initial_build.read(identity['stateRoot'])
+        if record is not None and record['phase'] == 'upgrading':
+            return {'state': 'deferred', 'reason': 'inactive_bundle_upgrade',
+                    'initialBuild': 'upgrading'}
         if record is None or record['identity'] != identity:
             raise IndexContractError('initial_build_identity_changed')
         if record['phase'] == 'retired':

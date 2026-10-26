@@ -313,7 +313,7 @@ class MutationTests(CatalogCase):
     def test_change_before_hash_blocks(self):
         catalog, snap1 = self.complete_catalog()
         catalog.request_scan()
-        self.assertEqual(catalog.step(max_files=2)['phase'], 'hash')
+        self.assertEqual(catalog.step(max_files=2)['status'], 'pending')
         hashed = catalog.step(max_files=2)
         self.assertEqual(hashed['work']['files_hashed'], 2)
         self.write(self.plans, 'a05.md', 'changed while the scan was pending\n')
@@ -348,7 +348,7 @@ class MutationTests(CatalogCase):
         catalog = self.open_catalog(create=True)
         catalog.request_scan()
         first = catalog.step(max_files=3)
-        self.assertEqual(first['work']['files_hashed'], 1)
+        self.assertEqual(first['work']['files_hashed'], 2)
         catalog.close()
 
         reopened = self.open_catalog()
@@ -373,8 +373,9 @@ class MutationTests(CatalogCase):
         resumed = self.open_catalog()
         results = drive(resumed)
         self.assertEqual(results[-1]['status'], 'complete')
-        # The durable cursor resumes after plans/a00.md; nothing is hashed twice.
-        self.assertEqual(sum(r['work']['files_hashed'] for r in results), 10)
+        # The durable cursor resumes after the two committed hashes; nothing
+        # from the failed step is committed or hashed twice.
+        self.assertEqual(sum(r['work']['files_hashed'] for r in results), 9)
         self.assertEqual(self.catalog_manifest(resumed), self.port_manifest())
 
     def test_duplicate_requests_and_busy_writer(self):

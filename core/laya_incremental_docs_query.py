@@ -99,8 +99,15 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     from laya_index_host_route import wiki_index_roots
     import wiki_freshness
 
-    state = Path(decision.get('previewStateRoot') or
-                 Path(decision['journalPath']).parent)
+    state_root = decision.get('previewStateRoot')
+    if state_root is None:
+        journal_path = decision.get('journalPath')
+        if journal_path is None:
+            # Legacy synthetic v2 routes have no initial-build sidecar.
+            # The selected generation remains the only search source.
+            return [], frozenset(), {}, (), None
+        state_root = Path(journal_path).parent
+    state = Path(state_root)
     preview = state / FILE
     if not preview.exists() and not preview.is_symlink():
         return [], frozenset(), {}, (), None

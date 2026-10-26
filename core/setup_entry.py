@@ -398,6 +398,8 @@ def main(argv=None):
                                           'prepare-index-origin','prepare-fresh-wiki-origin',
                                           'index-origin-status',
                                           'index-build-status','index-build-rescan',
+                                          'upgrade-inactive-index-build',
+                                          'restore-inactive-index-upgrade',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin','retire-index-origin',
@@ -453,6 +455,7 @@ def main(argv=None):
     parser.add_argument('--approve-index-origin-retire', action='store_true')
     parser.add_argument('--approve-index-build-abandon', action='store_true')
     parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
+    parser.add_argument('--approve-inactive-index-upgrade', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
     try:
@@ -461,6 +464,8 @@ def main(argv=None):
                            'prepare-index-origin','prepare-fresh-wiki-origin',
                            'index-origin-status',
                            'index-build-status','index-build-rescan',
+                           'upgrade-inactive-index-build',
+                           'restore-inactive-index-upgrade',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin','retire-index-origin',
@@ -523,6 +528,19 @@ def main(argv=None):
                     result = (product.initial_build_status(state)
                               if args.action == 'index-build-status' else
                               product.request_initial_build_rescan(state))
+                elif args.action in ('upgrade-inactive-index-build',
+                                     'restore-inactive-index-upgrade'):
+                    if not args.approve_inactive_index_upgrade:
+                        raise ValueError('inactive_index_upgrade_approval_required')
+                    from laya_inactive_upgrade import upgrade
+                    result = upgrade(
+                        project_root=str(Path(args.project).resolve()),
+                        state_root=state, source_root=args.source_root,
+                        plugin_root=installed, commit_id=args.commit,
+                        accepted_provider_sha256=args.accepted_provider_sha256,
+                        model_path=args.provider_model_file,
+                        dimension=args.provider_dimension,
+                        restore=args.action == 'restore-inactive-index-upgrade')
                 elif args.action == 'finalize-index-origin':
                     result = product.finalize_initial_build(
                         project_root=args.project, state_root=state)

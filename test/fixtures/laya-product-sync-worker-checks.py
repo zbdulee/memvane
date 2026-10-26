@@ -292,14 +292,16 @@ class V2WorkerChecks(unittest.TestCase):
         with closing(LayaIndexA(self.index_path,create=True)) as index:
             self.incarnation=index.incarnation()
         ClaimQueue.create(self.queue_path,index_incarnation=self.incarnation).close()
-        self.decision={'projectRoot':str(self.home),'scopeId':SCOPE,
+        self.profile={**PROFILE,'profileId':profile_identity(
+            PROFILE['modelId'],PROFILE['embeddingFingerprint'],PROFILE['dimension'])}
+        self.decision={'projectRoot':str(self.home),'scopeId':SCOPE,'installId':'3'*32,
+            'vectorProfile':self.profile,
             'dbPath':str(self.index_path),'queuePath':str(self.queue_path),
             'dbIncarnation':self.incarnation,'journalPath':str(self.home/'install-journal.sqlite'),
             'collections':[{'name':'alpha','role':'raw','sourceRoot':str(self.alpha)},
                            {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}],
             'collectionRoots':{'alpha':str(self.alpha),'beta':str(self.beta)}}
         self.epoch=7;self.marks=[];self.embedded=[];self.batches=[];self.services=[]
-        self.profile=PROFILE
 
     def proof(self):
         return {'productRouteAllowed':True,'selectionEpoch':self.epoch,
@@ -796,7 +798,7 @@ class CapacityWorkerChecks(unittest.TestCase):
             if answer['state']=='indexed':
                 before_publish();before_publish()  # two publishes, one fence
             return answer
-        def fill(_runtime,_provider,*,should_yield):
+        def fill(_runtime,_provider,*,should_yield,on_document_complete=None):
             seen['fills']+=1;return next(fill_answers)
         def runtime(**kwargs):
             seen['runtime']=kwargs
