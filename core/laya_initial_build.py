@@ -459,7 +459,8 @@ def advance(record, **changes):
 
 
 def _progress(result):
-    keep = ('state', 'reason', 'path', 'required', 'detail', 'claims_pending')
+    keep = ('state', 'reason', 'path', 'required', 'detail', 'claims_pending',
+            'lastAttemptNs', 'lastAttemptClass')
     out = {key: result[key] for key in keep if key in result}
     catalog = result.get('catalog')
     if isinstance(catalog, dict):

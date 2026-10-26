@@ -277,65 +277,8 @@ def _candidate_paths(cwd: Path):
         yield directory, auto, path
 
 
-def select_route(cwd: str, *, action: str = "recall") -> dict:
-    """Classify a hook without creating a directory, database, or runtime.
-
-    Candidate means only that the route record and source settings agree. It
-    does not mean that an active product service is ready. The caller must use
-    the runtime's own proof check; its failure may never select legacy QMD.
-    """
-    if action not in ROUTED_ACTIONS:
-        return _decision("blocked", "unsupported_route_action")
-    try:
-        requested = Path(cwd)
-        if not requested.is_absolute():
-            return _decision("blocked", "invalid_cwd")
-        current = requested.resolve(strict=False)
-        records = list(_candidate_paths(current))
-        markers = []
-        for directory in (current, *current.parents):
-            marker = directory / '.auto-context' / QMD_SELECTION_MARKER
-            if marker.exists() or marker.is_symlink():
-                markers.append((directory, marker))
-    except (OSError, RuntimeError, ValueError):
-        return _decision("blocked", "route_lookup_failed")
-    if len(markers) > 1:
-        return _decision("blocked", "ambiguous_selection_markers")
-    if markers:
-        # Both installer origins keep a marker through restoration. Only the
-        # matching durable ledger can classify an absent route as legacy.
-        from laya_qmd_cutover import (_read_json, classify_marker,
-                                      MARKER_SCHEMA as QMD_MARKER_SCHEMA)
-        from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
-                                            classify_marker as classify_fresh)
-        marker_root, marker_path = markers[0]
-        try:
-            marker_record = _read_json(marker_path)
-            schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
-        except (OSError, RuntimeError, ValueError, TypeError):
-            schema = None
-        classifier = (classify_fresh if schema == FRESH_MARKER_SCHEMA else
-                      classify_marker if schema == QMD_MARKER_SCHEMA else None)
-        selection = (classifier(marker_root, marker_path, marker_path.parent / RECORD)
-                     if classifier else 'blocked')
-        if selection == 'blocked':
-            return _decision("blocked", "qmd_selection_uncertain")
-        if selection == 'legacy':
-            if records:
-                return _decision("blocked", "qmd_route_unexpected")
-            return _decision("legacy", "qmd_selection_verified")
-        if (selection != 'candidate' or len(records) != 1 or
-                records[0][0] != marker_root):
-            return _decision("blocked", "qmd_route_unverified")
-    elif not records:
-        return _decision("legacy", "no_route_record")
-    if not requested.is_dir():
-        return _decision("blocked", "route_cwd_unavailable")
-    # A nested/stale route must not be ignored just because an ancestor has
-    # ordinary QMD settings or a second route record.
-    if len(records) != 1:
-        return _decision("blocked", "ambiguous_route_records")
-    root, auto, path = records[0]
+def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
+    """Apply the same settings and route checks to visible or reviewed records."""
     try:
         if auto.is_symlink() or path.is_symlink() or not auto.is_dir():
             raise ValueError("unsafe_route_path")
@@ -491,6 +434,154 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError) as exc:
         return _decision("blocked", str(exc) or "invalid_route_record")
 
+
+
+def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
+    """Recognize only an installer-owned, inactive fresh-wiki build."""
+    if action != 'recall':
+        return None
+    try:
+        found = config.find_project_config(str(current))
+        if found.get('configFormat') != 'auto-context-dir':
+            return None
+        root = Path(found['projectRoot'])
+        if (not requested.is_dir() or not root.is_absolute()
+                or str(root.resolve(strict=True)) != str(root)
+                or (current != root and root not in current.parents)
+                or found.get('configPath') != str(root / '.auto-context' / 'settings.json')):
+            return _decision('blocked', 'initial_preview_project_mismatch')
+        import laya_initial_build
+        build = laya_initial_build.lookup(str(root))
+        if build is None:
+            return None
+        identity = build['identity']
+        if identity.get('originMode') != 'fresh_wiki_only':
+            return None
+        if build['phase'] not in ('registered', 'building', 'sealed'):
+            return _decision('blocked', 'initial_preview_build_unavailable')
+        state = Path(identity['stateRoot'])
+        route_path = state / 'reviewed-route.json'
+        if (identity['routeFile'] != str(route_path)
+                or identity['journalPath'] != str(state / 'install-journal.sqlite')
+                or identity['projectRoot'] != str(root)):
+            return _decision('blocked', 'initial_preview_identity_mismatch')
+        raw = _read_regular(route_path, MAX_RECORD_BYTES)
+        if hashlib.sha256(raw).hexdigest() != identity['routeSha256']:
+            return _decision('blocked', 'initial_preview_route_changed')
+        candidate = _classify_record(root, root / '.auto-context', route_path, current)
+        if candidate['state'] != 'candidate':
+            return candidate
+        expected = {'projectRoot': identity['projectRoot'],
+                    'dbPath': identity['candidateDb'], 'queuePath': identity['queueDb'],
+                    'dbIncarnation': identity['dbIncarnation'],
+                    'scopeId': identity['scopeId'], 'installId': identity['installId'],
+                    'journalPath': identity['journalPath'],
+                    'collections': identity['collections']}
+        if (any(candidate.get(key) != value for key, value in expected.items())
+                or candidate['vectorProfile']['profileId'] != identity['vectorProfileId']):
+            return _decision('blocked', 'initial_preview_route_mismatch')
+        return {**candidate, 'state': 'preview', 'reason': 'initial_build_preview',
+                'previewStateRoot': str(state),
+                'previewRouteSha256': identity['routeSha256']}
+    except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
+        return _decision('blocked', 'initial_preview_proof_unavailable')
+
+
+def verify_preview_route(decision: dict) -> dict:
+    """Reprove a pending build and the currently executing sealed bundle."""
+    if not isinstance(decision, dict) or decision.get('state') != 'preview':
+        raise ValueError('initial_preview_unselected')
+    live = select_route(decision.get('projectRoot', ''), action='recall')
+    if live != decision:
+        raise ValueError('initial_preview_changed')
+    import laya_initial_build
+    build = laya_initial_build.lookup(decision['projectRoot'])
+    if (build is None or build['identity']['stateRoot'] != decision['previewStateRoot']
+            or build['phase'] not in ('registered', 'building', 'sealed')):
+        raise ValueError('initial_preview_build_changed')
+    from laya_install_journal import inspect_journal, preflight_product_candidate
+    journal = inspect_journal(decision['journalPath'])
+    proof = preflight_product_candidate(decision['journalPath'],
+                                        require_executing=True)
+    pending = journal['pending']
+    if (journal['state'] != 'candidate_ready' or journal['selected'] is not None
+            or journal['newWriteSeen'] is not False
+            or Path(decision['journalPath']).parent != Path(decision['previewStateRoot'])
+            or journal['pendingRouteSha256'] != decision['previewRouteSha256']
+            or proof['pendingRouteSha256'] != decision['previewRouteSha256']
+            or journal['scopeId'] != decision['scopeId']
+            or journal['projectRoot'] != decision['projectRoot']
+            or not isinstance(pending, dict)
+            or any(pending.get(key) != decision.get(key) for key in
+                   ('pluginRoot', 'installId', 'generation',
+                    'bundleManifestSha256', 'ownershipManifestSha256'))
+            or pending.get('vectorProfile') != decision['vectorProfile']):
+        raise ValueError('initial_preview_journal_mismatch')
+    return {'journalEpoch': journal['epoch'], 'buildPhase': build['phase'], **proof,
+            'vectorProfile': decision['vectorProfile']}
+
+
+def select_route(cwd: str, *, action: str = "recall") -> dict:
+    """Classify a hook without creating a directory, database, or runtime.
+
+    Candidate means only that the route record and source settings agree. It
+    does not mean that an active product service is ready. The caller must use
+    the runtime's own proof check; its failure may never select legacy QMD.
+    """
+    if action not in ROUTED_ACTIONS:
+        return _decision("blocked", "unsupported_route_action")
+    try:
+        requested = Path(cwd)
+        if not requested.is_absolute():
+            return _decision("blocked", "invalid_cwd")
+        current = requested.resolve(strict=False)
+        records = list(_candidate_paths(current))
+        markers = []
+        for directory in (current, *current.parents):
+            marker = directory / '.auto-context' / QMD_SELECTION_MARKER
+            if marker.exists() or marker.is_symlink():
+                markers.append((directory, marker))
+    except (OSError, RuntimeError, ValueError):
+        return _decision("blocked", "route_lookup_failed")
+    if len(markers) > 1:
+        return _decision("blocked", "ambiguous_selection_markers")
+    if markers:
+        # Both installer origins keep a marker through restoration. Only the
+        # matching durable ledger can classify an absent route as legacy.
+        from laya_qmd_cutover import (_read_json, classify_marker,
+                                      MARKER_SCHEMA as QMD_MARKER_SCHEMA)
+        from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
+                                            classify_marker as classify_fresh)
+        marker_root, marker_path = markers[0]
+        try:
+            marker_record = _read_json(marker_path)
+            schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
+        except (OSError, RuntimeError, ValueError, TypeError):
+            schema = None
+        classifier = (classify_fresh if schema == FRESH_MARKER_SCHEMA else
+                      classify_marker if schema == QMD_MARKER_SCHEMA else None)
+        selection = (classifier(marker_root, marker_path, marker_path.parent / RECORD)
+                     if classifier else 'blocked')
+        if selection == 'blocked':
+            return _decision("blocked", "qmd_selection_uncertain")
+        if selection == 'legacy':
+            if records:
+                return _decision("blocked", "qmd_route_unexpected")
+            return _decision("legacy", "qmd_selection_verified")
+        if (selection != 'candidate' or len(records) != 1 or
+                records[0][0] != marker_root):
+            return _decision("blocked", "qmd_route_unverified")
+    elif not records:
+        preview = _preview_route(current, requested, action)
+        return preview if preview is not None else _decision("legacy", "no_route_record")
+    if not requested.is_dir():
+        return _decision("blocked", "route_cwd_unavailable")
+    # A nested/stale route must not be ignored just because an ancestor has
+    # ordinary QMD settings or a second route record.
+    if len(records) != 1:
+        return _decision("blocked", "ambiguous_route_records")
+    root, auto, path = records[0]
+    return _classify_record(root, auto, path, current)
 
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
     """Classify bounded event bytes, including legacy malformed-input behavior."""

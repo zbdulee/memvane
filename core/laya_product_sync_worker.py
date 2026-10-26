@@ -197,14 +197,36 @@ def qa_sync_barrier(decision, *, environ=None):
 
 
 def _higher_priority_wake(controller):
-    """Yield between documents so older QMD index/update work can dispatch."""
+    """Yield for due QMD work; preserve an unavailable probe as a distinct deferral."""
     from runtime_work import WakeQueue
     try:
         rows = WakeQueue(controller.root).pending()
         return any(row['kind'] in ('index', 'update') and row['due'] <= time.time()
                    for row in rows)
-    except (OSError, ValueError, sqlite3.Error):
-        return True
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        # Keep the fail-closed behavior, but never label a queue access error
+        # as an observed higher-priority job. No queue row is recorded.
+        raise ResourceDeferred('laya_sync_priority_probe_unavailable') from exc
+
+
+def _build_attempt_class(result=None, error=None):
+    """Non-sensitive outcome for this project's build record, never queue data."""
+    if error is not None:
+        if (isinstance(error, IndexContractError)
+                and str(error) == 'provider_unavailable'
+                and isinstance(error.__cause__, TimeoutError)):
+            return 'provider_timeout'
+        if isinstance(error, IndexContractError) and str(error).startswith('provider_'):
+            return 'provider_error'
+        return 'worker_error'
+    reason = result.get('reason') if isinstance(result, dict) else None
+    if reason == 'laya_sync_yield_priority':
+        return 'higher_priority_due'
+    if reason == 'laya_sync_priority_probe_unavailable':
+        return 'priority_probe_unavailable'
+    if isinstance(reason, str) and reason.startswith('provider_'):
+        return 'provider_error'
+    return 'other'
 
 
 def _capacity_paths(decision):
@@ -516,8 +538,33 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                                   db_incarnation=decision['dbIncarnation'],
                                   catalog_path=capacity[0],
                                   binding_store_path=capacity[1]) as runtime:
+                publish_complete = None
+                if 'collections' in decision:
+                    from laya_incremental_docs import publish_document
+                    incremental_identity = {
+                        'projectRoot': decision['projectRoot'],
+                        'stateRoot': str(Path(decision['journalPath']).parent),
+                        'installId': decision['installId'],
+                        'scopeId': decision['scopeId'],
+                        'collections': decision['collections'],
+                        'candidateDb': decision['dbPath'],
+                        'dbIncarnation': decision['dbIncarnation'],
+                        'vectorProfileId': decision['vectorProfile']['profileId'],
+                    }
+
+                    def publish_complete(snapshot, path, sha, title, body, profile_id):
+                        if not proof_ok():
+                            raise IndexContractError('selected_proof_changed')
+                        # This is a durable searchable write, even if the full
+                        # generation has not published yet. Cross the selected
+                        # journal's first-write fence before the sidecar commit.
+                        before_publish()
+                        publish_document(runtime, incremental_identity, snapshot, path,
+                                         sha, title, body, profile_id)
+
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
-                                        controller, lambda: not proof_ok())
+                                        controller, lambda: not proof_ok(),
+                                        on_document_complete=publish_complete)
             if not proof_ok():
                 raise IndexContractError('selected_proof_changed')
     except ResourceDeferred as exc:
@@ -525,16 +572,19 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     return _checked(result), state['proof']
 
 
-def _sync_capacity(runtime, provider, before_publish, controller, proof_changed):
-    """Bounded sync_step / vector_fill_step rounds for one wake.
+def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
+                   on_document_complete=None):
+    """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
     so it first asks the catalog for a scan; a pending scan is marked to run
     once more. ``sync_step`` never loads a model; it asks for
     ``vector_backlog`` until the fill has cached every member, then seals and
-    publishes. Chunk sets already filled stay cached when this wake stops.
+    publishes. Individually hashed members are also published while the scan
+    is pending; those cached chunk sets are reused by the full seal.
     """
-    from laya_vector_capacity import provider_profile_id, vector_fill_step
+    from laya_vector_capacity import (provider_profile_id, vector_fill_step,
+                                      pending_vector_fill_step)
     profile_id = provider_profile_id(provider)
 
     def should_yield():
@@ -549,10 +599,19 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed)
             raise IndexContractError('selected_proof_changed')
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
                            vector_profile_id=profile_id)
+        if result.get('reason') == 'scan_pending' and on_document_complete is not None:
+            partial = pending_vector_fill_step(runtime, provider,
+                                               should_yield=should_yield,
+                                               before_write=before_publish,
+                                               on_document_complete=on_document_complete)
+            if partial['state'] in ('blocked', 'deferred'):
+                return {key: partial[key] for key in ('state', 'reason', 'path', 'detail')
+                        if key in partial}
         if result['state'] != 'pending':
             return result
         if result.get('reason') == 'vector_backlog':
-            fill = vector_fill_step(runtime, provider, should_yield=should_yield)
+            fill = vector_fill_step(runtime, provider, should_yield=should_yield,
+                                    on_document_complete=on_document_complete)
             if fill['state'] in ('deferred', 'blocked'):
                 return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result
@@ -707,9 +766,19 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                                       db_incarnation=identity['dbIncarnation'],
                                       catalog_path=identity['catalogDb'],
                                       binding_store_path=identity['bindingStore']) as runtime:
+                    from laya_incremental_docs import publish_document
+
+                    def publish_complete(snapshot, path, sha, title, body, profile_id):
+                        if not proof_ok():
+                            raise IndexContractError('initial_build_proof_changed')
+                        publish_document(runtime, identity, snapshot, path, sha,
+                                         title, body, profile_id)
+
                     result = _build_rounds(runtime, AdmittedProvider(), before_publish,
                                            controller, lambda: not proof_ok(), admitted,
-                                           deadline=clock() + BUILD_WAKE_SECONDS, clock=clock)
+                                           deadline=clock() + BUILD_WAKE_SECONDS,
+                                           clock=clock,
+                                           on_document_complete=publish_complete)
                     sealed = None
                     if result['state'] in ('indexed', 'unchanged'):
                         sealed = initial_build.evidence(runtime, result.get('generation'),
@@ -718,6 +787,20 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                 raise IndexContractError('initial_build_proof_changed')
         except ResourceDeferred as exc:
             result, sealed = {'state': 'deferred', 'reason': str(exc)}, None
+        except Exception as exc:
+            # An unexpected provider failure previously left the old progress
+            # reason intact forever. Preserve that reason and the exception's
+            # existing retry semantics, while recording only a fixed class.
+            progress = {**(record.get('progress') or {}),
+                        'lastAttemptNs': time.time_ns(),
+                        'lastAttemptClass': _build_attempt_class(error=exc)}
+            try:
+                initial_build.advance(record, progress=progress)
+            except Exception:
+                pass  # Diagnostic failure must not replace the real failure.
+            raise
+        result = {**result, 'lastAttemptNs': time.time_ns(),
+                  'lastAttemptClass': _build_attempt_class(result)}
         changes = initial_build.transition(record, result, sealed)
         if changes:
             record = initial_build.advance(record, **changes)
@@ -731,8 +814,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
 
 
 def _build_rounds(runtime, provider, before_publish, controller, proof_changed, admitted,
-                  *, deadline, clock):
-    """Bounded sync_step / vector_fill_step rounds of one initial-build wake.
+                  *, deadline, clock, on_document_complete=None):
+    """Bounded scan and per-document fill rounds of one initial-build wake.
 
     Unlike a selected wake this never requests a scan: the catalog bootstraps
     one itself, and every extra request would chain another full rescan
@@ -741,7 +824,8 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
     (streamed, never buffered), after a fresh resource sample; under pressure
     the wake defers and the scan stays pending at that file.
     """
-    from laya_vector_capacity import provider_profile_id, vector_fill_step
+    from laya_vector_capacity import (provider_profile_id, vector_fill_step,
+                                      pending_vector_fill_step)
     profile_id = provider_profile_id(provider)
 
     def should_yield():
@@ -762,6 +846,14 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
             budget, large = {'max_files': 1, 'max_bytes': large}, None
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
                            vector_profile_id=profile_id, **budget)
+        if result.get('reason') == 'scan_pending' and on_document_complete is not None:
+            partial = pending_vector_fill_step(runtime, provider,
+                                               should_yield=should_yield,
+                                               before_write=before_publish,
+                                               on_document_complete=on_document_complete)
+            if partial['state'] in ('blocked', 'deferred'):
+                return {key: partial[key] for key in ('state', 'reason', 'path', 'detail')
+                        if key in partial}
         if (result['state'] == 'deferred' and not budget
                 and result.get('reason') == 'file_exceeds_step_bytes'):
             large = result['required']['max_bytes']
@@ -772,7 +864,8 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
         if result['state'] != 'pending':
             return result
         if result.get('reason') == 'vector_backlog':
-            fill = vector_fill_step(runtime, provider, should_yield=should_yield)
+            fill = vector_fill_step(runtime, provider, should_yield=should_yield,
+                                    on_document_complete=on_document_complete)
             result = {**result, 'fill': {key: fill[key] for key in
                                          ('state', 'reason', 'embedded', 'cached', 'bytes',
                                           'cursor', 'path', 'detail', 'rows') if key in fill}}

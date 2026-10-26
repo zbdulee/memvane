@@ -14,7 +14,8 @@ import struct
 import time
 import unicodedata
 
-from laya_index_a import IndexContractError, _NOT_EXCLUDED, _path_predicate
+from laya_index_a import (IndexContractError, _NOT_EXCLUDED, _path_predicate,
+                          _shadow_predicate)
 
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -517,7 +518,7 @@ class LayaVectorIndex:
     def search_exact(self, token, query_vector, *, model_id, embedding_fingerprint,
                      dimension, limit, max_candidates=None,
                      max_float_work=None, deadline_seconds=None,
-                     path_prefixes=None):
+                     path_prefixes=None, excluded_paths=None):
         if (type(limit) is not int or not 1 <= limit <= 100
                 or (max_candidates is not None and
                     (type(max_candidates) is not int or max_candidates < 1))
@@ -529,6 +530,7 @@ class LayaVectorIndex:
             raise IndexContractError('invalid_vector_query')
         profile_id = profile_identity(model_id, embedding_fingerprint, dimension)
         prefix_sql, prefix_params = _path_predicate(path_prefixes)
+        shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
         query_blob, query = _blob(query_vector, dimension)
         del query_blob
         qnorm = math.sqrt(math.fsum(v * v for v in query))
@@ -543,7 +545,7 @@ class LayaVectorIndex:
             return self._search_exact_pinned(
                 token, query, qnorm, profile_id, dimension, limit,
                 max_candidates, max_float_work, deadline,
-                prefix_sql, prefix_params)
+                prefix_sql + shadow_sql, prefix_params + shadow_params)
         except sqlite3.OperationalError as exc:
             if deadline is not None and time.monotonic() >= deadline:
                 raise IndexContractError('vector_deadline_exceeded') from exc

@@ -197,6 +197,24 @@ def _path_predicate(prefixes):
         value for prefix in prefixes for value in (prefix, prefix))
 
 
+def _shadow_predicate(paths):
+    """Exclude newer, fully published document revisions before top-K.
+
+    One JSON parameter avoids SQLite's host parameter limit for a large
+    initial corpus. An unavailable JSON table function fails closed.
+    """
+    if paths is None:
+        return '', ()
+    if (not isinstance(paths, tuple) or len(paths) > 20_000
+            or any(not _valid_relative_path(path) for path in paths)
+            or len(set(paths)) != len(paths)):
+        raise IndexContractError('invalid_shadow_paths')
+    encoded = json.dumps(paths, ensure_ascii=False, separators=(',', ':'))
+    if len(encoded.encode('utf-8')) > 8_000_000:
+        raise IndexContractError('invalid_shadow_paths')
+    return ' AND m.path NOT IN (SELECT value FROM json_each(?))', (encoded,)
+
+
 def _valid_relative_path(path):
     """Accept exactly the source port's serveable relative path vocabulary."""
     if not isinstance(path, str) or not path or path.startswith('/') or '\\' in path:
@@ -1075,13 +1093,15 @@ class LayaIndexA:
             raise IndexContractError('index_stale')
         return scope, gen, ordinal
 
-    def search(self, token, fts_query, limit, *, path_prefixes=None):
+    def search(self, token, fts_query, limit, *, path_prefixes=None,
+               excluded_paths=None):
         """Use only this pinned generation's FTS statistics and eligible rows."""
         return self.search_many(token, (fts_query,), limit,
-                                path_prefixes=path_prefixes)[0]
+                                path_prefixes=path_prefixes,
+                                excluded_paths=excluded_paths)[0]
 
     def search_many(self, token, fts_queries, limit, *, path_prefixes=None,
-                    deadline_seconds=None):
+                    deadline_seconds=None, excluded_paths=None):
         """Run at most eight searches after one sealed-generation FTS check."""
         if (not isinstance(fts_queries, tuple) or not 1 <= len(fts_queries) <= 8
                 or any(not isinstance(query, str) or not query for query in fts_queries)
@@ -1092,6 +1112,7 @@ class LayaIndexA:
                      or not 0 < deadline_seconds <= 30))):
             raise IndexContractError('invalid_query')
         prefix_sql, prefix_params = _path_predicate(path_prefixes)
+        shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
         deadline = (None if deadline_seconds is None else
                     time.monotonic() + deadline_seconds)
         if deadline is not None:
@@ -1116,9 +1137,10 @@ class LayaIndexA:
                   JOIN membership m ON m.gen=? AND m.path={table}.path_key
                   JOIN content c ON c.hash=m.hash
                   WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
-                  {prefix_sql}
+                  {prefix_sql}{shadow_sql}
                   ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
-                """, (gen, fts_query, scope, *prefix_params, limit)).fetchall()
+                """, (gen, fts_query, scope, *prefix_params,
+                      *shadow_params, limit)).fetchall()
                 if deadline is not None and time.monotonic() >= deadline:
                     raise IndexContractError('fts_deadline_exceeded')
                 answer.append([{'generation': gen, 'scope': scope, 'path': path,

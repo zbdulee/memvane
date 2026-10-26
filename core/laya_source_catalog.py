@@ -8,7 +8,7 @@ same source contract but spreads the work over durable steps:
   * ``step()`` runs one ``BEGIN IMMEDIATE`` transaction with a finite budget:
     ``max_files`` units (one directory listing or one file hash each),
     ``max_bytes`` streamed file bytes and ``max_stats`` verification stats.
-    Phases: enumerate -> hash -> verify_dirs -> verify_files -> publish.
+    Phases: interleaved enumerate/hash -> verify_dirs -> verify_files -> publish.
   * The complete snapshot pointer moves only in the transaction that finishes
     verification. Pending, deferred or blocked scans never replace it, and a
     partial listing is never evidence of deletion.
@@ -139,6 +139,14 @@ _SCHEMA = (
          seq INTEGER NOT NULL, path TEXT NOT NULL, dir_rel TEXT NOT NULL,
          name TEXT NOT NULL, size INTEGER NOT NULL, sig TEXT NOT NULL,
          sha256 TEXT, PRIMARY KEY(seq, path))""",
+    'CREATE INDEX scan_files_unhashed ON scan_files(seq,path) WHERE sha256 IS NULL',
+    """CREATE TABLE hash_ready(
+         ord INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL,
+         path TEXT NOT NULL, sha256 TEXT NOT NULL, UNIQUE(seq,path))""",
+    'CREATE INDEX hash_ready_scan_ord ON hash_ready(seq,ord)',
+    """CREATE TABLE pending_fill(
+         seq INTEGER NOT NULL, profile_id TEXT NOT NULL, ord INTEGER NOT NULL,
+         PRIMARY KEY(seq,profile_id))""",
 )
 
 Exclusions = Tuple[FrozenSet[str], FrozenSet[str]]
@@ -189,6 +197,18 @@ class CatalogSnapshot:
     files: int
     bytes: int
     completed_ns: int
+
+
+@dataclass(frozen=True)
+class PendingMemberProof:
+    """One scan's committed file hashes, before its corpus snapshot is complete.
+
+    It authorizes only live-rehashed per-document work, never a full generation
+    seal, manifest, or installer completion claim.
+    """
+    scope: str
+    seq: int
+    scan_id: str
 
 
 class _Work:
@@ -523,8 +543,32 @@ class LayaSourceCatalog:
 
     def _drop_scan(self, seq: int) -> None:
         # Catalog metadata only; never source or A-int data.
-        for table in ('scan_files', 'scan_dirs', 'scans'):
+        for table in ('hash_ready', 'pending_fill', 'scan_files', 'scan_dirs', 'scans'):
             self.db.execute(f'DELETE FROM {table} WHERE seq=?', (seq,))
+
+    def _ensure_partial_tables(self) -> None:
+        """Add the per-file feed to an existing v1 catalog, within its write txn.
+
+        A previous process may have committed hashes before this code was
+        installed. Backfill them in path order once, atomically with the DDL;
+        new hashes receive later ordinals regardless of their path spelling.
+        """
+        old = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                              "AND name='hash_ready'").fetchone()
+        self.db.execute('CREATE INDEX IF NOT EXISTS scan_files_unhashed '
+                        'ON scan_files(seq,path) WHERE sha256 IS NULL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS hash_ready('
+                        'ord INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER NOT NULL, '
+                        'path TEXT NOT NULL, sha256 TEXT NOT NULL, UNIQUE(seq,path))')
+        self.db.execute('CREATE INDEX IF NOT EXISTS hash_ready_scan_ord '
+                        'ON hash_ready(seq,ord)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS pending_fill('
+                        'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
+                        'ord INTEGER NOT NULL, PRIMARY KEY(seq,profile_id))')
+        if old is None:
+            self.db.execute('INSERT INTO hash_ready(seq,path,sha256) '
+                            'SELECT seq,path,sha256 FROM scan_files '
+                            'WHERE sha256 IS NOT NULL ORDER BY seq,path')
 
     def _start_scan(self) -> Tuple[int, str]:
         current = self._pointer('current')
@@ -553,6 +597,7 @@ class LayaSourceCatalog:
         if not self._begin_write():
             return {'status': 'busy', 'scan_id': None}
         try:
+            self._ensure_partial_tables()
             active = self._scan_row(self._pointer('active'))
             if active is not None and active['phase'] in PENDING_PHASES:
                 self.db.execute('UPDATE scans SET rerequested=1 WHERE seq=?',
@@ -578,6 +623,7 @@ class LayaSourceCatalog:
             return {'status': 'busy', 'scan_id': None, 'phase': None,
                     'work': work.report()}
         try:
+            self._ensure_partial_tables()
             scan = self._scan_row(self._pointer('active'))
             if scan is None or scan['phase'] not in PENDING_PHASES:
                 self.db.rollback()
@@ -647,6 +693,14 @@ class LayaSourceCatalog:
 
     def _enumerate_one(self, seq: int, state: Dict[str, Any], work: _Work,
                        opener: _DirOpener) -> Optional[str]:
+        # Hash files from already-listed directories before listing the next
+        # one. A first document can be published without enumerating the
+        # entire tree. Selection uses sha256 IS NULL, not a path cursor:
+        # later directory listings may introduce lexically earlier paths.
+        unhashed = self.db.execute('SELECT 1 FROM scan_files WHERE seq=? '
+                                   'AND sha256 IS NULL LIMIT 1', (seq,)).fetchone()
+        if unhashed is not None:
+            return self._hash_one(seq, state, work, opener)
         row = self.db.execute('SELECT rel,collection,depth FROM scan_dirs '
                               'WHERE seq=? AND listed=0 ORDER BY rel LIMIT 1',
                               (seq,)).fetchone()
@@ -700,10 +754,11 @@ class LayaSourceCatalog:
     def _hash_one(self, seq: int, state: Dict[str, Any], work: _Work,
                   opener: _DirOpener) -> Optional[str]:
         row = self.db.execute('SELECT path,dir_rel,name,size,sig FROM scan_files '
-                              'WHERE seq=? AND path>? ORDER BY path LIMIT 1',
-                              (seq, state['cursor'])).fetchone()
+                              'WHERE seq=? AND sha256 IS NULL ORDER BY path LIMIT 1',
+                              (seq,)).fetchone()
         if row is None:
-            state['phase'], state['cursor'] = 'verify_dirs', ''
+            if state['phase'] == 'hash':
+                state['phase'], state['cursor'] = 'verify_dirs', ''
             return None
         path, dir_rel, name, size, sig = row
         if size > work.max_bytes:
@@ -717,6 +772,8 @@ class LayaSourceCatalog:
         digest = _hash_entry(opener.open_dir(dir_rel), name, path, size, sig)
         self.db.execute('UPDATE scan_files SET sha256=? WHERE seq=? AND path=?',
                         (digest, seq, path))
+        self.db.execute('INSERT INTO hash_ready(seq,path,sha256) VALUES(?,?,?)',
+                        (seq, path, digest))
         work.units += 1
         work.bytes += size
         work.files += 1
@@ -886,6 +943,113 @@ class LayaSourceCatalog:
             _raise_stale(f'catalog has no usable complete snapshot: {snapshot}')
         return snapshot
 
+    def pending_hashed(self, exclusions: Exclusions, *, after_ord: int = 0,
+                       limit: int = _PAGE) -> tuple[PendingMemberProof | None,
+                                                   List[Tuple[int, str, str, bool]]]:
+        """Committed hashes in completion order, never partial file writes.
+
+        An ordinal advances only when its SHA and ready row commit together.
+        A new directory may reveal a lexically earlier path, so path is not a
+        safe partial-scan cursor. No row grants a full snapshot seal.
+        """
+        if (type(after_ord) is not int or after_ord < 0
+                or type(limit) is not int or limit < 1):
+            raise ValueError('invalid_pending_member_page')
+        excluded_paths, excluded_hashes = exclusions
+
+        def read():
+            scan = self._scan_row(self._pointer('active'))
+            if scan is None or scan['phase'] not in PENDING_PHASES:
+                return None, []
+            proof = PendingMemberProof(self.scope, scan['seq'], scan['scan_id'])
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                               "AND name='hash_ready'").fetchone() is None:
+                # An older v1 catalog is upgraded in its next write step.
+                return proof, []
+            rows = [(ord_, path, sha,
+                     path not in excluded_paths and sha not in excluded_hashes)
+                    for ord_, path, sha in self.db.execute(
+                        'SELECT h.ord,h.path,h.sha256 FROM hash_ready h '
+                        'JOIN scan_files f ON f.seq=h.seq AND f.path=h.path '
+                        'AND f.sha256=h.sha256 WHERE h.seq=? AND h.ord>? '
+                        'ORDER BY h.ord LIMIT ?', (proof.seq, after_ord, limit))]
+            return proof, rows
+        return self._read(read)
+
+    def pending_fill_progress(self, proof: PendingMemberProof, profile_id: str) -> int:
+        """Last published partial hash ordinal; zero never means scan done."""
+        if not isinstance(proof, PendingMemberProof) or not _HEX64.match(profile_id or ''):
+            raise ValueError('invalid pending fill key')
+
+        def read():
+            if not self._pending_proof_current(proof):
+                return None
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                               "AND name='pending_fill'").fetchone() is None:
+                return 0
+            row = self.db.execute('SELECT ord FROM pending_fill WHERE seq=? '
+                                  'AND profile_id=?', (proof.seq, profile_id)).fetchone()
+            return 0 if row is None else row[0]
+        ordinal = self._read(read)
+        if ordinal is None:
+            _raise_stale('pending scan changed')
+        return ordinal
+
+    def set_pending_fill_progress(self, proof: PendingMemberProof, profile_id: str,
+                                  ordinal: int) -> bool:
+        """Persist publication progress only after the sidecar commit succeeds."""
+        if (not isinstance(proof, PendingMemberProof) or not _HEX64.match(profile_id or '')
+                or type(ordinal) is not int or ordinal < 0):
+            raise ValueError('invalid pending fill record')
+        if not self._begin_write():
+            return False
+        try:
+            self._ensure_partial_tables()
+            if not self._pending_proof_current(proof):
+                self.db.rollback()
+                return False
+            if ordinal and self.db.execute('SELECT 1 FROM hash_ready WHERE seq=? '
+                                           'AND ord=?', (proof.seq, ordinal)).fetchone() is None:
+                self.db.rollback()
+                return False
+            previous = self.db.execute('SELECT ord FROM pending_fill WHERE seq=? '
+                                       'AND profile_id=?', (proof.seq, profile_id)).fetchone()
+            if previous is not None and ordinal < previous[0]:
+                self.db.rollback()
+                return False
+            self.db.execute('INSERT INTO pending_fill(seq,profile_id,ord) VALUES(?,?,?) '
+                            'ON CONFLICT(seq,profile_id) DO UPDATE SET ord=excluded.ord',
+                            (proof.seq, profile_id, ordinal))
+            self.db.commit()
+            return True
+        except BaseException:
+            self._rollback()
+            raise
+
+    def _pending_proof_current(self, proof: PendingMemberProof) -> bool:
+        if not isinstance(proof, PendingMemberProof) or proof.scope != self.scope:
+            return False
+        scan = self._scan_row(proof.seq)
+        return (scan is not None and scan['scan_id'] == proof.scan_id and
+                ((self._pointer('active') == proof.seq and scan['phase'] in PENDING_PHASES)
+                 or (self._pointer('current') == proof.seq and scan['phase'] == 'complete')))
+
+    def require_pending_member(self, proof: PendingMemberProof, path: str,
+                               sha256: str) -> None:
+        """Recheck a single hash without asserting whole-corpus readiness."""
+        if (not isinstance(proof, PendingMemberProof) or proof.scope != self.scope
+                or not isinstance(path, str) or not isinstance(sha256, str)):
+            _raise_stale('invalid pending member proof')
+
+        def read():
+            if not self._pending_proof_current(proof):
+                return False
+            row = self.db.execute('SELECT sha256 FROM scan_files WHERE seq=? AND path=?',
+                                  (proof.seq, path)).fetchone()
+            return row == (sha256,)
+        if not self._read(read):
+            _raise_stale('pending member changed')
+
     def require_current(self, snapshot: CatalogSnapshot) -> None:
         """``snapshot`` is still the current pointer; a pending scan is allowed."""
         if self.require_complete() != snapshot:
@@ -949,15 +1113,20 @@ class LayaSourceCatalog:
 
     def read_verified(self, snapshot: CatalogSnapshot, path: str, sha256: str) -> bytes:
         """Re-read one member's current bytes; they must rehash to ``sha256``."""
+        if isinstance(snapshot, PendingMemberProof):
+            self.require_pending_member(snapshot, path, sha256)
         row = self.db.execute('SELECT dir_rel,name,size,sha256 FROM scan_files '
                               'WHERE seq=? AND path=?', (snapshot.seq, path)).fetchone()
         if row is None or row[3] != sha256:
             _raise_stale('path is not in the catalog snapshot')
         opener = _DirOpener(self.db, self.roots, snapshot.seq)
         try:
-            return self._read_member(opener, path, row[0], row[1], row[2], sha256)
+            data = self._read_member(opener, path, row[0], row[1], row[2], sha256)
         finally:
             opener.close()
+        if isinstance(snapshot, PendingMemberProof):
+            self.require_pending_member(snapshot, path, sha256)
+        return data
 
     def _read_member(self, opener: _DirOpener, path: str, dir_rel: str, name: str,
                      size: int, sha256: str) -> bytes:
