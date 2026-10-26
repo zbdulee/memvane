@@ -31,6 +31,9 @@ Phases (``PHASES``):
   before activation the binding is retired and the record stays ``bound``
   for good; ``retire_project_pointer`` releases the project pointer so a
   fresh install (its own state root and record) can register.
+* ``upgrading``: the installer owns an inactive bundle replacement. Older
+  workers reject this unknown phase; current workers defer without writing.
+  The original identity and stores remain available for explicit recovery.
 * ``retired``: an explicit, audited abandon of a build that never did any
   work (still ``registered``, nothing read or written; see
   ``laya_product_install.abandon_unused_initial_build``). Terminal and
@@ -67,7 +70,8 @@ POINTER_SCHEMA = 'laya-initial-build-pointer-v1'
 RECORD = 'initial-build.json'
 LOCK = 'initial-build.lock'
 POINTERS = 'initial-builds'
-PHASES = ('registered', 'building', 'sealed', 'blocked', 'bound', 'retired')
+PHASES = ('registered', 'building', 'sealed', 'blocked', 'bound', 'retired',
+          'upgrading')
 MAX_RECORD_BYTES = 65536
 IDENTITY_FIELDS = frozenset((
     'projectRoot', 'stateRoot', 'installId', 'scopeId', 'collections',
@@ -118,7 +122,7 @@ def _private_dir(path):
     return path
 
 
-def _read_json(path):
+def _read_json(path, *, max_bytes=MAX_RECORD_BYTES):
     """One owned, private, single-link canonical JSON object; None if absent."""
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
@@ -130,9 +134,9 @@ def _read_json(path):
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
                 or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o077
-                or before.st_size > MAX_RECORD_BYTES):
+                or before.st_size > max_bytes):
             _fail('initial_build_record_unsafe')
-        raw = os.read(fd, MAX_RECORD_BYTES + 1)
+        raw = os.read(fd, max_bytes + 1)
         after = os.fstat(fd)
     finally:
         os.close(fd)
@@ -149,11 +153,11 @@ def _read_json(path):
     return value
 
 
-def _write_json(path, value, *, replace):
+def _write_json(path, value, *, replace, max_bytes=MAX_RECORD_BYTES):
     """Fsynced temp file, then a no-clobber link or an atomic replace."""
     path = Path(path)
     raw = _canon(value)
-    if len(raw) > MAX_RECORD_BYTES:
+    if len(raw) > max_bytes:
         _fail('initial_build_record_too_large')
     fd, name = tempfile.mkstemp(prefix='.laya-build-', dir=path.parent)
     temp = Path(name)
@@ -455,6 +459,28 @@ def advance(record, **changes):
                'updatedNs': time.time_ns()}
     _validate(updated)
     _write_json(record_path(state), updated, replace=True)
+    return updated
+
+
+def rebind_inactive_upgrade(record, new_identity):
+    """CAS only the reviewed route and attestation of an upgrading build.
+
+    The candidate stores, scope, install ID and vector profile cannot move.
+    Caller holds both the install lock and build owner lock. The separate
+    installer intent makes an interrupted multi-file switch recoverable.
+    """
+    _validate_identity(new_identity)
+    current = read(record['identity']['stateRoot'])
+    if current != record or current['phase'] != 'upgrading':
+        _fail('initial_build_upgrade_stale')
+    old = current['identity']
+    changed = {'routeSha256', 'attestationSha256', 'providerProposalSha256'}
+    if any(old[key] != new_identity[key] for key in old.keys() - changed):
+        _fail('initial_build_upgrade_identity_mismatch')
+    updated = {**current, 'identity': new_identity,
+               'epoch': current['epoch'] + 1, 'updatedNs': time.time_ns()}
+    _validate(updated)
+    _write_json(record_path(old['stateRoot']), updated, replace=True)
     return updated
 
 

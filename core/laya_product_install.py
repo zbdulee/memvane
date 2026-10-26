@@ -1367,6 +1367,8 @@ def request_initial_build_rescan(state_root):
         record = initial_build.read(state)
         if record is None:
             _fail('initial_build_missing')
+        if record['phase'] == 'upgrading':
+            _fail('inactive_bundle_upgrade_pending')
         identity = record['identity']
         roots = wiki_index_roots(identity['collections'])
         with closing(LayaSourceCatalog(identity['catalogDb'], roots,
@@ -1414,6 +1416,8 @@ def finalize_initial_build(*, project_root, state_root):
         record = initial_build.read(state)
         if record is None:
             _fail('initial_build_missing')
+        if record['phase'] == 'upgrading':
+            _fail('inactive_bundle_upgrade_pending')
         identity = record['identity']
         if identity.get('originMode') == 'fresh_wiki_only':
             return _finalize_fresh_wiki_locked(record, project_root, state)
@@ -1745,7 +1749,7 @@ _UNUSED_ZERO_TABLES = (
                      'content_fts_content', 'content_fts_docsize')),
     ('queueDb', ('jobs',)),
     ('catalogDb', ('scans', 'active', 'current', 'scan_dirs', 'scan_files',
-                   'vector_fill')),
+                   'hash_ready', 'pending_fill', 'vector_fill')),
     ('bindingStore', ('bindings',)),
 )
 _UNUSED_METADATA_TABLES = {

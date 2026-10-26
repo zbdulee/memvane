@@ -599,6 +599,43 @@ def cas_stage_update(journal_path, expected_epoch, next_bundle_proof, proposed_r
     return _cas(journal_path, expected_epoch, stage)
 
 
+def cas_replace_inactive_candidate(journal_path, expected_epoch,
+                                   current_route_raw, next_bundle_proof,
+                                   next_route_raw):
+    """CAS a still-unselected initial build to an exact replacement bundle.
+
+    Only installer-owned, private candidate metadata changes. The vector
+    profile, project, scope, install ID, generation and every store path stay
+    fixed. This function also supports a guarded rollback to the old bundle.
+    """
+    def replace(path, row):
+        if (row['state'] != 'candidate_ready' or row['pending'] is None or
+                row['selected'] is not None or row['previous'] is not None or
+                row['new_write_seen']):
+            _fail('inactive_candidate_not_replaceable')
+        before, before_sha = _route(current_route_raw, path)
+        after, after_sha = _route(next_route_raw, path)
+        if before_sha != row['pending_route_sha']:
+            _fail('inactive_candidate_route_changed')
+        next_identity = _identity(next_bundle_proof, after, path)
+        replaceable = {'pluginRoot', 'bundleManifestSha256',
+                       'ownershipManifestSha256'}
+        if (set(before) != set(after) or
+                any(before[key] != after[key] for key in before.keys() - replaceable)
+                or any(before[key] != row['pending'].get(key) for key in
+                       ('pluginRoot', 'installId', 'generation',
+                        'bundleManifestSha256', 'ownershipManifestSha256',
+                        'vectorProfile'))
+                or any(row['pending'][key] != next_identity[key] for key in
+                       ('installId', 'generation', 'vectorProfile'))
+                or _project(after) != (row['project_root'], row['project_dev'],
+                                       row['project_ino'])
+                or after['scopeId'] != row['scope_id']):
+            _fail('inactive_candidate_identity_mismatch')
+        return {'pending': _canon(next_identity), 'pending_route_sha': after_sha}
+    return _cas(journal_path, expected_epoch, replace)
+
+
 def cas_recover(journal_path, expected_epoch, observed_route_raw):
     """Finish pending switch if new route is visible, else retain exact old route."""
     def recover(path, row):
