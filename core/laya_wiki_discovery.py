@@ -151,6 +151,20 @@ def _locked(path, wait):
 
 def _read(path):
     """One owned, private, regular JSON object; None only when absent."""
+    data = _read_bytes(path)
+    if data is None:
+        return None
+    try:
+        value = json.loads(data.decode('utf-8'))
+    except (UnicodeError, ValueError) as exc:
+        raise DiscoveryBlocked('state_corrupt') from exc
+    if not isinstance(value, dict):
+        raise DiscoveryBlocked('state_corrupt')
+    return value
+
+
+def _read_bytes(path):
+    """Owned, private, regular file bytes; None only when absent."""
     try:
         fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
     except FileNotFoundError:
@@ -174,19 +188,17 @@ def _read(path):
                 raise DiscoveryBlocked('state_unsafe')
     finally:
         os.close(fd)
-    try:
-        value = json.loads(b''.join(chunks).decode('utf-8'))
-    except (UnicodeError, ValueError) as exc:
-        raise DiscoveryBlocked('state_corrupt') from exc
-    if not isinstance(value, dict):
-        raise DiscoveryBlocked('state_corrupt')
-    return value
+    return b''.join(chunks)
+
+
+def _encode(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=True,
+                      separators=(',', ':')).encode('utf-8')
 
 
 def _write(path, value):
     """Atomic 0600 replace; the temp is exclusive and never followed."""
-    data = json.dumps(value, sort_keys=True, ensure_ascii=True,
-                      separators=(',', ':')).encode('utf-8')
+    data = _encode(value)
     if len(data) > MAX_FILE_BYTES:
         raise DiscoveryBlocked('state_too_large')
     tmp = path.with_name('.%s.%s.tmp' % (path.name, uuid.uuid4().hex))
@@ -575,6 +587,91 @@ def seed_source_snapshot(decision, baseline):
         head, _base, _base_rows, _head_rows = _read_view(decision, None)
         _write(state_path, _state_doc(decision, head, baseline, {}))
         return baseline
+
+
+def _raw_entry(decision):
+    raw = [item for item in decision['collections'] if item.get('role') == 'raw']
+    if len(raw) != 1:
+        raise DiscoveryBlocked('binding_invalid')
+    return raw[0]
+
+
+def rebased_cursor(old_decision, new_decision):
+    """(state path, old bytes, new bytes) for a raw collection rename or root expansion.
+
+    Both decisions bind the same scope, DB incarnation and queue, so the
+    cursor keeps its path. The new raw root must be the old one or an
+    ancestor of it. Paths of the old cursor are re-keyed to the new
+    collection (snapshot, pending revisions and the deletion keys they
+    hold); files of the new root outside the old root enter the snapshot
+    from a current scan, so they become baseline and are not reported as
+    changes. Inside the old root the old snapshot stays, so an edit made
+    since the last drain is still discovered. ``baseGen`` and spent grant
+    ids are kept. Read-only; the caller replaces the file under the lock.
+    """
+    path, _grants, _lock = _paths(old_decision)
+    if _paths(new_decision)[0] != path:
+        raise DiscoveryBlocked('state_binding_mismatch')
+    data = _read_bytes(path)
+    if data is None:
+        raise DiscoveryBlocked('snapshot_missing')
+    state = _read(path)
+    _validate_state(state, old_decision)
+    old_raw, new_raw = _raw_entry(old_decision), _raw_entry(new_decision)
+    old_root, new_root = Path(old_raw['sourceRoot']), Path(new_raw['sourceRoot'])
+    if old_root != new_root and new_root not in old_root.parents:
+        raise DiscoveryBlocked('raw_root_not_expanded')
+    prefix = old_root.relative_to(new_root).as_posix()
+    prefix = '' if prefix == '.' else prefix + '/'
+
+    def moved(key):
+        name, rel = key.split('/', 1)
+        if name != old_raw['name']:
+            raise DiscoveryBlocked('state_corrupt')
+        return '%s/%s%s' % (new_raw['name'], prefix, rel)
+    snapshot = {moved(key): sha for key, sha in state['rawSnapshot'].items()}
+    pending = {moved(key): sha for key, sha in state['pending'].items()}
+    if prefix:
+        inside = new_raw['name'] + '/' + prefix
+        scanned = _raw_snapshot(new_decision, [new_raw['name']])
+        snapshot.update({key: sha for key, sha in scanned.items()
+                         if not key.startswith(inside)})
+    if len(snapshot) > MAX_MEMBERS or len(pending) > MAX_PENDING:
+        raise DiscoveryBlocked('state_over_cap')
+    doc = _state_doc(new_decision, state['baseGen'], snapshot, pending,
+                     state.get('spentGrants', ()))
+    _validate_state(doc, new_decision)
+    new = _encode(doc)
+    if len(new) > MAX_FILE_BYTES:
+        raise DiscoveryBlocked('state_too_large')
+    return path, data, new
+
+
+def replace_cursor(decision, old, new, *, keep_valid_for=None):
+    """Exact compare-and-replace of the cursor bytes, under the worker lock.
+
+    Already ``new`` is a no-op, so an interrupted rebind resumes; called
+    with the pair swapped it rolls back. ``keep_valid_for`` (a rollback's
+    target decision) also leaves any other cursor that is valid for that
+    binding: the forward replace never happened, so nothing is undone.
+    """
+    path, _grants, lock = _paths(decision)
+    with _locked(lock, WORKER_LOCK_SECONDS):
+        current = _read_bytes(path)
+        if current == new:
+            return
+        if current != old and keep_valid_for is not None and current is not None:
+            try:
+                _validate_state(_read(path), keep_valid_for)
+                return
+            except DiscoveryBlocked:
+                pass
+        if current != old:
+            raise DiscoveryBlocked('state_changed')
+        value = json.loads(new.decode('utf-8'))
+        if _encode(value) != new:
+            raise DiscoveryBlocked('state_corrupt')
+        _write(path, value)
 
 
 def _changed_files(pending, roots, snapshot):

@@ -92,6 +92,12 @@ reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`�
    digest가 같을 때만 settings를 `{name, skipPaths}`로 다시 씁니다. 원래 바이트는
    `.auto-context/settings.json.pre-minimal-<UTC 시각>`에 남습니다.
 
+현재 `name`이 bound collection 이름을 유도하지 못하면(예: 한글 제목) 두 action 모두에
+`--name <slug>`를 붙입니다. ASCII slug여야 하고, 유도되는 collection 이름이 현재
+collection 이름과 정확히 같아야 합니다(`name_override_invalid` · `name_override_mismatch`).
+제안 digest가 새 `name`을 포함하므로 migrate에도 같은 `--name`을 줍니다. route가 settings
+바이트를 묶으므로 settings 파일을 손으로 고치지 않습니다.
+
 **선택된 route의 rebind.** 유도된 collection identity가 route가 묶은 것과 같으면, 번들
 업그레이드와 같은 잠금(install lock → cutover operation lock → provider lane) 아래에서
 settings 바이트를 묶는 모든 곳을 새 바이트로 옮깁니다. install journal의 selected route
@@ -101,6 +107,18 @@ ledger(fresh-wiki 또는 QMD-origin)의 `routeSha256`, selection marker, setting
 시작 전에 state root에 `settings-rebind-intent.json`을 쓰고, 끝나면
 `settings-rebind-<digest>-settled.json`으로 옮깁니다. 이미 끝난 번들 업그레이드
 receipt(`active-upgrade-intent.json`)는 먼저 settled로 정리합니다.
+
+**raw collection 이동.** wiki collection(이름·role·루트)은 같고 raw collection만
+다르면(이름 변경, 또는 루트를 상위 디렉터리로 넓힘, 예: `docs` → 프로젝트 루트) 같은
+intent로 옮깁니다. Laya index는 wiki 카드만 담으므로 generation·catalog·binding
+store·vector는 그대로 유효합니다. route record와 ledger의 `collections`가 settings
+digest와 함께 바뀌고, claim queue 옆 raw discovery cursor
+(`*.wiki-discovery-v2-<scope>-<incarnation>.json`)가 첫 단계로 새 collection에 맞춰
+다시 쓰입니다. 이전 snapshot·pending 경로는 새 이름 아래로 옮겨져 마지막 drain 이후의
+수정·삭제를 그대로 찾고, 이전 루트 밖 파일은 현재 스캔(raw 스캔과 같은 규칙)으로 baseline에
+들어갑니다. 제안의 `rebind.rawCollection`이 이전·새 raw collection을 보여 줍니다.
+QMD-origin 선택에서 raw 이름이 바뀌면 QMD source digest를 다시 증명할 수 없으므로
+`rebind.forfeits`에 `qmd_origin_restore`가 표시되고, 이후 QMD로의 복원은 거부됩니다.
 
 intent가 남아 있는 동안(중단된 경우 포함):
 
@@ -115,7 +133,9 @@ intent가 남아 있는 동안(중단된 경우 포함):
 
 | reason | 조건 |
 |---|---|
-| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다릅니다. `identityDiff`가 차이를 collection별로 보여 줍니다. collection 이름은 바꾸지 않습니다 |
+| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다르고, 그 차이가 raw collection 이동(위)으로 설명되지 않습니다(wiki collection 변경, raw 루트 축소 등). `identityDiff`가 차이를 collection별로 보여 줍니다 |
+| `raw_collection_bound_by_wiki_state` | raw 이름이 바뀌는데 wiki 카드 frontmatter(`sources`·`sourceRevisions`)나 `compile/source-queue.jsonl`·`verify-queue.jsonl`이 이전 raw 이름을 가리킵니다. 옮기면 그 카드가 recall에서 거부되므로 바꾸지 않습니다(`citingCards`, `citingCardSample`, `queuedRecords`) |
+| `raw_discovery_rebase_refused` | raw discovery cursor가 없거나 새 루트를 스캔할 수 없습니다(`discoveryReason`) |
 | `selected_route_not_verified` | route record가 있지만 installer journal·ledger·marker가 뒷받침하는 active 선택이 아닙니다 |
 | `selected_route_busy` | install·cutover 작업 또는 provider lane이 사용 중입니다. 나중에 다시 실행합니다 |
 | `active_upgrade_unsettled` | 끝나지 않은 번들 업그레이드 intent가 있습니다 |
@@ -128,7 +148,8 @@ intent가 남아 있는 동안(중단된 경우 포함):
 | `binding_probe_failed:*` | 위 binding 여부를 읽지 못했습니다 |
 | `collection_identity_changed` | 유도된 collection 이름·role·루트 또는 wiki 루트가 현재와 다릅니다(`identityDiff`) |
 | `legacy_indexing_not_enabled` | 현재 effective `indexing`이 `true`가 아닙니다. 끈 상태는 optout marker로 표현합니다 |
-| `name_required` · `invalid_skip_paths` | minimal settings로 옮길 수 없는 값입니다 |
+| `name_required` · `invalid_skip_paths` | minimal settings로 옮길 수 없는 값입니다. `name_required`는 `--name <slug>`로 풀 수 있습니다 |
+| `name_override_invalid` · `name_override_mismatch` | `--name`이 ASCII slug가 아니거나, 유도되는 collection 이름이 현재 이름과 다릅니다 |
 
 선택된 route의 프로젝트에서 끝난 setup journal과 공용 QMD store 승인은 다시 쓰지 않고
 `staleQmdBindings`로만 보고됩니다. 선택된 route는 QMD setup·shared store 경로를 타지 않으므로

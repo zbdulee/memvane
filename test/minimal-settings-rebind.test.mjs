@@ -15,7 +15,7 @@ test('minimal settings migrate a selected Laya route with read-only recall and c
         PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 19 tests/);
+    assert.match(result.stderr, /Ran 35 tests/);
     assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

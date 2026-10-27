@@ -475,19 +475,20 @@ def main(argv=None):
     parser.add_argument('--accepted-settings-proposal-sha256')
     parser.add_argument('--approve-settings-rewrite', action='store_true')
     parser.add_argument('--rollback-settings-rebind', action='store_true')
+    parser.add_argument('--name')
     args = parser.parse_args(argv)
     try:
         if args.action in ('plan-minimal-settings', 'migrate-minimal-settings'):
             import settings_migration
             project = str(Path(args.project).resolve())
             if args.action == 'plan-minimal-settings':
-                result = settings_migration.plan(project)
+                result = settings_migration.plan(project, args.name)
             elif not args.approve_settings_rewrite:
                 raise ValueError('settings_rewrite_approval_required')
             else:
                 result = settings_migration.apply(
                     project, args.accepted_settings_proposal_sha256,
-                    rollback=args.rollback_settings_rebind)
+                    rollback=args.rollback_settings_rebind, name=args.name)
             print(json.dumps(result, sort_keys=True, ensure_ascii=False))
             return 1 if result.get('status') == 'refused' else 0
         if args.action in ('plan-index-origin','plan-fresh-wiki-origin',

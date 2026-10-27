@@ -14,6 +14,12 @@ Installed state that binds the current settings bytes:
   the install journal's selected route digest, the selection ledger and the
   selection marker are rebound to the new bytes by ``laya_settings_rebind``
   under the bundle-upgrade locks, with an intent for resume or rollback.
+  The derived raw collection may differ from the bound one (a new name, or
+  its root expanded to an ancestor such as the project root) while the wiki
+  collection is equal: the route, ledger and raw discovery cursor move with
+  it. Wiki cards and live compile queues that cite the old raw name would
+  stop resolving, so such a rename refuses with
+  ``raw_collection_bound_by_wiki_state``.
   While it is between steps, recall serves the published generation
   read-only. QMD-side records that only the legacy QMD path reads (a finished
   setup journal, a shared-store approval) are not rewritten; the proposal
@@ -26,6 +32,10 @@ Installed state that binds the current settings bytes:
 Non-identity fields that change (recall tuning, compile budget, custom
 extractor backends, learning flags) are reported in ``changedFields`` and do
 not refuse the plan; accepting the proposal digest accepts them.
+
+``name`` (``--name``) replaces a legacy ``name`` that does not derive the
+bound collections, for example a non-ASCII title. It must be an ASCII slug
+that derives exactly the current collection names.
 """
 from __future__ import annotations
 
@@ -37,6 +47,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -144,8 +155,11 @@ def identity_diff(current: dict, derived: dict) -> list:
     return diff
 
 
-def minimal_settings_for(raw: dict) -> dict:
-    name = raw.get("name")
+def minimal_settings_for(raw: dict, name_override=None) -> dict:
+    name = raw.get("name") if name_override is None else name_override
+    if name_override is not None and (not isinstance(name_override, str)
+                                      or config.settings_slug(name_override) != name_override):
+        raise MigrationRefused("name_override_invalid", name=name_override)
     if not isinstance(name, str) or not config.settings_slug(name):
         raise MigrationRefused("name_required")
     skip = raw.get("skipPaths", [])
@@ -252,17 +266,88 @@ def _initial_build(project: Path):
     return laya_initial_build.lookup(str(project))
 
 
+def raw_only_move(bound: list, derived: list):
+    """(old raw, new raw) when only the raw collection differs and its root expands."""
+    from laya_install_journal import raw_collection_rebind
+    if not raw_collection_rebind(bound, derived):
+        return None
+    old = next(row for row in bound if row["role"] == "raw")
+    new = next(row for row in derived if row["role"] == "raw")
+    old_root, new_root = Path(old["sourceRoot"]), Path(new["sourceRoot"])
+    if old_root != new_root and new_root not in old_root.parents:
+        return None
+    return old, new
+
+
+_FRONTMATTER_LIMIT = 1 << 20
+_LIVE_QUEUES = ("source-queue.jsonl", "verify-queue.jsonl")
+
+
+def _cites(text: str, name: str) -> bool:
+    pattern = r"""["']?collection["']?\s*:\s*["']?%s["']?\s*[,}\n]""" % re.escape(name)
+    return re.search(pattern, text) is not None
+
+
+def raw_name_citations(project: Path, wiki_root: str, name: str) -> dict:
+    """Wiki cards (frontmatter) and live compile queue rows that cite raw ``name``.
+
+    Card provenance (``sources``/``sourceRevisions``) names the raw collection;
+    recall and the compiler resolve it through the selected collections, so a
+    renamed raw collection would reject every such card.
+    """
+    cards = []
+    root = Path(wiki_root)
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = sorted(item for item in dirs if not (Path(directory) / item).is_symlink())
+        for file in sorted(files):
+            path = Path(directory) / file
+            if not file.endswith(".md") or path.is_symlink():
+                continue
+            with open(path, "rb") as handle:
+                head = handle.read(_FRONTMATTER_LIMIT).decode("utf-8", "replace")
+            head = head.replace("\r\n", "\n")
+            end = head.find("\n---\n", 4) if head.startswith("---\n") else -1
+            if end >= 0 and _cites(head[4:end] + "\n", name):
+                cards.append(path.relative_to(root).as_posix())
+    queued = 0
+    compile_dir = project / config.CONFIG_DIR_NAME / "compile"
+    for file in _LIVE_QUEUES:
+        path = compile_dir / file
+        if path.is_file() and not path.is_symlink():
+            queued += sum(1 for line in path.read_text(encoding="utf-8", errors="replace")
+                          .splitlines() if _cites(line, name))
+    return {"cards": cards, "queued": queued}
+
+
 def _selected_binding(project: Path, derived: dict, payload: bytes, route: Path):
     bound = _route_collections(route)
     if bound is None:
         return "settings_bound_by_laya_route", {"bindingPath": str(route)}, None
+    new_collections = None
     if bound != derived["collections"]:
-        return "bound_collection_identity_changed", {
-            "bindingPath": str(route), "boundCollections": bound,
-            "identityDiff": identity_diff({"collections": bound}, derived)}, None
+        move = raw_only_move(bound, derived["collections"])
+        if move is None:
+            return "bound_collection_identity_changed", {
+                "bindingPath": str(route), "boundCollections": bound,
+                "identityDiff": identity_diff({"collections": bound}, derived)}, None
+        old, new = move
+        if old["name"] != new["name"]:
+            wiki = next(row for row in bound if row["role"] == "wiki")
+            try:
+                cited = raw_name_citations(project, wiki["sourceRoot"], old["name"])
+            except OSError as exc:
+                return _probe_failed("wiki_citations", exc), {}, None
+            if cited["cards"] or cited["queued"]:
+                return "raw_collection_bound_by_wiki_state", {
+                    "bindingPath": str(route), "boundCollections": bound,
+                    "identityDiff": identity_diff({"collections": bound}, derived),
+                    "rawCollection": old["name"], "citingCards": len(cited["cards"]),
+                    "citingCardSample": cited["cards"][:5],
+                    "queuedRecords": cited["queued"]}, None
+        new_collections = derived["collections"]
     import laya_settings_rebind
     try:
-        summary, _exact = laya_settings_rebind.inspect(project, payload)
+        summary, _exact = laya_settings_rebind.inspect(project, payload, new_collections)
     except laya_settings_rebind.RebindRefused as exc:
         return exc.reason, {"bindingPath": str(route), **exc.detail}, None
     except Exception as exc:
@@ -337,7 +422,7 @@ def _pending_rebind(project: Path):
         raise MigrationRefused(exc.reason, **exc.detail) from None
 
 
-def plan(project_root) -> dict:
+def plan(project_root, name=None) -> dict:
     """Read-only proposal.
 
     ``status`` is ``review_required``, ``already_minimal``, ``rebind_pending``
@@ -368,16 +453,27 @@ def plan(project_root) -> dict:
         if current_cfg.get("indexing") is not True:
             # minimal settings cannot say "off"; the local optout marker does.
             raise MigrationRefused("legacy_indexing_not_enabled")
-        minimal = minimal_settings_for(raw)
+        minimal = minimal_settings_for(raw, name)
         derived_cfg = config.normalize_config(minimal)
         current = collection_identity(project, current_cfg)
         derived = collection_identity(project, derived_cfg)
+        if name is not None and (sorted(row["name"] for row in derived["collections"]) !=
+                                 sorted(row["name"] for row in current["collections"])):
+            raise MigrationRefused("name_override_mismatch", name=name,
+                                   currentCollections=sorted(
+                                       row["name"] for row in current["collections"]),
+                                   derivedCollections=sorted(
+                                       row["name"] for row in derived["collections"]))
         payload = payload_bytes(minimal)
         # Bindings first: a bound route or build reports the identity it binds.
         reason, detail, rebind = settings_binding(project, derived, payload)
         if reason:
             raise MigrationRefused(reason, derivedIdentity=derived, **detail)
-        if current != derived:
+        moved = rebind is not None and "rawCollection" in rebind
+        if current != derived and not (
+                moved and current.get("wikiRoot") == derived.get("wikiRoot")
+                and current["collections"] == _route_collections(
+                    project / config.CONFIG_DIR_NAME / ROUTE_RECORD)):
             raise MigrationRefused("collection_identity_changed",
                                    currentIdentity=current, derivedIdentity=derived,
                                    identityDiff=identity_diff(current, derived))
@@ -477,7 +573,9 @@ def _rewrite_selected(project: Path, auto: Path, current: dict) -> dict:
     if hashlib.sha256(original).hexdigest() != current["settingsSha256"]:
         raise MigrationRefused("settings_changed_during_migration")
     payload = payload_bytes(current["minimalSettings"])
-    intent = rebind.begin(project, current["proposalSha256"], payload)
+    moved = current["rebind"].get("rawCollection") is not None
+    intent = rebind.begin(project, current["proposalSha256"], payload,
+                          current["identity"]["collections"] if moved else None)
     # The intent holds the exact old bytes too; the backup is the user's copy.
     backup = _backup(auto, original)
     receipt = rebind.forward(intent)
@@ -513,7 +611,7 @@ def _resume(project: Path, pending, accepted_proposal_sha256, rollback) -> dict:
             "changesApplied": 1}
 
 
-def apply(project_root, accepted_proposal_sha256, *, rollback=False) -> dict:
+def apply(project_root, accepted_proposal_sha256, *, rollback=False, name=None) -> dict:
     """Rewrite settings to the accepted proposal; the original bytes are kept as a backup.
 
     An interrupted selected-route rebind resumes with the same accepted
@@ -522,7 +620,7 @@ def apply(project_root, accepted_proposal_sha256, *, rollback=False) -> dict:
     import wiki_mutation_lock
     project = Path(project_root)
     try:
-        first = plan(project)
+        first = plan(project, name)
         if first["status"] == "rebind_pending":
             return _resume(project, _pending_rebind(project), accepted_proposal_sha256,
                            rollback)
@@ -538,7 +636,7 @@ def apply(project_root, accepted_proposal_sha256, *, rollback=False) -> dict:
             from contextlib import nullcontext
             outer = nullcontext()
         with outer, _setup_lock(auto), wiki_mutation_lock.lock(project):
-            current = plan(project)
+            current = plan(project, name)
             if current["status"] != "review_required":
                 return current
             if (not isinstance(accepted_proposal_sha256, str)
@@ -577,10 +675,12 @@ def main(argv=None) -> int:
     parser.add_argument("--project", required=True)
     parser.add_argument("--accepted-proposal-sha256")
     parser.add_argument("--rollback-settings-rebind", action="store_true")
+    parser.add_argument("--name")
     args = parser.parse_args(argv)
     project = str(Path(args.project).resolve())
-    result = plan(project) if args.action == "plan" else apply(
-        project, args.accepted_proposal_sha256, rollback=args.rollback_settings_rebind)
+    result = plan(project, args.name) if args.action == "plan" else apply(
+        project, args.accepted_proposal_sha256, rollback=args.rollback_settings_rebind,
+        name=args.name)
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     return 0 if result["status"] in ("review_required", "already_minimal", "migrated",
                                      "rebind_pending", "rolled_back") else 1
