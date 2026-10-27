@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -526,10 +527,15 @@ class ResponseChecks(unittest.TestCase):
             body = frontmatter.replace('{digest}', digest)
             card = row(path='wiki/card.md', body=body)
             self.assertTrue(response._verified_wiki_row(card, decision))
+            before = source.stat()
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+            self.assertTrue(response._verified_wiki_row(card, decision))
             self.assertFalse(response._verified_wiki_row(
                 row(path='wiki/card.md', body=body.replace('Source fact.', 'Forged fact.')),
                 decision))
-            source.write_text('new source', encoding='utf-8')
+            retained = source.stat()
+            source.write_text('modified source', encoding='utf-8')
+            os.utime(source, ns=(retained.st_atime_ns, retained.st_mtime_ns))
             self.assertFalse(response._verified_wiki_row(card, decision))
 
     def test_v2_hierarchy_never_backfills_raw_when_wiki_unverified(self):
