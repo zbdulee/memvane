@@ -157,6 +157,18 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual(calls,[])
         service.stop.assert_not_called()
 
+    def test_resource_refusal_keeps_the_admission_criterion(self):
+        class Refusing(Coordinator):
+            @contextmanager
+            def activity(self,*_args):
+                raise ResourceDeferred('learning_deferred_resource',{'ready':False,'reason':'memory_reserve'})
+                yield
+        controller,service,calls,start,patches=self.wiring(activity=Refusing())
+        with self._patches(patches):
+            result=worker.run(self.project,coordinator=controller,start_service=start)
+        self.assertEqual((result['state'],result['reason'],result.get('detail')),
+                         ('deferred','learning_deferred_resource','memory_reserve'))
+
     def test_new_index_wake_yields_before_sync_and_stops_service(self):
         runtime_work.WakeQueue(self.project).put('index','',now=0)
         def forbidden(*_args,**_kwargs):self.fail('priority work reached sync')

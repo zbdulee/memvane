@@ -114,6 +114,8 @@ Claude Code의 프로젝트 설치본은 다음 명령으로 갱신합니다.
 ```bash
 claude plugin marketplace update qmd-auto-context-marketplace
 claude plugin update qmd-auto-context@qmd-auto-context-marketplace --scope project
+# 사용자 범위(user scope)로 설치했다면 --scope 없이 실행합니다.
+claude plugin update qmd-auto-context@qmd-auto-context-marketplace
 ```
 
 Codex는 `codex plugin marketplace upgrade qmd-auto-context-marketplace` 후

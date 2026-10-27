@@ -53,6 +53,14 @@ MAX_CAPACITY_ROUNDS = 64
 BUILD_WAKE_SECONDS = 45
 
 
+def _deferred(exc):
+    """Keep the admission criterion (cpu_pressure, memory_reserve, ...) for status."""
+    result = {'state': 'deferred', 'reason': str(exc)}
+    report = getattr(exc, 'report', None)
+    if isinstance(report, dict) and isinstance(report.get('reason'), str):
+        result['detail'] = report['reason']
+    return result
+
 def _large_initial_document(body):
     """Keep the existing provider recipe; only extend a large build request."""
     return isinstance(body, str) and len(body.encode('utf-8', 'surrogatepass')) > 200_000
@@ -387,7 +395,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         try:
             ensure_running(decision['projectRoot'], proof['providerManifest'])
         except ResourceDeferred as exc:
-            return {'state': 'deferred', 'reason': str(exc)}
+            return _deferred(exc)
     controller = coordinator or Coordinator()
     observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
     if capacity is not None:
@@ -461,7 +469,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
             finally:
                 service.stop()
     except ResourceDeferred as exc:
-        return {'state': 'deferred', 'reason': str(exc)}
+        return _deferred(exc)
     if result.get('state') not in ('indexed', 'unchanged', 'deferred'):
         raise IndexContractError('invalid_sync_result')
     return _after_sync(decision, proof, grants, result)
@@ -620,7 +628,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
             if not proof_ok():
                 raise IndexContractError('selected_proof_changed')
     except ResourceDeferred as exc:
-        return {'state': 'deferred', 'reason': str(exc)}, state['proof']
+        return _deferred(exc), state['proof']
     return _checked(result), state['proof']
 
 
