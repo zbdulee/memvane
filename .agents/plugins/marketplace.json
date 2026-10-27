@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "qmd-auto-context",
-      "description": "qmd 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/sync/query/update/wiki-compile/wiki-dedup/enable-compile manual skills",
+      "description": "qmd 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/sync/query/update/wiki-compile/wiki-dedup manual skills",
   "version": "0.37.10",
       "category": "Productivity",
       "source": { "source": "url", "url": "https://github.com/zbdulee/qmd-auto-context" },

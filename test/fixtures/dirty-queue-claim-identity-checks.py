@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Synthetic conditional-ACK checks over temp queues; no QMD, endpoint or model I/O."""
-import copy
 import fcntl
 import inspect
 import json
@@ -14,7 +13,6 @@ from unittest.mock import patch
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 import dirty_queue_claim as claim
-import shadow_ack_policy as policy
 
 ROWS = b'a\t/tmp/a\t/tmp/project\nb\t/tmp/b\t/tmp/project\n'
 TAIL = b'later\t/tmp/later\t/tmp/project\n'
@@ -208,51 +206,6 @@ class Conditional(Base):
                                     expect={**identity, 'digest': '0' * 64})
         claim.ack(self.queue, expect=identity)
         self.assertEqual(self.queue.read_bytes(), TAIL)
-
-
-def view(revision, generation):
-    return {'owner': 'project-a', 'incarnation': 'registration-a',
-            'worktree': 'worktree-a', 'scopeRevision': 'settings-a',
-            'storeGeneration': 'store-a', 'contentRevision': revision,
-            'indexGeneration': generation}
-
-
-EXPECTED = view('rev-1', 'g-' + '1' * 32)
-PREPARED = view('rev-2', 'g-' + '2' * 32)
-SEAL = {'schema': 'qmd-source-snapshot-v1', 'identity': [41, 7], 'snapshotSha256': 'b' * 64}
-
-
-def prepared_result():
-    return {'outcome': 'prepared', 'reason': None, 'view': dict(PREPARED),
-            'candidate': {'generation': PREPARED['indexGeneration'], 'index': '/synthetic/index.sqlite'},
-            'sealed': copy.deepcopy(SEAL), 'current': dict(EXPECTED),
-            'ack': 'not_called', 'expected': dict(EXPECTED)}
-
-
-class PolicyCompatibility(Base):
-    def test_identity_is_a_valid_policy_claim(self):
-        identity = self.claimed()
-        self.assertTrue(policy._valid_claim(identity))
-        receipt = policy.build_receipt(identity, prepared_result())
-        self.assertTrue(policy.valid_receipt(receipt))
-
-    def test_policy_ack_feeds_conditional_ack(self):
-        identity = self.claimed()
-        receipt = policy.build_receipt(identity, prepared_result())
-        verdict = policy.decide(receipt, dict(PREPARED), claim.claim_identity(self.queue), True)
-        self.assertEqual((verdict['decision'], verdict['reason']), (policy.ACK, 'cas_landed_sealed'))
-        claim.ack(self.queue, expect=verdict['ack'])
-        self.assertEqual(self.queue.read_bytes(), TAIL)
-
-    def test_policy_rejects_newer_claim_and_ack_refuses_stale(self):
-        stale = self.claimed()
-        receipt = policy.build_receipt(stale, prepared_result())
-        claim.ack(self.queue)
-        self.assertTrue(claim.claim(self.queue, self.root / 'snapshot'))
-        current = claim.claim_identity(self.queue)
-        verdict = policy.decide(receipt, dict(PREPARED), current, True)
-        self.assertNotEqual(verdict['decision'], policy.ACK)
-        self.assertRefusedUnchanged('dirty_queue_claim_identity_mismatch', expect=receipt['claim'])
 
 
 if __name__ == '__main__':

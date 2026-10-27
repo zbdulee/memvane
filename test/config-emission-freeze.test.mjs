@@ -4,7 +4,7 @@
 // 왜 emitted가 아니라 effective인가: writer를 "delta-only"(DEFAULT_CONFIG 기본값과 같은
 // 키는 쓰지 않음)로 바꾸는 리팩터가 예정돼 있고, 그 리팩터는 **emitted 모양을 의도적으로
 // 줄인다**. 따라서 emitted를 단정하는 기존 테스트(`wiki-compile-defaults` ·
-// `enable-compile-skill` · `recommend-config`)는 "의도된 축소"와 "우발적 동작 변경"을
+// `enable-compile` · `recommend-config`)는 "의도된 축소"와 "우발적 동작 변경"을
 // 구분하지 못한다. writer가 쓰던 값이 기본값과 **다른데** 그 키를 지우면 effective가
 // 조용히 바뀌는데, 이 파일이 그 클래스를 잡는 유일한 장치다.
 //
