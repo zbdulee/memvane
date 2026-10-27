@@ -827,11 +827,20 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     stack.callback(service.stop)
                     state['service'] = service
 
+                from laya_qmd_vector_reuse import for_initial_build
+                reuse = for_initial_build(identity, provider.manifest,
+                                          provider.profile['dimension'])
+                if reuse is not None:
+                    stack.callback(reuse.close)
+
                 class AdmittedProvider:
                     manifest = provider.manifest
                     profile = provider.profile
 
                     def embed_document_chunks(self, body, path):
+                        reused = reuse.lookup(body) if reuse is not None else None
+                        if reused is not None and not reuse.take_sample():
+                            return reused  # Origin QMD vectors; no model needed.
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
                         if not admitted():
@@ -841,9 +850,13 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         # idle limit. The reviewed provider and embedding
                         # recipe remain byte-identical to existing vectors.
                         if _large_initial_document(body):
-                            return provider.embed_document_chunks(body, path,
-                                                                  timeout=270)
-                        return provider.embed_document_chunks(body, path)
+                            fresh = provider.embed_document_chunks(body, path,
+                                                                   timeout=270)
+                        else:
+                            fresh = provider.embed_document_chunks(body, path)
+                        if reused is not None:
+                            reuse.verify(reused, fresh)
+                        return fresh
 
                 with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
                                       db_path=identity['candidateDb'],
