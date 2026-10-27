@@ -173,6 +173,19 @@ def _setup_notice(cwd, queue, guard=None):
         Path(tmp).unlink(missing_ok=True)
 
 
+def _request_laya_bundle_upgrade(cwd):
+    """A host plugin update moves this project's inactive or bound laya-db
+    build to the executing bundle in a detached worker; never waits here."""
+    try:
+        import config as qmd_config
+        import laya_bundle_upgrade
+        root = qmd_config.find_project_config(cwd).get('projectRoot')
+        if isinstance(root, str) and root:
+            laya_bundle_upgrade.request_for_project(root)
+    except Exception:
+        pass
+
+
 def enqueue(raw):
     if len(raw) > 65536: raise ValueError('oversized_session_start')
     payload = json.loads(raw) if raw.strip() else {}
@@ -182,6 +195,7 @@ def enqueue(raw):
     if not isinstance(cwd, str) or not path.is_absolute() or not path.is_dir():
         raise ValueError('invalid_session_start_cwd')
     cwd = str(path.resolve())
+    _request_laya_bundle_upgrade(cwd)
     import config as qmd_config
     from context_learning.synthetic_scope import invocation_in_generated_story
     if not invocation_in_generated_story(qmd_config.find_project_config(cwd), payload.get('cwd')):

@@ -1,8 +1,10 @@
-"""Recoverable replacement of the sealed code for a selected fresh-wiki index.
+"""Recoverable replacement of the sealed code for a selected Laya index.
 
+Both selection ledgers are supported: the fresh-wiki ledger
+(``fresh-wiki-cutover.json``) and the QMD-origin ledger (``qmd-cutover.json``).
 This changes bundle ownership, never the index generation, vector profile,
-scope, project, store paths, or QMD backup.  The fresh ledger's upgrading
-phase fences readers while the provider lane excludes selected writers.
+scope, project, store paths, or QMD backup.  The ledger's upgrading phase
+fences readers while the provider lane excludes selected writers.
 """
 from __future__ import annotations
 
@@ -14,12 +16,14 @@ from pathlib import Path
 import laya_fresh_wiki_origin as fresh
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
+import laya_qmd_cutover as qmd
 from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   _canon as journal_canon,
                                   _provider_file_identity, cas_activate,
                                   cas_recover, cas_restore, cas_stage_update,
                                   inspect_journal)
 from laya_product_bundle import (PRODUCTION_ATTESTATION_SCHEMA,
+                                 BundleEvidenceError,
                                  adopt_host_loaded_plugin,
                                  inspect_full_plugin_candidate,
                                  validate_production_provider_attestation)
@@ -30,6 +34,66 @@ INTENT = 'active-upgrade-intent.json'
 LIMIT = 3 * 1024 * 1024
 REPLACEABLE = frozenset(('pluginRoot', 'bundleManifestSha256',
                          'ownershipManifestSha256'))
+# The only ledger fields a bundle replacement may change.
+LEDGER_CHANGES = frozenset(('epoch', 'phase', 'routeSha256', 'attestationSha256',
+                            'providerFileIdentitySha256'))
+
+
+class _Ledger:
+    """One selection ledger's own loader, CAS writer, lock and marker.
+
+    Attributes are looked up on the module at call time so a ledger module
+    keeps a single implementation of each operation.
+    """
+
+    def __init__(self, origin):
+        if origin not in ('fresh', 'qmd'):
+            _fail('active_upgrade_origin_invalid')
+        self.origin = origin
+        self.module = fresh if origin == 'fresh' else qmd
+        self.name = fresh.LEDGER if origin == 'fresh' else qmd.LEDGER
+        self.marker_name = self.module.MARKER
+        self.route_name = self.module.ROUTE
+
+    def load(self, path):
+        return (fresh._load(path) if self.origin == 'fresh' else
+                qmd._ledger(path))
+
+    def change(self, path, epoch, phase, next_phase):
+        return self.module._change(path, epoch, phase, next_phase)
+
+    def lock(self, path):
+        return self.module._ledger_lock(path)
+
+    def write(self, path, row):
+        if self.origin == 'qmd':
+            qmd._validated(dict(row), path)
+        self.module._write(path, row, replace=True)
+
+    def marker(self, row):
+        return self.module._marker(row)
+
+    def classify(self, project, marker, route):
+        return self.module.classify_marker(project, marker, route)
+
+    def paths(self, project, journal):
+        return self.module._paths(project, journal)
+
+    def fields(self, row):
+        return fresh.FIELDS if self.origin == 'fresh' else frozenset(row)
+
+
+def _origin(state):
+    """The one selection ledger in this state root."""
+    names = [origin for origin, name in (('fresh', fresh.LEDGER), ('qmd', qmd.LEDGER))
+             if (state / name).exists() or (state / name).is_symlink()]
+    if len(names) != 1:
+        _fail('active_upgrade_not_selected')
+    return _Ledger(names[0])
+
+
+def _intent_ledger(intent):
+    return _Ledger(intent.get('origin', 'fresh'))
 
 
 def _fail(reason):
@@ -84,20 +148,21 @@ def _load_intent(state, project):
     return value
 
 
-def _old_state(project, state, journal):
+def _old_state(project, state, journal, ledger=None):
+    ledger = ledger or _Ledger('fresh')
     auto = project / '.auto-context'
-    row = fresh._load(state / fresh.LEDGER)
+    row = ledger.load(state / ledger.name)
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
         _fail('active_upgrade_not_selected')
-    marker = _read(auto / fresh.MARKER, 8192)
-    route = _read(auto / fresh.ROUTE, 8192)
+    marker = _read(auto / ledger.marker_name, 8192)
+    route = _read(auto / ledger.route_name, 8192)
     reviewed = _read(state / 'reviewed-route.json', 8192)
     attestation = _read(state / PRODUCTION_ATTESTATION, 1024 * 1024)
-    if (marker != _bytes(fresh._marker(row)) or route != reviewed or
+    if (marker != _bytes(ledger.marker(row)) or route != reviewed or
             _sha(route) != row['routeSha256'] or
             _sha(attestation) != row['attestationSha256'] or
-            fresh.classify_marker(project, auto / fresh.MARKER,
-                                  auto / fresh.ROUTE) != 'candidate'):
+            ledger.classify(project, auto / ledger.marker_name,
+                            auto / ledger.route_name) != 'candidate'):
         _fail('active_upgrade_old_metadata_changed')
     selected = inspect_journal(journal)
     if (selected['state'] not in ('active', 'restored_old') or
@@ -106,18 +171,26 @@ def _old_state(project, state, journal):
             selected['providerFileIdentitySha256'] != row['providerFileIdentitySha256'] or
             selected['selected']['vectorProfile']['profileId'] != row['vectorProfileId']):
         _fail('active_upgrade_journal_changed')
-    old_proof = inspect_full_plugin_candidate(selected['selected']['pluginRoot'])
-    if any(old_proof[key] != selected['selected'][key] for key in
-           ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256',
-            'vectorProfile')):
+    try:
+        old_proof = inspect_full_plugin_candidate(selected['selected']['pluginRoot'])
+    except BundleEvidenceError:
+        # A host may remove the superseded cache before the upgrade runs. The
+        # journal keeps the sealed identity; only a later restore needs the
+        # old files, and that restore then refuses on its own proof.
+        old_proof = None
+    if old_proof is not None and any(
+            old_proof[key] != selected['selected'][key] for key in
+            ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256',
+             'vectorProfile')):
         _fail('active_upgrade_old_bundle_changed')
     return row, selected, route, attestation, marker
 
 
 def _prepare(project, state, journal, source_root, plugin_root, commit_id,
-             accepted_provider_sha256, model_path, dimension):
+             accepted_provider_sha256, model_path, dimension, ledger=None):
+    ledger = ledger or _Ledger('fresh')
     row, selected, old_route, old_att, old_marker = _old_state(project, state,
-                                                               journal)
+                                                               journal, ledger)
     record = build.read(state)
     if (record is None or record['identity']['projectRoot'] != str(project) or
             record['identity']['stateRoot'] != str(state) or
@@ -168,14 +241,14 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
                'attestationSha256': _sha(new_att),
                'providerFileIdentitySha256': provider_digest}
     # No source, vector, generation, collection or ownership path is rebound.
-    for key in fresh.FIELDS - {'epoch', 'phase', 'routeSha256',
-                               'attestationSha256', 'providerFileIdentitySha256'}:
+    for key in ledger.fields(row) - LEDGER_CHANGES:
         if row[key] != new_row[key]:
             _fail('active_upgrade_store_identity_changed')
     counts = inactive._store_counts(record['identity'])
     backup = inactive._backup(record['identity'], record, old_route, old_att,
                               counts)
     intent = {'schema': 'laya-active-upgrade-intent-v1',
+              **({'origin': 'qmd'} if ledger.origin == 'qmd' else {}),
               'projectRoot': str(project), 'stateRoot': str(state),
               'oldRecord': record, 'oldLedger': row, 'newLedger': new_row,
               'oldRoute': old_route.decode('utf-8'),
@@ -183,7 +256,7 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
               'oldAttestation': old_att.decode('utf-8'),
               'newAttestation': new_att.decode('utf-8'),
               'oldMarker': old_marker.decode('utf-8'),
-              'newMarker': _bytes(fresh._marker(new_row)).decode('utf-8'),
+              'newMarker': _bytes(ledger.marker(new_row)).decode('utf-8'),
               'newProof': {key: proof[key] for key in
                            ('pluginRoot', 'sourceCommit', 'bundleManifestSha256',
                             'ownershipManifestSha256', 'vectorProfile')},
@@ -196,18 +269,17 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
 
 def _backup_proof(intent, *, verify_new=True):
     inactive._verify_backup(intent)
+    ledger = _intent_ledger(intent)
     old, new = intent['oldLedger'], intent['newLedger']
     old_route = json.loads(intent['oldRoute'])
     new_route = json.loads(intent['newRoute'])
     new_att = json.loads(intent['newAttestation'])
     if (intent['oldRecord']['identity']['journalPath'] !=
             str(Path(intent['stateRoot']) / 'install-journal.sqlite') or
-            set(old) != fresh.FIELDS or set(new) != fresh.FIELDS or
+            set(old) != ledger.fields(old) or set(new) != set(old) or
             old['phase'] != 'active' or new['phase'] != 'upgrading' or
             new['epoch'] != old['epoch'] + 2 or
-            any(old[key] != new[key] for key in fresh.FIELDS -
-                {'epoch', 'phase', 'routeSha256', 'attestationSha256',
-                 'providerFileIdentitySha256'}) or
+            any(old[key] != new[key] for key in set(old) - LEDGER_CHANGES) or
             set(old_route) != set(new_route) or
             any(old_route[key] != new_route[key] for key in
                 set(old_route) - REPLACEABLE) or
@@ -219,8 +291,8 @@ def _backup_proof(intent, *, verify_new=True):
             _sha(intent['oldAttestation'].encode('utf-8')) or
             new['attestationSha256'] !=
             _sha(intent['newAttestation'].encode('utf-8')) or
-            intent['oldMarker'] != _bytes(fresh._marker(old)).decode('utf-8') or
-            intent['newMarker'] != _bytes(fresh._marker(new)).decode('utf-8') or
+            intent['oldMarker'] != _bytes(ledger.marker(old)).decode('utf-8') or
+            intent['newMarker'] != _bytes(ledger.marker(new)).decode('utf-8') or
             new_route['pluginRoot'] != intent['newProof']['pluginRoot'] or
             new_route['bundleManifestSha256'] !=
             intent['newProof']['bundleManifestSha256'] or
@@ -241,10 +313,11 @@ def _backup_proof(intent, *, verify_new=True):
 
 def _fence(intent):
     state = Path(intent['stateRoot'])
+    ledger = _intent_ledger(intent)
     old = intent['oldLedger']
-    row = fresh._load(state / fresh.LEDGER)
+    row = ledger.load(state / ledger.name)
     if row == old:
-        row = fresh._change(state / fresh.LEDGER, old['epoch'], 'active',
+        row = ledger.change(state / ledger.name, old['epoch'], 'active',
                             'upgrading')
     if row not in ({**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'},
                    intent['newLedger']):
@@ -254,30 +327,32 @@ def _fence(intent):
         _fail('active_upgrade_resident_busy')
 
 
-def _replace_ledger(path, before, after):
+def _replace_ledger(path, before, after, ledger=None):
     """Use the ledger's own canonical writer and lock during a blocked phase."""
-    with fresh._ledger_lock(path):
-        current = fresh._load(path)
+    ledger = ledger or _Ledger('fresh')
+    with ledger.lock(path):
+        current = ledger.load(path)
         if current == after:
             return
         if current != before:
             _fail('active_upgrade_ledger_changed')
-        fresh._write(path, after, replace=True)
+        ledger.write(path, after)
 
 
 def _switch(intent):
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    ledger = _intent_ledger(intent)
     journal = state / 'install-journal.sqlite'
     auto = project / '.auto-context'
     old_route, new_route = (intent[key].encode('utf-8') for key in
                             ('oldRoute', 'newRoute'))
     old_att, new_att = (intent[key].encode('utf-8') for key in
                         ('oldAttestation', 'newAttestation'))
-    already = fresh._load(state / fresh.LEDGER)
+    already = ledger.load(state / ledger.name)
     if (already['phase'] == 'active' and
             already['routeSha256'] == _sha(new_route) and
-            fresh.classify_marker(project, auto / fresh.MARKER,
-                                  auto / fresh.ROUTE) == 'candidate'):
+            ledger.classify(project, auto / ledger.marker_name,
+                                  auto / ledger.route_name) == 'candidate'):
         current = inspect_journal(journal)
         if (current['state'] == 'active' and
                 current['selectedRouteSha256'] == _sha(new_route)):
@@ -307,12 +382,12 @@ def _switch(intent):
         _fail('active_upgrade_journal_changed')
     inactive._atomic_expected(state / PRODUCTION_ATTESTATION, old_att, new_att)
     inactive._atomic_expected(state / 'reviewed-route.json', old_route, new_route)
-    inactive._atomic_expected(auto / fresh.ROUTE, old_route, new_route)
+    inactive._atomic_expected(auto / ledger.route_name, old_route, new_route)
     fenced = {**intent['oldLedger'],
               'epoch': intent['oldLedger']['epoch'] + 1,
               'phase': 'upgrading'}
-    _replace_ledger(state / fresh.LEDGER, fenced, intent['newLedger'])
-    inactive._atomic_expected(auto / fresh.MARKER,
+    _replace_ledger(state / ledger.name, fenced, intent['newLedger'], ledger)
+    inactive._atomic_expected(auto / ledger.marker_name,
                               intent['oldMarker'].encode('utf-8'),
                               intent['newMarker'].encode('utf-8'))
     if current['state'] == 'pending':
@@ -326,13 +401,13 @@ def _switch(intent):
             inactive._store_counts(intent['oldRecord']['identity']) !=
             intent['counts']):
         _fail('active_upgrade_recheck_failed')
-    row = fresh._load(state / fresh.LEDGER)
+    row = ledger.load(state / ledger.name)
     if row['phase'] == 'upgrading' and row == intent['newLedger']:
-        row = fresh._change(state / fresh.LEDGER, row['epoch'], 'upgrading',
+        row = ledger.change(state / ledger.name, row['epoch'], 'upgrading',
                             'active')
     if (row['phase'] != 'active' or row['routeSha256'] != new_sha or
-            fresh.classify_marker(project, auto / fresh.MARKER,
-                                  auto / fresh.ROUTE) != 'candidate'):
+            ledger.classify(project, auto / ledger.marker_name,
+                                  auto / ledger.route_name) != 'candidate'):
         _fail('active_upgrade_selection_unconfirmed')
     return {'status': 'active_upgrade_complete',
             'routeSha256': new_sha, 'vectorCounts': intent['counts'],
@@ -342,6 +417,7 @@ def _switch(intent):
 def _restore(intent):
     """Return to the previous sealed Laya bundle before any new selected write."""
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    ledger = _intent_ledger(intent)
     journal = state / 'install-journal.sqlite'
     auto = project / '.auto-context'
     old_route, new_route = (intent[key].encode('utf-8') for key in
@@ -350,12 +426,12 @@ def _restore(intent):
                         ('oldAttestation', 'newAttestation'))
     old_sha, new_sha = _sha(old_route), _sha(new_route)
     current = inspect_journal(journal)
-    row = fresh._load(state / fresh.LEDGER)
+    row = ledger.load(state / ledger.name)
     if (row['phase'] == 'active' and row['routeSha256'] == old_sha and
             current['state'] == 'restored_old' and
             current['selectedRouteSha256'] == old_sha and
-            fresh.classify_marker(project, auto / fresh.MARKER,
-                                  auto / fresh.ROUTE) == 'candidate'):
+            ledger.classify(project, auto / ledger.marker_name,
+                                  auto / ledger.route_name) == 'candidate'):
         return {'status': 'active_upgrade_restored_laya',
                 'routeSha256': old_sha, 'vectorCounts': intent['counts'],
                 'backup': intent['backup']}
@@ -365,12 +441,12 @@ def _restore(intent):
                 current['selectedRouteSha256'] == old_sha and
                 current['providerAttestationSha256'] ==
                 intent['oldLedger']['attestationSha256'] and
-                _read(auto / fresh.ROUTE, 8192) == old_route and
+                _read(auto / ledger.route_name, 8192) == old_route and
                 _read(state / 'reviewed-route.json', 8192) == old_route and
-                _read(auto / fresh.MARKER, 8192) ==
+                _read(auto / ledger.marker_name, 8192) ==
                 intent['oldMarker'].encode('utf-8') and
                 _read(state / PRODUCTION_ATTESTATION, 1024 * 1024) == old_att):
-            row = fresh._change(state / fresh.LEDGER, row['epoch'],
+            row = ledger.change(state / ledger.name, row['epoch'],
                                 'upgrading', 'active')
             return {'status': 'active_upgrade_restored_laya',
                     'routeSha256': old_sha, 'vectorCounts': intent['counts'],
@@ -384,14 +460,14 @@ def _restore(intent):
                  'ownershipManifestSha256', 'vectorProfile'))):
         _fail('active_upgrade_previous_bundle_changed')
     if row['phase'] == 'active' and row['routeSha256'] == new_sha:
-        row = fresh._change(state / fresh.LEDGER, row['epoch'], 'active',
+        row = ledger.change(state / ledger.name, row['epoch'], 'active',
                             'upgrading')
     if row['phase'] != 'upgrading' or row['routeSha256'] not in (old_sha, new_sha):
         _fail('active_upgrade_restore_phase_changed')
     from laya_embed_resident import wait_for_release
     if not wait_for_release(state / 'runtime' / 'laya-embed.sock', timeout=15):
         _fail('active_upgrade_resident_busy')
-    inactive._atomic_expected(auto / fresh.ROUTE, new_route, old_route)
+    inactive._atomic_expected(auto / ledger.route_name, new_route, old_route)
     inactive._atomic_expected(state / PRODUCTION_ATTESTATION, new_att, old_att)
     inactive._atomic_expected(state / 'reviewed-route.json', new_route, old_route)
     current = inspect_journal(journal)
@@ -404,23 +480,23 @@ def _restore(intent):
             current['providerAttestationSha256'] !=
             intent['oldLedger']['attestationSha256']):
         _fail('active_upgrade_restore_unconfirmed')
-    inactive._atomic_expected(auto / fresh.MARKER,
+    inactive._atomic_expected(auto / ledger.marker_name,
                               intent['newMarker'].encode('utf-8'),
                               intent['oldMarker'].encode('utf-8'))
-    with fresh._ledger_lock(state / fresh.LEDGER):
-        row = fresh._load(state / fresh.LEDGER)
+    with ledger.lock(state / ledger.name):
+        row = ledger.load(state / ledger.name)
         if row['phase'] != 'upgrading' or row['routeSha256'] not in (old_sha, new_sha):
             _fail('active_upgrade_restore_phase_changed')
         old_row = {**intent['oldLedger'], 'epoch': row['epoch'] + 1,
                    'phase': 'upgrading'}
-        fresh._write(state / fresh.LEDGER, old_row, replace=True)
+        ledger.write(state / ledger.name, old_row)
     if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
         _fail('active_upgrade_restore_store_changed')
-    row = fresh._change(state / fresh.LEDGER, old_row['epoch'], 'upgrading',
+    row = ledger.change(state / ledger.name, old_row['epoch'], 'upgrading',
                         'active')
     if (row['routeSha256'] != old_sha or
-            fresh.classify_marker(project, auto / fresh.MARKER,
-                                  auto / fresh.ROUTE) != 'candidate'):
+            ledger.classify(project, auto / ledger.marker_name,
+                                  auto / ledger.route_name) != 'candidate'):
         _fail('active_upgrade_restore_unconfirmed')
     return {'status': 'active_upgrade_restored_laya',
             'routeSha256': old_sha, 'vectorCounts': intent['counts'],
@@ -429,7 +505,8 @@ def _restore(intent):
 
 def _archive_finished_intent(state, project, intent):
     """Retain the old receipt when a later exact bundle is requested."""
-    row = fresh._load(state / fresh.LEDGER)
+    ledger = _intent_ledger(intent)
+    row = ledger.load(state / ledger.name)
     journal = inspect_journal(state / 'install-journal.sqlite')
     current = row['routeSha256']
     if (row['phase'] != 'active' or
@@ -437,8 +514,8 @@ def _archive_finished_intent(state, project, intent):
                             intent['newLedger']['routeSha256']) or
             journal['state'] not in ('active', 'restored_old') or
             journal['selectedRouteSha256'] != current or
-            fresh.classify_marker(project, project / '.auto-context' / fresh.MARKER,
-                                  project / '.auto-context' / fresh.ROUTE) != 'candidate'):
+            ledger.classify(project, project / '.auto-context' / ledger.marker_name,
+                                  project / '.auto-context' / ledger.route_name) != 'candidate'):
         _fail('active_upgrade_prior_unsettled')
     # The original old route can be active only after an explicit Laya restore.
     if (current == intent['oldLedger']['routeSha256'] and
@@ -460,16 +537,21 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
     if project != Path(project_root) or state / 'install-journal.sqlite' != \
             Path(state_root) / 'install-journal.sqlite':
         _fail('active_upgrade_paths_invalid')
-    ledger, marker, _route = fresh._paths(project, state / 'install-journal.sqlite')
-    with _install_lock(state), fresh._operation_lock(marker), _locked_provider():
+    selected_ledger = _origin(state)
+    _ledger_path, marker, _route = selected_ledger.paths(
+        project, state / 'install-journal.sqlite')
+    with _install_lock(state), qmd._operation_lock(marker), _locked_provider():
         intent = _load_intent(state, project)
+        if intent is not None and _intent_ledger(intent).origin != selected_ledger.origin:
+            _fail('active_upgrade_intent_invalid')
+        ledger = selected_ledger
         if restore:
             if intent is None:
                 _fail('active_upgrade_intent_missing')
             _backup_proof(intent, verify_new=False)
             return _restore(intent)
         if intent is not None:
-            current_row = fresh._load(state / fresh.LEDGER)
+            current_row = ledger.load(state / ledger.name)
             current_journal = inspect_journal(state / 'install-journal.sqlite')
             settled_restored = (
                 current_row['phase'] == 'active' and
@@ -488,7 +570,8 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if intent is None:
             intent = _prepare(project, state, state / 'install-journal.sqlite',
                               source_root, plugin_root, commit_id,
-                              accepted_provider_sha256, model_path, dimension)
+                              accepted_provider_sha256, model_path, dimension,
+                              ledger)
         elif (intent['newProof']['pluginRoot'] != str(plugin_root) or
               intent['newProof']['sourceCommit'] != commit_id or
               intent['reviewSha256'] != accepted_provider_sha256):

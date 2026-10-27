@@ -484,6 +484,30 @@ def rebind_inactive_upgrade(record, new_identity):
     return updated
 
 
+def rebind_bound_upgrade(record, new_identity):
+    """CAS only the reviewed route and attestation of a ``bound`` build.
+
+    A bound build keeps its phase and sealed evidence: ``bound`` is terminal
+    for the build worker. Only an installer-owned bundle replacement
+    (``laya_bound_upgrade``) calls this, holding the install, operation and
+    build owner locks, with its own recoverable intent.
+    """
+    _validate_identity(new_identity)
+    current = read(record['identity']['stateRoot'])
+    if current != record or current['phase'] != 'bound':
+        _fail('initial_build_upgrade_stale')
+    old = current['identity']
+    changed = {'routeSha256', 'attestationSha256', 'providerProposalSha256'}
+    if set(old) != set(new_identity) or any(
+            old[key] != new_identity[key] for key in old.keys() - changed):
+        _fail('initial_build_upgrade_identity_mismatch')
+    updated = {**current, 'identity': new_identity,
+               'epoch': current['epoch'] + 1, 'updatedNs': time.time_ns()}
+    _validate(updated)
+    _write_json(record_path(old['stateRoot']), updated, replace=True)
+    return updated
+
+
 def _progress(result):
     keep = ('state', 'reason', 'path', 'required', 'detail', 'claims_pending',
             'lastAttemptNs', 'lastAttemptClass', 'lastAttemptReason')
