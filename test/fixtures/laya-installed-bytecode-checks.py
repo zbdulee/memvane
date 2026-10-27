@@ -113,9 +113,12 @@ class InstalledBytecodeChecks(unittest.TestCase):
         extra.parent.mkdir(mode=0o700)
         extra.write_bytes(b'not trusted')
         with self.assertRaisesRegex(bundle.BundleEvidenceError,
-                                    'installed_file_set_not_exact_commit'):
+                                    'installed_file_set_not_exact_commit') as caught:
             bundle.adopt_host_loaded_plugin(self.source, fresh,
                                             commit_id=self.commit, vector_profile=None)
+        self.assertEqual(caught.exception.detail,
+                         {'unexpected': ['core/__pycache__/config.cpython-39.pyc'],
+                          'missing': [], 'truncated': False})
         extra.unlink()
         extra.parent.rmdir()
         bundle.adopt_host_loaded_plugin(self.source, fresh,

@@ -160,4 +160,16 @@ class Readiness(unittest.TestCase):
   with patch('qmd_route.project_paths',return_value={'shared':True}),contextlib.redirect_stdout(out):update_hook_queue._setup_notice(self.project,queue,{'status':'ready'})
   self.assertEqual(out.getvalue(),'')
 
+ def test_state_root_actions_require_state_root_and_surface_bundle_detail(self):
+  import contextlib,io,laya_product_install as product,laya_product_bundle as bundle
+  out=io.StringIO()
+  with contextlib.redirect_stdout(out):code=setup_entry.main(['index-origin-status','--project',str(self.project)])
+  row=json.loads(out.getvalue());self.assertEqual((code,row['status'],row['reason']),(1,'rejected','state_root_required'))
+  def blocked(*a,**k):
+   try:raise bundle.BundleEvidenceError('installed_file_set_not_exact_commit',{'unexpected':['core/__pycache__/x.pyc'],'missing':[],'truncated':False})
+   except bundle.BundleEvidenceError as exc:raise product.InstallBlocked(str(exc)) from exc
+  out=io.StringIO()
+  with patch.object(product,'plan_qmd_origin',side_effect=blocked),contextlib.redirect_stdout(out):setup_entry.main(['plan-index-origin','--project',str(self.project)])
+  row=json.loads(out.getvalue());self.assertEqual(row['reason'],'installed_file_set_not_exact_commit');self.assertEqual(row['detail']['unexpected'],['core/__pycache__/x.pyc'])
+
 if __name__=='__main__':unittest.main(verbosity=2)

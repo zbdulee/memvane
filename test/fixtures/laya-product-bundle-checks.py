@@ -726,6 +726,12 @@ print(json.dumps(result))'''
                 state_root=self.install, commit_id=self.commit1,
                 model_path=str(model), dimension=3)
             self.assertEqual(first, second)
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'unsupported_state_root_creation'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.root / 'not-created-state', commit_id=self.commit1,
+                    model_path=str(model), dimension=3)
             self.assertEqual(len(first['reviewedProvider']['dependencyClosure']), 2)
             cache = self.root / 'models'
             cache.mkdir()

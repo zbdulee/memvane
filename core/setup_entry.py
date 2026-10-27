@@ -385,6 +385,17 @@ def select_learning(args):
         mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
 
 
+def _exception_detail(exc):
+    """Structured evidence (e.g. unexpected installed files) from the cause chain."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, 'detail', None) is not None:
+            return exc.detail
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'check-update', 'plan', 'prepare', 'status', 'activate', 'rollback',
@@ -478,6 +489,9 @@ def main(argv=None):
                            'seal-host-copy'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
+            if (args.action not in ('plan-index-origin', 'plan-fresh-wiki-origin')
+                    and not args.state_root):
+                raise ValueError('state_root_required')
             if args.action == 'plan-index-origin':
                 result = product.plan_qmd_origin(args.project, background=True)
                 pending = product.retired_build_pointer(Path(args.project).resolve())
@@ -660,6 +674,9 @@ def main(argv=None):
                       'changesApplied': 0}
         else:
             result = {'status': 'rejected', 'reason': str(exc), 'changesApplied': 0}
+            detail = _exception_detail(exc)
+            if detail is not None:
+                result['detail'] = detail
             if (str(exc) == 'cutover_source_drift_requires_fresh_generation' and
                     args.action in ('finalize-index-origin', 'activate-index-origin')):
                 # The bound generation is stale and never rebound: the way on.

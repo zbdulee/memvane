@@ -438,6 +438,11 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
             str(state.resolve(strict=False)) != str(state) or
             len(str(state / 'runtime' / 'laya-embed.sock').encode()) > 100):
         _fail('provider_review_paths_invalid')
+    # prepare creates only ~/.local/state/laya/<install id>; refuse before a digest.
+    if (not state.exists() and not state.is_symlink() and
+            (state.parent != Path.home() / '.local' / 'state' / 'laya' or
+             not re.fullmatch(r'[0-9a-f]{32}', state.name))):
+        _fail('unsupported_state_root_creation')
     if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or
             _git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source)):
         _fail('provider_review_commit_changed')

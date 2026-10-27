@@ -75,11 +75,13 @@ FLAGS = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
 
 
 class BundleEvidenceError(ValueError):
-    pass
+    def __init__(self, reason, detail=None):
+        super().__init__(reason)
+        self.detail = detail
 
 
-def _fail(reason):
-    raise BundleEvidenceError(reason)
+def _fail(reason, detail=None):
+    raise BundleEvidenceError(reason, detail)
 
 
 def _canonical(value):
@@ -615,7 +617,11 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
         for name in files:
             actual.add(str((current / name).relative_to(installed)))
     if actual != set(selected):
-        _fail('installed_file_set_not_exact_commit')
+        unexpected = sorted(actual - set(selected))
+        missing = sorted(set(selected) - actual)
+        _fail('installed_file_set_not_exact_commit',
+              {'unexpected': unexpected[:5], 'missing': missing[:5],
+               'truncated': len(unexpected) > 5 or len(missing) > 5})
     entries = {}
     for name, committed in selected.items():
         source_raw, source_info = _read(source / name, MAX_FILE)
