@@ -542,7 +542,6 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 _fail('active_upgrade_intent_missing')
             _backup_proof(intent, verify_new=False)
             return _restore(intent)
-        settled_restored = settled_upgraded = False
         if intent is not None:
             current_row = ledger.load(state / ledger.name)
             current_journal = inspect_journal(state / 'install-journal.sqlite')
@@ -552,20 +551,17 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 current_journal['state'] == 'restored_old' and
                 current_journal['selectedRouteSha256'] ==
                 intent['oldLedger']['routeSha256'])
-            settled_upgraded = (
-                current_row['phase'] == 'active' and
-                current_row['routeSha256'] == intent['newLedger']['routeSha256'] and
-                current_journal['state'] == 'active' and
-                current_journal['selectedRouteSha256'] ==
-                intent['newLedger']['routeSha256'])
+        else:
+            settled_restored = False
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id):
-            # A settled intent is only a receipt. Its new bundle is now the
-            # bound one, which its host may already have replaced or removed;
-            # the journal seal and ``_old_state`` prove the selection instead.
-            _backup_proof(intent,
-                          verify_new=not (settled_restored or settled_upgraded))
+            # Only a settled intent is archived, and ``_archive_finished_intent``
+            # (also the settings rebind's settle step) is that proof. A settled
+            # intent is a receipt: its new bundle is now the bound one, which
+            # its host may already have replaced or removed, so its files are
+            # not re-proved here; ``_old_state`` proves the selection next.
+            _backup_proof(intent, verify_new=False)
             _archive_finished_intent(state, project, intent)
             intent = None
         if intent is None:
