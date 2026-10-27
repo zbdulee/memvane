@@ -145,11 +145,16 @@ class ProviderRuleChecks(Base):
             'dependencyClosure': changes.pop('closure', self.old['dependencyClosure']),
             'providerManifest': manifest(root, **changes)}}
 
-    def test_only_bundle_file_paths_may_differ(self):
+    def test_only_paths_may_differ_and_bundle_files_stay_in_the_new_root(self):
         self.assertTrue(auto.provider_equivalent(self.old, self.review(), '/new'))
+        # Same content at another socket, model, node or module path re-attests.
+        for moved in ({'serviceSocketPath': '/other/laya.sock'},
+                      {'modelPath': '/laya/models/model.gguf'}, {'nodePath': '/laya/node'}):
+            with self.subTest(moved=moved):
+                self.assertTrue(auto.provider_equivalent(
+                    self.old, self.review(**dict(moved)), '/new'))
         for changed in ({'modelSha256': '0' * 64}, {'nodeSha256': '0' * 64},
                         {'workerSha256': '0' * 64}, {'dimension': 1024},
-                        {'serviceSocketPath': '/other.sock'},
                         {'workerPath': '/elsewhere/worker.mjs'},
                         {'profile': {**PROFILE, 'providerArtifactSha256': '0' * 64}},
                         {'closure': []}):

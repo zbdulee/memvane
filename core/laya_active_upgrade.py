@@ -29,6 +29,7 @@ from laya_product_bundle import (PRODUCTION_ATTESTATION_SCHEMA,
                                  validate_production_provider_attestation)
 from laya_product_install import (_install_lock, _private_parent,
                                   _read_private, review_local_provider)
+from laya_provider_reproof import attestation_record, reattest
 
 INTENT = 'active-upgrade-intent.json'
 LIMIT = 3 * 1024 * 1024
@@ -196,7 +197,10 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
                                    model_path=model_path, dimension=dimension)
     if review['proposalSha256'] != accepted_provider_sha256:
         _fail('reviewed_provider_proposal_changed')
-    approved = review['reviewedProvider']
+    # Same content at other paths keeps the selected vector profile.
+    approved = reattest(json.loads(old_att), review['reviewedProvider'])
+    if approved is None:
+        _fail('provider_changed_rebuild_required')
     proof = adopt_host_loaded_plugin(source_root, plugin_root,
                                      commit_id=commit_id,
                                      vector_profile=approved['vectorProfile'])
@@ -220,14 +224,8 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
         _fail('active_upgrade_route_scope_changed')
     if new_route == old_route:
         _fail('active_upgrade_same_bundle')
-    att = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
-           'sourceCommit': proof['sourceCommit'],
-           'bundleManifestSha256': proof['bundleManifestSha256'],
-           'ownershipManifestSha256': proof['ownershipManifestSha256'],
-           'journalPath': str(journal),
-           'vectorProfile': proof['vectorProfile'],
-           'providerManifest': approved['providerManifest'],
-           'dependencyClosure': approved['dependencyClosure']}
+    att = attestation_record(proof=proof, journal_path=journal, reattested=approved,
+                             schema=PRODUCTION_ATTESTATION_SCHEMA)
     validate_production_provider_attestation(proof['vectorProfile'], proof, att)
     new_att = journal_canon(att).encode('utf-8')
     provider_digest = _sha(journal_canon(_provider_file_identity(att)).encode('utf-8'))

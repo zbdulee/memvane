@@ -17,11 +17,18 @@ refused as ``qmd_origin_detach_required``; no retry clears it.
 
 Source rule: the host marketplace clone is the only unattended source, and
 only when its HEAD is the installed commit (from the host's own record) and
-its tracked files are clean. Provider review runs again and is accepted only
-when the proposal equals the previously sealed attestation except for the
-bundle file paths. A changed model, runtime, closure or provider byte is
-never accepted here; the install keeps its bundle and the notice says why.
-A host whose bundle is older than the bound one never downgrades it.
+its tracked files are clean. Provider review runs again and is accepted when
+its content equals the previously sealed attestation
+(``laya_provider_reproof``): provider, worker, node, module entry, native
+closure and model bytes, runtime and recipe ids, dimension and vector
+profile. Paths (bundle root, runtime directory, model file, service socket)
+may differ; the new attestation re-states the old vector profile. A changed
+model, runtime, recipe, closure or provider byte is never accepted here; the
+install keeps its bundle and the notice says why. A host whose bundle is
+older than the bound one never downgrades it.
+
+The same worker converts a v3 install journal to v4
+(``laya_journal_v4``) once every host copy of this plugin reads v4.
 
 A busy provider/compute lane or install lock is contention, not a failure:
 the worker waits it out a few times, then leaves a ``deferred`` status that a
@@ -61,8 +68,9 @@ BUSY_BACKOFF_SECONDS = (5, 15, 45)
 # so it is deferred and retried and never counts as a failed attempt.
 DEFERRALS = frozenset((
     'learning_compute_busy', 'learning_inference_deadline',
-    'initial_build_busy', 'active_upgrade_resident_busy'))
-# Provider manifest keys that may name the new bundle's own files.
+    'initial_build_busy', 'active_upgrade_resident_busy',
+    'journal_v4_install_busy'))
+# Provider manifest keys that must name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
 REFUSALS = frozenset((
@@ -325,23 +333,17 @@ def _not_older(source, bound_commit, commit):
 # ------------------------------------------------------- provider equivalence
 
 def provider_equivalent(old_attestation, review, new_root):
-    """Same reviewed provider except for the new bundle's own file paths."""
-    old_manifest = old_attestation.get('providerManifest')
+    """Same provider content; paths may move, bundle files stay in ``new_root``."""
+    from laya_provider_reproof import reattest
     approved = review.get('reviewedProvider') if isinstance(review, dict) else None
-    if not isinstance(old_manifest, dict) or not isinstance(approved, dict):
+    reattested = reattest(old_attestation, approved)
+    if reattested is None:
         return False
-    new_manifest = approved.get('providerManifest')
-    if (not isinstance(new_manifest, dict) or set(new_manifest) != set(old_manifest) or
-            approved.get('vectorProfile') != old_attestation.get('vectorProfile') or
-            approved.get('dependencyClosure') != old_attestation.get('dependencyClosure')):
-        return False
-    if any(new_manifest[key] != old_manifest[key]
-           for key in set(old_manifest) - BUNDLE_PATH_KEYS):
-        return False
+    manifest = reattested['providerManifest']
     root = Path(new_root)
-    return (new_manifest['providerPath'] ==
-            str(root / new_manifest['providerRelativePath']) and
-            new_manifest['workerPath'] == str(root / 'core' / 'laya_local_embed_worker.mjs'))
+    return (manifest.get('providerPath') ==
+            str(root / str(manifest.get('providerRelativePath'))) and
+            manifest.get('workerPath') == str(root / 'core' / 'laya_local_embed_worker.mjs'))
 
 
 # ---------------------------------------------------------- install discovery
@@ -512,6 +514,21 @@ def _upgrade_with_backoff(project, state, root, home):
             _sleep(wait)
 
 
+def _convert_journal(project, state, root, home):
+    """v3 -> v4 journal conversion once every host copy reads v4.
+
+    Runs after the bundle step, under the same state lock. A conversion that
+    waits or fails never fails the bundle step; a later session retries.
+    """
+    try:
+        import laya_journal_v4
+        converted = laya_journal_v4.convert_install(state, project, root=root, home=home)
+    except Exception as exc:
+        converted = {'status': 'journal_v4_failed', 'reason': _reason(exc)}
+    _log(state, f"journal {converted.get('status')} {converted.get('reason', '')}")
+    return {'journalV4': converted.get('status')}
+
+
 def _host(root, home):
     try:
         return host_layout(root, home)[0]
@@ -537,6 +554,7 @@ def run(project_root, *, root=None, home=None):
             _log(state, f'upgrade started host={_host(root, home)} root={root.name}')
             try:
                 result = _upgrade_with_backoff(project, state, root, home)
+                result = {**result, **_convert_journal(project, state, root, home)}
                 status = ('current' if result.get('status') == 'current'
                           else 'complete')
                 _write_status(state, status=status, executingRoot=str(root),

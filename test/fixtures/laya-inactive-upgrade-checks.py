@@ -205,7 +205,6 @@ class JournalCase(unittest.TestCase):
                                    old_id if proof == 'old' else new_id), \
                  mock.patch.object(journal, '_project', return_value=
                                    (str(project), *[project.stat().st_dev, project.stat().st_ino])), \
-                 mock.patch.object(journal, '_user_qmd_inventory', return_value=[['safe']]), \
                  mock.patch.object(journal, '_strict_vector_profile',
                                    side_effect=lambda value: value):
                 created = journal.create_journal(path, 'old', old_raw,

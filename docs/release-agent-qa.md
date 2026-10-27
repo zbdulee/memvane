@@ -961,7 +961,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
    After a selected write, automatic rollback must be refused and owned
    forward recovery must work. Distinct LI-RECOVER assertions may reuse the
    same receipts. Never delete the retained selection marker or treat a new
-   origin plan after `restored_qmd` as an identical installer retry.
+   origin plan after `restored_origin` as an identical installer retry.
 3. Recheck pre-apply settings/wiki/source hashes, original DB integrity,
    selected route, status and Q-alpha in a fresh session. A repeated ordinary
    install must preserve those originals; it does not itself reselect Laya.

@@ -474,7 +474,13 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                                        dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
-        reviewed = review['reviewedProvider']
+        from laya_provider_reproof import attestation_record, reattest
+        # Same content at other paths keeps the build's vector profile.
+        prior_att = (intent['oldAttestation'].encode('utf-8') if intent is not None
+                     else _read_private(state / PRODUCTION_ATTESTATION, 1024 * 1024))
+        reviewed = reattest(json.loads(prior_att), review['reviewedProvider'])
+        if reviewed is None:
+            _fail('inactive_upgrade_vector_profile_changed')
         new_proof = adopt_host_loaded_plugin(
             source_root, plugin_root, commit_id=commit_id,
             vector_profile=reviewed['vectorProfile'])
@@ -516,14 +522,9 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                          bundleManifestSha256=new_proof['bundleManifestSha256'],
                          ownershipManifestSha256=new_proof['ownershipManifestSha256'])
             new_route = _canonical(route)
-            new_attestation = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
-                               'sourceCommit': new_proof['sourceCommit'],
-                               'bundleManifestSha256': new_proof['bundleManifestSha256'],
-                               'ownershipManifestSha256': new_proof['ownershipManifestSha256'],
-                               'journalPath': old_identity['journalPath'],
-                               'vectorProfile': new_proof['vectorProfile'],
-                               'providerManifest': reviewed['providerManifest'],
-                               'dependencyClosure': reviewed['dependencyClosure']}
+            new_attestation = attestation_record(
+                proof=new_proof, journal_path=old_identity['journalPath'],
+                reattested=reviewed, schema=PRODUCTION_ATTESTATION_SCHEMA)
             validate_production_provider_attestation(new_proof['vectorProfile'],
                                                      new_proof, new_attestation)
             new_att = journal_canon(new_attestation).encode('utf-8')
@@ -552,7 +553,9 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
               json.loads(intent['newAttestation'])['providerManifest'] !=
               reviewed['providerManifest'] or
               json.loads(intent['newAttestation'])['dependencyClosure'] !=
-              reviewed['dependencyClosure']):
+              reviewed['dependencyClosure'] or
+              json.loads(intent['newAttestation']).get('profileDependencyClosure') !=
+              reviewed.get('profileDependencyClosure')):
             _fail('inactive_upgrade_intent_changed')
         _verify_backup(intent)
         if (record['identity'] == intent['newIdentity'] and

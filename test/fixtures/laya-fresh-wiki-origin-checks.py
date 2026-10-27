@@ -51,7 +51,7 @@ class FakeJournal:
     def restore(self, _path, epoch, route_sha):
         if self.state != 'active' or epoch != self.epoch or self.new_write or route_sha != self.route_sha:
             raise AssertionError('bad restore')
-        self.state, self.epoch = 'restored_qmd', self.epoch + 1
+        self.state, self.epoch = 'restored_origin', self.epoch + 1
         return self.inspect(_path)
 
 

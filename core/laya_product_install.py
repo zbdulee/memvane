@@ -586,7 +586,7 @@ def _finish_interrupted_claim_queue_link(queue, incarnation):
 
 def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_root,
                               commit_id, expected_proposal_sha256, install_id,
-                              accepted_provider_sha256, user_qmd_roots,
+                              accepted_provider_sha256, user_qmd_roots=None,
                               model_path=None, dimension=None):
     """Register an inactive wiki-only build; do not touch QMD or activate."""
     if model_path is None or dimension is None:
@@ -597,7 +597,7 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             not re.fullmatch(r'[0-9a-f]{32}', install_id) or
             not isinstance(accepted_provider_sha256, str) or
             not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256) or
-            not isinstance(user_qmd_roots, list) or not user_qmd_roots):
+            (user_qmd_roots is not None and not isinstance(user_qmd_roots, list))):
         _fail('invalid_origin_preparation_request')
     if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
         _fail('source_checkout_cannot_be_installed_root')
@@ -627,11 +627,13 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
 def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
                       user_qmd_roots, state, journal, socket):
     """Adopt the host-loaded exact bundle and stage its provider attestation."""
-    from laya_package import _user_qmd_inventory
     proof = adopt_host_loaded_plugin(source_root, plugin_root,
                                      commit_id=commit_id,
                                      vector_profile=reviewed_provider['vectorProfile'])
-    _user_qmd_inventory(Path(plugin_root), user_qmd_roots)
+    if user_qmd_roots:
+        # Optional legacy overlap check; the install never binds these roots.
+        from laya_package import _user_qmd_inventory
+        _user_qmd_inventory(Path(plugin_root), user_qmd_roots)
     profile = proof['vectorProfile']
     manifest = reviewed_provider['providerManifest']
     if manifest.get('serviceSocketPath') != str(socket):
@@ -1534,7 +1536,7 @@ def _restore_fresh_wiki_selection(project, state, journal):
             _fail('restore_cutover_mismatch')
         before = observed()
         if tuple(before.values()) in (('prepared', 'candidate_ready', 'legacy'),
-                                      ('restored', 'restored_qmd', 'legacy')):
+                                      ('restored', 'restored_origin', 'legacy')):
             return {'status': 'legacy_selected', **before, 'changesApplied': 0}
         try:
             if row['phase'] == 'active':
@@ -1552,7 +1554,7 @@ def _restore_fresh_wiki_selection(project, state, journal):
                     **after, 'changesApplied': 1}
         after = observed()
     if tuple(after.values()) in (('prepared', 'candidate_ready', 'legacy'),
-                                 ('restored', 'restored_qmd', 'legacy')):
+                                 ('restored', 'restored_origin', 'legacy')):
         from laya_embed_resident import wait_for_release
         stopped = wait_for_release(state / 'runtime' / 'laya-embed.sock')
         return {'status': 'legacy_restored', **after,
@@ -1563,7 +1565,7 @@ def _restore_fresh_wiki_selection(project, state, journal):
 
 
 def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,
-                                route_bytes, reviewed_provider, user_qmd_roots,
+                                route_bytes, reviewed_provider, user_qmd_roots=None,
                                 _already_locked=False):
     """Seal an installed commit and stage its attested, inactive journal.
 
@@ -1590,7 +1592,7 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
             not isinstance(reviewed_provider, dict) or
             set(reviewed_provider) != {'vectorProfile', 'providerManifest',
                                        'dependencyClosure'} or
-            not isinstance(user_qmd_roots, list)):
+            (user_qmd_roots is not None and not isinstance(user_qmd_roots, list))):
         _fail('invalid_install_request')
     journal = parent / 'install-journal.sqlite'
     with (nullcontext() if _already_locked else _install_lock(parent)):
@@ -1646,7 +1648,7 @@ def main(argv=None):
     stage.add_argument('--state-root', required=True)
     stage.add_argument('--route-file', required=True)
     stage.add_argument('--provider-review-file', required=True)
-    stage.add_argument('--user-qmd-roots-file', required=True)
+    stage.add_argument('--user-qmd-roots-file')
     fresh_plan = sub.add_parser('plan-fresh-wiki',
                                 help='review a new wiki-only generation')
     fresh_plan.add_argument('--project-root', required=True)
@@ -1664,7 +1666,7 @@ def main(argv=None):
         fresh_prepare.add_argument('--' + key, required=True)
     fresh_prepare.add_argument('--model-file')
     fresh_prepare.add_argument('--dimension', type=int)
-    fresh_prepare.add_argument('--user-qmd-root', action='append', required=True)
+    fresh_prepare.add_argument('--user-qmd-root', action='append')
     status = sub.add_parser('status', help='inspect the inactive or active install journal')
     status.add_argument('--state-root', required=True)
     build_status = sub.add_parser('build-status', help='inspect a registered initial build')
@@ -1727,7 +1729,8 @@ def main(argv=None):
             state_root=args.state_root, commit_id=args.commit,
             route_bytes=_read_private(args.route_file, 8192),
             reviewed_provider=_json_input(args.provider_review_file),
-            user_qmd_roots=_json_input(args.user_qmd_roots_file))
+            user_qmd_roots=(_json_input(args.user_qmd_roots_file)
+                            if args.user_qmd_roots_file else None))
     elif args.action == 'status':
         proof = inspect_full_plugin_candidate(root)
         result = {'bundle': proof, 'journal': inspect_journal(journal)}
