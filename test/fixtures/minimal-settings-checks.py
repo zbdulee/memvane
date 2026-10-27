@@ -253,13 +253,16 @@ class MigrationChecks(Project):
         self.assertEqual(result["boundCollections"][0]["name"], "project-plans")
         self.assertEqual(self.settings.read_bytes(), before)
 
-    def test_bound_route_with_same_identity_is_refused_for_its_digest(self):
+    def test_unverified_route_with_same_identity_is_refused(self):
+        # A route record that is not a verified active selection cannot be
+        # rebound (minimal-settings-rebind-checks covers a selected route).
         before = self.write(LEGACY_EQUIVALENT)
         self.write_route(self.derived_collections())
         result = self.plan()
-        self.assertEqual(result["reason"], "settings_bytes_bound_by_laya_route", result)
+        self.assertEqual(result["reason"], "selected_route_not_verified", result)
+        self.assertEqual(result["routeState"], "blocked", result)
         self.assertEqual(settings_migration.apply(str(self.root), None)["reason"],
-                         "settings_bytes_bound_by_laya_route")
+                         "selected_route_not_verified")
         self.assertEqual(self.settings.read_bytes(), before)
 
     def test_selection_marker_and_setup_journal_are_bindings(self):

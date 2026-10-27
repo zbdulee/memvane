@@ -3,15 +3,25 @@
 
 The minimal model keeps only ``name`` and ``skipPaths`` in
 ``.auto-context/settings.json``; ``config.expand_minimal_settings`` derives
-the rest. ``plan`` is read-only. ``apply`` rewrites the file only when
+the rest. ``plan`` is read-only. ``apply`` rewrites the file only when the
+derived collection identity (name, role, canonical root) and wiki path equal
+the current effective ones and the identity a selected route binds. A
+difference refuses with ``identityDiff``; collections are never renamed.
 
-- the derived collection identity (name, role, canonical root) and wiki path
-  equal the current effective ones, and
-- no installed state binds the current settings bytes: a laya-db route
-  record or selection marker, a registered initial build, a setup journal, or
-  a shared QMD store registration/approval. Every one of those compares the
-  settings SHA-256 on later hooks or setup steps, so a rewrite would block
-  them. Rebinding them is not done here.
+Installed state that binds the current settings bytes:
+
+- a selected (active) Laya route: the route record, ``reviewed-route.json``,
+  the install journal's selected route digest, the selection ledger and the
+  selection marker are rebound to the new bytes by ``laya_settings_rebind``
+  under the bundle-upgrade locks, with an intent for resume or rollback.
+  While it is between steps, recall serves the published generation
+  read-only. QMD-side records that only the legacy QMD path reads (a finished
+  setup journal, a shared-store approval) are not rewritten; the proposal
+  lists them in ``rebind.staleQmdBindings``.
+- a route that is not a verified active selection, a selection marker
+  without a route, an unselected initial build (its reviewed build proposal
+  binds the settings digest), an unfinished setup journal, or a shared QMD
+  store registration/approval of a project without a selected route: refused.
 
 Non-identity fields that change (recall tuning, compile budget, custom
 extractor backends, learning flags) are reported in ``changedFields`` and do
@@ -39,6 +49,7 @@ MAX_SETTINGS_BYTES = 2 * 1024 * 1024
 ROUTE_RECORD = "laya-index-route.json"
 SELECTION_MARKER = "laya-index-selection.json"
 SETUP_JOURNALS = ("install-update-journal.json", "shared-install-journal.json")
+FINISHED_SETUP_PHASES = ("activated", "rolled_back", "completed")
 _IGNORED_FIELDS = frozenset({"settingsModel"})
 
 
@@ -112,6 +123,27 @@ def collection_identity(project: Path, cfg: dict) -> dict:
             "wikiRoot": _canonical(project, wiki) if isinstance(wiki, str) and wiki else None}
 
 
+def identity_diff(current: dict, derived: dict) -> list:
+    """Per-collection differences between two identities, then the wiki root."""
+    left = {row["name"]: row for row in current.get("collections") or []}
+    right = {row["name"]: row for row in derived.get("collections") or []}
+    diff = []
+    for name in sorted(set(left) | set(right), key=str):
+        if name not in left or name not in right:
+            diff.append({"collection": name, "current": left.get(name),
+                         "derived": right.get(name)})
+            continue
+        for field in ("role", "sourceRoot"):
+            if left[name].get(field) != right[name].get(field):
+                diff.append({"collection": name, "field": field,
+                             "current": left[name].get(field),
+                             "derived": right[name].get(field)})
+    if "wikiRoot" in current and current.get("wikiRoot") != derived.get("wikiRoot"):
+        diff.append({"field": "wikiRoot", "current": current.get("wikiRoot"),
+                     "derived": derived.get("wikiRoot")})
+    return diff
+
+
 def minimal_settings_for(raw: dict) -> dict:
     name = raw.get("name")
     if not isinstance(name, str) or not config.settings_slug(name):
@@ -121,6 +153,10 @@ def minimal_settings_for(raw: dict) -> dict:
             or any(not isinstance(item, str) or not item for item in skip)):
         raise MigrationRefused("invalid_skip_paths")
     return {"name": name, "skipPaths": list(skip)}
+
+
+def payload_bytes(minimal: dict) -> bytes:
+    return (json.dumps(minimal, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
 def _route_collections(record_path: Path):
@@ -145,10 +181,6 @@ def _route_collections(record_path: Path):
     return sorted(({"name": row.get("name"), "role": row.get("role"),
                     "sourceRoot": row.get("sourceRoot")} for row in rows),
                   key=lambda row: str(row["name"]))
-
-
-def _identity_reason(bound, derived, *, changed, same):
-    return changed if bound != derived["collections"] else same
 
 
 def _shared_store_binding(project: Path):
@@ -177,43 +209,119 @@ def _shared_store_binding(project: Path):
     return None
 
 
-def settings_binding(project: Path, derived: dict):
-    """The first installed state that binds the current settings bytes, or None."""
-    auto = project / config.CONFIG_DIR_NAME
-    for name in (ROUTE_RECORD, SELECTION_MARKER):
-        path = auto / name
-        if _present(path):
-            bound = _route_collections(path) if name == ROUTE_RECORD else None
-            if bound is None:
-                return "settings_bound_by_laya_route", {"bindingPath": str(path)}
-            return _identity_reason(bound, derived,
-                                    changed="bound_collection_identity_changed",
-                                    same="settings_bytes_bound_by_laya_route"), {
-                "bindingPath": str(path), "boundCollections": bound}
+def _setup_journal_phase(path: Path):
     try:
-        import laya_initial_build
-        build = laya_initial_build.lookup(str(project))
+        if path.is_symlink() or path.stat().st_size > 65536:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value.get("phase") if isinstance(value, dict) else None
+
+
+def _qmd_bindings(project: Path):
+    """QMD-side records of a selected project: (stale names, refusal or None).
+
+    A selected route never enters the QMD setup or shared-store path, so a
+    finished setup journal or a shared-store approval keeps the old digest
+    without affecting search. An unfinished setup transition still refuses.
+    """
+    auto = project / config.CONFIG_DIR_NAME
+    stale = []
+    for name in SETUP_JOURNALS:
+        path = auto / name
+        if not _present(path):
+            continue
+        if _setup_journal_phase(path) not in FINISHED_SETUP_PHASES:
+            return stale, "settings_bound_by_unfinished_setup_journal"
+        stale.append(name)
+    reason = _shared_store_binding(project)
+    if reason == "settings_bound_by_shared_store":
+        stale.append("shared_store_approval")
+    elif reason:
+        return stale, reason
+    return stale, None
+
+
+def _probe_failed(kind, exc):
+    return "binding_probe_failed:%s:%s" % (kind, str(exc) or type(exc).__name__)
+
+
+def _initial_build(project: Path):
+    import laya_initial_build
+    return laya_initial_build.lookup(str(project))
+
+
+def _selected_binding(project: Path, derived: dict, payload: bytes, route: Path):
+    bound = _route_collections(route)
+    if bound is None:
+        return "settings_bound_by_laya_route", {"bindingPath": str(route)}, None
+    if bound != derived["collections"]:
+        return "bound_collection_identity_changed", {
+            "bindingPath": str(route), "boundCollections": bound,
+            "identityDiff": identity_diff({"collections": bound}, derived)}, None
+    import laya_settings_rebind
+    try:
+        summary, _exact = laya_settings_rebind.inspect(project, payload)
+    except laya_settings_rebind.RebindRefused as exc:
+        return exc.reason, {"bindingPath": str(route), **exc.detail}, None
     except Exception as exc:
-        return "binding_probe_failed:initial_build:%s" % (str(exc) or type(exc).__name__), {}
+        return _probe_failed("laya_route", exc), {"bindingPath": str(route)}, None
+    try:
+        build = _initial_build(project)
+    except Exception as exc:
+        return _probe_failed("initial_build", exc), {}, None
+    # The selected install's own build record is not read after selection
+    # (the bundle upgrade leaves it as well); a build in another state root is.
+    if (build is not None and build.get("phase") != "retired" and
+            build.get("identity", {}).get("stateRoot") != summary["stateRoot"]):
+        return "settings_bound_by_initial_build", {
+            "stateRoot": build.get("identity", {}).get("stateRoot")}, None
+    stale, reason = _qmd_bindings(project)
+    if reason:
+        return reason, {}, None
+    return None, {}, {**summary, "staleQmdBindings": stale}
+
+
+def settings_binding(project: Path, derived: dict, payload: bytes):
+    """(refusal, detail, rebind) for the installed state binding the settings bytes.
+
+    ``rebind`` is the selected-route rebind summary when that state can move
+    to ``payload``; the refusal is None then.
+    """
+    auto = project / config.CONFIG_DIR_NAME
+    route = auto / ROUTE_RECORD
+    if _present(route):
+        return _selected_binding(project, derived, payload, route)
+    if _present(auto / SELECTION_MARKER):
+        return "settings_bound_by_laya_route", {
+            "bindingPath": str(auto / SELECTION_MARKER)}, None
+    try:
+        build = _initial_build(project)
+    except Exception as exc:
+        return _probe_failed("initial_build", exc), {}, None
     if build is not None:
+        # The reviewed build proposal and the pending journal route bind the
+        # settings digest. Activate (or abandon) the build, then migrate.
+        detail = {"stateRoot": build.get("identity", {}).get("stateRoot"),
+                  "next": "activate_or_abandon_index_build_then_migrate"}
         bound = build.get("identity", {}).get("collections")
-        detail = {"stateRoot": build.get("identity", {}).get("stateRoot")}
         if isinstance(bound, list) and all(isinstance(row, dict) for row in bound):
             bound = sorted(({"name": row.get("name"), "role": row.get("role"),
                              "sourceRoot": row.get("sourceRoot")} for row in bound),
                            key=lambda row: str(row["name"]))
             detail["boundCollections"] = bound
-            return _identity_reason(bound, derived,
-                                    changed="bound_collection_identity_changed",
-                                    same="settings_bound_by_initial_build"), detail
-        return "settings_bound_by_initial_build", detail
+            if bound != derived["collections"]:
+                detail["identityDiff"] = identity_diff({"collections": bound}, derived)
+                return "bound_collection_identity_changed", detail, None
+        return "settings_bound_by_initial_build", detail, None
     for name in SETUP_JOURNALS:
         if _present(auto / name):
-            return "settings_bound_by_setup_journal", {"bindingPath": str(auto / name)}
+            return "settings_bound_by_setup_journal", {"bindingPath": str(auto / name)}, None
     reason = _shared_store_binding(project)
     if reason:
-        return reason, {}
-    return None, {}
+        return reason, {}, None
+    return None, {}, None
 
 
 def _changed_fields(current: dict, derived: dict) -> list:
@@ -221,8 +329,21 @@ def _changed_fields(current: dict, derived: dict) -> list:
     return sorted(key for key in keys if current.get(key) != derived.get(key))
 
 
+def _pending_rebind(project: Path):
+    import laya_settings_rebind
+    try:
+        return laya_settings_rebind.pending_for_project(project)
+    except laya_settings_rebind.RebindRefused as exc:
+        raise MigrationRefused(exc.reason, **exc.detail) from None
+
+
 def plan(project_root) -> dict:
-    """Read-only proposal. ``status`` is ``review_required``, ``already_minimal`` or ``refused``."""
+    """Read-only proposal.
+
+    ``status`` is ``review_required``, ``already_minimal``, ``rebind_pending``
+    (an interrupted selected-route rebind; apply resumes or rolls it back) or
+    ``refused``.
+    """
     project = Path(project_root)
     try:
         if (not project.is_absolute() or project.is_symlink()
@@ -230,6 +351,16 @@ def plan(project_root) -> dict:
             raise MigrationRefused("invalid_project_root")
         settings, data, raw = _read_settings(project)
         digest = hashlib.sha256(data).hexdigest()
+        pending = _pending_rebind(project)
+        if pending is not None:
+            state, intent = pending
+            return {"status": "rebind_pending", "projectRoot": str(project),
+                    "stateRoot": str(state), "settingsSha256": digest,
+                    "proposalSha256": intent["proposalSha256"], "changesApplied": 0,
+                    "next": ("migrate-minimal-settings --approve-settings-rewrite "
+                             "--accepted-settings-proposal-sha256 <proposalSha256> "
+                             "resumes; add --rollback-settings-rebind to restore "
+                             "the previous settings")}
         if config.is_minimal_settings(raw):
             return {"status": "already_minimal", "projectRoot": str(project),
                     "settingsSha256": digest, "changesApplied": 0}
@@ -241,17 +372,20 @@ def plan(project_root) -> dict:
         derived_cfg = config.normalize_config(minimal)
         current = collection_identity(project, current_cfg)
         derived = collection_identity(project, derived_cfg)
-        # Bindings first: a bound route reports the identity it binds.
-        reason, detail = settings_binding(project, derived)
+        payload = payload_bytes(minimal)
+        # Bindings first: a bound route or build reports the identity it binds.
+        reason, detail, rebind = settings_binding(project, derived, payload)
         if reason:
             raise MigrationRefused(reason, derivedIdentity=derived, **detail)
         if current != derived:
             raise MigrationRefused("collection_identity_changed",
-                                   currentIdentity=current, derivedIdentity=derived)
+                                   currentIdentity=current, derivedIdentity=derived,
+                                   identityDiff=identity_diff(current, derived))
         proposal = {"schema": SCHEMA, "projectRoot": str(project),
                     "settingsPath": str(settings), "settingsSha256": digest,
                     "minimalSettings": minimal, "identity": derived,
-                    "changedFields": _changed_fields(current_cfg, derived_cfg)}
+                    "changedFields": _changed_fields(current_cfg, derived_cfg),
+                    **({"rebind": rebind} if rebind is not None else {})}
         proposal_sha = hashlib.sha256(json.dumps(
             proposal, sort_keys=True, ensure_ascii=False,
             separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -297,16 +431,112 @@ def _write_new(path: Path, data: bytes) -> None:
         os.close(fd)
 
 
-def apply(project_root, accepted_proposal_sha256) -> dict:
-    """Rewrite settings to the accepted proposal; the original bytes are kept as a backup."""
+def _backup(auto: Path, original: bytes) -> Path:
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = auto / ("settings.json.pre-minimal-%s" % stamp)
+    _write_new(backup, original)
+    return backup
+
+
+def _rewrite_unbound(auto: Path, current: dict) -> dict:
+    """The settings file alone: nothing installed binds its bytes."""
+    settings = Path(current["settingsPath"])
+    original = settings.read_bytes()
+    if hashlib.sha256(original).hexdigest() != current["settingsSha256"]:
+        raise MigrationRefused("settings_changed_during_migration")
+    backup = _backup(auto, original)
+    payload = payload_bytes(current["minimalSettings"])
+    expected = config.normalize_config(current["minimalSettings"])
+    fd, tmp_name = tempfile.mkstemp(dir=str(auto), prefix="settings.json.",
+                                    suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if config.normalize_config(json.loads(tmp.read_text(encoding="utf-8"))) != expected:
+            raise MigrationRefused("verification_failed")
+        if hashlib.sha256(settings.read_bytes()).hexdigest() != current["settingsSha256"]:
+            raise MigrationRefused("settings_changed_during_migration")
+        os.replace(tmp, settings)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    final = json.loads(settings.read_text(encoding="utf-8"))
+    if config.normalize_config(final) != expected:
+        raise MigrationRefused("verification_failed", backupPath=str(backup))
+    return {"backupPath": str(backup), "settingsSha256": hashlib.sha256(payload).hexdigest()}
+
+
+def _rewrite_selected(project: Path, auto: Path, current: dict) -> dict:
+    """Settings plus every selected-route binding, through a recoverable intent."""
+    import laya_settings_rebind as rebind
+    settings = Path(current["settingsPath"])
+    original = settings.read_bytes()
+    if hashlib.sha256(original).hexdigest() != current["settingsSha256"]:
+        raise MigrationRefused("settings_changed_during_migration")
+    backup = _backup(auto, original)
+    payload = payload_bytes(current["minimalSettings"])
+    intent = rebind.begin(project, current["proposalSha256"], payload)
+    receipt = rebind.forward(intent)
+    final = json.loads(settings.read_text(encoding="utf-8"))
+    if config.normalize_config(final) != config.normalize_config(current["minimalSettings"]):
+        raise MigrationRefused("verification_failed", backupPath=str(backup))
+    return {"backupPath": str(backup), "settingsSha256": hashlib.sha256(payload).hexdigest(),
+            "rebind": {**current["rebind"], "receiptPath": receipt}}
+
+
+def _resume(project: Path, pending, accepted_proposal_sha256, rollback) -> dict:
+    import laya_settings_rebind as rebind
+    import wiki_mutation_lock
+    state, intent = pending
+    if accepted_proposal_sha256 != intent["proposalSha256"]:
+        raise MigrationRefused("proposal_acceptance_required",
+                               proposalSha256=intent["proposalSha256"])
+    auto = project / config.CONFIG_DIR_NAME
+    with rebind.locks(project, state), _setup_lock(auto), wiki_mutation_lock.lock(project):
+        intent = rebind.load_intent(state)
+        if intent is None or intent["proposalSha256"] != accepted_proposal_sha256:
+            raise MigrationRefused("settings_rebind_intent_changed")
+        if rollback:
+            receipt = rebind.rollback(intent)
+            status = "rolled_back"
+        else:
+            receipt = rebind.forward(intent)
+            status = "migrated"
+    settings = auto / config.SETTINGS_FILE_NAME
+    return {"status": status, "projectRoot": str(project), "settingsPath": str(settings),
+            "settingsSha256": hashlib.sha256(settings.read_bytes()).hexdigest(),
+            "rebind": {"stateRoot": str(state), "receiptPath": receipt},
+            "changesApplied": 1}
+
+
+def apply(project_root, accepted_proposal_sha256, *, rollback=False) -> dict:
+    """Rewrite settings to the accepted proposal; the original bytes are kept as a backup.
+
+    An interrupted selected-route rebind resumes with the same accepted
+    proposal digest, or with ``rollback`` returns to the previous settings.
+    """
     import wiki_mutation_lock
     project = Path(project_root)
-    first = plan(project)
-    if first["status"] != "review_required":
-        return first
-    auto = project / config.CONFIG_DIR_NAME
     try:
-        with _setup_lock(auto), wiki_mutation_lock.lock(project):
+        first = plan(project)
+        if first["status"] == "rebind_pending":
+            return _resume(project, _pending_rebind(project), accepted_proposal_sha256,
+                           rollback)
+        if rollback:
+            raise MigrationRefused("settings_rebind_not_pending")
+        if first["status"] != "review_required":
+            return first
+        auto = project / config.CONFIG_DIR_NAME
+        if "rebind" in first:
+            import laya_settings_rebind as rebind
+            outer = rebind.locks(project, first["rebind"]["stateRoot"])
+        else:
+            from contextlib import nullcontext
+            outer = nullcontext()
+        with outer, _setup_lock(auto), wiki_mutation_lock.lock(project):
             current = plan(project)
             if current["status"] != "review_required":
                 return current
@@ -314,46 +544,30 @@ def apply(project_root, accepted_proposal_sha256) -> dict:
                     or current["proposalSha256"] != accepted_proposal_sha256):
                 raise MigrationRefused("proposal_acceptance_required",
                                        proposalSha256=current["proposalSha256"])
-            settings = Path(current["settingsPath"])
-            original = settings.read_bytes()
-            if hashlib.sha256(original).hexdigest() != current["settingsSha256"]:
-                raise MigrationRefused("settings_changed_during_migration")
-            stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup = auto / ("settings.json.pre-minimal-%s" % stamp)
-            _write_new(backup, original)
-            payload = (json.dumps(current["minimalSettings"], ensure_ascii=False, indent=2)
-                       + "\n").encode("utf-8")
-            expected = config.normalize_config(current["minimalSettings"])
-            fd, tmp_name = tempfile.mkstemp(dir=str(auto), prefix="settings.json.",
-                                            suffix=".tmp")
-            tmp = Path(tmp_name)
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                if config.normalize_config(json.loads(tmp.read_text(encoding="utf-8"))) != expected:
-                    raise MigrationRefused("verification_failed")
-                if hashlib.sha256(settings.read_bytes()).hexdigest() != current["settingsSha256"]:
-                    raise MigrationRefused("settings_changed_during_migration")
-                os.replace(tmp, settings)
-            finally:
-                if tmp.exists():
-                    tmp.unlink()
-            final = json.loads(settings.read_text(encoding="utf-8"))
-            if config.normalize_config(final) != expected:
-                raise MigrationRefused("verification_failed", backupPath=str(backup))
+            if ("rebind" in current) != ("rebind" in first):
+                raise MigrationRefused("settings_binding_changed_during_migration")
+            done = (_rewrite_selected(project, auto, current) if "rebind" in current
+                    else _rewrite_unbound(auto, current))
             return {"status": "migrated", "projectRoot": str(project),
-                    "settingsPath": str(settings), "backupPath": str(backup),
+                    "settingsPath": current["settingsPath"],
                     "previousSettingsSha256": current["settingsSha256"],
-                    "settingsSha256": hashlib.sha256(payload).hexdigest(),
-                    "changedFields": current["changedFields"], "changesApplied": 1}
+                    "changedFields": current["changedFields"], "changesApplied": 1,
+                    **done}
     except MigrationRefused as exc:
         return {"status": "refused", "reason": exc.reason, "projectRoot": str(project),
                 "changesApplied": 0, **exc.detail}
     except OSError as exc:
         return {"status": "refused", "reason": "write_error", "error": str(exc),
                 "projectRoot": str(project), "changesApplied": 0}
+    except Exception as exc:
+        import laya_settings_rebind as rebind
+        if isinstance(exc, rebind.RebindRefused):
+            return {"status": "refused", "reason": exc.reason, "projectRoot": str(project),
+                    "changesApplied": 0, **exc.detail}
+        # A failed rebind step leaves its intent: plan reports rebind_pending.
+        return {"status": "refused", "reason": "settings_rebind_step_failed",
+                "error": str(exc) or type(exc).__name__, "projectRoot": str(project),
+                "changesApplied": 0}
 
 
 def main(argv=None) -> int:
@@ -361,12 +575,14 @@ def main(argv=None) -> int:
     parser.add_argument("action", choices=("plan", "apply"))
     parser.add_argument("--project", required=True)
     parser.add_argument("--accepted-proposal-sha256")
+    parser.add_argument("--rollback-settings-rebind", action="store_true")
     args = parser.parse_args(argv)
     project = str(Path(args.project).resolve())
     result = plan(project) if args.action == "plan" else apply(
-        project, args.accepted_proposal_sha256)
+        project, args.accepted_proposal_sha256, rollback=args.rollback_settings_rebind)
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
-    return 0 if result["status"] in ("review_required", "already_minimal", "migrated") else 1
+    return 0 if result["status"] in ("review_required", "already_minimal", "migrated",
+                                     "rebind_pending", "rolled_back") else 1
 
 
 if __name__ == "__main__":

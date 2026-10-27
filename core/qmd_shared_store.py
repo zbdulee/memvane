@@ -485,6 +485,13 @@ def _reserve_owners(base, wanted):
         for name, owner in wanted.items():
             if name not in current or current[name] == owner:
                 continue
+            # Only the indexed flag of the same owner and path moves when a
+            # collection stops being indexed (role `source`, or the raw root of
+            # minimal settings); update.sh then unregisters it.
+            if (current[name].get('scope') == owner['scope'] and
+                    current[name].get('path') == owner['path'] and
+                    current[name].get('indexed') is True and owner['indexed'] is False):
+                continue
             # A path move needs an explicit index migration. Reassigning the
             # registry first would let an old qmd://name/relative hit resolve
             # against an unindexed file at the new path.
@@ -692,8 +699,13 @@ def assert_all_enrolled(*, home=None):
             current = {row['name']: str((scope / row['path']).resolve(strict=True))
                        for row in resolved.get('entries', [])}
             current_indexed = {row['name'] for row in resolved.get('indexEntries', [])}
+            # An indexed collection that its owner now resolves as not indexed
+            # (same path) is a pending unregister by that owner, not a revoked
+            # one: QMD may still update it, but no owner was withdrawn.
+            current_source = {row['name'] for row in resolved.get('sourceEntries', [])}
             if any(current.get(name) != path or not Path(path).is_dir()
-                   or (name in current_indexed) is not was_indexed
+                   or ((name in current_indexed) is not was_indexed and
+                       not (was_indexed is True and name in current_source))
                    for name, path, was_indexed in entries):
                 raise ValueError('revoked')
         except (OSError, ValueError, KeyError, TypeError):

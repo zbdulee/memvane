@@ -721,6 +721,38 @@ def cas_restore(journal_path, expected_epoch, observed_old_route_raw):
     return _cas(journal_path, expected_epoch, restore)
 
 
+def cas_rebind_route(journal_path, expected_epoch, from_route_raw, to_route_raw):
+    """Move the selected route digest between two routes that differ only in
+    ``settingsSha256``. The selected bundle, previous/pending rows, provider
+    binding and write flag stay as they are, so the call is its own inverse.
+    Route bytes are passed explicitly: the project route file does not equal
+    the journal while a settings rebind is between steps.
+    """
+    def rebind(path, row):
+        if row['state'] not in ('active', 'restored_old') or row['selected'] is None:
+            _fail('journal_not_active')
+        before, before_sha = _route(from_route_raw, path)
+        after, after_sha = _route(to_route_raw, path)
+        if row['selected_route_sha'] == after_sha:
+            return None
+        if row['selected_route_sha'] != before_sha:
+            _fail('rebind_route_not_selected')
+        if (before['schema'] != after['schema'] or set(before) != set(after) or
+                any(before[key] != after[key] for key in set(before) - {'settingsSha256'}) or
+                before['settingsSha256'] == after['settingsSha256'] or
+                not isinstance(after['settingsSha256'], str) or
+                not SHA.fullmatch(after['settingsSha256'])):
+            _fail('rebind_route_scope_changed')
+        if (_project(after) != (row['project_root'], row['project_dev'], row['project_ino']) or
+                after['scopeId'] != row['scope_id'] or
+                any(after.get(k) != row['selected'].get(k) for k in
+                    ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
+                     'ownershipManifestSha256', 'vectorProfile'))):
+            _fail('rebind_identity_mismatch')
+        return {'selected_route_sha': after_sha}
+    return _cas(journal_path, expected_epoch, rebind)
+
+
 def cas_restore_qmd(journal_path, expected_epoch, expected_new_route_sha):
     """Record an initial QMD selection after the reviewed route was removed.
 
@@ -798,15 +830,21 @@ def _executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
+def _verify_selected_route(decision, *, dispatch_target=False, read_only=False,
+                           rebind=None):
     """Read-only product proof for a host-validated candidate decision.
 
     The caller must still construct LayaIndexRuntime, which rechecks DB and
     queue identity before serving. No legacy fallback is authorized on error.
     ``read_only`` skips only the checks that read the bound plugin bundle or
-    prove the executing bundle; it never authorizes a write.
+    prove the executing bundle; it never authorizes a write. ``rebind`` is the
+    (old, new) route bytes of an in-flight settings rebind: the route file and
+    the journal may each name either one, and nothing else may differ.
     """
-    if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
+    if rebind is not None and not read_only:
+        _fail('rebind_proof_read_only')
+    expected_state = 'rebinding' if rebind is not None else 'candidate'
+    if (not isinstance(decision, dict) or decision.get('state') != expected_state or
             any(type(decision.get(key)) is not str for key in
                 ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
                  'queuePath', 'dbIncarnation', 'scopeId'))):
@@ -815,11 +853,25 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     engine = Path(decision.get('pluginRoot'))
     raw = _observed_route({'project_root': decision.get('projectRoot')}, None)
     route, digest = _route(raw, journal)
+    allowed = {digest}
+    if rebind is not None:
+        if raw not in rebind:
+            _fail('rebind_route_unexpected')
+        allowed = {hashlib.sha256(item).hexdigest() for item in rebind}
     if (journal != journal.parent / 'install-journal.sqlite' or
             (route['schema'] == ROUTE_SCHEMA and engine.parent != journal.parent)):
         _fail('journal_engine_root_mismatch')
     fresh = select_route(route['projectRoot'], action='recall')
-    if fresh.get('state') != 'candidate' or fresh != decision:
+    if rebind is not None:
+        # The rebind may finish between the two reads; only the state label
+        # may differ then, never a store, scope or bundle field.
+        def stable(value):
+            return {key: item for key, item in value.items()
+                    if key not in ('state', 'reason')}
+        if (fresh.get('state') not in ('candidate', 'rebinding') or
+                stable(fresh) != stable(decision)):
+            _fail('host_route_unverified')
+    elif fresh.get('state') != 'candidate' or fresh != decision:
         _fail('host_route_unverified')
     for key in ROUTE_FIELDS:
         if key in fresh and fresh[key] != route[key]:
@@ -830,7 +882,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
         try:
             row = _row(db)
             if (row['state'] not in ('active', 'restored_old') or
-                    row['selected'] is None or row['selected_route_sha'] != digest or
+                    row['selected'] is None or row['selected_route_sha'] not in allowed or
                     _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
                     route['scopeId'] != row['scope_id'] or
                     any(route.get(k) != row['selected'].get(k) for k in
@@ -982,6 +1034,18 @@ def verify_selected_route_read_only(decision):
     moved the executing bundle. Never authorizes sync, compile or any write.
     """
     return _verify_selected_route(decision, read_only=True)
+
+
+def verify_rebinding_read_only(decision, old_route_raw, new_route_raw):
+    """Read-only proof while a settings rebind moves between two routes.
+
+    Same evidence as ``verify_selected_route_read_only``; the route file and
+    the journal may name either route of the rebind. Never authorizes a write.
+    """
+    if type(old_route_raw) is not bytes or type(new_route_raw) is not bytes:
+        _fail('rebind_route_invalid')
+    return _verify_selected_route(decision, read_only=True,
+                                  rebind=(old_route_raw, new_route_raw))
 
 
 def verify_dispatch_target(decision):
