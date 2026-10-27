@@ -30,12 +30,13 @@ import resource_platform
 from unittest.mock import patch
 class FixtureObserver:
     level = 'normal'
+    free = 70
     calls = 0
     def observe(self, *, clock, **options):
         self.calls += 1
         return {'observed_at_mono': clock(), 'load_per_cpu': .1,
             'available_mib': 12000, 'total_mib': 16384, 'swap_used_mib': 0,
-            'memory_pressure': {'level': self.level, 'system_free_percent': 70},
+            'memory_pressure': {'level': self.level, 'system_free_percent': self.free},
             'query_status': {'load': 'ok', 'available': 'ok', 'total': 'ok',
                 'memory_pressure': 'ok'}, 'platform': {'scope': 'synthetic'}}
 resource_observer = FixtureObserver()
@@ -370,6 +371,7 @@ assert not attempts,attempts
         # deciding either scenario. Detached workers have already exited busy.
         policies={str(namespace):shared._policy(namespace) for _,namespace,_ in projects}
         resource_observer.level = 'warning'
+        resource_observer.free = 5  # warning alone no longer defers; scarce memory does
         from context_learning.resource_coordination import decision
         import runtime_admission
         observed = runtime_admission.sample(runtime_admission.POLICY)

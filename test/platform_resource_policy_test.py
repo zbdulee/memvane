@@ -133,9 +133,13 @@ class MemoryBudget(unittest.TestCase):
             self.assertFalse(row['ready'])
 
     def test_pressure_veto_is_independent_of_fitting_memory(self):
-        for pressure in (None,{'level':'warning','system_free_percent':53}):
+        for pressure in (None,{'level':'critical','system_free_percent':53},
+                         {'level':'warning','system_free_percent':9}):
             row=decision(self.policy,{**self.report,'memory_pressure':pressure},now=10.)
             self.assertFalse(row['ready'])
+        # Swap-driven 'warning' with ample free memory defers to memory admission.
+        row=decision(self.policy,{**self.report,'memory_pressure':{'level':'warning','system_free_percent':53}},now=10.)
+        self.assertTrue(row['ready'])
 
     def test_recovery_does_not_add_an_unrelated_40_percent_ram_floor(self):
         with tempfile.TemporaryDirectory() as name:
@@ -199,6 +203,20 @@ class PlatformObservation(unittest.TestCase):
             self.assertNotIn('system_free_percent',row['memory_pressure'])
             self.assertEqual(row['platform']['scope'],scope)
             self.assertIsNone(row['gpu_usage_percent'])
+
+    def test_mac_warning_pressure_admits_only_with_free_memory(self):
+        module=self.module()
+        def row(level,free=None):
+            pressure={'level':level}
+            if free is not None:pressure['system_free_percent']=free
+            return {'query_status':{'memory_pressure':'ok'},'memory_pressure':pressure}
+        self.assertTrue(module.normal_pressure(row('normal',42)))
+        self.assertTrue(module.normal_pressure(row('warning',42)))
+        self.assertTrue(module.normal_pressure(row('warning',10)))
+        self.assertFalse(module.normal_pressure(row('warning',9)))
+        self.assertFalse(module.normal_pressure(row('warning')))
+        self.assertFalse(module.normal_pressure(row('critical',60)))
+        self.assertFalse(module.normal_pressure(row('normal',9)))
 
     def test_mac_queries_share_one_deadline_and_unknown_is_not_zero(self):
         adapter=self.module().adapter_for('darwin',machine='arm64',release='synthetic')
