@@ -387,7 +387,7 @@ identity is proved by content hashes (section 5), not by version strings.
 Operator rules:
 
 - Product interaction uses natural-language requests or the exposed skills
-  (`setup`, `query`, `sync`, `update`, `enable-compile`, `wiki-compile`). The
+  (`setup`, `query`, `sync`, `update`, `wiki-compile`). The
   operator must not run `core/*`, `core/update.sh`, `skills/*/scripts/*` or
   backend scripts directly to make a scenario progress. Doing so invalidates
   that scenario's run. The scenario must restart from its preconditions.
@@ -1542,7 +1542,7 @@ Scenarios respect domain ownership. Two rules apply:
 |---|---|
 | `core/recall.py`, `core/qmd_project_query.py`, `core/qmd_route.py`, `core/wiki_freshness.py`, `backend/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
 | `core/sync.py`, `core/file_change_queue.py`, `core/index_enqueue.py`, `core/update.sh`, `skills/sync/**`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
-| `core/wiki_*`, `skills/wiki-*/**`, `skills/enable-compile/**`, `agents/**` | WIKI-01..03 |
+| `core/wiki_*`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `core/context_learning/**` | RES-01, RES-02 |
 | `core/setup_entry.py`, `core/shared_*`, `core/install_update.py`, `core/qmd_shared_store.py`, `core/setup_guard.py`, `core/runtime_update.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01, GIT-02 |
 | `core/runtime_work.py`, `core/runtime_wake_policy.py`, `core/qmd_endpoint.py`, resource coordination modules, `backend/index_worker.sh` | RES-01, RES-02, RACE-01 |

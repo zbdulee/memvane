@@ -297,38 +297,3 @@ test('소스 변경으로 카드가 갱신되면 verifiedBodyHash 가 키째 사
   assert.equal(r.newBody, true, '새 본문이 반영된다');
 });
 
-test('legacy 정규화(wiki_reviewed_migrate)도 verifiedBodyHash 를 제거한다', () => {
-  // `sourceRevisions` 가 없는 신뢰 status 는 정규화 대상이다 — `generated` 로 내려가면서
-  // 증명 필드가 함께 사라져야 한다. 지문만 남으면 그 카드는 재검수 뒤에도 옛 지문과
-  // 어긋난 채로 남는다.
-  const out = py([
-    'import sys, json, tempfile, shutil',
-    'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_reviewed_migrate as m',
-    'root = Path(tempfile.mkdtemp())',
-    'wiki = root / ".auto-context" / "wiki" / "concepts"',
-    'wiki.mkdir(parents=True)',
-    '(root / ".auto-context" / "settings.json").write_text(json.dumps({',
-    '    "indexing": True, "collections": ["w"],',
-    '    "collectionPaths": {"w": ".auto-context/wiki"},',
-    '    "collectionRoles": {"w": "wiki"}}), encoding="utf-8")',
-    'card = wiki / "c.md"',
-    'card.write_text("---\\ntitle: \\"t\\"\\nstatus: verified\\n"',
-    '                "createdBy: qmd-auto-context\\nverifiedBy: \\"codex\\"\\n"',
-    '                "verifiedAt: \\"2026-08-01T00:00:00Z\\"\\n"',
-    '                "verifiedBodyHash: \\"deadbeef\\"\\n---\\nbody\\n",',
-    '                encoding="utf-8")',
-    'report = m.migrate_reviewed_state(root)',
-    'after = card.read_text(encoding="utf-8")',
-    'shutil.rmtree(root)',
-    'print(json.dumps({"hasHash": "verifiedBodyHash" in after,',
-    '                  "hasProof": "verifiedBy" in after,',
-    '                  "generated": "status: generated" in after,',
-    '                  "text": after}, ensure_ascii=False))',
-  ].join('\n'));
-  const r = JSON.parse(out);
-  assert.equal(r.generated, true, `정규화 대상이어야 한다:\n${r.text}`);
-  assert.equal(r.hasHash, false, `정규화 뒤에도 지문이 남았다:\n${r.text}`);
-  assert.equal(r.hasProof, false, '증명 필드 전체가 함께 제거된다');
-});

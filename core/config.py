@@ -281,8 +281,8 @@ VERIFIED_MODE_SELF = "self"
 VERIFIED_MODE_UNKNOWN = "unknown"
 VERIFIED_MODES = {VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF, VERIFIED_MODE_UNKNOWN}
 # status: verified/contested와 **함께** 써야 하는 증명 필드. 리셋 시 함께 제거된다.
-# 검증 증명 필드. 리셋 경로(`wiki_compile` frontmatter merge,
-# `wiki_reviewed_migrate`)가 이 튜플을 보고 **키째 제거**하므로, 취소된 검증의
+# 검증 증명 필드. 리셋 경로(`wiki_compile` frontmatter merge)가 이 튜플을 보고
+# **키째 제거**하므로, 취소된 검증의
 # 잔재가 남지 않는다. `verifiedBodyHash` 도 증명이다 — 남으면 새 본문에 옛
 # 지문이 붙어 영구 불일치가 된다.
 VERIFY_PROOF_FIELDS = ("verifiedBy", "verifiedAt", "verifiedMode", "verifiedBodyHash")

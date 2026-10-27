@@ -822,11 +822,6 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
-                from laya_qmd_vector_reuse import for_initial_build
-                reuse = for_initial_build(identity, provider.manifest,
-                                          provider.profile['dimension'])
-                if reuse is not None:
-                    stack.callback(reuse.close)
                 resident = (start_service is start_owned_embed_service
                             and identity.get('originMode') == 'fresh_wiki_only')
 
@@ -839,28 +834,19 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         raise IndexContractError('initial_build_proof_changed')
                     state['service'] = ensure_running(project, approval['providerManifest'])
 
-                if resident and reuse is None:
+                if resident:
                     start_resident()
-                # Copying existing QMD vectors and scanning need no model: a
-                # reuse build takes the provider lane (and, on the fresh path,
-                # starts the resident model) only once a document needs it.
-                lane = {'held': reuse is None}
-                if lane['held']:
-                    stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+                stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
 
                 def ensure_service():
-                    if state['service'] is not None and lane['held']:
+                    if state['service'] is not None:
                         return
                     if not proof_ok():
                         raise IndexContractError('initial_build_proof_changed')
-                    if resident and state['service'] is None:
+                    if resident:
                         start_resident()
-                    if not lane['held']:
-                        stack.enter_context(controller.activity(
-                            'provider', EMBED_POLICY, resource_report(EMBED_POLICY, detailed=True)))
-                        lane['held'] = True
-                    if state['service'] is not None:
-                        return
+                        if state['service'] is not None:
+                            return
                     try:
                         service = start_service(approval['providerManifest'], admit=admitted)
                     except IndexContractError as exc:
@@ -875,21 +861,6 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     profile = provider.profile
 
                     def embed_document_chunks(self, body, path):
-                        reused = reuse.lookup(body) if reuse is not None else None
-                        if reused is not None:
-                            if not reuse.take_sample():
-                                return reused  # Origin QMD vectors; no model needed.
-                            try:
-                                fresh = self._embed(body, path)
-                            except ResourceDeferred:
-                                # Parity waits for the model; copying continues.
-                                reuse.defer_sample()
-                                return reused
-                            reuse.verify(reused, fresh)
-                            return fresh
-                        return self._embed(body, path)
-
-                    def _embed(self, body, path):
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
                         if not admitted():

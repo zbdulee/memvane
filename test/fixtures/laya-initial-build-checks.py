@@ -231,69 +231,11 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(self.service_log, [])
         self.assertEqual(FakeProvider.calls, ['wiki/f000.md'])
 
-    def reuse_stub(self, *, found, sample=False):
-        class Reuse:
-            closed = []
-
-            def lookup(self, body):
-                return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}] if found else None
-
-            def take_sample(self):
-                return sample
-
-            def defer_sample(self):
-                pass
-
-            def verify(self, reused, fresh):
-                return True
-
-            def close(self):
-                Reuse.closed.append(True)
-        return Reuse()
-
-    def test_fresh_build_copies_shared_vectors_without_the_resident_model(self):
-        self.corpus(2)
-        self.register(fresh=True)
-        stub = self.reuse_stub(found=True)
-        with mock.patch('laya_qmd_vector_reuse.for_initial_build', return_value=stub), \
-             mock.patch('laya_embed_resident.ensure_running',
-                        side_effect=AssertionError('resident model started')), \
-             mock.patch.object(worker, 'start_owned_embed_service',
-                               side_effect=AssertionError('transient model started')):
-            answers = []
-            for _ in range(50):
-                answers.append(worker.run_initial_build(
-                    self.project, self.record(), coordinator=self.coordinator, report={},
-                    start_service=worker.start_owned_embed_service))
-                if answers[-1]['state'] != 'pending':
-                    break
-        self.assertIn(answers[-1]['state'], ('indexed', 'unchanged'), answers)
-        self.assertEqual(FakeProvider.calls, [])
-        self.assertEqual(self.coordinator.lanes, [])
-        self.assertTrue(stub.closed)
-
-    def test_fresh_reuse_sample_defers_while_the_resident_model_prepares(self):
-        self.corpus(1)
-        self.register(fresh=True)
-        with mock.patch('laya_qmd_vector_reuse.for_initial_build',
-                        return_value=self.reuse_stub(found=True, sample=True)), \
-             mock.patch('laya_embed_resident.ensure_running',
-                        side_effect=ResourceDeferred('laya_service_preparing')) as owner:
-            first = worker.run_initial_build(
-                self.project, self.record(), coordinator=self.coordinator, report={},
-                start_service=worker.start_owned_embed_service)
-        owner.assert_called_once()
-        self.assertNotEqual(first.get('reason'), 'laya_service_preparing', first)
-        self.assertEqual(FakeProvider.calls, [])
-        self.assertEqual(self.coordinator.lanes, [])
-
-    def test_fresh_reuse_miss_attaches_the_resident_model_in_the_lane(self):
+    def test_fresh_build_attaches_the_resident_model_in_the_lane(self):
         from laya_embed_resident import AttachedService
         self.corpus(1)
         self.register(fresh=True)
-        with mock.patch('laya_qmd_vector_reuse.for_initial_build',
-                        return_value=self.reuse_stub(found=False)), \
-             mock.patch('laya_embed_resident.ensure_running',
+        with mock.patch('laya_embed_resident.ensure_running',
                         return_value=AttachedService()) as owner, \
              mock.patch.object(worker, 'start_owned_embed_service',
                                side_effect=AssertionError('transient model started')):

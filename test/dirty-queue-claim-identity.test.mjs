@@ -7,5 +7,5 @@ test('conditional dirty queue ACK refuses a stale identity and keeps legacy ACK 
     encoding: 'utf8', timeout: 30000, env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}
   });
   assert.equal(p.status, 0, p.stdout + p.stderr);
-  assert.match(p.stderr, /Ran 16 tests/);
+  assert.match(p.stderr, /Ran 13 tests/);
 });

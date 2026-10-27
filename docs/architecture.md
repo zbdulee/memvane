@@ -683,7 +683,6 @@ hooks:
 | `sync` | `core/sync.py` plus backend index kick |
 | `wiki-compile` | `core/wiki_extract.py` and `core/wiki_compile.py` |
 | `wiki-dedup` | `core/wiki_dedup_resolve.py` via resolver workflow |
-| `enable-compile` | `core/update.sh --enable-compile` |
 
 Manual skills may print diagnostics. Hook paths should stay quiet.
 

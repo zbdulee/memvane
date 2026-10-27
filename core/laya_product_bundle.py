@@ -46,8 +46,6 @@ ARTIFACTS = (
     'laya_qmd_cutover.py',
     'laya_qmd_migration.py',
     'laya_package.py',
-    'laya_install_binding.py',
-    'laya_backup_preflight.py',
     'laya_product_bundle.py',
     'laya_install_journal.py',
 )

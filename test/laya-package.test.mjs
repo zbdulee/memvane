@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 
-test('Laya source package and backup preflight use synthetic isolated evidence', () => {
+test('Laya source package evidence uses synthetic isolated fixtures', () => {
   const run = spawnSync('python3', ['-B', 'test/fixtures/laya-package-checks.py'], {
     encoding: 'utf8', timeout: 90000,
     env: {...process.env, QMD_RECALL_LOG: '', QMD_REAL_MODEL_TESTS: '',
@@ -10,5 +10,5 @@ test('Laya source package and backup preflight use synthetic isolated evidence',
   });
   assert.equal(run.status, 0,
     `python status=${run.status} signal=${run.signal} error=${run.error?.code ?? 'none'}\n${run.stdout}\n${run.stderr}`);
-  assert.match(run.stderr, /Ran 10 tests/);
+  assert.match(run.stderr, /Ran 5 tests/);
 });

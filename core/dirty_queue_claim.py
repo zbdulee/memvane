@@ -97,7 +97,6 @@ def _identity(value):
 
 
 def _valid_identity(expect):
-    # Same shape shadow_ack_policy accepts for a claim.
     return (isinstance(expect, dict) and set(expect) == IDENTITY_KEYS
             and isinstance(expect['id'], str) and 0 < len(expect['id']) <= MAX_IDENTITY_ID
             and isinstance(expect['digest'], str)
