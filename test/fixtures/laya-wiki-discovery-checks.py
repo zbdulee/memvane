@@ -75,7 +75,9 @@ class DiscoveryChecks(unittest.TestCase):
             'compile': {'mode': 'auto-wiki', 'triggers': list(triggers),
                         'extractor': {'builtins': ['claude']}}}), encoding='utf-8')
         record = {'schema': host_route.SCHEMA_V2, 'status': 'active', 'projectRoot': str(self.home),
-            'settingsSha256': hashlib.sha256(settings.read_bytes()).hexdigest(),
+            'settingsSha256': host_route.settings_identity_digest(self.home, [
+                {'name': 'alpha', 'role': 'raw', 'sourceRoot': str(self.alpha)},
+                {'name': 'beta', 'role': 'wiki', 'sourceRoot': str(self.beta)}]),
             'dbPath': str(self.index_path), 'queuePath': str(self.queue_path),
             'dbIncarnation': self.incarnation, 'scopeId': SCOPE,
             'pluginRoot': str(Path(response.__file__).resolve().parents[1]),

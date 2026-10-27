@@ -2,13 +2,11 @@
 
 The route record carries ``settingsSha256`` and its own digest is then bound
 by the private ``reviewed-route.json``, the install journal's selected route
-digest, the selection ledger (fresh-wiki or QMD-origin) and the project
+digest, the fresh-wiki selection ledger and the project
 selection marker. A rebind always writes the resolved settings identity
 (``laya_index_host_route.settings_identity_digest``) into the route, so a
-later ``skipPaths`` edit needs no rebind. Two callers move it:
-``settings_migration`` when a settings rewrite keeps the collection identity,
-and ``laya_origin_detach`` when it converts a route that still binds the
-settings file bytes (same settings bytes on both sides). Only
+later ``skipPaths`` edit needs no rebind. ``settings_migration`` moves it
+when a settings rewrite keeps the collection identity. Only
 ``settingsSha256`` moves, never the index store, scope, generation, vector
 profile or plugin bundle.
 
@@ -309,25 +307,21 @@ def verify_read_only(decision):
 
 class _Ledger:
     def __init__(self, origin):
+        if origin != 'fresh':
+            from laya_ledger_common import QMD_ORIGIN_DETACH_REQUIRED
+            _fail(QMD_ORIGIN_DETACH_REQUIRED)
+        import laya_fresh_wiki_origin as module
         self.origin = origin
-        if origin == 'fresh':
-            import laya_fresh_wiki_origin as module
-        else:
-            # Only a QMD-origin ledger loads the QMD cutover module.
-            import laya_qmd_cutover as module
         self.module = module
         self.name = dict(LEDGERS)[origin]
 
     def load(self, path):
-        return (self.module._load(path) if self.origin == 'fresh' else
-                self.module._ledger(path))
+        return self.module._load(path)
 
     def marker(self, row):
         return _canonical(self.module._marker(row))
 
     def write(self, path, row):
-        if self.origin == 'qmd':
-            self.module._validated(dict(row), path)
         self.module._write(path, row, replace=True)
         self.load(path)
 
@@ -437,11 +431,6 @@ def _raw_move(ledger, row, new_row, state, decision, after, exact):
     if ledger.origin == 'fresh' and new_raw['sourceRoot'] != row['projectRoot']:
         # A fresh-wiki selection always binds the whole project as raw.
         _fail('rebound_route_unsupported', routeReason='fresh_wiki_raw_root')
-    if ledger.origin == 'qmd':
-        try:
-            ledger.module._validated(dict(new_row), Path(state) / ledger.name)
-        except Exception as exc:
-            _fail('rebound_route_unsupported', routeReason=str(exc) or type(exc).__name__)
     try:
         path, old, new = discovery.rebased_cursor(decision, after)
     except discovery.DiscoveryBlocked as exc:
@@ -450,12 +439,7 @@ def _raw_move(ledger, row, new_row, state, decision, after, exact):
         _fail('raw_discovery_rebase_refused',
               discoveryReason=str(exc) or type(exc).__name__)
     exact.update({'discoveryPath': str(path), 'oldDiscovery': old, 'newDiscovery': new})
-    forfeits = []
-    if ledger.origin == 'qmd' and old_raw['name'] != new_raw['name']:
-        # The QMD source digest is bound to the ledger's collection names;
-        # the QMD store keeps the old raw name, so restore cannot re-prove it.
-        forfeits.append('qmd_origin_restore')
-    return {'rawCollection': {'from': old_raw, 'to': new_raw}, 'forfeits': forfeits}
+    return {'rawCollection': {'from': old_raw, 'to': new_raw}, 'forfeits': []}
 
 
 def _provider_lane():

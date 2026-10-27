@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 
 import laya_host_response as host  # noqa: E402
+from laya_index_host_route import settings_identity_digest  # noqa: E402
 
 GENERATION = 'g-' + 'c' * 32
 PROOF_KEYS = ('projectRoot', 'scopeId', 'dbIncarnation', 'installId', 'generation')
@@ -84,7 +85,9 @@ class OwnerRouting(unittest.TestCase):
         state = self.home / 'laya-state' / root.name
         record = {'schema': 'laya-index-route-v1', 'status': 'active',
                   'projectRoot': str(root),
-                  'settingsSha256': sha(root / '.auto-context/settings.json'),
+                  'settingsSha256': settings_identity_digest(root, [
+                      {'name': collection, 'role': 'raw',
+                       'sourceRoot': str(root / 'docs')}]),
                   'dbPath': str(state / 'index.sqlite'),
                   'queuePath': str(state / 'queue.sqlite'),
                   'dbIncarnation': tag(root, 'incarnation'), 'scopeId': tag(root, 'scope'),

@@ -11,7 +11,7 @@ the phase the installer's finalize gate reads.
 Phases (``PHASES``):
 
 * ``registered``: install created every store, the journal is
-  ``candidate_ready`` and the project still selects QMD. No source byte has
+  ``candidate_ready`` and no route is selected yet. No source byte has
   been read and nothing is staged.
 * ``building``: a bounded runtime step ran; the candidate head does not yet
   serve a complete, servable catalog snapshot with a vector seal (scan, fill,
@@ -23,14 +23,14 @@ Phases (``PHASES``):
 * ``blocked``: a step reported a block that retrying cannot clear (invalid
   source, vector budget, a member the provider refuses). It is re-evaluated by
   every wake and cleared by an explicit rescan.
-* ``bound``: finalize bound the sealed candidate to the QMD origin (a v3
-  ``laya_qmd_cutover`` ledger and project marker). The wake does nothing
-  more; activation is a separate explicit installer step. Between the
-  marker and this phase (an interrupted finalize) the wake defers without
-  stepping, and a repeated finalize records ``bound``. If QMD changes
-  before activation the binding is retired and the record stays ``bound``
-  for good; ``retire_project_pointer`` releases the project pointer so a
-  fresh install (its own state root and record) can register.
+* ``bound``: finalize bound the sealed candidate to its selection ledger
+  (``laya_fresh_wiki_origin`` ledger and project marker). The wake does
+  nothing more; activation is a separate explicit installer step. Between
+  the marker and this phase (an interrupted finalize) the wake defers
+  without stepping, and a repeated finalize records ``bound``. A retired
+  binding keeps the record ``bound`` for good; ``retire_project_pointer``
+  releases the project pointer so a fresh install (its own state root and
+  record) can register.
 * ``upgrading``: the installer owns an inactive bundle replacement. Older
   workers reject this unknown phase; current workers defer without writing.
   The original identity and stores remain available for explicit recovery.
@@ -77,10 +77,8 @@ IDENTITY_FIELDS = frozenset((
     'projectRoot', 'stateRoot', 'installId', 'scopeId', 'collections',
     'candidateDb', 'queueDb', 'catalogDb', 'bindingStore', 'dbIncarnation',
     'journalPath', 'routeFile', 'routeSha256', 'attestationSha256',
-    'vectorProfileId', 'sourceDb', 'sourceFormat', 'proposalSha256',
-    'providerProposalSha256'))
-REPLACEMENT_IDENTITY_FIELDS = IDENTITY_FIELDS | {'replacementEvidenceSha256'}
-FRESH_WIKI_IDENTITY_FIELDS = (IDENTITY_FIELDS - {'sourceDb', 'sourceFormat'}) | {'originMode'}
+    'vectorProfileId', 'proposalSha256', 'providerProposalSha256',
+    'originMode'))
 RECORD_FIELDS = frozenset(('schema', 'epoch', 'phase', 'identity', 'progress',
                            'sealed', 'freshness', 'blocked', 'updatedNs'))
 SEALED_FIELDS = frozenset(('generation', 'bindingDigest', 'sourceManifest',
@@ -182,14 +180,10 @@ def _write_json(path, value, *, replace, max_bytes=MAX_RECORD_BYTES):
 
 
 def _validate_identity(identity):
-    if not isinstance(identity, dict) or set(identity) not in (
-            IDENTITY_FIELDS, REPLACEMENT_IDENTITY_FIELDS,
-            FRESH_WIKI_IDENTITY_FIELDS):
+    if (not isinstance(identity, dict) or set(identity) != IDENTITY_FIELDS or
+            identity['originMode'] != 'fresh_wiki_only'):
         _fail('initial_build_identity_invalid')
-    fresh = set(identity) == FRESH_WIKI_IDENTITY_FIELDS
-    if fresh and identity['originMode'] != 'fresh_wiki_only':
-        _fail('initial_build_identity_invalid')
-    for key in (FRESH_WIKI_IDENTITY_FIELDS if fresh else IDENTITY_FIELDS) - {'collections'}:
+    for key in IDENTITY_FIELDS - {'collections'}:
         if not isinstance(identity[key], str) or not identity[key]:
             _fail('initial_build_identity_invalid')
     for key in ('installId', 'scopeId', 'dbIncarnation'):
@@ -199,11 +193,8 @@ def _validate_identity(identity):
                 'proposalSha256', 'providerProposalSha256'):
         if not _HEX64.fullmatch(identity[key]):
             _fail('initial_build_identity_invalid')
-    if ('replacementEvidenceSha256' in identity and
-            not _HEX64.fullmatch(identity['replacementEvidenceSha256'])):
-        _fail('initial_build_identity_invalid')
     for key in ('projectRoot', 'stateRoot', 'candidateDb', 'queueDb', 'catalogDb',
-                'bindingStore', 'journalPath', 'routeFile') + (() if fresh else ('sourceDb',)):
+                'bindingStore', 'journalPath', 'routeFile'):
         if not Path(identity[key]).is_absolute():
             _fail('initial_build_identity_invalid')
     stores = [identity[key] for key in ('candidateDb', 'queueDb', 'catalogDb',
@@ -331,7 +322,7 @@ def retire_project_pointer(identity):
     """Release the project's wake pointer of a retired build; deletes no store.
 
     The caller holds the build ``owner``. The record is either ``bound`` with
-    its QMD binding retired, or terminal ``retired`` because no work started;
+    its selection binding retired, or terminal ``retired`` because no work started;
     in both cases a wake cannot step it. The exact pointer bytes are first
     archived, no-clobber, as
     ``RETIRED_POINTER`` in the build's state root. Then only a pointer that

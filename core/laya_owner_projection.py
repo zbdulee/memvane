@@ -101,8 +101,7 @@ def project_owner(raw, base, *, snapshot=None, home=None):
         identity = _root_identity(root)
     except (OSError, ValueError, TypeError, UnicodeError):
         return None, 'owner_route_unreadable'
-    if digest != owner['settingsSha256'] and not _identity_approved(root, digest, decision,
-                                                                     owner):
+    if not _identity_approved(root, digest, decision, owner):
         return None, 'stale_approval'
     if _collection_root(decision, owner['collection']) != owner['path']:
         return None, 'collection_root_mismatch'

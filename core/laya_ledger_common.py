@@ -1,13 +1,16 @@
-"""Selection-ledger primitives shared by every Laya index origin.
+"""Selection-ledger primitives shared by the Laya selection and its upgrades.
 
-The fresh-wiki ledger, the QMD-origin ledger, the selected-route classifier
-and the active/bound/inactive bundle upgrades all read, write and lock their
-records through these functions. This module imports only the standard
-library at module level, so a hook that classifies a fresh-wiki marker never
-loads the QMD-origin cutover or migration code.
+The fresh-wiki ledger, the selected-route classifier and the
+active/bound/inactive bundle upgrades all read, write and lock their records
+through these functions. This module imports only the standard library at
+module level.
 
-``CutoverBlocked`` keeps its name: callers match it by class name, and
-``laya_qmd_cutover`` re-exports the same class object.
+A QMD-origin selection (``qmd-cutover.json`` and its marker schema) is no
+longer served or upgraded. Every writer refuses a state root that still
+holds that ledger as ``qmd_origin_detach_required``, and the route selector
+classifies its marker ``blocked`` with the same reason.
+
+``CutoverBlocked`` keeps its name: callers match it by class name.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import tempfile
 
 QMD_LEDGER = 'qmd-cutover.json'
 QMD_MARKER_SCHEMA = 'laya-qmd-selection-marker-v1'
+QMD_ORIGIN_DETACH_REQUIRED = 'qmd_origin_detach_required'
 # One project-wide lock name shared by every origin and by older installed
 # bundle copies; renaming it would stop cross-version mutual exclusion.
 OPERATION_LOCK = 'laya-qmd-cutover-operation.lock'
@@ -137,9 +141,10 @@ def _preflight_multi_settings(route, project_root):
     if settings.is_symlink():
         _fail('cutover_settings_unsafe')
     raw = _read_regular(settings, 2 * 1024 * 1024)
-    # Identity-bound routes are proved below against the resolved settings.
-    if (_sha(raw) != route['settingsSha256'] and route['settingsSha256'] !=
-            settings_identity_digest(project_root, route['collections'])):
+    # The route binds the resolved settings identity, proved below against
+    # the settings file itself.
+    if route['settingsSha256'] != settings_identity_digest(project_root,
+                                                           route['collections']):
         _fail('cutover_settings_changed')
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
@@ -229,11 +234,18 @@ def _operation_lock(marker_path):
         os.close(fd)
 
 
-def inspect_qmd_ledger(journal_path):
-    """``laya_qmd_cutover.inspect_bound_cutover``, loading that module only
-    when a QMD-origin ledger file sits beside ``journal_path``."""
-    ledger_path = Path(journal_path).parent / QMD_LEDGER
-    if not ledger_path.exists() and not ledger_path.is_symlink():
-        return None
-    from laya_qmd_cutover import inspect_bound_cutover
-    return inspect_bound_cutover(journal_path)
+def qmd_ledger_present(state_root):
+    """True when ``state_root`` still holds a QMD-origin selection ledger."""
+    path = Path(state_root) / QMD_LEDGER
+    return path.exists() or path.is_symlink()
+
+
+def refuse_qmd_origin(state_root):
+    """Refuse a state root still bound to a QMD-origin ledger.
+
+    Only the detach step of releases 0.37.8 to 0.37.10 converts such a
+    ledger to the fresh-wiki ledger; this code never activates, upgrades or
+    restores it.
+    """
+    if qmd_ledger_present(state_root):
+        _fail(QMD_ORIGIN_DETACH_REQUIRED)

@@ -89,7 +89,7 @@ class AbandonCase(unittest.TestCase):
             'journalPath': str(self.state / 'install-journal.sqlite'),
             'routeFile': str(route_file), 'routeSha256': hashlib.sha256(self.route).hexdigest(),
             'attestationSha256': 'b' * 64, 'vectorProfileId': 'a' * 64,
-            'sourceDb': str(self.project / 'qmd.sqlite'), 'sourceFormat': 'qmd-2.5.3',
+            'originMode': 'fresh_wiki_only',
             'proposalSha256': 'd' * 64, 'providerProposalSha256': 'e' * 64}
         initial_build.create_or_verify(self.identity)
         initial_build.register_project(self.identity)
@@ -231,7 +231,6 @@ class AbandonCase(unittest.TestCase):
             self.abandon_inactive()
 
     def test_partly_built_refuses_selection_first_write_and_bound_ledger(self):
-        import laya_qmd_cutover
         self.partly_built()
         for key, value in [('selected', {'installId': INSTALL}), ('newWriteSeen', True)]:
             old = self.journal[key]
@@ -239,12 +238,16 @@ class AbandonCase(unittest.TestCase):
             with self.assertRaises(product.InstallBlocked):
                 self.abandon_inactive()
             self.journal[key] = old
-        # The QMD-origin ledger is probed only when its file exists beside the journal.
+        # A QMD-origin ledger beside the journal refuses as detach required.
         ledger = self.state / 'qmd-cutover.json'
         ledger.write_text('{}')
-        with mock.patch.object(laya_qmd_cutover, 'inspect_bound_cutover', return_value={'phase':'prepared'}):
-            with self.assertRaisesRegex(product.InstallBlocked, 'inactive_build_cutover_started'):
-                self.abandon_inactive()
+        with self.assertRaisesRegex(Exception, '^qmd_origin_detach_required$'):
+            self.abandon_inactive()
+        ledger.unlink()
+        ledger = self.state / 'fresh-wiki-cutover.json'
+        ledger.write_text('{}')
+        with self.assertRaisesRegex(product.InstallBlocked, 'inactive_build_cutover_started'):
+            self.abandon_inactive()
         ledger.unlink()
         self.assertEqual(initial_build.read(self.state)['phase'], 'building')
         self.assertFalse((self.state / product.INACTIVE_RETIREMENT).exists())

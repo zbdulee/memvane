@@ -54,7 +54,7 @@ class HostRouteChecks(unittest.TestCase):
     def record(self, **changes):
         row = {"schema": route.SCHEMA, "status": "active",
                "projectRoot": str(self.root),
-               "settingsSha256": hashlib.sha256(self.settings.read_bytes()).hexdigest(),
+               "settingsSha256": "0" * 64,
                "dbPath": str(self.root / "private-index.sqlite"),
                "queuePath": str(self.root / "private-queue.sqlite"),
                "dbIncarnation": "1" * 32,
@@ -67,8 +67,20 @@ class HostRouteChecks(unittest.TestCase):
                "ownershipManifestSha256": "5" * 64,
                "vectorProfile": vector_profile()}
         row.update(changes)
+        if "settingsSha256" not in changes:
+            try:
+                row["settingsSha256"] = self.identity(row)
+            except KeyError:
+                pass  # a v2 caller sets ``collections`` and then ``write``s
         self.path.write_text(json.dumps(row))
         return row
+
+    def identity(self, row):
+        return route.settings_identity_digest(self.root, route.route_collections(row))
+
+    def write(self, row):
+        """Write ``row`` bound to the settings identity of its own collections."""
+        self.path.write_text(json.dumps({**row, "settingsSha256": self.identity(row)}))
 
     def state(self, cwd=None, action="recall"):
         return route.select_route(str(cwd or self.root), action=action)["state"]
@@ -85,11 +97,23 @@ class HostRouteChecks(unittest.TestCase):
                 self.assertEqual(self.state(nested, action), "candidate")
         self.assertFalse((self.root / "private-index.sqlite").exists())
 
-    def test_changed_settings_are_blocked_on_next_selection(self):
+    def test_changed_settings_identity_is_blocked_on_next_selection(self):
         self.record()
         self.assertEqual(self.state(), "candidate")
         self.settings.write_text(self.settings.read_text() + "\n")
-        self.assertEqual(self.state(), "blocked")
+        self.assertEqual(self.state(), "candidate")  # same identity, new bytes
+        cfg = json.loads(self.settings.read_text())
+        cfg["collectionPaths"] = {"docs": "."}
+        self.settings.write_text(json.dumps(cfg))
+        decision = route.select_route(str(self.root))
+        self.assertEqual((decision["state"], decision["reason"]),
+                         ("blocked", "route_settings_changed"))
+
+    def test_byte_bound_route_is_blocked(self):
+        self.record(settingsSha256=hashlib.sha256(self.settings.read_bytes()).hexdigest())
+        decision = route.select_route(str(self.root))
+        self.assertEqual((decision["state"], decision["reason"]),
+                         ("blocked", "route_settings_changed"))
 
     def test_automatic_compile_setting_blocks_selection(self):
         self.record()
@@ -114,7 +138,7 @@ class HostRouteChecks(unittest.TestCase):
         record['collections'] = [
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         decision = route.select_route(str(self.root))
         self.assertEqual(decision['state'], 'candidate', decision)
         self.assertEqual(decision['scopeId'], '6' * 32)
@@ -161,7 +185,7 @@ class HostRouteChecks(unittest.TestCase):
                 record['collections'] = [
                     {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
                     {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
-                self.path.write_text(json.dumps(record))
+                self.write(record)
                 decision = route.select_route(str(self.root))
                 self.assertEqual(decision['state'], 'candidate', decision)
                 self.assertEqual(decision['recallSettings']['recallStrategy'], 'wikiOnly')
@@ -170,8 +194,7 @@ class HostRouteChecks(unittest.TestCase):
                                  {'wiki': str(self.auto / 'wiki')})
         settings['skipPaths'] = ['build', 3]
         self.settings.write_text(json.dumps(settings))
-        record['settingsSha256'] = hashlib.sha256(self.settings.read_bytes()).hexdigest()
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         self.assertEqual(route.select_route(str(self.root))['reason'],
                          'selected_recall_settings_unsupported')
 
@@ -187,7 +210,7 @@ class HostRouteChecks(unittest.TestCase):
         record['collections'] = [
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         self.assertEqual(route.select_route(str(self.root))['reason'],
                          'selected_compile_unsupported')
 
@@ -208,14 +231,12 @@ class HostRouteChecks(unittest.TestCase):
         record['collections'] = [
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         self.assertEqual(route.select_route(str(self.root))['state'], 'candidate')
         changed = json.loads(self.settings.read_text())
         changed['compile']['recallVerifiedOnly'] = False
         self.settings.write_text(json.dumps(changed))
-        record['settingsSha256'] = hashlib.sha256(
-            self.settings.read_bytes()).hexdigest()
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         self.assertEqual(route.select_route(str(self.root))['reason'],
                          'selected_compile_unsupported')
 
@@ -266,7 +287,7 @@ class HostRouteChecks(unittest.TestCase):
         self.record()
         record = json.loads(self.path.read_text())
         del record["vectorProfile"]
-        self.path.write_text(json.dumps(record))
+        self.write(record)
         self.assertEqual(self.state(), "blocked")
 
     def test_bad_project_or_package_binding_is_blocked(self):

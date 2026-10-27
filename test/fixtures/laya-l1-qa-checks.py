@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import runpy
 import shutil
 import stat
 import subprocess
@@ -172,14 +171,13 @@ from laya_index_claim_queue import ClaimQueue
 from laya_index_source_port import scan
 from laya_index_vector import (LayaVectorIndex, qmd_markdown_title,
                                source_evidence)
-from laya_index_host_route import FIELDS, RECORD, SCHEMA, select_route
+from laya_index_host_route import (FIELDS, RECORD, SCHEMA, select_route,
+                                   settings_identity_digest)
 from laya_install_journal import (JournalEvidenceError, cas_activate,
     cas_mark_new_write, cas_recover, cas_restore, cas_stage_update,
     create_journal, inspect_journal, verify_selected_route)
 from laya_product_bundle import (BundleEvidenceError, PLUGIN_PREFIXES, PLUGIN_ROOT_FILES,
     inspect_full_plugin_candidate, prepare_full_plugin_candidate)
-from laya_qmd_migration import (QMD_253, backup_qmd, inspect_qmd,
-    prepare_qmd_candidate, verify_restore)
 
 
 def _run_git(root, *args):
@@ -275,7 +273,9 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
     def _route(self, proof, generation, install_id, journal, db, queue, incarnation):
         route = {'schema': SCHEMA, 'status': 'active',
                  'projectRoot': str(self.project),
-                 'settingsSha256': hashlib.sha256(self.settings.read_bytes()).hexdigest(),
+                 'settingsSha256': settings_identity_digest(
+                     self.project, [{'name': 'docs', 'role': 'raw',
+                                     'sourceRoot': str(self.docs)}]),
                  'dbPath': str(db), 'queuePath': str(queue),
                  'dbIncarnation': incarnation, 'scopeId': 'a' * 32,
                  'collectionName': 'docs', 'sourceRoot': str(self.docs),
@@ -717,31 +717,6 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
             cwd=self.project, env=hook_env)
         self.assertEqual(tampered.returncode, 3)
         self.assertIn('QMD fallback refused', tampered.stderr)
-        self._global_untouched()
-
-    def test_qmd_format_snapshot_stages_only_and_preserves_global_qmd(self):
-        fixture = runpy.run_path(str(REPO / 'test' / 'fixtures' /
-                                     'laya-qmd-migration-checks.py'))
-        source = self.root / 'qmd-format.sqlite'
-        fixture['make_source'](source, QMD_253)
-        before = source.read_bytes()
-        inventory = inspect_qmd(source, QMD_253, 'docs')
-        backup = self.root / 'qmd-backup.sqlite'
-        proof = backup_qmd(source, QMD_253, 'docs', backup)
-        self.assertEqual(proof['source_digest'], inventory['digest'])
-        self.assertTrue(verify_restore(backup, QMD_253, 'docs',
-                                       inventory['digest'])['verified'])
-        candidate = self.root / 'staged-only.sqlite'
-        staged = prepare_qmd_candidate(
-            backup, QMD_253, 'docs', {'live.md': 'astral manuscript'},
-            candidate, 'a' * 32, 'migrated-1', migration_allowed=True,
-            expected_collection_root='/synthetic/worktree-a',
-            expected_source_digest=inventory['digest'])
-        self.assertFalse(staged['cutover_ready'])
-        with closing(LayaIndexA(candidate)) as index:
-            self.assertEqual(index.inspect()['generations'], 1)
-            self.assertIsNone(index.db.execute('SELECT gen FROM head').fetchone())
-        self.assertEqual(source.read_bytes(), before)
         self._global_untouched()
 
 

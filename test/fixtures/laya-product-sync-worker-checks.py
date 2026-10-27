@@ -480,84 +480,6 @@ class V2WorkerChecks(unittest.TestCase):
         self.assertEqual(self.run_worker()['state'],'unchanged')
         self.assertEqual(self.marks,[8,9])
 
-    def test_v2_cutover_origin_first_sync_is_unchanged_without_fence_or_inference(self):
-        # Origin = installer staging (prepare_qmd_candidate over a synthetic
-        # QMD-format DB) + the exact seal check/publish call of bind_qmd_origin.
-        # Journal, attestation, route bytes and the cutover ledger/marker are
-        # not exercised here; laya-qmd-cutover-checks.py covers those.
-        import hashlib,runpy,sqlite3
-        from laya_index_source_port import publish_collections_from_source,scan_collections
-        from laya_index_vector import profile_identity,verify_generation_seal
-        from laya_qmd_migration import (QMD_253,backup_qmd_collections,
-                                        inspect_qmd_collections,prepare_qmd_candidate)
-        make_source=runpy.run_path(str(Path(__file__).with_name(
-            'laya-qmd-migration-checks.py')))['make_source']
-        names=('alpha','beta');roots=dict(self.decision['collectionRoots'])
-        files={'beta/two.md':'purple finch'}
-        source,backup=self.home/'qmd.sqlite',self.home/'qmd-backup.sqlite'
-        make_source(source,QMD_253,documents=[('alpha','one.md','silver otter',1),
-                                              ('beta','two.md','purple finch',1)])
-        with closing(sqlite3.connect(source)) as db,db:
-            db.executemany('INSERT INTO store_collections(name,path) VALUES(?,?)',
-                           sorted(roots.items()))
-        backup_qmd_collections(source,QMD_253,names,backup)
-        digest=inspect_qmd_collections(source,QMD_253,names)['digest']
-        with closing(LayaIndexA(self.index_path)) as scratch:
-            manifest=scan_collections({'beta':roots['beta']},SCOPE,scratch).manifest
-        keys={path:(hashlib.sha256(body.encode('utf-8')).hexdigest(),
-                    qmd_markdown_title(body,path)) for path,body in files.items()}
-        profile_id=profile_identity(PROFILE['modelId'],PROFILE['embeddingFingerprint'],
-                                    PROFILE['dimension'])
-        candidate,queue=self.home/'candidate.sqlite',self.home/'candidate-queue.sqlite'
-        gen='gen-cutover'
-        prepared=prepare_qmd_candidate(backup,QMD_253,names,files,candidate,SCOPE,gen,
-            migration_allowed=True,expected_collection_root=roots,
-            expected_source_digest=digest,vector_batch={
-                'scope':SCOPE,'source_manifest':manifest,'qmd_source_digest':digest,
-                'model_id':PROFILE['modelId'],
-                'embedding_fingerprint':PROFILE['embeddingFingerprint'],
-                'dimension':PROFILE['dimension'],
-                'chunks':[{'hash':h,'title':t,'seq':0,'pos':0,'vector':[1.0,0.0]}
-                          for h,t in sorted(keys.values())]},
-            provider_approved=True,current_source_db=source,scope_collections=names)
-        self.assertEqual(prepared['vector_profile_id'],profile_id)
-        with closing(LayaIndexA(candidate)) as index:
-            index.db.execute('BEGIN')
-            try:self.assertEqual(verify_generation_seal(index,gen)['profile_id'],profile_id)
-            finally:index.db.rollback()
-            self.assertEqual(publish_collections_from_source(
-                index,{'beta':roots['beta']},SCOPE,None,gen,'qmd-migration',
-                claim_digest=digest,claim_epoch=0,require_vector=True),'published')
-            incarnation=index.incarnation()
-        ClaimQueue.create(queue,index_incarnation=incarnation).close()
-        self.index_path,self.queue_path=candidate,queue
-        self.decision.update(dbPath=str(candidate),queuePath=str(queue),
-                             dbIncarnation=incarnation)
-        def sealed():
-            with closing(LayaIndexA(candidate)) as index:
-                rows=set(index.db.execute('SELECT path,hash,title,profile_id '
-                                          'FROM gen_vector_rows WHERE gen=?',(gen,)))
-                sets=index.db.execute('SELECT COUNT(*) FROM vector_chunk_sets').fetchone()[0]
-                head=index.db.execute('SELECT gen FROM head WHERE scope=?',
-                                      (SCOPE,)).fetchone()[0]
-            return rows,sets,head
-        expected={(path,h,t,profile_id) for path,(h,t) in keys.items()}
-        self.assertEqual(sealed(),(expected,1,gen))
-        first=self.run_worker()
-        # The first sync after cutover starts the discovery cursor and says so.
-        self.assertIs(first.pop('wikiDiscovery')['cursorStarted'],True)
-        self.assertEqual(first,{'state':'unchanged','generation':gen,'claim':None})
-        # No journal CAS fence and no inference: the worker reuses the sealed
-        # namespaced (hash,title,profile) sets the cutover origin published.
-        self.assertEqual(self.marks,[])
-        self.assertEqual(self.embedded,[])
-        self.assertEqual(self.members(gen),['beta/two.md'])
-        self.assertEqual(self.identities(self.batches[0]),set(keys.values()))
-        self.assertEqual(self.batches[0]['source_manifest'],manifest)
-        self.assertEqual(sealed(),(expected,1,gen))
-        with closing(ClaimQueue.open(queue)) as claims:
-            self.assertEqual(claims.active_for_scope(SCOPE),[])
-
     def test_v1_source_root_is_passed_unchanged(self):
         decision={key:value for key,value in self.decision.items()
                   if key not in ('collections','collectionRoots')}
@@ -631,7 +553,9 @@ class V2WorkerChecks(unittest.TestCase):
             'collectionRoles':{'alpha':'raw','beta':'wiki'},
             'recallStrategy':'hierarchical','compile':{'mode':'off'}}),encoding='utf-8')
         record={'schema':host_route.SCHEMA_V2,'status':'active','projectRoot':str(self.home),
-            'settingsSha256':hashlib.sha256(settings.read_bytes()).hexdigest(),
+            'settingsSha256':host_route.settings_identity_digest(self.home,[
+                {'name':'alpha','role':'raw','sourceRoot':str(self.alpha)},
+                {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}]),
             'dbPath':str(self.index_path),'queuePath':str(self.queue_path),
             'dbIncarnation':self.incarnation,'scopeId':SCOPE,
             'pluginRoot':str(Path(response.__file__).resolve().parents[1]),

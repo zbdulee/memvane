@@ -1,10 +1,10 @@
 """Recoverable replacement of the sealed code for a selected Laya index.
 
-Both selection ledgers are supported: the fresh-wiki ledger
-(``fresh-wiki-cutover.json``) and the QMD-origin ledger (``qmd-cutover.json``).
-This changes bundle ownership, never the index generation, vector profile,
-scope, project, store paths, or QMD backup.  The ledger's upgrading phase
-fences readers while the provider lane excludes selected writers.
+The selection ledger is ``fresh-wiki-cutover.json``. This changes bundle
+ownership, never the index generation, vector profile, scope, project or
+store paths. The ledger's upgrading phase fences readers while the provider
+lane excludes selected writers. A state root that still holds a QMD-origin
+ledger refuses as ``qmd_origin_detach_required``.
 """
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from pathlib import Path
 import laya_fresh_wiki_origin as fresh
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
-from laya_ledger_common import QMD_LEDGER, _operation_lock
+from laya_ledger_common import (QMD_ORIGIN_DETACH_REQUIRED, _operation_lock,
+                                refuse_qmd_origin)
 from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   _canon as journal_canon,
                                   _provider_file_identity, cas_activate,
@@ -39,29 +40,27 @@ LEDGER_CHANGES = frozenset(('epoch', 'phase', 'routeSha256', 'attestationSha256'
 
 
 class _Ledger:
-    """One selection ledger's own loader, CAS writer, lock and marker.
+    """The fresh-wiki selection ledger's loader, CAS writer, lock and marker.
 
-    Attributes are looked up on the module at call time so a ledger module
-    keeps a single implementation of each operation.
+    Attributes are looked up on the module at call time so the ledger module
+    keeps a single implementation of each operation. An intent that names
+    the QMD origin refuses.
     """
 
-    def __init__(self, origin):
-        if origin not in ('fresh', 'qmd'):
+    origin = 'fresh'
+
+    def __init__(self, origin='fresh'):
+        if origin == 'qmd':
+            _fail(QMD_ORIGIN_DETACH_REQUIRED)
+        if origin != 'fresh':
             _fail('active_upgrade_origin_invalid')
-        self.origin = origin
-        if origin == 'fresh':
-            self.module = fresh
-        else:
-            # Only a QMD-origin ledger loads the QMD cutover module.
-            import laya_qmd_cutover as qmd
-            self.module = qmd
-        self.name = self.module.LEDGER
-        self.marker_name = self.module.MARKER
-        self.route_name = self.module.ROUTE
+        self.module = fresh
+        self.name = fresh.LEDGER
+        self.marker_name = fresh.MARKER
+        self.route_name = fresh.ROUTE
 
     def load(self, path):
-        return (fresh._load(path) if self.origin == 'fresh' else
-                self.module._ledger(path))
+        return fresh._load(path)
 
     def change(self, path, epoch, phase, next_phase):
         return self.module._change(path, epoch, phase, next_phase)
@@ -70,8 +69,6 @@ class _Ledger:
         return self.module._ledger_lock(path)
 
     def write(self, path, row):
-        if self.origin == 'qmd':
-            self.module._validated(dict(row), path)
         self.module._write(path, row, replace=True)
 
     def marker(self, row):
@@ -83,17 +80,16 @@ class _Ledger:
     def paths(self, project, journal):
         return self.module._paths(project, journal)
 
-    def fields(self, row):
-        return fresh.FIELDS if self.origin == 'fresh' else frozenset(row)
+    def fields(self, _row):
+        return fresh.FIELDS
 
 
 def _origin(state):
-    """The one selection ledger in this state root."""
-    names = [origin for origin, name in (('fresh', fresh.LEDGER), ('qmd', QMD_LEDGER))
-             if (state / name).exists() or (state / name).is_symlink()]
-    if len(names) != 1:
+    """The selection ledger in this state root."""
+    refuse_qmd_origin(state)
+    if not (state / fresh.LEDGER).exists() and not (state / fresh.LEDGER).is_symlink():
         _fail('active_upgrade_not_selected')
-    return _Ledger(names[0])
+    return _Ledger()
 
 
 def _intent_ledger(intent):
@@ -130,6 +126,8 @@ def _load_intent(state, project):
     value = build._read_json(path, max_bytes=LIMIT)
     if value is None:
         return None
+    if isinstance(value, dict) and 'origin' in value:
+        _Ledger(value['origin'])  # an intent of the QMD origin refuses here
     if (value.get('schema') != 'laya-active-upgrade-intent-v1' or
             value.get('projectRoot') != str(project) or
             value.get('stateRoot') != str(state) or
@@ -245,7 +243,6 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
     backup = inactive._backup(record['identity'], record, old_route, old_att,
                               counts)
     intent = {'schema': 'laya-active-upgrade-intent-v1',
-              **({'origin': 'qmd'} if ledger.origin == 'qmd' else {}),
               'projectRoot': str(project), 'stateRoot': str(state),
               'oldRecord': record, 'oldLedger': row, 'newLedger': new_row,
               'oldRoute': old_route.decode('utf-8'),

@@ -8,7 +8,7 @@
 | [원문 변경에서 위키 카드까지](02-source-to-wiki.md) | 변경 감지, 비동기 추출·검증·큐 |
 | [위키 색인·검색·주입](03-wiki-index-search.md) | 위키 전용 Laya 저장·검색, 선택된 카드와 출처 링크 |
 | [학습](04-learning.md) | 합성 준비, 자원 승인, 학습·모델 선택의 별도 단계 |
-| [이관·전환·백업·복구](05-migration-recovery.md) | QMD 원본 보존, 위키 전용 후보, 최초 쓰기 전후 복구 |
+| [온보딩·전환·복구](05-migration-recovery.md) | minimal settings 온보딩, 위키 전용 후보, 최초 쓰기 전후 복구 |
 
 각 문서에는 입력과 출력, 저장소, 동기·비동기 작업, 권한 경계와 실패·복구 분기가 표시돼 있습니다. 전체 구현 설명은 [상위 아키텍처](../../architecture.md), 행별 기준은 [QA 계약](../../release-agent-qa.md), 열린 QA 항목은 [TODO](../../TODO.md)를 보세요.
 

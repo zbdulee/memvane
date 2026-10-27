@@ -19,7 +19,7 @@ import setup_guard
 import setup_entry
 
 Shared = runpy.run_path('test/fixtures/shared-qmd-setup-checks.py')['SharedSetup']
-Migration = runpy.run_path('test/fixtures/laya-qmd-migration-checks.py')
+Migration = runpy.run_path('test/fixtures/qmd-collection-backup-checks.py')
 
 
 class LegacyEnrollmentGuard(Shared):

@@ -1,7 +1,6 @@
 """Installer-side capacity store creation (temp dirs only; no model or host)."""
 from __future__ import annotations
 
-import inspect
 import os
 from pathlib import Path
 import stat
@@ -66,10 +65,6 @@ class CapacityInstallChecks(unittest.TestCase):
         self.prepare()
         with self.assertRaisesRegex(install.InstallBlocked, 'capacity_store_mismatch'):
             install.prepare_capacity_stores(self.db, self.roots, SCOPE, '0' * 32)
-
-    def test_origin_installer_keeps_capacity_stores_off_by_default(self):
-        default = inspect.signature(install.prepare_owned_qmd_origin).parameters['capacity_stores']
-        self.assertIs(default.default, False)
 
 
 if __name__ == '__main__':

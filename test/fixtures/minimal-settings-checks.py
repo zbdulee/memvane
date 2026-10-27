@@ -83,10 +83,11 @@ class Project(unittest.TestCase):
     def write_route(self, collections, *, settings_bytes=None):
         private = self.home / "private-state"
         private.mkdir(mode=0o700, exist_ok=True)
-        data = settings_bytes if settings_bytes is not None else self.settings.read_bytes()
+        digest = (hashlib.sha256(settings_bytes).hexdigest() if settings_bytes is not None
+                  else route.settings_identity_digest(self.root, collections))
         record = {"schema": route.SCHEMA_V2, "status": "active",
                   "projectRoot": str(self.root),
-                  "settingsSha256": hashlib.sha256(data).hexdigest(),
+                  "settingsSha256": digest,
                   "dbPath": str(self.home / "private-index.sqlite"),
                   "queuePath": str(self.home / "private-queue.sqlite"),
                   "dbIncarnation": "1" * 32, "scopeId": "6" * 32,
@@ -180,8 +181,8 @@ class MinimalModelChecks(Project):
         self.assertEqual(config.load_project_config_raw(str(self.root)), {"name": "project"})
 
     def test_minimal_settings_select_a_v2_route(self):
-        data = self.write({"name": "project", "skipPaths": ["build"]})
-        self.write_route(self.derived_collections(), settings_bytes=data)
+        self.write({"name": "project", "skipPaths": ["build"]})
+        self.write_route(self.derived_collections())
         decision = route.select_route(str(self.root))
         self.assertEqual(decision["state"], "candidate", decision)
         self.assertEqual(decision["recallSettings"]["recallStrategy"], "wikiOnly")
@@ -189,15 +190,22 @@ class MinimalModelChecks(Project):
         self.assertEqual(route.wiki_index_roots(decision["collections"]),
                          {"project-wiki": str(self.auto / "wiki")})
 
-    def test_legacy_route_is_unchanged_and_byte_bound(self):
+    def test_route_binds_identity_not_settings_bytes(self):
         data = self.write({**LEGACY_EQUIVALENT,
                            "compile": {"mode": "auto-wiki",
                                        "triggers": ["post_tool_source", "manual"],
                                        "extractor": {"builtins": ["claude"]}}})
-        self.write_route(self.derived_collections(), settings_bytes=data)
+        self.write_route(self.derived_collections())
         self.assertEqual(route.select_route(str(self.root))["state"], "candidate")
         # The minimal file with the same identity is a different byte string.
         self.write({"name": "project", "skipPaths": LEGACY_EQUIVALENT["skipPaths"]})
+        self.assertEqual(route.select_route(str(self.root))["state"], "candidate")
+        # A route bound to the settings file bytes is no longer accepted.
+        self.write_route(self.derived_collections(), settings_bytes=data)
+        self.write({**LEGACY_EQUIVALENT,
+                    "compile": {"mode": "auto-wiki",
+                                "triggers": ["post_tool_source", "manual"],
+                                "extractor": {"builtins": ["claude"]}}})
         self.assertEqual(route.select_route(str(self.root))["reason"],
                          "route_settings_changed")
 

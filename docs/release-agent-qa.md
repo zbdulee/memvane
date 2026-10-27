@@ -954,14 +954,14 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
    named recovery state, or QMD-ready/completed result without loss of
    settings, wiki, source or original DB. A selected shared store/enrollment
    is preserved and resumed forward, not automatically rolled back.
-2. If this updated project selected a Laya QMD-origin route, request its
-   official restore **before** its first selected write. Expected: QMD is
-   selected, original DB and backups remain intact, and a fresh session can
-   search the restored selection. After a selected write, automatic rollback
-   must be refused and owned forward recovery must work. Distinct LI-RECOVER
-   assertions may reuse the same receipts. Never delete the retained
-   selection marker or treat a new origin plan after `restored_qmd` as an
-   identical installer retry.
+2. If this updated project selected a Laya route, request its official
+   restore **before** its first selected write. Expected: only the route file
+   this selection published is withdrawn, the candidate stores, ledger and
+   marker remain intact, and a fresh session no longer serves that route.
+   After a selected write, automatic rollback must be refused and owned
+   forward recovery must work. Distinct LI-RECOVER assertions may reuse the
+   same receipts. Never delete the retained selection marker or treat a new
+   origin plan after `restored_qmd` as an identical installer retry.
 3. Recheck pre-apply settings/wiki/source hashes, original DB integrity,
    selected route, status and Q-alpha in a fresh session. A repeated ordinary
    install must preserve those originals; it does not itself reselect Laya.

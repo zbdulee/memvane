@@ -10,9 +10,10 @@ and package identity before serving or writing anything.
 The route's ``settingsSha256`` binds the resolved settings identity
 (``settings_identity_digest``: project root plus each collection's name, role
 and source root, which include the wiki root). Editing ``skipPaths`` keeps that
-identity; renaming a collection changes it and blocks. A route written before
-identity binding holds the settings file's byte digest instead; it stays
-selectable, byte-bound, until ``laya_origin_detach`` converts it.
+identity; renaming a collection changes it and blocks. A route that binds any
+other digest (such as the settings file bytes) blocks as
+``route_settings_changed``. A QMD-origin selection marker blocks as
+``qmd_origin_detach_required``.
 """
 from __future__ import annotations
 
@@ -74,10 +75,10 @@ def settings_identity_digest(project_root, collections) -> str:
 
 
 def settings_binding_form(record: dict, settings_bytes: bytes):
-    """``'identity'`` or ``'bytes'`` for the route's settings digest, else None.
+    """``'identity'`` when the route binds its own collections' identity, else None.
 
-    Only the identity form is checked against the route's own collections
-    here; ``_classify_record`` derives them from the settings file first.
+    Only the route's own collections are checked here; ``_classify_record``
+    derives them from the settings file first.
     """
     digest = record.get("settingsSha256") if isinstance(record, dict) else None
     if not isinstance(digest, str):
@@ -88,8 +89,6 @@ def settings_binding_form(record: dict, settings_bytes: bytes):
             return "identity"
     except (KeyError, TypeError):
         pass
-    if digest == hashlib.sha256(settings_bytes).hexdigest():
-        return "bytes"
     return None
 
 
@@ -414,19 +413,15 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
             raise ValueError("invalid_queue_path")
         settings_bytes = (_read_regular(settings, MAX_SETTINGS_BYTES)
                           if settings_raw is None else settings_raw)
-        settings_digest = hashlib.sha256(settings_bytes).hexdigest()
-        # A byte-bound route (written before identity binding) matches the
-        # exact bytes; an identity-bound one matches the derived identity.
-        if settings_digest != record["settingsSha256"]:
-            try:
-                derived = _derived_collections(record, root, settings_bytes)
-            except (ValueError, TypeError, KeyError, UnicodeError):
-                derived = None
-            # Settings that no longer resolve to the bound identity are a
-            # settings change, whatever would have failed first.
-            if (derived is None or record["settingsSha256"] !=
-                    settings_identity_digest(root, derived)):
-                raise ValueError("route_settings_changed")
+        try:
+            derived = _derived_collections(record, root, settings_bytes)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            derived = None
+        # Settings that no longer resolve to the bound identity are a
+        # settings change, whatever would have failed first.
+        if (derived is None or record["settingsSha256"] !=
+                settings_identity_digest(root, derived)):
+            raise ValueError("route_settings_changed")
         raw_settings = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
         if not isinstance(raw_settings, dict):
             raise ValueError("invalid_route_settings")
@@ -546,8 +541,6 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         if build is None:
             return None
         identity = build['identity']
-        if identity.get('originMode') != 'fresh_wiki_only':
-            return None
         if build['phase'] not in ('registered', 'building', 'sealed'):
             return _decision('blocked', 'initial_preview_build_unavailable')
         state = Path(identity['stateRoot'])
@@ -731,11 +724,10 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if len(markers) > 1:
         return _decision("blocked", "ambiguous_selection_markers")
     if markers:
-        # Both installer origins keep a marker through restoration. Only the
-        # matching durable ledger can classify an absent route as legacy.
-        # Only the classifier the marker names is imported, so a fresh-wiki
-        # selection never loads the QMD-origin cutover or migration modules.
-        from laya_ledger_common import QMD_MARKER_SCHEMA, _read_json
+        # The marker stays through restoration. Only its durable ledger can
+        # classify an absent route as legacy.
+        from laya_ledger_common import (QMD_MARKER_SCHEMA,
+                                        QMD_ORIGIN_DETACH_REQUIRED, _read_json)
         from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
                                             classify_marker as classify_fresh)
         marker_root, marker_path = markers[0]
@@ -744,14 +736,10 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
             schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
         except (OSError, RuntimeError, ValueError, TypeError):
             schema = None
-        if schema == FRESH_MARKER_SCHEMA:
-            classifier = classify_fresh
-        elif schema == QMD_MARKER_SCHEMA:
-            from laya_qmd_cutover import classify_marker as classifier
-        else:
-            classifier = None
-        selection = (classifier(marker_root, marker_path, marker_path.parent / RECORD)
-                     if classifier else 'blocked')
+        if schema == QMD_MARKER_SCHEMA:
+            return _decision("blocked", QMD_ORIGIN_DETACH_REQUIRED)
+        selection = (classify_fresh(marker_root, marker_path, marker_path.parent / RECORD)
+                     if schema == FRESH_MARKER_SCHEMA else 'blocked')
         if selection == 'blocked':
             return _decision("blocked", "qmd_selection_uncertain")
         if selection == 'legacy':

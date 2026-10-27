@@ -63,11 +63,9 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 무관하게 적용됩니다. 에이전트에게 "이 프로젝트에서는 auto-context 꺼줘"라고 요청하면
 marker가 기록됩니다.
 
-**선택된 laya-db route.** route record는 settings 파일의 SHA-256을 묶습니다. minimal
-settings로 선택된 route는 유도된 legacy 모양으로 검사합니다. legacy 파일로 선택된
-route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파일을 손으로 다시 쓰면 다음
-훅에서 `route_settings_changed`로 막힙니다. 선택된 route의 settings는 아래 migration으로
-바꿉니다.
+**선택된 laya-db route.** route record는 settings 파일 바이트가 아니라 해석된 settings
+identity를 묶습니다(아래 "route의 settings binding"). minimal settings로 선택된 route는
+유도된 legacy 모양으로 검사합니다.
 
 **QMD 인덱스.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
 선택된 route의 원천 신선도 기준일 뿐, QMD collection이 아닙니다. `resolve_paths`는 이를
@@ -76,28 +74,6 @@ route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파�
 경로의 이 collection만 `indexed: false`로 내려갈 수 있고, 그 사이에도 다른 프로젝트의
 공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
 reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
-
-### QMD-origin detach와 settings binding 변환
-
-선택된 설치 하나를 fresh-wiki origin과 identity binding으로 한 번 옮깁니다
-(`core/laya_origin_detach.py`). `setup_entry.py plan-detach-qmd-origin --project <루트>`는
-읽기만 하고 남은 단계(`steps`), 포기하는 복원(`forfeits`), `proposalSha256`을 출력합니다.
-`detach-qmd-origin --project <루트> --approve-origin-detach
---accepted-detach-proposal-sha256 <digest>`가 같은 잠금 아래에서 제안을 다시 계산해 실행합니다.
-
-- QMD-origin(`qmd-cutover.json` v3 active): 끝난 번들 업그레이드 receipt 정리 →
-  `initial-build.json` identity를 fresh 형태로 정렬(원본은 `initial-build.pre-detach.json`) →
-  `fresh-wiki-cutover.json` 작성 → selection marker 원자 교체(commit point) → fresh 분류 확인 →
-  `qmd-cutover.json`을 `qmd-cutover.detached-<epoch>.json`으로 이름 변경. 모든 시점에서 route는
-  `candidate`입니다. commit point 전 실패는 되돌리고(`--rollback-origin-detach`로도 가능),
-  이후는 다시 실행해 앞으로만 진행합니다. `forfeits`에 `qmd_origin_restore`가 들어갑니다.
-  QMD backup과 사용자 QMD store는 지우지 않습니다.
-- 그다음(fresh-origin 설치는 이것만) 바이트를 묶는 route를 settings identity로 rebind합니다.
-  settings 파일은 바뀌지 않고, 중단되면 `rebinding` 판정으로 읽기 전용 검색을 유지합니다.
-
-SessionStart는 아직 옮기지 않은 설치에 대해 번들 업그레이드 worker를 한 번 띄우고, worker가
-업그레이드 전에 이 변환을 실행합니다. 결과는 state root의 `origin-detach-status.json`과
-`bundle-auto-upgrade.log`에 남고, 실패하면 설치는 그대로 검색됩니다.
 
 ### legacy settings를 minimal로 바꾸기
 
@@ -123,16 +99,15 @@ collection 이름과 정확히 같아야 합니다(`name_override_invalid` · `n
 해석된 settings identity(프로젝트 루트와 collection별 이름·role·루트, wiki 루트 포함)의
 digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `skipPaths`를 손으로
 고쳐도 route는 그대로 선택되고, `name`을 바꿔 collection 이름이 달라지면
-`route_settings_changed`로 막힙니다. identity binding 이전에 만든 route는 파일 바이트
-digest를 묶고, 변환될 때까지 정확히 같은 바이트에서만 선택됩니다. 변환은 아래 detach가
-맡습니다.
+`route_settings_changed`로 막힙니다. 다른 digest(예: settings 파일 바이트)를 묶은 route도
+같은 사유로 막힙니다.
 
 **선택된 route의 rebind.** 유도된 collection identity가 route가 묶은 것과 같으면, 번들
 업그레이드와 같은 잠금(install lock → cutover operation lock → provider lane) 아래에서
-route가 묶은 값을 새 settings identity로 옮깁니다(바이트를 묶는 route라면 identity로
-바뀌고, 이미 같은 identity를 묶으면 settings 파일만 다시 씁니다). install journal의 selected route
+route가 묶은 값을 새 settings identity로 옮깁니다(이미 같은 identity를 묶으면 settings
+파일만 다시 씁니다). install journal의 selected route
 digest, state root의 `reviewed-route.json`, route record의 `settingsSha256`, selection
-ledger(fresh-wiki 또는 QMD-origin)의 `routeSha256`, selection marker, settings 파일
+ledger(fresh-wiki)의 `routeSha256`, selection marker, settings 파일
 순서입니다. index store·scope·generation·vector profile·plugin bundle은 바뀌지 않습니다.
 시작 전에 state root에 `settings-rebind-intent.json`을 쓰고, 끝나면
 `settings-rebind-<digest>-settled.json`으로 옮깁니다. 이미 끝난 번들 업그레이드
@@ -147,8 +122,6 @@ digest와 함께 바뀌고, claim queue 옆 raw discovery cursor
 다시 쓰입니다. 이전 snapshot·pending 경로는 새 이름 아래로 옮겨져 마지막 drain 이후의
 수정·삭제를 그대로 찾고, 이전 루트 밖 파일은 현재 스캔(raw 스캔과 같은 규칙)으로 baseline에
 들어갑니다. 제안의 `rebind.rawCollection`이 이전·새 raw collection을 보여 줍니다.
-QMD-origin 선택에서 raw 이름이 바뀌면 QMD source digest를 다시 증명할 수 없으므로
-`rebind.forfeits`에 `qmd_origin_restore`가 표시되고, 이후 QMD로의 복원은 거부됩니다.
 이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
 revision 판정, 원문 삭제 시 카드 정리, SessionStart lifecycle)이 같은 규칙으로 다룹니다.
 settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
