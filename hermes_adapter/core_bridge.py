@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -20,6 +21,12 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 8.0
+# recall arms core/hook_budget.py (18s default) and keeps working after it
+# prints (learning capture, Top-K expansion, shadow). Hermes kills the child at
+# RECALL_TIMEOUT, so recall must finish its own budget first; the margin covers
+# interpreter startup before arm() and exit.
+RECALL_TIMEOUT = DEFAULT_TIMEOUT
+RECALL_BUDGET_MARGIN = 2.0
 def _plugin_root() -> Path:
     override = os.environ.get("QMD_HERMES_PLUGIN_ROOT_FOR_TEST")
     if override:
@@ -136,6 +143,34 @@ def _run(
         timeout=timeout,
         env=env,
     )
+
+
+def _recall_budget_env() -> Dict[str, str]:
+    """Bound recall's hook budget below RECALL_TIMEOUT, never above a user's own."""
+    budget = max(RECALL_TIMEOUT - RECALL_BUDGET_MARGIN, 2.0)
+    try:
+        configured = float(os.environ.get("QMD_HOOK_TOTAL_SECONDS", ""))
+    except ValueError:
+        configured = budget
+    if math.isfinite(configured) and 2.0 <= configured < budget:
+        budget = configured
+    return {"QMD_HOOK_TOTAL_SECONDS": f"{budget:g}"}
+
+
+def _run_recall(payload: dict) -> subprocess.CompletedProcess[str]:
+    """Run recall; on timeout keep the context it already flushed."""
+    argv = [sys.executable, str(_core_path("core", "recall.py"))]
+    try:
+        return _run(argv, payload=payload, timeout=RECALL_TIMEOUT,
+                    extra_env=_recall_budget_env())
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout or b""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", errors="replace")
+        # recall prints exactly one JSON line; drop a partial trailing line.
+        complete = out[:out.rfind("\n") + 1] if "\n" in out else ""
+        logger.debug("qmd-auto-context recall timed out; recovered=%s", bool(complete))
+        return subprocess.CompletedProcess(argv, -9, complete, "")
 
 
 def _run_quiet(argv: list[str], *, timeout: float = DEFAULT_TIMEOUT) -> None:
@@ -267,8 +302,7 @@ def recall_context(
         if not _scope_allowed('recall', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
             return None
         _ensure_background()
-        proc = _run([sys.executable, str(_core_path("core", "recall.py"))], payload=payload)
-        parsed = _json_stdout(proc)
+        parsed = _json_stdout(_run_recall(payload))
         if not parsed:
             return None
         context = (

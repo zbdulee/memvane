@@ -3264,7 +3264,9 @@ def _main():
                 'selected': selected_for_edit,
                 'provenance_complete': provenance_complete,
                 'selection_reason': live_reason if live_selection else selection_reason}
-        print(json.dumps(output, ensure_ascii=False))
+        # Flush before post-output learning work: a host that kills this
+        # process on its own timeout must still find the context in the pipe.
+        print(json.dumps(output, ensure_ascii=False), flush=True)
 
     # Optional learning observes eligible returned candidates; never changes output.
     if config.get('contextLearning', {}).get('capture') is True:

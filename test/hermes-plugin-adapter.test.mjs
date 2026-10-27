@@ -69,6 +69,53 @@ print(json.dumps(recall_context(user_message='검색 결과 정렬?', cwd='/tmp/
   }
 });
 
+test('Hermes recall bounds the core hook budget below its own kill timeout', () => {
+  const { root, core } = makeFakeRoot();
+  const envLog = join(root, 'recall.env.json');
+  makeExecutable(join(core, 'recall.py'), `#!/usr/bin/env python3\nimport json, os, sys\nsys.stdin.read()\nopen("${envLog}", "w").write(json.dumps(os.environ.get("QMD_HOOK_TOTAL_SECONDS")))\nprint(json.dumps({"hookSpecificOutput":{"additionalContext":"ok"}}))\n`);
+  const recall = `
+import json
+from hermes_adapter.core_bridge import recall_context
+print(json.dumps(recall_context(user_message='질문', cwd='/tmp/project')))
+`;
+  try {
+    const env = { QMD_HERMES_PLUGIN_ROOT_FOR_TEST: root, QMD_QUERY_FIXTURE: 'fixture.json' };
+    assert.deepEqual(JSON.parse(runPython(recall, { ...env, QMD_HOOK_TOTAL_SECONDS: '' })), { context: 'ok' });
+    assert.equal(JSON.parse(readFileSync(envLog, 'utf8')), '6', 'default 18s budget must not outlive the 8s Hermes kill');
+    runPython(recall, { ...env, QMD_HOOK_TOTAL_SECONDS: '3' });
+    assert.equal(JSON.parse(readFileSync(envLog, 'utf8')), '3', 'a smaller user budget is kept');
+    runPython(recall, { ...env, QMD_HOOK_TOTAL_SECONDS: '20' });
+    assert.equal(JSON.parse(readFileSync(envLog, 'utf8')), '6', 'a larger user budget is capped');
+  } finally {
+    removeTemp(root);
+  }
+});
+
+test('Hermes recall keeps flushed context when the core outlives the kill timeout', () => {
+  const { root, core } = makeFakeRoot();
+  // Prints and flushes like core/recall.py, then keeps working past the kill.
+  makeExecutable(join(core, 'recall.py'), `#!/usr/bin/env python3\nimport json, sys, time\nsys.stdin.read()\nprint(json.dumps({"hookSpecificOutput":{"additionalContext":"flushed"}}), flush=True)\ntime.sleep(30)\n`);
+  try {
+    const out = runPython(`
+import json
+import hermes_adapter.core_bridge as bridge
+bridge.RECALL_TIMEOUT = 1.0
+print(json.dumps(bridge.recall_context(user_message='질문', cwd='/tmp/project')))
+`, { QMD_HERMES_PLUGIN_ROOT_FOR_TEST: root, QMD_QUERY_FIXTURE: 'fixture.json' });
+    assert.deepEqual(JSON.parse(out), { context: 'flushed' });
+  } finally {
+    removeTemp(root);
+  }
+});
+
+test('recall flushes its injected context before post-output learning work', () => {
+  const recall = readFileSync('core/recall.py', 'utf8');
+  const printAt = recall.indexOf('print(json.dumps(output, ensure_ascii=False), flush=True)');
+  assert.ok(printAt > 0, 'final hook output must be flushed');
+  assert.ok(printAt < recall.indexOf('# Optional learning observes eligible returned candidates'),
+    'flush must precede capture/expansion work that can outlive a host timeout');
+});
+
 test('Hermes session update bridge mirrors run-hook backend lifecycle order', () => {
   const { root, core, managerLog } = makeFakeRoot();
   const stdinLog = join(root, 'update.stdin.json');
