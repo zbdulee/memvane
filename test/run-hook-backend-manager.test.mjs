@@ -12,9 +12,15 @@ function makeExecutable(path, body) {
   return path;
 }
 
+// The hook runs from a neutral cwd: a checkout of this repository may itself be
+// a selected Laya project (or a linked worktree of one), which routes hooks away
+// from the QMD backend path these tests exercise.
+const HOOK = join(process.cwd(), "hooks", "run-hook");
+
 function runHook(args, input, env = {}) {
-  return execFileSync("/bin/bash", ["hooks/run-hook", ...args], {
+  return execFileSync("/bin/bash", [HOOK, ...args], {
     input,
+    cwd: tmpdir(),
     encoding: "utf8",
     env: { ...process.env, ...env },
   });
@@ -159,8 +165,9 @@ test("index action stays silent if index_enqueue.py invocation fails, and still 
     const managerLog = join(d, "manager.log");
     const manager = makeExecutable(join(d, "manager.sh"), `#!/usr/bin/env bash\necho "$@" >> "${managerLog}"\n`);
 
-    const result = spawnSync("/bin/bash", ["hooks/run-hook", "index", "codex"], {
+    const result = spawnSync("/bin/bash", [HOOK, "index", "codex"], {
       input: "{}",
+      cwd: tmpdir(),
       encoding: "utf8",
       env: {
         ...process.env,

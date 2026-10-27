@@ -565,7 +565,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id):
             # Only a settled intent is archived, and ``_archive_finished_intent``
-            # (also the settings rebind's settle step) is that proof. A settled
+            # is that proof. A settled
             # intent is a receipt: its new bundle is now the bound one, which
             # its host may already have replaced or removed, so its files are
             # not re-proved here; ``_old_state`` proves the selection next.

@@ -86,7 +86,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-update-hook-') as name:
         time.sleep(.03)
     assert json.loads(retry_status.read_text())['status']=='completed'
     assert not (queue/(retry_key+'.job.json')).exists()
-    subprocess.run(['bash','hooks/run-hook','update-queued','codex'], input='{invalid',
+    # A malformed payload falls back to the process cwd: keep it neutral, since a
+    # checkout of this repository may itself be a selected Laya project.
+    subprocess.run(['bash',str(Path.cwd()/'hooks/run-hook'),'update-queued','codex'],
+                   input='{invalid',cwd=str(project),
                    text=True,capture_output=True,env=env,timeout=3,check=True)
     assert json.loads((queue/'enqueue.status.json').read_text())['status']=='enqueue_failed'
     assert 'enqueue failed:JSONDecodeError' in (queue/'enqueue.log').read_text()

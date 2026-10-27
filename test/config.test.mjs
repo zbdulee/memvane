@@ -68,7 +68,9 @@ test('dogfood project pins the wiki extractor reasoning-effort policy', () => {
     engines: {},
   };
   const settings = JSON.parse(readFileSync(join(projectRoot, '.auto-context', 'settings.json'), 'utf8'));
-  assert.deepEqual(settings.compile.reasoningEffort, policy);
+  // The dogfood settings are minimal; the policy is the derived default.
+  assert.deepEqual(Object.keys(settings).sort(), ['name', 'skipPaths']);
+  assert.equal(cfg.settingsModel, 'minimal');
   assert.deepEqual(cfg.compile.reasoningEffort, policy);
 });
 

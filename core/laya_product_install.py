@@ -167,11 +167,13 @@ def _write_or_verify_private(path, raw):
 # work bound of the in-process origin path only, never a corpus admission: a
 # source above it is planned as a background initial build instead.
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
-    """Review a new wiki-only Laya generation without claiming QMD vector provenance.
+    """Review a new wiki-only Laya generation from minimal project settings.
 
-    No QMD database is read, copied, or selected by this mode. The legacy
-    project settings remain byte-for-byte unchanged; the installer will build
-    a separate private generation from the canonical wiki root.
+    The canonical ``.auto-context/settings.json`` must be minimal
+    (``{name, skipPaths}``); any other shape refuses as
+    ``minimal_settings_required``. The settings file is never rewritten; the
+    installer builds a separate private generation from the canonical wiki
+    root. No QMD database is read, copied, or selected.
     """
     import config
     from laya_index_host_route import (_multi_settings_supported,
@@ -196,8 +198,11 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
         _fail('canonical_settings_required')
     raw = _read_regular(settings, MAX_SETTINGS_BYTES)
     settings_sha = hashlib.sha256(raw).hexdigest()
-    source_settings = config.expand_minimal_settings(
-        json.loads(raw.decode('utf-8'), object_pairs_hook=_unique))
+    parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique)
+    # A new selection starts only from minimal ``{name, skipPaths}`` settings.
+    if not config.is_minimal_settings(parsed):
+        _fail('minimal_settings_required')
+    source_settings = config.expand_minimal_settings(parsed)
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))
     roles = config.role_map(cfg)

@@ -62,9 +62,9 @@ case "$ACTION" in
         rm -f "$_laya_route_payload"
         trap - EXIT
         ;;
-      candidate|preview|rebinding|worktree)
-        # rebinding (settings rebind between steps) and worktree (linked git worktree
-        # of a selected main checkout) serve a published generation read-only.
+      candidate|preview|worktree)
+        # worktree (linked git worktree of a selected main checkout) serves a
+        # published generation read-only.
         # Replace this shell with the synchronous writer/query process. A host
         # timeout then kills the work itself, not a waiting shell with an
         # orphaned Python child. The open stdin fd survives unlinking.

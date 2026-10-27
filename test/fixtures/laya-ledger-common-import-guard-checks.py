@@ -73,7 +73,7 @@ class ImportGuard(unittest.TestCase):
             import laya_index_host_route, laya_host_response
             import laya_fresh_wiki_origin, laya_ledger_common
             import laya_active_upgrade, laya_bound_upgrade, laya_inactive_upgrade
-            import laya_bundle_upgrade, laya_settings_rebind
+            import laya_bundle_upgrade
             import laya_product_install, laya_product_sync_worker, setup_entry
             report(loaded=loaded())
         ''')
@@ -132,13 +132,12 @@ class ImportGuard(unittest.TestCase):
             report(loaded=loaded(), ran=ran, failed=failed)
         ''')
         self.assertEqual(out['failed'], 0)
-        self.assertEqual(out['ran'], 18)
+        self.assertEqual(out['ran'], 19)
         self.assertEqual(out['loaded'], [])
 
     def test_qmd_ledger_probe_and_refusal(self):
         out = run('''
             import laya_active_upgrade as active
-            import laya_settings_rebind as rebind
             from laya_ledger_common import (CutoverBlocked, qmd_ledger_present,
                                             refuse_qmd_origin)
             state = Path(sys.argv[1])
@@ -151,20 +150,19 @@ class ImportGuard(unittest.TestCase):
             except CutoverBlocked as exc:
                 refused = str(exc)
             reasons = []
-            for make in (lambda: active._origin(state), lambda: active._Ledger('qmd'),
-                         lambda: rebind._Ledger('qmd')):
+            for make in (lambda: active._origin(state), lambda: active._Ledger('qmd')):
                 try:
                     make()
                 except Exception as exc:
                     reasons.append(str(exc))
-            ledgers = [active._Ledger('fresh').name, rebind._Ledger('fresh').name]
+            ledgers = [active._Ledger('fresh').name]
             report(loaded=loaded(), absent=absent, refused=refused, reasons=reasons,
                    ledgers=ledgers)
         ''', str(self.state))
         self.assertFalse(out['absent'])
         self.assertEqual(out['refused'], 'qmd_origin_detach_required')
-        self.assertEqual(out['reasons'], ['qmd_origin_detach_required'] * 3)
-        self.assertEqual(out['ledgers'], ['fresh-wiki-cutover.json'] * 2)
+        self.assertEqual(out['reasons'], ['qmd_origin_detach_required'] * 2)
+        self.assertEqual(out['ledgers'], ['fresh-wiki-cutover.json'])
         self.assertEqual(out['loaded'], [])
 
     def test_shared_primitives_keep_lock_name_and_identity(self):

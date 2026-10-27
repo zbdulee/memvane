@@ -1,8 +1,8 @@
 """Current raw collection of a card's source entry, by label or by path.
 
 A card's ``sources``/``sourceRevisions`` entry names its raw collection. After
-a raw collection is renamed (for example a minimal-settings migration from
-``rccar-docs`` to ``rccar``), existing cards still carry the old label. The
+a raw collection is renamed (for example from ``rccar-docs`` to ``rccar``),
+existing cards still carry the old label. The
 selected recall reader already resolves such a label by path
 (``laya_host_response._revision_raw_root``); the compile side uses the same
 rule here, so a card citing a legacy label is the same source as a job for

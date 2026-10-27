@@ -74,24 +74,6 @@ def settings_identity_digest(project_root, collections) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def settings_binding_form(record: dict, settings_bytes: bytes):
-    """``'identity'`` when the route binds its own collections' identity, else None.
-
-    Only the route's own collections are checked here; ``_classify_record``
-    derives them from the settings file first.
-    """
-    digest = record.get("settingsSha256") if isinstance(record, dict) else None
-    if not isinstance(digest, str):
-        return None
-    try:
-        if digest == settings_identity_digest(record["projectRoot"],
-                                              route_collections(record)):
-            return "identity"
-    except (KeyError, TypeError):
-        pass
-    return None
-
-
 def route_collections(record: dict) -> list:
     """The ``{name, role, sourceRoot}`` collections a v1 or v2 route binds."""
     if record.get("schema") == SCHEMA:
@@ -347,14 +329,8 @@ def _candidate_paths(cwd: Path):
         yield directory, auto, path
 
 
-def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
-                     route_raw: bytes | None = None,
-                     settings_raw: bytes | None = None) -> dict:
-    """Apply the same settings and route checks to visible or reviewed records.
-
-    ``route_raw``/``settings_raw`` replace the two file reads only for an
-    in-flight settings rebind, whose intent holds both exact byte pairs.
-    """
+def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
+    """Apply the settings and route checks to the visible route record."""
     try:
         if auto.is_symlink() or path.is_symlink() or not auto.is_dir():
             raise ValueError("unsafe_route_path")
@@ -366,7 +342,7 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
         settings = auto / "settings.json"
         if settings.is_symlink():
             raise ValueError("unsafe_route_settings")
-        raw = _read_regular(path, MAX_RECORD_BYTES) if route_raw is None else route_raw
+        raw = _read_regular(path, MAX_RECORD_BYTES)
         record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
         if (not isinstance(record, dict) or
                 (record.get('schema'), set(record)) not in
@@ -411,8 +387,7 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
             raise ValueError("invalid_db_path")
         if not _canonical_absolute(queue_path) or queue_path == db_path:
             raise ValueError("invalid_queue_path")
-        settings_bytes = (_read_regular(settings, MAX_SETTINGS_BYTES)
-                          if settings_raw is None else settings_raw)
+        settings_bytes = _read_regular(settings, MAX_SETTINGS_BYTES)
         try:
             derived = _derived_collections(record, root, settings_bytes)
         except (ValueError, TypeError, KeyError, UnicodeError):
@@ -612,10 +587,6 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
     does not mean that an active product service is ready. The caller must use
     the runtime's own proof check; its failure may never select legacy QMD.
 
-    A route blocked only by an in-flight settings rebind classifies as
-    ``rebinding``: the host may serve the published generation read-only and
-    every other caller treats it like ``blocked``.
-
     A cwd inside a linked git worktree of a project whose main checkout has a
     verified selected route classifies as ``worktree`` (see
     ``_worktree_route``). The host serves the main checkout's published
@@ -626,14 +597,6 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
         worktree = _worktree_route(cwd, action)
         if worktree is not None:
             return worktree
-    if decision.get("state") == "blocked" and action in ROUTED_ACTIONS:
-        try:
-            import laya_settings_rebind
-            rebinding = laya_settings_rebind.in_flight_decision(cwd)
-        except Exception:
-            rebinding = None
-        if rebinding is not None:
-            return rebinding
     return decision
 
 
