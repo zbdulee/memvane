@@ -26,6 +26,7 @@ from resource_deferred import ResourceDeferred
 import compile_paths as cp
 import config as qmd_config
 import cooldown as qmd_cooldown
+import source_text
 from collection_match import select_collections
 from wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
@@ -931,7 +932,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     except ValueError:
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "unsafe_source_path"))
         return True, False, []
-    if src.suffix.lower() != ".md":
+    if not source_text.is_source_text(src.name):
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if is_hidden_source_path(rel):

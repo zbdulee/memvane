@@ -11,13 +11,21 @@ function validConfig(value) {
     Number.isInteger(value.dimension) && value.dimension > 0 && value.dimension <= 2048;
 }
 
+// Mirror of core/source_text.py SOURCE_TEXT_EXTENSIONS (parity is tested).
+const SOURCE_TEXT_EXTENSIONS = Object.freeze(['.md', '.markdown', '.mdx', '.txt', '.rst', '.adoc']);
+
+function isSourceText(path) {
+  const lower = path.toLowerCase();
+  return SOURCE_TEXT_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
 function validRequest(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) &&
     ['query', 'document', 'document_chunks'].includes(value.kind) &&
     typeof value.text === 'string' && value.text.length > 0 &&
     (value.title === null || (value.kind === 'document' && typeof value.title === 'string')) &&
     (value.kind !== 'document_chunks' || (value.title === null &&
-      typeof value.path === 'string' && value.path.endsWith('.md') &&
+      typeof value.path === 'string' && isSourceText(value.path) &&
       !value.path.startsWith('/') &&
       value.path.split('/').every(part => part && part !== '.' && part !== '..')));
 }

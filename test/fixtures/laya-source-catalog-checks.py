@@ -476,16 +476,22 @@ class ValidationTests(CatalogCase):
                                   'invalid UTF-8: plans/bad.md')
         bad.unlink()
 
-        # Hidden entries and non-Markdown files stay outside the contract.
+        # Hidden entries, denied directories and non-text files stay outside
+        # the contract; non-text symlinks (file or directory) are ignored.
         (self.plans / '.hidden.md').write_bytes(b'\xff')
-        (self.plans / 'notes.txt').write_bytes(b'\xff')
+        (self.plans / 'blob.bin').write_bytes(b'\xff')
+        (self.plans / 'notes.txt').write_text('plain notes\n', encoding='utf-8')
         hidden_dir = self.plans / '.git'
         hidden_dir.mkdir()
         os.symlink(outside, hidden_dir / 'link.md')
+        for denied in ('node_modules', 'build', 'vendor'):
+            self.write(self.plans, f'{denied}/pkg/README.md', '# dep\n')
+        os.symlink(self.plans / 'blob.bin', self.plans / 'link.bin')
+        os.symlink(self.base, self.plans / 'linkdir', target_is_directory=True)
         catalog.request_scan()
         done = drive(catalog)[-1]
         self.assertEqual(done['status'], 'complete')
-        self.assertEqual(done['published']['files'], 11)
+        self.assertEqual(done['published']['files'], 12)
         self.assertEqual(self.catalog_manifest(catalog), self.port_manifest())
 
     def test_binding_and_root_validation(self):

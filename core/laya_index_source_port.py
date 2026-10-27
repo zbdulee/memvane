@@ -5,14 +5,19 @@ approved source root. Every operation does a full scan of that root and then
 calls LayaIndexA's sealed API.
 
 Source contract
-  * Only non-hidden ``*.md`` regular files are enumerated. Hidden entries
-    (leading ``.``) and hidden directories are not walked. Other non-hidden
-    non-symlink entries are ignored.
-  * Any of the following raises ``IndexContractError('index_stale')`` and
-    nothing is skipped silently: a non-hidden symlink (of any name), an unsafe
-    or non-UTF-8 name, a device crossing, a ``.md`` name that is not a regular
-    file, an unreadable entry, exceeding the file/byte/depth/entry bounds, a
-    file or directory that changes between stats, and invalid UTF-8 content.
+  * Only non-hidden source-text regular files (``source_text.SOURCE_TEXT_EXTENSIONS``,
+    case-insensitive; ``.md`` only for a wiki-only collection) are enumerated.
+    Hidden entries (leading ``.``) and directories named in
+    ``source_text.DENIED_SOURCE_SEGMENTS`` (``node_modules``, build outputs, ...)
+    are not walked. Every other non-text entry is ignored without a stat
+    failure: symlinks (including symlinked directories, which are never
+    followed), sockets, devices, and directories on another device.
+  * Any of the following raises ``IndexContractError('index_stale')``: a
+    source-text name that is a symlink or not a regular file, a source-text
+    file on another device, an unsafe or non-UTF-8 name of a walked directory
+    or source-text file, an unreadable entry, exceeding the file/byte/depth/entry
+    bounds, a file or directory that changes between stats, and invalid UTF-8
+    content. The entry bound counts visited directories plus source-text files.
   * The manifest digests sorted ``(path, sha256, eligible)`` for every
     enumerated file. Excluded files (path or hash exclusions) stay in the
     manifest with ``eligible=False``. Bytes remain stored until a physical-deletion policy exists, but cannot be served.
@@ -40,6 +45,8 @@ from types import MappingProxyType
 from typing import Any, Mapping, NoReturn
 
 from laya_index_a import IndexContractError, _digest
+from source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
+                         WIKI_TEXT_EXTENSIONS, is_source_text)
 
 STALE = "index_stale"
 EXCLUSION_KINDS = frozenset({"path", "hash"})
@@ -180,8 +187,8 @@ def _open_root_fd(root: str) -> int:
 def _require_platform() -> None:
     if os.stat not in os.supports_dir_fd or os.open not in os.supports_dir_fd:
         _raise_stale("platform lacks dir_fd support")
-    if os.listdir not in os.supports_fd:
-        _raise_stale("platform lacks fd listdir support")
+    if os.scandir not in os.supports_fd:
+        _raise_stale("platform lacks fd scandir support")
 
 
 def _load_exclusions(index: Any, scope: str) -> tuple[frozenset[str], frozenset[str]]:
@@ -266,34 +273,50 @@ def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budge
 
 def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
           root_dev: int, budget: _Budget, out: list,
-          wiki_only_root: bool = False) -> None:
+          wiki_only_root: bool = False,
+          extensions: tuple[str, ...] = SOURCE_TEXT_EXTENSIONS) -> None:
     if depth > MAX_DEPTH:
         _raise_stale("too deep")
-    names = sorted(os.listdir(dfd))
-    budget.entries += len(names)
+    budget.entries += 1
     if budget.entries > MAX_ENTRIES:
         _raise_stale("too many entries")
-    for name in names:
-        if name.startswith("."):
+    with os.scandir(dfd) as it:
+        entries = sorted(it, key=lambda entry: entry.name)
+    for entry in entries:
+        name = entry.name
+        if name.startswith(".") or name in DENIED_SOURCE_SEGMENTS:
+            continue
+        text = is_source_text(name, extensions)
+        # d_type pre-filter: a non-text entry that is not a real directory is
+        # never stat'ed, so its races and failures cannot fail the scan.
+        if not text and not entry.is_dir(follow_symlinks=False):
             continue
         rel = _safe_rel(prefix, name)
         st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
         if stat.S_ISLNK(st.st_mode):
-            _raise_stale(f"symlink: {rel}")
-        if st.st_dev != root_dev:
-            _raise_stale(f"crosses device: {rel}")
+            if text:
+                _raise_stale(f"symlink: {rel}")
+            continue
         if stat.S_ISDIR(st.st_mode):
+            if st.st_dev != root_dev:
+                continue
             cfd = os.open(name, _DIR_FLAGS, dir_fd=dfd)
             try:
                 cst = os.fstat(cfd)
                 if _node(cst) != _node(st):
                     _raise_stale(f"directory replaced: {rel}")
-                _walk(cfd, cst, rel + "/", depth + 1, root_dev, budget, out)
+                _walk(cfd, cst, rel + "/", depth + 1, root_dev, budget, out,
+                      extensions=extensions)
             finally:
                 os.close(cfd)
-        elif name.endswith(".md"):
+        elif text:
             if not stat.S_ISREG(st.st_mode):
                 _raise_stale(f"not a regular file: {rel}")
+            if st.st_dev != root_dev:
+                _raise_stale(f"crosses device: {rel}")
+            budget.entries += 1
+            if budget.entries > MAX_ENTRIES:
+                _raise_stale("too many entries")
             if wiki_only_root and name == 'log.md':
                 if generated_wiki_log_file(dfd, name, st):
                     continue
@@ -344,7 +367,7 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
     """Scan explicit disjoint roots into one namespaced A-int generation.
 
     The route/cutover proof binds the physical roots. A-int's source manifest
-    binds their sorted ``collection/relative.md`` members under one scope.
+    binds their sorted ``collection/relative`` text members under one scope.
     No project-root traversal is used: a hidden wiki root is entered only when
     it was explicitly approved as a collection root.
     """
@@ -377,7 +400,8 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
         try:
             root_st = os.fstat(root_fd)
             _walk(root_fd, root_st, name + "/", 0, root_st.st_dev,
-                  budget, raw, wiki_only_root=wiki_only)
+                  budget, raw, wiki_only_root=wiki_only,
+                  extensions=WIKI_TEXT_EXTENSIONS if wiki_only else SOURCE_TEXT_EXTENSIONS)
         except OSError as exc:
             _raise_stale("collection source unreadable", exc)
         finally:

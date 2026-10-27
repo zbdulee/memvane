@@ -12,7 +12,8 @@ function setupProject(config = {}) {
   mkdirSync(join(dir, 'docs'), { recursive: true });
   mkdirSync(join(dir, '.auto-context', 'wiki'), { recursive: true });
   writeFileSync(join(dir, 'docs', 'source.md'), '# Source\n');
-  writeFileSync(join(dir, 'docs', 'note.txt'), 'not markdown\n');
+  writeFileSync(join(dir, 'docs', 'note.txt'), 'plain text\n');
+  writeFileSync(join(dir, 'docs', 'tool.py'), 'print(1)\n');
   writeFileSync(join(dir, '.auto-context', 'wiki', 'generated.md'), '# Generated\n');
   writeFileSync(join(dir, '.auto-context', 'settings.json'), JSON.stringify({
     indexing: true,
@@ -49,6 +50,22 @@ function queueLines(project) {
   if (!existsSync(q)) return [];
   return readFileSync(q, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
+
+test('source-text extensions are enqueued; .py and .md under node_modules are not', () => {
+  const project = setupProject();
+  try {
+    mkdirSync(join(project, 'docs', 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(project, 'docs', 'node_modules', 'pkg', 'README.md'), '# dep\n');
+    writeFileSync(join(project, 'docs', 'guide.RST'), 'Guide\n=====\n');
+    for (const rel of ['note.txt', 'guide.RST', 'tool.py', join('node_modules', 'pkg', 'README.md')]) {
+      runEnqueue(project, { tool_input: { file_path: join(project, 'docs', rel) } });
+    }
+    assert.deepEqual(queueLines(project).map((job) => job.source.path).sort(),
+      ['docs/guide.RST', 'docs/note.txt']);
+  } finally {
+    removeTemp(project);
+  }
+});
 
 function pendingLines(project) {
   const path = join(project, '.auto-context', 'compile', 'source-refresh-pending.jsonl');
@@ -152,10 +169,10 @@ test('Codex apply_patch command payload enqueues the patched markdown source', (
   }
 });
 
-test('non-markdown, outside collection, wiki role, disabled trigger, and sandbox do not enqueue', () => {
+test('non-text source, outside collection, wiki role, disabled trigger, and sandbox do not enqueue', () => {
   const project = setupProject();
   try {
-    runEnqueue(project, { tool_input: { file_path: join(project, 'docs', 'note.txt') } });
+    runEnqueue(project, { tool_input: { file_path: join(project, 'docs', 'tool.py') } });
     runEnqueue(project, { tool_input: { file_path: join(project, 'README.md') } });
     runEnqueue(project, { tool_input: { file_path: join(project, '.auto-context', 'wiki', 'generated.md') } });
     runEnqueue(project, { tool_input: { file_path: join(project, 'docs', 'source.md') } }, { QMD_SANDBOX: '1' });

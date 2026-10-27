@@ -857,6 +857,71 @@ class LayaIndexASlice(unittest.TestCase):
         with self.assertRaisesRegex(IndexContractError, 'index_stale'):
             source_port.scan(root_path, 'alpha', self.index)
 
+    def _text_only_tree(self):
+        root = self.root / 'text-only-source'
+        outside = self.root / 'outside-source'
+        for rel, body in (('one.md', 'one'), ('notes.txt', 'notes'),
+                          ('guide.RST', 'guide'), ('tool.py', 'print(1)'),
+                          ('docs/deep.mdx', 'deep'),
+                          ('node_modules/pkg/README.md', 'dep'),
+                          ('build/out.md', 'built'), ('vendor/v.md', 'vendored'),
+                          ('__pycache__/x.md', 'cache')):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding='utf-8')
+        (root / 'assets').mkdir()
+        for i in range(40):
+            (root / 'assets' / f'blob{i:02d}.bin').write_bytes(b'\xff')
+        outside.mkdir()
+        (outside / 'linked.md').write_text('linked', encoding='utf-8')
+        (root / 'link.py').symlink_to(root / 'tool.py')
+        (root / 'dangling.json').symlink_to(root / 'missing.json')
+        (root / 'linkdir').symlink_to(outside, target_is_directory=True)
+        return root
+
+    def test_source_port_walks_only_text_documents(self):
+        root = self._text_only_tree()
+        root_path = str(root.resolve())
+        # 40 non-text names exceed the lowered bound; only visited directories
+        # (root, docs, assets) and text files (4) count toward it.
+        with mock.patch.object(source_port, 'MAX_ENTRIES', 10):
+            scanned = source_port.scan(root_path, 'alpha', self.index)
+        self.assertEqual([f.path for f in scanned.files],
+                         ['docs/deep.mdx', 'guide.RST', 'notes.txt', 'one.md'])
+        with mock.patch.object(source_port, 'MAX_ENTRIES', 6):
+            with self.assertRaisesRegex(IndexContractError, 'index_stale'):
+                source_port.scan(root_path, 'alpha', self.index)
+
+    def test_source_port_text_symlink_still_fails_closed(self):
+        root = self._text_only_tree()
+        root_path = str(root.resolve())
+        for name in ('link.md', 'link.txt'):
+            link = root / name
+            link.symlink_to(root / 'one.md')
+            with self.assertRaises(IndexContractError) as caught:
+                source_port.scan(root_path, 'alpha', self.index)
+            self.assertEqual(str(caught.exception.__cause__), f'symlink: {name}')
+            link.unlink()
+        os.mkfifo(root / 'pipe.md')
+        with self.assertRaises(IndexContractError) as caught:
+            source_port.scan(root_path, 'alpha', self.index)
+        self.assertEqual(str(caught.exception.__cause__), 'not a regular file: pipe.md')
+
+    def test_source_port_wiki_only_scan_stays_markdown(self):
+        wiki = self.root / 'wiki-only'
+        wiki.mkdir()
+        (wiki / 'card.md').write_text('# Card', encoding='utf-8')
+        (wiki / 'notes.txt').write_text('not a card', encoding='utf-8')
+        (wiki / 'log.md').write_text('# Auto-context Wiki Log\n\n- event', encoding='utf-8')
+        (wiki / 'nested').mkdir()
+        (wiki / 'nested' / 'log.md').write_text('# Auto-context Wiki Log\n\nnested',
+                                                 encoding='utf-8')
+        (wiki / 'nested' / 'extra.rst').write_text('not a card', encoding='utf-8')
+        scanned = source_port.scan_collections({'wiki': str(wiki.resolve())}, 'alpha',
+                                               self.index, wiki_only=True)
+        self.assertEqual([f.path for f in scanned.files],
+                         ['wiki/card.md', 'wiki/nested/log.md'])
+
     def test_bound_candidate_freezes_base_source_and_claim_receipt(self):
         docs = [('one', 'target one', True)]
         manifest, payload = _digest('alpha', [('one', hash_body('target one'), 1)]), 'b' * 64

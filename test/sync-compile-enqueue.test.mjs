@@ -361,7 +361,7 @@ test("wiki role collection changes are never enqueued for compile", () => {
   }
 });
 
-test("non-markdown files are not enqueued for compile", () => {
+test("only source-text files are enqueued for compile", () => {
   const envInfo = makeEnv();
   const dir = makeProject(envInfo);
   mkdirSync(join(dir, "docs"), { recursive: true });
@@ -369,17 +369,36 @@ test("non-markdown files are not enqueued for compile", () => {
   seedOwner(envInfo, dir);
   writeFileSync(join(dir, "docs", "notes.txt"), "text\n");
   writeFileSync(join(dir, "docs", "data.json"), "{}\n");
+  writeFileSync(join(dir, "docs", "tool.py"), "print(1)\n");
   writeFileSync(join(dir, "docs", "README.MD"), "upper\n");
   try {
     const result = runSync(dir, envInfo);
-    assert.equal(result.created, 3);
-    // Only the (case-insensitive) .md file qualifies.
-    assert.equal(result.compileQueued, 1);
-    assert.deepEqual(queuedSourcePaths(dir), ["docs/README.MD"]);
+    assert.equal(result.created, 4);
+    // source_text.SOURCE_TEXT_EXTENSIONS, matched case-insensitively.
+    assert.equal(result.compileQueued, 2);
+    assert.deepEqual(queuedSourcePaths(dir), ["docs/README.MD", "docs/notes.txt"]);
   } finally {
     cleanup(envInfo, dir);
   }
 });
+
+for (const denied of ["node_modules", "vendor", "build", "__pycache__", "DerivedData"]) {
+  test(`.md under a ${denied} directory is not enqueued for compile`, () => {
+    const envInfo = makeEnv();
+    const dir = makeProject(envInfo);
+    mkdirSync(join(dir, "docs", denied, "pkg"), { recursive: true });
+    writeSettings(dir);
+    seedOwner(envInfo, dir);
+    writeFileSync(join(dir, "docs", denied, "pkg", "README.md"), "# dep\n");
+    writeFileSync(join(dir, "docs", "keep.md"), "# keep\n");
+    try {
+      runSync(dir, envInfo);
+      assert.deepEqual(queuedSourcePaths(dir), ["docs/keep.md"]);
+    } finally {
+      cleanup(envInfo, dir);
+    }
+  });
+}
 
 test("dot-prefix policy: registered dot root is exempt, dot segments below it are not", () => {
   const envInfo = makeEnv();
