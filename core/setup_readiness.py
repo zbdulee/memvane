@@ -2,12 +2,16 @@
 
 The hook preflight reads only small local metadata. Explicit setup checks reuse
 existing compatibility attestations and revalidate versions/bundle hashes; they
-never install software or run a new inference/training smoke.
+never install software or run a new inference/training smoke. The detached
+SessionStart worker alone re-attests the selected generation when the shipped
+adapter is the only drift; it never installs, downloads or selects a generation.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
 import stat
+import time
 
 from context_learning import runtime_setup as runtime
 from context_learning.dataset import read_private_json
@@ -49,8 +53,6 @@ def laya_preflight():
                 or attestation.get('data_kind') != 'synthetic_compact_wiki'
                 or attestation.get('checks') != dict.fromkeys(runtime.CHECKS, True)):
             raise ValueError('managed_compatibility_required')
-        if attestation.get('adapter_sha256') != runtime._sha_file(ADAPTER):
-            raise ValueError('current_adapter_required')
         exe = Path(active['executable'])
         if not exe.is_absolute() or not exe.resolve().is_relative_to(root.resolve()):
             raise ValueError('external_interpreter_dependency')
@@ -70,12 +72,60 @@ def laya_preflight():
                 or any(type(value) is not int or value < EDIT_INPUT_TOKENS for value in
                        (encoder.get('max_position_embeddings'), tokenizer.get('model_max_length')))):
             raise ValueError('edit_model_required')
+        # Checked last: this reason means every other local input still matches.
+        if attestation.get('adapter_sha256') != runtime._sha_file(ADAPTER):
+            raise ValueError('current_adapter_required')
         result['status'] = 'prepared_unverified'
     except (OSError, ValueError, KeyError, TypeError) as exc:
         reason = str(exc) if isinstance(exc, ValueError) else 'invalid_managed_pointer'
         result['reason'] = 'laya_' + reason
     return result
 
+
+def _adapter_refresh_marker(queue):
+    active = read_private_json(runtime.default_managed_root() / 'active.json')
+    token = hashlib.sha256((runtime._sha_file(ADAPTER) + '\0'
+                            + active['runtime_identity_sha256']).encode()).hexdigest()[:32]
+    return Path(queue) / ('laya-adapter-refresh-' + token + '.failed.json')
+
+
+def adapter_refresh_failed(queue):
+    """True once a re-attestation of this adapter/runtime pair has failed."""
+    try:
+        marker = _adapter_refresh_marker(queue)
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    return marker.exists() or marker.is_symlink()
+
+
+def refresh_adapter_attestation(queue, *, reattest=None):
+    """Re-attest adapter-only drift of the selected Laya generation.
+
+    Resource pressure defers to a later SessionStart; any other failure is
+    recorded once so the setup notice returns instead of retrying every session.
+    """
+    from resource_deferred import ResourceDeferred
+    if laya_preflight()['reason'] != 'laya_current_adapter_required':
+        return {'status': 'not_required'}
+    if adapter_refresh_failed(queue):
+        return {'status': 'failed_previously'}
+    marker = _adapter_refresh_marker(queue)
+    if reattest is None:
+        from context_learning.runtime_installer import reattest_active as reattest
+    try:
+        return reattest(runtime.default_managed_root(), ADAPTER.resolve())
+    except ResourceDeferred as exc:
+        return {'status': 'deferred', 'reason': str(exc)}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf8') as out:
+                json.dump({'schema': 'qmd-laya-adapter-refresh-v1', 'reason': reason,
+                           'at': time.time()}, out, sort_keys=True)
+        except FileExistsError:
+            pass
+        return {'status': 'failed', 'reason': reason}
 
 def _preparation_stamp():
     pointer = runtime.default_managed_root() / 'active.json'

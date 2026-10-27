@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from context_learning.runtime_installer import (activate_generation,
-    install_commands, rollback_generation, stage_generation)
+    install_commands, reattest_active, rollback_generation, stage_generation)
 from context_learning.runtime_setup import (MANAGED_DEPENDENCIES, choose_runtime,
     probe_runtime)
 _offline_keys=('HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_DATASETS_OFFLINE',
@@ -105,6 +105,24 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     second=activate_generation(root,two_path,fake_adapter,fake_model,prover=proof,probe=full_probe)
     assert second['previous_available'] is True
     assert json.loads((root/'active.json').read_text())['previous']['executable']==staged['executable']
+    before=json.loads((root/'active.json').read_text())
+    fake_adapter.write_text('synthetic adapter shipped by plugin update')
+    refreshed=reattest_active(root,fake_adapter,prover=proof,probe=full_probe)
+    assert refreshed['status']=='reattested'
+    after=json.loads((root/'active.json').read_text())
+    assert after['executable']==before['executable'] and after['previous']==before['previous']
+    assert after['model_dir']==before['model_dir']
+    assert after['attestation']['adapter_sha256']==sha(fake_adapter)
+    assert reattest_active(root,fake_adapter,prover=proof,probe=full_probe)['status']=='current'
+    weight=fake_model/MODEL_FILES[0];original=weight.read_text()
+    weight.write_text('synthetic weight drift');fake_adapter.write_text('synthetic adapter again')
+    try:
+        reattest_active(root,fake_adapter,prover=proof,probe=full_probe)
+        raise AssertionError('model drift must not be re-attested automatically')
+    except ValueError as exc:
+        assert str(exc)=='managed_compatibility_failed'
+    assert json.loads((root/'active.json').read_text())==after
+    weight.write_text(original);fake_adapter.write_text('synthetic adapter')
     result=rollback_generation(root,fake_adapter,fake_model,prover=proof,probe=full_probe)
     assert result['status']=='rolled_back'
     rolled=json.loads((root/'active.json').read_text())
@@ -114,4 +132,5 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     assert all(str(root) in ' '.join(args) or args[1:] == ['--version'] for args in calls[1:])
 
 print(json.dumps({'external_calls':0,'install_mutations_outside_temp':0,
-                  'stage':'passed','activate':'passed','rollback':'passed'}))
+                  'stage':'passed','activate':'passed','reattest':'passed',
+                  'rollback':'passed'}))

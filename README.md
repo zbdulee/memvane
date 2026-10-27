@@ -104,7 +104,12 @@ Codex CLI에서는 `/plugins`에서 설치 상태를 볼 수 있습니다. 훅�
 기존 사용자는 업데이트 전에 “이 프로젝트 auto-context 업데이트 계획과
 백업·복구 경로를 먼저 보여줘”라고 요청하세요. 호스트의 marketplace 갱신과
 플러그인 코드 갱신은 프로젝트 DB 이관이나 Laya 검색 경로 전환을 끝내지
-않습니다. Claude Code의 프로젝트 설치본은 다음 명령으로 갱신합니다.
+않습니다. 예외로, 이미 선택된 Laya 런타임에서 플러그인이 함께 배포한
+adapter만 달라졌다면 Claude Code·Codex SessionStart의 백그라운드 작업이 기존
+런타임과 로컬 모델로 호환성 검증을 다시 실행해 선택 정보를 갱신합니다. 설치,
+다운로드, 새 세대 선택은 하지 않으며, 자원이 부족하면 다음 세션으로 미루고
+검증이 실패하면 setup 안내를 표시합니다.
+Claude Code의 프로젝트 설치본은 다음 명령으로 갱신합니다.
 
 ```bash
 claude plugin marketplace update qmd-auto-context-marketplace
