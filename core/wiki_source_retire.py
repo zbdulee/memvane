@@ -239,3 +239,49 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
         finally:
             os.close(directory)
     return 'retired'
+
+
+def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
+                            expected: str, revisions: list) -> str:
+    """Record ``revisions`` as the source proof of one card whose bytes are still ``expected``.
+
+    This is the single write seam for "card X was generated from these source
+    revisions". Today the proof lives in the card's ``sourceRevisions``
+    frontmatter block (``wiki_compile.insert_source_revisions``, which refuses
+    a card that already declares the key or has no ``sources``); moving the
+    proof to another store replaces only this function. The same card and wiki
+    locks, path checks, byte comparison and ownership recheck as
+    ``retire_card`` guard the write, so a concurrent compiler rewrite or a
+    human edit is never stamped.
+    """
+    root = Path(root).resolve()
+    wiki_root = Path(wiki_root)
+    if wiki_root.is_symlink() or not wiki_root.is_dir():
+        return 'blocked'
+    with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        wiki_selected_laya.recheck(selected)
+        try:
+            subpath = card.relative_to(wiki_root)
+        except ValueError:
+            return 'blocked'
+        if (any(part.startswith('.') for part in subpath.parts)
+                or card.name in ('index.md', 'log.md')):
+            return 'blocked'
+        try:
+            info = card.lstat()
+        except FileNotFoundError:
+            return 'gone'
+        if (not stat.S_ISREG(info.st_mode) or card.is_symlink()
+                or card.resolve() != card or info.st_size > MAX_CARD_BYTES):
+            return 'blocked'
+        try:
+            text = card.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            return 'blocked'
+        if text != expected:
+            return 'changed'
+        if not wc.auto_writable_text(text)[0]:
+            return 'blocked'
+        if not wc.insert_source_revisions(card, revisions):
+            return 'blocked'
+    return 'recorded'
