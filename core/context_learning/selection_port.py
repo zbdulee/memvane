@@ -15,6 +15,11 @@ same order keeps public behavior unchanged.
 """
 from __future__ import annotations
 
+import hashlib
+import re
+
+_SHA256 = re.compile(r'[0-9a-f]{64}\Z')
+_GENERATION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 PUBLISHED_LIMIT = 15
 
 QMD_SCHEME = 'qmd://'
@@ -85,10 +90,6 @@ def published_candidate_rows(pool, wiki_names, scope_id):
     port checks its immutable row contract again before passing any card bytes
     to the existing local selector. A partial or mixed invalid pool is refused.
     """
-    import hashlib
-    import re
-    sha256 = re.compile(r'[0-9a-f]{64}\Z')
-    generation = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
     if (not isinstance(pool, list) or len(pool) > PUBLISHED_LIMIT
             or not isinstance(wiki_names, (tuple, list, frozenset))
             or not wiki_names or any(not isinstance(n, str) or not n for n in wiki_names)):
@@ -101,10 +102,10 @@ def published_candidate_rows(pool, wiki_names, scope_id):
             raise ValueError('published_candidate_invalid')
         path, digest, body = (row.get('path'), row.get('hash'), row.get('body'))
         if (not isinstance(path, str) or path in seen
-                or not isinstance(digest, str) or not sha256.fullmatch(digest)
+                or not isinstance(digest, str) or not _SHA256.fullmatch(digest)
                 or not isinstance(body, str)
                 or not isinstance(row.get('generation'), str)
-                or not generation.fullmatch(row['generation'])
+                or not _GENERATION.fullmatch(row['generation'])
                 or row.get('scope') != scope_id):
             raise ValueError('published_candidate_invalid')
         collection, sep, relative = path.partition('/')

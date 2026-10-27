@@ -34,7 +34,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 | `collectionRoles` | raw `raw`, wiki `wiki` |
 | `recallStrategy` | `wikiOnly`. 검색은 위키 카드만 합니다 |
 | `compile` | `mode: "auto-wiki"`, `triggers: ["post_tool_source","post_sync_source","manual"]`, `extractor.builtins: ["claude","codex","hermes"]`. 나머지 compile 값은 기본값입니다 |
-| `contextLearning` | `capture`·`autoCycle`·`liveSelection` 모두 `true` |
+| `contextLearning` | `capture`·`autoCycle` 모두 `true`. 검색 시 Laya 카드 선택은 설정 없이 필수로 실행됩니다 |
 | `indexing` | `true`. 끄는 방법은 아래 "인덱싱 끄기"입니다 |
 | `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
 

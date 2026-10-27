@@ -124,8 +124,9 @@ class MinimalModelChecks(Project):
                          ["post_tool_source", "post_sync_source", "manual"])
         self.assertEqual(cfg["compile"]["extractor"]["builtins"], ["claude", "codex", "hermes"])
         self.assertEqual({k: cfg["contextLearning"][k] for k in
-                          ("capture", "autoCycle", "liveSelection")},
-                         {"capture": True, "autoCycle": True, "liveSelection": True})
+                          ("capture", "autoCycle")},
+                         {"capture": True, "autoCycle": True})
+        self.assertNotIn("liveSelection", cfg["contextLearning"])
         # Deterministic: the same input always yields the same effective config.
         self.assertEqual(cfg, config.normalize_config({"skipPaths": ["build"],
                                                        "name": "My Project"}))

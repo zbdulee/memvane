@@ -401,7 +401,7 @@ def expand_minimal_settings(raw):
             "triggers": list(MINIMAL_COMPILE_TRIGGERS),
             "extractor": {"builtins": list(MINIMAL_EXTRACTOR_BUILTINS)},
         },
-        "contextLearning": {"capture": True, "autoCycle": True, "liveSelection": True},
+        "contextLearning": {"capture": True, "autoCycle": True},
     }
 
 
