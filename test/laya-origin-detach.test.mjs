@@ -15,7 +15,7 @@ test('QMD-origin detach and settings-identity conversion keep recall at every st
         PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 17 tests/);
+    assert.match(result.stderr, /Ran 19 tests/);
     assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

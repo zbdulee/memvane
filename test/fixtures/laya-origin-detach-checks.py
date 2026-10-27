@@ -455,6 +455,23 @@ class FreshOriginConversion(Install):
                 self.assertEqual(build.read(self.state)['identity'],
                                  json.loads(self.build_raw)['identity'])
 
+    def test_interrupted_conversion_session_start_resumes_in_background(self):
+        self.crash_after('convert', conversion_step='route')
+        decision = self.decision()
+        self.assertEqual(decision['state'], 'rebinding', decision)
+        requests = []
+        real = self.detach.request
+
+        def request(project, journal):
+            return real(project, journal, spawn=requests.append)
+        with mock.patch.object(self.detach, 'request', request):
+            notice, _ = self.serve('update', decision, {'hook_event_name': 'SessionStart',
+                                                        'cwd': str(self.project)})
+        self.assertIn('conversion', notice['hookSpecificOutput']['additionalContext'])
+        self.assertEqual(requests, [str(self.project)])
+        self.assertEqual(self.detach.auto_converge(self.project)['status'], 'converged')
+        self.assert_converged()
+
     def test_leftover_bundle_upgrade_receipt_is_settled(self):
         self.finished_upgrade_intent()
         planned = self.plan()
@@ -507,6 +524,9 @@ class IdentityRouteSelection(REBIND['SelectedProject']):
         with mock.patch.dict(REBIND['SelectedProject'].setUp.__globals__,
                              {'legacy_settings': lambda *_a, **_k: dict(MINIMAL)}):
             super().setUp()
+        self.bind_identity()
+
+    def bind_identity(self):
         route = {**self.route, 'settingsSha256': identity_digest(self.project,
                                                                  self.collections())}
         raw = canon(route)
@@ -528,6 +548,29 @@ class IdentityRouteSelection(REBIND['SelectedProject']):
     def test_name_edit_blocks_an_identity_bound_route(self):
         self.settings.write_text(json.dumps({'name': 'renamed', 'skipPaths': ['build']}))
         self.assertEqual(self.decision()['state'], 'blocked')
+
+
+
+class LegacySettingsOnIdentityRoute(REBIND['SelectedProject']):
+    """A legacy settings file under an identity-bound route: the minimal
+    rewrite keeps the identity, so only the settings file is rewritten."""
+    ORIGIN = 'fresh'
+
+    def setUp(self):
+        super().setUp()
+        IdentityRouteSelection.bind_identity(self)
+
+    def test_minimal_rewrite_needs_no_rebind(self):
+        import settings_migration
+        route = (self.auto / host_route.RECORD).read_bytes()
+        proposal = settings_migration.plan(str(self.project))
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        self.assertNotIn('rebind', proposal)
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        self.assertEqual(json.loads(self.settings.read_text()), MINIMAL)
+        self.assertEqual((self.auto / host_route.RECORD).read_bytes(), route)
+        self.assertEqual(self.decision()['state'], 'candidate')
 
 
 if __name__ == '__main__':
