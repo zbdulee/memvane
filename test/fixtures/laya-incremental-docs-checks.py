@@ -477,6 +477,17 @@ class IncrementalDocsTests(unittest.TestCase):
             self.runtime, self.identity, before_write=concurrent_publication), 0)
         self.assertEqual(self.rows()[0][1], newer)
 
+    def test_explicit_hash_exclusion_retires_the_completed_sidecar(self):
+        self.write('excluded.md', '# Excluded\ncompleted fact\n')
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=self.publish)
+        old_hash = self.rows()[0][1]
+        self.runtime.index.exclude(SCOPE, hash_=old_hash)
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=lambda: None), 1)
+        self.assertEqual(self.rows(), [])
+
 
 if __name__ == '__main__':
     unittest.main()

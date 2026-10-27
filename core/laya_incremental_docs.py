@@ -309,7 +309,7 @@ def retire_missing_documents(runtime, identity, *, before_write):
         rows = db.execute('SELECT path,rowid,hash,scan_id FROM docs ORDER BY path').fetchall()
         for path, rowid, old_hash, scan_id in rows:
             member = runtime.catalog.lookup(snapshot, path)
-            remove = (member is None or path in excluded_paths
+            remove = (member is None or path in excluded_paths or old_hash in excluded_hashes
                       or (member is not None and member[0] in excluded_hashes))
             if not remove and isinstance(scan_id, str) and scan_id.startswith('head-') \
                     and head is not None:
