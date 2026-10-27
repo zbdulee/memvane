@@ -802,35 +802,45 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
-                if (start_service is start_owned_embed_service
-                        and identity.get('originMode') == 'fresh_wiki_only'):
-                    # Start the detached, installation-owned model outside
+                from laya_qmd_vector_reuse import for_initial_build
+                reuse = for_initial_build(identity, provider.manifest,
+                                          provider.profile['dimension'])
+                if reuse is not None:
+                    stack.callback(reuse.close)
+                resident = (start_service is start_owned_embed_service
+                            and identity.get('originMode') == 'fresh_wiki_only')
+
+                def start_resident():
+                    # The detached, installation-owned model starts outside
                     # the provider lane. A pending preview query can then use
                     # completed documents between finite build wakes.
                     from laya_embed_resident import ensure_running
                     if not proof_ok():
                         raise IndexContractError('initial_build_proof_changed')
                     state['service'] = ensure_running(project, approval['providerManifest'])
-                from laya_qmd_vector_reuse import for_initial_build
-                reuse = for_initial_build(identity, provider.manifest,
-                                          provider.profile['dimension'])
-                if reuse is not None:
-                    stack.callback(reuse.close)
-                # Copying origin vectors and scanning need no model: a reuse
-                # build takes the provider lane only when it starts the model.
+
+                if resident and reuse is None:
+                    start_resident()
+                # Copying existing QMD vectors and scanning need no model: a
+                # reuse build takes the provider lane (and, on the fresh path,
+                # starts the resident model) only once a document needs it.
                 lane = {'held': reuse is None}
                 if lane['held']:
                     stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
 
                 def ensure_service():
-                    if state['service'] is not None:
+                    if state['service'] is not None and lane['held']:
                         return
                     if not proof_ok():
                         raise IndexContractError('initial_build_proof_changed')
+                    if resident and state['service'] is None:
+                        start_resident()
                     if not lane['held']:
                         stack.enter_context(controller.activity(
                             'provider', EMBED_POLICY, resource_report(EMBED_POLICY, detailed=True)))
                         lane['held'] = True
+                    if state['service'] is not None:
+                        return
                     try:
                         service = start_service(approval['providerManifest'], admit=admitted)
                     except IndexContractError as exc:
