@@ -197,7 +197,7 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
         _fail("invalid_source_locations")
     if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
         _fail("invalid_result_limit")
-    if ranking not in ("cosine_distance", "hybrid_rrf"):
+    if ranking not in ("cosine_distance", "hybrid_rrf", "laya_selection"):
         _fail("invalid_result_ranking")
     if not isinstance(rows, (tuple, list)) or len(rows) > limit:
         _fail("invalid_result_count")
@@ -254,7 +254,9 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
             _fail("invalid_result_score")
         if not math.isfinite(number) or not 0 <= number <= 2:
             _fail("invalid_result_score")
-        label = "cosine distance" if ranking == "cosine_distance" else "hybrid rank score"
+        label = ("cosine distance" if ranking == "cosine_distance" else
+                 "hybrid candidate score" if ranking == "laya_selection" else
+                 "hybrid rank score")
         lines.append(f'- "{path}" sha256:{digest[:12]} {label} {number:.4g}')
         if path.split('/', 1)[0] in wiki_names:
             import recall
@@ -287,7 +289,9 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
         # Locations for a raw row or an absent path are never silently ignored.
         _fail("invalid_source_locations")
     meaning = ("lower cosine distance is closer" if ranking == "cosine_distance"
-               else "higher hybrid rank score ranks first")
+               else "local Laya model selected these cards from hybrid candidates"
+               if ranking == "laya_selection" else
+               "higher hybrid rank score ranks first")
     if any(item.startswith('preview-') for item in generations):
         view = ('completed wiki document view' if len(generations) == 1 else
                 'completed wiki documents with selected generation')
@@ -345,6 +349,71 @@ def host_payload(host: str, context: str) -> dict:
     if host == "hermes":
         return {"context": context}
     _fail("unsupported_host")
+
+
+def _select_verified_cards(decision, settings, prompt, rows):
+    """Required local card selection after the index proved published wiki rows."""
+    from context_learning.selection_read import select_published
+    from laya_index_host_route import wiki_index_roots
+    roots = wiki_index_roots(decision['collections'])
+    names = tuple(sorted(roots))
+    if not names:
+        _fail('selected_wiki_required')
+    result = select_published(
+        rows[:15], prompt=prompt, config=settings,
+        project_root=decision['projectRoot'],
+        wiki_names=names, scope_id=decision['scopeId'])
+    if result['reason'] not in ('selected', 'no_candidates'):
+        _write_selection_log(decision['projectRoot'], 'laya_selector_' + result['reason'], [])
+        print('[laya-index] local selection unavailable; no context injected',
+              file=sys.stderr)
+    return result['final_results'], result['reason']
+
+
+def _selection_view_unchanged(decision, chosen, expected_head=None):
+    """Recheck index and completed-card membership after potentially slow scoring.
+
+    Read only the already selected rows. No raw file, source scan or work queue
+    is consulted by the query-time selector.
+    """
+    from contextlib import closing
+    from laya_incremental_docs_query import _readonly
+    from laya_incremental_docs import FILE
+    completed_gen = ('preview-' + decision['installId']
+                     if isinstance(decision.get('installId'), str) else None)
+    with closing(_readonly(Path(decision['dbPath']))) as index:
+        if expected_head is not None:
+            head = index.execute('SELECT gen FROM head WHERE scope=?',
+                                 (decision['scopeId'],)).fetchone()
+            if head != (expected_head,):
+                return False
+        exclusions = set(index.execute(
+            'SELECT kind,value FROM exclusions WHERE scope=?',
+            (decision['scopeId'],)).fetchall())
+        if any(('path', row['path']) in exclusions or ('hash', row['hash']) in exclusions
+               for row in chosen):
+            return False
+        for row in chosen:
+            if row['generation'] == completed_gen:
+                continue
+            if expected_head is None or row['generation'] != expected_head:
+                return False
+            current = index.execute(
+                'SELECT hash FROM membership WHERE gen=? AND scope=? AND path=? AND eligible=1',
+                (expected_head, decision['scopeId'], row['path'])).fetchone()
+            if current != (row['hash'],):
+                return False
+    completed = [row for row in chosen if row['generation'] == completed_gen]
+    if completed:
+        state = Path(decision.get('previewStateRoot') or
+                     Path(decision['journalPath']).parent)
+        with closing(_readonly(state / FILE)) as side:
+            for row in completed:
+                current = side.execute('SELECT hash,body FROM docs WHERE path=?',
+                                       (row['path'],)).fetchone()
+                if current != (row['hash'], row['body']):
+                    return False
+    return True
 
 
 def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, limit,
@@ -798,6 +867,7 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                       approved_profile: dict, approved_provider,
                       decision: dict, *, source_locations: dict | None = None,
                       excluded_paths=None, expected_generation=None,
+                      pinned_generation=None,
                       ) -> tuple[list[dict], frozenset[str]]:
     """Return verified wiki cards on one pin; no model work in the hook.
 
@@ -816,6 +886,8 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
     if (not wiki or settings['recallStrategy'] not in ('hierarchical', 'wikiOnly')):
         _fail('selected_recall_settings_unsupported')
     token, _generation = runtime.index.pin(runtime.scope)
+    if pinned_generation is not None:
+        pinned_generation.append(_generation)
     candidates = None
     try:
         if expected_generation is not None and _generation != expected_generation:
@@ -1154,11 +1226,20 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
     if ({key: value for key, value in refreshed.items() if key != 'buildPhase'} !=
             {key: value for key, value in proof.items() if key != 'buildPhase'}):
         _fail('initial_preview_proof_changed')
-    top_n = decision['recallSettings']['topN']
-    chosen = rows[:top_n]
+    import config
+    settings = config.load_project_config(decision['projectRoot'])
+    chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    answer_limit = min(decision['recallSettings']['topN'], 3)
+    chosen = chosen[:answer_limit]
+    if reason != 'selected' or not chosen:
+        if reason == 'selected':
+            _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        return host_payload(host, '')
+    if verify_preview_route(decision) != refreshed or not _selection_view_unchanged(decision, chosen):
+        _fail('initial_preview_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     context = render_context({**decision, 'buildPhase': refreshed['buildPhase']},
-                             chosen, limit=top_n, ranking='hybrid_rrf',
+                             chosen, limit=answer_limit, ranking='laya_selection',
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in
                                                locations.items() if path in chosen_paths})
@@ -1420,6 +1501,9 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     if (type(top_n) is not int or not 1 <= top_n <= MAX_ROWS
             or patterns not in ([], ["ep"])):
         _fail("selected_recall_settings_unsupported")
+    if not v2:
+        _write_selection_log(decision['projectRoot'], 'laya_selector_wiki_route_required', [])
+        return host_payload(host, '')
     from laya_index_runtime import capacity_store_paths
     from laya_index_host_route import wiki_index_roots
     capacity = capacity_store_paths(decision["dbPath"]) if v2 else None
@@ -1433,6 +1517,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     locations: dict[str, tuple[str, ...]] = {}
     incremental_rows, incremental_locations, shadow_paths, base_generation = [], {}, (), None
     incremental_title_only = frozenset()
+    pinned_generation = []
     try:
         if v2:
             from laya_incremental_docs_query import query_incremental
@@ -1455,7 +1540,8 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                     runtime, prompt, decision["vectorProfile"],
                     proof["vectorProfile"], query_provider, decision,
                     source_locations=locations, excluded_paths=shadow_paths or None,
-                    expected_generation=base_generation)
+                    expected_generation=base_generation,
+                    pinned_generation=pinned_generation)
             else:
                 rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
                                              proof["vectorProfile"],
@@ -1484,6 +1570,8 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         _request_stale_sync(decision, proof)
     if recheck(decision) != proof:
         _fail("selected_proof_changed")
+    if base_generation is not None and pinned_generation != [base_generation]:
+        _fail('incremental_base_changed')
     if incremental_rows:
         locations.update(incremental_locations)
         title_only = title_only | incremental_title_only
@@ -1495,10 +1583,19 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   [(row, 1) for row in rows])
         rows = [row for row, _origin in sorted(
             ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
-    chosen = rows[:top_n]
+    chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    answer_limit = min(top_n, 3)
+    chosen = chosen[:answer_limit]
+    if reason != 'selected' or not chosen:
+        if reason == 'selected':
+            _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        return host_payload(host, '')
+    if recheck(decision) != proof or not _selection_view_unchanged(
+            decision, chosen, pinned_generation[0] if pinned_generation else None):
+        _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
-    context = render_context(decision, chosen, limit=top_n,
-                             ranking="hybrid_rrf",
+    context = render_context(decision, chosen, limit=answer_limit,
+                             ranking="laya_selection",
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in locations.items()
                                                if path in chosen_paths},
