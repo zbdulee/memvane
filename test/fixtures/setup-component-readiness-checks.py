@@ -118,6 +118,18 @@ class Readiness(unittest.TestCase):
   after=json.loads(self.pointer.read_text());self.assertEqual(after['executable'],before['executable']);self.assertEqual(after['model_dir'],before['model_dir'])
   self.assertEqual(after['adapter_path'],str(self.adapter))
   row=setup_entry.check_update(self.project);self.assertEqual(row['status'],'up_to_date',row);self.assertTrue(row['layaReady'])
+ def test_missing_attested_adapter_path_is_repointed_without_smoke(self):
+  import functools,setup_readiness
+  from context_learning.runtime_installer import reattest_active
+  self.prepare();self.generation()
+  value=json.loads(self.pointer.read_text());value['adapter_path']=str(self.home/'removed-worktree/laya_adapter.py');self.pointer.write_text(json.dumps(value))
+  self.assertEqual(setup_readiness.laya_preflight()['reason'],'laya_current_adapter_required')
+  self.assertFalse(setup_entry.check_update(self.project)['layaReady'])
+  def no_smoke(*a,**k):self.fail('same adapter content needs no smoke')
+  row=setup_readiness.refresh_adapter_attestation(self.queue(),reattest=functools.partial(reattest_active,prover=no_smoke,probe=R.probe_runtime))
+  self.assertEqual(row['status'],'repointed',row)
+  self.assertEqual(json.loads(self.pointer.read_text())['adapter_path'],str(self.adapter))
+  row=setup_entry.check_update(self.project);self.assertEqual(row['status'],'up_to_date',row)
  def test_adapter_drift_with_other_drift_is_left_for_review(self):
   import setup_readiness
   self.prepare();self.stale_adapter();(self.model/'model.safetensors').unlink();before=self.pointer.read_bytes()

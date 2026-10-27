@@ -114,6 +114,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     assert after['model_dir']==before['model_dir']
     assert after['attestation']['adapter_sha256']==sha(fake_adapter)
     assert reattest_active(root,fake_adapter,prover=proof,probe=full_probe)['status']=='current'
+    copied=home/'copied-adapter.py';copied.write_text(fake_adapter.read_text())
+    def no_smoke(*_a,**_k): raise AssertionError('same adapter content needs no smoke')
+    moved=reattest_active(root,copied,prover=no_smoke,probe=full_probe)
+    assert moved['status']=='repointed'
+    pointed=json.loads((root/'active.json').read_text())
+    assert pointed['adapter_path']==str(copied) and pointed['attestation']==after['attestation']
+    assert pointed['previous']==after['previous']
+    assert reattest_active(root,fake_adapter,prover=no_smoke,probe=full_probe)['status']=='repointed'
+    after=json.loads((root/'active.json').read_text())
     weight=fake_model/MODEL_FILES[0];original=weight.read_text()
     weight.write_text('synthetic weight drift');fake_adapter.write_text('synthetic adapter again')
     try:
