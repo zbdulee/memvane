@@ -1271,7 +1271,7 @@ class ResponseChecks(unittest.TestCase):
             with self.assertRaisesRegex(response.HostResponseError,
                                         '^selected_provider_preparing$'):
                 response._request_provider_start(decision, V2_PROOF)
-        wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+        wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
 
     def test_provider_failure_and_identity_transition_have_distinct_codes(self):
         import laya_install_journal
@@ -1295,7 +1295,68 @@ class ResponseChecks(unittest.TestCase):
                                         '^selected_provider_identity_transition$'):
                 response._request_provider_start(decision, V2_PROOF,
                                                  transition=True)
-        wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+        wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
+
+    def test_withdrawn_owner_restarts_from_the_query_path(self):
+        # After a bundle upgrade (starting) or lane contention
+        # (resource_deferred) the owner has no socket. The query path starts
+        # it directly instead of waiting for a backed-off sync wake.
+        import time as clock
+        import laya_install_journal
+        import laya_embed_resident
+        import runtime_work
+        from laya_index_a import IndexContractError
+        from resource_deferred import ResourceDeferred
+        decision = v2_decision()
+        with tempfile.TemporaryDirectory(prefix='laya-host-owner-') as temp:
+            sock = Path(temp) / 'laya-embed.sock'
+            proof = {**V2_PROOF, 'providerManifest': {
+                **V2_PROOF['providerManifest'], 'serviceSocketPath': str(sock)}}
+
+            def wake(state, *, root=decision['pluginRoot'], transition=False,
+                     started=ResourceDeferred('laya_service_preparing'),
+                     queued={'status': 'queued'}):
+                row = None if state is None else {
+                    'fingerprint': 'a' * 64, 'reason': state, 'terminal': False,
+                    'at': clock.time() - 60, 'attempts': 0}
+                with patch.object(laya_install_journal, 'verify_selected_route',
+                                  return_value=proof), \
+                     patch.object(laya_embed_resident, 'read_owner_state', return_value=row), \
+                     patch.object(laya_embed_resident, 'ensure_running',
+                                  side_effect=started) as ensure, \
+                     patch.object(runtime_work, 'request', return_value=queued):
+                    try:
+                        response._request_provider_start({**decision, 'pluginRoot': root},
+                                                         proof, transition=transition)
+                    except response.HostResponseError as exc:
+                        return str(exc), ensure.call_args_list
+                self.fail('provider start must raise its code')
+
+            code, calls = wake('starting')
+            self.assertEqual(code, 'selected_provider_preparing')
+            self.assertEqual(calls, [((decision['projectRoot'], proof['providerManifest']),)])
+            code, calls = wake('resource_deferred')
+            self.assertEqual((code, len(calls)), ('selected_provider_resource_deferred', 1))
+            # A failed wake queue still gets the direct start.
+            code, calls = wake('starting', queued=None)
+            self.assertEqual((code, len(calls)), ('selected_provider_wake_failed', 1))
+            code, calls = wake('starting', started=[None])
+            self.assertEqual((code, len(calls)), ('selected_provider_preparing', 1))
+            code, calls = wake('starting', started=IndexContractError('provider_start_failed'))
+            self.assertEqual(code, 'selected_provider_start_failed')
+            code, calls = wake('starting', started=IndexContractError('provider_socket_invalid'))
+            self.assertEqual(code, 'selected_provider_state_invalid')
+            # Never from another plugin copy: the owner would refuse that root
+            # as a terminal identity failure.
+            self.assertEqual(wake('starting', root='/other/plugin/root')[1], [])
+            # A real failure, an unknown state and a transition keep the sync path.
+            self.assertEqual(wake('startup_failed'),
+                             ('selected_provider_retry_wait', []))
+            self.assertEqual(wake(None), ('selected_provider_preparing', []))
+            self.assertEqual(wake('starting', transition=True),
+                             ('selected_provider_identity_transition', []))
+            sock.write_text('')  # a live or stale socket is the sync path's
+            self.assertEqual(wake('starting')[1], [])
 
     def test_main_reports_stale_sync_codes_with_exit_3_and_no_fallback(self):
         import contextlib

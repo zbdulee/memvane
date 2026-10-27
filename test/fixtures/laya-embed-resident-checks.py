@@ -104,6 +104,104 @@ class ResidentChecks(unittest.TestCase):
             finally:
                 os.close(fd)
 
+    def _contended_serve(self, refusals, *, owned_checks=None):
+        """Run _serve with an activity gate refusing ``refusals`` first."""
+        import laya_product_sync_worker as sync
+        import laya_install_journal as journal
+        import laya_local_embed_service as local
+        import context_learning.resource_coordination as coordination
+        import context_learning.shared as shared
+        root = tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp')
+        self.addCleanup(root.cleanup)
+        project = Path(root.name).resolve() / 'project'
+        project.mkdir()
+        runtime = Path(root.name).resolve() / 'runtime'
+        runtime.mkdir(mode=0o700)
+        socket = runtime / 'laya-embed.sock'
+        fd = os.open(runtime / 'laya-embed.sock.resident.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        manifest = {**self.manifest, 'serviceSocketPath': str(socket)}
+        decision = {'projectRoot': str(project), 'pluginRoot': str(Path(__file__).resolve().parents[2]),
+                    'installId': '1' * 32, 'journalPath': str(runtime / 'install-journal.sqlite'),
+                    'scopeId': '2' * 32, 'dbPath': str(runtime / 'index.sqlite'),
+                    'dbIncarnation': '3' * 32, 'bundleManifestSha256': '4' * 64,
+                    'ownershipManifestSha256': '5' * 64,
+                    'vectorProfile': {'embeddingFingerprint': manifest['embeddingFingerprint']}}
+        proof = {'providerManifest': manifest}
+        _write_state(manifest, 'starting', attempts=1)
+        service = Mock()
+        service.process.poll.return_value = None
+        pending = list(refusals)
+        entered = []
+
+        class Controller:
+            @contextmanager
+            def activity(self, *_args):
+                if pending:
+                    raise ResourceDeferred(pending.pop(0))
+                entered.append(True)
+                yield
+
+            def check(self, *_args):
+                return {'ready': True}
+        if owned_checks is None:
+            # each retry's still_owned, then after-READY; the idle loop withdraws
+            owned_checks = len(refusals) + 1
+        routes = [(decision, proof)] * (1 + owned_checks) + [IndexError('withdrawn')]
+        sleeps = []
+        result = {}
+        with patch.object(sync, '_selected', side_effect=routes), \
+             patch.object(journal, 'verify_worker_attestation', return_value=manifest), \
+             patch.object(local, 'start_owned_embed_service', return_value=service) as start, \
+             patch.object(coordination, 'Coordinator', Controller), \
+             patch.object(shared, 'resource_report', return_value={}), \
+             patch('laya_embed_resident.time.sleep', side_effect=sleeps.append):
+            try:
+                result['status'] = _serve(str(project), str(socket),
+                                          manifest['embeddingFingerprint'], fd)
+            except Exception as exc:
+                result['error'] = exc
+        result.update(start=start, service=service, sleeps=sleeps, entered=entered,
+                      manifest=manifest)
+        return result
+
+    def test_lane_contention_keeps_lease_and_retries_until_ready(self):
+        import laya_embed_resident as resident
+        seen = []
+        real_write = resident._write_state
+        with patch('laya_embed_resident._write_state',
+                   side_effect=lambda m, reason, **kw: (seen.append(reason),
+                                                        real_write(m, reason, **kw))):
+            run = self._contended_serve(['learning_compute_busy', 'learning_deferred_inference',
+                                         'learning_deferred_resource'])
+        self.assertEqual(run.get('status'), 0, run.get('error'))
+        run['start'].assert_called_once()
+        self.assertEqual(run['entered'], [True])
+        self.assertEqual(run['sleeps'][:3], [resident.LANE_RETRY_SECONDS] * 3)
+        # It became ready instead of exiting 75 into the wake backoff.
+        self.assertEqual(seen, ['ready', 'starting'])
+
+    def test_lane_contention_gives_up_after_the_bounded_window(self):
+        import laya_embed_resident as resident
+        refusals = ['learning_compute_busy'] * resident.LANE_RETRY_LIMIT
+        run = self._contended_serve(refusals)
+        self.assertIsInstance(run.get('error'), ResourceDeferred)
+        self.assertEqual(str(run['error']), 'learning_compute_busy')
+        self.assertEqual(run['sleeps'], [resident.LANE_RETRY_SECONDS] * (resident.LANE_RETRY_LIMIT - 1))
+        run['start'].assert_not_called()
+
+    def test_other_deferrals_and_withdrawal_during_the_wait_do_not_retry(self):
+        run = self._contended_serve(['qmd_startup_recovery_required'])
+        self.assertEqual(str(run.get('error')), 'qmd_startup_recovery_required')
+        self.assertEqual(run['sleeps'], [])
+        run['start'].assert_not_called()
+        # The route moves on while the owner waits: a normal withdrawal.
+        moved = self._contended_serve(['learning_compute_busy'] * 3, owned_checks=1)
+        self.assertEqual(moved.get('status'), 0, moved.get('error'))
+        moved['start'].assert_not_called()
+        row = read_owner_state(moved['manifest'])
+        self.assertEqual((row['reason'], row['attempts']), ('starting', 0))
+
     def test_pending_owner_survives_selection_of_the_same_installation(self):
         import laya_product_sync_worker as sync
         import laya_index_host_route as route
