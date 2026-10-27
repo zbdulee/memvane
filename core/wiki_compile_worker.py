@@ -493,6 +493,12 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
                               if item["role"] == "wiki"))
         if wiki_root.is_symlink() or wiki_root.resolve(strict=True) != wiki_root:
             return None
+        import source_label
+        label = source_label.decision_resolver(decision)
+
+        def same_label(item, revision):
+            return (label(item.get("collection"), item.get("path")) ==
+                    label(revision.get("collection"), revision.get("path")))
         files = sorted(itertools.islice(wiki_root.rglob("*.md"), SELECTED_PROOF_MAX_CARDS + 1))
         if len(files) > SELECTED_PROOF_MAX_CARDS:
             return None
@@ -525,11 +531,17 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
             revisions = recall.frontmatter_source_revisions(block)
             if not revisions and source_revision["path"] in block:
                 return None  # names this source but its provenance is unreadable
+            # A card citing a renamed raw collection is the same source when
+            # its label resolves by path to the job's collection (recall rule).
             if not any((item.get("path") == source_revision.get("path")
-                        and item.get("collection") == source_revision.get("collection")
+                        and same_label(item, source_revision)
                         and item.get("sha256") == source_revision.get("sha256")
                         and item.get("size") == source_revision.get("size"))
-                       if content_only else wiki_freshness.same_revision(item, source_revision)
+                       if content_only else (
+                           same_label(item, source_revision)
+                           and wiki_freshness.same_revision(
+                               {**item, "collection": source_revision.get("collection")},
+                               source_revision))
                        for item in revisions):
                 continue
             if content_only and bound_event is not None:

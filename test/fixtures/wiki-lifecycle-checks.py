@@ -312,6 +312,20 @@ class WikiLifecycle(unittest.TestCase):
         second, _, _ = self.run_lifecycle()
         self.assertEqual((second['kept'], second['retired']), (2, 0))
 
+    def test_renamed_raw_label_missing_source_is_decidable(self):
+        # A raw collection renamed (rccar-docs -> rccar): the old label resolves
+        # by path under the current raw root, so a gone source is provably gone.
+        renamed = self.card('renamed-gone.md', provenance=False,
+                            sources=[('docs/gone.md', 'old-docs')])
+        # An unknown label whose path is outside every raw root stays undecidable.
+        foreign = self.card('foreign-gone.md', provenance=False,
+                            sources=[('tasks/gone.md', 'old-docs')])
+        result, _, _ = self.run_lifecycle()
+        self.assertFalse(renamed.exists())
+        self.assertTrue(foreign.exists())
+        self.assertEqual((result['retired'], result['undecidable']), (1, 1))
+        self.assertIn('source_foreign_collection', self.log.read_text())
+
     def test_guard_counts_no_source_retirements(self):
         self.source('keep.md', b'k')
         self.card('keep.md', [self.revision('keep.md')])

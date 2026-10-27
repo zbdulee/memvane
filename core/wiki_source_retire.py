@@ -87,6 +87,13 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
     wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
+    import source_label
+    label = source_label.resolver(root, config)
+
+    def key(item):
+        # A renamed raw collection's old label resolves by path (recall rule).
+        return label(item['collection'], item['path']), item['path']
+    deleted = key({'collection': collection, 'path': rel})
     with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
         wiki_selected_laya.recheck(selected)
         cards = sorted(wiki_root.rglob('*.md'))
@@ -117,8 +124,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             # A source may have several historical card revisions. The deleted
             # path, not only the last observed revision, is retired once absence
             # is rechecked under this mutation lock.
-            if not any(item is not None and item['path'] == rel
-                       and item['collection'] == collection
+            if not any(item is not None and key(item) == deleted
                        for item in normalized):
                 continue
             writable, findings = wc.is_auto_writable_page(card)
@@ -142,16 +148,14 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 return {'state': 'blocked', 'survivors': []}
             for old_card, old_text, revisions in shared_cards:
                 survivors = [item for item in revisions
-                             if (item['collection'], item['path']) != (collection, rel)
+                             if key(item) != deleted
                              and ((root / item['path']).exists()
                                   or (root / item['path']).is_symlink())]
                 def covered(revision):
                     return any(
                         candidate != old_card and all(item is not None for item in proof)
-                        and any((item['collection'], item['path']) ==
-                                (revision['collection'], revision['path']) for item in proof)
-                        and not any((item['collection'], item['path']) ==
-                                    (collection, rel) for item in proof)
+                        and any(key(item) == key(revision) for item in proof)
+                        and not any(key(item) == deleted for item in proof)
                         and _verified_wiki_row({
                             'path': wiki_name + '/' + candidate.relative_to(wiki_root).as_posix(),
                             'body': body}, selected[0], current_source=True)
@@ -159,7 +163,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 if all(covered(item) for item in survivors):
                     retiring.append((old_card, old_text))
                 else:
-                    shared.update((item['collection'], item['path']) for item in survivors)
+                    shared.update(key(item) for item in survivors)
         if shared:
             return {'state': 'shared_pending', 'survivors': sorted(shared)}
         if source.is_symlink() or source.exists():

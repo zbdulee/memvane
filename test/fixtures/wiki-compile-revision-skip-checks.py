@@ -125,6 +125,44 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertEqual(len(self.extractor_calls), 1)
         self.verify(self.cards[0])
 
+    def rename_raw(self):
+        """Minimal migration: raw `proj-docs` at docs/ becomes `proj` at the root."""
+        self.config = {**self.config, 'collections': ['proj', 'proj-wiki'],
+                       'collectionPaths': {'proj': '.', 'proj-wiki': '.auto-context/wiki'},
+                       'collectionRoles': {'proj': 'raw', 'proj-wiki': 'wiki'}}
+        (self.root / '.auto-context' / 'settings.json').write_text(
+            json.dumps(self.config), encoding='utf-8')
+        self.decision.update({
+            'collections': [{'name': 'proj', 'role': 'raw', 'sourceRoot': str(self.root)},
+                            {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}],
+            'collectionRoots': {'proj': str(self.root), 'proj-wiki': str(self.wiki)}})
+
+    def renamed_job(self, trigger):
+        job = self.job(trigger)
+        job['source'] = {**job['source'], 'collection': 'proj'}
+        job['selectedRoute'] = wiki_selected_laya.route_identity(self.bound)
+        return job
+
+    def test_old_label_card_proves_the_revision_after_a_raw_rename(self):
+        self.compile_verified_once()
+        self.rename_raw()
+        done = worker.process_job(self.root, self.config, self.config['compile'],
+                                  self.renamed_job('session_start'))
+        self.assertEqual(done, (True, False, []))
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
+        self.assertEqual(len(self.cards), 1)
+        self.assertEqual([row['card'] for row in self.skip_reasons()], ['concepts/card-1.md'])
+
+    def test_wiki_label_with_the_source_path_is_not_proof(self):
+        self.compile_verified_once()
+        card = self.cards[0]
+        card.write_text(card.read_text(encoding='utf-8').replace(
+            'collection: "proj-docs", sha256', 'collection: "proj-wiki", sha256'),
+            encoding='utf-8')
+        self.verify(card)
+        self.assertEqual(self.process('session_start'), (True, False, []))
+        self.assertEqual(len(self.extractor_calls), 2)
+
     def test_same_revision_across_triggers_and_processed_queue_extracts_once(self):
         self.compile_verified_once()
         for trigger in ('session_start', 'file_change', 'post_tool_source', 'manual'):
