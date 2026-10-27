@@ -183,6 +183,30 @@ class RuntimeChecks(unittest.TestCase):
             phase[0]='completed';update.worker(key);self.assertFalse(job.exists())
             self.assertEqual(laya.call_count,2)
 
+    def test_update_worker_never_refreshes_laya_under_test_overrides(self):
+        import hashlib
+        import update_hook_queue as update
+        import config,setup_guard,qmd_route
+        from context_learning import synthetic_scope
+        runtime=self.runtime();cwd=str(self.root);key=hashlib.sha256(cwd.encode()).hexdigest()[:32]
+        for env in ({'QMD_SETUP_GUARD_FIXTURE':'1'},{'QMD_CORE_UPDATE_SCRIPT':'/bin/true'}):
+            job=self.root/(key+'.job.json')
+            update._write(job,{'schema':'qmd-update-hook-job-v1','cwd':cwd})
+            def run(argv,**kw):
+                if kw.get('env'):
+                    update._write(self.root/(key+'.status.json'),{'runId':kw['env']['QMD_UPDATE_HOOK_RUN_ID'],'status':'completed'})
+                return subprocess.CompletedProcess(argv,0,stdout='',stderr='')
+            with patch.dict(os.environ,env,clear=True),patch.object(update,'_private_queue',return_value=self.root), \
+                 patch.object(config,'find_project_config',return_value={'config':{}}), \
+                 patch.object(synthetic_scope,'invocation_in_generated_story',return_value=True), \
+                 patch.object(setup_guard,'status',return_value={'status':'ready'}), \
+                 patch.object(qmd_route,'project_paths',return_value={'selected':True}), \
+                 patch.object(update,'readiness'),patch.object(update.subprocess,'run',side_effect=run), \
+                 patch.object(runtime,'request'), \
+                 patch.object(update,'_refresh_laya_adapter') as laya:
+                update.worker(key)
+                laya.assert_not_called()
+
     def test_small_qmd_child_obeys_the_shared_boundary(self):
         runtime=self.runtime()
         with patch.dict(os.environ,{},clear=True),patch.object(runtime,'sample',return_value=self.report):

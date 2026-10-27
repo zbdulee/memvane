@@ -356,7 +356,9 @@ def worker(key):
                 else:
                     import runtime_work
                     runtime_work.request('update',key)
-                _refresh_laya_adapter(queue, output)
+                # Test overrides keep the real HOME; never touch its Laya runtime.
+                if product_update and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+                    _refresh_laya_adapter(queue, output)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 output.write(f'{time.time():.3f} update failed:{type(exc).__name__}\n')
                 _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',
