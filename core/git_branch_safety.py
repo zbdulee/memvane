@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import unicodedata
 
 GIT_TIMEOUT_SECONDS = 5.0
 RUN_BUDGET_SECONDS = 20.0
@@ -145,8 +146,13 @@ def operation_in_progress(facts: dict) -> str | None:
     return None
 
 
+def _nfc(path: str) -> str:
+    # macOS git stores precomposed names; a card may record either form.
+    return unicodedata.normalize('NFC', path)
+
+
 def _z_paths(raw: bytes) -> set[str]:
-    return {item.decode('utf-8', 'surrogateescape') for item in raw.split(b'\0') if item}
+    return {_nfc(item.decode('utf-8', 'surrogateescape')) for item in raw.split(b'\0') if item}
 
 
 class LineageJudge:
@@ -223,7 +229,7 @@ class LineageJudge:
         if not candidate.is_absolute():
             candidate = self.root / candidate
         try:
-            return candidate.resolve().relative_to(self.top).as_posix()
+            return _nfc(candidate.resolve().relative_to(self.top).as_posix())
         except (OSError, RuntimeError, ValueError):
             return None
 
