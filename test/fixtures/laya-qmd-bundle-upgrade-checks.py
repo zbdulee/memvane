@@ -73,8 +73,14 @@ def identity(item):
             'bundleKind': 'full_plugin', 'vectorProfile': item['vectorProfile']}
 
 
+# Plugin roots whose files a host re-extracted in place (new inode rows).
+REEXTRACTED = set()
+
+
 def file_identity(attestation):
-    return [[attestation['providerManifest']['workerPath'], 1, 2, 3, 4, 5]]
+    path = attestation['providerManifest']['workerPath']
+    inode = 9 if any(path.startswith(root + '/') for root in REEXTRACTED) else 2
+    return [[path, 1, inode, 3, 4, 5]]
 
 
 class Journal:
@@ -161,6 +167,9 @@ class UpgradeCase(BOUND['BoundCase']):
         self.new = proof(self.new_root, NEW_COMMIT)
         self.fj.pending = identity(self.old)
         self.removed = set()
+        self.bundles = {self.old_root: self.old, self.new_root: self.new}
+        REEXTRACTED.clear()
+        self.addCleanup(REEXTRACTED.clear)
         # The upgrade backup snapshots the journal file; its CAS is synthetic.
         import sqlite3
         with sqlite3.connect(self.journal_path) as db:
@@ -218,7 +227,7 @@ class UpgradeCase(BOUND['BoundCase']):
     def inspect_bundle(self, root):
         if root in self.removed:
             raise BundleEvidenceError('bundle_root_unavailable')
-        return {self.old_root: self.old, self.new_root: self.new}[root]
+        return self.bundles[root]
 
     def patches(self, module):
         stack = ExitStack()
@@ -241,7 +250,7 @@ class UpgradeCase(BOUND['BoundCase']):
                                     lambda raw, _j: (json.loads(raw), _sha(raw))))
         enter(mock.patch.object(module, 'inspect_journal', self.fj.inspect))
         enter(mock.patch.object(module, 'adopt_host_loaded_plugin',
-                                side_effect=lambda *_a, **_k: self.new))
+                                side_effect=lambda _source, root, **_k: self.bundles[root]))
         enter(mock.patch.object(module, 'inspect_full_plugin_candidate',
                                 side_effect=self.inspect_bundle))
         enter(mock.patch.object(module, 'validate_production_provider_attestation',
@@ -249,11 +258,11 @@ class UpgradeCase(BOUND['BoundCase']):
         enter(mock.patch.object(module, '_provider_file_identity', file_identity))
         return stack
 
-    def run_upgrade(self, module):
+    def run_upgrade(self, module, root=None, commit=NEW_COMMIT):
         with self.patches(module):
             return module.upgrade(project_root=str(self.project), state_root=str(self.state),
                                   source_root=str(self.home / 'marketplace'),
-                                  plugin_root=self.new_root, commit_id=NEW_COMMIT,
+                                  plugin_root=root or self.new_root, commit_id=commit,
                                   accepted_provider_sha256='e' * 64,
                                   model_path='/models/m.gguf', dimension=3)
 
@@ -360,6 +369,85 @@ class ActiveQmdUpgradeTests(UpgradeCase):
         self.assertEqual(self.row()['phase'], 'upgrading')
         self.assertEqual(self.selection(), 'blocked')
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertEqual(self.selection(), 'candidate')
+
+
+class CrossHostQmdUpgradeTests(UpgradeCase):
+    """Claude 0.37.1 -> Codex 0.37.1 (newer commit, same label) -> Claude 0.37.2.
+
+    The Codex upgrade leaves its settled intent behind; Codex then re-extracts
+    or removes its cache directory before the next Claude bundle arrives.
+    """
+    CODEX_COMMIT, NEXT_COMMIT = '2' * 40, '3' * 40
+
+    def setUp(self):
+        super().setUp()
+        cache = lambda host: self.home / host / 'plugins' / 'cache' / 'mkt' / 'qmd-auto-context'
+        self.old_root = str(cache('.claude') / '0.37.1')
+        self.new_root = str(cache('.codex') / '0.37.1')
+        self.next_root = str(cache('.claude') / '0.37.2')
+        self.old = proof(self.old_root, OLD_COMMIT)
+        self.new = proof(self.new_root, self.CODEX_COMMIT)
+        self.next = proof(self.next_root, self.NEXT_COMMIT)
+        self.bundles = {self.old_root: self.old, self.new_root: self.new,
+                        self.next_root: self.next}
+        self.fj.pending = identity(self.old)
+        self.write_attestation(self.old, manifest(self.old_root))
+        self.review = self.reviewed_at(self.new_root)
+        self.bound()
+        self.activate()
+        result = self.run_upgrade(active, self.new_root, self.CODEX_COMMIT)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertTrue((self.state / active.INTENT).exists())  # settled receipt stays
+        self.review = self.reviewed_at(self.next_root)
+
+    def reviewed_at(self, root):
+        return {**self.review, 'reviewedProvider': {
+            **self.review['reviewedProvider'], 'providerManifest': manifest(root)}}
+
+    def assert_moved_to_next(self):
+        before = self.row()
+        result = self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        after = self.row()
+        self.assertTrue(self.unchanged_fields(before, after, active.LEDGER_CHANGES))
+        self.assertEqual(json.loads(self.route.read_bytes())['pluginRoot'], self.next_root)
+        self.assertEqual(self.fj.selected['pluginRoot'], self.next_root)
+        self.assertEqual(self.selection(), 'candidate')
+        self.assertEqual(len(list(self.state.glob('active-upgrade-*-settled.json'))), 1)
+        intent = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertEqual(intent['newProof']['pluginRoot'], self.next_root)
+        self.kept()
+
+    def test_codex_cache_reextracted_in_place_does_not_wedge_next_claude_bundle(self):
+        REEXTRACTED.add(self.new_root)  # same files, new inodes
+        self.assert_moved_to_next()
+
+    def test_codex_cache_removed_does_not_wedge_next_claude_bundle(self):
+        self.removed.add(self.new_root)
+        self.assert_moved_to_next()
+
+    def test_codex_cache_readopted_at_another_commit_is_treated_as_replaced(self):
+        self.bundles[self.new_root] = proof(self.new_root, '4' * 40)
+        self.assert_moved_to_next()
+
+    def test_unsettled_foreign_intent_still_refuses(self):
+        # An interrupted upgrade is not a receipt: another bundle must not
+        # archive it, and its own resume still verifies the new provider.
+        fenced = self.row()
+        with mock.patch.object(active, '_switch', side_effect=BOUND['Kill']()):
+            with self.assertRaises(BOUND['Kill']):
+                self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
+        self.assertEqual(self.row(), fenced)
+        intent = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertEqual(intent['newProof']['pluginRoot'], self.next_root)
+        self.bundles[self.new_root] = proof(self.new_root, '5' * 40)
+        with self.assertRaisesRegex(Exception, 'active_upgrade_prior_unsettled'):
+            self.run_upgrade(active, self.new_root, '5' * 40)
+        REEXTRACTED.add(self.next_root)
+        with self.assertRaisesRegex(Exception, 'active_upgrade_new_provider_changed'):
+            self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
+        self.assertEqual(self.row(), fenced)
         self.assertEqual(self.selection(), 'candidate')
 
 
