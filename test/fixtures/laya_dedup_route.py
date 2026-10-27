@@ -37,10 +37,33 @@ def exercise():
             {'role': 'raw', 'sourceRoot': str(root / 'docs')},
             {'role': 'wiki', 'sourceRoot': str(wiki)}]}, {'proof': 'synthetic'})
         calls = []
+        held = {'card': 0, 'wiki': 0}
+        card_lock = dedup.cp.card_write_lock
+        wiki_lock = dedup.wiki_mutation_lock.lock
+
+        @contextlib.contextmanager
+        def tracked_card(project):
+            with card_lock(project):
+                held['card'] += 1
+                try:
+                    yield
+                finally:
+                    held['card'] -= 1
+
+        @contextlib.contextmanager
+        def tracked_wiki(project):
+            assert held['card'] > 0, 'wiki lock must follow card-write lock'
+            with wiki_lock(project):
+                held['wiki'] += 1
+                try:
+                    yield
+                finally:
+                    held['wiki'] -= 1
 
         def request_sync(project, selected):
             assert project == root and selected is bound
             assert not (pages / 'loser.md').exists(), 'wake must follow deletion'
+            assert held == {'card': 0, 'wiki': 0}, 'wake must follow lock release'
             calls.append('wake')
             if len(calls) == 1:
                 raise RuntimeError('synthetic wake failure')
@@ -60,6 +83,8 @@ def exercise():
 
         with (patch.object(dedup.wiki_selected_laya, 'selected', return_value=bound),
               patch.object(dedup.wiki_selected_laya, 'request_sync', side_effect=request_sync),
+              patch.object(dedup.cp, 'card_write_lock', side_effect=tracked_card),
+              patch.object(dedup.wiki_mutation_lock, 'lock', side_effect=tracked_wiki),
               patch.object(dedup, 'enqueue_project_collections', side_effect=AssertionError('QMD queue used'))):
             try:
                 run('merge', '--delete', 'entities/loser.md')

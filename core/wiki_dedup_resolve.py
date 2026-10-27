@@ -152,8 +152,15 @@ def pair_missing(wiki_root: Path, entry: dict) -> bool:
 
 
 def resolve_entry(root: Path, wiki_root: Path, compile_dir: Path, entry: dict, action: str, delete_rel: str | None, *, laya_bound=None) -> dict:
-    with wiki_mutation_lock.lock(root):
-        return _resolve_entry_locked(root, wiki_root, compile_dir, entry, action, delete_rel, laya_bound=laya_bound)
+    # Match compiler/verifier/retirement lock order. Queueing a wake performs
+    # journal proof checks, so do it only after both card locks are released.
+    with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        result = _resolve_entry_locked(root, wiki_root, compile_dir, entry, action,
+                                       delete_rel, laya_bound=laya_bound)
+    sync_needed = result.pop('_syncAfterMutation', False)
+    if laya_bound is not None and sync_needed:
+        wiki_selected_laya.request_sync(root, laya_bound)
+    return result
 
 
 def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry: dict, action: str, delete_rel: str | None, *, laya_bound=None) -> dict:
@@ -165,9 +172,9 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         recorded = record_skip(root, wiki_root, compile_dir, entry)
         # A prior merge may have deleted the loser before its wake could be
         # queued. Stale pairs are retried as skips by the resolver agent.
-        if laya_bound is not None and not recorded and pair_missing(wiki_root, entry):
-            wiki_selected_laya.request_sync(root, laya_bound)
-        return {"action": "skipped", "recorded": recorded}
+        stale = laya_bound is not None and not recorded and pair_missing(wiki_root, entry)
+        return {"action": "skipped", "recorded": recorded,
+                "_syncAfterMutation": stale}
 
     if action == "merge":
         if delete_rel not in valid_choices:
@@ -178,9 +185,8 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         except ValueError:
             return {"action": "rejected", "reason": "unsafe_delete_path"}
         if not target.is_file():
-            if laya_bound is not None:
-                wiki_selected_laya.request_sync(root, laya_bound)
-            return {"action": "skipped", "reason": "stale_target"}
+            return {"action": "skipped", "reason": "stale_target",
+                    "_syncAfterMutation": laya_bound is not None}
 
         paired_with = page_b if delete_rel == page_a else page_a
         content = target.read_text(encoding="utf-8")
@@ -206,12 +212,10 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         title = str(meta.get("title") or Path(delete_rel).stem)
         index_ok = wc.remove_from_index(wiki_root, target)
         wc.append_log(wiki_root, "deleted", target, title)
-        # The final on-disk state must precede the durable index wake. Keep
-        # the claimed dedup row until the wake succeeds; an exception requeues
-        # it, and a retry with the loser already absent wakes again.
-        if laya_bound is not None:
-            wiki_selected_laya.request_sync(root, laya_bound)
-        return {"action": "deleted", "deletedPath": delete_rel, "indexOk": index_ok}
+        # The caller requests sync after releasing the card locks but before
+        # ACKing the dedup queue. A failure requeues this row for stale retry.
+        return {"action": "deleted", "deletedPath": delete_rel,
+                "indexOk": index_ok, "_syncAfterMutation": laya_bound is not None}
 
     return {"action": "rejected", "reason": "unknown_action"}
 
