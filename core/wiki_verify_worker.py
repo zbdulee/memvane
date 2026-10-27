@@ -658,24 +658,6 @@ def snapshot_revision_evidence(
     return loaded, {"state": wiki_freshness.FRESH, "checked": len(loaded)}, evidence
 
 
-def record_source_missing(root: Path, config: dict, compile_cfg: dict, rel: str,
-                          status: str, job: dict) -> None:
-    """소스 전멸 사실을 트림되지 않는 원장에 남긴다(감지 경로 #2, 큐 경유).
-
-    존재 판정은 `wiki_source_missing`이 SSOT이고 그 안에서 `recall.resolve_existing_source`
-    하나만 쓴다 — 주입·스캔·검수가 같은 판정을 봐야 한다. `load_sources`가 0건인 이유가
-    "없다"가 아니라 읽기 실패(권한 등)인 경우엔 판정이 present로 나와 아무것도 쓰지 않는다.
-    fail-open: 원장 기록 실패는 검수 흐름을 바꾸지 않는다.
-    """
-    try:
-        info = wsm.classify_records(job.get("sources"), root, wsm.allow_roots_of(config))
-        if not wsm.all_sources_missing(info):
-            return
-        wsm.record_detection(root, compile_cfg, rel, status, info["missing"], "verify")
-    except Exception:
-        return
-
-
 def base_record(job: dict) -> dict:
     """attempt 이전에도 쓸 수 있는 레코드 필드.
 
@@ -946,12 +928,9 @@ def process_verify_job(
 
     sources = load_sources(root, job, max_chars, initial_sources=snapshot_sources)
     if not sources:
-        # 원문 없이는 대조 불가 — generated로 남겨 미검수 배지가 유지되게 한다.
-        # verify-log.jsonl은 pass까지 담는 운영 로그라 trim_jsonl 대상이다(활성 프로젝트에서
-        # 며칠치만 남는다) — 즉 여기에만 남기면 이 신호는 **유실된다**(실측: 3주치가 이미
-        # 밀려나갔다). 소실 사실은 트림하지 않는 원장에 별도로 남긴다(verify-deleted.jsonl과
-        # 같은 이유·같은 패턴). 카드는 건드리지 않는다.
-        record_source_missing(root, config, compile_cfg, rel, status, job)
+        # 원문 없이는 대조 불가 — generated로 남겨 미검수 배지가 유지되게 한다. 카드는
+        # 건드리지 않는다: 원문 소실 카드의 보관 후 삭제는 SessionStart `wiki_lifecycle`이
+        # 기록된 `sourceRevisions`로 판정해 처리한다.
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "source_missing"})
         return True, False
 

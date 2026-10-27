@@ -246,8 +246,11 @@ hermes_adapter.core_bridge.session_update()
 - run `qmd embed` in a background subshell under the shared embed lock;
 - reload the daemon after embeddings or removals change daemon-visible state;
 - run retroactive wiki dedup scan after embed completes;
-- surface one-time notices for daemon-down, stale queue, source-missing, and
-  wiki-dedup backlogs. `merge-needed.jsonl` stays a passive diagnostic and is
+- run the wiki lifecycle (`core/wiki_lifecycle.py`): retire generated cards whose
+  recorded source is missing or that have no `sourceRevisions`, and enqueue
+  regeneration for cards whose recorded source hash changed;
+- surface one-time notices for daemon-down, stale queue, and wiki-dedup
+  backlogs. `merge-needed.jsonl` stays a passive diagnostic and is
   never scanned into a SessionStart review action.
 
 The update path still depends on qmd CLI commands. Replacing qmd for indexing

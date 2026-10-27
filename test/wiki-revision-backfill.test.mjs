@@ -440,7 +440,7 @@ test('매니페스트에 컴파일 시각이 없으면 undecidable — 카드 mt
 });
 
 test('원문이 사라졌으면 source_missing — 삭제도 백필도 하지 않는다', () => {
-  // 3단계(source-missing) 경로다. 존재 판정은 recall 의 SSOT 를 쓴다.
+  // 원문 소실 카드는 SessionStart 수명 주기 몫이다. 존재 판정은 recall 의 SSOT 를 쓴다.
   const dir = setupProject({
     manifestSources: [{ kind: 'file', path: 'docs/gone.md', collection: 'proj-docs' }],
     cardOptions: { sources: ['  - {kind: file, path: "docs/gone.md", collection: "proj-docs"}'] },

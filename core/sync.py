@@ -105,7 +105,7 @@ def write_state_atomic(path, snapshot):
     마커를 남겨 자동 재처리와 baseline 전진을 모두 막는다. 다른 호출부는 각자의
     재처리 계약을 따른다.
     sync에서는 예외가 `run()`을 뚫고 나가 skill(`set -euo pipefail`)에서 실패로 보이며,
-    백그라운드 스캐너(`wiki_source_scan`·`wiki_dedup_scan`)에서는 각자의 `main()`이 잡아
+    백그라운드 worker(`wiki_lifecycle`·`wiki_dedup_scan`)에서는 각자의 `main()`이 잡아
     로그에 `EXCEPTION`으로 남긴다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)

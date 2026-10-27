@@ -196,8 +196,8 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.verify.crossEngine` | `"prefer"` | 검수 엔진을 카드를 만든 엔진과 분리합니다(`prefer`·`require`·`off`) → [검수 엔진 분리 (`crossEngine`)](#검수-엔진-분리-crossengine) |
 | `compile.verify.builtins` | `[]` | 검수 후보 엔진입니다. 비면 `compile.extractor` 풀을 물려받습니다. |
 | `compile.verify.cooldownSeconds` | `600` | 검수 실패 뒤 cooldown입니다(24h 클램프). |
-| `compile.sourceScan.enabled` | `true` | 카드의 **원문 소실 스캔만** 켜고 끕니다(provenance 결측 집계는 끄지 않습니다). **`true`/`false`만** 유효하고, `"false"`처럼 bool이 아닌 값은 기본값(스캔 유지)으로 폴백한 뒤 SessionStart에 알림이 나옵니다 → [원문 소실 (`source_missing`)](#원문-소실-source_missing) |
-| `compile.sourceScan.maxCardsPerScan` | `300` | 한 회차에 볼 카드 수입니다(5000 클램프). 초과분은 순환 커서가 다음 회차에 이어 봅니다. `QMD_SOURCE_SCAN_MAX`가 이 값을 덮습니다. |
+| `compile.sourceScan.enabled` | `true` | **wiki 수명 주기 조치**(원문 소실·지문 없음 카드 삭제, 해시 변경 재생성 enqueue)를 켜고 끕니다(provenance 결측 집계는 끄지 않습니다). **`true`/`false`만** 유효하고, `"false"`처럼 bool이 아닌 값은 기본값(유지)으로 폴백한 뒤 SessionStart에 알림이 나옵니다 → [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) |
+| `compile.sourceScan.maxCardsPerScan` | `300` | 수명 주기가 한 회차에 원문 해시를 대조할 카드 수입니다(5000 클램프). 초과분은 순환 커서가 다음 회차에 이어 봅니다. `QMD_SOURCE_SCAN_MAX`가 이 값을 덮습니다. |
 | `maintenance.orphanVectors.enabled` | `true` | 죽은(orphan) 벡터 자동 회수입니다 → [orphan 벡터 자동 회수](#orphan-벡터-자동-회수) |
 | `maintenance.orphanVectors.minRatio` | `0.2` | 기회적 회수의 orphan 비율 하한입니다(`0`~`1`). |
 | `maintenance.orphanVectors.minCount` | `200` | 기회적 회수의 절대 개수 하한입니다. 두 조건을 **모두** 넘겨야 회수합니다. |
@@ -290,11 +290,10 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 - **dedup score 레버 4종** — `threshold`·`autoMergeThreshold`·`topK`·`similarPageMaxChars`는
   상수가 됐습니다. daemon score가 유사도가 아니라 **RRF 순위의 함수**라 어떤 임계도
   "두 카드가 같은 사실을 말한다"를 표현할 수 없었습니다([Semantic Dedup](#semantic-dedup)).
-- **`compile.sourceMissingPath`** — 위 "산출물 경로 9종"과 같은 경로 키입니다(목록에서만
-  빠져 있었습니다). 원장 위치는 `.auto-context/compile/source-missing.jsonl` 고정이며
-  적어 두면 SessionStart 알림이 "지우십시오"라고 안내합니다.
-  (`compile.sourceScan.enabled`·`maxCardsPerScan`은 경로 키가 아니라 스캔 동작 값이라
-  **이제 실제로 읽힙니다** — 위 [전체 키 레퍼런스](#전체-키-레퍼런스)를 보십시오.)
+- **`compile.sourceMissingPath`** — 위 "산출물 경로 9종"과 같은 경로 키입니다. 읽는 소비자가
+  없으므로 적어 두면 SessionStart 알림이 "지우십시오"라고 안내합니다.
+  (`compile.sourceScan.enabled`·`maxCardsPerScan`은 경로 키가 아니라 수명 주기 동작 값이라
+  읽힙니다 — 위 [전체 키 레퍼런스](#전체-키-레퍼런스)를 보십시오.)
 - **클램프 상수** — `MAX_COMPILE_PER_RUN`(50)·`MAX_CARDS_PER_SOURCE`(50)·
   `MAX_VERIFY_PER_RUN`(50)·`VERIFY_PRODUCED_HARD_CAP`(30)·cooldown 24h 상한은
   "설정 오류나 모델 출력이 과금 규모를 정하지 못한다"를 보장하는 자리라 설정으로
@@ -325,7 +324,7 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 - [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) · [Collection Roles](#collection-roles) · [Recall Strategy](#recall-strategy)
 - [카드 본문 주입](#카드-본문-주입) · [원문 경로 주입](#원문-경로-주입) · [lex 게이트](#lex-게이트--무관-주입-차단) · [minScore는 유사도가 아니라 순위입니다](#minscore는-유사도가-아니라-순위입니다) · [Raw Fallback Tuning](#raw-fallback-tuning)
 - [Recall 품질 진단 (shadow query)](#recall-품질-진단-shadow-query) · [Events](#events)
-- [Wiki Compile](#wiki-compile) · [처리량과 유료 호출 예산](#처리량과-유료-호출-예산) · [Verify](#verify) · [원문 소실 (`source_missing`)](#원문-소실-source_missing) · [Semantic Dedup](#semantic-dedup)
+- [Wiki Compile](#wiki-compile) · [처리량과 유료 호출 예산](#처리량과-유료-호출-예산) · [Verify](#verify) · [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) · [Semantic Dedup](#semantic-dedup)
 - [orphan 벡터 자동 회수](#orphan-벡터-자동-회수) · [cooldown·lock의 "영구 정지" 방어](#cooldownlock의-영구-정지-방어)
 - [Common Recipes](#common-recipes) · [Troubleshooting](#troubleshooting)
 
@@ -654,7 +653,7 @@ fail-closed drop된 경우(`path_unresolved`)를 진짜 미검수 카드와 구�
 
 | 검증 | 이유 |
 |---|---|
-| `kind`가 `file`인가 | `{kind: "url", path: "docs/x.md"}`처럼 로컬 경로 모양의 비파일 소스가 원문으로 주입되는 것을 막습니다. 반대로 실제 url/slack 소스가 `missing`으로 집계되면 **사유가 틀립니다** — `source_missing` 정책 판단이 그 신호를 근거로 삼기 때문입니다. `wiki_verify_worker`가 검증에 쓰는 kind 집합과 같습니다. |
+| `kind`가 `file`인가 | `{kind: "url", path: "docs/x.md"}`처럼 로컬 경로 모양의 비파일 소스가 원문으로 주입되는 것을 막습니다. 반대로 실제 url/slack 소스가 `missing`으로 집계되면 **사유가 틀립니다** — 원문 소실 판정이 그 신호를 근거로 삼기 때문입니다. `wiki_verify_worker`가 검증에 쓰는 kind 집합과 같습니다. |
 | `path`가 비어 있지 않은 문자열인가 | `{"path": false}`가 표기 `path: false`로 나가면 되읽어 문자열 `"false"`가 되고, 그런 이름의 파일이 있으면 원문으로 주입됩니다. 쓰기 쪽에서 그 항목을 아예 쓰지 않고(`wiki_compile.source_flow_entries`), 읽기 쪽에서도 검사합니다. |
 | 길이가 상한(200자) 이하인가 | title(160)·본문(600)에는 상한이 있는데 경로만 무제한이면 토큰 목표에 구멍이 남습니다(822자 경로가 축자 주입된 사례). **자르지 않고 버립니다** — 잘린 경로는 열 수 없어 없는 파일을 열게 만듭니다. 판정은 실제 주입되는 표시 문자열 기준이라, 같은 카드가 하위 cwd(절대 표시)에서는 상한을 넘어 빠질 수 있습니다. |
 | project root(또는 `allowRoots`) 안으로 해석되는가 | `../../../etc/passwd`를 "이 프로젝트 파일"로 제시하지 않기 위함입니다. `resolve()` **후** 판정하므로 밖을 가리키는 심볼릭 링크도 걸립니다. `collectionPaths` 검증과 같은 함수(`resolve_paths.contained_path`)를 씁니다. |
@@ -765,7 +764,7 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 없음" 표식을 붙이면 stale 카드마다 토큰만 늘고 모델이 할 수 있는 일은 없습니다.
 `duplicate`는 같은 경로가 상위 카드 아래에 이미 있으므로 손실이 아닙니다. stale 링크는
 주입에서 감추는 것이 아니라 소스 쪽에서 고쳐야 하는 문제입니다 —
-그 경로가 "원문 소실(`source_missing`)" 절입니다. 같은 줄의 `cards_all_sources_missing`은
+그 경로가 "wiki 수명 주기" 절입니다. 같은 줄의 `cards_all_sources_missing`은
 **살아 있는 원문이 하나도 없는 카드가 실제로 주입된 수**입니다(카드 사이 중복 제거 전 기준).
 
 ### lex 게이트 — 무관 주입 차단
@@ -1178,7 +1177,7 @@ recall에서 사라집니다.** 사람 검수를 전제하지 않으므로 복�
 "교차검증됨"으로 오독되기 때문입니다.
 
 **recall은 `verifiedMode`를 읽지 않습니다.** `self`도 `cross-engine`과 동일하게 캐논급으로
-주입됩니다. 주입에 신뢰 하향 배지를 붙이지 않는 이유는 `source_missing`에서와 같습니다 —
+주입됩니다. 주입에 신뢰 하향 배지를 붙이지 않는 이유는 —
 recall에서 내리지 않기로 한 카드에 하향 표식을 붙이는 것은 자기모순이고, 배지는 주입마다
 토큰을 먹어 이 플러그인의 목표(토큰 절감)와 반대로 갑니다. 노출을 재는 수단은 주입이
 아니라 frontmatter 그리고 `verify-log.jsonl`의 `verifiedMode`/`producedBy`/`enginesAttempted`
@@ -1264,7 +1263,7 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 | 후보 전원 식힘 중 | 0 | 불변(`generated`) | **보존** | 유지 | `deferred`/`engines_cooling` |
 | `require` + 귀속 불가/후보 없음 | 0 | 불변(`generated`) | **보존** | — | `deferred`/`cross_engine_unavailable` |
 | extractor 설정 없음 | 0 | 불변(`generated`) | 폐기 | — | `skipped`/`missing_extractor` |
-| 소스 전멸 | 0 | 불변(`generated`) | 소비 | — | `skipped`/`source_missing` + `source-missing.jsonl` |
+| 소스 전멸 | 0 | 불변(`generated`, 정리는 수명 주기) | 소비 | — | `skipped`/`source_missing` |
 
 **카드를 삭제하는 행은 verdict 세 줄뿐이고, 그 셋은 유효 JSON verdict 를 받은 뒤에만 도달
 합니다.** transient(127·timeout·실행 실패)는 전부 "카드 불변 + 큐 보존"이므로 verifier CLI가
@@ -1276,8 +1275,7 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 함께** 나갑니다(`wiki_compile.stamp_verification`이 유일한 경로). 라이브에는 `verified`인데
 `verifiedAt`이 없는 카드가 27장 있는데 전부 `verifiedBy: agent-full-source` — 이 코드베이스가
 쓰지 않는 값이고 과거 수동/에이전트 백필의 잔재입니다. **이 27장은 소급 수정하지 않습니다**:
-결측은 거짓이 아니고, 지금 타임스탬프를 채우면 없던 사실을 만들어 내는 것입니다(`source_missing`
-정책의 "기존 데이터를 건드리지 않는다" 기조와 같습니다).
+결측은 거짓이 아니고, 지금 타임스탬프를 채우면 없던 사실을 만들어 내는 것입니다("기존 데이터를 건드리지 않는다" 기조).
 
 반대로 카드가 갱신돼 `generated`로 리셋될 때는 증명 필드를 **키째로 제거**합니다. 값만
 비우면(`verifiedBy: ""`) "한 번 기계 검수를 통과한 카드"로 읽히는 잔재가 남습니다
@@ -1327,106 +1325,71 @@ verifier의 자동 삭제 대상은 qmd가 만든 `status: generated` 카드뿐�
 CLI 부재(exit 127)·timeout 같은 **transient 실패는 inconclusive가 아니며** 큐 보존 +
 cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카드가 삭제되지 않습니다.
 
-### 원문 소실 (`source_missing`)
+### wiki 수명 주기 (원문 소실·변경)
 
-카드의 `sources[].path`가 가리키는 파일이 **전부** 사라진 상태입니다. 이 카드는 원문
-대조가 불가능하고, `verified`라면 캐논급으로 주입되면서도 검증할 수단이 없습니다.
+SessionStart의 **백그라운드 worker**가 생성 카드마다 기록된 원문 경로와 해시
+(`sourceRevisions`)로 카드를 판정합니다(`core/wiki_lifecycle.py`). blocking hook 예산을 쓰지
+않고, 데몬·embed·LLM에 의존하지 않습니다.
 
-**원장 위치는 설정 키가 아닙니다** — `.auto-context/compile/source-missing.jsonl` 고정이고
-트림하지 않습니다(`compile.sourceMissingPath`는 읽지 않습니다). **스캔 동작은 두 키로
-조정합니다**: `compile.sourceScan.enabled`(기본 `true`, **JSON bool만**)로 끄고,
-`compile.sourceScan.maxCardsPerScan`(기본 300, 5000 클램프)으로 한 회차의 폭을 정합니다.
-초과분은 순환 커서로 다음 회차가 이어 보므로 폭을 줄여도 카드가 영구히 빠지지 않습니다.
-`QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레버이고 설정값을 덮습니다.
+| 원문 상태 | 처리 |
+|---|---|
+| 기록된 원문 파일이 없음 | 카드를 보관한 뒤 삭제하고 laya-db에서 제거합니다 |
+| 원문 해시가 바뀜 | compile 큐에 재생성을 넣고, 새 카드가 laya-db를 갱신합니다 |
+| 카드에 `sourceRevisions`가 없음 | 카드를 보관한 뒤 삭제하고 laya-db에서 제거합니다 |
+| 같음 | 유지합니다 |
 
-**`enabled:false`가 끄는 것과 끄지 않는 것.** 끄는 것은 **원문 소실 감지 하나**입니다
-(카드별 소스 존재 판정·`source-missing.jsonl` 기록). 끄지 않는 것은 같은 run이 함께 세는
-**provenance 결측 카드 수**입니다 — 그것은 "원문 지문 없이 남아 recall에 주입되지 않는
-카드가 N장"이라는 별개 신호이고 별개 알림을 가지므로, 소실 스캔을 껐다고 0으로 보고되면
-안 됩니다(그 알림은 "남은 수는 이 알림이 사라지면 0입니다"라고 안내하므로 0은 곧 복구
-완료를 뜻합니다). 즉 `enabled:false`인 프로젝트도 카드 frontmatter를 훑는 비용은 그대로
-냅니다(실측 0.12ms/장, update worker 경로).
+**대상은 플러그인이 만든 카드뿐입니다** — `createdBy: qmd-auto-context`이고 auto 블록이 있으며
+`superseded`가 아닌 카드입니다. 사람이 쓴 페이지, 심볼릭 링크, `.`으로 시작하는 경로,
+`index.md`/`log.md`, wiki root 밖의 파일은 건드리지 않습니다. 형식이 틀린 `sourceRevisions`,
+`allowRoots` 밖을 가리키는 원문, 읽을 수 없는 원문은 "판정 불가"로 남기고 로그만 씁니다.
+원문 존재 판정은 주입 경로와 **같은 함수**(`recall.resolve_existing_source`)를 씁니다.
 
-`enabled`에 bool이 아닌 값(`"false"`·`1`·`null`)을 적으면 **스캔을 끄지 않고** 기본값으로
-폴백한 뒤 다음 SessionStart에 1줄 알림이 나옵니다. 끄는 쪽으로 읽지 않는 이유는 bool이
-아닌 값 중에는 켜려는 의도(`1`·`"true"`)도 있고, 잘못 켜진 스캔의 대가는 stat 몇 번인데
-잘못 꺼진 스캔의 대가는 **소실 감지 부재**라서입니다. 알림은 값을 고치면 사라집니다.
+**삭제는 복구할 수 있습니다.** 옛 바이트는 `.auto-context/compile/retired-wiki/`에
+`<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워지고 `index.md` 줄이
+빠집니다. 그다음 `laya-sync`를 깨우면 laya-db full scan이 다음 세대에서 없는 wiki 파일을
+뺍니다. 살아 있는 원문이 남은 공유 카드는 바로 지우지 않고 compile 큐에 `sourceDelete`
+행으로 넘깁니다 — compile worker가 살아 있는 원문을 먼저 재생성한 뒤 카드를 퇴역시킵니다.
 
-**삭제도 downgrade도 하지 않습니다.** 라이브 855장 실측에서 소스 전멸 카드는 25장
-(`generated` 18 / `verified` 7)이었고, 사라진 원인은 삭제가 아니라 **개명**
-(`…07-20.md` → `…07-21.md`)이었습니다. 개명과 삭제는 파일시스템만으로 구분할 수 없으므로
-소실을 근거로 카드를 지우면 날짜 개명 한 번에 25장이 날아갑니다. `verify.onFail`의 삭제와
-성질이 다릅니다 — fail은 "원문이 있는데 카드와 모순"(카드가 틀렸고 소스를 고치면 재생성)이고
-소실은 "원문이 없다"(그 카드가 그 지식의 **유일한 기록**일 수 있음)입니다.
-자동 downgrade(`verified` → `generated`)도 하지 않습니다: 검증은 수행 시점에 유효했고,
-downgrade하면 `recallVerifiedOnly`(기본 `true`) 아래에서 그 카드가 recall에서 사라져
-유일한 기록을 숨기게 됩니다.
+**재생성은 compile trigger 동의를 따릅니다.** 해시가 바뀐 원문은
+legacy settings에서는 `compile.triggers`에 `session_start_source`가 있을 때만 큐에 들어갑니다(유료 호출입니다). minimal settings(`name`·`skipPaths`만 있는 파일)는 wiki 생성이 항상 켜져 있으므로 이 동의 없이 넣습니다.
+없으면 로그에 `ENQUEUE compile_disabled`가 남고 카드는 그대로입니다 — 그 카드는 원문
+지문이 맞지 않아 recall에 주입되지 않습니다. 원문을 편집하는 경로(PostToolUse, raw
+discovery)는 기존 compile 큐로 변경을 넣고 삭제된 원문을 `sourceDelete`로 넣습니다.
 
-**감지 경로 두 개.** (1) `core/wiki_source_scan.py` — SessionStart의 **백그라운드 worker**
-에서 실행됩니다(blocking hook 예산을 쓰지 않고, 데몬·embed·LLM에 의존하지 않는 stat 검사라
-embed 서브셸 안에 두지 않습니다). 카드 mtime 스냅샷을 쓰지 않는 이유는 **소스가 개명돼도
-카드 파일은 바뀌지 않기 때문**입니다 — 그래서 순환 커서로 전량을 여러 회차에 나눠 봅니다.
-(2) 기계 검수(`wiki_verify_worker`)가 큐 잡에서 소스 전멸을 만났을 때. 소스 존재 판정은
-주입 경로와 **같은 함수**(`recall.resolve_existing_source`)를 씁니다.
+**대량 삭제 가드.** 증명된 카드 중 원문이 없는 카드가 3장보다 많고 25%를 넘으면 그 run은
+아무것도 지우거나 넣지 않고 로그(`DEFER: mass-deletion guard`)만 남깁니다. 디스크가 마운트되지
+않았거나 브랜치를 바꿨거나 checkout을 옮긴 경우가 여기에 걸립니다. 조건이 사라지면 다음
+SessionStart가 정상 처리합니다. `sourceRevisions`가 없는 카드는 카드 자체의 성질이라 비율
+계산에서 빠지고 run당 상한을 받습니다. 가드가 발동한 run은 그 카드들도 보류합니다.
 
-**일부만 소실은 대상이 아닙니다.** 살아 있는 원문이 하나라도 있으면 대조가 가능하므로
-"stale 링크가 유일 진실"이 성립하지 않습니다. 소스 항목이 0인 메타 문서(SCHEMA/index/log)와
-지원하지 않는 `sources` 표기(block mapping·여러 줄 flow)도 대상이 아닙니다 — 후자는
-"원문이 없다"가 아니라 "판정 불가"입니다.
+**한 run의 폭은 유계입니다.** 원문 해시 대조는 `compile.sourceScan.maxCardsPerScan`(기본 300,
+5000 클램프)장 창을 순환 커서로 보고, 삭제는 run당 25장, enqueue는 compile per-wake
+상한(`QMD_SYNC_COMPILE_MAX`, 기본 50)까지입니다. 상한에 걸리면 커서가 그 카드에서 멈추고 다음
+SessionStart가 이어 봅니다. `QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레버이고 설정값을
+덮습니다.
 
-**원장 = 감사 추적 + 대기 큐.** 행마다
-`action`(`detected`/`resolved`/`repointed`/`dismissed`)을 담고 카드별 **최신 행이
-상태**입니다(대기 = 최신 행이 `detected`). `resolved`는 "소스가 **다시 존재한다**"는
-전이입니다(그 행의 `missingSources`는 비어 있습니다 — 상태와 모순되지 않게, 남은 부분
-소실은 `remainingMissing`에 둡니다) — 개명 되돌리기·`git checkout`·문서 재생성이 실측된 원인(개명)의 가장 흔한
-회복 경로이므로, 이 전이가 없으면 복구된 카드가 영구히 대기로 남아 TTL마다 거짓 알림이
-나고, 그것을 치우려 `dismiss`하면 **다음 진짜 소실까지 영구히 묻힙니다**(같은 소실 집합의
-`dismissed` 행이 계속 최신이므로). `dismiss`의 억제는 그 소실 집합에 한정되고
-`resolved`가 그것을 재무장합니다(`notice_once`의 "조건 해소 시 재무장"과 같은 규칙). 이 신호는 원래
-`verify-log.jsonl`에만 남았고 그 파일은 트림 대상이라 **이미 유실되고 있었습니다**
-(실측: 3주치가 밀려나갔음) — `verify-deleted.jsonl`과 같은 이유로 이 원장은 트림하지
-않습니다. 무한 누적을 막는 것은 트림이 아니라 **상태가 바뀔 때만 쓴다**는 규칙입니다:
-같은 소실 집합으로 이미 대기/거절 중이면 아무것도 쓰지 않으므로 스캔을 몇 번 돌려도
-행이 늘지 않습니다. 원문 본문은 담지 않습니다.
+**멱등입니다.** 지운 카드는 다음 run에 없고, 보관은 같은 내용을 재사용하며, 아직 큐에 있는
+같은 행은 다시 넣지 않습니다. 이미 넣은 같은 원문 해시의 재생성은 7일 안에 다시 넣지 않습니다
+(상태는 sync state 디렉터리의 `<key>-wiki-lifecycle.json`). 처리 내역은
+`~/.cache/qmd/wiki-lifecycle.log`(`QMD_WIKI_LIFECYCLE_LOG`)에 남습니다.
 
-**원장 쓰기는 `flock`으로 직렬화합니다.** race는 append 자체가 아니라 "이미 대기 중인가"를
-읽고 쓰는 check-then-act입니다. 두 생산자(스캔=update worker, 검수=compile worker)가 서로
-다른 lock 도메인에 있으므로 원장 자신의 sidecar 락(`<원장>.lock`, dirty queue·compile 큐와
-같은 `fcntl.flock` 패턴)으로 막습니다. 동시 실행 8개에서도 카드당 행은 하나입니다.
+**선택된 laya-db route에서만 조치합니다.** legacy QMD route에서는 카드를 판정하지 않고
+provenance 결측 카드 수만 셉니다.
 
-**복구는 삭제가 아니라 재지정입니다.** SessionStart가 대기 건수를 알리고
-(`notice_once`, TTL 4h, 조건 해소 시 재무장), `wiki-source-repair` skill이 항목별로
-사람 확인을 받아 `sources[].path`만 고쳐 씁니다(카드 쓰기는 임시파일 + `os.replace`로
-**원자적**이고 원본 권한을 이식합니다 — 쓰기가 실패해도 원본이 잘리지 않아야 합니다.
-같은 원자적 경로를 자동 쓰기(`patch_frontmatter_fields`·wiki compile)가 모두
-공유합니다: verify worker가 `status: verified`를 스탬프하다 실패하면 다음 회차가 절단본을
-읽어 `changed_during_verify`로 skip하므로, 사람이 개입하지 않는 그 경로가 오히려 조용한
-영구 손상에 가깝습니다). 재지정 시 옛 `sourceHash` 같은 "옛 파일
-내용에 묶인 키"는 제거합니다(새 경로 옆에 남으면 거짓 기록입니다). `wikiPath`가 심볼릭
-링크나 `../`로 프로젝트 밖을 가리키면 스캐너와 **같은 판정**으로 거절합니다. 후보 제안(같은 디렉터리 안 파일명
-유사도)은 **제안일 뿐** 자동 적용하지 않습니다 — 잘못 매칭하면 카드가 무관한 원문을
-가리키고 그 상태로 verify가 돌면 카드가 삭제됩니다. 그래서 자율 resolver 에이전트도
-두지 않습니다. `status`는 이 경로에서 절대 바뀌지 않습니다.
+**`compile.sourceScan.enabled:false`가 끄는 것과 끄지 않는 것.** 끄는 것은 수명 주기 조치
+(삭제·enqueue)입니다. 끄지 않는 것은 같은 run이 함께 세는 **provenance 결측 카드 수**입니다 —
+그것은 "원문 지문 없이 남아 recall에 주입되지 않는 카드가 N장"이라는 별개 신호이고 별개
+알림을 가지므로, 조치를 껐다고 0으로 보고되면 안 됩니다(그 알림은 "남은 수는 이 알림이
+사라지면 0입니다"라고 안내합니다). `enabled`에 bool이 아닌 값(`"false"`·`1`·`null`)을 적으면
+끄지 않고 기본값으로 폴백한 뒤 다음 SessionStart에 1줄 알림이 나옵니다. 알림은 값을 고치면
+사라집니다.
 
-**알림 문구는 에이전트에게 지시합니다.** SessionStart 알림은 사람과 모델이 함께 읽습니다
-(그 출력이 모델 컨텍스트로 들어갑니다). 숫자만 보고하는 문구는 아무 조치도 유발하지 않으므로,
-이 알림은 사람용 한 문장 뒤에 수신자를 바꿔 "지금 `wiki-source-repair`로 대기 목록을 읽고
-개명 후보를 사용자에게 제시하라"를 지시합니다. **지시 범위는 제시까지입니다** — `repoint`·
-`dismiss`는 여전히 사용자 확인 뒤에만 적용되고(위 단락의 근거), 자율 resolver는 없습니다.
-지시가 필요 없다면 알림을 끄는 대신 대기 건수를 0으로 만드십시오(고치거나 dismiss하면
-알림이 스스로 사라집니다).
+**기계 검수는 원문 소실 카드를 바꾸지 않습니다.** 검수 큐에서 원문이 전부 없는 잡을 만나면
+`skipped`/`source_missing`으로 기록하고 카드는 수명 주기에 맡깁니다.
 
-**목록은 배치로 봅니다.** `list`의 세 번째 인자가 상한이고(생략·`0`은 전체) 지시는 10건씩을
-말합니다. 대기가 수백 건인 프로젝트에서 전량 목록은 그 자체로 세션 예산을 태우기 때문입니다
-(실측 278건 = 111KB). 응답의 `pending`은 **전체** 대기 건수이고 `returned`/`truncated`가
-받은 조각을 말합니다. 순서는 `trusted` 먼저(그 카드는 지금 `verified` 배지로 캐논급 주입되면서
-원문 대조가 불가능한 상태입니다), 그다음 오래된 감지 먼저입니다 — 그래서 여러 세션에 걸친
-드레인이 재현됩니다.
-
-**주입 표식은 두지 않습니다.** 미검수 카드의 ` (미검수)` 배지와 달리 이 카드는 검수
-시점에 유효했고 downgrade하지 않기로 했으므로 모델에게 줄 지시가 없습니다. 그리고 `sources[].path`
-주입 규칙("`missing` 항목에는 `↳` 줄을 두지 않는다 — 깨진 경로 표식은 토큰만 늘리고 모델이 할
-수 있는 일이 없다")과 방향을 맞춥니다. 대신 진단 로그의 `cards_all_sources_missing`이
+**주입 표식은 두지 않습니다.** 원문이 없는 카드는 다음 SessionStart 수명 주기가 정리하고,
+`missing` 항목에는 `↳` 줄을 두지 않습니다(깨진 경로 표식은 토큰만 늘리고 모델이 할 수 있는
+일이 없습니다). 대신 진단 로그의 `cards_all_sources_missing`이
 "소스가 전멸한 카드가 실제로 주입됐다"는 사실을 토큰 비용 0으로 남깁니다. 이 카운터는
 `injectSourcePathsPerCard: 0`에서도 삽니다 — `QMD_RECALL_LOG`가 켜져 있으면 경로를
 주입하지 않고 **분류만** 수행합니다(주입 문자열은 바이트 동일). 로그가 꺼져 있으면

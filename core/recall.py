@@ -743,9 +743,9 @@ def resolve_existing_source(raw_path: str, project_root: Path,
     """경로 문자열 하나 → (존재가 확인된 실경로, 실패 사유). **소스 존재 판정 SSOT.**
 
     세 호출부가 이 함수를 공유한다 — 주입(`resolve_source_path`), 기계 검수
-    (`wiki_verify_worker`가 `wiki_source_missing`을 경유), 소실 스캔
-    (`wiki_source_scan`). 판정이 갈리면 "주입은 링크를 지웠는데 스캔은 정상으로 본다"
-    같은 모순이 생기고, 이 저장소는 판정 이중화로 여러 번 깨졌다.
+    (`wiki_verify_worker`가 `wiki_source_missing`을 경유), SessionStart 수명 주기
+    (`wiki_lifecycle`). 판정이 갈리면 "주입은 링크를 지웠는데 수명 주기는 정상으로 본다"
+    같은 모순이 생긴다.
     사유 값(`too_long`/`outside_root`/`missing`)과 검사 순서는 그대로 유지한다.
     """
     if len(raw_path) > MAX_SOURCE_PATH_CHARS:
@@ -767,9 +767,9 @@ def classify_source_entry(entry: str, project_root: Path,
     """sources 항목 하나 → (존재하는 실경로, 실패 사유, 표기된 원본 path 문자열).
 
     표시(한 줄 강제·표시 길이) **전까지의** 판정이다. 표시 규칙은 주입 전용이므로
-    소실 스캔·검수는 여기까지만 쓴다. 세 번째 값은 카드를 고칠 때(`wiki_source_repair`)
-    필요한 "카드에 적힌 그대로의 경로"다 — 여기서 내주지 않으면 호출부가 flow mapping을
-    한 번 더 파싱해야 하고 그것이 곧 판정 이중화다.
+    소실 분류·검수는 여기까지만 쓴다. 세 번째 값은 "카드에 적힌 그대로의 경로"다 —
+    여기서 내주지 않으면 호출부가 flow mapping을 한 번 더 파싱해야 하고 그것이 곧 판정
+    이중화다.
     """
     fields, issue = yaml_scalars.load_flow_mapping(entry)
     raw_path = fields.get("path") if isinstance(fields.get("path"), str) else ""
@@ -1062,7 +1062,7 @@ def read_wiki_meta(result: dict, config: dict, cwd: str, summary_max_chars: int 
     created_by = fields.get("createdBy", "")
     meta["createdBy"] = created_by
     # 본문 지문 대조. **`is_auto_trusted_card` 안에 넣지 않는다** — 그 함수는 meta dict 만
-    # 받는 순수 predicate 이고 다른 소비자(`wiki_source_scan`·`wiki_source_missing`)가
+    # 받는 순수 predicate 이고 다른 소비자(`wiki_lifecycle`의 ineligible 집계)가
     # 파일 전문 읽기를 강제당하면 안 된다. 신선도 검사(`card_freshness`)가 별도 단계인 것과
     # 같은 구조다. 그 비대칭의 대가: 그 소비자들이 매기는 `trusted` 라벨은 본문 어긋남을
     # 반영하지 않는다(주입 경로만 fail-closed 다).
