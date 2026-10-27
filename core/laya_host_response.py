@@ -1517,6 +1517,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
+        if action in ("update", "update-queued"):
+            _request_journal_v4(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
@@ -1560,6 +1562,23 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _request_journal_v4(decision: dict) -> None:
+    """A v3 journal asks the detached upgrade worker to convert it.
+
+    The worker converts only when every host copy reads v4; this hook only
+    reads the journal format and never waits.
+    """
+    try:
+        from laya_install_journal import journal_version
+        if journal_version(decision['journalPath']) >= 4:
+            return
+        import laya_bundle_upgrade
+        laya_bundle_upgrade.request(decision['projectRoot'], decision['journalPath'],
+                                    'journal_v4_conversion')
+    except Exception:
+        pass
 
 
 def _drift_code(exc: BaseException) -> str:

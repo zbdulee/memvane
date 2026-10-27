@@ -22,7 +22,9 @@ from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2, select_route)
-from laya_package import _user_qmd_inventory
+# Loaded for the executing-bundle proof (``_executing_from_candidate``),
+# which requires laya_package from the sealed core; no QMD inventory is read.
+import laya_package  # noqa: F401
 from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA,
@@ -31,15 +33,19 @@ from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_ca
                                  validate_vector_profile)
 
 
-SCHEMA = 'laya-installer-journal-v3'
+SCHEMA_V3 = 'laya-installer-journal-v3'
+SCHEMA = 'laya-installer-journal-v4'
 DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
 APP_ID = 0x4c594a31
-VERSION = 3
+VERSION = 4
+# Every journal format this code reads and CAS-writes. A v3 journal still
+# carries the retired global-QMD inventory column; it is never re-checked.
+READ_VERSIONS = (3, 4)
 ID = re.compile(r'[0-9a-f]{32}\Z')
 GEN = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 PRODUCTION_ATTESTATION = 'production-provider-attestation.json'
-_CREATE = '''CREATE TABLE selection(
+_CREATE_V3 = '''CREATE TABLE selection(
   id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
   epoch INTEGER NOT NULL, state TEXT NOT NULL,
   selected TEXT, selected_route_sha TEXT, previous TEXT, previous_route_sha TEXT,
@@ -49,6 +55,27 @@ _CREATE = '''CREATE TABLE selection(
   user_qmd_inventory TEXT NOT NULL, new_write_seen INTEGER NOT NULL,
   provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
   provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
+_CREATE = '''CREATE TABLE selection(
+  id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
+  epoch INTEGER NOT NULL, state TEXT NOT NULL,
+  selected TEXT, selected_route_sha TEXT, previous TEXT, previous_route_sha TEXT,
+  pending TEXT, pending_route_sha TEXT,
+  scope_id TEXT NOT NULL, project_root TEXT NOT NULL,
+  project_dev INTEGER NOT NULL, project_ino INTEGER NOT NULL,
+  new_write_seen INTEGER NOT NULL,
+  provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
+  provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
+_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE)}
+# The withdrawn-selection state. A v3 file stores its old name; readers see
+# only ``restored_origin``.
+RESTORED = 'restored_origin'
+_V3_RESTORED = 'restored_qmd'
+_FIELDS_V4 = ('id', 'schema', 'epoch', 'state', 'selected', 'selected_route_sha',
+              'previous', 'previous_route_sha', 'pending', 'pending_route_sha',
+              'scope_id', 'project_root', 'project_dev', 'project_ino',
+              'new_write_seen', 'provider_attestation_sha',
+              'previous_provider_attestation_sha', 'provider_file_identity',
+              'previous_provider_file_identity')
 
 
 class JournalEvidenceError(ValueError):
@@ -396,6 +423,37 @@ def _observed_route(row, supplied_raw):
         raise JournalEvidenceError('route_unavailable') from exc
 
 
+def _schema_version(db):
+    """The journal format of an open connection, or None when unknown."""
+    if db.execute('PRAGMA application_id').fetchone()[0] != APP_ID:
+        return None
+    version = db.execute('PRAGMA user_version').fetchone()[0]
+    expected = _FORMATS.get(version)
+    if (expected is None or
+            db.execute("SELECT sql FROM sqlite_master WHERE name='selection'").fetchone()
+            != (expected[1],)):
+        return None
+    return version
+
+
+def _recover_interrupted_transaction(path):
+    """Roll back a crashed writer's hot rollback journal, then nothing else.
+
+    A ``mode=ro`` connection cannot roll a hot journal back and fails, which
+    would stop every reader until the next writer. One read on a read-write
+    connection makes SQLite restore the last committed state under its own
+    exclusive lock. A live writer holds RESERVED, so its journal is not hot
+    and is left alone.
+    """
+    side = path.with_name(path.name + '-journal')
+    if not side.exists() or side.is_symlink():
+        return False
+    with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
+                                 isolation_level=None)) as db:
+        db.execute('PRAGMA application_id').fetchone()
+    return True
+
+
 def _open(path, *, write):
     path = _private_parent(path)
     try:
@@ -405,9 +463,15 @@ def _open(path, *, write):
             _fail('unsafe_journal_file')
         uri = path.as_uri() + ('?mode=rw' if write else '?mode=ro')
         db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
-        if (db.execute('PRAGMA application_id').fetchone()[0] != APP_ID or
-                db.execute('PRAGMA user_version').fetchone()[0] != VERSION or
-                db.execute("SELECT sql FROM sqlite_master WHERE name='selection'").fetchone() != (_CREATE,)):
+        try:
+            version = _schema_version(db)
+        except sqlite3.OperationalError:
+            db.close()
+            if write or not _recover_interrupted_transaction(path):
+                raise
+            db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
+            version = _schema_version(db)
+        if version is None:
             db.close()
             _fail('journal_schema_unknown')
         return path, db
@@ -415,31 +479,55 @@ def _open(path, *, write):
         raise JournalEvidenceError('journal_unavailable') from exc
 
 
+def journal_version(journal_path):
+    """Read-only journal format (3 or 4); refuses an unknown file."""
+    path, db = _open(journal_path, write=False)
+    with closing(db):
+        db.execute('BEGIN')
+        try:
+            version = _schema_version(db)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+    if version is None:
+        _fail('journal_schema_unknown')
+    return version
+
+
 def _row(db):
+    # Re-read inside the caller's transaction: a v3->v4 conversion may have
+    # committed between ``_open`` and this read.
+    version = _schema_version(db)
+    if version is None:
+        _fail('journal_schema_unknown')
     record = db.execute('SELECT * FROM selection WHERE id=1').fetchone()
     if record is None or db.execute('SELECT count(*) FROM selection').fetchone()[0] != 1:
         _fail('journal_selection_missing')
-    fields = ('id', 'schema', 'epoch', 'state', 'selected', 'selected_route_sha',
-              'previous', 'previous_route_sha', 'pending', 'pending_route_sha',
-              'scope_id', 'project_root', 'project_dev', 'project_ino',
-              'user_qmd_inventory', 'new_write_seen', 'provider_attestation_sha',
-              'previous_provider_attestation_sha', 'provider_file_identity',
-              'previous_provider_file_identity')
+    fields = (_FIELDS_V4 if version == 4 else
+              _FIELDS_V4[:14] + ('user_qmd_inventory',) + _FIELDS_V4[14:])
+    if len(record) != len(fields):
+        _fail('journal_schema_unknown')
     row = dict(zip(fields, record))
-    if (row['schema'] != SCHEMA or type(row['epoch']) is not int or row['epoch'] < 1 or
+    stored_restored = RESTORED if version == 4 else _V3_RESTORED
+    if (row['schema'] != _FORMATS[version][0] or type(row['epoch']) is not int or
+            row['epoch'] < 1 or
             row['state'] not in ('candidate_ready', 'pending', 'active', 'restored_old',
-                                 'restored_qmd') or
+                                 stored_restored) or
             type(row['new_write_seen']) is not int or row['new_write_seen'] not in (0, 1)):
         _fail('journal_state_invalid')
+    if row['state'] == stored_restored:
+        row['state'] = RESTORED
+    # The v3 global-QMD inventory is retired evidence: carried, never bound.
+    row.pop('user_qmd_inventory', None)
+    row['_version'] = version
     try:
-        for key in ('selected', 'previous', 'pending', 'user_qmd_inventory',
+        for key in ('selected', 'previous', 'pending',
                     'provider_file_identity', 'previous_provider_file_identity'):
             row[key] = json.loads(row[key], object_pairs_hook=_pairs,
                                   parse_constant=_nonfinite) if row[key] is not None else None
     except (TypeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('journal_value_invalid') from exc
-    if not isinstance(row['user_qmd_inventory'], list) or not row['user_qmd_inventory']:
-        _fail('journal_inventory_invalid')
     for key in ('provider_file_identity', 'previous_provider_file_identity'):
         value = row[key]
         if value is not None and (not isinstance(value, list) or
@@ -482,7 +570,7 @@ def _row(db):
          (row['selected'] is None or row['selected_route_sha'] is None)) or
             (row['state'] in ('candidate_ready', 'pending') and
              (row['pending'] is None or row['pending_route_sha'] is None)) or
-            (row['state'] == 'restored_qmd' and
+            (row['state'] == RESTORED and
              (row['selected'] is not None or row['selected_route_sha'] is not None
               or row['pending'] is not None or row['pending_route_sha'] is not None
               or row['new_write_seen'] or row['provider_attestation_sha'] or
@@ -491,15 +579,19 @@ def _row(db):
     return row
 
 
-def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_roots):
-    """No-clobber synthetic journal; route publication remains external."""
+def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_roots=None):
+    """No-clobber synthetic v4 journal; route publication remains external.
+
+    ``user_qmd_roots`` is accepted for older callers and ignored: a journal
+    binds only Laya-owned evidence, never the global QMD directories.
+    """
+    del user_qmd_roots
     path = _private_parent(journal_path)
     if path.exists() or path.is_symlink():
         _fail('journal_already_exists')
     route, digest = _route(proposed_route_raw, path)
     identity = _identity(bundle_proof, route, path)
     project, dev, ino = _project(route)
-    inventory = _user_qmd_inventory(Path(identity['pluginRoot']), user_qmd_roots)
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     os.close(fd)
     try:
@@ -510,10 +602,10 @@ def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_r
             db.execute(f'PRAGMA user_version={VERSION}')
             db.execute('BEGIN IMMEDIATE')
             db.execute(_CREATE)
-            db.execute('INSERT INTO selection VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO selection VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (SCHEMA, 1, 'candidate_ready', None, None, None, None,
                         _canon(identity), digest, route['scopeId'], project, dev, ino,
-                        _canon(inventory), 0, None, None, None, None))
+                        0, None, None, None, None))
             db.commit()
         file_fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         try:
@@ -566,6 +658,8 @@ def _cas(path, expected_epoch, mutate):
             _fail('stale_journal_cas')
         values = mutate(path, row)
         if values is not None:
+            if values.get('state') == RESTORED and row['_version'] == 3:
+                values = {**values, 'state': _V3_RESTORED}
             fields = ','.join(f'{key}=?' for key in values)
             args = (*values.values(), expected_epoch + 1, expected_epoch)
             changed = db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?',
@@ -579,6 +673,82 @@ def _cas(path, expected_epoch, mutate):
     finally:
         db.close()
     return inspect_journal(path)
+
+
+# Test seam: called with each conversion step name inside the transaction.
+_conversion_step = None
+
+
+def _step(name):
+    if _conversion_step is not None:
+        _conversion_step(name)
+
+
+def convert_to_v4(journal_path):
+    """Rewrite a v3 journal as v4 in one SQLite transaction; idempotent.
+
+    The logical row is unchanged: the retired global-QMD inventory column
+    is dropped and ``restored_qmd`` is stored as ``restored_origin``. The
+    epoch stays the same, so a reader's proof taken before the commit still
+    equals one taken after it. A crash before COMMIT leaves the v3 file
+    (SQLite rolls the hot journal back); after COMMIT the file is v4.
+    The caller holds the install lock; this function takes no other lock.
+    """
+    path, db = _open(journal_path, write=True)
+    try:
+        db.execute('PRAGMA synchronous=FULL')
+        db.execute('BEGIN IMMEDIATE')
+        before = _row(db)
+        if before.pop('_version') == 4:
+            db.commit()
+            return {'status': 'journal_v4_current', 'journalPath': str(path),
+                    'epoch': before['epoch']}
+        _step('locked')
+        stored = db.execute('SELECT ' + ','.join(_FIELDS_V4) +
+                            ' FROM selection WHERE id=1').fetchone()
+        values = dict(zip(_FIELDS_V4, stored))
+        values['schema'] = SCHEMA
+        if values['state'] == _V3_RESTORED:
+            values['state'] = RESTORED
+        db.execute('DROP TABLE selection')
+        _step('dropped')
+        # Never ALTER ... RENAME: SQLite would rewrite the stored CREATE text
+        # and the exact-schema check would refuse the converted file.
+        db.execute(_CREATE)
+        _step('created')
+        db.execute('INSERT INTO selection(' + ','.join(_FIELDS_V4) + ') VALUES(' +
+                   ','.join('?' * len(_FIELDS_V4)) + ')',
+                   tuple(values[key] for key in _FIELDS_V4))
+        _step('inserted')
+        db.execute(f'PRAGMA user_version={VERSION}')
+        _step('versioned')
+        after = _row(db)
+        if (after.pop('_version') != 4 or after.pop('schema') != SCHEMA or
+                before.pop('schema') != SCHEMA_V3 or after != before):
+            _fail('journal_conversion_mismatch')
+        db.commit()
+    except BaseException:
+        if db.in_transaction:
+            db.rollback()
+        raise
+    finally:
+        db.close()
+    _step('committed')
+    try:
+        file_fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            os.fsync(file_fd)
+        finally:
+            os.close(file_fd)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise JournalEvidenceError('journal_conversion_unsynced') from exc
+    return {'status': 'journal_v4_converted', 'journalPath': str(path),
+            'epoch': after['epoch']}
 
 
 def cas_stage_update(journal_path, expected_epoch, next_bundle_proof, proposed_route_raw):
@@ -739,7 +909,7 @@ def cas_restore_fresh(journal_path, expected_epoch, expected_new_route_sha):
         _check_marker(ledger, auto / MARKER)
         if (auto / ROUTE).exists() or (auto / ROUTE).is_symlink():
             _fail('fresh_wiki_route_still_selected')
-        return {'state': 'restored_qmd', 'selected': None,
+        return {'state': RESTORED, 'selected': None,
                 'selected_route_sha': None, 'pending': None,
                 'pending_route_sha': None, 'new_write_seen': 0,
                 'provider_attestation_sha': None,
@@ -815,15 +985,10 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 proof = {key: row['selected'][key] for key in
                          ('sourceCommit', 'bundleManifestSha256',
                           'ownershipManifestSha256', 'vectorProfile')}
-                inventory_root = _executing_root()
             else:
                 proof = _inspect_identity(row['selected'])
-                inventory_root = Path(row['selected']['pluginRoot'])
-            inventory = row['user_qmd_inventory']
-            observed = _user_qmd_inventory(inventory_root,
-                                           [r['root'] for r in inventory])
-            if observed != inventory:
-                _fail('user_qmd_inventory_changed')
+            # Only Laya-owned evidence binds the route: the global QMD
+            # directories are neither read nor required to exist.
             # Read-only DB/queue identity classification. The runtime repeats
             # both checks when opening writable connections.
             db_path, queue_path = Path(route['dbPath']), Path(route['queuePath'])
@@ -833,10 +998,6 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 _fail('invalid_index_paths')
             for candidate_path in (db_path, queue_path):
                 canonical_path = candidate_path.resolve(strict=True)
-                for foreign in inventory:
-                    user_root = Path(foreign['root'])
-                    if canonical_path == user_root or user_root in canonical_path.parents:
-                        _fail('index_path_overlaps_user_qmd')
                 for plugin_root in {Path(row['selected']['pluginRoot']),
                                     *((_executing_root(),) if read_only else ())}:
                     if canonical_path == plugin_root or plugin_root in canonical_path.parents:

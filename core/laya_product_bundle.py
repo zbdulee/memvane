@@ -60,6 +60,9 @@ PRODUCTION_ATTESTATION_FIELDS = frozenset((
     'schema', 'sourceCommit', 'bundleManifestSha256',
     'ownershipManifestSha256', 'journalPath', 'vectorProfile', 'providerManifest',
     'dependencyClosure'))
+# Optional: the closure rows a re-attested provider's vector profile was
+# derived from, when the same native files now live at other paths.
+PROFILE_CLOSURE_FIELD = 'profileDependencyClosure'
 PROVIDER_MANIFEST_FIELDS = frozenset((
     'approvedProviderId', 'providerArtifactSha256', 'providerRelativePath',
     'providerPath', 'workerPath', 'workerSha256',
@@ -173,6 +176,56 @@ def _attested_file(path, expected_sha, expected_bytes=None):
         raise BundleEvidenceError('provider_artifact_unavailable') from exc
 
 
+def closure_layout(closure):
+    """Path-independent content of a native closure: relative layout and bytes.
+
+    Each row becomes ``[path relative to the rows' common directory, sha256,
+    bytes]``. The same package moved to another directory has the same layout.
+    """
+    if (type(closure) is not list or not closure or
+            any(type(row) is not dict or set(row) != {'path', 'sha256', 'bytes'} or
+                type(row['path']) is not str or not Path(row['path']).is_absolute()
+                for row in closure)):
+        _fail('production_dependency_closure_invalid')
+    base = os.path.commonpath([os.path.dirname(row['path']) for row in closure])
+    return sorted([os.path.relpath(row['path'], base), row['sha256'], row['bytes']]
+                  for row in closure)
+
+
+def _closure_rows_valid(closure):
+    if (type(closure) is not list or not closure or len(closure) > 4096 or
+            any(type(row) is not dict or set(row) != {'path', 'sha256', 'bytes'}
+                or type(row['path']) is not str
+                for row in closure)):
+        return False
+    paths = [row['path'] for row in closure]
+    return paths == sorted(set(paths))
+
+
+def _private_socket_parent(socket_path):
+    """The provider socket may live in any owner-only directory.
+
+    It is an install runtime (``<state>/runtime``) or a per-user service
+    directory; either way only this user can create or replace it.
+    """
+    if (type(socket_path) is not str or not socket_path.startswith('/') or
+            len(socket_path.encode('utf-8')) > 100 or
+            os.path.normpath(socket_path) != socket_path or
+            str(Path(socket_path).resolve(strict=False)) != socket_path):
+        _fail('production_service_owner_invalid')
+    parent = Path(socket_path).parent
+    info = parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) & 0o077):
+        _fail('production_service_owner_invalid')
+    if Path(socket_path).exists() or Path(socket_path).is_symlink():
+        socket_info = Path(socket_path).lstat()
+        if (not stat.S_ISSOCK(socket_info.st_mode) or
+                socket_info.st_uid != os.getuid() or
+                stat.S_IMODE(socket_info.st_mode) & 0o077):
+            _fail('production_service_owner_invalid')
+
+
 def validate_production_provider_attestation(profile, bundle_proof, attestation):
     """Check a *journal-bound* external review record; this is not authority.
 
@@ -183,7 +236,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
     if (type(bundle_proof) is not dict or
             bundle_proof.get('status') != 'exact_commit_full_plugin_candidate_consistent' or
             type(attestation) is not dict or
-            set(attestation) != PRODUCTION_ATTESTATION_FIELDS or
+            set(attestation) - {PROFILE_CLOSURE_FIELD} != PRODUCTION_ATTESTATION_FIELDS or
             attestation.get('schema') != PRODUCTION_ATTESTATION_SCHEMA or
             type(profile) is not dict or profile != bundle_proof.get('vectorProfile') or
             attestation.get('vectorProfile') != profile or
@@ -225,24 +278,8 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             _fail('production_journal_owner_invalid')
     except OSError as exc:
         raise BundleEvidenceError('production_journal_owner_invalid') from exc
-    runtime_dir = state_dir / 'runtime'
-    socket_path = str(runtime_dir / 'laya-embed.sock')
     try:
-        runtime_info = runtime_dir.lstat()
-        if (provider['serviceSocketPath'] != socket_path or
-                len(socket_path.encode('utf-8')) > 100 or
-                os.path.normpath(socket_path) != socket_path or
-                str(Path(socket_path).resolve(strict=False)) != socket_path or
-                not stat.S_ISDIR(runtime_info.st_mode) or
-                runtime_info.st_uid != os.getuid() or
-                stat.S_IMODE(runtime_info.st_mode) & 0o077):
-            _fail('production_service_owner_invalid')
-        if Path(socket_path).exists() or Path(socket_path).is_symlink():
-            socket_info = Path(socket_path).lstat()
-            if (not stat.S_ISSOCK(socket_info.st_mode) or
-                    socket_info.st_uid != os.getuid() or
-                    stat.S_IMODE(socket_info.st_mode) & 0o077):
-                _fail('production_service_owner_invalid')
+        _private_socket_parent(provider['serviceSocketPath'])
     except (OSError, RuntimeError, TypeError) as exc:
         raise BundleEvidenceError('production_service_owner_invalid') from exc
     _attested_file(expected_provider_path, profile['providerArtifactSha256'])
@@ -252,17 +289,21 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
                                  ('modelPath', 'modelSha256')):
         _attested_file(provider[path_key], provider[digest_key])
     closure = attestation['dependencyClosure']
-    if (type(closure) is not list or not closure or len(closure) > 4096 or
-            any(type(row) is not dict or set(row) != {'path', 'sha256', 'bytes'}
-                or type(row['path']) is not str
-                for row in closure)):
-        _fail('production_dependency_closure_invalid')
-    paths = [row['path'] for row in closure]
-    if paths != sorted(set(paths)):
+    if not _closure_rows_valid(closure):
         _fail('production_dependency_closure_invalid')
     for row in closure:
         _attested_file(row['path'], row['sha256'], row['bytes'])
-    if _sha(_canonical(closure)) != provider['dependencyClosureSha256']:
+    if PROFILE_CLOSURE_FIELD in attestation:
+        # Re-attested provider: the profile (and the manifest digest the
+        # frozen provider re-derives) name the reviewed closure; the live
+        # rows must be the same files, by layout and content, elsewhere.
+        reviewed = attestation[PROFILE_CLOSURE_FIELD]
+        if (not _closure_rows_valid(reviewed) or
+                _sha(_canonical(reviewed)) != provider['dependencyClosureSha256'] or
+                _sha(_canonical(closure)) == provider['dependencyClosureSha256'] or
+                closure_layout(reviewed) != closure_layout(closure)):
+            _fail('production_dependency_closure_mismatch')
+    elif _sha(_canonical(closure)) != provider['dependencyClosureSha256']:
         _fail('production_dependency_closure_mismatch')
     from laya_local_embed_provider import recipe_fingerprint
     from laya_index_vector import profile_identity

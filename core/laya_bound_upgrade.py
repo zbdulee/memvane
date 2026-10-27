@@ -155,8 +155,10 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
                                    model_path=model_path, dimension=dimension)
     if review['proposalSha256'] != accepted_provider_sha256:
         _fail('reviewed_provider_proposal_changed')
-    approved = review['reviewedProvider']
-    if approved['vectorProfile'] != pending['vectorProfile']:
+    from laya_provider_reproof import attestation_record, reattest
+    # Same content at other paths keeps the bound vector profile.
+    approved = reattest(json.loads(old_att), review['reviewedProvider'])
+    if approved is None or approved['vectorProfile'] != pending['vectorProfile']:
         _fail('bound_upgrade_vector_profile_changed')
     proof = adopt_host_loaded_plugin(source_root, plugin_root, commit_id=commit_id,
                                      vector_profile=approved['vectorProfile'])
@@ -173,14 +175,8 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
     checked_route(new_route, journal_path)
     if new_route == old_route:
         _fail('bound_upgrade_same_bundle')
-    att = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
-           'sourceCommit': proof['sourceCommit'],
-           'bundleManifestSha256': proof['bundleManifestSha256'],
-           'ownershipManifestSha256': proof['ownershipManifestSha256'],
-           'journalPath': str(journal_path),
-           'vectorProfile': proof['vectorProfile'],
-           'providerManifest': approved['providerManifest'],
-           'dependencyClosure': approved['dependencyClosure']}
+    att = attestation_record(proof=proof, journal_path=journal_path,
+                             reattested=approved, schema=PRODUCTION_ATTESTATION_SCHEMA)
     validate_production_provider_attestation(proof['vectorProfile'], proof, att)
     new_att = journal_canon(att).encode('utf-8')
     new_row = {**row, 'epoch': row['epoch'] + 1,

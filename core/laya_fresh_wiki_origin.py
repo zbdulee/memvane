@@ -271,7 +271,7 @@ def classify_marker(project_root, marker_path, route_path):
                 journal['pendingRouteSha256'] == row['routeSha256'] and
                 not journal['newWriteSeen']):
             return 'legacy'
-        if row['phase'] == 'restored' and journal['state'] == 'restored_qmd':
+        if row['phase'] == 'restored' and journal['state'] == 'restored_origin':
             return 'legacy'
         return 'blocked'
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
@@ -352,7 +352,7 @@ def recover(project_root, journal_path, route_bytes):
                     _fsync_dir(route.parent)
                 journal = cas_restore_fresh(journal_path, journal['epoch'],
                                             row['routeSha256'])
-            if journal['state'] == 'restored_qmd' and not (route.exists() or route.is_symlink()):
+            if journal['state'] == 'restored_origin' and not (route.exists() or route.is_symlink()):
                 return _change(ledger, row['epoch'], 'restoring', 'restored')
             _fail('fresh_wiki_restore_uncertain')
         if row['phase'] == 'active' and journal['state'] in ('active', 'restored_old'):
