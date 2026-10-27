@@ -8,6 +8,14 @@ selection ledger (fresh-wiki or QMD-origin) and the project selection marker.
 expanded collection identity unchanged: only ``settingsSha256`` moves, never
 the index store, scope, generation, vector profile or plugin bundle.
 
+A rewrite may also rename the raw collection or expand its root to an
+ancestor, while the wiki collection (name, role, root) stays equal. The index
+holds wiki cards only, so its generation, catalog, binding store and vectors
+stay valid. The route and ledger ``collections`` then move with the settings
+digest, and the raw discovery cursor beside the claim queue is re-keyed to the
+new collection (``laya_wiki_discovery.rebased_cursor``) as one more step of
+the same intent.
+
 The switch takes the install lock, the cutover operation lock and the
 provider lane (the locks the active bundle upgrade takes), writes an intent
 in the private state root, then moves every binding with an exact
@@ -40,6 +48,8 @@ LEDGERS = (('fresh', 'fresh-wiki-cutover.json'), ('qmd', 'qmd-cutover.json'))
 _STRINGS = ('origin', 'projectRoot', 'stateRoot', 'journalPath', 'proposalSha256',
             'oldSettings', 'newSettings', 'oldRoute', 'newRoute', 'oldMarker',
             'newMarker')
+# Present together only when the raw collection moves.
+_DISCOVERY = ('discoveryPath', 'oldDiscovery', 'newDiscovery')
 
 
 class RebindRefused(RuntimeError):
@@ -117,8 +127,17 @@ def intent_path(state):
     return Path(state) / INTENT
 
 
+def _route_collections(raw):
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value.get('collections') if isinstance(value, dict) else None
+
+
 def load_intent(state):
     """The validated in-flight intent of this state root, or None."""
+    from laya_install_journal import raw_collection_rebind
     raw = _private(intent_path(state))
     if raw is None:
         return None
@@ -136,9 +155,25 @@ def load_intent(state):
             not isinstance(value.get('newLedger'), dict) or
             _strip_epoch(value['oldLedger']) == _strip_epoch(value['newLedger']) or
             value['oldLedger'].get('routeSha256') != _sha(value['oldRoute'].encode()) or
-            value['newLedger'].get('routeSha256') != _sha(value['newRoute'].encode()) or
-            _strip_epoch({**value['oldLedger'], 'routeSha256': None}) !=
-            _strip_epoch({**value['newLedger'], 'routeSha256': None})):
+            value['newLedger'].get('routeSha256') != _sha(value['newRoute'].encode())):
+        _fail('settings_rebind_intent_invalid')
+    moved = [key for key in _DISCOVERY if key in value]
+    ignored = {'routeSha256'}
+    if moved:
+        old_collections = _route_collections(value['oldRoute'])
+        new_collections = _route_collections(value['newRoute'])
+        if (moved != list(_DISCOVERY) or
+                any(type(value[key]) is not str for key in _DISCOVERY) or
+                Path(value['discoveryPath']).parent != Path(state) or
+                not raw_collection_rebind(old_collections, new_collections) or
+                value['oldLedger'].get('collections') != old_collections or
+                value['newLedger'].get('collections') != new_collections):
+            _fail('settings_rebind_intent_invalid')
+        ignored.add('collections')
+    if (_strip_epoch({key: item for key, item in value['oldLedger'].items()
+                      if key not in ignored}) !=
+            _strip_epoch({key: item for key, item in value['newLedger'].items()
+                          if key not in ignored})):
         _fail('settings_rebind_intent_invalid')
     return value
 
@@ -287,12 +322,15 @@ def _origin(state):
     return _Ledger(found[0])
 
 
-def inspect(project, new_settings):
+def inspect(project, new_settings, new_collections=None):
     """Read-only proof that this selected route can be rebound to ``new_settings``.
 
-    Returns the summary a migration proposal binds, plus the exact current
-    bytes the intent needs. Refuses a route that is not active and consistent.
+    ``new_collections`` (route shape, name-sorted) replaces the bound
+    collections when only the raw entry differs. Returns the summary a
+    migration proposal binds, plus the exact current bytes the intent needs.
+    Refuses a route that is not active and consistent.
     """
+    from laya_install_journal import raw_collection_rebind
     from laya_index_host_route import (MAX_SETTINGS_BYTES, SCHEMA_V2, _classify_record,
                                        _read_regular, select_route)
     from laya_install_journal import inspect_journal
@@ -332,16 +370,23 @@ def inspect(project, new_settings):
     old_settings = _read_regular(auto / SETTINGS, MAX_SETTINGS_BYTES)
     if _sha(old_settings) != route['settingsSha256']:
         _fail('selected_route_settings_changed')
-    new_route = _canonical({**route, 'settingsSha256': _sha(new_settings)})
+    moved = new_collections is not None and new_collections != route['collections']
+    if moved and (not raw_collection_rebind(route['collections'], new_collections) or
+                  row.get('collections') != route['collections']):
+        _fail('rebound_route_identity_changed', changedRouteFields=['collections'])
+    new_route = _canonical({**route, 'settingsSha256': _sha(new_settings),
+                            **({'collections': new_collections} if moved else {})})
     after = _classify_record(project, auto, auto / ROUTE, project, route_raw=new_route,
                              settings_raw=new_settings)
     if after.get('state') != 'candidate':
         _fail('rebound_route_unsupported', routeReason=after.get('reason'))
     changed = sorted(key for key in set(decision) | set(after)
                      if decision.get(key) != after.get(key))
-    if set(changed) - {'recallSettings'}:
+    allowed = {'recallSettings'} | ({'collections', 'collectionRoots'} if moved else set())
+    if set(changed) - allowed:
         _fail('rebound_route_identity_changed', changedRouteFields=changed)
-    new_row = {**row, 'epoch': row['epoch'] + 1, 'routeSha256': _sha(new_route)}
+    new_row = {**row, 'epoch': row['epoch'] + 1, 'routeSha256': _sha(new_route),
+               **({'collections': new_collections} if moved else {})}
     summary = {'origin': ledger.origin, 'stateRoot': str(state),
                'oldRouteSha256': _sha(old_route), 'newRouteSha256': _sha(new_route),
                'routeDecisionChanges': {key: {'from': decision.get(key),
@@ -351,7 +396,41 @@ def inspect(project, new_settings):
              'oldRoute': old_route, 'newRoute': new_route,
              'oldMarker': old_marker, 'newMarker': ledger.marker(new_row),
              'oldLedger': row, 'newLedger': new_row}
+    if moved:
+        summary.update(_raw_move(ledger, row, new_row, state, decision, after, exact))
     return summary, exact
+
+
+def _raw_entry(collections):
+    return next(item for item in collections if item['role'] == 'raw')
+
+
+def _raw_move(ledger, row, new_row, state, decision, after, exact):
+    """Summary of a raw collection move; adds the cursor bytes to ``exact``."""
+    import laya_wiki_discovery as discovery
+    old_raw, new_raw = _raw_entry(row['collections']), _raw_entry(new_row['collections'])
+    if ledger.origin == 'fresh' and new_raw['sourceRoot'] != row['projectRoot']:
+        # A fresh-wiki selection always binds the whole project as raw.
+        _fail('rebound_route_unsupported', routeReason='fresh_wiki_raw_root')
+    if ledger.origin == 'qmd':
+        try:
+            ledger.module._validated(dict(new_row), Path(state) / ledger.name)
+        except Exception as exc:
+            _fail('rebound_route_unsupported', routeReason=str(exc) or type(exc).__name__)
+    try:
+        path, old, new = discovery.rebased_cursor(decision, after)
+    except discovery.DiscoveryBlocked as exc:
+        _fail('raw_discovery_rebase_refused', discoveryReason=str(exc))
+    except Exception as exc:
+        _fail('raw_discovery_rebase_refused',
+              discoveryReason=str(exc) or type(exc).__name__)
+    exact.update({'discoveryPath': str(path), 'oldDiscovery': old, 'newDiscovery': new})
+    forfeits = []
+    if ledger.origin == 'qmd' and old_raw['name'] != new_raw['name']:
+        # The QMD source digest is bound to the ledger's collection names;
+        # the QMD store keeps the old raw name, so restore cannot re-prove it.
+        forfeits.append('qmd_origin_restore')
+    return {'rawCollection': {'from': old_raw, 'to': new_raw}, 'forfeits': forfeits}
 
 
 def _provider_lane():
@@ -392,9 +471,9 @@ def _settle_active_upgrade(project, state):
         _fail('active_upgrade_unsettled', error=str(exc) or type(exc).__name__)
 
 
-def begin(project, proposal_sha256, new_settings):
+def begin(project, proposal_sha256, new_settings, new_collections=None):
     """Write the intent after re-proving the live route. Caller holds ``locks``."""
-    summary, exact = inspect(project, new_settings)
+    summary, exact = inspect(project, new_settings, new_collections)
     state = Path(summary['stateRoot'])
     if load_intent(state) is not None:
         _fail('settings_rebind_intent_exists')
@@ -405,6 +484,8 @@ def begin(project, proposal_sha256, new_settings):
               'proposalSha256': proposal_sha256,
               **{key: value.decode('utf-8') for key, value in exact.items()
                  if isinstance(value, bytes)},
+              **({'discoveryPath': exact['discoveryPath']} if 'discoveryPath' in exact
+                 else {}),
               'oldLedger': exact['oldLedger'], 'newLedger': exact['newLedger']}
     _write_new(intent_path(state), _canonical(intent))
     if load_intent(state) != intent:
@@ -463,6 +544,31 @@ def _journal_step(intent, target):
     cas_rebind_route(intent['journalPath'], current['epoch'], before, after)
 
 
+def _route_decision(route_raw):
+    """The cursor binding fields of a route record (scope, queue, collections)."""
+    route = json.loads(route_raw)
+    return {**route, 'collectionRoots': {item['name']: item['sourceRoot']
+                                         for item in route['collections']}}
+
+
+def _discovery_step(intent, target):
+    import laya_wiki_discovery as discovery
+    if 'discoveryPath' not in intent:
+        return
+    old, new = intent['oldDiscovery'].encode(), intent['newDiscovery'].encode()
+    keep = None
+    if target == 'old':
+        old, new = new, old
+        keep = _route_decision(intent['oldRoute'])
+    decision = _route_decision(intent['newRoute'])
+    if str(discovery._paths(decision)[0]) != intent['discoveryPath']:
+        _fail('settings_rebind_discovery_changed')
+    try:
+        discovery.replace_cursor(decision, old, new, keep_valid_for=keep)
+    except discovery.DiscoveryBlocked as exc:
+        _fail('settings_rebind_discovery_changed', discoveryReason=str(exc))
+
+
 def _file_steps(intent, target):
     from laya_inactive_upgrade import _atomic_expected
     pairs = _pairs(intent)
@@ -474,10 +580,11 @@ def _file_steps(intent, target):
             'marker': lambda: _atomic_expected(auto / MARKER, *side('Marker')),
             'settings': lambda: _settings_expected(auto / SETTINGS, *side('Settings')),
             'ledger': lambda: _ledger_step(intent, target),
-            'journal': lambda: _journal_step(intent, target)}
+            'journal': lambda: _journal_step(intent, target),
+            'discovery': lambda: _discovery_step(intent, target)}
 
 
-FORWARD = ('journal', 'reviewed', 'route', 'ledger', 'marker', 'settings')
+FORWARD = ('discovery', 'journal', 'reviewed', 'route', 'ledger', 'marker', 'settings')
 
 
 def forward(intent):
@@ -507,6 +614,12 @@ def _verify_selected(intent):
         _fail('settings_rebind_unverified', routeReason=decision.get('reason'))
     try:
         verify_selected_route_read_only(decision)
+        if 'discoveryPath' in intent:
+            import laya_wiki_discovery as discovery
+            path = discovery._paths(decision)[0]
+            if str(path) != intent['discoveryPath']:
+                _fail('settings_rebind_discovery_changed')
+            discovery._validate_state(discovery._read(path), decision)
     except Exception as exc:
         _fail('settings_rebind_unverified', error=str(exc) or type(exc).__name__)
 

@@ -247,10 +247,19 @@ class MigrationChecks(Project):
         self.write_route([
             {"name": "project-plans", "role": "raw",
              "sourceRoot": str(self.root / "docs" / "plans")},
-            {"name": "project-wiki", "role": "wiki", "sourceRoot": str(self.auto / "wiki")}])
+            {"name": "project-plans-wiki", "role": "wiki",
+             "sourceRoot": str(self.auto / "wiki")}])
         result = self.plan()
         self.assertEqual(result["reason"], "bound_collection_identity_changed", result)
         self.assertEqual(result["boundCollections"][0]["name"], "project-plans")
+        self.assertEqual(self.settings.read_bytes(), before)
+        # Only the raw collection differs: the route itself must then prove
+        # an active selection (minimal-settings-rebind-checks covers one).
+        self.write_route([
+            {"name": "project-plans", "role": "raw",
+             "sourceRoot": str(self.root / "docs" / "plans")},
+            {"name": "project-wiki", "role": "wiki", "sourceRoot": str(self.auto / "wiki")}])
+        self.assertEqual(self.plan()["reason"], "selected_route_not_verified")
         self.assertEqual(self.settings.read_bytes(), before)
 
     def test_unverified_route_with_same_identity_is_refused(self):
