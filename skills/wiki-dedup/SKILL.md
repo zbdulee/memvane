@@ -52,7 +52,7 @@ each queued pair autonomously.
 
 - Read-only for the queue in step 1 (`cat` and claimed-file existence check); every mutation goes through the resolver's
   `core/wiki_dedup_resolve.py` calls — never edit the queue file or the resolver scripts directly.
-- The resolver acquires a per-project run-lock (`~/.config/qmd/dedup-resolve-lock/<project_key>`);
+- The resolver acquires a per-project run-lock (`~/.local/state/laya/auto-context/dedup-resolve-lock/<project_key>`);
   if one is already active it will stop on its own. Don't bypass it by editing pages by hand.
 - Cards with `status: generated` (unreviewed) are valid targets — the resolver handles them.
 - For a selected Laya project, the resolver CLI keeps a private copy of each

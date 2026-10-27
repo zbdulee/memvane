@@ -355,14 +355,6 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                                            {**edit, 'hook_event_name': 'PreToolUse'})
             self.assertEqual(gate['hookSpecificOutput']['permissionDecision'], 'allow')
 
-    def test_worktree_never_asks_for_setup(self):
-        import setup_guard
-        worktree = self.add_worktree(self.project / '.claude/worktrees/agent-1')
-        state = setup_guard.status(str(worktree))
-        self.assertEqual(state['status'], 'worktree_read_only', state)
-        self.assertEqual(state['mainProject'], str(self.project))
-        self.assertEqual(setup_guard.main(['check', str(worktree)]), 4)
-
     def test_unproven_identity_keeps_todays_classification(self):
         changed = self.add_worktree(self.selected.home / 'changed')
         settings = changed / '.auto-context/settings.json'

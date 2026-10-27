@@ -59,30 +59,6 @@ def foreground(namespace,*,coordinator=None):
     with (coordinator or Coordinator()).inference(time.monotonic()+.1,namespace):yield
 
 
-def guarded_run(argv,*,coordinator=None,execute=None,**options):
-    """Admit one fixed caller-owned command while preserving its index route."""
-    execute=execute or subprocess.run
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':
-        return execute(argv,**options)
-    controller=coordinator or Coordinator()
-    try:report=sample()
-    except (OSError,ValueError,TypeError,KeyError):report=None
-    with controller.step(POLICY,report,with_fd=True) as (_,fd):
-        from runtime_cpu import lease,environment
-        with lease(controller.root) as budget:
-            env=environment({**os.environ,**(options.pop('env',None) or {})})
-            fds=(*options.pop('pass_fds',()),fd,*budget.fds)
-            return execute(argv,env=env,pass_fds=fds,**options)
-
-
-def qmd_operation(argv,*,coordinator=None,execute=None):
-    """One QMD command is its indivisible checkpoint boundary; never SIGSTOP."""
-    try:
-        return guarded_run(argv,coordinator=coordinator,execute=execute,
-            stdin=subprocess.DEVNULL,check=False).returncode
-    except ResourceDeferred:return 75
-
-
 class WakeQueue:
     def __init__(self,root=None):
         self.root=_private_state(Path(root) if root is not None else default_root())
@@ -341,7 +317,6 @@ def hook_wake():
 
 
 def main(argv):
-    if argv[:1]==['qmd'] and len(argv)>2:return qmd_operation(argv[1:])
     if argv==['wake']:hook_wake();return 0
     if argv[:1]==['cancel-build-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
         # Official per-UID queue only; ownership is proven from private build state.
@@ -353,23 +328,6 @@ def main(argv):
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
         import runtime_wake_cancel
         print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
-    if argv[:1]==['cancel-update-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
-        # Official per-UID queue only; ownership is proven from the QA fixture and private update job.
-        import runtime_update_cancel
-        if os.environ.get('QMD_UPDATE_HOOK_QUEUE_DIR') is not None:
-            print(json.dumps({'status':'refused','reason':'non_official_update_queue'}));return 3
-        try:revision=int(argv[4])
-        except ValueError:revision=None
-        result=runtime_update_cancel.cancel(argv[2],revision,argv[6])
-        print(json.dumps(result,sort_keys=True,default=str));return 0 if result['status']!='refused' else 3
-    if argv[:1]==['update-wake-status'] and len(argv)==3 and argv[1]=='--project':
-        import runtime_update_cancel
-        print(json.dumps(runtime_update_cancel.status(argv[2]),sort_keys=True,default=str));return 0
-    if argv==['index-pending']:
-        from dirty_queue import queue_path
-        path=queue_path()
-        if path.is_file() and path.stat().st_size:request('index')
-        return 0
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')

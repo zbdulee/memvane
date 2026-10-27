@@ -207,22 +207,7 @@ def _index_ack(project, story, source_collection, source_suffix, source_sha,
     if bound is not None:
         return _laya_index_ack(bound, project, story, source_collection, source_suffix,
                                source_sha, card_suffix, card_sha)
-    import qmd_route
-    import sqlite_read
-    route = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
-    if route.get('selected') is not True:
-        raise ValueError('source_card_index_unselected')
-    with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
-        rows = []
-        for collection, relative, revision in ((source_collection, source_suffix, source_sha),
-                                               (WIKI_COLLECTION, card_suffix, card_sha)):
-            rows_for_path = index.execute('SELECT hash FROM documents WHERE collection=? AND '
-                                          'path=? AND active=1',
-                                          (collection, relative)).fetchall()
-            if rows_for_path != [(revision,)]:
-                raise ValueError('source_card_index_unacknowledged')
-            rows.append([collection, relative, revision])
-    return rows
+    raise ValueError('source_card_index_unselected')
 
 
 def _laya_index_ack(bound, project, story, source_collection, source_suffix,

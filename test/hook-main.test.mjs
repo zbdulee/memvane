@@ -109,7 +109,7 @@ print("rc=%d" % hook_main.run(boom))
 
 // End-to-end: each real hook entrypoint stays exit 0 even when its shared
 // config lookup is forced to raise (simulating a sandboxed-fs denial).
-for (const script of ['recall.py', 'posttool.py', 'preflight_gate.py', 'index_enqueue.py', 'wiki_compile_enqueue.py']) {
+for (const script of ['wiki_compile_enqueue.py']) {
   test(`${script}: config 조회가 예외를 던져도 프로세스는 exit 0 (무출력)`, () => {
     const mod = script.replace('.py', '');
     // Monkeypatch config to raise, then drive the real module's main() through

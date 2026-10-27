@@ -58,7 +58,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_vector_capacity.py',
                  'laya_package.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
-                 'laya_host_response.py', 'laya_owner_projection.py',
+                 'laya_host_response.py',
                  'laya_initial_build.py', 'laya_fresh_wiki_origin.py',
                  'laya_ledger_common.py')
         (self.source / 'core').mkdir()
@@ -72,8 +72,7 @@ class ProductBundleChecks(unittest.TestCase):
                      self.source / 'core' / 'laya_qmd_chunking.mjs')
         provider_path = self.source / 'core' / 'laya_test_query_provider.py'
         provider_path.write_text('# synthetic inert provider artifact\n', encoding='utf-8')
-        for name in ('LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
-                     'locks/qmd-2.5.3/package-lock.json'):
+        for name in ('LICENSE', 'README.md'):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / name, target)
@@ -262,7 +261,6 @@ print(json.dumps(result))'''
         self.assertNotIn('core/laya_qmd_cutover.py', proof['includedFiles'])
         self.assertIn('LICENSE', proof['includedFiles'])
         self.assertIn('README.md', proof['includedFiles'])
-        self.assertIn('locks/qmd-2.5.3/package-lock.json', proof['includedFiles'])
         self.assertIn('docs/committed-note.md', proof['includedFiles'])
         self.assertFalse(proof['productRouteAllowed'])
         with self.assertRaisesRegex(bundle.BundleEvidenceError, 'invalid_bundle_request'):
@@ -311,8 +309,7 @@ print(json.dumps(result))'''
         staged = product_install.stage_host_loaded_candidate(
             source_root=self.source, plugin_root=installed, state_root=self.install,
             commit_id=self.commit1,
-            route_bytes=raw, reviewed_provider=review,
-            user_qmd_roots=[self.user_qmd])
+            route_bytes=raw, reviewed_provider=review)
         self.assertEqual(staged['status'], 'candidate_ready')
         self.assertEqual(journal.inspect_journal(self.journal_path)['state'],
                          'candidate_ready')
@@ -321,8 +318,7 @@ print(json.dumps(result))'''
         repeated = product_install.stage_host_loaded_candidate(
             source_root=self.source, plugin_root=installed, state_root=self.install,
             commit_id=self.commit1,
-            route_bytes=raw, reviewed_provider=review,
-            user_qmd_roots=[self.user_qmd])
+            route_bytes=raw, reviewed_provider=review)
         self.assertEqual(repeated, staged)
         self.model.write_bytes(b'GGUFchanged after review')
         with self.assertRaisesRegex(journal.JournalEvidenceError,
@@ -331,7 +327,7 @@ print(json.dumps(result))'''
                 source_root=self.source, plugin_root=installed,
                 state_root=self.install,
                 commit_id=self.commit1, route_bytes=raw,
-                reviewed_provider=review, user_qmd_roots=[self.user_qmd])
+                reviewed_provider=review)
 
     def test_host_adoption_rejects_extra_files_and_nonprivate_cache(self):
         installed = self.install / 'host-plugin'

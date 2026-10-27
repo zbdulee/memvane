@@ -301,43 +301,6 @@ test('multi-source agreement passes; conflicting or incomplete mock evidence doe
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('mixed version pool is filtered before topK; legacy bytes and old recall formatter remain intact', () => {
-  const root = sandbox();
-  try {
-    const src = source(root, 'v2', 'The current rule requires a blue ticket.\n');
-    const created = compile(root, [card('ticket', 'Ticket', [claim('ticket-rule',
-      'The current rule requires a blue ticket.', 'rule', 'chapter-8', '',
-      [evidence(src, 'The current rule requires a blue ticket.', 1)])])]);
-    const id = created.result.generationId;
-    const legacy = ['missing', 'v1', 'future', 'pretend-v2'];
-    const versions = [null, 1, 9, 2];
-    const original = [];
-    legacy.forEach((name, index) => {
-      const value = ['---', `title: "${name}"`, ...(versions[index] === null ? [] : [`schemaVersion: ${versions[index]}`]),
-        'status: verified', '---', '## Summary', `Old ${name} content`, ''].join('\n');
-      writeFileSync(join(root, 'legacy-cards', `${name}.md`), value);
-      original.push(value);
-    });
-    const hits = legacy.map((name) => ({ kind: 'legacy', path: `legacy-cards/${name}.md` }));
-    hits.push(hit(id, 'ticket', staged(root, id, 'ticket'), 5));
-    const result = invoke(root, hits, 2400, 1);
-    assert.equal(result.result.ingestion.eligibleBeforeTopK, 1);
-    assert.equal(result.result.ingestion.excludedBeforeTopK, 4);
-    assert.deepEqual(result.result.selected.map((x) => x.cardId), ['ticket']);
-    assert.deepEqual(result.result.excluded.slice(0, 4).map((x) => x.reason), [
-      'legacy_or_missing_schema_version', 'legacy_or_missing_schema_version',
-      'unsupported_schema_version', 'v2_without_semantic_attestation',
-    ]);
-    assert.deepEqual(legacy.map((name) => readFileSync(join(root, 'legacy-cards', `${name}.md`), 'utf8')), original);
-    const old = py('import sys;sys.path.insert(0,"core");import recall;print(recall.format_context([{"file":"qmd://old/a.md","title":"Legacy","_collection":"old"}]))');
-    assert.match(old, /Legacy/);
-    const migration = cli(root, 'migration-dry-run', { paths: legacy.map((name) => `legacy-cards/${name}.md`) });
-    assert.equal(migration.code, 0);
-    assert.equal(migration.result.cards[0].migrationClass, 'source_unconfirmed');
-    assert.equal(migration.result.cards[2].migrationClass, 'unsupported_future_or_unknown');
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
 test('failed staged bundle leaves prior generation untouched and no partial new generation', () => {
   const root = sandbox();
   try {

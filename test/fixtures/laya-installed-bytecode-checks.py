@@ -76,9 +76,10 @@ class InstalledBytecodeChecks(unittest.TestCase):
         subprocess.run([str(installed / 'hooks/run-hook'), 'gate', 'codex'],
                        input=payload, env=env, cwd=project, check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        # A refusal still imports the setup modules from the installed tree.
         subprocess.run([str(python), str(installed / 'core/setup_entry.py'),
-                        'inspect', '--project', str(project)],
-                       env=env, cwd=project, check=True, stdout=subprocess.PIPE,
+                        'plan-fresh-wiki-origin', '--project', str(project)],
+                       env=env, cwd=project, check=False, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=30)
         # Direct maintenance/status entrypoints also load installed modules.
         # They must not add bytecode to the sealed plugin cache.

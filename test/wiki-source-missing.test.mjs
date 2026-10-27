@@ -53,34 +53,6 @@ function runPy(dir, lines, { ulimit } = {}) {
 }
 
 
-test('source_missing 판정은 recall의 존재 판정을 재사용한다(두 벌 금지)', () => {
-  const out = execFileSync('python3', ['-c', [
-    'import sys; sys.path.insert(0, "core")',
-    'import inspect, recall, wiki_source_missing as wsm',
-    // 존재 판정 SSOT: 두 분류 함수가 모두 recall의 함수를 호출한다.
-    'src = inspect.getsource(wsm.classify_entries) + inspect.getsource(wsm.classify_records)',
-    'assert "classify_source_entry" in src and "resolve_existing_source" in src, src',
-    'assert "classify_source_entry(entry, project_root, allow_roots)" in inspect.getsource(recall.resolve_source_path)',
-    'print("ok")',
-  ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' });
-  assert.equal(out.trim(), 'ok');
-});
-
-test('injectSourcePathsPerCard:0 에서도 진단 로그가 켜지면 카운터가 산다 / 꺼지면 비용 0', () => {
-  // (a) 로그 off + 상한 0 → allowRoots resolve도, 분류도 하지 않는다(추가 비용 0 계약).
-  const off = execFileSync('python3', ['-c', [
-    'import sys, json; sys.path.insert(0, "core")',
-    'import recall',
-    'cfg = {"injectSourcePathsPerCard": 0, "allowRoots": ["/tmp"]}',
-    'print(json.dumps([recall.source_inject_opts(cfg), recall.source_inject_opts(cfg, observe=True)], default=str))',
-  ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' });
-  const [noObserve, observe] = JSON.parse(off);
-  assert.deepEqual(noObserve, [0, [], false]);
-  assert.equal(observe[0], 0);
-  assert.equal(observe[2], true, '로그가 켜지면 관측 전용 모드');
-  assert.ok(observe[1].length > 0, '관측 모드에서는 allowRoots를 해석한다');
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 확인 라운드 반영 — 자동 경로 원자성 / 권한 / 판정 통일 / observe 死코드
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,51 +120,6 @@ test('원자적 쓰기가 원본 권한을 보존한다 (0600 → 0600)', () => 
     ]);
     assert.equal(statSync(card).mode & 0o777, 0o600);
   } finally { removeTemp(dir); }
-});
-
-test('전부 소실 판정이 두 경로에서 같은 구현을 쓴다 (예산 절단은 입력 차이로만 남는다)', () => {
-  const out = execFileSync('python3', ['-c', [
-    'import sys, json; sys.path.insert(0, "core")',
-    'import inspect, recall, wiki_source_missing as wsm',
-    // 구현은 한 벌이다.
-    'assert "sources_all_missing(" in inspect.getsource(wsm.all_sources_missing)',
-    'assert "sources_all_missing(" in inspect.getsource(recall.card_sources_all_missing)',
-    // 같은 (missing, present, undecidable) 입력이면 답이 같다.
-    'cases = [(1,0,0),(0,0,0),(2,1,0),(3,0,1),(1,0,2)]',
-    'rule = [recall.sources_all_missing(*c) for c in cases]',
-    'wsmr = [wsm.all_sources_missing({"missing": ["x"]*m, "present": ["y"]*p, "unknown": {"z": u} if u else {}}) for m,p,u in cases]',
-    'assert rule == wsmr, (rule, wsmr)',
-    // recall 쪽 환산: duplicate는 판정불가가 아니고(살아 있는 경로의 중복), over_scan_budget은 판정불가다.
-    'r = {"_wiki_source_reasons": {"missing": 7}, "_wiki_source_present": 0}',
-    'assert recall.card_sources_all_missing(r) is True',
-    'r2 = {"_wiki_source_reasons": {"missing": 6, "over_scan_budget": 1}, "_wiki_source_present": 0}',
-    'assert recall.card_sources_all_missing(r2) is False',
-    'print(json.dumps({"rule": rule}))',
-  ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' });
-  assert.deepEqual(JSON.parse(out).rule, [true, false, false, false, false]);
-});
-
-test('observe 모드에서 duplicate 사유가 실제로 발화한다 (死코드 없음)', () => {
-  const out = execFileSync('python3', ['-c', [
-    'import sys, json, tempfile, os; sys.path.insert(0, "core")',
-    'import recall',
-    'from pathlib import Path',
-    'root = Path(tempfile.mkdtemp()).resolve()',
-    '(root / "docs").mkdir()',
-    '(root / "docs" / "a.md").write_text("x")',
-    'block = \'sources:\\n  - {kind: "file", path: "docs/a.md"}\\n  - {kind: "file", path: "docs/a.md"}\'',
-    'inject = recall.collect_source_paths(block, root, str(root), 3, [], False)',
-    'observe = recall.collect_source_paths(block, root, str(root), 0, [], True)',
-    'print(json.dumps({"inject": [inject[0], inject[2], inject[3]], "observe": [observe[0], observe[2], observe[3]]}))',
-  ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' });
-  const { inject, observe } = JSON.parse(out);
-  assert.deepEqual(inject[1], { duplicate: 1 });
-  assert.deepEqual(observe[1], { duplicate: 1 }, 'observe 모드에서도 중복이 집계돼야 한다');
-  assert.deepEqual(observe[0], [], '관측 모드는 주입하지 않는다');
-  assert.equal(inject[2], 2);
-  assert.equal(observe[2], 2, 'present 집계는 두 모드가 같다');
-  // over_cap은 주입 상한 전용이므로 observe 모드에서 발화하지 않는다.
-  assert.ok(!('over_cap' in observe[1]));
 });
 
 test('index.md 쓰기 실패에서 누적 인덱스가 온전히 남는다 / 정상 append는 불변 / log는 append 그대로', () => {

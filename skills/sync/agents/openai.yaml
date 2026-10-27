@@ -1,4 +1,0 @@
-interface:
-  display_name: "qmd Sync"
-  short_description: "Reconcile qmd context from file changes"
-  default_prompt: "Use $sync to resync qmd auto-context for this project."

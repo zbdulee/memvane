@@ -135,42 +135,6 @@ class CpuThreads(unittest.TestCase):
             service.main()
         call.assert_called_once_with(self.root)
 
-    def test_qmd_daemon_spawn_passes_only_its_cpu_share(self):
-        cpu=self.cpu();import qmd_endpoint as endpoint
-        from context_learning.resource_coordination import Coordinator
-        c=Coordinator(self.root)
-        def spawn(*args,**options):
-            self.assertTrue(options.get('pass_fds'),'CPU share not passed')
-            self.assertEqual(options['env']['OMP_NUM_THREADS'],'1')
-            with self.assertRaises(ValueError):
-                with cpu.lease(self.root):self.fail('QMD has no CPU share')
-            return Mock()
-        with patch.object(cpu.os,'cpu_count',return_value=4),patch('context_learning.resource_coordination.Coordinator',return_value=c),patch.object(endpoint,'child_environment',return_value={}),patch.object(endpoint.subprocess,'Popen',side_effect=spawn):
-            endpoint.spawn(12345,Mock())
-
-    def test_qmd_operation_owns_cpu_and_compute_without_spawning(self):
-        cpu=self.cpu();import runtime_work
-        from context_learning.resource_coordination import Coordinator
-        c=Coordinator(self.root)
-        report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
-        def execute(*args,**options):
-            self.assertTrue(c.owned_compute())
-            with self.assertRaises(ValueError):
-                with cpu.lease(self.root):self.fail('operation has no CPU share')
-            return 'synthetic'
-        with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':''}),patch.object(runtime_work,'sample',return_value=report):
-            self.assertEqual(runtime_work.guarded_run(['synthetic'],coordinator=c,execute=execute),'synthetic')
-
-    def test_qmd_cpu_refusal_does_not_leave_an_orphan_startup_barrier(self):
-        cpu=self.cpu();import runtime_admission as admission;import qmd_endpoint as endpoint
-        from context_learning.resource_coordination import Coordinator
-        c=Coordinator(self.root)
-        report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
-        with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':''}),patch.object(admission,'Coordinator',return_value=c),patch.object(admission,'sample',return_value=report),patch('context_learning.resource_coordination.Coordinator',return_value=c),patch.object(endpoint,'limits',return_value=(12345,1,.1)),patch.object(endpoint,'expected',return_value={}),patch.object(endpoint,'raw',return_value=None),patch.object(endpoint,'log_path',return_value=self.root/'daemon.log'),patch.object(endpoint,'port_busy',return_value=False),patch.object(endpoint.subprocess,'Popen',side_effect=AssertionError('must not launch')):
-            with cpu.lease(self.root):
-                with self.assertRaises(admission.PreSendDeferred):
-                    with admission.startup():endpoint.ensure_locked(self.root)
-            self.assertFalse((self.root/'startup-reservation.json').exists())
 
     def test_adapter_configures_before_any_model_import_work(self):
         cpu=self.cpu();from context_learning import laya_adapter as adapter

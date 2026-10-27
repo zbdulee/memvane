@@ -1,4 +1,4 @@
 interface:
-  display_name: "qmd Update"
-  short_description: "Run manual qmd index refresh"
-  default_prompt: "Use $update to refresh qmd auto-context indexing for this project."
+  display_name: "Auto-context Update"
+  short_description: "Queue a full-scan sync of the Laya index"
+  default_prompt: "Use $update to resync auto-context indexing for this project."

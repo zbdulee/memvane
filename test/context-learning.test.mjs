@@ -130,62 +130,6 @@ print('ok')
  } finally {rmSync(dir,{recursive:true,force:true});}
 });
 
-test('Claude and Codex payload capture preserves exact output and isolates projects', () => {
- const parent = mkdtempSync(join(tmpdir(), 'qmd-host-learning-'));
- try {
- const output = execFileSync('python3', ['-c', `
-import json, os, subprocess, sys, sqlite3
-from pathlib import Path
-base=Path(sys.argv[1]).resolve()
-state_root=base/'private-state'; state_root.mkdir(mode=0o700)
-for host in ('claude','codex'):
- root=base/host; (root/'.auto-context').mkdir(parents=True); (root/'docs').mkdir()
- (root/'docs'/'guide.md').write_text('safe synthetic evidence')
- config={'collections':['sample'],'collectionPaths':{'sample':'.'}}
- settings=root/'.auto-context'/'settings.json'
- def run():
-  env=dict(os.environ,QMD_ENGINE=host,QMD_RECALL_LOG='',QMD_QUERY_FIXTURE='test/fixtures/daemon-response.json',INDEX_PATH=str(base/'unused-index.sqlite'),PYTHONDONTWRITEBYTECODE='1')
-  return subprocess.check_output(['python3','core/recall.py'],input=json.dumps({'prompt':'검색 결과 정렬은 어떻게 동작해?', 'cwd':str(root),'hook_event_name':'UserPromptSubmit','session_id':'synthetic'}).encode(),env=env)
- settings.write_text(json.dumps(config)); before=run()
- import hashlib
- state=state_root/hashlib.sha256(str(root).encode()).hexdigest()
- assert before and not state.exists()
- settings.write_text(json.dumps(dict(config,contextLearning={'capture':True,'stateRoot':str(state_root)})))
- assert run()==before
- with sqlite3.connect(state/'learning.sqlite3') as db:
-  body=json.loads(db.execute('select body from samples').fetchone()[0])
-  assert body['host']==host and len(body['candidates'])==1
-  assert body['candidates'][0]['revision_sha256']
-  assert body['candidates'][0]['excerpt']['text']=='safe synthetic evidence'
-  assert not (root/'.auto-context'/'context-learning').exists()
- settings.write_text(json.dumps(dict(config,contextLearning={'capture':'true','stateRoot':str(state_root)})))
- assert run()==before
- with sqlite3.connect(state/'learning.sqlite3') as db: assert db.execute('select count(*) from samples').fetchone()[0]==1
- settings.write_text(json.dumps(dict(config,contextLearning={'capture':True,'stateRoot':str(state_root)})))
- with sqlite3.connect(state/'learning.sqlite3') as db:
-  db.execute('BEGIN EXCLUSIVE')
-  assert run()==before
-  db.rollback()
- dbpath=state/'learning.sqlite3'; saved=state/'saved.sqlite3'
- dbpath.rename(saved); dbpath.symlink_to(saved)
- assert run()==before
- dbpath.unlink(); saved.rename(dbpath)
- (root/'docs'/'guide.md').unlink()
- assert run()==before
- with sqlite3.connect(dbpath) as db:
-  partial=json.loads(db.execute('select body from samples order by rowid desc').fetchone()[0])
-  assert partial['sampling']['snapshot_failures'] and not partial['sampling']['complete_within_returned_bound']
- (root/'docs'/'guide.md').write_text('safe synthetic evidence')
- # State roots in the indexed project are forbidden, even with exact opt-in.
- settings.write_text(json.dumps(dict(config,contextLearning={'capture':True,'stateRoot':str(root)})))
- assert run()==before and not (root/hashlib.sha256(str(root).encode()).hexdigest()).exists()
-print('ok')
-`, parent], {encoding:'utf8',env:{...process.env,QMD_RECALL_LOG:'',PYTHONDONTWRITEBYTECODE:'1'}});
- assert.equal(output.trim(),'ok');
- } finally {rmSync(parent,{recursive:true,force:true});}
-});
-
-
 test('source snapshot rejects non-regular files without blocking', () => {
  const dir = mkdtempSync(join(tmpdir(), 'qmd-source-kind-'));
  try {

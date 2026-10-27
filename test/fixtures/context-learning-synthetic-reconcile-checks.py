@@ -64,8 +64,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-synthetic-reconcile-', dir='/tmp') 
                        ('writing' if source in (a, b) else 'wiki_review', 1, 1,
                         relative, sha(source.read_bytes()), None, time.time()))
     enqueued = []
-    with patch('dirty_queue.enqueue_project_collections',
-               side_effect=lambda project, selected: enqueued.append(dict(selected))):
+    with patch('context_learning.synthetic_source_reconcile._request_index',
+               side_effect=lambda project: enqueued.append(str(project))):
         assert _reconcile_authorized(root, project, story)['detected'] == 0
         assert _reconcile_authorized(root, project, story)['detected'] == 0
         a.unlink()  # shell deletion: no edit hook receipt
@@ -152,7 +152,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-synthetic-reconcile-chain-', dir='/
                        '(kind,episode,slot,relative_path,sha256,prior_sha256,recorded_at) '
                        'VALUES (?,?,?,?,?,?,?)',
                        (kind, 1, 1, relative, sha(path.read_bytes()), None, time.time()))
-    with patch('dirty_queue.enqueue_project_collections') as enqueue:
+    with patch('context_learning.synthetic_source_reconcile._request_index') as enqueue:
         assert _reconcile_authorized(root, project, story)['detected'] == 0
         source.write_text('Revision B\n')
         # Detection commits, then the process crashes before event replay.
@@ -187,7 +187,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-synthetic-reconcile-chain-', dir='/
                 raise AssertionError('restore crash did not occur')
         restore_temp = next(wiki.glob('.qmd-restore-*.tmp'))
         assert generated_card.is_file() and restore_temp.stat().st_nlink == 2
-        with patch('dirty_queue.enqueue_project_collections',
+        with patch('context_learning.synthetic_source_reconcile._request_index',
                    side_effect=OSError('synthetic crash before restore queue')):
             try:
                 _reconcile_authorized(root, project, story)
@@ -253,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-synthetic-reconcile-chain-', dir='/
                        '(kind,episode,slot,relative_path,sha256,prior_sha256,recorded_at) '
                        'VALUES (?,?,?,?,?,?,?)',
                        (kind, 2, 1, relative, sha(path.read_bytes()), None, time.time()))
-    with patch('dirty_queue.enqueue_project_collections') as enqueue:
+    with patch('context_learning.synthetic_source_reconcile._request_index') as enqueue:
         assert _reconcile_authorized(root, project, story)['detected'] == 0
         restored.write_text('Revision B again\n')
         with _db(root) as db:
@@ -270,7 +270,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-synthetic-reconcile-chain-', dir='/
     generated_card.write_text(content + '\nUser edit at retired path.\n')
     source.write_text('Revision A\n')
     restored.write_text('Revision B again\n')
-    with patch('dirty_queue.enqueue_project_collections') as enqueue:
+    with patch('context_learning.synthetic_source_reconcile._request_index') as enqueue:
         mixed = _reconcile_authorized(root, project, story)
         assert mixed['wikiCollectionsQueued'] == 1
         assert not card2.exists() and generated_card.read_text().endswith(

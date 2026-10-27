@@ -15,7 +15,6 @@ import subprocess
 import sys
 
 import config as qmd_config
-import qmd_route
 from context_learning.contracts import digest
 from context_learning.dataset import read_private_json
 from context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, _atomic_json
@@ -138,18 +137,7 @@ def launch(project: Path, *, data_mode: str | None = None) -> dict:
         # test-only guard override into this deliberately scrubbed child env.
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
             env['QMD_SETUP_GUARD_FIXTURE'] = '1'
-        # The current-corpus gate must read the exact QMD index/config that the
-        # preceding worker updated, including an isolated project override.
-        # A selected Laya route has no QMD store; its gate reads laya-db.
-        from context_learning.laya_learning import selected
-        try:
-            laya_route = selected(project) is not None
-        except Exception:
-            laya_route = True
-        if not laya_route:
-            route = qmd_route.project_paths(project)
-            for key in qmd_route.PATH_KEYS:
-                env[key] = route[key]
+        # The current-corpus gate reads the selected Laya index (laya-db).
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
         import runtime_work

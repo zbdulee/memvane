@@ -4,15 +4,18 @@ export PYTHONDONTWRITEBYTECODE=1
 
 SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"
-QMD_BACKEND_MANAGER="${QMD_BACKEND_MANAGER:-$PLUGIN_ROOT/core/backend_manager.sh}"
 TARGET_CWD="${1:-$PWD}"
-if [ -z "${QMD_SANDBOX:-}" ] && ! python3 "$PLUGIN_ROOT/core/setup_guard.py" check "$TARGET_CWD" >/dev/null 2>&1; then
-  printf '[qmd] setup required: 이 프로젝트의 기존 데이터는 보존 중입니다. setup skill에 설치 계획 검토를 요청하세요.\n' >&2
-  exit 1
-fi
-
 if [ -z "${QMD_SANDBOX:-}" ]; then
-  bash "$QMD_BACKEND_MANAGER" check-qmd --manual
+  # The writer publishes into the selected Laya index; it needs that route.
+  _laya_state="$(python3 "$PLUGIN_ROOT/core/laya_index_host_route.py" classify compile "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
+  case "$_laya_state" in
+    candidate) ;;
+    legacy)
+      echo '[laya-index] 이 프로젝트는 Laya 색인에 온보딩되지 않았습니다. setup skill로 온보딩하세요.' >&2
+      exit 1
+      ;;
+    *) echo '[laya-index] selected route unavailable; wiki writes refused' >&2; exit 3 ;;
+  esac
 fi
 
 python3 "$PLUGIN_ROOT/core/wiki_extract.py" --cwd "$TARGET_CWD"

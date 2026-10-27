@@ -33,7 +33,7 @@ def _approval(project, story):
     from edit_context import _approved
     value = _approved(project, story)
     return value['parentApprovalSha256'], hashlib.sha256(
-        Path.home().joinpath('.config/qmd/real-edit-approval/current.json').read_bytes()).hexdigest()
+        Path.home().joinpath('.config/laya/real-edit-approval/current.json').read_bytes()).hexdigest()
 
 
 def _source_active(story, path, after_sha):

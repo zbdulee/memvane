@@ -32,6 +32,18 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec('runtime_work'),'runtime wake queue missing')
         return importlib.import_module('runtime_work')
 
+    def test_learning_wake_defers_during_install_transition(self):
+        import config
+        from context_learning import shared
+        runtime=self.runtime()
+        with patch.object(config,'find_project_config',return_value={'config':{}}), \
+             patch.object(shared,'_safe_root',return_value=self.root), \
+             patch('context_learning.laya_learning.ready',return_value=False), \
+             patch.object(shared,'run_training_pending',return_value={'status':'staged'}) as train:
+            self.assertFalse(runtime.dispatch({'kind':'learning','target':str(self.root)}))
+        train.assert_not_called()
+
+
     def test_unknown_critical_or_scarce_warning_pressure_defer(self):
         for pressure in (None,{'system_free_percent':70,'level':'critical'},
                          {'system_free_percent':5,'level':'warning'}):
@@ -52,20 +64,6 @@ class RuntimeChecks(unittest.TestCase):
                 with Coordinator(self.root).step(self.policy,self.report):self.fail('background ran')
             with runtime.foreground('project-b',coordinator=Coordinator(self.root)):pass
         with c.step(self.policy,self.report):pass
-
-    def test_background_operation_releases_compute_before_pressure_wait(self):
-        runtime=self.runtime();calls=[];clock=[self.report['observed_at_mono']]
-        c=Coordinator(self.root,clock=lambda:clock[0],wall=lambda:100+clock[0])
-        def execute(argv,**kw):calls.append(argv);return subprocess.CompletedProcess(argv,0)
-        with patch.object(runtime,'sample',return_value={**self.report,'ready':False}):
-            self.assertEqual(runtime.qmd_operation(['/synthetic/qmd','embed'],coordinator=c,execute=execute),75)
-        self.assertEqual(calls,[])
-        with c.inference_compute(time.monotonic()+.1):pass
-        with patch.object(runtime,'sample',return_value=self.report):
-            self.assertEqual(runtime.qmd_operation(['/synthetic/qmd','embed'],coordinator=c,execute=execute),75)
-            clock[0]+=5;self.report['observed_at_mono']=clock[0]
-            self.assertEqual(runtime.qmd_operation(['/synthetic/qmd','embed'],coordinator=c,execute=execute),0)
-        self.assertEqual(len(calls),1)
 
     def test_durable_queue_recovers_running_job_and_coalesces_projects(self):
         runtime=self.runtime();q=runtime.WakeQueue(self.root)
@@ -120,20 +118,6 @@ class RuntimeChecks(unittest.TestCase):
                 env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'core')},timeout=5,check=False)
         self.assertEqual(p.returncode,0)
 
-    def test_recall_advertises_priority_through_context_injection(self):
-        import recall
-        runtime=self.runtime();inside=[]
-        @contextmanager
-        def priority(*a,**kw):
-            inside.append(True)
-            try:yield
-            finally:inside.pop()
-        self.assertTrue(hasattr(recall,'_main'),'recall priority wrapper missing')
-        with patch.dict(os.environ,{},clear=True),patch.object(runtime,'foreground',priority), \
-             patch.object(recall,'_main',side_effect=lambda:self.assertEqual(inside,[True])):
-            recall.main()
-        self.assertEqual(inside,[])
-
     def test_hook_completion_wakes_persistent_work_without_changing_exit(self):
         import hook_main
         runtime=self.runtime()
@@ -154,69 +138,6 @@ class RuntimeChecks(unittest.TestCase):
                  patch.object(shared.subprocess,'run',side_effect=probe),patch.object(shared.os,'getloadavg',return_value=(0,0,0)):
                 report=shared.resource_report(self.policy,detailed=True)
             self.assertEqual(report['ready'],ready);self.assertEqual(report['memory_pressure']['level'],'warning')
-
-    def test_dirty_enqueue_persists_recovery_hint_after_content(self):
-        import dirty_queue
-        runtime=self.runtime();path=self.root/'dirty-queue'
-        def request(kind,**kw):
-            self.assertEqual(kind,'index');self.assertTrue(path.read_text().startswith('synthetic\t'))
-            self.assertFalse(kw['start'])
-        with patch.object(dirty_queue,'queue_path',return_value=path),patch.object(runtime,'request',side_effect=request) as hint:
-            dirty_queue.enqueue_collections({'synthetic':'/synthetic/docs'})
-        hint.assert_called_once()
-
-    def test_update_worker_keeps_job_until_embed_actually_completes(self):
-        import hashlib
-        import update_hook_queue as update
-        import config,setup_guard,qmd_route
-        from context_learning import synthetic_scope
-        runtime=self.runtime();cwd=str(self.root);key=hashlib.sha256(cwd.encode()).hexdigest()[:32]
-        job=self.root/(key+'.job.json');phase=['embed_failed']
-        update._write(job,{'schema':'qmd-update-hook-job-v1','cwd':cwd})
-        def run(argv,**kw):
-            update._write(self.root/(key+'.status.json'),{'runId':kw['env']['QMD_UPDATE_HOOK_RUN_ID'],'status':phase[0]})
-            return subprocess.CompletedProcess(argv,0,stdout='',stderr='')
-        with patch.dict(os.environ,{},clear=True),patch.object(update,'_private_queue',return_value=self.root), \
-             patch.object(config,'find_project_config',return_value={'config':{}}), \
-             patch.object(synthetic_scope,'invocation_in_generated_story',return_value=True), \
-             patch.object(setup_guard,'status',return_value={'status':'ready'}), \
-             patch.object(qmd_route,'project_paths',return_value={'selected':True}), \
-             patch.object(update,'readiness'),patch.object(update.subprocess,'run',side_effect=run), \
-             patch.object(runtime,'request') as hint, \
-             patch.object(update,'_refresh_laya_adapter') as laya:
-            update.worker(key);self.assertTrue(job.exists());hint.assert_called_with('update',key)
-            phase[0]='completed';update.worker(key);self.assertFalse(job.exists())
-            self.assertEqual(laya.call_count,1)  # only after the completed update
-
-    def test_update_worker_never_refreshes_laya_under_test_overrides(self):
-        import hashlib
-        import update_hook_queue as update
-        import config,setup_guard,qmd_route
-        from context_learning import synthetic_scope
-        runtime=self.runtime();cwd=str(self.root);key=hashlib.sha256(cwd.encode()).hexdigest()[:32]
-        for env in ({'QMD_SETUP_GUARD_FIXTURE':'1'},{'QMD_CORE_UPDATE_SCRIPT':'/bin/true'},{'QMD_SANDBOX':'1'}):
-            job=self.root/(key+'.job.json')
-            update._write(job,{'schema':'qmd-update-hook-job-v1','cwd':cwd})
-            def run(argv,**kw):
-                if kw.get('env'):
-                    update._write(self.root/(key+'.status.json'),{'runId':kw['env']['QMD_UPDATE_HOOK_RUN_ID'],'status':'completed'})
-                return subprocess.CompletedProcess(argv,0,stdout='',stderr='')
-            with patch.dict(os.environ,env,clear=True),patch.object(update,'_private_queue',return_value=self.root), \
-                 patch.object(config,'find_project_config',return_value={'config':{}}), \
-                 patch.object(synthetic_scope,'invocation_in_generated_story',return_value=True), \
-                 patch.object(setup_guard,'status',return_value={'status':'ready'}), \
-                 patch.object(qmd_route,'project_paths',return_value={'selected':True}), \
-                 patch.object(update,'readiness'),patch.object(update.subprocess,'run',side_effect=run), \
-                 patch.object(runtime,'request'), \
-                 patch.object(update,'_refresh_laya_adapter') as laya:
-                update.worker(key)
-                laya.assert_not_called()
-
-    def test_small_qmd_child_obeys_the_shared_boundary(self):
-        runtime=self.runtime()
-        with patch.dict(os.environ,{},clear=True),patch.object(runtime,'sample',return_value=self.report):
-            code=runtime.qmd_operation([sys.executable,'-B','-c','pass'],coordinator=Coordinator(self.root))
-        self.assertEqual(code,0)
 
     def test_legacy_adapter_cannot_bypass_active_foreground(self):
         from context_learning import local_cycle,shared,resource_coordination
@@ -276,36 +197,8 @@ class RuntimeChecks(unittest.TestCase):
             if child is not None:child.communicate('done',timeout=2)
         with c.step(self.policy,self.report):pass
 
-    def test_learning_wake_defers_during_install_transition(self):
-        import config,setup_guard
-        from context_learning import shared
-        runtime=self.runtime()
-        with patch.object(config,'find_project_config',return_value={'config':{}}), \
-             patch.object(shared,'_safe_root',return_value=self.root), \
-             patch.object(setup_guard,'status',return_value={'status':'setup_required'}), \
-             patch.object(shared,'run_training_pending',return_value={'status':'staged'}) as train:
-            self.assertFalse(runtime.dispatch({'kind':'learning','target':str(self.root)}))
-        train.assert_not_called()
-
-    def test_cleanup_deferral_keeps_pending_without_consuming_cooldown(self):
-        import orphan_reclaim as reclaim
-        runtime=self.runtime();pending=self.root/'cleanup-pending';pending.write_text('pending')
-        with patch.object(reclaim,'decide',return_value={'action':'reclaim','trigger':'post-remove'}), \
-             patch.object(reclaim,'lock_dir',return_value=self.root/'cleanup-lock'), \
-             patch.object(reclaim,'pending_path',return_value=pending), \
-             patch.object(reclaim,'failed_path',return_value=self.root/'cleanup-failed'), \
-             patch.object(reclaim,'touch_cooldown') as cooldown,patch.object(reclaim,'log'), \
-             patch.object(runtime,'Coordinator',return_value=Coordinator(self.root)), \
-             patch.object(runtime,'default_root',return_value=self.root),patch.object(runtime,'wake'), \
-             patch.object(runtime,'sample',return_value={**self.report,'ready':False}), \
-             patch.object(reclaim.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout='',stderr='')) as launch:
-            result=reclaim.run(str(self.root),qmd_bin='/synthetic/qmd')
-        self.assertEqual(result.get('reason'),'resource_deferred')
-        self.assertTrue(pending.exists());cooldown.assert_not_called();launch.assert_not_called()
-        self.assertEqual(runtime.WakeQueue(self.root).pending()[0]['kind'],'cleanup')
-
     def test_learning_dispatch_keeps_existing_history_worker_fence(self):
-        import config,setup_guard
+        import config
         from context_learning import shared,history_lifecycle
         runtime=self.runtime();inside=[]
         @contextmanager
@@ -317,39 +210,9 @@ class RuntimeChecks(unittest.TestCase):
             self.assertEqual(inside,[True]);return {'status':'settled'}
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.root), \
-             patch.object(setup_guard,'status',return_value={'status':'ready'}), \
+             patch('context_learning.laya_learning.ready',return_value=True), \
              patch.object(history_lifecycle,'worker_lease',lease), \
              patch.object(shared,'learning_worker_step',side_effect=step):
             self.assertTrue(runtime.dispatch({'kind':'learning','target':str(self.root),'revision':1}))
-
-    def test_cleanup_retry_resolves_its_own_index_route(self):
-        import setup_guard,qmd_route
-        runtime=self.runtime();route={key:'/synthetic/'+key for key in qmd_route.PATH_KEYS}
-        def execute(argv,**kw):
-            self.assertEqual({key:kw['env'][key] for key in route},route)
-            self.assertEqual(argv[-3:],['--cwd',str(self.root),'--json'])
-            return subprocess.CompletedProcess(argv,0,stdout='{"reason":"resource_deferred"}')
-        with patch.dict(os.environ,{'INDEX_PATH':'/unrelated/project'}), \
-             patch.object(setup_guard,'status',return_value={'status':'ready'}), \
-             patch.object(qmd_route,'project_paths',return_value=route), \
-             patch.object(runtime.subprocess,'run',side_effect=execute):
-            self.assertFalse(runtime.dispatch({'kind':'cleanup','target':str(self.root)}))
-
-    def test_cleanup_attempt_records_cooldown_before_the_command_can_crash(self):
-        import orphan_reclaim as reclaim
-        runtime=self.runtime();started=[]
-        def execute(argv,**kw):
-            self.assertEqual(started,['attempt'])
-            return subprocess.CompletedProcess(argv,1,stdout='',stderr='synthetic failure')
-        with patch.object(reclaim,'decide',return_value={'action':'reclaim'}), \
-             patch.object(reclaim,'lock_dir',return_value=self.root/'cleanup-lock'),patch.object(reclaim,'log'), \
-             patch.object(reclaim,'failed_path',return_value=self.root/'cleanup-failed'), \
-             patch.object(reclaim,'touch_cooldown',side_effect=lambda:started.append('attempt')), \
-             patch.object(runtime,'Coordinator',return_value=Coordinator(self.root)), \
-             patch.object(runtime,'sample',return_value=self.report), \
-             patch.object(reclaim.subprocess,'run',side_effect=execute):
-            result=reclaim.run(str(self.root),qmd_bin='/synthetic/qmd')
-        self.assertFalse(result['ok']);self.assertEqual(started,['attempt'])
-
 
 if __name__=='__main__':unittest.main()

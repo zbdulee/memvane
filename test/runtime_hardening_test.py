@@ -85,38 +85,4 @@ class Hardening(unittest.TestCase):
         with self.assertRaises(ValueError):q.put('learning','/'+('x'*4096))
         self.assertEqual(q.pending(),[])
 
-    def test_failed_observation_never_starts_qmd(self):
-        run=Mock(side_effect=AssertionError('child must not start'))
-        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':''}), \
-             patch.object(runtime,'sample',side_effect=OSError('denied')):
-            self.assertEqual(runtime.qmd_operation(['/synthetic/qmd','embed'],coordinator=Coordinator(self.root),execute=run),75)
-        run.assert_not_called()
-
-    def test_general_command_wrapper_preserves_route_and_releases_on_exception(self):
-        self.assertTrue(hasattr(runtime,'guarded_run'))
-        c=Coordinator(self.root)
-        def execute(argv,**options):
-            self.assertEqual(options['env']['INDEX_PATH'],'/synthetic/selected-index')
-            self.assertTrue(options['pass_fds'])
-            with self.assertRaises(ResourceDeferred):
-                with c.step(self.policy,self.report):self.fail('overlapping compute')
-            raise RuntimeError('synthetic command failure')
-        with patch.object(runtime,'sample',return_value=self.report):
-            with self.assertRaisesRegex(RuntimeError,'synthetic command'):
-                runtime.guarded_run(['/synthetic/qmd','embed'],coordinator=c,execute=execute,
-                    env={'INDEX_PATH':'/synthetic/selected-index'})
-        with c.step(self.policy,self.report):pass
-
-    def test_manual_wiki_qmd_call_cannot_bypass_foreground_demand(self):
-        import wiki_topical_publish as publish
-        c=Coordinator(self.root)
-        paths={key:self.root/key for key in ('QMD_BIN','INDEX_PATH','QMD_CONFIG_DIR','XDG_CACHE_HOME')}
-        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':''}), \
-             patch.object(runtime,'Coordinator',return_value=c),patch.object(runtime,'sample',return_value=self.report), \
-             patch.object(publish.subprocess,'run',side_effect=AssertionError('must not launch')):
-            with c.inference(time.monotonic()+1,'search'):
-                with self.assertRaises((ResourceDeferred,publish.topical.TopicalError)):
-                    publish._call(self.root,paths,['embed'])
-
-
 if __name__=='__main__':unittest.main()

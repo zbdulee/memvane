@@ -2,7 +2,7 @@
 import json,tempfile,threading
 from pathlib import Path
 from unittest.mock import patch
-import install_update
+import settings_lock
 import project_learning_setup as setup
 from context_learning.local_cycle import _atomic_json
 from context_learning.runtime_setup import default_managed_root
@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-recovery-lock-',dir='/tmp') as fold
   except BaseException as exc:outcome.append(exc)
   finally:finished.set()
  with patch.object(Path,'home',return_value=home):
-  with install_update._locked(project):
+  with settings_lock.locked(project):
    thread=threading.Thread(target=recovery,daemon=True);thread.start()
    assert started.wait(1),'recovery did not start'
    assert not finished.wait(.2),'recovery bypassed the project settings writer lock'

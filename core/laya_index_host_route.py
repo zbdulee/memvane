@@ -749,12 +749,45 @@ def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
 
 
 def select_hook_route(action: str, payload_file: str, fallback_cwd: str) -> dict:
-    """Resolve a host event's own cwd before its QMD setup/backend work."""
+    """Resolve a host event's own cwd before any hook work."""
     try:
         body = _read_regular(Path(payload_file), MAX_HOOK_BYTES)
         return select_hook_payload(action, body, fallback_cwd)
     except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as exc:
         return _decision("blocked", str(exc) or "invalid_hook_payload")
+
+
+ONBOARDING_NOTICE = ('[auto-context] {root}: Laya 색인이 선택되지 않아 recall·색인·compile이 '
+                     '꺼져 있습니다. setup skill로 온보딩하세요.')
+BUILD_NOTICE = ('[auto-context] {root}: 초기 Laya 색인을 준비 중입니다. '
+                '빌드가 끝나면 setup skill로 활성화하세요.')
+
+
+def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
+    """One SessionStart line for a project with settings but no selected route.
+
+    The caller has already classified the event ``legacy``. A directory
+    without ``.auto-context/settings.json`` is not opted in and stays silent.
+    """
+    cwd = fallback_cwd
+    try:
+        payload = json.loads(_read_regular(Path(payload_file), MAX_HOOK_BYTES).decode("utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
+            cwd = payload["cwd"]
+    except (OSError, ValueError, TypeError, UnicodeError):
+        pass
+    if not Path(cwd).is_absolute():
+        return None
+    found = config.find_project_config(cwd)
+    if found.get("configFormat") != "auto-context-dir":
+        return None
+    root = found.get("projectRoot") or cwd
+    try:
+        from laya_initial_build import lookup
+        building = lookup(Path(root)) is not None
+    except Exception:
+        building = False
+    return (BUILD_NOTICE if building else ONBOARDING_NOTICE).format(root=root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -763,6 +796,11 @@ def main(argv: list[str] | None = None) -> int:
         decision = select_route(args[2], action=args[1])
     elif len(args) == 4 and args[0] == "classify-hook":
         decision = select_hook_route(args[1], args[2], args[3])
+    elif len(args) == 3 and args[0] == "onboarding-notice":
+        notice = onboarding_notice(args[1], args[2])
+        if notice:
+            print(notice)
+        return 0
     else:
         return 2
     print(decision["state"])

@@ -58,18 +58,11 @@ def selected(project_root, *, action='recall'):
 
 
 def ready(project) -> bool:
-    """Learning readiness: a verified selected Laya route, or legacy QMD setup.
-
-    The selected route is checked first so a selected project never loads the
-    QMD setup guard. ``setup_guard.status`` keeps its meaning for QMD writers.
-    """
+    """Learning readiness: a verified selected Laya route."""
     try:
-        if selected(project) is not None:
-            return True
+        return selected(project) is not None
     except Exception:
-        pass
-    import setup_guard
-    return setup_guard.status(project)['status'] == 'ready'
+        return False
 
 
 def wiki_names(decision):

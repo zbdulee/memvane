@@ -19,7 +19,6 @@ from unittest import mock
 sys.path.insert(0, str(Path.cwd() / 'core'))
 import compile_paths as cp
 import config as qmd_config
-import file_change_plan
 import wiki_compile_enqueue as E
 import wiki_source_intent as I
 
@@ -288,36 +287,6 @@ class EnqueueThroughSeam(ProjectFixture):
         self.assertTrue(self.queue.read_bytes().startswith(prior))
         self.assertEqual(len(self.queue.read_bytes().splitlines()), 5)
 
-    def test_deferred_files_keep_snapshot_entries_and_ack_sees_them(self):
-        # The file-change apply contract consumes `deferredFiles` from this seam.
-        meta = lambda n: {'mtimeNs': n, 'size': n}
-        previous = {'collections': {
-            'docs': {'root': str(self.project / 'docs'), 'files': {'a.md': meta(1), 'b.md': meta(1)}},
-            'src': {'root': str(self.project / 'src'), 'files': {}}}}
-        snapshot = {'collections': {
-            'docs': {'root': str(self.project / 'docs'),
-                     'files': {'a.md': meta(2), 'b.md': meta(2), 'c.md': meta(1)}},
-            'src': {'root': str(self.project / 'src'), 'files': {'s.md': meta(1)}}}}
-        persisted, acked = [], []
-        with mock.patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
-            compiled = file_change_plan.apply_change_set(
-                {}, copy.deepcopy(self.changed), snapshot, previous,
-                enqueue_index=None,
-                enqueue_wiki=lambda files: E.enqueue_changed_sources(
-                    str(self.project), self.config, files),
-                persist=lambda value: persisted.append(copy.deepcopy(value)),
-                ack=acked.append)
-        self.assertEqual(compiled['deferredFiles'],
-                         [('docs', 'b.md'), ('docs', 'c.md'), ('src', 's.md')])
-        files = persisted[0]['collections']
-        self.assertEqual(files['docs']['files'], {'a.md': meta(2), 'b.md': meta(1)})
-        self.assertEqual(files['src']['files'], {})
-        # A deferred wake is reported to ACK, so the pending event is kept.
-        self.assertEqual(acked, [compiled])
-        self.assertEqual(compiled['deferred'], 3)
-        self.assertEqual(len(self.rows(self.queue.read_bytes())), 1)
-
-
 class RevisionCoalescing(ProjectFixture):
     """A hashed row identical to one still in the live queue is not appended."""
 
@@ -381,56 +350,6 @@ class RevisionCoalescing(ProjectFixture):
             'reason': 'capped', 'wakePending': True})
         self.assertEqual(self.queue.read_bytes(), before)
 
-    def test_retry_after_snapshot_failure_keeps_the_per_wake_cap(self):
-        docs = self.project / 'docs'
-        total, cap = 60, 50
-        for i in range(total):
-            (docs / f'n{i:02d}.md').write_text(f'# n{i}\n', encoding='utf-8')
-        scanned = {f'n{i:02d}.md': {'mtimeNs': 1, 'size': 1, 'sha256': hashlib.sha256(
-                       (docs / f'n{i:02d}.md').read_bytes()).hexdigest()}
-                   for i in range(total)}
-        names = sorted(scanned)
-
-        def run(previous, persist, acked):
-            plan = file_change_plan.plan_change_set([('docs', str(docs), previous, scanned, ())])
-            with mock.patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': str(cap)}):
-                return file_change_plan.apply_change_set(
-                    {}, plan['changedFiles'], {'collections': plan['collections']},
-                    {'collections': {'docs': {'root': str(docs), 'files': previous}}},
-                    enqueue_index=None,
-                    enqueue_wiki=lambda files: E.enqueue_changed_sources(
-                        str(self.project), self.config, files, session_start=True),
-                    persist=persist, ack=acked.append)
-
-        def failing(_snapshot):
-            raise OSError('synthetic snapshot failure')
-        acked = []
-        with self.assertRaises(OSError):
-            run({}, failing, acked)
-        first = self.queue.read_bytes()
-        self.assertEqual([r['source']['path'] for r in self.rows(first)],
-                         [f'docs/{n}' for n in names[:cap]])
-        # The retry sees all 60 again; the 50 live rows fill the cap, the tail stays deferred.
-        persisted = []
-        compiled = run({}, persisted.append, acked)
-        self.assertEqual(self.queue.read_bytes(), first, 'one wake must not compile more than cap')
-        self.assertEqual(len({r['source']['path'] for r in self.rows(first)}), cap)
-        self.assertEqual(compiled, {'queued': 0, 'deferred': total - cap, 'reason': 'capped',
-                                    'deferredFiles': [('docs', n) for n in names[cap:]],
-                                    'wakePending': True})
-        files = persisted[0]['collections']['docs']['files']
-        self.assertEqual(sorted(files), names[:cap], 'the deferred tail keeps no snapshot entry')
-        self.assertEqual(acked, [compiled])
-        # The wake drains the live queue; the next run picks up exactly the tail.
-        self.drain()
-        persisted.clear()
-        later = run(files, persisted.append, acked)
-        self.assertEqual(later, {'queued': total - cap, 'deferred': 0, 'deferredFiles': [],
-                                 'reason': 'queued'})
-        self.assertEqual([r['source']['path'] for r in self.rows(self.queue.read_bytes())],
-                         [f'docs/{n}' for n in names[cap:]])
-        self.assertEqual(persisted[0]['collections']['docs']['files'], scanned)
-
     def test_oversized_live_queue_falls_back_to_plain_append(self):
         self.assertEqual(E.QUEUE_SCAN_MAX_BYTES, 8 * 1024 * 1024)
         self.enqueue(self.hashed())
@@ -450,41 +369,6 @@ class RevisionCoalescing(ProjectFixture):
         data = self.queue.read_bytes()
         self.assertTrue(data.startswith(oversized), 'existing rows are never rewritten or lost')
         self.assertEqual(data[len(oversized):], live, 'the appended rows match the first run')
-
-    def test_retry_after_enqueue_then_snapshot_failure_queues_once_and_acks(self):
-        docs = self.project / 'docs'
-        scanned = {rel: {'mtimeNs': 1, 'size': 1,
-                         'sha256': hashlib.sha256((docs / rel).read_bytes()).hexdigest()}
-                   for rel in ('a.md', 'b.md')}
-
-        def run(persist, acked):
-            plan = file_change_plan.plan_change_set([('docs', str(docs), {}, scanned, ())])
-            return file_change_plan.apply_change_set(
-                {}, plan['changedFiles'], {'collections': plan['collections']},
-                {'collections': {}}, enqueue_index=None,
-                enqueue_wiki=lambda files: E.enqueue_changed_sources(
-                    str(self.project), self.config, files, session_start=True),
-                persist=persist, ack=acked.append)
-
-        def failing(_snapshot):
-            raise OSError('synthetic snapshot failure')
-        acked = []
-        with self.assertRaises(OSError):
-            run(failing, acked)
-        self.assertEqual(acked, [])
-        first = self.queue.read_bytes()
-        self.assertEqual([r['contentRevision'] for r in self.rows(first)],
-                         [scanned['a.md']['sha256'], scanned['b.md']['sha256']])
-        persisted = []
-        compiled = run(persisted.append, acked)
-        self.assertEqual(self.queue.read_bytes(), first, 'the retry must not queue a second paid job')
-        # Not counted as queued or deferred, but the still-queued rows must be woken.
-        self.assertEqual(compiled, self.SKIPPED_ALL)
-        self.assertTrue(compiled['queued'] or compiled.get('wakePending'),
-                        'the retry must still request the compile kick')
-        # Nothing deferred, so the snapshot advances and the caller may ACK.
-        self.assertEqual(persisted[0]['collections']['docs']['files'], scanned)
-        self.assertEqual(acked, [compiled])
 
     def test_rows_the_worker_already_claimed_are_not_coalesced(self):
         self.enqueue(self.hashed())

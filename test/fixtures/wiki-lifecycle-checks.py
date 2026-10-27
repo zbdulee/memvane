@@ -210,7 +210,7 @@ class WikiLifecycle(unittest.TestCase):
     # --- legacy cards: no `sourceRevisions`, provenance only in `sources:` ---
 
     def frontmatter_revisions(self, card):
-        import recall
+        import wiki_card as recall
         text = card.read_text(encoding='utf-8')
         return recall.frontmatter_source_revisions(text.split('\n---', 1)[0])
 

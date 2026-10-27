@@ -1,6 +1,5 @@
 """Synthetic cross-process compile/verify wiki writer lock contract."""
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -56,47 +55,5 @@ else:
         assert wc.stamp_verification(path=card, status='contested', engine='synthetic', mode='self', body_hash=None)
     assert index.read_text() == 'nested\n'
     assert 'status: contested' in card.read_text()
-    init_root = root / 'init-project'
-    init_root.mkdir()
-    init_env = {**os.environ, 'HOME': str(root / 'isolated-home'),
-                'QMD_BACKEND_STATE_DIR': str(root / 'backend-state'),
-                'QMD_DAEMON_PID': str(root / 'backend-state/daemon.pid'),
-                'QMD_BACKEND_LOG': str(root / 'backend-manager.log')}
-    Path(init_env['HOME']).mkdir()
-    with wl.lock(init_root):
-        init = subprocess.Popen(['bash', 'core/update.sh', '--init-wiki', str(init_root)],
-            cwd=Path.cwd(), env=init_env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True)
-        time.sleep(.35)
-        assert init.poll() is None
-        assert not (init_root / '.auto-context/wiki/SCHEMA.md').exists()
-        assert not (init_root / '.auto-context/settings.json').exists()
-    out, err = init.communicate(timeout=10)
-    assert init.returncode == 0, (out, err)
-    assert (init_root / '.auto-context/wiki/SCHEMA.md').is_file()
-    assert (init_root / '.auto-context/settings.json').is_file()
-    opt_root = root / 'optin-project'
-    opt_root.mkdir()
-    with wl.lock(opt_root):
-        opt = subprocess.Popen(['bash', 'core/update.sh', '--optin', str(opt_root)],
-            cwd=Path.cwd(), env=init_env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True)
-        time.sleep(.25)
-        assert opt.poll() is None
-        assert not (opt_root / '.auto-context/settings.json').exists()
-    out, err = opt.communicate(timeout=10)
-    assert opt.returncode == 0, (out, err)
-    assert (opt_root / '.auto-context/settings.json').is_file()
-    with wl.lock(init_root):
-        enable = subprocess.Popen(['bash', 'core/update.sh', '--enable-compile', str(init_root)],
-            cwd=Path.cwd(), env=init_env, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True)
-        time.sleep(.25)
-        assert enable.poll() is None
-        assert 'compile' not in json.loads((init_root / '.auto-context/settings.json').read_text())
-    out, err = enable.communicate(timeout=10)
-    assert enable.returncode == 0, (out, err)
-    assert 'compile' in json.loads((init_root / '.auto-context/settings.json').read_text())
     print(json.dumps({'compileBlocked': True, 'verifyBlocked': True,
-                      'initWikiBlocked': True, 'optinBlocked': True,
-                      'enableCompileBlocked': True, 'nestedLockReentrant': True}))
+                      'nestedLockReentrant': True}))

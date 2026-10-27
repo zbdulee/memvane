@@ -94,7 +94,7 @@ def _id(hit):
 
 
 def observe(payload, config, project_root, final_results, *, phases=None, verdict=None,
-            candidate_limit=None, qmd_paths=None):
+            candidate_limit=None):
     opts = config.get('contextLearning', {})
     if not isinstance(opts, dict) or opts.get('capture') is not True:
         return 'disabled'
@@ -113,7 +113,7 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
         if state is None:
             return 'unsafe_or_missing_state'
         from .corpus import snapshot as corpus_snapshot
-        current_corpus = corpus_snapshot(root, config, qmd_paths=qmd_paths)
+        current_corpus = corpus_snapshot(root, config)
         indexed_hashes = ({(collection, relative): revision
             for collection, relative, revision in current_corpus['material']['activeDocuments']}
             if current_corpus else {})

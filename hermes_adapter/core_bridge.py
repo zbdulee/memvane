@@ -1,17 +1,15 @@
-"""Bridge Hermes Agent plugin hooks to the existing qmd-auto-context core.
+"""Bridge Hermes Agent plugin hooks to the selected Laya route in core.
 
 This module is intentionally thin: it adapts Hermes hook callback shapes to the
-same JSON payloads used by Claude/Codex/Gemini dispatchers, then delegates to
-core/recall.py, core/update.sh, core/posttool.py, core/index_enqueue.py,
-core/wiki_compile_enqueue.py, and core/preflight_gate.py. qmd backend/config/
-indexing/compile logic stays in core/.
+same JSON payloads used by Claude/Codex dispatchers and hands them to
+core/laya_host_response.py. A project without a selected Laya route gets no
+work; index, recall, compile and learning logic stays in core/.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import subprocess
 import sys
@@ -19,24 +17,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_TIMEOUT = 8.0
-# recall arms core/hook_budget.py (18s default) and keeps working after it
-# prints (learning capture, Top-K expansion, shadow). Hermes kills the child at
-# RECALL_TIMEOUT, so recall must finish its own budget first; the margin covers
-# interpreter startup before arm() and exit.
-RECALL_TIMEOUT = DEFAULT_TIMEOUT
-RECALL_BUDGET_MARGIN = 2.0
-def _plugin_root() -> Path:
-    override = os.environ.get("QMD_HERMES_PLUGIN_ROOT_FOR_TEST")
-    if override:
-        return Path(override).resolve()
-    return Path(__file__).resolve().parents[1]
-
-
-def _core_path(*parts: str) -> Path:
-    return _plugin_root().joinpath(*parts)
-
 
 def _cwd(cwd: Optional[str] = None, **kwargs: Any) -> str:
     candidate = (
@@ -58,9 +38,6 @@ def _env() -> Dict[str, str]:
     env = os.environ.copy()
     env["QMD_ENGINE"] = "hermes"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    if not env.get("QMD_RECALL_LOG"):
-        cache_dir = env.get("QMD_CACHE_DIR") or str(Path.home() / ".cache" / "qmd")
-        env["QMD_RECALL_LOG"] = str(Path(cache_dir) / "qmd-hermes-hook.log")
     return env
 
 
@@ -77,34 +54,6 @@ def _is_noop_env() -> bool:
     )
 
 
-def _setup_allowed(cwd: str) -> bool:
-    try:
-        # This safety check always uses the adapter's own installed core. The
-        # test-only backend root override must not replace the guard itself.
-        guard = Path(__file__).resolve().parent.parent / 'core' / 'setup_guard.py'
-        result = subprocess.run([sys.executable, str(guard),
-                                 'check', cwd], stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=2.0, env=_env(), check=False)
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def _scope_allowed(action: str, payload: dict, raw_cwd: Any) -> bool:
-    """Use the core pilot boundary before any Hermes backend side effect."""
-    try:
-        guard = Path(__file__).resolve().parent.parent / 'core' / 'synthetic_invocation_gate.py'
-        event = {**payload, 'cwd': raw_cwd}
-        result = subprocess.run([sys.executable, str(guard), action, '-', payload.get('cwd') or os.getcwd()],
-                                input=json.dumps(event, ensure_ascii=False), text=True,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=2.0, env=_env(), check=False)
-        return result.returncode == 0
-    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
-        return False
-
-
 def _laya_route_state(action: str, cwd: str) -> str:
     """Read the installed adapter's own selector before any QMD side effect."""
     selector = Path(__file__).resolve().parent.parent / "core" / "laya_index_host_route.py"
@@ -118,101 +67,6 @@ def _laya_route_state(action: str, cwd: str) -> str:
         return state if result.returncode == 0 and state in {"legacy", "candidate", "blocked", "worktree"} else "blocked"
     except (OSError, subprocess.TimeoutExpired):
         return "blocked"
-
-
-def _manager_path() -> str:
-    return os.environ.get("QMD_BACKEND_MANAGER") or str(_core_path("core", "backend_manager.sh"))
-
-
-def _run(
-    argv: list[str],
-    *,
-    payload: Optional[dict] = None,
-    timeout: float = DEFAULT_TIMEOUT,
-    extra_env: Optional[Dict[str, str]] = None,
-) -> subprocess.CompletedProcess[str]:
-    stdin = json.dumps(payload or {}, ensure_ascii=False) if payload is not None else None
-    env = _env()
-    if extra_env:
-        env.update(extra_env)
-    return subprocess.run(
-        argv,
-        input=stdin,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        env=env,
-    )
-
-
-def _recall_budget_env() -> Dict[str, str]:
-    """Bound recall's hook budget below RECALL_TIMEOUT, never above a user's own."""
-    budget = max(RECALL_TIMEOUT - RECALL_BUDGET_MARGIN, 2.0)
-    try:
-        configured = float(os.environ.get("QMD_HOOK_TOTAL_SECONDS", ""))
-    except ValueError:
-        configured = budget
-    if math.isfinite(configured) and 2.0 <= configured < budget:
-        budget = configured
-    return {"QMD_HOOK_TOTAL_SECONDS": f"{budget:g}"}
-
-
-def _run_recall(payload: dict) -> subprocess.CompletedProcess[str]:
-    """Run recall; on timeout keep the context it already flushed."""
-    argv = [sys.executable, str(_core_path("core", "recall.py"))]
-    try:
-        return _run(argv, payload=payload, timeout=RECALL_TIMEOUT,
-                    extra_env=_recall_budget_env())
-    except subprocess.TimeoutExpired as exc:
-        out = exc.stdout or b""
-        if isinstance(out, bytes):
-            out = out.decode("utf-8", errors="replace")
-        # recall prints exactly one JSON line; drop a partial trailing line.
-        complete = out[:out.rfind("\n") + 1] if "\n" in out else ""
-        logger.debug("qmd-auto-context recall timed out; recovered=%s", bool(complete))
-        return subprocess.CompletedProcess(argv, -9, complete, "")
-
-
-def _run_quiet(argv: list[str], *, timeout: float = DEFAULT_TIMEOUT) -> None:
-    try:
-        subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-            env=_env(),
-            check=False,
-        )
-    except Exception as exc:  # pragma: no cover - defensive hook isolation
-        logger.debug("qmd-auto-context manager command failed: %s", exc)
-
-
-def _ensure_background() -> None:
-    if os.environ.get("QMD_QUERY_FIXTURE"):
-        return
-    try:
-        subprocess.Popen(
-            ["bash", _manager_path(), "ensure"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=_env(),
-        )
-    except Exception as exc:  # pragma: no cover - defensive hook isolation
-        logger.debug("qmd-auto-context background ensure failed: %s", exc)
-
-
-def _json_stdout(proc: subprocess.CompletedProcess[str]) -> Optional[dict]:
-    out = (proc.stdout or "").strip()
-    if not out:
-        return None
-    try:
-        parsed = json.loads(out)
-    except json.JSONDecodeError:
-        logger.debug("qmd-auto-context core returned non-json stdout: %r", out[:200])
-        return None
-    return parsed if isinstance(parsed, dict) else None
 
 
 def _result_has_error(result: Any, status: Optional[str] = None) -> bool:
@@ -266,7 +120,7 @@ def recall_context(
     cwd: Optional[str] = None,
     **kwargs: Any,
 ) -> Optional[Dict[str, str]]:
-    """Hermes pre_llm_call hook: inject qmd recall context into this turn."""
+    """Hermes pre_llm_call hook: inject selected Laya recall context into this turn."""
     selected_route = False
     try:
         if _is_noop_env():
@@ -290,27 +144,7 @@ def recall_context(
                                   {"prompt": prompt, "cwd": selected_cwd})
         if route_state != "legacy":
             return {"context": "[laya-index] selected route unavailable; QMD fallback refused"}
-        if not isinstance(prompt, str) or not prompt.strip():
-            return None
-        if not _setup_allowed(_cwd(cwd, **kwargs)):
-            return None
-        payload = {
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": prompt,
-            "cwd": _cwd(cwd, **kwargs),
-        }
-        if not _scope_allowed('recall', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
-            return None
-        _ensure_background()
-        parsed = _json_stdout(_run_recall(payload))
-        if not parsed:
-            return None
-        context = (
-            parsed.get("hookSpecificOutput", {})
-            .get("additionalContext")
-        )
-        if isinstance(context, str) and context.strip():
-            return {"context": context}
+        # Not onboarded: no recall.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context recall hook failed: %s", exc)
         # A selected route must make proof or search failure visible to the host.
@@ -321,13 +155,7 @@ def recall_context(
 
 
 def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
-    """Hermes on_session_start hook: run qmd update through core/update.sh.
-
-    Hermes에는 session-start context 주입 채널이 없어(on_session_start 반환값
-    미사용) update.sh의 stdout notice가 표면화되지 않는다. QMD_SUPPRESS_NOTICE=1로
-    notice 출력·marker 기록을 모두 생략해, Hermes 실행이 TTL marker를 선점해서
-    이후 Claude/Codex 세션의 이상 상태 알림을 삼키는 것을 방지한다.
-    """
+    """Hermes on_session_start hook: queue the selected Laya route's sync wake."""
     selected_route = False
     try:
         if _is_noop_env():
@@ -347,22 +175,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             return None
         if route_state != "legacy":
             logger.warning("laya-index selected route unavailable; QMD fallback refused")
-            return None
-        if not _setup_allowed(_cwd(cwd, **kwargs)):
-            return None
-        payload = {"hook_event_name": "SessionStart", "cwd": _cwd(cwd, **kwargs)}
-        if not _scope_allowed('update', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
-            return None
-        manager = _manager_path()
-        _run_quiet(["bash", manager, "ensure", "--wait"])
-        _run_quiet(["bash", manager, "warm"])
-        _run_quiet(["bash", manager, "rotate"])
-        _run(
-            ["bash", str(_core_path("core", "update.sh"))],
-            payload=payload,
-            timeout=30.0,
-            extra_env={"QMD_SUPPRESS_NOTICE": "1"},
-        )
+        # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context session update failed: %s", exc)
         if selected_route:
@@ -375,7 +188,7 @@ def pre_edit_gate(
     cwd: Optional[str] = None,
     **kwargs: Any,
 ) -> Optional[Dict[str, str]]:
-    """Hermes pre_tool_call hook: translate qmd pending-project gate to block."""
+    """Hermes pre_tool_call hook: translate the selected route's edit gate to block."""
     selected_route = False
     try:
         if _is_noop_env():
@@ -402,25 +215,7 @@ def pre_edit_gate(
             return {"action": "block", "message": "Laya Index gate failed; QMD fallback refused"}
         if route_state != "legacy":
             return {"action": "block", "message": "Laya Index route unavailable; QMD fallback refused"}
-        if not _setup_allowed(_cwd(cwd, **kwargs)):
-            return None
-        core_tool, tool_input = mapped
-        payload = {
-            "hook_event_name": "PreToolUse",
-            "tool_name": core_tool,
-            "tool_input": tool_input,
-            "cwd": _cwd(cwd, **kwargs),
-        }
-        if not _scope_allowed('gate', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
-            return None
-        proc = _run([sys.executable, str(_core_path("core", "preflight_gate.py"))], payload=payload)
-        parsed = _json_stdout(proc)
-        if not parsed:
-            return None
-        hook_out = parsed.get("hookSpecificOutput", {})
-        if hook_out.get("permissionDecision") == "deny":
-            reason = hook_out.get("permissionDecisionReason") or "qmd-auto-context blocked this edit"
-            return {"action": "block", "message": str(reason)}
+        # Not onboarded: the edit is not gated.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context pre-edit gate failed: %s", exc)
         if selected_route:
@@ -436,12 +231,10 @@ def post_edit_sync(
     cwd: Optional[str] = None,
     **kwargs: Any,
 ) -> None:
-    """Hermes post_tool_call hook: run post-edit hint path and enqueue indexing.
+    """Hermes post_tool_call hook: the selected route's posttool and index wake.
 
-    Hermes post_tool_call return values are observer-only, so posttool output is
-    intentionally not returned or claimed as injected. Dirty-queue indexing is
-    still performed via core/index_enqueue.py. Automatic wiki compile source
-    queueing is observer-only as well and delegates to core/wiki_compile_enqueue.py.
+    Hermes post_tool_call return values are observer-only, so nothing is
+    returned or claimed as injected.
     """
     selected_route = False
     try:
@@ -471,26 +264,7 @@ def post_edit_sync(
             return None
         if route_state != "legacy":
             logger.warning("laya-index selected route unavailable; QMD fallback refused")
-            return None
-        if not _setup_allowed(_cwd(cwd, **kwargs)):
-            return None
-        core_tool, tool_input = mapped
-        payload = {
-            "hook_event_name": "PostToolUse",
-            "tool_name": core_tool,
-            "tool_input": tool_input,
-            "cwd": _cwd(cwd, **kwargs),
-        }
-        if not _scope_allowed('posttool', payload, cwd or kwargs.get('cwd') or kwargs.get('working_directory')):
-            return None
-        manager = _manager_path()
-        payload_cwd = payload["cwd"]
-        _run_quiet(["bash", manager, "ensure", "--wait"])
-        _run([sys.executable, str(_core_path("core", "posttool.py"))], payload=payload)
-        _run([sys.executable, str(_core_path("core", "index_enqueue.py"))], payload=payload)
-        _run_quiet(["bash", manager, "kick-index"])
-        _run([sys.executable, str(_core_path("core", "wiki_compile_enqueue.py"))], payload=payload)
-        _run_quiet(["bash", manager, "kick-wiki-compile", str(payload_cwd)])
+        # Not onboarded: no index or compile work.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("qmd-auto-context post-edit sync failed: %s", exc)
         if selected_route:

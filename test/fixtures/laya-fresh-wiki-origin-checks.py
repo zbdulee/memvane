@@ -126,11 +126,8 @@ class FreshWikiChecks(unittest.TestCase):
     def selection(self):
         return fresh.classify_marker(self.project, self.marker, self.route)
 
-    def test_explicit_plan_never_resolves_an_old_qmd_store(self):
-        import qmd_route
-        with mock.patch.object(qmd_route, 'project_paths',
-                               side_effect=AssertionError('old QMD store read')):
-            plan = product.plan_fresh_wiki_origin(self.project)
+    def test_explicit_plan_is_wiki_only(self):
+        plan = product.plan_fresh_wiki_origin(self.project)
         self.assertEqual(plan['mode'], 'fresh_wiki_only')
         self.assertNotIn('sourceDb', plan)
         self.assertEqual(plan['collections'], self.collections)

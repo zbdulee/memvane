@@ -1,83 +1,33 @@
-"""Read-only QMD corpus fingerprint and immutable review-queue reconciliation.
+"""Read-only corpus fingerprint and immutable review-queue reconciliation.
 
-Only QMD's active document IDs/hashes and search settings are read. This does
-not read private source bodies, issue a search, or call a teacher/model.
+Only the selected Laya index's active document IDs/hashes and search settings
+are read. This does not read private source bodies, issue a search, or call a
+teacher/model.
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-from pathlib import Path
-import sqlite3
-import qmd_route
-import sqlite_read
 
-from .contracts import digest
 from .store import canonical, database
 
 MAX_DOCUMENTS = 50000
 
 
-def snapshot(project_root, config, *, qmd_paths=None):
+def snapshot(project_root, config):
     """Return a complete active-index snapshot or None, never a guessed hash.
 
-    A project on a selected Laya route is fingerprinted from laya-db only
-    (``laya_learning.corpus_snapshot``); an unverifiable selected route
-    returns None and never reads QMD. An explicit ``qmd_paths`` is the
-    legacy QMD recall caller.
+    Only a project on a selected Laya route has an index; it is fingerprinted
+    from laya-db (``laya_learning.corpus_snapshot``). Anything else, or an
+    unverifiable selected route, returns None.
     """
-    if qmd_paths is None:
-        try:
-            from . import laya_learning
-            bound = laya_learning.selected(project_root)
-        except Exception:
-            return None
-        if bound is not None:
-            return laya_learning.corpus_snapshot(project_root, config, decision=bound[0])
     try:
-        root = Path(project_root).resolve(strict=True)
-        if not root.is_dir() or not isinstance(config, dict):
-            return None
-        names = sorted(set(config.get('collections', [])))
-        if not names or len(names) > 32 or any(not isinstance(n, str) or not n for n in names):
-            return None
-        route = qmd_paths if qmd_paths is not None else qmd_route.project_paths(root)
-        if route.get('shared') is True:
-            import qmd_shared_store
-            if not set(names).issubset(qmd_shared_store.owned_collections(root, config)):
-                return None
-        db_path = Path(route['INDEX_PATH'])
-        if db_path is None or not db_path.is_file() or db_path.is_symlink():
-            return None
-        with sqlite_read.connect(db_path, timeout=.2) as db:
-            placeholders = ','.join('?' for _ in names)
-            cursor = db.execute(
-                f'SELECT collection,path,hash FROM documents WHERE active=1 '
-                f'AND collection IN ({placeholders}) ORDER BY collection,path', names)
-            docs = cursor.fetchmany(MAX_DOCUMENTS + 1)
-        if len(docs) > MAX_DOCUMENTS or any(
-                not isinstance(c, str) or not isinstance(p, str) or not isinstance(h, str)
-                or len(h) != 64 for c, p, h in docs):
-            return None
-        qmd_settings = Path(route['QMD_CONFIG_DIR']) / 'index.yml'
-        if not qmd_settings.is_file() or qmd_settings.is_symlink() or qmd_settings.stat().st_size > 65536:
-            return None
-        qmd_config_sha = hashlib.sha256(qmd_settings.read_bytes()).hexdigest()
-        policy = {key: config.get(key) for key in (
-            'collections', 'collectionPaths', 'collectionRoles', 'recallStrategy',
-            'minScore', 'rawFallbackMinScore', 'skipPaths', 'lexicalPatterns',
-            'topN', 'excludeStatusesFromRecall', 'recallVerifiedOnly',
-            'contextLearning')}
-        material = {'schema': 'qmd-corpus-snapshot-v1', 'projectRoot': str(root),
-                    'policy': policy, 'qmdConfigSha256': qmd_config_sha,
-                    'runtimeGeneration': route.get('generation'),
-                    'activeDocuments': [list(row) for row in docs]}
-        return {'fingerprint': digest(canonical(material)), 'material': material,
-                'activeDocuments': len(docs)}
-    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+        from . import laya_learning
+        bound = laya_learning.selected(project_root)
+    except Exception:
         return None
-
+    if bound is None:
+        return None
+    return laya_learning.corpus_snapshot(project_root, config, decision=bound[0])
 
 def reconcile(state_dir, current):
     """Queue old candidate pools for human review; never rewrite their samples."""

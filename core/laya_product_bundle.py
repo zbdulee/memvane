@@ -41,7 +41,6 @@ ARTIFACTS = (
     'laya_index_capacity.py',
     'laya_vector_capacity.py',
     'laya_index_host_route.py',
-    'laya_owner_projection.py',
     'laya_initial_build.py',
     'laya_package.py',
     'laya_product_bundle.py',
@@ -544,7 +543,6 @@ def _plugin_paths(source, commit_id):
                  'core/laya_local_embed_worker.mjs',
                  'core/laya_qmd_chunking.mjs',
                  'core/laya_index_host_route.py', 'core/laya_host_response.py',
-                 'core/laya_owner_projection.py',
                  'core/laya_initial_build.py',
                  'core/laya_product_sync_worker.py',
                  'core/laya_index_sync.py',
@@ -553,8 +551,7 @@ def _plugin_paths(source, commit_id):
                  'core/laya_product_install.py',
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
                  'hermes_adapter/core_bridge.py', 'plugin.yaml',
-                 'LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
-                 'locks/qmd-2.5.3/package-lock.json',
+                 'LICENSE', 'README.md',
                  '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(selected)):
         _fail('incomplete_plugin_commit')
     return {name: paths[name] for name in selected}
@@ -867,7 +864,6 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_local_embed_worker.mjs',
              'core/laya_qmd_chunking.mjs',
              'core/laya_index_host_route.py', 'core/laya_host_response.py',
-             'core/laya_owner_projection.py',
              'core/laya_initial_build.py',
              'core/laya_product_sync_worker.py',
              'core/laya_index_sync.py',
@@ -876,8 +872,7 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_product_install.py',
              'core/laya_product_bundle.py', 'core/laya_install_journal.py',
              'hermes_adapter/core_bridge.py', 'plugin.yaml',
-             'LICENSE', 'README.md', 'locks/qmd-2.5.3/package.json',
-             'locks/qmd-2.5.3/package-lock.json',
+             'LICENSE', 'README.md',
              '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(expected_files) or
             any(Path(name).is_absolute() or '..' in Path(name).parts or
                 '.git' in Path(name).parts or '.laya-product' in Path(name).parts or

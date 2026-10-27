@@ -313,8 +313,8 @@ def gather_similar_pages(
     """Fail-open lookup of the top-K existing wiki pages most similar to `content`.
 
     Returns full page bodies (capped at cap_chars) for grounding the extractor prompt, or
-    None if semantic dedup is disabled, no wiki collection is configured, the daemon/fixture
-    query failed, or nothing scored above compile.semanticDedup.threshold.
+    None if semantic dedup is disabled, no wiki collection is configured, the project has
+    no selected Laya route, or nothing matched.
     """
     semantic_cfg = compile_cfg.get("semanticDedup") if isinstance(compile_cfg.get("semanticDedup"), dict) else {}
     if not semantic_cfg.get("enabled", True):
@@ -330,35 +330,8 @@ def gather_similar_pages(
         return [{"path": path.relative_to(root).as_posix(),
                  "score": score, "content": body}
                 for path, score, body in rows] or None
-    import qmd_endpoint
-    daemon_url = qmd_endpoint.optional_url()
-    timeout = float(config.get("queryTimeout", 5.0) or 5.0)
-    results = wc.query_wiki_similar(daemon_url, collection, content, top_k, timeout)
-    if not results:
-        return None
-    threshold = qmd_config.DEDUP_SCORE_THRESHOLD
-    pages = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        score = result.get("score", 0)
-        if not isinstance(score, (int, float)) or score < threshold:
-            continue
-        path = wc.resolve_daemon_result_path(root, wiki_root, result.get("file", ""), collection)
-        if path is None:
-            continue
-        try:
-            body = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        pages.append({
-            "path": path.relative_to(root).as_posix(),
-            "score": score,
-            "content": body[:cap_chars],
-        })
-        if len(pages) >= top_k:
-            break
-    return pages or None
+    # Only a selected Laya index answers similarity.
+    return None
 
 
 def bounded_failure(action: str, job: dict, reason: str) -> dict:
@@ -1385,13 +1358,13 @@ def main():
 
     if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
         return 0
-    import setup_guard
-    if setup_guard.status(args.cwd)['status'] != 'ready':
-        return 0
     found = qmd_config.find_project_config(args.cwd)
     root = Path(found["projectRoot"]).resolve()
     import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
+    # Only a selected Laya route compiles; synthetic fixtures stand in for one.
+    if selected_route is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+        return 0
     config = found["config"]
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):

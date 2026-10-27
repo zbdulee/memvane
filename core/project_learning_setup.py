@@ -630,10 +630,10 @@ def recover(project,root):
     root=Path(root)
     previous=read_private_json(_path(root/NAME,private=True))
     project,root=_namespace(project,root,mode=previous.get('plan',{}).get('mode','default'))
-    import install_update
+    import settings_lock
     # Match activation's lock order: namespace first, then the shared project
     # writer lock. Keep both through verification and every restoration write.
-    with _locked(root), install_update._locked(project):
+    with _locked(root), settings_lock.locked(project):
         journal=read_private_json(_path(root/NAME,private=True))
         if journal.get('schema')!=SCHEMA or journal.get('plan',{}).get('projectRoot')!=str(project) or journal['plan'].get('namespaceRoot')!=str(root):
             raise ValueError('setup_recovery_invalid')

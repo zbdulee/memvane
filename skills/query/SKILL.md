@@ -1,16 +1,16 @@
 ---
 name: query
-description: Use when the user asks to manually query, search, recall, or look up project docs via qmd auto-context — e.g. "qmd 검색", "문서에서 찾아줘", "recall this", "look up in notes". Runs the read-only QMD recall path (core/recall.py) without the UserPromptSubmit hook's Laya route classification and honors .auto-context/settings.json opt-in. Read-only — never edits files. Prefer this over calling the qmd daemon directly.
+description: Use when the user asks to manually query, search, recall, or look up project docs via auto-context — e.g. "문서에서 찾아줘", "auto-context 검색", "recall this", "look up in notes". Runs the same Laya recall hook a prompt uses, against the project's selected Laya index. Read-only — never edits files.
 ---
 
 # Query
 
-Run a manual qmd auto-context recall query for the current project.
+Run a manual auto-context recall query for the current project.
 
 ## Workflow
 
 1. Confirm the target cwd and query text.
-2. Resolve the plugin root: the directory where the qmd-auto-context plugin is installed, which differs from the target project (`$PWD`). Use the env var the hooks already set; the git-toplevel fallback is correct only inside a qmd-auto-context checkout. The wrapper itself derives the plugin root from its own location:
+2. Resolve the plugin root: the directory where the plugin is installed, which differs from the target project (`$PWD`). Use the env var the hooks already set; the git-toplevel fallback is correct only inside a plugin checkout. The wrapper itself derives the plugin root from its own location:
 
    ```bash
    ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"
@@ -21,15 +21,10 @@ Run a manual qmd auto-context recall query for the current project.
    bash "$ROOT/skills/query/scripts/query.sh" "$PWD" "question or keywords"
    ```
 
-4. If qmd is missing or unsupported, report the wrapper's pinned install guidance instead of querying directly.
-5. Report the returned context or say that recall returned no context.
+4. Report the returned context or say that recall returned no context.
 
 ## Safety
 
-- Do not bypass `.auto-context/settings.json` opt-in.
-- Do not auto-install qmd. The wrapper checks the plugin-tested qmd version and prints install guidance when needed.
-- Do not query qmd directly unless debugging the wrapper.
+- The wrapper answers only for a selected Laya route (or a linked git worktree of a selected main checkout, read-only). A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- A selected route whose proof fails exits 3; report the reason and do not search another way.
 - Preserve empty output as a valid no-result state.
-- The wrapper ensures the plugin-managed backend before recall.
-- The wrapper runs the QMD recall path via `core/recall.py`. It does not perform the hook's Laya route classification.
-- In a linked git worktree of a project whose main checkout has a selected Laya route, the wrapper serves that checkout's published index read-only through the recall hook instead.

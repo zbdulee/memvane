@@ -234,7 +234,7 @@ def _plugin_overrides():
         source = Path(matches[0]["source"]["path"])
         for relative in ("core/context_learning/synthetic_launcher.py",
                          "core/context_learning/synthetic_scope.py",
-                         "core/recall.py", "hooks/run-hook",
+                         "core/laya_host_response.py", "hooks/run-hook",
                          ".codex-plugin/plugin.json", "hooks/hooks-codex.json"):
             if (hashlib.sha256((plugin / relative).read_bytes()).digest()
                     != hashlib.sha256((source / relative).read_bytes()).digest()):
@@ -1068,25 +1068,18 @@ def _dispatch_edit_hook(project, relative, *, deleted=False):
 
 
 def _indexed_revision(project, source_id, source_sha):
-    """A counted query may start only after QMD sees the exact card bytes."""
-    import qmd_route
-    import sqlite_read
+    """A counted query may start only after an index sees the exact card bytes.
+
+    The synthetic story index was an isolated QMD index; no index serves it,
+    so the card is never acknowledged.
+    """
     collection, separator, relative = source_id.partition("/")
     if collection != WIKI_COLLECTION or not separator or "/" in relative:
         raise ValueError("synthetic_query_source_invalid")
     path = f".auto-context/wiki/{relative}"
     if hashlib.sha256(snapshot_beneath(project, path)).hexdigest() != source_sha:
         raise ValueError("synthetic_query_source_changed")
-    try:
-        selected = qmd_route.project_paths(str(project.parent), isolated=True,
-                                           reject_conflicts=True)
-        with sqlite_read.connect(selected["INDEX_PATH"], timeout=1) as index:
-            row = index.execute(
-                "SELECT hash FROM documents WHERE collection=? AND path=? AND active=1",
-                (collection, relative)).fetchone()
-        return row is not None and row[0] == source_sha
-    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
-        return False
+    return False
 
 
 def _delete_generated(project, relative, prior_sha):

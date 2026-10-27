@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# qmd auto-context 공통 hook 디스패처.
+# auto-context 공통 hook 디스패처.
 # usage: run-hook <action> <engine> [--sandbox]
 #   action: recall | update | update-queued | posttool | index | compile | gate
 #   topical-event | topical-stop | topical-reconcile | file-change-event
 #   engine: claude | codex | gemini
-# 플러그인 루트는 CLAUDE_PLUGIN_ROOT/PLUGIN_ROOT(있으면) 또는 스크립트 위치(dirname)로 결정.
+# 모든 action은 이벤트 cwd의 Laya route를 먼저 분류한다. 선택된 route만
+# core/laya_host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
+# 작업도 하지 않는다(SessionStart에서만 온보딩 안내 한 줄).
 set -u
 
 ACTION="${1:-}"
@@ -22,8 +24,8 @@ case " $* " in *" --sandbox "*) _qmd_sandbox=1 ;; esac
 [ -n "${QMD_SANDBOX:-}" ] && _qmd_sandbox=1
 case "$ENGINE" in
   claude) { [ "${CLAUDE_HEADLESS:-}" = "1" ] || [ -n "${CLAUDE_SANDBOX:-}" ]; } && _qmd_sandbox=1 ;;
-  # Normal Codex workspace-write runs set CODEX_SANDBOX; the pending-project
-  # edit gate must still deny there. Nested extractor isolation is QMD_SANDBOX.
+  # Normal Codex workspace-write runs set CODEX_SANDBOX; the selected-project
+  # edit gate must still answer there. Nested extractor isolation is QMD_SANDBOX.
   codex)  [ -n "${CODEX_SANDBOX:-}" ] && [ "$ACTION" != "gate" ] && _qmd_sandbox=1 ;;
   gemini) [ -n "${GEMINI_SANDBOX:-}" ] && _qmd_sandbox=1 ;;
 esac
@@ -32,233 +34,66 @@ if [ "$_qmd_sandbox" = 1 ]; then
   exit 0
 fi
 
+case "$ACTION" in
+  recall|update|update-queued|gate|posttool|index|compile|file-change-event|topical-event|topical-stop|topical-reconcile) ;;
+  *) echo "run-hook: unknown action '$ACTION'" >&2; exit 1 ;;
+esac
+
 # The installed plugin is re-attested as an exact commit during setup. Python
 # imports from this writable host cache must never add __pycache__ files.
 export PYTHONDONTWRITEBYTECODE=1
 
-# 1) 플러그인 루트 결정 — 변수 우선, 없으면 스크립트 위치 기준(hooks/run-hook → 루트)
-ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"
-if [ -z "$ROOT" ]; then
-  ROOT="$(cd "$(dirname "$0")/.." && pwd)" || { echo "run-hook: cannot resolve plugin root" >&2; exit 1; }
-fi
 _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 
-# A route record is sticky. Check the event's cwd before QMD setup/backend;
-# selected recall enters only the installer-verified A-int service. Other
-# selected actions explicitly fail until they have engine equivalents.
+# A route record is sticky. Classify the event's own cwd first; a selected
+# route enters only the installer-verified Laya service.
+_laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[laya-index] route lookup unavailable' >&2; exit 3; }
+trap 'rm -f "$_laya_route_payload"' EXIT
+cat >"$_laya_route_payload" || { echo '[laya-index] route payload unavailable' >&2; exit 3; }
+_laya_route_fallback="$PWD"
 case "$ACTION" in
-  recall|update|update-queued|gate|posttool|index|compile|file-change-event|topical-event|topical-stop|topical-reconcile)
-    _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[laya-index] route lookup unavailable' >&2; exit 3; }
-    trap 'rm -f "$_laya_route_payload"' EXIT
-    cat >"$_laya_route_payload" || { echo '[laya-index] route payload unavailable' >&2; exit 3; }
-    _laya_route_fallback="$PWD"
-    case "$ACTION" in
-      topical-*) _laya_route_fallback="${QMD_TOPICAL_PROJECT_ROOT:-${QMD_TOPICAL_SANDBOX_ROOT:-$PWD}}" ;;
-    esac
-    _laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
-    case "$_laya_route_state" in
-      legacy)
-        exec <"$_laya_route_payload"
-        rm -f "$_laya_route_payload"
-        trap - EXIT
-        ;;
-      candidate|preview|worktree)
-        # worktree (linked git worktree of a selected main checkout) serves a
-        # published generation read-only.
-        # Replace this shell with the synchronous writer/query process. A host
-        # timeout then kills the work itself, not a waiting shell with an
-        # orphaned Python child. The open stdin fd survives unlinking.
-        exec <"$_laya_route_payload"
-        rm -f "$_laya_route_payload" || { echo '[laya-index] route payload cleanup failed' >&2; exit 3; }
-        trap - EXIT
-        exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
-          "$ACTION" "$ENGINE" "$_laya_route_fallback"
-        ;;
-      blocked)
-        echo '[laya-index] selected route unavailable; QMD fallback refused' >&2
-        [ "$ACTION" = "topical-stop" ] && printf '{}\n'
-        exit 3
-        ;;
-      *) echo '[laya-index] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
-    esac
-    ;;
+  topical-*) _laya_route_fallback="${QMD_TOPICAL_PROJECT_ROOT:-${QMD_TOPICAL_SANDBOX_ROOT:-$PWD}}" ;;
 esac
-
-# A fresh installed SessionStart may acknowledge an owner-requested history
-# cutover. It never selects history or touches project content.
-if [ "$ACTION" = "update-queued" ]; then
-  python3 "$_qmd_code_root/core/context_learning_host_ack.py" "$ENGINE" \
-    >/dev/null 2>&1 || true
-fi
-
-# Local trial installs may ship this marker to keep existing auto-wiki projects
-# from sending source text to a model. It does not affect manual skills.
-[ -f "$ROOT/.qmd-local-auto-compile-disabled" ] && export QMD_AUTO_COMPILE_DISABLED=1
-
-# A local trial may supply only validated data assignments, never shell code.
-_qmd_runtime_file="$ROOT/.qmd-local-runtime.env"
-if [ -e "$_qmd_runtime_file" ] || [ -L "$_qmd_runtime_file" ]; then
-  _qmd_parser="$(cd "$(dirname "$0")/.." && pwd)/core/local_runtime_env.py"
-  if ! _qmd_assignments="$(python3 "$_qmd_parser" "$_qmd_runtime_file")"; then
-    exit 0
-  fi
-  while IFS= read -r _qmd_assignment; do
-    [ -n "$_qmd_assignment" ] && export "$_qmd_assignment"
-  done <<< "$_qmd_assignments"
-fi
-
-# Host hooks other than SessionStart stop before backend/model/index work while
-# an existing project needs explicit setup. Preserve stdin for the chosen core
-# action; the private temporary name is removed before dispatch/exec.
-if [ "$ACTION" != "update-queued" ]; then
-  _qmd_payload_file="$(mktemp "${TMPDIR:-/tmp}/qmd-hook-payload.XXXXXXXX")" || exit 0
-  trap 'rm -f "$_qmd_payload_file"' EXIT
-  cat >"$_qmd_payload_file" || exit 0
-  if [ "$ACTION" = "topical-stop" ] && [ "$ENGINE" = "claude" ]; then
-    # Ordinary opted-in projects do not require the separate topical pilot.
-    # Only wake the durable file-state job; no scan/QMD/model work in Stop.
-    QMD_ENGINE="$ENGINE" python3 "$_qmd_code_root/core/file_change_queue.py" boundary \
-      <"$_qmd_payload_file" >/dev/null 2>&1 || true
-  fi
-  case "$ACTION" in
-    topical-event|topical-stop|topical-reconcile)
-      if ! _qmd_topical_root="$(python3 "$_qmd_code_root/core/setup_guard.py" hook-root "$ACTION" "$_qmd_payload_file" "$PWD" 2>/dev/null)"; then
-        [ "$ACTION" = "topical-stop" ] && printf '{}\n'
-        exit 0
+_laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
+case "$_laya_route_state" in
+  legacy)
+    # No selected route: the project is not onboarded and gets no index,
+    # recall, compile or learning work. SessionStart names onboarding once.
+    if [ "$ACTION" = "update-queued" ]; then
+      # A fresh installed SessionStart may acknowledge an owner-requested
+      # history cutover. It never selects history or touches project content.
+      python3 "$_qmd_code_root/core/context_learning_host_ack.py" "$ENGINE" \
+        >/dev/null 2>&1 || true
+      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" onboarding-notice \
+        "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
+      if [ -n "$_laya_notice" ]; then
+        if [ "$ENGINE" = codex ]; then
+          # Codex reads SessionStart stdout as one event-shaped JSON object.
+          printf '%s' "$_laya_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
+        else
+          printf '%s\n' "$_laya_notice"
+        fi
       fi
-      ;;
-    *)
-      if ! python3 "$_qmd_code_root/core/setup_guard.py" hook "$ACTION" "$_qmd_payload_file" "$PWD" >/dev/null 2>&1; then
-        exit 0
-      fi
-      # Stop before backend ensure/kick as well as before the per-action core
-      # guard. The inherited novel-root settings belong to one generated story.
-      if ! python3 "$_qmd_code_root/core/synthetic_invocation_gate.py" \
-          "$ACTION" "$_qmd_payload_file" "$PWD" >/dev/null 2>&1; then
-        exit 0
-      fi
-      ;;
-  esac
-  exec <"$_qmd_payload_file"
-  rm -f "$_qmd_payload_file"
-  trap - EXIT
-fi
-
-# The validated host cwd/config binds ordinary hooks to a selected project.
-# Explicit sandbox roots remain accepted by setup_guard for isolated fixtures.
-case "$ACTION" in
-  topical-event|topical-stop|topical-reconcile)
-    case "$ACTION" in
-      topical-event) topical_action=event ;;
-      topical-stop) topical_action=boundary ;;
-      *) topical_action=reconcile ;;
-    esac
-    if [ "$ACTION" = "topical-event" ]; then
-      if [ -f "$_qmd_topical_root/.topical-reconcile-hook.json" ]; then
-        python3 "$ROOT/core/wiki_topical_reconcile.py" "$topical_action" \
-          --root "$_qmd_topical_root" \
-          --settings-json "$_qmd_topical_root/.topical-reconcile-hook.json" >/dev/null || exit $?
-      fi
-    else
-      # Full source scans and model/QMD work are durable jobs. Stop records
-      # only the turn key, never the assistant message or source body.
-      python3 "$ROOT/core/topical_hook_queue.py" "$topical_action" "$_qmd_topical_root" >/dev/null || true
     fi
-    # Stop requires JSON output. No hook action exposes source paths or queue
-    # internals to the model; the durable state is the handoff.
     [ "$ACTION" = "topical-stop" ] && printf '{}\n'
     exit 0
     ;;
-esac
-
-# 2) engine 라벨 + 로그 경로 기본값
-# 기본 로그는 유저 격리 경로($HOME/.cache/qmd, backend_manager의 MANAGER_LOG/DAEMON_LOG와 동일 베이스).
-# 예측가능한 /tmp 경로는 멀티유저 symlink 선점 클래스 문제라 기본값에서 제거한다.
-# QMD_RECALL_LOG override는 반드시 유지(테스트가 주입한다).
-export QMD_ENGINE="$ENGINE"
-_QMD_HOOK_LOG_DIR="${QMD_CACHE_DIR:-$HOME/.cache/qmd}"
-mkdir -p "$_QMD_HOOK_LOG_DIR" 2>/dev/null || true
-: "${QMD_RECALL_LOG:=$_QMD_HOOK_LOG_DIR/qmd-${ENGINE}-hook.log}"
-export QMD_RECALL_LOG
-
-# 4) action → backend lifecycle + core 위임
-MANAGER="${QMD_BACKEND_MANAGER:-$ROOT/core/backend_manager.sh}"
-
-case "$ACTION" in
-  file-change-event)
-    exec python3 "$ROOT/core/file_change_queue.py" event
+  candidate|preview|worktree)
+    # worktree (linked git worktree of a selected main checkout) serves a
+    # published generation read-only.
+    # Replace this shell with the synchronous writer/query process. A host
+    # timeout then kills the work itself, not a waiting shell with an
+    # orphaned Python child. The open stdin fd survives unlinking.
+    exec <"$_laya_route_payload"
+    rm -f "$_laya_route_payload" || { echo '[laya-index] route payload cleanup failed' >&2; exit 3; }
+    trap - EXIT
+    exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
+      "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
-  update-queued)
-    # Codex can interpret a leading "[qmd]" notice as malformed JSON. Collect
-    # every notice into one event-shaped object; Claude keeps its text output.
-    _qmd_session_notice="$(QMD_BACKEND_MANAGER="$MANAGER" python3 "$ROOT/core/update_hook_queue.py" enqueue 2>/dev/null)" || true
-    if [ -n "$_qmd_session_notice" ]; then
-      if [ "$ENGINE" = codex ]; then
-        printf '%s' "$_qmd_session_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
-      else
-        printf '%s\n' "$_qmd_session_notice"
-      fi
-    fi
-    exit 0
+  blocked)
+    echo '[laya-index] selected route unavailable; QMD fallback refused' >&2
+    [ "$ACTION" = "topical-stop" ] && printf '{}\n'
+    exit 3
     ;;
-  recall)
-    if [ -z "${QMD_QUERY_FIXTURE:-}" ]; then
-      bash "$MANAGER" ensure >/dev/null 2>&1 &
-    fi
-    exec python3 "${QMD_CORE_RECALL_SCRIPT:-$ROOT/core/recall.py}"
-    ;;
-  update)
-    # backend lifecycle(ensure/warm/rotate)는 백그라운드로 — SessionStart를 블록하지 않는다.
-    # 과거: `ensure --wait`가 데몬 미응답 시 wait_health(최대 ~30s)로 SessionStart를 동기 블록했다.
-    # 데몬 기동은 start_daemon이 nohup으로 비동기 처리하고, update core(update.sh main)도
-    # worker를 nohup으로 fork 후 즉시 종료하므로 데몬 준비를 동기 대기할 이유가 없다.
-    # (recall 액션과 동일하게 backend 준비는 off-critical-path로 둔다.)
-    {
-      bash "$MANAGER" ensure
-      bash "$MANAGER" warm
-      bash "$MANAGER" rotate
-    } >/dev/null 2>&1 </dev/null &
-    QMD_BACKEND_MANAGER="$MANAGER" exec bash "${QMD_CORE_UPDATE_SCRIPT:-$ROOT/core/update.sh}"
-    ;;
-  posttool)
-    bash "$MANAGER" ensure >/dev/null 2>&1 </dev/null &
-    exec python3 "${QMD_CORE_POSTTOOL_SCRIPT:-$ROOT/core/posttool.py}"
-    ;;
-  index)
-    # compile 액션과 달리 payload를 한 번만(index_enqueue.py로) 넘기므로
-    # tmp 버퍼링 없이 stdin을 직접 파이프한다(recall/posttool/gate와 동일 패턴).
-    python3 "${QMD_CORE_INDEX_SCRIPT:-$ROOT/core/index_enqueue.py}" >/dev/null 2>&1 || true
-    bash "$MANAGER" kick-index >/dev/null 2>&1 || true
-    exit 0
-    ;;
-  compile)
-    [ -n "${QMD_AUTO_COMPILE_DISABLED:-}" ] && exit 0
-    tmp="$(mktemp 2>/dev/null || true)"
-    if [ -z "$tmp" ]; then
-      cat >/dev/null 2>&1 || true
-      exit 0
-    fi
-    if ! cat >"$tmp" 2>/dev/null; then
-      rm -f "$tmp"
-      exit 0
-    fi
-    payload_cwd="$(python3 - "$tmp" <<'PY' 2>/dev/null || true
-import json
-import sys
-try:
-    with open(sys.argv[1], 'r', encoding='utf-8') as handle:
-        payload = json.load(handle)
-    cwd = payload.get('cwd') if isinstance(payload, dict) else ''
-    print(cwd if isinstance(cwd, str) else '')
-except Exception:
-    print('')
-PY
-)"
-    python3 "${QMD_CORE_COMPILE_ENQUEUE_SCRIPT:-$ROOT/core/wiki_compile_enqueue.py}" <"$tmp" >/dev/null 2>&1 || true
-    rm -f "$tmp"
-    [ -n "$payload_cwd" ] && bash "$MANAGER" kick-wiki-compile "$payload_cwd" >/dev/null 2>&1 || true
-    exit 0
-    ;;
-  gate)     exec python3 "$ROOT/core/preflight_gate.py" ;;
-  *) echo "run-hook: unknown action '$ACTION'" >&2; exit 1 ;;
+  *) echo '[laya-index] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
 esac

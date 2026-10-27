@@ -48,7 +48,7 @@ except OSError:
 def _approved(root, story):
     """Separate owner-held real-edit enrollment; config opt-in is insufficient."""
     private = shared_for(root)
-    approval = Path.home() / '.config/qmd/real-edit-approval/current.json'
+    approval = Path.home() / '.config/laya/real-edit-approval/current.json'
     if approval.is_symlink() or not approval.is_file():
         raise ValueError('edit_approval_missing')
     owner = approval.parent.stat()

@@ -7,25 +7,6 @@ function kw(prompt, patterns = []) {
   return JSON.parse(out); // { keywords: [...], identifiers: [...], lexicalTerms: [...] }
 }
 
-// recall.py(훅 경로)가 실제로 데몬에 보내는 lex 쿼리를 회수한다. CLI와 정책을 공유하는지
-// (build_lexical_terms 단일화) 확인하려면 문자열 추출만으로는 부족하다.
-function recallSearches(prompt, settings) {
-  const out = execFileSync('python3', ['test/helpers/capture_query.py', prompt, JSON.stringify(settings)], { encoding: 'utf8' });
-  const { queries } = JSON.parse(out);
-  assert.equal(queries.length, 1, 'stub 데몬이 정확히 한 번 질의를 받아야 한다');
-  return queries[0].searches;
-}
-
-// EP 변형은 독립 lex 엔트리라 lex 문자열이 여러 개일 수 있다.
-function recallLexQueries(prompt, settings) {
-  return recallSearches(prompt, settings).filter(s => s.type === 'lex').map(s => s.query);
-}
-
-// 일반 키워드(식별자 + 키워드)가 실리는 lex 문자열 = searches 의 첫 lex 엔트리.
-function recallLexQuery(prompt, settings) {
-  return recallLexQueries(prompt, settings)[0];
-}
-
 // qmd 2.5.3 `dist/store.js` 의 규칙을 그대로 옮긴 것 (기대값 하드코딩).
 //   sanitizeFTS5Term:  term.replace(/[^\p{L}\p{N}'_]/gu, '').toLowerCase()  → `"x"*` prefix
 //   isHyphenatedToken: 하이픈 토큰은 조각 phrase 로 (buildFTS5Query 가 먼저 분기)
@@ -63,20 +44,6 @@ test('ep 패턴 on이면 EP 정규화 용어 생성', () => {
 test('keywords 상한 5', () => {
   const r = kw('하나 둘 셋 넷 다섯 여섯 일곱 여덟 아홉 열');
   assert.ok(r.keywords.length <= 5);
-});
-
-test('multi-line host instruction does not replace the actual question in lex search', () => {
-  const prompt = [
-    '도구를 쓰지 말고 이번 프롬프트에 자동 주입된 프로젝트 컨텍스트만 근거로 답해줘.',
-    'release QA alpha 문서의 codename은?',
-    '주입된 컨텍스트에 없으면 "없음"이라고만 답해.',
-  ].join('\n');
-  const built = kw(prompt);
-  const lex = recallLexQuery(prompt, { collections: ['qa'] });
-  assert.equal(built.keywordSpan, 'question');
-  assert.match(lex, /release|alpha|codename/i);
-  assert.doesNotMatch(lex, /도구|쓰지|말고|컨텍스트|없으면/);
-  assert.ok(built.keywords.some(t => /release|alpha|codename/i.test(t)));
 });
 
 test('host instruction identifiers cannot contaminate the selected question', () => {
@@ -299,83 +266,7 @@ print(json.dumps(out))
 
 // --- 훅 경로(recall.py)가 CLI와 같은 EP 정책을 쓰는지: 실제 lex 쿼리로 검증 ---
 
-test('recall 경로: ep-off면 cap 뒤에 등장한 EP 도 lex 쿼리에 없다', () => {
-  const prompt = '하나 둘 셋 넷 다섯 여섯 일곱 여덟 아홉 열 EP12 복선 정리';
-  const lex = recallLexQuery(prompt, { collections: ['sample'] });
-  assert.ok(!/EP\s?0?12/i.test(lex), `누출: ${lex}`);
-});
-
-test('recall 경로: lexicalPatterns:["ep"] 게이팅은 그대로 동작한다', () => {
-  const prompt = '하나 둘 셋 넷 다섯 여섯 일곱 여덟 아홉 열 EP12 복선 정리';
-  const lex = recallLexQueries(prompt, { collections: ['sample'], lexicalPatterns: ['ep'] });
-  assert.ok(lex.includes('EP012'), `ep 게이팅이 켜지면 EP 변형이 실려야 함: ${JSON.stringify(lex)}`);
-});
-
 // --- EP 변형은 독립 lex search 여야 한다 (AND 결합으로 lex 가 죽는 버그) ---
-
-test('recall 경로: ep-on 이면 EP 변형이 각각 독립 lex 엔트리로 들어간다', () => {
-  // 한 문자열로 합치면 `"ep012"* AND "ep12"*` 가 되어 한 문서가 두 표기를 모두
-  // 가져야 하고, 현실적으로 불가능하므로 EP 쿼리의 lex 는 항상 0건이 된다.
-  const searches = recallSearches('EP12 에서 서미래가 먹은 약과 부작용', {
-    collections: ['sample'], lexicalPatterns: ['ep'],
-  });
-  const lex = searches.filter(s => s.type === 'lex').map(s => s.query);
-
-  assert.deepEqual(lex.slice(1), ['EP012', 'EP12'], 'EP 변형이 각각 별도 엔트리');
-  for (const q of lex.slice(1)) {
-    assert.ok(!/\s/.test(q), `EP 엔트리에 다른 term 이 합쳐졌다 (AND 결합): ${q}`);
-  }
-  // 일반 키워드는 여전히 하나의 lex 문자열이다 — AND 로 좁히는 것은 의도된 동작.
-  // term 수만 GENERAL_LEX_TERM_CAP(3)으로 잘린다: `부작용`이 컷 뒤로 밀려 AND 조건이
-  // 하나 느슨해진다(4-term AND 는 서사 코퍼스에서 0건이 되기 쉽다). EP 변형 엔트리는
-  // 이 상한의 대상이 아니므로 위 slice(1) 단정이 그대로 유지된다.
-  assert.equal(lex[0], '서미래 먹은 약과');
-  assert.ok(!/EP/i.test(lex[0]), `EP 표기가 일반 문자열에 남으면 AND 가 다시 좁아진다: ${lex[0]}`);
-  // vec 는 프롬프트 원문 그대로 1건 유지.
-  assert.deepEqual(searches.filter(s => s.type === 'vec').map(s => s.query),
-    ['EP12 에서 서미래가 먹은 약과 부작용']);
-});
-
-test('recall 경로: ep-off 면 payload 가 기존과 동일하다 (lex 1 + vec 1)', () => {
-  const searches = recallSearches('EP12 에서 서미래가 먹은 약과 부작용', { collections: ['sample'] });
-  assert.deepEqual(searches, [
-    // lex term 3개 상한(GENERAL_LEX_TERM_CAP) — 엔트리 **수**는 예전 그대로 1개다.
-    { type: 'lex', query: '서미래 먹은 약과' },
-    { type: 'vec', query: 'EP12 에서 서미래가 먹은 약과 부작용' },
-  ]);
-});
-
-test('recall 경로: ep-off 일반 프롬프트도 lex 엔트리는 정확히 1개', () => {
-  const searches = recallSearches('docs/settings.md 구조를 설명해줘', { collections: ['sample'] });
-  assert.equal(searches.filter(s => s.type === 'lex').length, 1);
-  assert.equal(searches.filter(s => s.type === 'vec').length, 1);
-});
-
-test('EP 독립 search 는 예산(6) 상한을 넘지 않고 넘친 변형은 일반 문자열로 되돌지 않는다', () => {
-  // 되돌리면 AND 조건이 다시 좁아져 고치려던 버그가 재발한다.
-  const lex = recallLexQueries('EP1 EP2 EP3 EP4 정리', {
-    collections: ['sample'], lexicalPatterns: ['ep'],
-  });
-  assert.equal(lex.length - 1, 6, `EP 독립 search 6개 상한 (실제 ${lex.length - 1})`);
-  assert.equal(lex[0], '정리');
-  assert.ok(!/EP/i.test(lex[0]), `예산 초과 EP 변형이 일반 문자열로 새면 안 됨: ${lex[0]}`);
-  // 일반 lex 1 + EP 6 + vec 1 = 8 → qmd MCP `searches` 스키마 상한(10) 안.
-  assert.ok(lex.length + 1 <= 10, 'searches 총 개수가 qmd 스키마 상한을 넘으면 안 됨');
-});
-
-test('EP 언급 원문 조각(`EP 12` → EP, 12)도 일반 lex 문자열에서 빠진다', () => {
-  // 띄어 쓴 형태는 keywords 가 `EP`·`12` 를 별개 토큰으로 낸다. 독립 search 가 이미
-  // 덮으므로 일반 문자열에 남기면 AND 조건만 좁아진다.
-  const lex = recallLexQueries('EP 12 에서 무슨 일이 있었는지 정리해줘', {
-    collections: ['sample'], lexicalPatterns: ['ep'],
-  });
-  assert.deepEqual(lex.slice(1), ['EP012', 'EP12']);
-  assert.equal(lex[0], '무슨 일이 있었는지');
-
-  // 같은 span 에서 나온 조각만 제외한다 — 무관한 숫자 토큰은 살아 있어야 한다.
-  const r = kw('12개 항목 EP 12 확인', ['ep']);
-  assert.equal(r.lexQueries[0], '12개 항목 확인');
-});
 
 test('순수 숫자 단독 변형(`012`)은 lex 엔트리로 나가지 않는다 (RRF 노이즈)', () => {
   // AND 결합과는 별개 이유다: `012`* 는 EP 표기가 아니라 "012 로 시작하는 아무 토큰"에
@@ -413,11 +304,4 @@ test('단독 조사 토큰은 stopword — 의미어가 term 예산(5)에서 밀
   assert.ok(r.keywords.includes('먹은'));
   // `약과` 처럼 조사를 포함한 듯한 의미어는 그대로 살아야 한다.
   assert.ok(r.keywords.includes('약과'));
-});
-
-test('recall 경로: 경로형 식별자가 plain term 으로 선두에 실린다 (phrase 없음)', () => {
-  const lex = recallLexQuery('docs/settings.md 구조를 설명해줘', { collections: ['sample'] });
-  assert.ok(!lex.includes('"'), `phrase 가 섞이면 AND 결합에서 lex 가 0건이 된다: ${lex}`);
-  assert.ok(lex.startsWith('settings'), lex);   // 식별자가 일반 키워드보다 앞
-  assert.match(lex, /\bdocs\b/);                // 디렉터리는 일반 키워드가 커버
 });

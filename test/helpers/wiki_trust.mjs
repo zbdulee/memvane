@@ -4,13 +4,13 @@ import { execFileSync } from 'node:child_process';
 // "provenance 를 썼다"와 "recall 이 그 카드를 주입한다"는 다른 사실이다 — 라이브에 status
 // 만 찍히고 증명 필드가 빠진 카드 27장이 남아 있는 것이 그 간극의 실측이다. 그래서 두
 // 단정을 한 번에 얻는 프로브를 테스트 사이에서 공유한다(판정 재구현 금지 — 실제
-// `recall.is_auto_trusted_card` / `wiki_freshness.check_card` 를 호출한다).
+// `wiki_card.is_auto_trusted_card` / `wiki_freshness.check_card` 를 호출한다).
 export function wikiTrustState(projectDir, cardRel) {
   return JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     'from pathlib import Path',
     'sys.path.insert(0, "core")',
-    'import recall as R, wiki_compile as wc, wiki_freshness as WF, wiki_source_missing as wsm',
+    'import wiki_card as R, wiki_compile as wc, wiki_freshness as WF, wiki_source_missing as wsm',
     'root = Path(sys.argv[1]).resolve()',
     'text = (root / sys.argv[2]).read_text(encoding="utf-8")',
     'block = wc.FRONTMATTER_RE.match(text).group(1)',

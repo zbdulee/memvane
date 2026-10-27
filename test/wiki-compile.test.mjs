@@ -101,7 +101,6 @@ test('wiki_compile: lint-clean candidate writes generated markdown, audit files,
     assert.match(readFileSync(join(work, '.auto-context', 'compile', 'generated-manifest.jsonl'), 'utf8'), /config-layout/);
     assert.match(readFileSync(join(work, '.auto-context', 'wiki', 'index.md'), 'utf8'), /decisions\/config-layout.md/);
     assert.match(readFileSync(join(work, '.auto-context', 'wiki', 'log.md'), 'utf8'), /created/);
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /proj-wiki\t.*\.auto-context\/wiki/);
   } finally {
     removeTemp(work);
   }
@@ -874,60 +873,6 @@ print(w.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "supe
   }
 });
 
-test('wiki_compile: semantic gate queues merge-needed when no identity match but daemon reports a high-similarity hit', () => {
-  const work = repoTemp('wiki-compile-semantic-hit');
-  try {
-    writeSettings(work);
-    mkdirSync(join(work, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(
-      join(work, '.auto-context', 'wiki', 'entities', 'cctv-request.md'),
-      [
-        '---',
-        'title: "CCTV request"',
-        'canonicalKey: "cctv-request"',
-        'type: entity',
-        'status: generated',
-        'createdBy: qmd-auto-context',
-        '---',
-        '',
-        '<!-- qmd:auto:start id="main" sourceHash="abc" -->',
-        '## Summary',
-        'Someone requested CCTV footage from the building office.',
-        '<!-- qmd:auto:end -->',
-        '',
-      ].join('\n'),
-    );
-
-    const fixture = join(work, 'daemon-fixture.json');
-    writeFileSync(fixture, JSON.stringify({
-      results: [
-        { file: 'proj-wiki/entities/cctv-request.md', score: 0.9, title: 'CCTV request' },
-      ],
-    }));
-
-    const out = JSON.parse(runCompile(work, {
-      title: 'Second unknown call about luggage',
-      summary: 'An unrelated-looking phone call about luggage — possibly the same actor as the CCTV request.',
-      suggestedType: 'entity',
-      confidence: 'medium',
-    }, { QMD_QUERY_FIXTURE: fixture }));
-
-    assert.equal(out.action, 'merge-needed');
-    assert.equal(out.matchedPath, '.auto-context/wiki/entities/cctv-request.md');
-    assert.equal(out.score, 0.9);
-
-    const mergeNeeded = readJsonl(join(work, '.auto-context', 'compile', 'merge-needed.jsonl'));
-    assert.equal(mergeNeeded.length, 1);
-    assert.equal(mergeNeeded[0].matchedPath, '.auto-context/wiki/entities/cctv-request.md');
-    assert.equal('suggestedAction' in mergeNeeded[0], false, 'collision log is diagnostic, not a human action queue');
-    assert.equal(mergeNeeded[0].candidate.title, 'Second unknown call about luggage');
-
-    assert.equal(existsSync(join(work, '.auto-context', 'wiki', 'entities', 'second-unknown-call-about-luggage.md')), false);
-  } finally {
-    removeTemp(work);
-  }
-});
-
 test('wiki_compile: semantic gate is skipped when identity already matched (no daemon call needed)', () => {
   const work = repoTemp('wiki-compile-semantic-identity-bypass');
   try {
@@ -1054,44 +999,6 @@ test('wiki_compile: semantic gate fails open when QMD_QUERY_FIXTURE returns vali
   }
 });
 
-test('wiki_compile: semantic gate queries with rerank=true (find_wiki_semantic_match only ever runs off the async compile worker or the manual wiki-compile skill, never a synchronous per-edit path)', async () => {
-  const work = repoTemp('wiki-compile-semantic-rerank-true');
-  const requests = [];
-  const server = createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/query') {
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', () => {
-        requests.push(JSON.parse(body));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ results: [] }));
-      });
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  try {
-    writeSettings(work);
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address();
-
-    await runCompileAsync(work, {
-      title: 'Brand new entity with no identity match',
-      summary: 'Should trigger the semantic gate to query the live daemon.',
-      suggestedType: 'entity',
-      confidence: 'high',
-    }, { QMD_DAEMON_URL: `http://127.0.0.1:${port}` });
-
-    assert.equal(requests.length, 1, 'expected exactly one /query call from the semantic gate');
-    assert.equal(requests[0].rerank, true, 'semantic gate must use rerank=true for a real, threshold-comparable score');
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    removeTemp(work);
-  }
-});
-
 test('wiki_compile: semantic gate fails open when the daemon result score is non-numeric (string)', () => {
   const work = repoTemp('wiki-compile-semantic-score-string');
   try {
@@ -1135,57 +1042,6 @@ test('wiki_compile: semantic gate fails open when the daemon result score is nul
     }, { QMD_QUERY_FIXTURE: fixture }));
 
     assert.equal(out.action, 'created');
-  } finally {
-    removeTemp(work);
-  }
-});
-
-test('wiki_compile: semantic gate resolves a daemon result path via the project-root-relative fallback when the primary (wiki-root-relative) interpretation misses (Finding 1 hardening)', () => {
-  const work = repoTemp('wiki-compile-semantic-fallback-path');
-  try {
-    writeSettings(work);
-    mkdirSync(join(work, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(
-      join(work, '.auto-context', 'wiki', 'entities', 'cctv-request.md'),
-      [
-        '---',
-        'title: "CCTV request"',
-        'canonicalKey: "cctv-request"',
-        'type: entity',
-        'status: generated',
-        'createdBy: qmd-auto-context',
-        '---',
-        '',
-        '<!-- qmd:auto:start id="main" sourceHash="abc" -->',
-        '## Summary',
-        'Someone requested CCTV footage from the building office.',
-        '<!-- qmd:auto:end -->',
-        '',
-      ].join('\n'),
-    );
-
-    const fixture = join(work, 'daemon-fixture.json');
-    // "rel" here (the part after qmd://proj-wiki/) is the project-root-relative
-    // path, INCLUDING the .auto-context/wiki/ prefix, not the wiki-root-relative
-    // path. wiki_root/rel would be wiki/.auto-context/wiki/entities/... (misses).
-    // root/rel is wiki/entities/... nested under wiki_root again by coincidence
-    // of this fixture shape and lands inside wiki_root, so the fallback catches it.
-    writeFileSync(fixture, JSON.stringify({
-      results: [
-        { file: 'qmd://proj-wiki/.auto-context/wiki/entities/cctv-request.md', score: 0.9, title: 'CCTV request' },
-      ],
-    }));
-
-    const out = JSON.parse(runCompile(work, {
-      title: 'Second unknown call about luggage',
-      summary: 'An unrelated-looking phone call about luggage — possibly the same actor as the CCTV request.',
-      suggestedType: 'entity',
-      confidence: 'medium',
-    }, { QMD_QUERY_FIXTURE: fixture }));
-
-    assert.equal(out.action, 'merge-needed');
-    assert.equal(out.matchedPath, '.auto-context/wiki/entities/cctv-request.md');
-    assert.equal(out.score, 0.9);
   } finally {
     removeTemp(work);
   }
@@ -1423,33 +1279,6 @@ test('wiki_compile: traversal, absolute, and hidden-segment targetPath are still
   } finally {
     removeTemp(work);
   }
-});
-
-test('query_wiki_similar collapses a multi-line query into a single line (qmd vec search rejects newlines with a 500)', () => {
-  // Regression: card bodies are multi-line; qmd's structuredSearch throws
-  // "queries must be single-line" -> HTTP 500 -> fail-open, silently disabling
-  // the semantic gate/scan for every multi-line card. The query text sent to
-  // the daemon must have all whitespace (incl. newlines) collapsed to spaces.
-  const script = `
-import sys, json
-sys.path.insert(0, 'core')
-import urllib.request
-import wiki_compile as w
-cap = {}
-class R:
-    def __enter__(self): return self
-    def __exit__(self, *a): pass
-    def read(self): return json.dumps({"results": []}).encode()
-def fake(req, timeout=None):
-    cap['q'] = json.loads(req.data.decode())['searches'][0]['query']
-    return R()
-urllib.request.urlopen = fake
-w.query_wiki_similar('http://x', 'col', 'line1\\nline2\\n\\n  line3\\t tail ', 3, 5.0)
-print(cap['q'])
-`;
-  const out = execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trim();
-  assert.equal(out, 'line1 line2 line3 tail');
-  assert.doesNotMatch(out, /\n/);
 });
 
 test('compact_manifest: same-identity 중복은 접되 최신 엔트리를 보존해 삭제감지(previous 조회)를 유지', () => {

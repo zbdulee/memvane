@@ -13,8 +13,6 @@ import re
 import shutil
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,16 +81,6 @@ _NON_SECRET_VALUE_RE = re.compile(
         | str|string|int|integer|number|float|bool|boolean|optional|required|any|object
     ) [.,;:)\]}'"`]* $""",
 )
-
-
-def enqueue_project_collections(project_root, selected):
-    """Queue a QMD reindex for a project that has no selected Laya route.
-
-    The import stays inside this function so the selected path never loads
-    the QMD queue modules.
-    """
-    from dirty_queue import enqueue_project_collections as enqueue
-    enqueue(project_root, selected)
 
 
 def is_non_secret_value(value: str) -> bool:
@@ -1299,128 +1287,24 @@ def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-def resolve_daemon_result_path(root: Path, wiki_root: Path, uri: str, collection: str) -> Path | None:
-    if not isinstance(uri, str) or not uri:
-        return None
-    if uri.startswith("qmd://"):
-        rest = uri[len("qmd://"):]
-        if "/" not in rest:
-            return None
-        actual, rel = rest.split("/", 1)
-        if actual != collection:
-            return None
-    elif collection and uri.startswith(f"{collection}/"):
-        rel = uri[len(collection) + 1:]
-    else:
-        return None
-    for candidate_root in (wiki_root, root):
-        candidate_path = (candidate_root / rel).resolve()
-        try:
-            candidate_path.relative_to(wiki_root)
-        except ValueError:
-            continue
-        if candidate_path.is_file():
-            return candidate_path
-    return None
-
-
-def query_wiki_similar(daemon_url: str, collection: str, text: str, top_k: int, timeout: float) -> list[dict] | None:
-    """Vector-search `text` against `collection`. Returns daemon `results` list, or
-    None on any failure — caller must fail-open on None, never raise.
-
-    Always queries with rerank=True: with rerank=False the daemon's `score`
-    field is a reciprocal-rank value (1, 0.5, 0.33, ...) from result position,
-    NOT a semantic similarity, which makes every caller's threshold comparison
-    meaningless (rank-1 is always ~1.0 regardless of true similarity). Every
-    caller here runs off an async path -- the compile worker's write-time
-    semantic gate and similar-page lookup (backend_manager.sh forks the worker
-    with `&`), the retroactive dedup scanner (update.sh's background embed
-    subshell, once per 24h), or the manual wiki-compile skill -- so there is
-    no synchronous per-edit caller left that needs to skip rerank for latency.
-    """
-    fixture_path = os.environ.get("QMD_QUERY_FIXTURE")
-    if fixture_path:
-        try:
-            with open(fixture_path, "r", encoding="utf-8") as f:
-                parsed = json.load(f)
-            if not isinstance(parsed, dict):
-                return None
-            results = parsed.get("results", [])
-        except (OSError, json.JSONDecodeError):
-            return None
-        return results if isinstance(results, list) else []
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
-        try:
-            import qmd_shared_store
-            qmd_shared_store.select()
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-        import qmd_endpoint
-        selected_url=qmd_endpoint.optional_url()
-        if not selected_url or daemon_url != selected_url:
-            return None
-    # qmd's vec search rejects multi-line queries (store.js structuredSearch:
-    # "queries must be single-line. Remove newline characters.") with a 500.
-    # Card bodies are almost always multi-line, so passing them raw made every
-    # caller (write-time semantic gate, retroactive dedup scan, similar-page
-    # lookup) silently fail-open on any multi-line card -- the dominant cause of
-    # near-duplicate proliferation. Collapse all whitespace to single spaces.
-    single_line = " ".join(text.split())
-    payload = {
-        "searches": [{"type": "vec", "query": single_line}],
-        "collections": [collection],
-        "limit": max(1, top_k),
-        "minScore": 0,
-        "timeout": timeout,
-        "rerank": True,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        f"{daemon_url}/query",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8")
-        parsed = json.loads(body)
-        if not isinstance(parsed, dict):
-            return None
-        results = parsed.get("results", [])
-        return results if isinstance(results, list) else []
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
-        return None
-
-
 def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:
     import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
         return any(item['name'] == collection and item['role'] == 'wiki'
                    for item in selected[0]['collections'])
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
-        return True
-    try:
-        import qmd_shared_store
-        return collection in qmd_shared_store.owned_collections(root, config)
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-
-
-def _numeric_score(value) -> float:
-    return value if isinstance(value, (int, float)) else 0
+    return os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
 
 
 def query_wiki_candidates(
     root: Path, wiki_root: Path, config: dict, candidate: dict, summary: str, min_score: float
 ) -> list[tuple[Path, float]]:
-    """Resolved (path, score) daemon hits at or above `min_score`, best first.
+    """Resolved (path, score) selected-index hits at or above `min_score`, best first.
 
     Retrieval only. `min_score` narrows the candidate set; it must never stand in
-    for a duplicate judgment (the daemon score is rank-bounded — see
-    wiki_dedup_judge.py). Empty list covers "daemon down", "no hits", and
-    "semanticDedup disabled" alike, so every caller fails open.
+    for a duplicate judgment (see wiki_dedup_judge.py). Empty list covers "no
+    selected route", "no hits", and "semanticDedup disabled" alike, so every
+    caller fails open.
     """
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     semantic_cfg = compile_cfg.get("semanticDedup") if isinstance(compile_cfg.get("semanticDedup"), dict) else {}
@@ -1440,25 +1324,8 @@ def query_wiki_candidates(
                     qmd_config.DEDUP_TOP_K,
                     qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
                 if score >= min_score]
-    import qmd_endpoint
-    daemon_url = qmd_endpoint.optional_url()
-    timeout = float(config.get("queryTimeout", 5.0) or 5.0)
-    results = query_wiki_similar(daemon_url, collection, text, qmd_config.DEDUP_TOP_K, timeout)
-    if not results:
-        return []
-    hits: list[tuple[Path, float]] = []
-    for result in sorted(
-        (r for r in results if isinstance(r, dict)),
-        key=lambda r: _numeric_score(r.get("score", 0)),
-        reverse=True,
-    ):
-        score = _numeric_score(result.get("score", 0))
-        if score < min_score:
-            continue
-        matched = resolve_daemon_result_path(root, wiki_root, result.get("file", ""), collection)
-        if matched is not None:
-            hits.append((matched, score))
-    return hits
+    # Only a selected Laya index answers similarity; anything else has none.
+    return []
 
 
 def find_wiki_semantic_match(
@@ -1894,11 +1761,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         append_log(wiki_root, action, target, title)
 
     collection, collection_path = find_wiki_collection(config)
-    if pending_path is None and collection and collection_path:
-        if selected is None:
-            enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
-        else:
-            wiki_selected_laya.request_sync(root, selected)
+    if pending_path is None and collection and collection_path and selected is not None:
+        wiki_selected_laya.request_sync(root, selected)
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.

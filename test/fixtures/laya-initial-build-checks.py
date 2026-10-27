@@ -556,7 +556,7 @@ class RecordAndInstallerTests(BuildCase):
                       plugin_root=str(self.project.parent / 'plugin'), state=self.state,
                       journal=self.state / 'install-journal.sqlite',
                       socket=self.state / 'runtime' / 'laya-embed.sock',
-                      commit_id='0' * 40, install_id=INSTALL, user_qmd_roots=['/q'])
+                      commit_id='0' * 40, install_id=INSTALL)
         with mock.patch.object(product, '_adopt_and_attest',
                                return_value=(proof, {'profileId': PROFILE_ID}, {})), \
                 mock.patch.object(product, 'stage_host_loaded_candidate', side_effect=stage):

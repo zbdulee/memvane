@@ -148,66 +148,6 @@ test('wiki lifecycle: ineligibleMeasured가 "0"과 "안 셌다"를 구분한다'
 // update.sh worker → SessionStart notice의 **상태 파일**까지가 이 신호의 종점이다.
 // 스캐너 단위 테스트만으로는 "worker가 0을 받으면 파일을 지운다"는 마지막 한 칸을 못 잡고,
 // 그 칸이 거짓 복구 보고(`notice_clear wiki-ineligible`)의 실제 발생 지점이다.
-test('update.sh worker: 미측정 run은 ineligible 상태 파일을 지우지 않는다', () => {
-  const base = join(homedir(), '.cache');
-  mkdirSync(base, { recursive: true });
-  const work = mkdtempSync(join(base, 'qmd-ineligible-'));
-  const fakehome = join(work, 'fakehome');
-  const bin = join(work, 'bin');
-  mkdirSync(fakehome, { recursive: true });
-  mkdirSync(bin, { recursive: true });
-  writeFileSync(join(bin, 'qmd'), '#!/usr/bin/env sh\nexit 0\n', { mode: 0o755 });
-  const statePath = () => {
-    const hash = execFileSync('python3', ['-c',
-      'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])', work,
-    ], { encoding: 'utf8' }).trim();
-    return join(fakehome, `notice-wiki-ineligible-state-${hash}`);
-  };
-  const runWorker = () => execFileSync('bash', [join(process.cwd(), 'core', 'update.sh'), '--worker', work], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH}`,
-      HOME: fakehome,
-      QMD_CACHE_DIR: fakehome,
-      QMD_LOCK_BASE: join(work, 'locks'),
-      QMD_BACKEND_MANAGER: '/bin/true',
-      QMD_SKIP_BACKGROUND_EMBED: '1',
-      QMD_WIKI_LIFECYCLE_LOG: join(work, 'lifecycle.log'),
-    },
-  });
-  const setScan = (sourceScan, extra = {}) => {
-    const path = join(work, '.auto-context', 'settings.json');
-    const cfg = JSON.parse(readFileSync(path, 'utf8'));
-    cfg.compile.sourceScan = sourceScan;
-    Object.assign(cfg, extra);
-    writeFileSync(path, JSON.stringify(cfg));
-  };
-
-  try {
-    setupProject({ base: work });
-    writeCard(work, 'entities/draft.md', { status: 'generated' });  // provenance 없음
-    runWorker();
-    assert.equal(readFileSync(statePath(), 'utf8'), '1', '측정된 1장이 상태 파일에 남는다');
-
-    // 수명 주기 조치만 껐다 — ineligible은 계속 측정되므로 수가 유지된다.
-    setScan({ enabled: false });
-    runWorker();
-    assert.equal(readFileSync(statePath(), 'utf8'), '1', 'enabled:false가 수를 0으로 만들지 않는다');
-
-    // 측정 불가(unsafe wikiPath) — 0을 보고하지만 상태 파일을 **지우지 않는다**.
-    setScan({ enabled: true }, { wikiPath: '../outside' });
-    runWorker();
-    assert.equal(existsSync(statePath()), true, '미측정 run이 상태를 지우면 거짓 복구 보고가 된다');
-    assert.equal(readFileSync(statePath(), 'utf8'), '1');
-
-    // 실제로 복구되면(카드가 적격) 측정된 0이므로 파일이 사라진다 — 알림도 사라져야 한다.
-    setScan({ enabled: true }, { wikiPath: '.auto-context/wiki' });
-    writeCard(work, 'entities/draft.md', { status: 'verified' });
-    runWorker();
-    assert.equal(existsSync(statePath()), false, '측정된 0은 상태 파일을 지운다(notice_clear)');
-  } finally { removeTemp(work); }
-});
 
 // 수명 주기 판정은 순환 커서로 창을 나눠 여러 회차에 덮지만, `ineligible`은 사용자에게 보여 줄
 // **총량**이라 같은 창에 갇히면 틀린 수를 말하게 된다("3장 남았습니다"라고 했는데 실제로는

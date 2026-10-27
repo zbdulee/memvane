@@ -12,7 +12,7 @@ from pathlib import Path
 def state_dir(explicit=None):
     return Path(explicit) if explicit is not None else Path(os.environ.get(
         "QMD_SYNC_STATE_DIR",
-        str(Path.home() / ".config" / "qmd" / "sync-state"),
+        str(Path.home() / ".local" / "state" / "laya" / "auto-context" / "scan-state"),
     ))
 
 

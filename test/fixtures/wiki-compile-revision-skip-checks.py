@@ -175,8 +175,7 @@ class RevisionSkipChecks(unittest.TestCase):
 
         # Separate claims of the real queue: each run claims, processes and ACKs.
         queue = self.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
-        with patch('setup_guard.status', return_value={'status': 'ready'}), \
-             patch.object(worker, '_run_verify_pass'):
+        with patch.object(worker, '_run_verify_pass'):
             for trigger in ('session_start', 'manual'):
                 queue.write_text(json.dumps(self.job(trigger)) + '\n', encoding='utf-8')
                 out = io.StringIO()
@@ -456,8 +455,7 @@ class RevisionSkipChecks(unittest.TestCase):
             result = self.fake_compile(root, candidate)
             result['sourceRefreshEventId'] = candidate.get('sourceRefreshEventId')
             return result
-        with patch('setup_guard.status', return_value={'status': 'ready'}), \
-             patch.object(worker, '_run_verify_pass'), \
+        with patch.object(worker, '_run_verify_pass'), \
              patch.object(worker, 'run_extractor', side_effect=extractor), \
              patch.object(worker, 'compile_candidate', side_effect=compile_echo):
             first = self.run_main()
@@ -490,16 +488,14 @@ class RevisionSkipChecks(unittest.TestCase):
         owner = worker.try_run_lock(self.root)
         self.assertIsNotNone(owner)
         try:
-            with patch('setup_guard.status', return_value={'status': 'ready'}):
-                report = self.run_main()
+            report = self.run_main()
         finally:
             os.close(owner)
         self.assertEqual(report['wakeAfterSeconds'], worker.RUN_LOCK_BUSY_RETRY_SECS)
         self.assertEqual(self.extractor_calls, [])
         self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 1)
         # Lock released (as on owner exit or crash): the retained row now runs.
-        with patch('setup_guard.status', return_value={'status': 'ready'}), \
-             patch.object(worker, '_run_verify_pass'):
+        with patch.object(worker, '_run_verify_pass'):
             self.assertEqual(self.run_main()['processed'], 1)
         self.assertEqual(len(self.extractor_calls), 1)
 

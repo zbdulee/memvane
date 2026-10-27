@@ -26,7 +26,6 @@ import wiki_topical as topical
 import wiki_topical_backend as backend
 import wiki_topical_experiment as experiment
 import yaml_scalars
-import qmd_route
 
 
 def _same_published_card(existing: bytes, freshly_stamped: bytes) -> bool:
@@ -549,141 +548,15 @@ def _retire_stale_locked(root: Path, generation_id: str, card_id: str,
             'generationId': generation_id, 'archivePath': str(target)}
 
 
-def _qmd_runtime(root: Path):
-    try:
-        import topical_story_scope
-        if topical_story_scope.exact_story(root):
-            scope = topical_story_scope.read(root)
-            paths = qmd_route.project_paths(scope['project'], isolated=True,
-                reject_conflicts=True)
-            if paths.get('selected') is not True:
-                raise ValueError('shared_qmd_store_unselected')
-        else:
-            paths = qmd_route.project_paths(root, isolated=True, reject_conflicts=True,
-                fixture_env=os.environ.get('QMD_TOPICAL_SYNTHETIC_RUNTIME') == '1')
-        binary = qmd_route.binary_info()['QMD_BIN']
-        if os.environ.get('QMD_BIN'):
-            from qmd_runtime import probe_cli
-            probe_cli(binary)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
-            subprocess.TimeoutExpired) as exc:
-        reason = str(exc)
-        if reason not in ('project_index_env_conflict', 'qmd_runtime_outside_project',
-                          'isolated_qmd_runtime_required'):
-            reason = 'qmd_runtime_incompatible'
-        raise topical.TopicalError(reason) from exc
-    return {'QMD_BIN': Path(binary), **{key: Path(paths[key]) for key in qmd_route.PATH_KEYS}}
-
-
-def _call(root: Path, runtime: dict, args: list[str]):
-    from runtime_work import guarded_run
-    result = guarded_run([str(runtime["QMD_BIN"]), *args], cwd=root,
-                            capture_output=True, text=True, timeout=900,
-                            env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
-                                 'INDEX_PATH':str(runtime['INDEX_PATH']),
-                                 'QMD_CONFIG_DIR':str(runtime['QMD_CONFIG_DIR']),
-                                 'XDG_CACHE_HOME':str(runtime['XDG_CACHE_HOME'])})
-    if result.returncode:
-        raise topical.TopicalError("isolated_qmd_command_failed")
-    return result
-
-
-def _reload_shared_daemon():
-    # The shared QMD daemon may hold the old SQLite view. The same writer
-    # lock remains held until reload finishes, as in index_worker.sh.
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
-        return
-    manager = Path(__file__).resolve().parent / 'backend_manager.sh'
-    result = subprocess.run(['bash', str(manager), 'reload'],
-                            capture_output=True, text=True, timeout=30)
-    if result.returncode:
-        raise topical.TopicalError('qmd_daemon_reload_failed')
-
-
 def sync(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
          reclaim_retired: bool = False) -> dict:
-    import topical_story_scope
-    if topical_story_scope.exact_story(root):
-        topical_story_scope.read(root)
-        import qmd_writer_lock
-        with qmd_writer_lock.acquire():
-            return _sync_locked(root, allow_empty=allow_empty,
-                allow_stale=allow_stale, reclaim_retired=reclaim_retired)
-    return _sync_locked(root, allow_empty=allow_empty,
-        allow_stale=allow_stale, reclaim_retired=reclaim_retired)
+    """Make published topical cards searchable.
 
-
-def _sync_locked(root: Path, *, allow_empty: bool = False, allow_stale: bool = False,
-                 reclaim_retired: bool = False) -> dict:
-    root, wiki, collection = _project(root)
-    runtime = _qmd_runtime(root)
-    cards = list((wiki / "topical-v2").glob("*/*.md")) if (wiki / "topical-v2").is_dir() else []
-    if not cards and not allow_empty:
-        raise topical.TopicalError("no_verified_topical_cards")
-    fresh_cards = []
-    stale_cards = []
-    for page in cards:
-        if page.is_symlink() or not page.is_file():
-            raise topical.TopicalError("unsafe_published_card")
-        if allow_stale:
-            sidecar = json.loads(topical.read_generation_bytes(root, page.parent.name,
-                f'cards/{page.stem}.evidence.json'))
-            if any(not (root / revision['path']).is_file() or
-                hashlib.sha256((root / revision['path']).read_bytes()).hexdigest() != revision['sha256']
-                for revision in sidecar['sourceRevisions']):
-                stale_cards.append(page)
-                continue
-        # Recheck the source-bound backend proof before indexing any existing
-        # card. A staged page that has gone stale may remain for audit, but it
-        # must not be refreshed into the searchable QMD collection.
-        if publish(root, page.parent.name, page.stem)["path"] != str(page):
-            raise topical.TopicalError("published_card_conflict")
-        fresh_cards.append(page)
-    config_file = runtime["QMD_CONFIG_DIR"] / "index.yml"
-    if not config_file.is_file() or config_file.is_symlink():
-        raise topical.TopicalError("isolated_qmd_config_required")
-    config = config_file.read_text()
-    if collection in config:
-        _call(root, runtime, ["update"])
-    else:
-        _call(root, runtime, ["collection", "add", str(wiki), "--name", collection, "--mask", "**/*.md"])
-    if fresh_cards:
-        _call(root, runtime, ["embed", "-c", collection, "--max-docs-per-batch", "1", "--max-batch-mb", "1"])
-    if reclaim_retired:
-        # QMD update deactivates retired documents but retains their vectors.
-        # Its own cleanup removes inactive rows and unreferenced embeddings on
-        # this selected project DB. Recheck fresh cards after cleanup below.
-        _call(root, runtime, ["cleanup"])
-    db = sqlite3.connect(runtime["INDEX_PATH"])
-    try:
-        db.execute("PRAGMA query_only=ON")
-        if not cards and db.execute(
-            "SELECT 1 FROM documents WHERE collection=? AND path GLOB 'topical-v2/*' "
-            "AND active=1 LIMIT 1",
-                (collection,)).fetchone():
-            raise topical.TopicalError("qmd_retired_card_still_active")
-        for page in fresh_cards:
-            rel = page.relative_to(wiki).as_posix()
-            expected = hashlib.sha256(page.read_bytes()).hexdigest()
-            row = db.execute("SELECT hash FROM documents WHERE collection=? AND path=? AND active=1",
-                             (collection, rel)).fetchone()
-            if row is None or row[0] != expected or not db.execute(
-                    "SELECT 1 FROM content_vectors WHERE hash=?", (expected,)).fetchone():
-                raise topical.TopicalError("qmd_verified_card_not_ready")
-    finally:
-        db.close()
-    registration = None
-    import topical_story_scope
-    if topical_story_scope.exact_story(root):
-        _reload_shared_daemon()
-        from context_learning.topical_worker_provenance import reconcile_pending
-        from context_learning.synthetic_scope import NOVEL_ROOT
-        from context_learning.synthetic_experiment import shared_for
-        registration = reconcile_pending(shared_for(NOVEL_ROOT), NOVEL_ROOT)
-    return {"status": "ready", "collection": collection, "verifiedCards": len(fresh_cards),
-            "pendingStaleCards": len(stale_cards),
-            "lexicalReady": True, "vectorReady": True,
-            **({'workerProvenance': registration} if registration is not None else {})}
+    Their only index was an isolated QMD collection. No index serves it, so
+    every sync refuses after the project check; published card files stay.
+    """
+    _project(root)
+    raise topical.TopicalError("topical_index_unavailable")
 
 
 def main(argv):
