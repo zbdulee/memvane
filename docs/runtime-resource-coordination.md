@@ -52,7 +52,7 @@ development execution guard is separate; see
   (detached, behind the owner's own 5-second backoff) and pulls a backed-off
   `laya-sync` wake's due time forward without changing its attempt count. A
   sync result deferred by `laya_service_preparing` is recorded as
-  `target_preparing`: retried after 5 seconds and not counted as an attempt.
+  `target_preparing`: retried after 15 seconds and not counted as an attempt.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue.
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks

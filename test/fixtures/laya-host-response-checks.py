@@ -1314,7 +1314,8 @@ class ResponseChecks(unittest.TestCase):
                 **V2_PROOF['providerManifest'], 'serviceSocketPath': str(sock)}}
 
             def wake(state, *, root=decision['pluginRoot'], transition=False,
-                     started=ResourceDeferred('laya_service_preparing')):
+                     started=ResourceDeferred('laya_service_preparing'),
+                     queued={'status': 'queued'}):
                 row = None if state is None else {
                     'fingerprint': 'a' * 64, 'reason': state, 'terminal': False,
                     'at': clock.time() - 60, 'attempts': 0}
@@ -1323,7 +1324,7 @@ class ResponseChecks(unittest.TestCase):
                      patch.object(laya_embed_resident, 'read_owner_state', return_value=row), \
                      patch.object(laya_embed_resident, 'ensure_running',
                                   side_effect=started) as ensure, \
-                     patch.object(runtime_work, 'request', return_value={'status': 'queued'}):
+                     patch.object(runtime_work, 'request', return_value=queued):
                     try:
                         response._request_provider_start({**decision, 'pluginRoot': root},
                                                          proof, transition=transition)
@@ -1336,6 +1337,9 @@ class ResponseChecks(unittest.TestCase):
             self.assertEqual(calls, [((decision['projectRoot'], proof['providerManifest']),)])
             code, calls = wake('resource_deferred')
             self.assertEqual((code, len(calls)), ('selected_provider_resource_deferred', 1))
+            # A failed wake queue still gets the direct start.
+            code, calls = wake('starting', queued=None)
+            self.assertEqual((code, len(calls)), ('selected_provider_wake_failed', 1))
             code, calls = wake('starting', started=[None])
             self.assertEqual((code, len(calls)), ('selected_provider_preparing', 1))
             code, calls = wake('starting', started=IndexContractError('provider_start_failed'))

@@ -1228,13 +1228,15 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if (stable(refreshed) != stable(proof) or
             refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
         _fail('selected_proof_changed')
+    if not transition:
+        # Independent of the wake queue: it also helps when that queue fails.
+        _restart_withdrawn_owner(decision, proof, state)
     if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
         if transition:
             _fail('selected_provider_wake_failed')
         return 'selected_provider_wake_failed'
     if transition:
         _fail('selected_provider_identity_transition')
-    _restart_withdrawn_owner(decision, proof, state)
     if state is not None and state['reason'] == 'resource_deferred':
         return 'selected_provider_resource_deferred'
     if state is not None and state['reason'] in (

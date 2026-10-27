@@ -314,16 +314,16 @@ runtime._handoff_worker(queue,fd)
         self.queue.put('laya-sync', '/synthetic/a', now=0)
         self.drain(self.failing('target_preparing'), wall=100)
         row, = self.rows()
-        self.assertEqual((row['attempts'], row['due']), (0, 100 + policy.RETRY_BASE_SECS))
+        self.assertEqual((row['attempts'], row['due']), (0, 100 + policy.PREPARING_RETRY_SECS))
         self.assertTrue(row['reason'].startswith('dispatch:target_preparing:'))
         for wall in (200, 300, 400):
             self.drain(self.failing('target_child_failed'), wall=wall)
         self.assertEqual(self.rows()[0]['attempts'], 3)
         # Prior real failures stay counted; the wait itself adds none and
-        # returns after the owner's own spawn backoff.
+        # returns after the fixed preparing delay.
         self.drain(self.failing('target_preparing'), wall=1000)
         row, = self.rows()
-        self.assertEqual((row['attempts'], row['due']), (3, 1000 + policy.RETRY_BASE_SECS))
+        self.assertEqual((row['attempts'], row['due']), (3, 1000 + policy.PREPARING_RETRY_SECS))
         self.drain(self.failing('target_deferred'), wall=2000)
         self.assertEqual(self.rows()[0]['attempts'], 4)
 
