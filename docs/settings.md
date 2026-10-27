@@ -119,11 +119,12 @@ digest와 함께 바뀌고, claim queue 옆 raw discovery cursor
 들어갑니다. 제안의 `rebind.rawCollection`이 이전·새 raw collection을 보여 줍니다.
 QMD-origin 선택에서 raw 이름이 바뀌면 QMD source digest를 다시 증명할 수 없으므로
 `rebind.forfeits`에 `qmd_origin_restore`가 표시되고, 이후 QMD로의 복원은 거부됩니다.
-이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall이 경로로 raw 루트를 찾으므로
-계속 검색됩니다. plan은 그런 카드와 live compile queue 행 수를 `legacyRawLabel`로 따로
-보여 줍니다(compile이 계속 쓰므로 제안 digest에는 넣지 않습니다). compile 쪽 revision
-대조와 원문 소실 검사는 이름으로 비교하므로, 이전 이름 카드의 원문이 바뀌면 그 카드를
-고치지 않고 새 카드가 생깁니다.
+이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
+revision 판정, 원문 삭제 시 카드 정리, SessionStart lifecycle)이 같은 규칙으로 다룹니다.
+settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
+wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다. plan은 그런 카드와 live
+compile queue 행 수를 `legacyRawLabel`로 따로 보여 줍니다(compile이 계속 쓰므로 제안
+digest에는 넣지 않습니다). compiler가 카드를 다시 쓰면 그 원문 항목은 현재 이름으로 기록됩니다.
 
 intent가 남아 있는 동안(중단된 경우 포함):
 

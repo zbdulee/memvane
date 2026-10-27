@@ -20,7 +20,8 @@ Installed state that binds the current settings bytes:
   it. Cards that cite the old raw name keep serving: selected recall resolves
   a label that is not a route collection by its path under the raw root. The
   plan reports them in ``legacyRawLabel`` (outside the proposal digest, since
-  the compiler keeps writing); the compiler still matches revisions by label.
+  the compiler keeps writing); the compile side resolves them by the same
+  path rule (``source_label``).
   While it is between steps, recall serves the published generation
   read-only. QMD-side records that only the legacy QMD path reads (a finished
   setup journal, a shared-store approval) are not rewritten; the proposal
