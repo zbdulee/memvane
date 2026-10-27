@@ -342,6 +342,9 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
         raw_settings = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
         if not isinstance(raw_settings, dict):
             raise ValueError("invalid_route_settings")
+        # A minimal {name, skipPaths} file is checked as its derived legacy
+        # shape; any other file is checked exactly as written.
+        raw_settings = config.expand_minimal_settings(raw_settings)
         cfg = config.normalize_config(raw_settings)
         if cfg.get("indexing") is not True:
             raise ValueError("route_indexing_not_selected")

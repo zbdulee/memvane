@@ -148,6 +148,24 @@ qmd auto-context는 프로젝트별 opt-in 방식입니다. 설정이 없는 프
 우선 기억 대상으로 잡습니다.
 설정 값을 직접 조정해야 한다면 [설정 레퍼런스](docs/settings.md)를 참고하세요.
 
+settings 파일에 `name`과 `skipPaths`만 적으면 나머지는 플러그인이 정합니다
+([minimal settings](docs/settings.md#minimal-settings)).
+
+```json
+{
+  "name": "my-project",
+  "skipPaths": ["node_modules", "dist"]
+}
+```
+
+이 형식에서는 프로젝트 루트 전체가 위키 생성 원천이고 검색은 위키만 합니다.
+`.`으로 시작하는 폴더와 `skipPaths`에 걸리는 폴더로는 위키를 만들지 않습니다.
+`.auto-context/wiki`의 위키 카드는 검색 대상입니다. 두 키 외의 키가 하나라도
+있으면 전체 설정 형식으로 읽습니다. 기존 설정을 이 형식으로 바꾸려면 에이전트에게
+“settings를 minimal 형식으로 바꿀 수 있는지 확인해줘”라고 요청하세요. 바꾸기 전에
+달라지는 항목을 보여 주고, 선택된 Laya 경로나 설치 상태가 지금 settings 파일에
+묶여 있으면 바꾸지 않습니다.
+
 첫 확인은 에이전트에게 “이 프로젝트 문서 한 건이 검색되는지와 출처 링크를
 보여줘”라고 요청하세요. Wiki Compile을 켰다면 “위키 카드 한 건을 만들고
 검증 상태와 원문 위치 링크를 확인해줘”라고 요청할 수 있습니다. 생성·검증·색인

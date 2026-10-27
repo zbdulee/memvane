@@ -42,7 +42,8 @@ ratio and bounded by the per-run cap; a run that trips the guard defers it too.
 The run is idempotent: a retired card is gone on the next run, the archive
 reuses same-content bytes, live-queue keys collapse a repeated enqueue, and a
 refresh already enqueued for the same source hash is not enqueued again until
-`REFRESH_RETRY_SECONDS` pass. Only the selected laya-db route acts; the legacy
+`REFRESH_RETRY_SECONDS` pass. Regeneration follows the legacy `session_start_source`
+trigger consent; minimal settings (`settingsModel: "minimal"`) need none. Only the selected laya-db route acts; the legacy
 QMD route only measures `ineligible`.
 
 Fail-open: always exit 0, no stdout without `--json`, exceptions go to the log.
@@ -277,6 +278,25 @@ def _recently_refreshed(refreshed: dict, path: str, sha: str, now: float) -> boo
             and isinstance(row.get("ts"), (int, float)) and now - row["ts"] < REFRESH_RETRY_SECONDS)
 
 
+def regeneration_config(config: dict) -> dict:
+    """Config the regeneration enqueue is gated by.
+
+    Minimal settings make wiki generation plugin-owned (always on), so the
+    lifecycle refresh needs no separate `session_start_source` grant there.
+    Legacy settings keep their explicit trigger consent.
+    """
+    if not qmd_config.is_minimal_config(config):
+        return config
+    import wiki_source_intent
+    compile_cfg = dict(config.get("compile") or {})
+    triggers = list(compile_cfg.get("triggers") or [])
+    for trigger in wiki_source_intent.SESSION_START_ACCEPTED_TRIGGERS:
+        if trigger not in triggers:
+            triggers.append(trigger)
+    compile_cfg["triggers"] = triggers
+    return {**config, "compile": compile_cfg}
+
+
 def run(cwd: str) -> dict:
     # `ineligibleMeasured` separates a measured 0 from "not counted": update.sh
     # clears the wiki-ineligible notice state only on a measured run.
@@ -415,7 +435,7 @@ def run(cwd: str) -> dict:
     if changed_files:
         import wiki_compile_enqueue
         outcome = wiki_compile_enqueue.enqueue_changed_sources(
-            str(root), config, changed_files, session_start=True)
+            str(root), regeneration_config(config), changed_files, session_start=True)
         reason = outcome.get("reason")
         deferred = {tuple(item)[1] for item in outcome.get("deferredFiles", [])}
         log(f"ENQUEUE {reason}: queued={outcome.get('queued', 0)} deferred={len(deferred)} "

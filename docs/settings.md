@@ -14,6 +14,92 @@
 유사도가 아닌 daemon score, 유료 호출 예산의 곱처럼 이름과 다르게 동작하는 설정이
 거기에 설명돼 있습니다.
 
+## Minimal settings
+
+settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minimal settings**입니다.
+나머지 effective 설정은 플러그인이 `name`에서 결정적으로 유도합니다
+(`core/config.py`의 `expand_minimal_settings`).
+
+```json
+{
+  "name": "my-project",
+  "skipPaths": ["node_modules", "dist"]
+}
+```
+
+| 항목 | 유도 값 |
+|---|---|
+| collection 이름 | `name`의 slug(소문자, `[a-z0-9._-]`, 59자 이하)가 raw, slug + `-wiki`가 wiki입니다. `"My Project"` → `my-project`·`my-project-wiki` |
+| `collectionPaths` | raw `"."`(프로젝트 루트 전체가 위키 생성 원천), wiki `".auto-context/wiki"` |
+| `collectionRoles` | raw `raw`, wiki `wiki` |
+| `recallStrategy` | `wikiOnly`. 검색은 위키 카드만 합니다 |
+| `compile` | `mode: "auto-wiki"`, `triggers: ["post_tool_source","post_sync_source","manual"]`, `extractor.builtins: ["claude","codex","hermes"]`. 나머지 compile 값은 기본값입니다 |
+| `contextLearning` | `capture`·`autoCycle`·`liveSelection` 모두 `true` |
+| `indexing` | `true`. 끄는 방법은 아래 "인덱싱 끄기"입니다 |
+| `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
+
+정규화된 effective config에는 `settingsModel: "minimal"`이 붙습니다. legacy 파일에는
+이 키가 없습니다. minimal 해석은 `.auto-context/settings.json`에만 적용되고, 레거시 위치
+(`.auto-context.json`, `.agents/qmd-recall.json`)의 파일은 키가 같아도 legacy로 읽습니다.
+
+**minimal이 아닌 경우.** 두 키 외의 키가 하나라도 있으면 legacy 파일이며 아래
+[전체 키 레퍼런스](#전체-키-레퍼런스)대로 읽습니다. 일부 키만 유도하지 않습니다.
+`name`이 없거나 slug가 비는 경우(ASCII 영숫자가 없는 이름), `skipPaths`가 비어 있지
+않은 문자열 목록이 아닌 경우도 minimal이 아니며, collection이 비어 아무것도
+인덱싱하지 않습니다.
+
+**`skipPaths`는 위키 생성에서 제외할 경로입니다.** 원문 경로의 상위 디렉터리
+문자열에 항목이 포함되면 그 파일로 위키를 만들지 않습니다(`build` → `docs/build/a.md`
+제외, `docs/build-notes.md`는 생성). 생성되지 않은 내용은 검색되지 않습니다.
+기본 제외는 다음과 같습니다.
+
+- `.`으로 시작하는 모든 폴더와 파일(`.git`, `.claude`, `docs/.draft` 등)
+- `.auto-context`: 위키 생성 원천에서 제외됩니다. 그 안의 `.auto-context/wiki`는
+  wiki collection 루트이므로 검색 대상입니다.
+
+**인덱싱 끄기.** minimal settings에는 `indexing` 키가 없습니다. settings 파일이 있으면
+켜지고, 사용자 로컬 optout marker(`~/.config/qmd/optout/<프로젝트 루트 해시>.json`)가
+있으면 꺼집니다. 이 marker는 프로젝트 settings보다 먼저 확인되고 settings 형식과
+무관하게 적용됩니다. 에이전트에게 "이 프로젝트에서는 auto-context 꺼줘"라고 요청하면
+marker가 기록됩니다.
+
+**선택된 laya-db route.** route record는 settings 파일의 SHA-256을 묶습니다. minimal
+settings로 선택된 route는 유도된 legacy 모양으로 검사합니다. legacy 파일로 선택된
+route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파일을 다시 쓰면 다음 훅에서
+`route_settings_changed`로 막힙니다.
+
+### legacy settings를 minimal로 바꾸기
+
+명시적으로 실행할 때만 바뀝니다. `core/setup_entry.py`의 두 action이 담당합니다
+(구현: `core/settings_migration.py`).
+
+1. `plan-minimal-settings --project <루트>`: 읽기 전용입니다. 바꿀 수 있으면
+   `review_required`와 `proposalSha256`, 새 settings, collection identity,
+   달라지는 effective 필드(`changedFields`)를 출력합니다.
+2. `migrate-minimal-settings --project <루트> --approve-settings-rewrite
+   --accepted-settings-proposal-sha256 <proposalSha256>`: 같은 제안을 다시 계산해
+   digest가 같을 때만 settings를 `{name, skipPaths}`로 다시 씁니다. 원래 바이트는
+   `.auto-context/settings.json.pre-minimal-<UTC 시각>`에 남습니다.
+
+다음 경우에는 거부합니다(`status: "refused"`, settings 바이트는 그대로).
+
+| reason | 조건 |
+|---|---|
+| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다릅니다 |
+| `settings_bytes_bound_by_laya_route` | route record가 같은 collection을 묶지만 settings SHA-256도 묶습니다. 다시 쓰면 route가 막힙니다 |
+| `settings_bound_by_laya_route` | selection marker가 있거나 route record를 읽을 수 없습니다 |
+| `settings_bound_by_initial_build` | 등록된 초기 빌드가 현재 settings를 묶습니다 |
+| `settings_bound_by_setup_journal` | `install-update-journal.json` 또는 `shared-install-journal.json`이 있습니다 |
+| `settings_bound_by_shared_store` | 공용 QMD store registry·승인·legacy enrollment에 이 프로젝트가 있습니다 |
+| `binding_probe_failed:*` | 위 binding 여부를 읽지 못했습니다 |
+| `collection_identity_changed` | 유도된 collection 이름·role·루트 또는 wiki 루트가 현재와 다릅니다 |
+| `legacy_indexing_not_enabled` | 현재 effective `indexing`이 `true`가 아닙니다. 끈 상태는 optout marker로 표현합니다 |
+| `name_required` · `invalid_skip_paths` | minimal settings로 옮길 수 없는 값입니다 |
+
+collection identity 밖의 차이(recall 조정값, compile budget, 사용자 extractor backend,
+학습 플래그 등)는 거부 사유가 아니라 `changedFields`로 보고됩니다. 제안 digest를
+승인하면 그 차이도 승인한 것입니다.
+
 ## 기본 예시
 
 ```json
@@ -46,14 +132,14 @@
 
 ## 전체 키 레퍼런스
 
-스키마의 전부입니다(61개). 여기 없는 키는 읽히지 않습니다 —
+legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-settings)는 이 중 `name`·`skipPaths`만 씁니다. 여기 없는 키는 읽히지 않습니다 —
 [설정할 수 없는 값](#설정할-수-없는-값)을 보십시오. `기본값`은 키를 적지 않았을 때의
 동작이므로, 그 값과 같은 것을 적을 필요는 없습니다.
 
 | 키 | 기본값 | 설명 |
 |---|---:|---|
 | `indexing` | `null` | `true`면 이 프로젝트에서 recall·indexing을 씁니다. `false`면 설정 파일이 있어도 effective collection이 비어 비활성처럼 동작합니다. |
-| `name` | `""` | 프로젝트 표시 이름입니다. 동작에는 영향이 없습니다. |
+| `name` | `""` | 프로젝트 이름입니다. legacy 파일에서는 동작에 영향이 없고, [minimal settings](#minimal-settings)에서는 collection 이름을 정합니다. |
 | `collections` | `[]` | qmd에 등록할 logical collection 이름 목록입니다. 비어 있으면 recall은 무동작입니다. |
 | `collectionPaths` | `{}` | collection별 프로젝트 상대 경로입니다. **인덱싱 범위를 정하는 유일한 설정입니다** → [인덱싱 범위를 줄이는 방법](#인덱싱-범위를-줄이는-방법) |
 | `collectionRoles` | `{}` | collection 역할(`raw`·`wiki`·`session`·`source`)입니다. 미설정은 `raw`, 오타 등 미지 값은 fail-closed로 전부 제외 → [Collection Roles](#collection-roles) |
@@ -63,7 +149,7 @@
 | `topN` | `3` | 주입할 최대 문서 수입니다. `minScore`가 이보다 강하게 자를 수 있습니다. |
 | `queryTimeout` | `5` | qmd query **1건**의 응답 대기(초)입니다. 전체 훅 예산이 아닙니다 → [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) |
 | `staleQueueThreshold` | `20` | dirty queue 적체 안내를 표시할 기준 줄 수입니다. |
-| `skipPaths` | `[]` | 기존 QMD에서는 recall 결과 경로 substring 필터입니다. 선택된 Laya에서는 원문 디렉터리 제외와 기존 위키 출처 보호에도 쓰입니다 → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
+| `skipPaths` | `[]` | 기존 QMD에서는 recall 결과 경로 substring 필터입니다. 선택된 Laya와 [minimal settings](#minimal-settings)에서는 위키 생성에서 제외할 원문 디렉터리이고, 선택된 Laya에서는 기존 위키 출처 보호에도 쓰입니다 → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
 | `allowRoots` | `[]` | 프로젝트 밖 절대경로 collection을 허용할 root 목록입니다. 보통 비워 둡니다. |
 | `prefixStyle` | `"full"` | recall 출력 prefix 스타일입니다(`full`·`tag`). |
 | `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. raw 결과는 원문 본문을 자동 주입하지 않습니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
@@ -1263,7 +1349,7 @@ SessionStart의 **백그라운드 worker**가 생성 카드마다 기록된 원�
 행으로 넘깁니다 — compile worker가 살아 있는 원문을 먼저 재생성한 뒤 카드를 퇴역시킵니다.
 
 **재생성은 compile trigger 동의를 따릅니다.** 해시가 바뀐 원문은
-`compile.triggers`에 `session_start_source`가 있을 때만 큐에 들어갑니다(유료 호출입니다).
+legacy settings에서는 `compile.triggers`에 `session_start_source`가 있을 때만 큐에 들어갑니다(유료 호출입니다). minimal settings(`name`·`skipPaths`만 있는 파일)는 wiki 생성이 항상 켜져 있으므로 이 동의 없이 넣습니다.
 없으면 로그에 `ENQUEUE compile_disabled`가 남고 카드는 그대로입니다 — 그 카드는 원문
 지문이 맞지 않아 recall에 주입되지 않습니다. 원문을 편집하는 경로(PostToolUse, raw
 discovery)는 기존 compile 큐로 변경을 넣고 삭제된 원문을 `sourceDelete`로 넣습니다.

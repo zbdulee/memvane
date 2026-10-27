@@ -244,6 +244,20 @@ class WikiLifecycle(unittest.TestCase):
         self.assertEqual((second['enqueued'], self.queue_rows()), (0, []))
         self.assertTrue(stale.exists() and fresh.exists())
 
+    def test_minimal_settings_regenerate_without_trigger_consent(self):
+        (self.root / '.auto-context/settings.json').write_text(json.dumps({'name': 'project'}))
+        self.source('a.md', b'first')
+        rev = self.revision('a.md')
+        rev['collection'] = 'project'
+        card = self.card('a-card.md', [rev])
+        self.source('a.md', b'edited')
+        result, _, compile_wakes = self.run_lifecycle()
+        rows = self.queue_rows()
+        self.assertEqual((result['enqueued'], len(rows), compile_wakes), (1, 1, 1))
+        self.assertEqual(rows[0]['source']['path'], 'docs/a.md')
+        self.assertEqual(rows[0]['contentRevision'], hashlib.sha256(b'edited').hexdigest())
+        self.assertTrue(card.exists())
+
     def test_card_caps_match_the_retire_helper(self):
         import wiki_source_retire
         self.assertEqual((lifecycle.MAX_CARDS, lifecycle.MAX_CARD_BYTES, lifecycle.MAX_TOTAL_BYTES),
