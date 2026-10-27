@@ -273,6 +273,14 @@ class MigrationChecks(Project):
         marker.write_text("{}")
         self.assertEqual(self.plan()["reason"], "settings_bound_by_laya_route")
         marker.unlink()
+        # An unreadable (symlinked) route record is a binding, not a crash.
+        target = self.home / "elsewhere.json"
+        target.write_text("{}")
+        (self.auto / route.RECORD).symlink_to(target)
+        unreadable = self.plan()
+        self.assertEqual((unreadable["status"], unreadable["reason"]),
+                         ("refused", "settings_bound_by_laya_route"), unreadable)
+        (self.auto / route.RECORD).unlink()
         (self.auto / "install-update-journal.json").write_text("{}")
         self.assertEqual(self.plan()["reason"], "settings_bound_by_setup_journal")
 

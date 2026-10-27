@@ -476,9 +476,10 @@ def _rewrite_selected(project: Path, auto: Path, current: dict) -> dict:
     original = settings.read_bytes()
     if hashlib.sha256(original).hexdigest() != current["settingsSha256"]:
         raise MigrationRefused("settings_changed_during_migration")
-    backup = _backup(auto, original)
     payload = payload_bytes(current["minimalSettings"])
     intent = rebind.begin(project, current["proposalSha256"], payload)
+    # The intent holds the exact old bytes too; the backup is the user's copy.
+    backup = _backup(auto, original)
     receipt = rebind.forward(intent)
     final = json.loads(settings.read_text(encoding="utf-8"))
     if config.normalize_config(final) != config.normalize_config(current["minimalSettings"]):

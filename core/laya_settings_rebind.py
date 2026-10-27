@@ -156,7 +156,8 @@ def pending_for_project(project):
     route = Path(project) / '.auto-context' / ROUTE
     try:
         record = json.loads(_read_regular(route, MAX_RECORD_BYTES).decode('utf-8'))
-    except FileNotFoundError:
+    except (OSError, ValueError, UnicodeError):
+        # No readable route: the migration binding check reports the record.
         return None
     journal = record.get('journalPath') if isinstance(record, dict) else None
     if not isinstance(journal, str) or not Path(journal).is_absolute():

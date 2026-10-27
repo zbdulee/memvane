@@ -27,6 +27,7 @@ sys.path.insert(0, str(CORE))
 import config  # noqa: E402
 import laya_active_upgrade as active  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
+import laya_qmd_cutover as qmd  # noqa: E402
 import laya_host_response as response  # noqa: E402
 import laya_inactive_upgrade as inactive  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402
@@ -75,6 +76,7 @@ def legacy_settings(raw_name, wiki_name):
 
 class SelectedProject(unittest.TestCase):
     RAW, WIKI = 'project', 'project-wiki'
+    ORIGIN = 'fresh'
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix='minimal-rebind-')
@@ -160,11 +162,29 @@ class SelectedProject(unittest.TestCase):
             'candidateIdentity': identity(self.db), 'queueIdentity': identity(self.queue),
             'catalogIdentity': identity(self.state / 'catalog.sqlite'),
             'bindingStoreIdentity': identity(self.state / 'binding.sqlite')}
-        fresh._write(self.state / fresh.LEDGER, self.ledger, replace=False)
-        fresh._write(self.auto / fresh.MARKER, fresh._marker(self.ledger), replace=False)
+        if self.ORIGIN == 'fresh':
+            self.ledger_module, self.ledger_name = fresh, fresh.LEDGER
+        else:
+            # A QMD-origin (v3) selection: it also pins the QMD source and backup.
+            for name in ('source.sqlite', 'backup.sqlite'):
+                (self.state / name).write_bytes(b'')
+            self.ledger = {**self.ledger, 'schema': qmd.SCHEMA_V3, 'sourceDigest': 'c' * 64,
+                           'sourceDb': str(self.state / 'source.sqlite'),
+                           'sourceFormat': 'qmd-2.5.3',
+                           'sourceIdentity': identity(self.state / 'source.sqlite'),
+                           'backupDb': str(self.state / 'backup.sqlite'),
+                           'backupIdentity': identity(self.state / 'backup.sqlite')}
+            qmd._validated(dict(self.ledger), self.state / qmd.LEDGER)
+            self.ledger_module, self.ledger_name = qmd, qmd.LEDGER
+        self.ledger_module._write(self.state / self.ledger_name, self.ledger, replace=False)
+        self.ledger_module._write(self.auto / self.ledger_module.MARKER,
+                                  self.ledger_module._marker(self.ledger), replace=False)
         stack = ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.object(rebind, '_provider_lane', nullcontext))
+
+    def load_ledger(self):
+        return rebind._Ledger(self.ORIGIN).load(self.state / self.ledger_name)
 
     def collections(self):
         return [{'name': self.RAW, 'role': 'raw', 'sourceRoot': str(self.project)},
@@ -224,7 +244,7 @@ class RebindChecks(SelectedProject):
         self.assert_selected_and_readable()
         proposal = settings_migration.plan(str(self.project))
         self.assertEqual(proposal['status'], 'review_required', proposal)
-        self.assertEqual(proposal['rebind']['origin'], 'fresh')
+        self.assertEqual(proposal['rebind']['origin'], self.ORIGIN)
         self.assertEqual(proposal['rebind']['staleQmdBindings'], [])
         self.assertEqual(sorted(proposal['rebind']['routeDecisionChanges']),
                          ['recallSettings'])
@@ -238,7 +258,7 @@ class RebindChecks(SelectedProject):
         self.assertEqual(json.loads(new_route)['settingsSha256'],
                          sha(self.settings.read_bytes()))
         self.assertEqual((self.state / 'reviewed-route.json').read_bytes(), new_route)
-        row = fresh._load(self.state / fresh.LEDGER)
+        row = self.load_ledger()
         self.assertEqual((row['routeSha256'], row['phase'], row['epoch']),
                          (sha(new_route), 'active', 4))
         self.assertEqual(journal_mod.inspect_journal(self.journal)['selectedRouteSha256'],
@@ -256,7 +276,7 @@ class RebindChecks(SelectedProject):
         with mock.patch.object(active, 'inspect_full_plugin_candidate',
                                side_effect=BundleEvidenceError('gone')):
             old = active._old_state(self.project, self.state, self.journal,
-                                    active._Ledger('fresh'))
+                                    active._Ledger(self.ORIGIN))
         self.assertEqual(old[2], new_route)
 
     def test_crash_between_steps_serves_read_only_then_resumes(self):
@@ -313,7 +333,7 @@ class RebindChecks(SelectedProject):
         self.assertEqual(done['status'], 'rolled_back', done)
         self.assertEqual(self.settings.read_bytes(), self.legacy)
         self.assertEqual((self.auto / host_route.RECORD).read_bytes(), self.route_raw)
-        self.assertEqual(fresh._load(self.state / fresh.LEDGER)['routeSha256'],
+        self.assertEqual(self.load_ledger()['routeSha256'],
                          sha(self.route_raw))
         self.assert_selected_and_readable()
         self.assertEqual(settings_migration.plan(str(self.project))['status'],
@@ -340,7 +360,8 @@ class RebindChecks(SelectedProject):
                 'newLedger': {**self.ledger, 'phase': 'upgrading'},
                 'oldRoute': route, 'newRoute': route, 'oldAttestation': '{}',
                 'newAttestation': '{}', 'oldMarker': '{}', 'newMarker': '{}',
-                'backup': str(self.state / 'backup')}
+                'backup': str(self.state / 'backup'),
+                **({'origin': 'qmd'} if self.ORIGIN == 'qmd' else {})}
 
     def test_finished_bundle_upgrade_receipt_is_settled_first(self):
         path = self.state / active.INTENT
@@ -358,6 +379,7 @@ class RebindChecks(SelectedProject):
         refused = settings_migration.apply(str(self.project), proposal['proposalSha256'])
         self.assertEqual(refused['reason'], 'active_upgrade_unsettled', refused)
         self.assertEqual(self.settings.read_bytes(), self.legacy)
+        self.assertEqual(list(self.auto.glob('settings.json.pre-minimal-*')), [])
         self.assertFalse(rebind.intent_path(self.state).exists())
         self.assert_selected_and_readable()
 
@@ -372,6 +394,11 @@ class RebindChecks(SelectedProject):
                                        'phase': 'preparing'}))
         refused = settings_migration.plan(str(self.project))
         self.assertEqual(refused['reason'], 'settings_bound_by_unfinished_setup_journal')
+
+
+class QmdOriginRebindChecks(RebindChecks):
+    """The same migration on a QMD-origin (v3 ledger) selected route."""
+    ORIGIN = 'qmd'
 
 
 class IdentityChangeChecks(SelectedProject):
