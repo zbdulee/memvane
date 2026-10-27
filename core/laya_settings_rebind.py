@@ -1,12 +1,16 @@
-"""Recoverable rebind of a selected Laya route to new settings bytes.
+"""Recoverable rebind of a selected Laya route's settings binding.
 
-A selected route binds the exact settings bytes: the route record carries
-``settingsSha256`` and its own digest is then bound by the private
-``reviewed-route.json``, the install journal's selected route digest, the
-selection ledger (fresh-wiki or QMD-origin) and the project selection marker.
-``settings_migration`` uses this module when a settings rewrite leaves the
-expanded collection identity unchanged: only ``settingsSha256`` moves, never
-the index store, scope, generation, vector profile or plugin bundle.
+The route record carries ``settingsSha256`` and its own digest is then bound
+by the private ``reviewed-route.json``, the install journal's selected route
+digest, the selection ledger (fresh-wiki or QMD-origin) and the project
+selection marker. A rebind always writes the resolved settings identity
+(``laya_index_host_route.settings_identity_digest``) into the route, so a
+later ``skipPaths`` edit needs no rebind. Two callers move it:
+``settings_migration`` when a settings rewrite keeps the collection identity,
+and ``laya_origin_detach`` when it converts a route that still binds the
+settings file bytes (same settings bytes on both sides). Only
+``settingsSha256`` moves, never the index store, scope, generation, vector
+profile or plugin bundle.
 
 A rewrite may also rename the raw collection or expand its root to an
 ancestor, while the wiki collection (name, role, root) stays equal. The index
@@ -178,6 +182,11 @@ def load_intent(state):
     return value
 
 
+def is_conversion(intent):
+    """A byte-bound to identity-bound conversion: the settings never change."""
+    return intent['oldSettings'] == intent['newSettings']
+
+
 def _pairs(intent):
     enc = {key: intent[key].encode('utf-8') for key in
            ('oldSettings', 'newSettings', 'oldRoute', 'newRoute',
@@ -242,8 +251,13 @@ def in_flight_decision(cwd):
     if raw not in (pairs['oldRoute'], pairs['newRoute']):
         return None
     settings_raw = _read_regular(auto / SETTINGS, MAX_SETTINGS_BYTES)
-    route_raw = {pairs['oldSettings']: pairs['oldRoute'],
-                 pairs['newSettings']: pairs['newRoute']}.get(settings_raw)
+    if is_conversion(intent):
+        # Same settings bytes on both sides: the identity-bound new route is
+        # proved against whatever settings file is on disk now.
+        route_raw = pairs['newRoute']
+    else:
+        route_raw = {pairs['oldSettings']: pairs['oldRoute'],
+                     pairs['newSettings']: pairs['newRoute']}.get(settings_raw)
     if route_raw is None:
         return None
     decision = _classify_record(root, auto, path, current, route_raw=route_raw,
@@ -284,7 +298,8 @@ def verify_read_only(decision):
             _strip_epoch(row) not in (_strip_epoch(intent['oldLedger']),
                                       _strip_epoch(intent['newLedger'])) or
             row.get('phase') != 'active' or
-            settings not in (pairs['oldSettings'], pairs['newSettings'])):
+            (not is_conversion(intent) and
+             settings not in (pairs['oldSettings'], pairs['newSettings']))):
         _fail('settings_rebind_state_unexpected')
     proof = verify_rebinding_read_only(decision, pairs['oldRoute'], pairs['newRoute'])
     return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
@@ -335,7 +350,9 @@ def inspect(project, new_settings, new_collections=None):
     """
     from laya_install_journal import raw_collection_rebind
     from laya_index_host_route import (MAX_SETTINGS_BYTES, SCHEMA_V2, _classify_record,
-                                       _read_regular, select_route)
+                                       _read_regular, select_route,
+                                       settings_binding_form,
+                                       settings_identity_digest)
     from laya_install_journal import inspect_journal
     project = Path(project)
     auto = project / '.auto-context'
@@ -371,14 +388,19 @@ def inspect(project, new_settings, new_collections=None):
         _fail('selected_route_not_verified', routeState='candidate',
               routeReason=str(exc) or type(exc).__name__)
     old_settings = _read_regular(auto / SETTINGS, MAX_SETTINGS_BYTES)
-    if _sha(old_settings) != route['settingsSha256']:
+    if settings_binding_form(route, old_settings) is None:
         _fail('selected_route_settings_changed')
     moved = new_collections is not None and new_collections != route['collections']
     if moved and (not raw_collection_rebind(route['collections'], new_collections) or
                   row.get('collections') != route['collections']):
         _fail('rebound_route_identity_changed', changedRouteFields=['collections'])
-    new_route = _canonical({**route, 'settingsSha256': _sha(new_settings),
+    collections = new_collections if moved else route['collections']
+    new_route = _canonical({**route, 'settingsSha256':
+                            settings_identity_digest(project, collections),
                             **({'collections': new_collections} if moved else {})})
+    if new_route == old_route:
+        # Already identity-bound to this identity: nothing in the route moves.
+        _fail('settings_rebind_not_required')
     after = _classify_record(project, auto, auto / ROUTE, project, route_raw=new_route,
                              settings_raw=new_settings)
     if after.get('state') != 'candidate':
@@ -581,7 +603,8 @@ def _file_steps(intent, target):
     return {'reviewed': lambda: _atomic_expected(state / REVIEWED, *side('Route')),
             'route': lambda: _atomic_expected(auto / ROUTE, *side('Route')),
             'marker': lambda: _atomic_expected(auto / MARKER, *side('Marker')),
-            'settings': lambda: _settings_expected(auto / SETTINGS, *side('Settings')),
+            'settings': ((lambda: None) if is_conversion(intent) else
+                         lambda: _settings_expected(auto / SETTINGS, *side('Settings'))),
             'ledger': lambda: _ledger_step(intent, target),
             'journal': lambda: _journal_step(intent, target),
             'discovery': lambda: _discovery_step(intent, target)}

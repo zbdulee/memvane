@@ -401,6 +401,13 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     return {'status': 'review_required', 'proposalSha256': digest, **plan}
 
 
+def _settings_identity(plan):
+    """A new route binds the resolved settings identity, not the file bytes;
+    the reviewed plan proposal keeps binding the exact bytes."""
+    from laya_index_host_route import settings_identity_digest
+    return settings_identity_digest(plan['projectRoot'], plan['collections'])
+
+
 def _background_plan(project, settings_sha, source_db, scope, collections, selected,
                      runtime, observed_digest):
     from laya_qmd_migration import QMD_253
@@ -1106,7 +1113,7 @@ def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_ro
             _fail('origin_changed_before_bind')
         route = {'schema': SCHEMA_V2, 'status': 'active',
                  'projectRoot': plan['projectRoot'],
-                 'settingsSha256': plan['settingsSha256'],
+                 'settingsSha256': _settings_identity(plan),
                  'dbPath': str(candidate), 'queuePath': str(queue),
                  'dbIncarnation': incarnation, 'scopeId': plan['scopeId'],
                  'collections': plan['collections'],
@@ -1299,7 +1306,7 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
          plan['proposalSha256']).encode()).hexdigest()[:32]
     route = {'schema': SCHEMA_V2, 'status': 'active',
              'projectRoot': plan['projectRoot'],
-             'settingsSha256': plan['settingsSha256'],
+             'settingsSha256': _settings_identity(plan),
              'dbPath': str(candidate), 'queuePath': str(queue),
              'dbIncarnation': incarnation, 'scopeId': plan['scopeId'],
              'collections': plan['collections'],

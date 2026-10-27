@@ -260,8 +260,10 @@ class RebindChecks(SelectedProject):
         self.assertEqual(Path(done['backupPath']).read_bytes(), self.legacy)
         decision, _proof = self.assert_selected_and_readable()
         new_route = (self.auto / host_route.RECORD).read_bytes()
+        # The rebound route binds the resolved settings identity, not bytes.
         self.assertEqual(json.loads(new_route)['settingsSha256'],
-                         sha(self.settings.read_bytes()))
+                         host_route.settings_identity_digest(self.project,
+                                                             self.collections()))
         self.assertEqual((self.state / 'reviewed-route.json').read_bytes(), new_route)
         row = self.load_ledger()
         self.assertEqual((row['routeSha256'], row['phase'], row['epoch']),

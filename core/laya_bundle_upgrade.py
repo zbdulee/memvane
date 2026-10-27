@@ -12,6 +12,10 @@ project under its own state root to the executing bundle:
 * selected route (fresh-wiki or QMD-origin ledger): ``laya_active_upgrade``,
   then one selected sync wake.
 
+Before any of these, a selected QMD-origin or byte-bound install runs
+``laya_origin_detach.auto_converge`` once; SessionStart also requests this
+worker for such an install when no bundle changed.
+
 Source rule: the host marketplace clone is the only unattended source, and
 only when its HEAD is the installed commit (from the host's own record) and
 its tracked files are clean. Provider review runs again and is accepted only
@@ -518,9 +522,19 @@ def _host(root, home):
 
 
 def run(project_root, *, root=None, home=None):
-    """Worker: upgrade every install of one project, one state root at a time."""
+    """Worker: upgrade every install of one project, one state root at a time.
+
+    A selected install first converges to the fresh-wiki origin and an
+    identity-bound settings binding (``laya_origin_detach``), so the upgrade
+    below takes the fresh-wiki path. That step logs and never raises.
+    """
     project = Path(project_root).resolve(strict=True)
     root = Path(root or executing_root())
+    try:
+        import laya_origin_detach
+        laya_origin_detach.auto_converge(project)
+    except Exception:
+        pass  # Convergence failures are logged by the step; the upgrade runs.
     results = []
     for state in installs(project):
         with _state_lock(state) as owned:

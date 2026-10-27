@@ -72,7 +72,7 @@ class ImportGuard(unittest.TestCase):
             import laya_index_host_route, laya_host_response
             import laya_fresh_wiki_origin, laya_ledger_common
             import laya_active_upgrade, laya_bound_upgrade, laya_inactive_upgrade
-            import laya_bundle_upgrade, laya_settings_rebind
+            import laya_bundle_upgrade, laya_settings_rebind, laya_origin_detach
             import laya_product_install, laya_product_sync_worker, setup_entry
             report(loaded=loaded())
         ''')

@@ -8,8 +8,9 @@ an unregistered path is never registered here.
 
 A registry owner is a Laya owner only if its own installed state agrees:
 
-- its route record (no-follow read) binds the same settings digest that the
-  shared store approved and that the current settings file hashes to;
+- the shared store approved the digest the current settings file hashes to,
+  and its route record (no-follow read) binds either that byte digest or the
+  settings identity ``select_route`` just re-derived from that file;
 - the route's collection of that name has the registered source root;
 - select_route still classifies it as a candidate for that exact root, which
   re-checks settings, optout and route shape;
@@ -49,6 +50,24 @@ def _route_settings_digest(root: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _identity_approved(root: str, digest: str | None, decision: dict, owner: dict) -> bool:
+    """An identity-bound route whose current settings bytes are the approved ones."""
+    import hashlib
+    from laya_index_host_route import (MAX_SETTINGS_BYTES, _read_regular,
+                                       route_collections, settings_identity_digest)
+    try:
+        collections = route_collections(decision if 'collections' in decision else
+                                        {'schema': 'laya-index-route-v1',
+                                         'collectionName': decision['collectionName'],
+                                         'sourceRoot': decision['sourceRoot']})
+        settings = _read_regular(Path(root) / '.auto-context' / 'settings.json',
+                                 MAX_SETTINGS_BYTES)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (digest == settings_identity_digest(root, collections) and
+            hashlib.sha256(settings).hexdigest() == owner['settingsSha256'])
+
+
 def _root_identity(root: str) -> list[int]:
     info = os.lstat(root)
     if not stat.S_ISDIR(info.st_mode):
@@ -82,7 +101,8 @@ def project_owner(raw, base, *, snapshot=None, home=None):
         identity = _root_identity(root)
     except (OSError, ValueError, TypeError, UnicodeError):
         return None, 'owner_route_unreadable'
-    if digest != owner['settingsSha256']:
+    if digest != owner['settingsSha256'] and not _identity_approved(root, digest, decision,
+                                                                     owner):
         return None, 'stale_approval'
     if _collection_root(decision, owner['collection']) != owner['path']:
         return None, 'collection_root_mismatch'
