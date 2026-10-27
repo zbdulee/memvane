@@ -48,7 +48,6 @@ import recall as qmd_recall  # noqa: E402
 import wiki_compile as wc  # noqa: E402
 import wiki_freshness as wf  # noqa: E402
 import wiki_source_missing as wsm  # noqa: E402
-import yaml_scalars  # noqa: E402
 
 # 백필 대상 프로젝트 기본 목록.
 DEFAULT_PROJECTS = [
@@ -265,39 +264,13 @@ def declared_source_paths(block: str):
     이 저장소의 `COLLECTION_ROLE_INVALID` 와 같은 규칙이다: "키 없음"과 "키 있음 + 값
     미지"를 구분하고 후자는 fail-closed.
     """
-    sections = wc._frontmatter_sections(block)
-    if sections is None:
+    # 표기 판정은 core SSOT(`wiki_source_missing.declared_source_records`) 하나다 —
+    # SessionStart 수명 주기의 레거시 카드 백필도 같은 판정을 쓴다.
+    records, state = wsm.declared_source_records(block)
+    if state != wsm.SOURCES_OK:
         return set(), False
-    lines = None
-    for key, section_lines in sections:
-        if key == "sources":
-            lines = section_lines
-            break
-    if lines is None:
-        return set(), False
-    inline = qmd_recall.sources_inline_entry(lines[0].split(":", 1)[1])
-    children = [line for line in lines[1:] if line.strip()]
-    # 들여쓴 자식이 전부 `- ` 항목이 아니면 block mapping·여러 줄 flow 다(두 번째 파서가
-    # 필요한 형태 — recall 도 지원하지 않고 사유로만 남긴다).
-    if any(not line.strip().startswith("- ") for line in children):
-        return set(), False
-    entries = qmd_recall.frontmatter_source_entries(block)
-    if len(entries) != len(children) + (1 if inline else 0):
-        # 파서가 본 항목 수와 실제 줄 수가 어긋난다 — 무엇을 놓쳤는지 알 수 없다.
-        return set(), False
-    paths = set()
-    for raw in entries:
-        record, problem = yaml_scalars.load_flow_mapping(raw)
-        if problem or not isinstance(record, dict):
-            return set(), False
-        if record.get("kind") != qmd_recall.SOURCE_KIND_FILE:
-            # 비파일 출처(session/url)는 파일 경로를 주장하지 않는다 — 정상 항목이다.
-            continue
-        path = record.get("path")
-        if not isinstance(path, str) or not path:
-            return set(), False
-        paths.add(path)
-    return paths, True
+    return {record["path"] for record in records
+            if record.get("kind") == qmd_recall.SOURCE_KIND_FILE}, True
 
 
 def compare_source_blobs(root: Path, source_rel: str, data: bytes,

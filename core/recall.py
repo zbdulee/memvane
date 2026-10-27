@@ -2140,9 +2140,19 @@ def _main():
                      and payload.get('context_origin') == 'tool_edit')
     deferred_replay = (internal_edit and
                        os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') == '1')
-    # The old opt-in/out key is intentionally not consulted. The selected Laya
-    # route has its own required selector; legacy QMD retains this model stage.
-    live_selection = True
+    # Selected Laya recall requires its own selector. On legacy QMD, retain
+    # the baseline pool until a prepared local checkpoint (or an approved
+    # shared trial) exists. The removed project flag cannot opt out of either.
+    try:
+        from context_learning.seam import _private_state
+        local_state = _private_state(
+            config, Path(found_config['projectRoot']), create=False)
+        local_checkpoint = (local_state is not None
+                            and not (local_state / 'active-checkpoint.json').is_symlink()
+                            and (local_state / 'active-checkpoint.json').is_file())
+    except (OSError, ValueError, KeyError, TypeError):
+        local_checkpoint = False
+    live_selection = shared_trial or local_checkpoint
     # Only the new shared trial uses resource-dependent pool sizing. Existing
     # local live selection and the 24-hour autoCycle retain their old bounds.
     live_plan = None

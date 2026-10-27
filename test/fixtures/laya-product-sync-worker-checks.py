@@ -622,6 +622,7 @@ class V2WorkerChecks(unittest.TestCase):
     def hook_world(self):
         import laya_install_journal
         import laya_local_embed_provider
+        from context_learning import seam,live_select
         real_queue=runtime_work.WakeQueue
         payloads=tempfile.TemporaryDirectory(prefix='laya-hook-payload-')
         self.addCleanup(payloads.cleanup)
@@ -643,9 +644,13 @@ class V2WorkerChecks(unittest.TestCase):
                         'providerArtifactSha256':profile['providerArtifactSha256'],
                         'vector':[1.0,0.0]}
             return embed
+        def choose(_state,_prompt,rows,**_kwargs):
+            return [row['id'] for row in rows[:3]],'selected',{}
         with patch.dict(os.environ,env,clear=True),\
                 patch.object(runtime_work,'WakeQueue',lambda root=None:real_queue(self.home)),\
                 patch.object(runtime_work,'wake',side_effect=AssertionError('hook spawned')),\
+                patch.object(seam,'_private_state',return_value=self.home),\
+                patch.object(live_select,'choose',side_effect=choose),\
                 patch.object(laya_install_journal,'verify_selected_route',side_effect=journal),\
                 patch.object(laya_local_embed_provider,'ReviewedLocalQmdProvider',
                              side_effect=provider):
@@ -742,7 +747,7 @@ class V2WorkerChecks(unittest.TestCase):
                                  ['beta/sightings.md','beta/two.md'])
             after=self.fresh_context(self.home)
         # No verified card remains; standalone raw files are never a fallback.
-        self.assertIn('0 matching documents',after)
+        self.assertEqual(after,'')
         self.assertNotIn('"alpha/river.md"',after)
         self.assertNotIn('"alpha/estuary.md"',after)
         self.assertNotIn('The otter guards the south dam.',after)
@@ -771,7 +776,7 @@ class V2WorkerChecks(unittest.TestCase):
         copied,untracked=self.worktree(tracked=True),self.worktree(tracked=False)
         with self.hook_world() as queue:
             before=self.fresh_context(nested)
-            self.assertIn('0 matching documents',before)
+            self.assertEqual(before,'')
             self.assertNotIn('South dam card',before)
             # Wiki create outside any hook.
             self.card('dam-card.md','South dam card','The otter guards the south dam.',river)
