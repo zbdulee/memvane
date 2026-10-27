@@ -28,8 +28,11 @@ summary; from the `wiki-dedup` skill on an explicit user request → report the 
 1. Resolve the plugin root from the host-provided plugin environment, with a repository fallback:
    `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`.
    Every CLI call below uses `"$ROOT"` — never a bare relative path.
-2. Read `.auto-context/compile/dedup-needed.jsonl` in the target project.
-   Empty or missing → release the run-lock and stop; nothing to do.
+2. Before reading the queue, run
+   `python3 "$ROOT/core/wiki_dedup_resolve.py" --cwd <cwd> --recover-queue`.
+   It reclaims dead-owner `dedup-needed.jsonl.claimed.*` files under the queue
+   lock. Then read `.auto-context/compile/dedup-needed.jsonl` in the target
+   project. Empty or missing → release the run-lock and stop; nothing to do.
 3. Before resolving ANY entry, read the whole queue and group entries into clusters: two entries
    belong to the same cluster when they share a page (e.g. (A,B) and (B,C) share B → one cluster
    {A,B,C}). An entry sharing no page with any other entry is its own cluster and needs nothing
@@ -93,6 +96,16 @@ summary; from the `wiki-dedup` skill on an explicit user request → report the 
       --delete <wiki-root-relative path of the page being deleted>`
       (or `--action skip` with no `--delete` for non-duplicates).
    e. Record the CLI's JSON stdout for your own tracking.
+      In a journal-selected Laya project, a successful merge also records a
+      private recovery copy under `.auto-context/compile/dedup-recovery/` and
+      durably requests a project-wide `laya-sync` after the loser is removed.
+      If that wake fails, the CLI fails and retains the queue pair. On retry,
+      step 4.a's stale `--action skip` requests the sync before acknowledging
+      the pair. The sync rebuilds membership from current source files: the
+      deleted card leaves the next search generation, the edited keeper is
+      reembedded, and unchanged chunk vectors can be reused. Do not send the
+      selected project to the legacy QMD dirty queue or write the Laya search
+      queue directly.
    f. If any CLI call exits non-zero or prints non-JSON: STOP the whole run — do not process
       further entries. You cannot tell whether the queue mutated before the failure, and
       continuing risks double-processing against stale indices. Release the run-lock; whatever
