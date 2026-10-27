@@ -20,6 +20,10 @@ bundle file paths. A changed model, runtime, closure or provider byte is
 never accepted here; the install keeps its bundle and the notice says why.
 A host whose bundle is older than the bound one never downgrades it.
 
+A busy provider/compute lane or install lock is contention, not a failure:
+the worker waits it out a few times, then leaves a ``deferred`` status that a
+later session retries after ``DEFER_RETRY_SECONDS`` without spending an attempt.
+
 Until an upgrade completes, a selected project serves its last published
 generation read-only (``laya_install_journal.verify_selected_route_read_only``).
 """
@@ -47,6 +51,14 @@ RETRY_SECONDS = 600
 REFUSED_RETRY_SECONDS = 6 * 3600
 MAX_FAST_ATTEMPTS = 3
 DEADLINE_SECONDS = 1800
+DEFER_RETRY_SECONDS = 120
+# In-worker waits before a busy lane is left to a later session.
+BUSY_BACKOFF_SECONDS = (5, 15, 45)
+# Lane or lock contention: the same request succeeds once the holder is done,
+# so it is deferred and retried and never counts as a failed attempt.
+DEFERRALS = frozenset((
+    'learning_compute_busy', 'learning_inference_deadline',
+    'initial_build_busy', 'active_upgrade_resident_busy'))
 # Provider manifest keys that may name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
@@ -105,7 +117,7 @@ def read_status(state):
         return None
     if (not isinstance(value, dict) or value.get('schema') != SCHEMA or
             value.get('status') not in ('running', 'complete', 'failed', 'refused',
-                                        'current') or
+                                        'current', 'deferred') or
             not isinstance(value.get('executingRoot'), str) or
             type(value.get('updatedNs')) is not int or
             type(value.get('attempts')) is not int):
@@ -172,6 +184,8 @@ def _due(status, root, now):
         return age >= RUNNING_SECONDS
     if status['status'] == 'refused':
         return age >= REFUSED_RETRY_SECONDS
+    if status['status'] == 'deferred':
+        return age >= DEFER_RETRY_SECONDS
     if status['status'] == 'failed':
         wait = (RETRY_SECONDS * max(1, status['attempts'])
                 if status['attempts'] < MAX_FAST_ATTEMPTS else REFUSED_RETRY_SECONDS)
@@ -209,6 +223,10 @@ def notice_line(state, code):
                 'setup skill to upgrade or rebuild the Laya index.')
     if status == 'complete':
         return (head + 'index upgrade finished; the next session uses it.')
+    if status == 'deferred':
+        return (head + 'index upgrade waits for a busy lane (' + reason + '); '
+                'search serves the last published index read-only and a later '
+                'session retries shortly.')
     return (head + 'automatic index upgrade failed (' + reason + '); search '
             'stays read-only on the last published index and a later session '
             'retries.')
@@ -477,6 +495,28 @@ def _reason(exc):
         else type(exc).__name__
 
 
+_sleep = time.sleep
+
+
+def _upgrade_with_backoff(project, state, root, home):
+    """``upgrade_install``, waiting out a busy lane a few times in-process."""
+    for wait in (*BUSY_BACKOFF_SECONDS, None):
+        try:
+            return upgrade_install(project, state, root, home)
+        except Exception as exc:
+            if wait is None or _reason(exc) not in DEFERRALS:
+                raise
+            _log(state, f'upgrade busy {_reason(exc)} retry_in={wait}s')
+            _sleep(wait)
+
+
+def _host(root, home):
+    try:
+        return host_layout(root, home)[0]
+    except UpgradeRefused:
+        return 'unknown'
+
+
 def run(project_root, *, root=None, home=None):
     """Worker: upgrade every install of one project, one state root at a time."""
     project = Path(project_root).resolve(strict=True)
@@ -492,9 +532,9 @@ def run(project_root, *, root=None, home=None):
                         prior['executingRoot'] == str(root) else 0) + 1
             _write_status(state, status='running', executingRoot=str(root),
                           attempts=attempts, reason='')
-            _log(state, f'upgrade started root={root.name}')
+            _log(state, f'upgrade started host={_host(root, home)} root={root.name}')
             try:
-                result = upgrade_install(project, state, root, home)
+                result = _upgrade_with_backoff(project, state, root, home)
                 status = ('current' if result.get('status') == 'current'
                           else 'complete')
                 _write_status(state, status=status, executingRoot=str(root),
@@ -505,9 +545,17 @@ def run(project_root, *, root=None, home=None):
                               attempts=attempts, reason=str(exc))
             except Exception as exc:
                 reason = _reason(exc)
-                result = {'status': 'failed', 'reason': reason}
-                _write_status(state, status='refused' if reason in REFUSALS else 'failed',
-                              executingRoot=str(root), attempts=attempts, reason=reason)
+                if reason in DEFERRALS:
+                    # Keep the prior attempt count: contention is not a failure.
+                    result = {'status': 'deferred', 'reason': reason}
+                    _write_status(state, status='deferred', executingRoot=str(root),
+                                  attempts=attempts - 1, reason=reason)
+                else:
+                    result = {'status': 'failed', 'reason': reason}
+                    _write_status(state,
+                                  status='refused' if reason in REFUSALS else 'failed',
+                                  executingRoot=str(root), attempts=attempts,
+                                  reason=reason)
             _log(state, f"upgrade {result.get('status')} {result.get('reason', '')}")
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
