@@ -157,6 +157,27 @@ done < <(sort -u "$SNAP")
 rm -f "$SNAP"
 [ "${#ENTRIES[@]}" -eq 0 ] && { ack_claim; exit $?; }
 
+# A project that now selects a Laya route is synced by that route's own
+# full-scan owner, and its retired QMD collections are never written again.
+# Its legacy entries are dropped with this claim instead of retaining the
+# whole claim (and every other project's edits) behind its setup guard.
+LAYA_ROUTE_SCRIPT="${QMD_CORE_LAYA_ROUTE_SCRIPT:-$_QMD_ROOT/core/laya_index_host_route.py}"
+KEPT=()
+for e in "${ENTRIES[@]}"; do
+  remainder="${e#*$'\t'}"
+  path="${remainder%%$'\t'*}"
+  owner=""
+  [[ "$remainder" == *$'\t'* ]] && owner="${remainder#*$'\t'}"
+  state="$(python3 "$LAYA_ROUTE_SCRIPT" classify index "${owner:-$path}" 2>/dev/null)" || state=""
+  if [ "$state" = candidate ]; then
+    log "selected Laya route owns ${e%%$'\t'*} — legacy entry dropped"
+    continue
+  fi
+  KEPT+=("$e")
+done
+[ "${#KEPT[@]}" -eq 0 ] && { ack_claim; exit $?; }
+ENTRIES=("${KEPT[@]}")
+
 # Resolve every dirty collection before any QMD write. Mixed project queues
 # must never be handed to a single global-index update.
 ROUTES=()

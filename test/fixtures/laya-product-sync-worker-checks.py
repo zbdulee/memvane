@@ -63,6 +63,26 @@ class WorkerChecks(unittest.TestCase):
                     'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
         self.refreshed={**self.proof,'selectionEpoch':8}
 
+    def test_repeatedly_failing_qmd_wake_does_not_starve_selected_sync(self):
+        import runtime_work
+        controller=Coordinator();controller.root=self.project
+        queue=runtime_work.WakeQueue(self.project)
+        queue.put('index','',now=0)
+        self.assertTrue(worker._higher_priority_wake(controller))
+        def failed(_row):return False
+        for wall in (100,200,300):
+            runtime_work.drain(queue,execute=failed,ready=lambda:True,clock=lambda:0,
+                               wall=lambda wall=wall:wall,sleep=lambda _s:None,max_runs=1)
+        row,=queue.pending()
+        self.assertEqual(row['attempts'],3)
+        self.assertLessEqual(row['due'],time.time())
+        # Due, but already failing on its own backoff: the sync keeps going.
+        self.assertFalse(worker._higher_priority_wake(controller))
+        queue.put('update','0'*32,now=time.time()+3600)
+        self.assertFalse(worker._higher_priority_wake(controller))
+        queue.put('update','1'*32,now=0)
+        self.assertTrue(worker._higher_priority_wake(controller))
+
     def test_build_attempt_reason_is_fixed_and_non_sensitive(self):
         self.assertEqual(worker._build_attempt_reason(
             IndexContractError('provider_start_failed')), 'provider_start_failed')

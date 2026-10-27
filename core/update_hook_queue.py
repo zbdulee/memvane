@@ -26,6 +26,15 @@ def _private_queue():
 SETUP_REQUIRED = 'setup_required_store_not_selected'
 
 
+def _laya_selected(cwd):
+    """True only when the project's update route is a selected Laya route."""
+    try:
+        from laya_index_host_route import select_route
+        return select_route(str(cwd), action='update').get('state') == 'candidate'
+    except Exception:
+        return False
+
+
 def _no_project_config_candidate(cwd):
     """find_project_config reads unreadable settings as 'none'; recheck files."""
     import config as qmd_config
@@ -300,10 +309,17 @@ def worker(key):
             try:
                 import setup_guard
                 if setup_guard.status(cwd)['status'] != 'ready':
+                    laya = _laya_selected(cwd)
                     _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',
-                        'cwdHash': key, 'status': 'setup_required', 'at': time.time()})
-                    output.write(f'{time.time():.3f} setup required; job retained\n'); output.flush()
-                    return
+                        'cwdHash': key, 'status': 'setup_required', 'at': time.time(),
+                        **({'reason': 'laya_route_selected'} if laya else {})})
+                    output.write(f'{time.time():.3f} setup required'
+                                 f'{" (selected Laya route)" if laya else ""}; job retained\n')
+                    output.flush()
+                    # A selected Laya route owns this project's updates; the
+                    # legacy job can only run again after a route rollback, so
+                    # its wake is ACKed. Other setup-required jobs keep theirs.
+                    return SETUP_REQUIRED if laya else None
                 import qmd_route
                 try:
                     selected = qmd_route.project_paths(cwd)
