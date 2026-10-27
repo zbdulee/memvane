@@ -71,7 +71,6 @@ flowchart TD
 - [`core/wiki_compile_worker.py:879-908`](../../../core/wiki_compile_worker.py#L879-L908): 다음 경우를 `extractor_failed`로 기록합니다: 경로 탈출, `.md`가 아닌 파일, 숨김 경로, 컬렉션 불일치, compile source role이 아닌 파일.
 - [`core/wiki_compile_worker.py:909-929`](../../../core/wiki_compile_worker.py#L909-L929): 최신 미해결 pending을 바인딩한 다음 안정 snapshot을 뜨고, `maxSourceChars` 한도 안에서 decode합니다.
 - [`core/wiki_compile_worker.py:930-952`](../../../core/wiki_compile_worker.py#L930-L952): extractor를 띄우기 전에 두 가지 비용 가드를 적용합니다. 하나는 verify inconclusive suppression이고, 다른 하나는 selected route에서 이미 compile된 revision입니다. 두 번째 가드는 pending이 없고 `partialCompile`이 아닐 때만 적용됩니다.
-- [`hooks/run-hook:92-94`](../../../hooks/run-hook#L92-L94): local trial marker가 있으면 `QMD_AUTO_COMPILE_DISABLED`를 설정합니다. 자동 compile이 source 텍스트를 모델로 보내지 않게 하기 위해서입니다.
 
 ### QA 증거와 미검증
 

@@ -9,26 +9,13 @@ development execution guard is separate; see
 
 ## Connected runtime paths
 
-- Legacy QMD route: `recall.main` advertises foreground demand
-  (`runtime_work.foreground`) throughout retrieval and context construction; it
-  does not acquire compute or wait for a background QMD command to finish. The
-  shared selector inference service owns model inference serialization.
-  Optional priority-registration failure does not discard otherwise available
-  retrieval.
-- Legacy QMD route: `update.sh` update/embed and `backend/index_worker.sh` QMD operations enter the
-  same Coordinator compute lease as learning. A busy lease, foreground demand or
-  resource refusal returns 75; the worker releases writer/embed locks and retains
-  its durable job/claim. Resource refusal bypasses in-lock shell retry sleeps.
-- Legacy QMD route: post-embed orphan cleanup uses that same lease. Resource refusal preserves
-  its pending marker and a routed cleanup wake without consuming a failure
-  cooldown. Retry resolves the current project's index again, instead of
-  inheriting another project's INDEX_PATH.
-- The queued SessionStart worker waits for its embed child and ACKs only the
-  actual `completed` phase. Lexical-ready or embed-failed cannot erase that job.
+- Retired wake kinds: `index`, `update` and `cleanup` rows that an older
+  installed bundle queued are acknowledged once by `runtime_handlers.retired`
+  without any work.
 - `LocalTrainer.call` also admits old explicit adapter calls through the shared
   compute lease. Already coordinated v2 adapters skip that outer lease and use
-  their existing per-group TrainingGuard, avoiding recursive acquisition. Raw
-  QMD and legacy children inherit their operation lease, so parent exit cannot
+  their existing per-group TrainingGuard, avoiding recursive acquisition.
+  Legacy adapter children inherit their operation lease, so parent exit cannot
   release compute while that child is still running.
 - Selected Laya route wakes: `core/laya_host_response.py` queues `laya-sync` and
   `laya-compile` through `runtime_work.request`. Both are kinds in
@@ -76,17 +63,14 @@ development execution guard is separate; see
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
 - A selected sync yields (`laya_sync_yield_priority`) only to a due `index` or
-  `update` wake that has failed fewer than 3 times; a repeatedly failing
-  legacy row keeps its own backoff without blocking the sync. The index worker
-  drops legacy dirty entries whose project now selects a Laya route, and the
-  update worker ACKs the wake of such a project's setup-required job (the job
-  stays for a route rollback).
+  `update` wake that has failed fewer than 3 times. Those retired kinds are
+  acknowledged on dispatch without work.
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
   `laya_query_resource_deferred`, keeps the loaded model, and persists no prompt.
   Laya recall does not call `runtime_work.foreground`, so it advertises no
-  foreground demand to background QMD or learning work.
+  foreground demand to background learning work.
 - Runtime OS reports include macOS pressure level plus `memory_pressure -Q`,
   total/available memory and system load. Linux keeps PSI semantics rather than
   inventing a macOS free percentage. Denied/unknown observations defer work.
@@ -111,9 +95,9 @@ the UID-global Laya coordination locks. The root comes from the OS UID home,
 not overridden HOME/CODEX_HOME. It stores no prompts, bodies, arbitrary argv or
 credentials. Original content queues, claims and model cursors own actual work.
 
-Dirty enqueue, SessionStart enqueue and local learning launch persist wake hints
-before detaching. Python hook completion and SessionStart enqueue wake a single
-bounded waiter. The worker lease is passed through spawn to prevent one waiter
+Selected-route hook wakes (`laya-sync`, `laya-compile`) and local learning
+launch persist wake hints before detaching. A hook wake starts a single bounded
+waiter. The worker lease is passed through spawn to prevent one waiter
 per session. Index readiness work precedes learning. Version-matched wake ACKs
 preserve an enqueue that arrived during dispatch. After a crash/reboot, obtaining
 the worker kernel lease allows interrupted `running` hints to become pending;
@@ -136,9 +120,9 @@ new hook. When that daemon/monitor is absent, after logout or reboot the next
 normal hook is needed.** No boot/login service,
 LaunchAgent, extra credential or security permission is used.
 
-Learning retries recheck the common setup guard and retain the existing history
+Learning retries recheck `laya_learning.ready` and retain the existing history
 worker fence. The runtime dispatcher starts at most one owned learning child
-per private learning root and returns immediately, so index and update wakes
+per private learning root and returns immediately, so `laya-sync` wakes
 can progress while the child runs. A general/legacy full request is persisted
 before its child starts; after a crash the request is retried under a bounded
 restart count. The teacher's existing uncertain-send receipts still decide
@@ -158,17 +142,16 @@ Routine pressure yielding happens before the next full optimizer group, after
 the previous head/cursor was committed. The parent does not independently kill
 an adapter during that resource yield. Existing emergency RSS, monitor failure
 and wall-time failure cleanup remain failure paths, not successful checkpoints.
-QMD CLI and legacy non-cursor adapter calls are indivisible boundaries: they
+Legacy non-cursor adapter calls are indivisible boundaries: they
 finish the current call, then refuse the next one if pressure has risen. The
 plugin never SIGSTOPs a job holding shared locks, and signals no existing user
 session or inbox process for scheduling.
 
 This is cooperative scheduling, not an OS hard aggregate CPU/RSS cap. System
 load is a moving average; brief peaks or another app allocating memory inside
-an indivisible command can outpace the next observation. QMD batch sizing has
-not been invented through undocumented CLI flags. Foreground retrieval gets
-admission priority but cannot preempt an already running atomic QMD operation;
-SQLite/backend contention may still affect latency. Compatibility requires all
+an indivisible command can outpace the next observation. Foreground retrieval
+cannot preempt an already running atomic embedding or model operation; SQLite
+contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
 tools outside these plugin paths are not intercepted.
 
@@ -176,15 +159,12 @@ tools outside these plugin paths are not intercepted.
 
 | Entry point | Ownership and admission | Bounded refusal/fallback |
 |---|---|---|
-| QMD cold start/reload | Existing endpoint ownership lock plus common fresh resource admission and compute lease, only through bind/health proof or cleanup; a durable private startup reservation survives parent loss | Endpoint ownership lock and compute contention defer immediately. New startup scanning/readiness shares a ten-second budget. No compute FD is inherited by the service daemon. A healthy proved endpoint bypasses cold admission. Reload checks admission before stopping its owned daemon. Cold start may satisfy a foreground demand; ordinary retrieval keeps its existing timeout/empty-context fallback. |
 | general/synthetic/manual teacher and quota CLI | One private UID `provider.lock`, separate from compute. Admission precedes source/budget mutation; every new teacher phase rechecks before a reservation and every actual Popen rechecks immediately before launch, even for inherited/nested lanes. The owned CLI inherits the provider FD. A nested builtin adapter verifies an already-held inode/lock and reuses it. | New work never waits for this lane. Initial refusal retains queued content and returns `deferred_resource`. A late pre-send rejection preserves its reservation/receipt for review, described below. Awaiting a remote response does not hold compute; remote launch while owning compute is refused. Existing per-call timeouts, consent, quota and uncertain-send/no-repeat receipts remain authoritative. A sent call is not automatically replayed by the wake waiter. |
 | wiki extract/verify/dedup, custom argv and topical provider attempts | Shared provider transport for custom children and direct builtin adapters. Explicit topical and manual budget flows acquire admission before reservation. | Pre-send resource refusal is exit75/`resource_deferred`; compile/verify/dedup keep jobs without failure cooldown or changing engine. Owned children use a bounded process group. An uncertain explicit attempt remains subject to its original receipt and retry policy. |
-| optional vector warm | Health probe remains cheap; opt-in warm reaches the common admission facade | QMD has no attested server-side cancellation/deadline contract, so vector POST is withheld with `warm_server_deadline_unavailable`, including on a healthy host. A curl timeout is not treated as server completion. |
 | model/artifact hashes, installed binding/inventory and cohort preparation | Common compute lease in a reentrant preparation scope; existing worker/namespace locks retained | Each 1MiB hash read and cohort/installation checkpoint releases and rechecks compute. Fresh observations are reused for at most0.5s within the same preparation, still subject to the two-second freshness rule. Background preparation has a thirty-second budget. The verified owner of a foreground inference slot may prepare without rejecting its own demand, using nonblocking compute and the smaller of one second and the remaining hook budget. All other background contexts still yield to demand. Partial hashes are never trusted or published; a later attempt recomputes them. |
 
 The cold-start 2048MiB estimate and preparation/provider 512MiB estimates are
-admission estimates, not measured peaks or enforced RSS caps. Startup cleanup may
-add the existing bounded child waits to the readiness budget. Cooperative checks
+admission estimates, not measured peaks or enforced RSS caps. Cooperative checks
 cannot interrupt a kernel file read. A preparation denied partway through may
 have added cohort exposure assignments; these are conservative history, not a
 completed learning job, and are never deleted to obtain fresh identities.
@@ -193,21 +173,20 @@ Preparation ends before trainer dispatch, so nested local trainer admission does
 not acquire compute recursively. Resource deferral is kept distinct from an
 authorization failure in the affected train/evaluation and worker return paths.
 The common coordinator still does not preempt an indivisible already-admitted
-QMD/model operation or impose an OS hard CPU limit. Raw operator tools outside
+model operation or impose an OS hard CPU limit. Raw operator tools outside
 the supported plugin entry points remain outside this contract.
 
 Startup, provider, preparation and probe limits:
 
-- Startup publishes/fsyncs `startup-reservation.json` before a child can be
-  launched or an owned reload can stop its daemon. A parent crash or unproved
-  cleanup leaves this barrier after the kernel compute lease closes. All common
-  compute, inference-compute, provider and new-start admissions then return
-  `qmd_startup_recovery_required`; they never wait indefinitely or duplicate the
-  start. Only the current nonce owner removes it after proved publication or a
-  known child exit. **There is no automatic orphan-reservation recovery, TTL
+- `startup-reservation.json` in the common UID root is a durable startup
+  barrier. No current plugin path writes it; one left by an older bundle's
+  daemon startup makes all common compute, inference-compute, provider and
+  new-start admissions return `qmd_startup_recovery_required`; they never wait
+  indefinitely. **There is no automatic orphan-reservation recovery, TTL
   clearing or blind PID adoption.** A surviving reservation needs explicit
   ownership/proof review before a later repair. This conservative fallback can
-  defer optional selector inference; available QMD retrieval keeps its fallback.
+  defer optional selector inference; recall keeps the verified rows' hybrid
+  rank.
 - A provider's durable dispatch-intent write is followed by another fresh check.
   `PreSendDeferred` is emitted only before that Popen was called. For gold work,
   a late resource refusal records `pre_send_rejected/resource_deferred`, retains
@@ -221,8 +200,8 @@ Startup, provider, preparation and probe limits:
   ownership (including the service's direct apply gate), preserving the owning
   request deadline and leaving that parent lease intact. Foreground preparation
   verifies its own inference-slot capability rather than ignoring global demand.
-  Oversized cold identity work may exhaust its short budget and return the
-  original QMD result.
+  Oversized cold identity work may exhaust its short budget; recall then keeps
+  the verified rows' hybrid rank.
 - Probe time is included. `resource_report` shares one deadline across all macOS
   subprocess probes: at most two seconds or the caller's shorter remaining
   budget. Exhaustion starts no later probe, makes the report unready, and is
@@ -236,7 +215,7 @@ Startup, provider, preparation and probe limits:
 
 The monitor runs only inside the shared Laya selector inference daemon
 (`context_learning/inference_service.py`, hosted by the per-user resident
-service); a QMD HTTP daemon running alone does not host it.
+service).
 
 `inference_service._serve` supervises one separate model-free monitor child.
 Sampling therefore does not wait behind its model scoring thread, GPU work or
@@ -332,17 +311,19 @@ uncertainty check completes before that path.
 `runtime_cpu.py` centralizes the25% CPU fraction used by the development guard
 and the managed child's nominal parallelism reservation. A private UID kernel
 pool contains `floor(logical CPUs*0.25)` one-thread shares:18logical CPUs admit
-4shares, not4.5 rounded up. Every LocalTrainer child and provider Popen, Laya
-shared/legacy resident worker, QMD daemon and guarded QMD operation reserves one.
+4shares, not4.5 rounded up. Every LocalTrainer child, provider Popen and the
+learning inference service hosted by the resident service reserves one; the
+resident service's embedding host does not.
 Busy/unknown capacity defers without stealing a lease. Spawned children inherit
 CPU descriptors; the parent's close does not release a share while an inherited
 copy remains open. No daemon inherits the startup parent's compute descriptor.
-Daemons conservatively retain their CPU share while idle. Fewer than4 or unknown
-logical CPUs cannot fit one share and defer rather than assume capacity.
-At4–7logical CPUs, QMD can occupy the only share; at8–11logical CPUs, QMD+Laya
-can occupy both. Training/provider work can then remain deferred until a share
-is actually released. Normal OS pressure alone cannot release an occupied
-share; the policy does not automatically stop daemons or expand its fraction.
+The hosted learning inference service conservatively retains its CPU share
+while idle. Fewer than4 or unknown logical CPUs cannot fit one share and defer
+rather than assume capacity. At4–7logical CPUs, the learning inference service
+can occupy the only share. Training/provider work can then remain deferred
+until a share is actually released. Normal OS pressure alone cannot release an
+occupied share; the policy does not automatically stop the service or expand
+its fraction.
 
 Before dependent numerical imports, managed child environments overwrite unsafe
 parent parallelism values with1:OpenMP, MKL, OpenBLAS (including its default
@@ -369,17 +350,15 @@ Each trainer's whole observed process group is compared to its allocated
 100%-per-share CPU allowance (100%means one logical CPU in `ps`). Exceeding it
 uses the existing cooperative yield/grace/TERM/KILL route. OS load/pressure,
 foreground demand, RSS, durable cursor and unknown-cleanup gates remain binding.
-QMD refusal before Popen uses an explicit pre-send rejection and settles its
-startup reservation, because no child exists; a launched/unknown child never
-gets that exemption. Provider CPU refusal also precedes dispatch-intent marking.
+A CPU-share refusal before Popen uses an explicit pre-send rejection, because
+no child exists; a launched/unknown child never gets that exemption. Provider CPU refusal also precedes dispatch-intent marking.
 
 This is a nominal shared reservation plus sampled response, **not a CPU quota**.
 Independent native pools may run simultaneously even with each pool set to1.
 Torch CPU setters do not limit GPU/MPS work, driver/system threads, arbitrary
 provider programs, explicit library overrides or unknown descendants. A native
 program may close its inherited descriptor, ending that nominal reservation
-before all its work ends. The QMD shell/Node/native FD lifetime and effective
-native settings are still unverified. The development guard's observed tree
+before all its work ends. The development guard's observed tree
 threshold uses the same fraction but is not an observed aggregate meter across
 every operating plugin and development process. No hard global25% guarantee is
 claimed. Missing observations/cleanup continue to defer; no OS guard is disabled.
@@ -492,3 +471,13 @@ from injected analytical tests; the shared OS reporter always attaches it.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired as
   before.
+- Embedding runtime: the embedding worker runs the Laya embedding runtime under
+  `~/.local/state/laya/embed-runtime` (`active.json`, `previous.json`,
+  content-addressed `generations/g-<id>/`). The bundle upgrade worker fills it
+  from an install's sealed provider attestation. On a new machine the owner
+  runs `core/setup_entry.py provision-index-runtime
+  --approve-index-runtime-download [--provider-model-file <local gguf>]`
+  (network: npm registry and model host); `index-runtime-status` re-hashes the
+  active generation, and `gc-index-runtime [--approve-index-runtime-gc]`
+  removes generations that are neither active, previous, nor named by an
+  install attestation.

@@ -26,7 +26,7 @@ domain are proved. Keep every ID in the run record, including non-PASS rows.
 | Install and settings | Exact installed bytes and loaded hooks, scoped setup decision, retained settings | A matching version string alone, or a direct core script call |
 | Source to wiki | Consented change reaches a verified current card, with source revision and locator; duplicate triggers do not cause duplicate paid work | All asynchronous queues globally empty before other QA |
 | Search and injection | Both hosts select the current wiki card, inject bounded wiki text and a verified source locator; Laya has no independent raw document hit | Force the agent to open a raw file or answer a raw-only token without tools |
-| Data migration and recovery | QMD/source/backup preservation, wiki-only Laya seal, scoped cutover, rollback before first write and forward recovery afterward | Delete an old store merely because a new candidate exists |
+| Onboarding and recovery | Source/wiki/settings preservation, wiki-only Laya seal, scoped activation, restore before the first selected write and forward recovery afterward | Delete an old store merely because a new candidate exists |
 | Boundaries | No cross-project results, normal work stays responsive, unsupported cells are reported honestly | Treat an optional hardware cell as tested on the available Mini |
 
 **Queue interpretation.** `pending` is ordinary asynchronous work unless a
@@ -38,8 +38,8 @@ an exceeded scenario deadline or a stale selected card are separate failures.
 No global `queue_count=0` precondition exists. A sync snapshot is not a wiki
 compile ACK, and an empty queue is not a search result.
 
-**Evidence reuse.** Keep source-level CI, immutable model provenance, QMD
-inventory, consistent backup and synthetic guard results as preflight where
+**Evidence reuse.** Keep source-level CI, immutable model provenance,
+consistent backup and synthetic guard results as preflight where
 their inputs are unchanged. An old candidate's complete L1 `PASS` never
 transfers to a different artifact hash. Batch fixes before final QA, then run
 the exact installed identity/core smoke and only the affected scenario
@@ -340,10 +340,10 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | 행 | 설치 후보에서 확인할 실제 결과 |
 |---|---|
 | LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | 선택된 프로젝트의 QMD 설정·원문·위키·색인 범위를 read-only inventory로 고정하고, 일관된 백업을 별도 DB로 복원해 비교한다. 새 Laya 후보에는 **위키 문서만** membership·본문·FTS·벡터로 재색인하고 원본 원문은 출처·최신성 증거로만 확인한다. 불일치/중단 시 이전 선택이 유지된다. |
-| LI-SCOPE | opt-out, worktree 분리, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
+| LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
+| LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
 | LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
-| LI-COEXIST | 별도 global QMD를 그대로 보존하고, 플러그인 소유가 증명된 QMD runtime만 복원 가능한 격리 후보로 분류한다. 불확실한 소유권은 보존하고 영구 삭제는 별도 결정한다. |
+| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/laya/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
 | LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
 | LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
 
@@ -355,7 +355,7 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | 행 | 현재 경계와 필요한 증거 |
 |---|---|
 | LI-INST/LI-VECTOR | 자기참조 없는 attestation, 실제 설치 cache의 0755 파일 검증, 소유 journal·private socket, 모델/native closure 검토 자료 생성은 합성 구현됐다. 정확한 최종 commit을 실제 marketplace가 로드한 위치에서 검토·승인하고, 선택된 모델의 tokenizer/청킹·자원 동작을 확인해야 한다. 기존 2회 기능 smoke는 소진됐으며 이 행의 L1 증거가 아니다. |
-| LI-MIG/LI-RECOVER | raw+wiki 두 컬렉션의 inventory, 백업·복원 비교, 후보 봉인, route/journal 중단점 복구를 합성 구현했다. 실제 QMD 소유 데이터의 read-only 범위·일관성 검토와 설치 후보에서 변경·중단점 재시작·전진 복구가 필요하다. 원본과 백업은 보존한다. |
+| LI-MIG/LI-RECOVER | 위키 후보 봉인과 route/journal 중단점 복구를 합성 구현했다. 설치 후보에서 변경·중단점 재시작·전진 복구가 필요하다. 원문·위키·settings는 보존한다. |
 | LI-RECALL | 선택된 hook의 warm provider, QMD 형식 FTS, 위키 계층·EP·DF 정책은 소스 및 합성 fixture에 연결됐다. 희귀 CJK Script 경계와 반복 DF 탐색의 시간 제한·부분 결과 폐기는 합성으로 확인했다. 실제 최대 규모 corpus의 훅 지연과 같은 corpus의 fresh Claude/Codex 검색 결과는 측정하지 않았다. |
 | RQA-RES-02 | durable learning queue의 중복 방지·재시작·부하 대기/재시도는 합성 검사했다. 실제 설치 후보에서 OS 압력 증가 시 중지·회복 후 재개는 별도 안전 범위의 실제 head 학습 검증이 필요하다. |
 
@@ -365,7 +365,6 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | 코드 경계 | 필요한 수정·검사 |
 |---|---|
 | `core/laya_product_bundle.py`의 production approval | 자기참조는 installer-owned attestation으로 제거했다. 이제 실제 host가 로드한 exact commit의 파일·모델·native closure를 검토해 journal에 봉인하고, 설치 뒤 source와 바이트가 같은지 확인해야 한다. |
-| `core/laya_qmd_migration.py`의 vector candidate | 제품 cutover는 boolean 승인 대신 journal-bound provider/profile을 검사한다. 단일 raw 범위만 지원하므로 원문·위키 별도 collection을 하나의 세대에 봉인하고 동일 tokenizer/청킹 결과를 확인해야 한다. |
 | `core/laya_host_response.py`의 selected route | 선택된 recall은 warm provider를 호출하고 update/index는 durable wake로 보낸다. 최종 설치 후보의 승인된 provider, 실제 fresh Claude/Codex 세션, QMD 대비 검색 정책을 검증해야 한다. |
 
 Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선택 검토 항목이다.
@@ -387,9 +386,9 @@ identity is proved by content hashes (section 5), not by version strings.
 Operator rules:
 
 - Product interaction uses natural-language requests or the exposed skills
-  (`setup`, `query`, `sync`, `update`, `wiki-compile`). The
-  operator must not run `core/*`, `core/update.sh`, `skills/*/scripts/*` or
-  backend scripts directly to make a scenario progress. Doing so invalidates
+  (`setup`, `query`, `update`, `wiki-compile`). The
+  operator must not run `core/*` or `skills/*/scripts/*` directly to make a
+  scenario progress. Doing so invalidates
   that scenario's run. The scenario must restart from its preconditions.
 - Outside the product, the operator may do only three kinds of work: actions
   that simulate the user (the fixture helper's Git actions, host marketplace
@@ -438,12 +437,13 @@ Operator rules:
   [development resource safety](development-resource-safety.md)). Never run
   the gate in a maintainer's daily account.
 - **Clean state.** A clean state has no qmd-auto-context plugin in either host,
-  no plugin runtime roots or shared store, no `~/.config/qmd` plugin state, no
-  previous fixtures, and no global Git `core.hooksPath`. Record how the state
+  no plugin state under `~/.local/state/laya` or
+  `~/Library/Application Support/qmd-auto-context`, no previous fixtures, and no global Git `core.hooksPath`. Record how the state
   was reset: new account, snapshot restore, or documented removal.
 - **Approvals recorded before running:**
   - QA host use and model-usage cost cap for host sessions.
-  - Package execution and lifecycle scripts, if the managed QMD install path is used.
+  - Network access for embedding runtime provisioning (npm registry and model
+    host), unless a reviewed local copy of the pinned GGUF is supplied.
   - Wiki extractor/verifier cost cap (RQA-WIKI-*).
   - Learning approval with safe test resources (RQA-RES-02 only).
 - **Data limits.** Real learning, manuscripts and operating DB writes are out
@@ -455,8 +455,8 @@ Operator rules:
   session with its own `QMD_RECALL_LOG="$EVID/recall-<host>-<run-session-id>.log"`.
   This setting writes diagnostics
   to a file only; it never writes to model context. Do not set test-only
-  variables such as `QMD_SKIP_BACKGROUND_WORKER`, `QMD_FORCE_DEAD_PIDS`,
-  `QMD_QUERY_FIXTURE` or `QMD_FAKE_PLATFORMS`. If any is present, the run is
+  variables such as `QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE` or
+  `QMD_SANDBOX`. If any is present, the run is
   invalid. `LAYA_QA_SYNC_BARRIER` is allowed only in the RQA-RACE-01 Part B
   session, with that part's arm file. In any other scenario it invalidates
   the run.
@@ -508,46 +508,23 @@ observed before the preflight was `READY`:
 - This preflight does not change any status that is already recorded in this
   document.
 
-**Reproducible Codex example (synthetic fixture, generic paths).** This
-example shows how to tell "approval pending" apart from a product defect. It
-does not change any recorded scenario status.
-
-1. Install the exact candidate in the QA account and record PF-ID. Create a
-   fixture with
-   `python3 -B test/fixtures/release-qa-fixture.py create /tmp/qmd-rqa-<runId>-codex-pf`.
-   Leave `project/` unconfigured, so the pre-edit gate should hold edits
-   pending.
-2. In an earlier candidate revision without hook trust, a fresh Codex session
-   asked "README.md 끝에 한 줄 추가해줘" and `apply_patch` changed the file.
-   Classify that observation as **approval pending** (PF-TRUST `not ready`),
-   not `PASS` or a proved product defect. Run `cleanup` on the fixture and
-   create a new one; do not repair the old one by hand.
-3. In the Codex official UI, trust only the folder `<fixture>/project`. Then
-   review and trust exactly the nine commands from the installed
-   `hooks/hooks-codex.json`. Each command has the form
-   `"<INSTALL_PATH>/hooks/run-hook" <name> codex`, where `<name>` is one of
-   `update-queued`, `topical-reconcile`, `recall`, `gate`, `posttool`,
-   `index`, `compile`, `topical-event` and `topical-stop`. Record this list as
-   the trust scope.
-4. On the revised candidate, start a fresh Codex session in the new fixture
-   and repeat the request. The PreToolUse `gate` hook denied `apply_patch`;
-   `git status --porcelain -- README.md` stayed empty. Preserve the hook
-   denial trace and compare the file SHA-256 before and after in future runs.
-   The two observations involve different candidate revisions, so they do
-   not isolate trust as the only cause. PF-TRUST is now `ready`; functional
-   scenarios (RQA-INST-01, RQA-HOOK-02) still run separately and record
-   their own status.
+**Codex trust scope.** The installed `hooks/hooks-codex.json` holds nine
+commands of the form `"<INSTALL_PATH>/hooks/run-hook" <name> codex`, where
+`<name>` is one of `update-queued`, `topical-reconcile`, `recall`, `gate`,
+`posttool`, `index`, `compile`, `topical-event` and `topical-stop`. Trust only
+the exact fixture folder and these commands in the Codex official UI, and
+record the list as the trust scope.
 
 ## 4. Supported OS and host matrix
 
 | Cell | Platform | Product support | Gate requirement |
 |---|---|---|---|
-| T1 | macOS arm64, current maintainer macOS release (record exact build) | Managed QMD + v2 routing | **Mandatory:** all scenarios for Claude Code and Codex |
-| T1-node | Same as T1, second Node LTS (22 vs 24) | Managed QMD accepts both | **Mandatory:** RQA-INST-01 + core smoke |
+| T1 | macOS arm64, current maintainer macOS release (record exact build) | Laya embedding runtime (prebuilt `mac-arm64-metal`) + selected Laya route | **Mandatory:** all scenarios for Claude Code and Codex |
+| T1-node | Same as T1, second Node LTS (22 vs 24) | Runtime provisioning accepts Node 22, 24 and 26 | **Mandatory:** RQA-INST-01 + core smoke |
 | T1-py | Same as T1, hooks run by the system `python3` (macOS ships 3.9) | Hook floor is Python 3.9 | **Mandatory:** core smoke with the host-resolved `python3`; record its version |
-| N26 | T1 with Node 26 Current | Native compatibility probe still pending (README) | Optional; release notes must say "unverified" unless RQA-INST-01 + core smoke PASS |
-| U-intel | macOS x86_64 | `setup_required`; existing global QMD preserved | RQA-PLAT-01 if hardware exists; otherwise `NOT RUN` + release note |
-| U-linux | Linux x86_64/arm64 | Managed v2 unsupported; existing global hook path only | RQA-PLAT-01 recommended; otherwise `NOT RUN` + release note |
+| N26 | T1 with Node 26 Current | Runtime provisioning accepts Node 26; native compatibility unverified | Optional; release notes must say "unverified" unless RQA-INST-01 + core smoke PASS |
+| U-intel | macOS x86_64 | Provider review refuses (`reviewed_native_platform_unsupported`); user QMD data untouched | RQA-PLAT-01 if hardware exists; otherwise `NOT RUN` + release note |
+| U-linux | Linux x86_64/arm64 | Provider review refuses (`reviewed_native_platform_unsupported`); no selected route | RQA-PLAT-01 recommended; otherwise `NOT RUN` + release note |
 | U-wsl / U-win | WSL guest / native Windows | Unverified / unsupported | Not claimed; no gate cell |
 | H-hermes | Hermes Agent on T1 | README lists it as supported | Core smoke equivalent recommended; if not run, release notes must say Hermes was not verified in this release |
 
@@ -559,8 +536,8 @@ Rules for unverified OS/host combinations:
 - Results from one cell are never copied to another cell. Each cell's record
   carries its own host, OS build and artifact identity.
 - An unsupported platform can pass only the negative-path scenario
-  RQA-PLAT-01. That scenario checks preservation and `setup_required`; it does
-  not check functionality.
+  RQA-PLAT-01. That scenario checks preservation and the provider-review
+  refusal; it does not check functionality.
 
 ## 5. Candidate and installed artifact identity
 
@@ -595,17 +572,17 @@ diff "$EVID/candidate-blobs.txt" "$EVID/installed-blobs-$HOST.txt" > "$EVID/iden
 - Every tracked path must match: same blob id, same executable bit.
 - Any extra file must be named in the run record's host-metadata allowlist
   with a justification. Extra files must not be executable, hook-related or
-  under `core/`, `hooks/`, `skills/`, `backend/` or `hermes_adapter/`. A
+  under `core/`, `hooks/`, `skills/`, `locks/` or `hermes_adapter/`. A
   symlink difference is shown in the diff and must be explained.
 - Also record the host-reported plugin version and commit. For Claude Code,
   this is the installed-plugin registry entry; for Codex, the plugin list.
 - Version consistency: one version string across `package.json`, `plugin.json`,
   `plugin.yaml`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-  `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json` and the
-  `test/probe-manifest.test.mjs` assertions.
-- Runtime identity, reported by the `setup` skill status request: QMD version
-  and entry, Node, embedding model file SHA-256, Laya state (`deferred` or a
-  reviewed identity), and selected store generation.
+  `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`.
+- Runtime identity, reported by the `setup` skill status request: the
+  embedding runtime (`runtimeId`, generation, Node and model file SHA-256),
+  Laya state (`deferred` or a reviewed identity), and selected index
+  generation.
 
 ## 6. Evidence and search-result proof
 
@@ -633,18 +610,14 @@ per-fixture id, so an earlier fixture cannot satisfy them. Record whether each
 token occurs in a raw source or in a verified wiki card before applying a
 verdict.
 
-All scenario rows below that say `Present(T)` or `Absent(T)` for a raw-only
-marker use the legacy QMD meaning while QMD is selected. After a Laya v2
-cutover, evaluate the selected, current wiki card and verified locator instead;
-raw-only markers must not create independent Laya hits. Do not relax the
+Scenario rows below that say `Present(T)` or `Absent(T)` for a raw-only
+marker are evaluated on the selected Laya route: evaluate the selected, current
+wiki card and verified locator; raw-only markers must not create independent
+Laya hits. Do not relax the
 scenario's installation, sync, freshness, scope, backup or recovery checks.
 
-- **Present(T) for a raw-source token** applies only to the legacy QMD
-  bootstrap/update path. Its selected route and fresh `qmd_recall_selection`
-  line identify the current, index-verified source path in the correct
-  `project_root`; the injected context contains a locator/title but no raw
-  body or T. On a selected Laya v2 route, raw files are not independent
-  indexed/searchable documents: a raw-only T must be absent from results and
+- **Present(T) for a raw-source token.** On a selected Laya route, raw files
+  are not independent indexed/searchable documents: a raw-only T must be absent from results and
   automatic context. Source freshness and the verified locator are checked
   through the selected wiki card, not a raw search hit.
 - `Present(T)` in older scenario steps is a legacy label for **located
@@ -660,8 +633,8 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 - **Absent(T)** means no selected current wiki card carrying T, no T in
   the injected context, and no unsupported answer containing T. An old or
   excluded source must not be served as current. A raw-only token must not
-  create a selected Laya result; the original file may still exist in QMD or
-  as a verified source of a wiki card.
+  create a selected Laya result; the original file may still exist as a
+  verified source of a wiki card.
 - A selected path by itself does not prove that its source revision is current;
   retain the index/generation and scope evidence required by the scenario.
 - In a **separate optional prompt that permits tools**, record whether the
@@ -804,58 +777,64 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 
 ### RQA-INST-01 Fresh install
 
-- **Purpose:** check first install, the unconfigured-project gate, opt-in,
-  managed setup and the first injection on a clean machine.
+- **Purpose:** check first install, the not-onboarded project, embedding
+  runtime preparation, Laya onboarding and the first injection on a clean
+  machine.
 - **Owner:** install, with search for the final probe. **Hosts:** Claude Code
   and Codex, each starting from clean state.
 - **Preconditions:**
   - Clean QA state.
-  - A supported Node LTS.
-  - A reviewed local embedding GGUF; record its SHA-256. Setup does not
-    download weights.
-  - Package-execution approval, if the managed QMD install path is used.
+  - A supported Node major (22, 24 or 26) as a real binary on `PATH` or in a
+    mise/fnm/nvm/volta/asdf/Homebrew/system install.
+  - Either the recorded network approval for runtime provisioning, or a
+    reviewed local copy of the pinned GGUF
+    (`embeddinggemma-300M-Q8_0.gguf`, SHA-256
+    `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`).
   - Fixture created.
 - **Steps:**
   1. Install the candidate through the host marketplace. On Codex, review and
      trust the exact hook commands in the official UI (preflight PF-TRUST).
   2. Run RQA-ID-00 for this host.
-  3. Start a fresh session in `project/`. Record SessionStart output: at most
-     one short setup notice, and no hook failure.
-  4. Ask "README.md 끝에 한 줄 추가해줘". Expected: the pre-edit gate stops
-     the edit and offers choices; `README.md` is unchanged (record
-     `git status`). Decline the edit.
-  5. Ask "이 프로젝트 auto-context 설치 상태 보여줘". Expected: a read-only
-     report; `git status` and the `.auto-context/` absence are unchanged.
-  6. Ask "이 프로젝트에서 auto-context 켜줘. 문서 범위는 docs/qa만." Expected:
-     `.auto-context/settings.json` names only the `docs/qa` collection.
-  7. Ask the `setup` skill for a plan ("설치 계획 보여줘"), review its roots,
-     input hashes and indexing impact, then approve ("검토한 설치를
-     진행해줘"). Grant only the approvals that are already recorded.
-  8. Record the result: `qmdReady`, `layaReady`, `overallReady`,
-     `componentReadiness`, `completionScope`.
-  9. Reload the host and start a fresh session. Probe Q-alpha.
+  3. Start a fresh session in `project/` (no `.auto-context/`). Expected: no
+     notice, no hook failure.
+  4. As the user, write the minimal settings file
+     `.auto-context/settings.json` with `{"name": "<slug>"}`. Start a fresh
+     session. Expected: exactly one SessionStart notice line that names the
+     project root and the setup skill (Codex receives it as SessionStart JSON
+     `additionalContext`). Probe Q-alpha: nothing is injected. Ask
+     "문서에서 release QA alpha 찾아줘": the query skill returns the
+     onboarding notice instead of results.
+  5. Ask "Laya 색인 준비 상태 보여줘". If the embedding runtime is missing,
+     ask the `setup` skill to prepare it, review the stated network scope
+     (npm registry, model host) or name the reviewed local GGUF, then
+     approve. Expected: the runtime status reports `runtimeId`, generation,
+     Node and model SHA-256; the model SHA-256 equals the pinned value.
+  6. Ask "이 프로젝트 auto-context 온보딩해줘". Review the plan and the
+     provider proposal digests, then approve preparation. Report build
+     progress until the worker reports a sealed build, request finalization,
+     then ask "인덱스 활성화해줘". Grant only the approvals that are already
+     recorded.
+  7. Record each phase result, including the activation's queued `syncWake`.
+  8. Reload the host and start a fresh session. Expected: no onboarding
+     notice. Probe Q-alpha.
 - **Expected:**
-  - `qmdReady: true`, with the managed binary version, index path and
-    embedding model file hash recorded separately from search proof.
-    `layaReady` is `deferred` unless the release advertises learning; in that
-    case `overallReady` and a separately reviewed Laya identity are required.
-    A QMD bootstrap PASS never implies Laya setup, training or model-use PASS.
-  - Nothing outside the fixture, the QA account's plugin runtime roots and the
+  - The settings file is byte-identical to what the user wrote.
+  - Nothing outside the fixture, the QA account's plugin state roots and the
     host plugin directories is written.
-  - On the QMD bootstrap route, Present(`ALPHA_MAIN`) within T_FRESH by the
-    legacy raw-source definition above. On a selected Laya route, verify the
-    current wiki card and its source locator instead; a token found only in
-    the raw file must not be returned. No hook timeout or failure.
+  - On the selected Laya route, a current wiki card for `docs/qa/alpha.md`
+    and its verified source locator within T_FRESH; a token found only in the
+    raw file is not returned. No hook timeout or failure.
 - **FAIL if:**
-  - The gate does not stop the edit.
-  - Install reports `completed` without scoped-search proof.
+  - The not-onboarded session shows more than one notice, or does indexing,
+    recall, compile or learning work.
+  - Activation reports success without a freshly sealed generation.
   - The probe stays absent at T_FRESH.
   - Any hook fails.
 - **Evidence:** setup outputs, settings file with its hash, `git status`
-  snapshots, recall log lines, probe transcript excerpt.
-- **Timeout:** T_INSTALL for steps 7–8; T_SCENARIO overall.
+  snapshots, SessionStart notice, recall log lines, probe transcript excerpt.
+- **Timeout:** T_INSTALL for steps 5–7; T_SCENARIO overall.
 - **Cleanup/recovery:**
-  - A `deferred` (75) result allows one identical retry.
+  - A deferred result allows one identical retry.
   - `recovery_required`: stop, preserve every journal and pointer, record
     `FAIL`, and open an issue.
   - Keep the install for later scenarios, or restore the clean state before
@@ -870,7 +849,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - Clean state.
   - The previous public release (N-1) is installed from the public
     marketplace, with its identity recorded per section 5.
-  - The fixture was opted in and indexed under N-1. Record the selected file,
+  - The fixture was onboarded and selected under N-1. Record the selected file,
     installed identity and consistent backup before updating; N-1 need not
     auto-inject or answer a token found only in the raw source.
   - The RQA-INST-03 preparation steps are done.
@@ -880,22 +859,24 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
      Reload as the host requires.
   3. In the old session, probe Q-alpha. Record the behavior: old code may
      still answer. Expected: no crash, no hook failure, no corruption.
-  4. Start a fresh session. Expected: at most one setup or update notice.
-  5. Ask "auto-context 업데이트 확인해줘" (`setup` skill `check-update`;
-     read-only). If it reports work, approve plan, prepare and apply in
-     separate requests.
+  4. Start a fresh session. Expected: at most one notice. The SessionStart
+     worker moves the fixture's install to the candidate bundle by itself;
+     until it finishes, search serves the last published index read-only and
+     the notice names the reason.
+  5. Wait for the bundle upgrade to finish. Do not run the `upgrade-*`
+     actions. A `provider_changed_rebuild_required`, `older_host_bundle` or
+     marketplace source refusal is recorded as reported.
   6. Run RQA-ID-00 against the candidate.
   7. Start a fresh session and probe Q-alpha.
 - **Expected:**
   - The installed identity equals the candidate.
-  - The check-update report is read-only.
+  - Sync, compile and index wakes wait while the bundle upgrade is pending.
   - After update, verify a current wiki card and its source locator on the
     selected Laya route. A raw-only `ALPHA_MAIN` token is absent from Laya
-    results; its source remains in the preserved QMD inventory and backup.
+    results.
   - Settings, wiki and index preserved (RQA-INST-03).
   - The old session caused no damage.
-- **Evidence:** both identities, notices, check-update and apply outputs,
-  probes.
+- **Evidence:** both identities, notices, upgrade status, probes.
 - **Timeout:** 60 min.
 - **Cleanup/recovery:** same as RQA-INST-01. The state carries over to
   RQA-INST-03 and RQA-INST-04.
@@ -907,15 +888,13 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Owner:** install. Settings are owned by the project and user.
 - **Hosts:** Claude Code, Codex.
 - **Preconditions:** under N-1, before the update in RQA-INST-02:
-  1. Ask "auto-context 설정에서 injectSourcePathsPerCard를 2로, queryTimeout을
-     4로 바꿔줘".
-  2. Confirm `compile.mode` is explicitly `"off"`.
-  3. Create a second fixture B in the same session flow and ask "이
-     프로젝트에서는 auto-context 꺼줘" there.
-  4. Record the settings bytes, SHA-256 and canonical JSON for A, the
+  1. As the user, add an entry to A's `skipPaths`. Expected: the route stays
+     selected (only a changed `name` blocks it as `route_settings_changed`).
+  2. Create a second fixture B and leave it without `.auto-context/`.
+  3. Record the settings bytes, SHA-256 and canonical JSON for A, the
      absence of `.auto-context/` in B, and the wiki file hashes for A.
-  5. Record N-1's on-disk format/version markers and representative index,
-     wiki and decision-store identities before update. Use actual N-1 output,
+  4. Record N-1's on-disk format/version markers and representative index,
+     wiki and install-journal identities before update. Use actual N-1 output,
      not a hand-written imitation of the old format.
 - **Steps:**
   1. After RQA-INST-02 completes, re-read A's settings and wiki hashes.
@@ -924,81 +903,61 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - A's settings are byte-identical, or differ only by a migration that the
     release notes document and that keeps every user value.
   - A's wiki bytes are unchanged.
-  - Every prior-format index and decision-store record is either readable by
-    the candidate or migrated through a documented path with no lost user
-    decision or source identity. Record the before/after format and any
+  - Every prior-format index and install-journal record is either readable
+    by the candidate or migrated through a documented path with no lost
+    source identity. Record the before/after format and any
     migration receipt. A fresh install alone cannot satisfy this check.
-  - In B the decline still holds: the recall log shows `no_collections`,
-    nothing is injected, and no `.auto-context/` is created.
-- **Evidence:** before/after hashes and diff, recall log lines for B.
+  - B stays silent: no notice, nothing is injected, and no `.auto-context/`
+    is created.
+- **Evidence:** before/after hashes and diff, B's session transcript.
 - **Timeout:** 20 min.
 - **Cleanup:** clean up fixture B.
 
 ### RQA-INST-04 Rollback and recovery
 
-- **Purpose:** check the recovery contract of the installer actually used by
-  the update: preserve old data and selection, and never report an
-  interrupted setup as complete. The ordinary preserving installer and
-  separate shadow installer have different rollback contracts; neither
-  path is waived by this distinction.
+- **Purpose:** check the recovery contract of the Laya selection: preserve
+  old data, restore only before the first selected write, recover forward
+  afterwards, and never report an interrupted setup as complete.
 - **Owner:** install. **Hosts:** Claude Code, Codex.
-- **Preconditions:** RQA-INST-02 state. Record the selected route, installer
-  journal/status, and hashes of settings, wiki and original DB/source
-  before applying. Keep the same reviewed request and an old session.
+- **Preconditions:** RQA-INST-02 state. Record the selected route, index
+  origin status, and hashes of settings, wiki and source before applying.
+  Keep an old session.
 
-**Part A: update, restoration and repeat under the supported installer.**
+**Part A: restore and forward recovery.**
 
-1. For the ordinary preserving `plan-install` / `install` route, verify the
-   same reviewed request and `shared-install-journal.json`. Repeat that
-   request through the setup skill if necessary; expected: a bounded defer,
-   named recovery state, or QMD-ready/completed result without loss of
-   settings, wiki, source or original DB. A selected shared store/enrollment
-   is preserved and resumed forward, not automatically rolled back.
-2. If this updated project selected a Laya route, request its official
-   restore **before** its first selected write. Expected: only the route file
-   this selection published is withdrawn, the candidate stores, ledger and
-   marker remain intact, and a fresh session no longer serves that route.
-   After a selected write, automatic rollback must be refused and owned
-   forward recovery must work. Distinct LI-RECOVER assertions may reuse the
-   same receipts. Never delete the retained selection marker or treat a new
-   origin plan after `restored_origin` as an identical installer retry.
-3. Recheck pre-apply settings/wiki/source hashes, original DB integrity,
-   selected route, status and Q-alpha in a fresh session. A repeated ordinary
-   install must preserve those originals; it does not itself reselect Laya.
-4. Only if a separately reviewed topical-card/shadow or runtime preparation
-   used `plan` / `prepare` / `activate` and has an
-   `install-update-journal.json`, ask "직전 적용을 되돌려줘" and then
-   "준비된 설치를 적용해줘" with that same request. Require pointer/settings
-   restoration, unchanged old data and fresh-session search after each
-   transition, or the named concurrent-change/recovery block. An ordinary
-   shared-install result cannot pass this separate path.
-5. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
+1. Request the official restore of this project's Laya selection
+   ("Laya 인덱스 전환을 되돌려줘") **before** its first selected write.
+   Expected: only the route file this selection published is withdrawn, the
+   candidate stores, ledger and marker remain intact, and a fresh session no
+   longer serves that route. After a selected write, restore reports
+   `blocked` with `rollback_forward_only` and the route stays selected;
+   owned forward recovery must work. Distinct LI-RECOVER assertions may reuse
+   the same receipts. Never delete the retained selection marker.
+2. Recheck pre-apply settings/wiki/source hashes, selected route, status and
+   Q-alpha in a fresh session.
+3. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
    fresh session. Expected: no hook failure, and either a working state or
-   one setup notice. If the host cannot pin a version, mark this step
-   `NOT RUN` with the reason.
+   one notice. If the host cannot pin a version, mark this step `NOT RUN`
+   with the reason.
 
-**Part B: interrupted recovery.**
+**Part B: interrupted activation.**
 
-1. Use a fresh fixture C and opt it in.
-2. Start the ordinary preserving setup install ("검토한 설치를 진행해줘")
-   through its official `install` route and record the request digest.
-3. Once its journal enters an incomplete phase such as `enrolling`, stop
-   the process executing that setup request abruptly. Do not signal an
-   unrelated shared worker or plugin child. Stopping the entire host is a
-   distinct integration observation, required to claim host interruption
-   but not to prove the install journal's abrupt-stop safety. Record which
-   process was stopped.
-4. In a fresh invocation/session, inspect the shared install journal before
-   retry. Expected: an incomplete/deferred or named recovery phase, never
-   false `completed` for the interrupted request.
-5. Repeat the identical reviewed request. Expected: QMD-ready or overall
-   completed with the same request digest, or a named deferred/recovery
-   state. Verify original DB integrity, settings and source/wiki hashes,
-   and Q-alpha from a fresh session on the selected route. Never accept
-   silent partial success. A synthetic parent-process test supports the
-   recovery mechanism but alone does not prove installed host behavior.
-   The dated `b1188c2` fixture adds a separate fresh Claude session after
-   verified-card indexing; it does not assert that the whole host was stopped.
+1. Use a fresh fixture C with minimal settings and a sealed, finalized build
+   (RQA-INST-01 steps 4–6 up to activation).
+2. Ask "인덱스 활성화해줘" and stop the process executing that setup request
+   abruptly. Do not signal an unrelated shared worker or plugin child.
+   Stopping the entire host is a distinct integration observation, required
+   to claim host interruption. Record which process was stopped.
+3. In a fresh session, ask for the index origin status. Expected: an
+   incomplete, deferred or named recovery phase, never a false selected
+   result.
+4. Resolve it only through the setup skill's documented recovery path.
+   `recovery_required` reports the observed phase after one bounded attempt;
+   record it as is and do not retry in a loop. Verify settings and
+   source/wiki hashes, and Q-alpha from a fresh session once the route is
+   selected. Never accept silent partial success. A synthetic parent-process
+   test supports the recovery mechanism but alone does not prove installed
+   host behavior.
 
 - **Evidence:** status outputs before and after, hash comparisons, probes.
 - **Timeout:** T_ROLLBACK per request; 60 min overall.
@@ -1015,20 +974,18 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Host:** Claude Code.
 - **Preconditions:**
   - RQA-INST-01 is `PASS` for Claude on this candidate.
-  - The fixture is opted in and in S-main.
+  - The fixture is selected and in S-main.
 - **Steps:**
   1. Start a fresh session in `project/`. Expected: both SessionStart hooks
      run without failure.
-  2. Probe Q-alpha. On QMD, expect the verified raw locator. On selected
-     Laya, expect a current wiki card and its verified `docs/qa/alpha.md`
-     locator if a card covers that source; never require the raw-only token
+  2. Probe Q-alpha. Expect a current wiki card and its verified
+     `docs/qa/alpha.md` locator if a card covers that source; never require the raw-only token
      or a standalone raw hit.
   3. Ask "docs/qa/agent-note.md 파일을 만들고 내용은 'The agent note marker is
      <AGENT_NOTE>.' 한 줄로 해줘". Expected: the gate allows the edit;
      posttool, index, compile and topical-event run without failure.
-  4. Probe Q-agent until T_FRESH. On QMD, expect the verified raw locator;
-     on selected Laya, expect a current wiki card and verified locator after
-     compile. Until a card exists, no raw fallback is expected.
+  4. Probe Q-agent until T_FRESH. Expect a current wiki card and verified
+     locator after compile. Until a card exists, no raw fallback is expected.
   5. Ask "Bash로 docs/qa/agent-note.md를 삭제해줘". Expected: the Bash
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).
@@ -1066,7 +1023,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   while compile is off).
 - **Hosts:** Claude Code, Codex (separate fixtures).
 - **Preconditions:** RQA-HOOK-0x is `PASS` for this host; the fixture is
-  opted in and in S-main; compile is off; no session is open.
+  selected and in S-main; compile is off; no session is open.
 - **Steps:**
   1. In a fresh session, probe Q-beta, Q-gamma and Q-delta. Expected: S-main.
      Close the session.
@@ -1090,7 +1047,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   previous branch is not injected as current.
 - **Owner:** file sync, search.
 - **Hosts:** Claude Code, Codex.
-- **Preconditions:** a fresh fixture, opted in and indexed, S-main confirmed in
+- **Preconditions:** a fresh fixture, selected and indexed, S-main confirmed in
   an open session.
 - **Steps (Claude Code):**
   1. Ask "git switch qa/feature 실행해줘". The Bash tool runs; Claude fires
@@ -1117,30 +1074,31 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 
 ### RQA-GIT-02 New worktree and actual cwd switch isolation
 
-- **Purpose:** a new worktree has its own search view, and neither the main
-  checkout nor the worktree leaks into the other.
-- **Owner:** file sync, search; install for enrollment.
+- **Purpose:** a linked worktree without its own settings gets no plugin
+  work, and its content never leaks into the main checkout.
+- **Owner:** file sync, search.
 - **Hosts:** Claude Code, Codex.
-- **Preconditions:** a fresh fixture opted in and indexed in `project/`
-  (S-main); `stage worktree-add` done. The worktree branch predates opt-in,
-  so the worktree has no settings.
+- **Preconditions:** a fresh fixture selected and indexed in `project/`
+  (S-main); `stage worktree-add` done. The worktree branch predates the
+  settings file, so the worktree has no settings.
 - **Steps:**
   1. Start a fresh host process whose actual working directory is
      `wt-worktree/` (start it from that directory; do not pass a path
-     argument). Probe Q-alpha and Q-worktree. Expected: no main-checkout
-     content is injected. Absent `ALPHA_MAIN`. The unconfigured worktree is
-     not indexed.
-  2. In that session, ask "이 프로젝트에서 auto-context 켜줘. 문서 범위는
-     docs/qa만." If the `setup` skill asks for enrollment of the new root,
-     review it and approve it.
-  3. Start a fresh session in `wt-worktree/` and probe at the T_FRESH
-     schedule. Expected: S-worktree. In particular, the same relative path
-     `docs/qa/alpha.md` yields `ALPHA_WORKTREE`, never `ALPHA_MAIN`.
-  4. Start a fresh session in `project/`. Probe Q-worktree and Q-alpha.
-     Expected: S-main-after-worktree, including the opposite result for that
-     same `alpha.md` path.
+     argument). Probe Q-alpha and Q-worktree. Expected: no notice, nothing
+     injected, and the worktree is not indexed. Absent `ALPHA_MAIN` and
+     `WORKTREE_ONLY`.
+  2. Ask the agent to edit `docs/qa/alpha.md` in `wt-worktree/`. Expected: no
+     sync wake for the main checkout.
+  3. Start a fresh session in `project/`. Probe Q-worktree and Q-alpha.
+     Expected: S-main-after-worktree, including `ALPHA_MAIN` (never
+     `ALPHA_WORKTREE`) for the same relative path `docs/qa/alpha.md`.
+- **Note:** a linked worktree whose settings derive the same name,
+  collections, paths, roles and wiki path as the selected main checkout is
+  served the main checkout's last published index read-only; sync, wiki
+  compile, wiki lifecycle and learning run only from the main checkout. This
+  fixture's worktree has no settings and does not cover that path.
 - **Evidence:** cwd and `git rev-parse --show-toplevel` per session, recall
-  `project_root` per line, probes, setup outputs.
+  `project_root` per line, probes.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; this removes the worktree too.
 
@@ -1151,7 +1109,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   Reverting them removes them.
 - **Owner:** file sync, search.
 - **Hosts:** Claude Code, Codex.
-- **Preconditions:** a fresh fixture opted in and indexed (S-main); no open
+- **Preconditions:** a fresh fixture selected and indexed (S-main); no open
   session.
 - **Steps:**
   1. Run `stage dirty`.
@@ -1173,7 +1131,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Owner:** file sync, search; runtime (wake queue, retry).
 - **Hosts:** Claude Code (Parts A and B use the Bash hook); Codex (Part C,
   plus Parts A and B with a sync request).
-- **Preconditions:** a fresh fixture, opted in and indexed, S-main.
+- **Preconditions:** a fresh fixture, selected and indexed, S-main.
 
 **Part A: mid-switch query.**
 
@@ -1185,8 +1143,8 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part B: late worker flip-flop (selected Laya Index engine).**
 
 Laya Index owns search and indexing in this release. Part B therefore runs on
-a fixture whose route was selected by the installer (LI-MIG in the same
-fixture), not on the legacy QMD writer.
+a fixture whose route was selected through setup onboarding (LI-MIG in the
+same fixture).
 
 How the selected engine enforces the invariant, and why the order differs
 from the old wording:
@@ -1269,23 +1227,17 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
      means the race did not run: `BLOCKED`, repeat with a new nonce. A fast
      flip-flop without the records cannot be `PASS`.
 
-**Legacy QMD route limitation.** A project that has not been migrated still
-uses the preserved QMD writer, which has no QA barrier or inactive DB
-publication path. This release does not build a QMD A-copy. Late-worker safety is not claimed for the legacy
-QMD route. Release notes must say "late-worker race verified only on the
-selected Laya Index engine" until a separate decision changes that.
-
 **Part C: I/O retry.**
 
 1. Close the session and run `stage deny-read`.
 2. Start a fresh session and probe Q-beta. Expected: beta is not treated as
    deleted. Its previous content stays searchable, and the I/O condition is
-   reported in hook or backend logs without a hook failure.
+   reported in hook or worker logs without a hook failure.
 3. Run `stage restore-read` and start a fresh session. Expected: normal
    state.
 
 - **Evidence:** precise timestamps (tool result, hook start, log line),
-  recall log lines, hook/backend log excerpts for the I/O condition, and the
+  recall log lines, hook/worker log excerpts for the I/O condition, and the
   `setup` skill's status report of pending or deferred work, if reported.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** run `stage restore-read` before `cleanup` (cleanup also
@@ -1300,7 +1252,7 @@ selected Laya Index engine" until a separate decision changes that.
 - **Preconditions:**
   - A recorded wiki cost approval with `compile.budget` caps.
   - The extractor and verifier engines are available.
-  - A fresh fixture, opted in.
+  - A fresh fixture, selected.
 - **Steps:**
   1. Ask "wiki compile 켜줘. SessionStart에서 감지한 원문도 wiki 대상으로 해줘."
      Expected: `compile.mode` is on, and the triggers include
@@ -1381,9 +1333,7 @@ selected Laya Index engine" until a separate decision changes that.
   - No new queue or ledger entries.
   - No extractor or verifier invocation.
   - Card bytes unchanged.
-  - On QMD, the raw document's changed locator is current within T_FRESH and
-    disappears after deletion. On Laya v2, wiki indexing still works, but
-    the changed raw-only content creates no Laya document or search hit;
+  - Wiki indexing still works, but the changed raw-only content creates no Laya document or search hit;
     the unchanged card is never presented as a fresh revision of that source.
     Compile remains OFF across retry and deletion.
 - **Evidence:** wiki listings before and after, probes, absence of compile
@@ -1398,7 +1348,7 @@ selected Laya Index engine" until a separate decision changes that.
 - **Owner:** runtime.
 - **Hosts:** Claude Code, Codex.
 - **Preconditions:** no learning profile and no grants (setup status reports
-  learning as deferred or off); a fresh fixture, opted in and indexed.
+  learning as deferred or off); a fresh fixture, selected and indexed.
 - **Steps:**
   1. In one session, run five probes, two agent edits and one sync request.
   2. Then start one fresh session.
@@ -1484,22 +1434,24 @@ selected Laya Index engine" until a separate decision changes that.
 
 ### RQA-PLAT-01 Unsupported or unverified platform
 
-- **Purpose:** on a platform without managed support, the plugin stays
-  harmless and preserves existing global QMD.
+- **Purpose:** on a platform without the prebuilt native runtime, the plugin
+  stays harmless and leaves the user's own QMD untouched.
 - **Owner:** install.
 - **Cells:** U-intel, U-linux. **Hosts:** whichever are available.
-- **Preconditions:** record before-state hashes of the global QMD binary path,
+- **Preconditions:** record before-state hashes of any global QMD binary path,
   its config and data.
 - **Steps:**
   1. Install the candidate.
-  2. Start a fresh session in a fixture.
-  3. Ask "이 프로젝트 auto-context 설치 상태 보여줘".
+  2. Start a fresh session in a fixture with minimal settings.
+  3. Ask "이 프로젝트 auto-context 온보딩해줘".
   4. Probe Q-alpha.
 - **Expected:**
-  - `setup_required` or `unsupported_managed_platform`, with manual guidance.
+  - The provider review refuses with `reviewed_native_platform_unsupported`;
+    no route is selected.
+  - At most one onboarding notice per session; nothing is injected.
   - Global QMD binaries, config and data unchanged.
-  - No hook failure, and no injection claimed through v2 routing.
-- **Evidence:** status output, before and after hashes.
+  - No hook failure.
+- **Evidence:** setup output, before and after hashes.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; restore the account state.
 
@@ -1519,7 +1471,7 @@ Scenarios respect domain ownership. Two rules apply:
 | Search | HOOK-0x, SYNC-01, GIT-*, RACE-01, WIKI-02 injection | Recall log selection lines, injected context |
 | Wiki | WIKI-01..03, SYNC-01 negative | Wiki queues, ledgers, cards, compile logs (read only) |
 | Learning | RES-02 | Learning receipts and status through the `setup` skill (read only) |
-| Install | ID-00, INST-01..04, PLAT-01, GIT-02 enrollment | Identity hashes, `setup` skill outputs, journal phase as reported |
+| Install | ID-00, INST-01..04, PLAT-01 | Identity hashes, `setup` skill outputs, journal phase as reported |
 | Runtime | RES-01, RES-02, RACE-01 retry, HOOK-0x hook budgets | Hook timings, process snapshots, deferred or retry status |
 
 ## 11. Changes after QA: reruns and identity match
@@ -1540,19 +1492,18 @@ Scenarios respect domain ownership. Two rules apply:
 
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
-| `core/recall.py`, `core/qmd_project_query.py`, `core/qmd_route.py`, `core/wiki_freshness.py`, `backend/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
-| `core/sync.py`, `core/file_change_queue.py`, `core/index_enqueue.py`, `core/update.sh`, `skills/sync/**`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
+| `core/laya_host_response.py`, `core/laya_incremental_docs_query.py`, `core/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
+| `core/laya_index_sync.py`, `core/laya_product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `core/wiki_*`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `core/context_learning/**` | RES-01, RES-02 |
-| `core/setup_entry.py`, `core/shared_*`, `core/install_update.py`, `core/qmd_shared_store.py`, `core/setup_guard.py`, `core/runtime_update.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01, GIT-02 |
-| `core/runtime_work.py`, `core/runtime_wake_policy.py`, `core/qmd_endpoint.py`, resource coordination modules, `backend/index_worker.sh` | RES-01, RES-02, RACE-01 |
-| `core/config.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
+| `core/setup_entry.py`, `core/laya_product_install.py`, `core/laya_embed_runtime.py`, `core/legacy_cleanup.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
+| `core/runtime_work.py`, `core/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
+| `core/config.py`, `core/laya_index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
 | Version strings only | INST-01, INST-02 |
 | Documentation only (`docs/**`, `README.md`; not `skills/**` or `agents/**`) | Core smoke only |
 | Any path not listed | **All** scenarios |
 
-- **Deployed identity.** The marketplace entry is not pinned to a revision
-  (see [install-update contract](install-update-contract-20261006.md)). After
+- **Deployed identity.** The marketplace entry is not pinned to a revision. After
   publishing, install from the **public** marketplace in a clean QA account.
   Run RQA-ID-00 and the core smoke. The deployed `artifactManifestSha256` must
   equal the QA'd hash. On a mismatch, the release is not announced. Retract or
@@ -1577,6 +1528,6 @@ Scenarios respect domain ownership. Two rules apply:
 | Scenario | Status | Note |
 |---|---|---|
 | RQA-ID-00, RQA-INST-01..04, RQA-HOOK-01..02, RQA-SYNC-01, RQA-GIT-01..03, RQA-WIKI-01..03, RQA-RES-01, RQA-PLAT-01 | `NOT RUN` | Specification only. No installed host, QMD, hook, install, model or network execution in this pass. The synthetic fixture helper was tested separately at L0. |
-| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected Laya Index engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. The legacy QMD writer has no barrier and its late-worker safety is not claimed (release-note limitation). |
+| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected Laya Index engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. |
 | RQA-RES-02 | `BLOCKED` | Needs separate learning approval, safe synthetic installed-candidate resources, and observed OS-pressure stop/resume. L0 queue tests do not satisfy this row. |
-| LI-INST, LI-MIG, LI-SCOPE, LI-RECOVER, LI-COEXIST, LI-VECTOR, LI-RECALL | `NOT RUN` | Exact marketplace install and fresh-host scenarios have not run. Production provider approval, migration cutover, and retrieval parity remain unresolved. |
+| LI-INST, LI-MIG, LI-SCOPE, LI-RECOVER, LI-COEXIST, LI-VECTOR, LI-RECALL | `NOT RUN` | Exact marketplace install and fresh-host scenarios have not run. Production provider approval, onboarding activation, and retrieval parity remain unresolved. |

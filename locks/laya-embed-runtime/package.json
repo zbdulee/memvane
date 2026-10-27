@@ -1,0 +1,8 @@
+{
+  "name": "laya-embed-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "node-llama-cpp": "3.18.1"
+  }
+}

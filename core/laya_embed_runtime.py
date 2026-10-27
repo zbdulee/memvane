@@ -1,19 +1,17 @@
 """Laya-owned local embedding runtime: Node, node-llama-cpp, native build, GGUF.
 
-The provider review reads its executable inventory from here, never from a
-QMD package, a QMD runtime generation or the QMD model cache. Layout, all
+The provider review reads its executable inventory from here. Layout, all
 owner-only (0700 directories, 0600/0700 files), no symlinks::
 
     ~/.local/state/laya/embed-runtime/
       .lock                  provisioning lock
       active.json            {"schema", "generation"}
+      previous.json          the generation active.json named before the last switch
       generations/g-<id>/    runtime.json, bin/node, node_modules/..., models/<gguf>
 
 The root sits beside the install state roots and the per-user service under
-the same private Laya state base. It is outside
-``~/Library/Application Support/qmd-auto-context`` (the QMD runtime tree that
-QMD removal deletes) and outside ``~/.cache`` (a cache may be purged; the
-attested provider files must not be).
+the same private Laya state base, outside ``~/.cache`` (a cache may be purged;
+the attested provider files must not be).
 
 A generation is content addressed: ``<id>`` is the digest of its sealed
 ``runtime.json`` (every file's relative path, sha256, size and exec bit), so
@@ -21,21 +19,24 @@ the same bytes always land on the same absolute paths. ``select`` re-hashes
 every file and refuses a missing, extra, changed or symlinked file.
 
 Provisioning copies bytes into a private staging directory and renames it in
-place. It never hardlinks: a second link would let the source tree (for
-example QMD's npm) rewrite the attested bytes, and the attestation validator
-refuses ``st_nlink != 1``. Sources, in order of use:
+place. It never hardlinks: a second link would let the source tree rewrite
+the attested bytes, and the attestation validator refuses ``st_nlink != 1``.
+Sources:
 
 * an install's sealed provider attestation: the exact node, module entry,
-  native closure and model files, each verified against the attested sha256;
-* the QMD managed runtime generation and QMD model cache, read as plain
-  files (``active.json`` → ``prepared.json``), with the pinned model sha256.
+  native closure and model files, each verified against the attested sha256
+  (``ensure_for_attestation``, run by the bundle upgrade worker);
+* a new machine (``provision_new``, owner approved): Node from PATH or a
+  version manager (supported majors only), ``npm ci --ignore-scripts`` of the
+  pinned lock in ``locks/laya-embed-runtime``, and the GGUF from a local file
+  or its pinned URL, accepted only with ``MODEL_SHA256``.
 
-No source downloads anything. Without a source, provisioning refuses
-``laya_embed_runtime_source_unavailable``.
+``collect`` removes generations that are neither active, previous, nor named
+by an install attestation.
 
-``RUNTIME_ID`` keeps QMD's label: the frozen provider accepts only its known
-runtime ids and binds the id into the embedding fingerprint. It names the
-node-llama-cpp 3.18.1 build that the bytes are, not a QMD dependency.
+``RUNTIME_ID`` keeps its historical label: the frozen provider accepts only
+its known runtime ids and binds the id into the embedding fingerprint. It
+names the node-llama-cpp 3.18.1 build that the bytes are.
 """
 from __future__ import annotations
 
@@ -62,10 +63,10 @@ MODEL_NAME = 'embeddinggemma-300M-Q8_0.gguf'
 MODEL = 'models/' + MODEL_NAME
 # hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf
 MODEL_SHA256 = 'f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc'
-QMD_MODEL_NAMES = ('hf_ggml-org_embeddinggemma-300M-Q8_0.gguf', MODEL_NAME)
 NATIVE_SUFFIXES = ('.node', '.dylib', '.so')
 MANIFEST = 'runtime.json'
 ACTIVE = 'active.json'
+PREVIOUS = 'previous.json'
 GENERATION = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 MAX_FILES = 50_000
@@ -275,20 +276,41 @@ def _described(generation, manifest):
                                    'bytes': row[2]} for row in native]}
 
 
-def select(home=None):
-    """The active generation, fully re-verified; refuses otherwise."""
-    runtime = _runtime_root(home)
+def _pointer(path, *, missing_ok=False):
+    """The generation name a pointer file names, or None when absent and allowed."""
     try:
-        pointer, _raw = _read_json(runtime / ACTIVE, 4096)
-    except FileNotFoundError as exc:
-        raise RuntimeUnavailable('laya_embed_runtime_missing') from exc
+        pointer, _raw = _read_json(path, 4096)
+    except FileNotFoundError:
+        if missing_ok:
+            return None
+        raise RuntimeUnavailable('laya_embed_runtime_missing') from None
     except OSError as exc:
         raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
     if (not isinstance(pointer, dict) or set(pointer) != {'schema', 'generation'} or
             pointer['schema'] != SCHEMA or not isinstance(pointer['generation'], str) or
             not GENERATION.fullmatch(pointer['generation'])):
         _fail('laya_embed_runtime_corrupt')
-    generation = runtime / 'generations' / pointer['generation']
+    return pointer['generation']
+
+
+def _activate(runtime, name):
+    """Point ``active.json`` at ``name``; the replaced one becomes ``previous.json``.
+
+    ``active.json`` keeps its exact two-key shape, which older bundles verify.
+    """
+    try:
+        current = _pointer(runtime / ACTIVE, missing_ok=True)
+    except RuntimeUnavailable:
+        current = None
+    if current is not None and current != name:
+        _write_private(runtime / PREVIOUS, _canonical({'schema': SCHEMA, 'generation': current}))
+    _write_private(runtime / ACTIVE, _canonical({'schema': SCHEMA, 'generation': name}))
+
+
+def select(home=None):
+    """The active generation, fully re-verified; refuses otherwise."""
+    runtime = _runtime_root(home)
+    generation = runtime / 'generations' / _pointer(runtime / ACTIVE)
     try:
         _owner_dir(runtime / 'generations')
         manifest = _verify_generation(generation)
@@ -468,6 +490,24 @@ def _provision(*, node, module_entry, model, expect, home=None):
     ``moduleEntry``, ``model`` (sha256) and optionally ``closure`` (attested
     native rows, compared by relative layout, sha256 and size).
     """
+    runtime = _runtime_root(home, create=True)
+    generations = _generations(runtime)
+    with _lock(runtime):
+        _seal(runtime, generations, node=node, module_entry=module_entry, model=model,
+              expect=expect)
+    return select(home)
+
+
+def _generations(runtime):
+    generations = runtime / 'generations'
+    if not generations.exists() and not generations.is_symlink():
+        os.mkdir(generations, 0o700)
+    _owner_dir(generations)
+    return generations
+
+
+def _seal(runtime, generations, *, node, module_entry, model, expect):
+    """Copy, seal and activate one generation; the caller holds the lock."""
     for path in (node, model):
         if not Path(path).is_absolute():
             _fail('laya_embed_runtime_source_unavailable')
@@ -476,57 +516,49 @@ def _provision(*, node, module_entry, model, expect, home=None):
     packages = _package_closure(module_pkg, outer.parent)
     if native not in packages:
         packages.append(native)
-    runtime = _runtime_root(home, create=True)
-    generations = runtime / 'generations'
-    if not generations.exists() and not generations.is_symlink():
-        os.mkdir(generations, 0o700)
-    _owner_dir(generations)
-    with _lock(runtime):
-        # A provisioner killed mid-copy leaves its staging tree; the lock
-        # holder is the only writer, so every leftover is stale.
-        for leftover in generations.glob('.staging-*'):
-            _remove_staging(leftover)
-        staging = generations / ('.staging-' + uuid.uuid4().hex)
-        os.mkdir(staging, 0o700)
-        try:
-            rows = []
-            (staging / 'bin').mkdir(mode=0o700)
-            rows.append([NODE, *_copy_file(Path(node), staging / NODE, True), True])
-            for package in sorted(packages):
-                _copy_package(package, outer, staging, rows)
-            (staging / 'models').mkdir(mode=0o700)
-            rows.append([MODEL, *_copy_file(Path(model), staging / MODEL, False), False])
-            _private_tree(staging)
-            rows.sort()
-            if len({row[0] for row in rows}) != len(rows):
-                _fail('laya_embed_runtime_source_unsafe')
-            manifest = {'schema': SCHEMA, 'runtimeId': RUNTIME_ID, 'node': NODE,
-                        'moduleEntry': 'node_modules/' + (module_pkg / 'dist' / 'index.js')
-                        .relative_to(outer).as_posix(),
-                        'nativePackage': 'node_modules/' + native.relative_to(outer).as_posix(),
-                        'model': MODEL, 'files': rows}
-            if not _manifest_valid(manifest):
-                _fail('laya_embed_runtime_source_unavailable')
-            described = _described(staging, manifest)
-            _check_expected(described, expect)
-            raw = _canonical(manifest)
-            _write_private(staging / MANIFEST, raw)
-            target = generations / ('g-' + hashlib.sha256(raw).hexdigest()[:32])
-            if target.exists() or target.is_symlink():
-                try:
-                    _verify_generation(target)
-                except (RuntimeUnavailable, OSError):
-                    _fail('laya_embed_runtime_generation_conflict')
-                _remove_staging(staging)
-            else:
-                os.rename(staging, target)
-            _write_private(runtime / ACTIVE, _canonical({'schema': SCHEMA,
-                                                         'generation': target.name}))
-        except BaseException:
-            if staging.exists():
-                _remove_staging(staging)
-            raise
-    return select(home)
+    # A provisioner killed mid-copy leaves its staging tree; the lock
+    # holder is the only writer, so every leftover is stale.
+    for leftover in generations.glob('.staging-*'):
+        _remove_staging(leftover)
+    staging = generations / ('.staging-' + uuid.uuid4().hex)
+    os.mkdir(staging, 0o700)
+    try:
+        rows = []
+        (staging / 'bin').mkdir(mode=0o700)
+        rows.append([NODE, *_copy_file(Path(node), staging / NODE, True), True])
+        for package in sorted(packages):
+            _copy_package(package, outer, staging, rows)
+        (staging / 'models').mkdir(mode=0o700)
+        rows.append([MODEL, *_copy_file(Path(model), staging / MODEL, False), False])
+        _private_tree(staging)
+        rows.sort()
+        if len({row[0] for row in rows}) != len(rows):
+            _fail('laya_embed_runtime_source_unsafe')
+        manifest = {'schema': SCHEMA, 'runtimeId': RUNTIME_ID, 'node': NODE,
+                    'moduleEntry': 'node_modules/' + (module_pkg / 'dist' / 'index.js')
+                    .relative_to(outer).as_posix(),
+                    'nativePackage': 'node_modules/' + native.relative_to(outer).as_posix(),
+                    'model': MODEL, 'files': rows}
+        if not _manifest_valid(manifest):
+            _fail('laya_embed_runtime_source_unavailable')
+        described = _described(staging, manifest)
+        _check_expected(described, expect)
+        raw = _canonical(manifest)
+        _write_private(staging / MANIFEST, raw)
+        target = generations / ('g-' + hashlib.sha256(raw).hexdigest()[:32])
+        if target.exists() or target.is_symlink():
+            try:
+                _verify_generation(target)
+            except (RuntimeUnavailable, OSError):
+                _fail('laya_embed_runtime_generation_conflict')
+            _remove_staging(staging)
+        else:
+            os.rename(staging, target)
+        _activate(runtime, target.name)
+    except BaseException:
+        if staging.exists():
+            _remove_staging(staging)
+        raise
 
 
 def _check_expected(described, expect):
@@ -627,47 +659,304 @@ def _reactivate(generation, manifest, closure, home):
             raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
         if not matches(described, manifest, closure):
             _fail('laya_embed_runtime_mismatch')
-        _write_private(runtime / ACTIVE, _canonical({'schema': SCHEMA,
-                                                     'generation': generation.name}))
+        _activate(runtime, generation.name)
     return select(home)
 
 
-def qmd_sources(home=None):
-    """Node, module entry and model of the QMD managed runtime, read as files."""
+# ------------------------------------------------- new-machine provisioning
+
+# Node majors the plugin supports (package.json ``engines``). A candidate is
+# accepted only after its own ``--version`` passes this gate, so manager alias
+# directories (``latest``, ``lts-*``) never select an unchecked binary.
+MIN_NODE_MAJOR = 22
+NODE_MAJORS = (22, 24, 26)
+LOCK_DIR = Path(__file__).resolve().parents[1] / 'locks' / 'laya-embed-runtime'
+MODEL_URL = ('https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/'
+             + MODEL_NAME)
+MAX_MODEL_BYTES = 2 * 1024 * 1024 * 1024
+NPM_SECONDS = 1800
+VERSION = re.compile(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)\Z')
+# Mach-O (both byte orders, 64/32-bit and fat) and ELF. A version-manager shim
+# is a script; copying it would seal a launcher, not a Node binary.
+BINARY_MAGIC = (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf',
+                b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\x7fELF')
+
+
+def _run(argv, *, cwd=None, env=None, timeout=60):
+    import subprocess
+    return subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def _version_key(path):
+    match = VERSION.fullmatch(path.name.removeprefix('node-'))
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _manager_nodes(home):
+    """Node binaries of the known version managers, newest version first."""
+    patterns = (
+        ('.local/share/mise/installs/node', 'bin/node'),
+        ('.local/share/fnm/node-versions', 'installation/bin/node'),
+        ('Library/Application Support/fnm/node-versions', 'installation/bin/node'),
+        ('.nvm/versions/node', 'bin/node'),
+        ('.volta/tools/image/node', 'bin/node'),
+        ('.asdf/installs/nodejs', 'bin/node'),
+    )
+    found = []
+    for base, tail in patterns:
+        directory = home / base
+        try:
+            versions = [path for path in directory.iterdir() if _version_key(path)]
+        except OSError:
+            continue
+        for path in sorted(versions, key=_version_key, reverse=True):
+            found.append(path / tail)
+    found.extend(Path(path) for path in ('/opt/homebrew/bin/node', '/usr/local/bin/node',
+                                         '/usr/bin/node'))
+    return found
+
+
+def node_candidates(*, path_env=None, home=None):
+    """``node`` on PATH first, then version-manager installs, then system paths."""
     home = Path(home or Path.home())
-    qmd_root = home / 'Library' / 'Application Support' / 'qmd-auto-context' / 'runtimes' / 'qmd'
+    candidates = []
+    found = shutil.which('node', path=path_env if path_env is not None
+                         else os.environ.get('PATH', ''))
+    if found:
+        candidates.append(Path(found))
+    candidates.extend(_manager_nodes(home))
+    unique = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _binary(path):
     try:
-        pointer = json.loads((qmd_root / ACTIVE).read_text('utf-8'))
-        generation = Path(pointer['generation'])
-        if generation.parent != qmd_root / 'generations':
+        with open(path, 'rb') as stream:
+            return stream.read(4) in BINARY_MAGIC
+    except OSError:
+        return False
+
+
+def discover_node(*, path_env=None, home=None, run=_run):
+    """(resolved node binary, version) of the first supported candidate."""
+    seen = []
+    for candidate in node_candidates(path_env=path_env, home=home):
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_file() or not os.access(resolved, os.X_OK):
+            continue
+        seen.append(resolved)
+        if not _binary(resolved):
+            continue
+        try:
+            result = run([str(resolved), '--version'], timeout=15)
+        except (OSError, ValueError):
+            continue
+        match = VERSION.fullmatch((result.stdout or '').strip())
+        if result.returncode != 0 or match is None:
+            continue
+        major = int(match.group(1))
+        if major >= MIN_NODE_MAJOR and major in NODE_MAJORS:
+            return resolved, match.group(0).lstrip('v')
+    _fail('laya_embed_runtime_node_unavailable')
+
+
+def _npm_cli(node):
+    """npm's own CLI script that ships beside this Node install."""
+    cli = Path(node).parents[1] / 'lib' / 'node_modules' / 'npm' / 'bin' / 'npm-cli.js'
+    if not cli.is_file():
+        _fail('laya_embed_runtime_npm_unavailable')
+    return cli
+
+
+def _install_module(node, work, *, run=_run):
+    """``npm ci`` of the pinned lock into ``work``; no lifecycle scripts."""
+    for name in ('package.json', 'package-lock.json'):
+        raw = (LOCK_DIR / name).read_bytes()
+        _write_private(work / name, raw)
+    cache = work / '.npm-cache'
+    os.mkdir(cache, 0o700)
+    env = {'PATH': str(Path(node).parent) + os.pathsep + '/usr/bin:/bin',
+           'HOME': str(work), 'npm_config_cache': str(cache),
+           'npm_config_update_notifier': 'false', 'npm_config_fund': 'false',
+           'npm_config_audit': 'false', 'npm_config_ignore_scripts': 'true'}
+    result = run([str(node), str(_npm_cli(node)), 'ci', '--ignore-scripts', '--omit=dev',
+                  '--no-audit', '--no-fund'], cwd=str(work), env=env, timeout=NPM_SECONDS)
+    if result.returncode != 0:
+        raise RuntimeUnavailable('laya_embed_runtime_npm_failed')
+    shutil.rmtree(cache, ignore_errors=True)
+    entry = work / 'node_modules' / MODULE / 'dist' / 'index.js'
+    if not entry.is_file():
+        _fail('laya_embed_runtime_npm_failed')
+    return entry
+
+
+def download(url, target, *, limit=MAX_MODEL_BYTES):
+    """Stream one HTTPS file into a new private file."""
+    import urllib.request
+    if not url.startswith('https://'):
+        _fail('laya_embed_runtime_download_refused')
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0),
+                 0o600)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            written = 0
+            while block := response.read(1024 * 1024):
+                written += len(block)
+                if written > limit:
+                    _fail('laya_embed_runtime_download_too_large')
+                view = memoryview(block)
+                while view:
+                    view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fetch_model(work, *, model_file, model_sha256, approve_download, fetch):
+    if model_file is not None:
+        source = Path(model_file)
+        if not source.is_absolute():
             _fail('laya_embed_runtime_source_unavailable')
-        prepared = json.loads((generation / 'prepared.json').read_text('utf-8'))
-        proof = prepared['proof']
-        node, qmd = Path(proof['node']), Path(proof['qmd'])
-        node_sha = proof['nodeSha256']
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
-        raise RuntimeUnavailable('laya_embed_runtime_source_unavailable') from exc
-    package = qmd.parent.parent
-    candidates = [package / 'node_modules' / MODULE]
-    if package.parent.name.startswith('@') and package.parent.parent.name == 'node_modules':
-        candidates.append(package.parent.parent / MODULE)
-    present = [path for path in candidates if (path / 'package.json').is_file()]
-    if len(present) != 1:
-        _fail('laya_embed_runtime_source_unavailable')
-    models = home / '.cache' / 'qmd' / 'models'
-    model = next((models / name for name in QMD_MODEL_NAMES
-                  if (models / name).is_file()), None)
-    if model is None:
-        _fail('laya_embed_runtime_source_unavailable')
-    return {'node': str(node), 'nodeSha256': node_sha,
-            'moduleEntry': str(present[0] / 'dist' / 'index.js'), 'model': str(model)}
+        _no_symlink_ancestor(source)
+        if _hash(source)[0] != model_sha256:
+            _fail('laya_embed_runtime_model_sha_mismatch')
+        return source
+    if not approve_download:
+        _fail('laya_embed_runtime_download_approval_required')
+    target = work / MODEL_NAME
+    try:
+        fetch(MODEL_URL, target)
+    except RuntimeUnavailable:
+        raise
+    except Exception as exc:
+        raise RuntimeUnavailable('laya_embed_runtime_download_failed') from exc
+    if _hash(target)[0] != model_sha256:
+        target.unlink(missing_ok=True)
+        _fail('laya_embed_runtime_model_sha_mismatch')
+    return target
 
 
-def provision_from_qmd(home=None, *, model_sha256=MODEL_SHA256):
-    """Copy QMD's node-llama-cpp generation and cached GGUF (pinned sha256)."""
-    sources = qmd_sources(home)
-    return _provision(node=sources['node'], module_entry=sources['moduleEntry'],
-                      model=sources['model'],
-                      expect={'node': sources['nodeSha256'], 'model': model_sha256},
-                      home=home)
+def provision_new(home=None, *, approve_download=False, model_file=None, node=None,
+                  path_env=None, model_sha256=MODEL_SHA256, run=_run, fetch=download):
+    """Build the runtime on a machine without any prior install.
 
+    Node comes from PATH or a version manager (supported majors only); the
+    pinned lock installs node-llama-cpp and its prebuilt native package with
+    ``npm ci --ignore-scripts``; the GGUF is a given local file or the pinned
+    download, accepted only with ``MODEL_SHA256``. Network access (npm
+    registry, model host) needs ``approve_download``. The result is sealed and
+    activated exactly like a copy from an attestation.
+    """
+    if not approve_download:
+        _fail('laya_embed_runtime_download_approval_required')
+    if node is None:
+        node, _version = discover_node(path_env=path_env, home=home, run=run)
+    runtime = _runtime_root(home, create=True)
+    generations = _generations(runtime)
+    with _lock(runtime):
+        for leftover in runtime.glob('.provision-*'):
+            _remove_work(leftover)
+        work = runtime / ('.provision-' + uuid.uuid4().hex)
+        os.mkdir(work, 0o700)
+        try:
+            entry = _install_module(node, work, run=run)
+            model = _fetch_model(work, model_file=model_file, model_sha256=model_sha256,
+                                 approve_download=approve_download, fetch=fetch)
+            _seal(runtime, generations, node=node, module_entry=entry, model=model,
+                  expect={'model': model_sha256})
+        finally:
+            _remove_work(work)
+    return select(home)
+
+
+def _remove_work(path):
+    if path.name.startswith('.provision-') and path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+
+
+# ------------------------------------------------------------------- gc
+
+
+def _referenced_generations(home):
+    """Generations a current install attestation still names."""
+    base = Path(home or Path.home()) / '.local' / 'state' / 'laya'
+    generations = root(home) / 'generations'
+    named = set()
+    try:
+        installs = [path for path in base.iterdir() if path.is_dir()]
+    except FileNotFoundError:
+        return named, []
+    unreadable = []
+    for install in installs:
+        path = install / 'production-provider-attestation.json'
+        if not path.is_file():
+            continue
+        try:
+            record = json.loads(path.read_text('utf-8'))
+        except (OSError, UnicodeError, ValueError):
+            unreadable.append(str(path))
+            continue
+        stack = [record]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                # The historical profile closure rows are data, not files.
+                stack.extend(item for key, item in value.items()
+                             if key != 'profileDependencyClosure')
+            elif isinstance(value, list):
+                stack.extend(value)
+            elif isinstance(value, str) and value.startswith(str(generations) + '/'):
+                head = Path(value).relative_to(generations).parts[0]
+                if GENERATION.fullmatch(head):
+                    named.add(head)
+    return named, unreadable
+
+
+def collect(home=None, *, approve=False):
+    """Remove generations other than active, previous and attested ones."""
+    runtime = _runtime_root(home)
+    generations = runtime / 'generations'
+    with _lock(runtime):
+        active = _pointer(runtime / ACTIVE)
+        previous = _pointer(runtime / PREVIOUS, missing_ok=True)
+        attested, unreadable = _referenced_generations(home)
+        rows = []
+        for path in sorted(generations.iterdir()):
+            if path.name.startswith('.staging-'):
+                rows.append({'generation': path.name, 'action': 'remove_stale_staging'})
+            elif GENERATION.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
+                reason = ('active' if path.name == active else
+                          'previous' if path.name == previous else
+                          'attested' if path.name in attested else None)
+                rows.append({'generation': path.name,
+                             'action': 'keep' if reason else 'remove',
+                             **({'reason': reason} if reason else {})})
+            else:
+                rows.append({'generation': path.name, 'action': 'keep',
+                             'reason': 'unrecognized'})
+        if unreadable:
+            # An unreadable attestation may name any generation.
+            return {'status': 'blocked', 'reason': 'attestation_unreadable',
+                    'attestations': unreadable, 'generations': rows, 'changesApplied': 0}
+        removed = 0
+        if approve:
+            for row in rows:
+                path = generations / row['generation']
+                if row['action'] == 'remove_stale_staging':
+                    _remove_staging(path)
+                elif row['action'] == 'remove':
+                    _owner_dir(path)
+                    shutil.rmtree(path)
+                else:
+                    continue
+                row['action'] = 'removed'
+                removed += 1
+    return {'status': 'collected' if approve else 'planned', 'active': active,
+            'previous': previous, 'generations': rows, 'changesApplied': removed}

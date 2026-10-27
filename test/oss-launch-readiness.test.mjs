@@ -12,9 +12,11 @@ test('README states the supported hosts and an English quickstart', () => {
   assert.match(readme, /## Quickstart \(English\)/);
 });
 
-test('README describes the actual temporary skip scope and data-handling link', () => {
+test('README describes the gate on selected and not-onboarded projects and the data-handling link', () => {
   const readme = read('README.md');
-  assert.match(readme, /프로젝트.*cwd.*2시간/);
+  assert.match(readme, /선택된 프로젝트에서.*gate가/s);
+  assert.match(readme, /온보딩되지 않은\s*프로젝트에서는 gate가 아무 작업도 하지 않습니다/);
+  assert.doesNotMatch(readme, /2시간/);
   assert.match(readme, /docs\/privacy\.md/);
 });
 
