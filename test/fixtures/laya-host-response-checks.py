@@ -246,10 +246,8 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(built.call_count, 2)
         self.assertTrue(all(call.args == (proof['providerManifest'],)
                             for call in built.call_args_list))
-        self.assertIs(queried.call_args.args[4], provider)
-        context = payload["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("docs/a.md", context)
-        self.assertNotIn("  | alpha", context)
+        queried.assert_not_called()
+        self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "")
 
     def test_selected_update_only_enqueues_and_accepts_worker_epoch_advance(self):
         import laya_install_journal
@@ -1058,7 +1056,7 @@ class ResponseChecks(unittest.TestCase):
                 requested.assert_not_called()
                 self.assertEqual(journal.call_count, 1)
                 self.assertTrue(used.released)
-        # Legacy v1 keeps its behavior even for a marked cause.
+        # A legacy v1 candidate cannot bypass the required published-wiki selector.
         import laya_install_journal
         import laya_index_runtime
         import laya_local_embed_provider
@@ -1081,8 +1079,9 @@ class ResponseChecks(unittest.TestCase):
                           return_value={'topN': 3, 'lexicalPatterns': []}), \
              patch.object(response, 'query_selected_hybrid', side_effect=legacy_stale), \
              patch.object(runtime_work, 'request') as requested:
-            with self.assertRaises(IndexContractError):
-                response.serve_selected('recall', 'claude', legacy, {'prompt': 'find alpha'})
+            self.assertEqual(response.serve_selected(
+                'recall', 'claude', legacy, {'prompt': 'find alpha'}
+            )['hookSpecificOutput']['additionalContext'], '')
         requested.assert_not_called()
 
     def test_repeated_stale_recall_coalesces_in_existing_wake_queue(self):

@@ -37,8 +37,17 @@ class Checks(unittest.TestCase):
   raw={**self.raw,'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':False},'sharedLearning':{'enabled':False,'autoApply':False}}
   self.write(self.settings,raw)
   plan=self.plan(mode='preserve');self.assertFalse(plan['localTrain']);self.assertFalse(plan['autoApply'])
-  for key in ('capture','autoCycle','liveSelection'):self.assertFalse(plan['settings']['contextLearning'][key])
+  for key in ('capture','autoCycle'):self.assertFalse(plan['settings']['contextLearning'][key])
+  self.assertNotIn('liveSelection',plan['settings']['contextLearning'])
   self.assertFalse(plan['settings']['sharedLearning']['enabled'])
+ def test_old_signed_binding_ignores_only_removed_selection_key(self):
+  old={**self.raw,'contextLearning':{'capture':False,'autoCycle':True,'liveSelection':False},
+       'sharedLearning':{'enabled':True}}
+  legacy={key:old.get(key) for key in ('contextLearning','sharedLearning','indexing','collectionPaths')}
+  row={'settings':old,'settingsBindingSha256':P.digest(legacy)}
+  current={**old,'contextLearning':{'capture':False,'autoCycle':True}}
+  self.assertTrue(P._binding_matches(row,current))
+  self.assertFalse(P._binding_matches(row,{**current,'indexing':False}))
  def test_exact_acceptance_required_and_revocation_model_change_disable(self):
   self.assertIsNotNone(P,'learning profile missing')
   plan=self.plan();key=P.digest(plan)

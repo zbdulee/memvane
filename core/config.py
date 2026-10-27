@@ -1016,15 +1016,12 @@ def normalize_config(input_config):
     config["sessionStartSync"] = raw_sync if isinstance(raw_sync, bool) else False
     learning = input_config.get('contextLearning')
     if isinstance(learning, dict):
-        live_selection = learning.get('liveSelection') is True
         config['contextLearning'] = {
             'capture': learning.get('capture') is True,
             'autoCycle': learning.get('autoCycle') is True,
-            'liveSelection': live_selection,
-            # Expansion is independently opt-in; invalid values retain the old pool.
-            # Live selection and an optional capture of its candidates must see
-            # the same 15-result pool. The ordinary observer keeps default 8.
-            'candidateTopK': 15 if live_selection else learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
+            # The legacy liveSelection key is ignored: selected Laya recall
+            # always uses the local selector, independent of project settings.
+            'candidateTopK': learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
             'stateRoot': learning.get('stateRoot') if isinstance(learning.get('stateRoot'), str) else None,
         }
         # Omission selects the per-user plugin default. Keep an explicitly

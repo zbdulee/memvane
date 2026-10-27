@@ -164,7 +164,7 @@ def synthetic_local_only(root,project,policy):
     selected=require_profile(root,policy,'local_train')
     if (selected.get('choice')!='local-staged' or selected.get('autoApply') is not False
             or selected.get('localTrain') is not True
-            or selected.get('settings',{}).get('contextLearning',{}).get('liveSelection') is not False):
+            or selected.get('settings',{}).get('sharedLearning',{}).get('autoApply') is not False):
         raise ValueError('setup_synthetic_scope_changed')
     _measured_memory(policy['adaptiveMemory'],plan['memoryEvidence'],root=root,project=Path(project),
         model_identity_sha=plan['modelIdentitySha256'],runtime_sha=file_sha(Path(policy['trainerArgv'][0]).resolve(strict=True)),
@@ -226,12 +226,10 @@ def _desired_settings(raw,root,*,mode='default'):
     if shared.get('root') not in (None,str(root)):raise ValueError('setup_namespace_changed')
     if settings.get('indexing') is False:raise ValueError('setup_indexing_disabled')
     learning.update(capture=True,autoCycle=True)
+    learning.pop('liveSelection',None)
     if mode==SYNTHETIC_STAGED:
-        learning['liveSelection']=False
         shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=False)
     else:
-        learning.setdefault('liveSelection',True)
-        if learning['liveSelection'] is not True:raise ValueError('setup_selection_disabled')
         shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=True)
     return settings
 
@@ -884,7 +882,7 @@ def bind_synthetic(plan,*,accepted_sha256,fault=lambda _:None):
         status='already_bound' if journal['phase']=='bound' else 'bound'
         if status=='bound':journal['phase']='bound';_write(path,journal)
         return {'status':status,'namespaceRoot':str(root),'acceptedSha256':accepted_sha256,
-                'teacherConsent':None,'liveSelection':False,'promotion':'disabled',
+                'teacherConsent':None,'promotion':'disabled',
                 'training':'not_started'}
 
 
