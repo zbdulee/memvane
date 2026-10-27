@@ -22,6 +22,8 @@ from runtime_wake_policy import DispatchFailure
 KINDS = frozenset(('laya-sync', 'laya-compile'))
 HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 MAX_RESULT = 65536
+# Last bytes of a failed child's stderr kept for the wake's failure record.
+STDERR_TAIL = 4096
 # Selected sync and compile had no handler wall-clock deadline. Their existing
 # step/queue policies still decide normal progress; this loose backstop detects
 # a stuck delegated child without imposing a short QA-only product timeout.
@@ -155,30 +157,59 @@ def _stop_owned_group(child):
             time.sleep(.05)
 
 
+def _drain_ready(pipe, tail, *, limit=1 << 20):
+    """Read what an exited child left in its stderr pipe without waiting."""
+    os.set_blocking(pipe.fileno(), False)
+    read = 0
+    while read < limit:
+        try:
+            raw = os.read(pipe.fileno(), 8192)
+        except BlockingIOError:
+            return
+        if not raw:
+            return
+        read += len(raw)
+        tail.extend(raw)
+        del tail[:-STDERR_TAIL]
+
+
 def _run_child(argv, project, seconds, *, owner_fd=None):
     """Bounded output and owned descendant cleanup for a sealed one-shot job."""
     env = _child_env()
     env['QMD_LAYA_WAKE_OWNER_PIPE'] = '1'
     child = subprocess.Popen(argv, cwd=project, env=env,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, start_new_session=True,
+                             stderr=subprocess.PIPE, start_new_session=True,
                              close_fds=True,
                              pass_fds=((owner_fd,) if owner_fd is not None else ()))
     deadline = time.monotonic() + seconds
     chunks = []
     used = 0
+    # Only a bounded tail is retained. stderr is drained while stdout is open
+    # so a chatty child never blocks on a full pipe; completion still follows
+    # stdout EOF alone, as a descendant may inherit stderr past the child.
+    tail = bytearray()
     selector = selectors.DefaultSelector()
     try:
         selector.register(child.stdout, selectors.EVENT_READ)
-        while selector.get_map():
+        selector.register(child.stderr, selectors.EVENT_READ)
+        while child.stdout in (key.fileobj for key in selector.get_map().values()):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(argv, seconds)
             for key, _ in selector.select(remaining):
+                if key.fileobj is child.stderr:
+                    raw = os.read(key.fd, 8192)
+                    if not raw:
+                        selector.unregister(key.fileobj)
+                        continue
+                    tail.extend(raw)
+                    del tail[:-STDERR_TAIL]
+                    continue
                 raw = os.read(key.fd, min(8192, MAX_RESULT + 1 - used))
                 if not raw:
                     selector.unregister(key.fileobj)
-                    break
+                    continue
                 used += len(raw)
                 if used > MAX_RESULT:
                     raise ValueError('target_output_limit')
@@ -187,9 +218,12 @@ def _run_child(argv, project, seconds, *, owner_fd=None):
         if remaining <= 0:
             raise subprocess.TimeoutExpired(argv, seconds)
         child.wait(timeout=remaining)
+        if child.stderr in (key.fileobj for key in selector.get_map().values()):
+            _drain_ready(child.stderr, tail)
         if child.returncode:
             _stop_owned_group(child)
-        return subprocess.CompletedProcess(argv, child.returncode, b''.join(chunks))
+        return subprocess.CompletedProcess(argv, child.returncode, b''.join(chunks),
+                                           bytes(tail))
     except BaseException:
         _stop_owned_group(child)
         raise
@@ -197,6 +231,14 @@ def _run_child(argv, project, seconds, *, owner_fd=None):
         selector.close()
         child.stdin.close()
         child.stdout.close()
+        child.stderr.close()
+
+
+def _failure_detail(child):
+    tail = getattr(child, 'stderr', None)
+    text = (tail[-STDERR_TAIL:].decode('utf-8', 'replace')
+            if isinstance(tail, bytes) else '')
+    return ('exit ' + str(child.returncode) + ('\n' + text if text else ''))
 
 
 def run(kind, value, *, owner_fd=None):
@@ -217,9 +259,11 @@ def run(kind, value, *, owner_fd=None):
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DispatchFailure('target_launch_failed', commit, bundle_sha) from exc
     except ValueError as exc:
-        raise DispatchFailure('target_child_failed', commit, bundle_sha) from exc
+        raise DispatchFailure('target_child_failed', commit, bundle_sha,
+                              detail=str(exc) or type(exc).__name__) from exc
     if child.returncode != 0:
-        raise DispatchFailure('target_child_failed', commit, bundle_sha)
+        raise DispatchFailure('target_child_failed', commit, bundle_sha,
+                              detail=_failure_detail(child))
     try:
         result = json.loads(child.stdout.decode('utf-8'))
     except (TypeError, ValueError) as exc:
@@ -229,6 +273,11 @@ def run(kind, value, *, owner_fd=None):
         raise DispatchFailure('target_result_invalid', commit, bundle_sha)
     if result['state'] not in (('drained',) if kind == 'laya-compile' else
                               ('indexed', 'unchanged')):
+        if (kind == 'laya-sync' and result['state'] == 'deferred'
+                and result.get('reason') == 'laya_service_preparing'):
+            # The target just started (or is still loading) its detached
+            # embedding owner. Waiting on that owner is not a failed attempt.
+            raise DispatchFailure('target_preparing', commit, bundle_sha)
         raise DispatchFailure('target_deferred', commit, bundle_sha)
     current = resolve(kind, value)
     if (current['terminal'] or any(current[field] != target[field]

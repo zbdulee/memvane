@@ -137,6 +137,56 @@ class DispatchBoundary(unittest.TestCase):
             self.assertEqual(failure_reason(caught.exception),
                              'dispatch:target_deferred:' + 'a' * 40 + ':' + 'c' * 64)
 
+    def test_preparing_owner_result_is_an_uncounted_wait(self):
+        root = self.bundles[0]
+        for stdout, code in ((b'{"reason":"laya_service_preparing","state":"deferred"}',
+                              'target_preparing'),
+                             (b'{"reason":"laya_service_backoff","state":"deferred"}',
+                              'target_deferred')):
+            with self.subTest(code=code), \
+                 patch('laya_index_host_route.select_route', return_value=self.route()), \
+                 patch('laya_install_journal.verify_dispatch_target',
+                       return_value=self.proof(root)), \
+                 patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
+                     returncode=0, stdout=stdout)):
+                with self.assertRaises(DispatchFailure) as caught:
+                    dispatch.run('laya-sync', self.project)
+                self.assertEqual(caught.exception.code, code)
+
+    def test_failed_child_keeps_a_bounded_stderr_tail(self):
+        root = self.bundles[0]
+        with patch('laya_index_host_route.select_route', return_value=self.route()), \
+             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+             patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
+                 returncode=1, stdout=b'',
+                 stderr=b'Traceback\nIndexContractError: provider_unavailable\n')):
+            with self.assertRaises(DispatchFailure) as caught:
+                dispatch.run('laya-sync', self.project)
+        self.assertEqual(caught.exception.code, 'target_child_failed')
+        self.assertIn('provider_unavailable', caught.exception.detail)
+        self.assertTrue(caught.exception.detail.startswith('exit 1'))
+        # The ledger reason keeps its fixed non-sensitive shape.
+        self.assertEqual(failure_reason(caught.exception),
+                         'dispatch:target_child_failed:' + 'a' * 40 + ':' + 'c' * 64)
+        failed = dispatch._run_child([sys.executable, '-c',
+            'import sys;sys.stderr.write("y"*9000+"LAST");sys.exit(3)'],
+            str(self.project), 10)
+        self.assertEqual(failed.returncode, 3)
+        self.assertEqual(len(failed.stderr), dispatch.STDERR_TAIL)
+        self.assertTrue(failed.stderr.endswith(b'LAST'))
+        # A large stderr burst never blocks the child on a full pipe.
+        flood = dispatch._run_child([sys.executable, '-c',
+            'import sys;sys.stderr.write("z"*300000);print("{}")'], str(self.project), 10)
+        self.assertEqual((flood.returncode, flood.stdout.strip()), (0, b'{}'))
+        # A descendant that inherits stderr past the child never holds the
+        # wake open: completion still follows stdout EOF and child exit. It
+        # reads the dispatcher's stdin pipe, which closes on return.
+        held = ('import subprocess,sys;'
+                'subprocess.Popen([sys.executable,"-c","import sys;sys.stdin.read()"],'
+                'stdout=subprocess.DEVNULL);print("{}")')
+        done = dispatch._run_child([sys.executable, '-c', held], str(self.project), 10)
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, b'{}'))
+
     def test_same_bundle_new_install_or_db_cannot_ack_old_work(self):
         root = self.bundles[0]
         start = {**self.proof(root), 'terminal': False, 'project': str(self.project),

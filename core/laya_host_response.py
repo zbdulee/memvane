@@ -1216,7 +1216,10 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
         _fail('selected_provider_start_failed')
     try:
         import runtime_work
-        result = runtime_work.request('laya-sync', decision['projectRoot'])
+        # A prompt that finds no vector owner brings a backed-off sync wake
+        # forward; the recorded attempts and reason stay unchanged.
+        result = runtime_work.request('laya-sync', decision['projectRoot'],
+                                      pull_due=True)
     except Exception:
         result = None
     refreshed = verify_selected_route(decision)
@@ -1231,12 +1234,45 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
         return 'selected_provider_wake_failed'
     if transition:
         _fail('selected_provider_identity_transition')
+    _restart_withdrawn_owner(decision, proof, state)
     if state is not None and state['reason'] == 'resource_deferred':
         return 'selected_provider_resource_deferred'
     if state is not None and state['reason'] in (
             'startup_failed', 'worker_exited', 'unexpected'):
         return 'selected_provider_retry_wait'
     return 'selected_provider_preparing'
+
+
+def _restart_withdrawn_owner(decision: dict, proof: dict, state) -> None:
+    """Start a withdrawn or lane-deferred owner without the sync wake.
+
+    After a bundle upgrade or lane contention the owner state is
+    starting/resource_deferred and its socket is gone. The detached spawn
+    returns at once; the owner's own 5s backoff and lease bound repeats. Only
+    the exact selected plugin root may start it, as the owner rechecks that
+    root and treats any other one as a terminal identity failure.
+    """
+    if state is None or state['reason'] not in ('starting', 'resource_deferred'):
+        return
+    manifest = proof['providerManifest']
+    if os.path.lexists(manifest['serviceSocketPath']):
+        return
+    if decision.get('pluginRoot') != str(Path(__file__).resolve().parent.parent):
+        return
+    from laya_embed_resident import ensure_running
+    from laya_index_a import IndexContractError
+    from resource_deferred import ResourceDeferred
+    try:
+        ensure_running(decision['projectRoot'], manifest)
+    except (ResourceDeferred, OSError):
+        # Best effort: the durable sync wake still retries the start.
+        return
+    except IndexContractError as exc:
+        if str(exc) == 'provider_start_failed':
+            _fail('selected_provider_start_failed')
+        raise HostResponseError('selected_provider_state_invalid') from exc
+    except Exception as exc:
+        raise HostResponseError('selected_provider_state_invalid') from exc
 
 
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,

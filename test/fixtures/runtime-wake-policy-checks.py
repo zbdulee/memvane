@@ -104,14 +104,17 @@ class PolicyDecisions(unittest.TestCase):
         self.assertEqual([policy.idle_wait(r) for r in (60, 5, 2.5, 0, -1)], [5, 5, 2.5, 0, 0])
 
     def test_settle_ack_and_retry(self):
-        self.assertEqual(policy.settle(3, done=True, now=10), {'ack': True, 'due': 10, 'reason': None})
-        self.assertEqual(policy.settle(0, done=False, now=10), {'ack': False, 'due': 15, 'reason': 'pending'})
-        self.assertEqual(policy.settle(2, done=None, now=10), {'ack': False, 'due': 30, 'reason': 'pending'})
+        self.assertEqual(policy.settle(3, done=True, now=10),
+                         {'ack': True, 'due': 10, 'reason': None, 'count': 0})
+        self.assertEqual(policy.settle(0, done=False, now=10),
+                         {'ack': False, 'due': 15, 'reason': 'pending', 'count': 1})
+        self.assertEqual(policy.settle(2, done=None, now=10),
+                         {'ack': False, 'due': 30, 'reason': 'pending', 'count': 1})
         self.assertEqual(policy.settle(0, done=False, error=RuntimeError('x'), now=10),
-                         {'ack': False, 'due': 15, 'reason': 'RuntimeError'})
+                         {'ack': False, 'due': 15, 'reason': 'RuntimeError', 'count': 1})
         deferred = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64)
         self.assertEqual(policy.settle(0, done=False, error=deferred, now=10),
-                         {'ack': False, 'due': 15,
+                         {'ack': False, 'due': 15, 'count': 1,
                           'reason': 'dispatch:target_deferred:' + 'a' * 40 + ':' + 'c' * 64})
         with self.assertRaises(ValueError):
             policy.DispatchFailure('private/path', 'a' * 40)
@@ -301,6 +304,85 @@ runtime._handoff_worker(queue,fd)
         row, = self.rows()
         self.assertEqual((row['revision'], row['status'], row['due'], row['attempts']), (2, 'pending', 50, 0))
         self.assertEqual(self.drain(lambda _: True, wall=60), {'status': 'drained', 'runs': 1})
+
+    def failing(self, code, *, detail=None):
+        def execute(_row):
+            raise policy.DispatchFailure(code, 'a' * 40, 'c' * 64, detail=detail)
+        return execute
+
+    def test_preparing_owner_wait_does_not_grow_the_backoff(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        self.drain(self.failing('target_preparing'), wall=100)
+        row, = self.rows()
+        self.assertEqual((row['attempts'], row['due']), (0, 100 + policy.RETRY_BASE_SECS))
+        self.assertTrue(row['reason'].startswith('dispatch:target_preparing:'))
+        for wall in (200, 300, 400):
+            self.drain(self.failing('target_child_failed'), wall=wall)
+        self.assertEqual(self.rows()[0]['attempts'], 3)
+        # Prior real failures stay counted; the wait itself adds none and
+        # returns after the owner's own spawn backoff.
+        self.drain(self.failing('target_preparing'), wall=1000)
+        row, = self.rows()
+        self.assertEqual((row['attempts'], row['due']), (3, 1000 + policy.RETRY_BASE_SECS))
+        self.drain(self.failing('target_deferred'), wall=2000)
+        self.assertEqual(self.rows()[0]['attempts'], 4)
+
+    def test_query_wake_pulls_a_backed_off_due_forward_without_resetting(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        for wall in range(1000, 8000, 1000):
+            self.drain(self.failing('target_child_failed'), wall=wall)
+        row, = self.rows()
+        self.assertEqual((row['attempts'], row['due']), (7, 7000 + policy.RETRY_MAX_SECS))
+        # A plain hook wake only bumps the revision.
+        self.assertEqual(self.queue.offer('laya-sync', '/synthetic/a', now=7050), 'queued')
+        self.assertEqual(self.rows()[0]['due'], 7000 + policy.RETRY_MAX_SECS)
+        self.assertEqual(self.queue.offer('laya-sync', '/synthetic/a', now=7050, pull_due=True),
+                         'queued')
+        pulled, = self.rows()
+        self.assertEqual((pulled['due'], pulled['attempts'], pulled['reason']),
+                         (7050, 7, row['reason']))
+        # Never pushes an earlier due later.
+        self.queue.offer('laya-sync', '/synthetic/a', now=7200, pull_due=True)
+        self.assertEqual(self.rows()[0]['due'], 7050)
+        with patch.object(runtime, 'WakeQueue', return_value=self.queue), \
+             patch.object(runtime, 'wake', return_value=True):
+            self.assertEqual(runtime.request('laya-sync', '/synthetic/b', pull_due=True),
+                             {'status': 'queued'})
+
+    def test_ack_of_a_rerequested_wake_resets_its_retry_history(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        for wall in (100, 200):
+            self.drain(self.failing('target_child_failed'), wall=wall)
+
+        def rerequest(_):
+            self.queue.put('laya-sync', '/synthetic/a', now=0)
+            return True
+        self.drain(rerequest, wall=1000)
+        row, = self.rows()
+        self.assertEqual((row['attempts'], row['reason'], row['due']), (0, None, 1000))
+
+    def test_failed_child_detail_is_kept_privately_and_bounded(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        detail = 'exit 1\n' + 'x' * 9000 + 'IndexContractError: provider_unavailable'
+        self.drain(self.failing('target_child_failed', detail=detail), wall=100)
+        row, = self.rows()
+        self.assertEqual(row['reason'], 'dispatch:target_child_failed:' + 'a' * 40 + ':' + 'c' * 64)
+        path = self.root / runtime.FAILURE_DETAIL_FILE
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        import json
+        saved = json.loads(path.read_text())[row['id']]
+        self.assertEqual((saved['kind'], saved['target'], saved['reason']),
+                         ('laya-sync', '/synthetic/a', row['reason']))
+        self.assertEqual(len(saved['detail'].encode()), runtime.FAILURE_DETAIL_MAX_BYTES)
+        self.assertTrue(saved['detail'].endswith('provider_unavailable'))
+        # Bounded row count, newest kept.
+        for n in range(runtime.FAILURE_DETAIL_MAX_ROWS + 3):
+            self.queue.put('laya-sync', '/synthetic/n%d' % n, now=0)
+            self.drain(self.failing('target_child_failed', detail='d%d' % n), wall=200 + n)
+        kept = json.loads(path.read_text())
+        self.assertEqual(len(kept), runtime.FAILURE_DETAIL_MAX_ROWS)
+        self.assertIn('d%d' % (runtime.FAILURE_DETAIL_MAX_ROWS + 2),
+                      [item['detail'] for item in kept.values()])
 
     def test_drain_goes_through_policy_settle(self):
         self.queue.put('index', '', now=0)

@@ -37,13 +37,17 @@ DISPATCH_REASONS = frozenset((
     'target_journal_changed', 'target_identity_invalid',
     'target_entry_unavailable', 'target_entry_invalid',
     'target_launch_failed', 'target_child_failed', 'target_result_invalid',
-    'target_deferred'))
+    'target_deferred', 'target_preparing'))
+# A target that has just started (or is still loading) its detached owner is
+# waiting on that owner, not failing. Its wake returns after the owner's own
+# five-second spawn backoff and does not grow the failure backoff.
+UNCOUNTED_DISPATCH_REASONS = frozenset(('target_preparing',))
 
 
 class DispatchFailure(ValueError):
     """A bounded, non-sensitive Laya wake failure for the durable ACK ledger."""
 
-    def __init__(self, code, commit=None, bundle=None):
+    def __init__(self, code, commit=None, bundle=None, *, detail=None):
         if code not in DISPATCH_REASONS:
             raise ValueError('invalid_dispatch_reason')
         if commit is not None and (not isinstance(commit, str) or len(commit) != 40
@@ -52,9 +56,14 @@ class DispatchFailure(ValueError):
         if bundle is not None and (not isinstance(bundle, str) or len(bundle) != 64
                                    or any(c not in '0123456789abcdef' for c in bundle)):
             raise ValueError('invalid_dispatch_identity')
+        if detail is not None and not isinstance(detail, str):
+            raise ValueError('invalid_dispatch_detail')
         self.code = code
         self.commit = commit
         self.bundle = bundle
+        # Bounded local diagnostics (child stderr tail); never in the ledger
+        # reason, which stays a fixed non-sensitive shape.
+        self.detail = detail
         super().__init__(code)
 
 
@@ -133,7 +142,13 @@ def settle(attempts, *, done, now, error=None):
     ack: delete the claimed revision; a newer revision (enqueued while running)
     survives and is re-pended at ``due`` without counting an attempt.
     retry: keep the row, push ``due`` back by the backoff and count the attempt.
+    An owner that is still preparing is retried after the base delay without
+    counting; the prior count from real failures is kept unchanged.
     """
     if done and error is None:
-        return {'ack': True, 'due': now, 'reason': None}
-    return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error)}
+        return {'ack': True, 'due': now, 'reason': None, 'count': 0}
+    if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
+        return {'ack': False, 'due': now + RETRY_BASE_SECS,
+                'reason': failure_reason(error), 'count': 0}
+    return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),
+            'count': 1}
