@@ -70,6 +70,22 @@ def _private_state(config, root, *, create=True):
     return state
 
 
+def local_checkpoint_prepared(config, root):
+    """True only when a prepared local selector checkpoint exists; read only.
+
+    Recall routes (legacy QMD and selected Laya) keep their baseline ranked
+    pool until this holds, so a project without a trained selector never
+    loses search results.
+    """
+    try:
+        state = _private_state(config, Path(root), create=False)
+        pointer = state / 'active-checkpoint.json' if state is not None else None
+        return (pointer is not None and not pointer.is_symlink()
+                and pointer.is_file())
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _id(hit):
     file = hit.get('file', '')
     if not isinstance(file,str) or not file:

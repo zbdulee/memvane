@@ -34,7 +34,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 | `collectionRoles` | raw `raw`, wiki `wiki` |
 | `recallStrategy` | `wikiOnly`. 검색은 위키 카드만 합니다 |
 | `compile` | `mode: "auto-wiki"`, `triggers: ["post_tool_source","post_sync_source","manual"]`, `extractor.builtins: ["claude","codex","hermes"]`. 나머지 compile 값은 기본값입니다 |
-| `contextLearning` | `capture`·`autoCycle` 모두 `true`. 검색 시 Laya 카드 선택은 설정 없이 필수로 실행됩니다 |
+| `contextLearning` | `capture`·`autoCycle` 모두 `true`. 준비된 Laya 선택 모델이 있으면 검색 시 설정 없이 카드 선택에 쓰입니다 |
 | `indexing` | `true`. 끄는 방법은 아래 "인덱싱 끄기"입니다 |
 | `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
 
@@ -233,8 +233,9 @@ binding store가 있는 **선택 Laya 위키 전용 검색**은 다릅니다. �
 제외를 확인합니다. 변경 감지와 원문 해시 비교, 위키 생성·수정, 색인 게시는 비동기
 인덱스 작업의 책임입니다. 갱신 중에는 이전 완료 위키가 검색될 수 있으며, 이는 최신
 원문이라는 보증이 아닙니다. 카드 자체의 `verifiedBodyHash`와 출처 구조 검사는 검색에도
-남습니다. 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이 평가해 최대 3개를
-주입합니다. 모델·체크포인트를 사용할 수 없으면 해당 질의에는 카드를 주입하지 않습니다.
+남습니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
+평가해 최대 3개를 주입합니다. 체크포인트가 없거나 모델이 응답하지 못하면 검증된
+후보를 하이브리드 순위대로 최대 3개 주입합니다.
 binding store가 없는 구형 Laya 선택 경로도 직접 RRF 결과를 주입하지 않습니다.
 
 **구 QMD 검사가 보장하는 것과 보장하지 않는 것을 구분하십시오.** `verified` + 신선도 통과는
