@@ -725,7 +725,8 @@ def dry_run(cwd: str) -> dict:
 
     Writes nothing (no card, lifecycle state, log, lock, queue or archive) and
     does not consult the selected route, so it can be pointed at a project
-    before the lifecycle is installed there. `changed` cards are those whose
+    before the lifecycle is installed there. It does run the same read-only
+    git judgement, so `held` counts cards the run would keep. `changed` cards are those whose
     recorded source hash differs (they would be regenerated, not deleted).
     """
     found = qmd_config.find_project_config(cwd)
