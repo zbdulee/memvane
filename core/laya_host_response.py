@@ -1443,6 +1443,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
+    if decision.get('state') == 'worktree':
+        return _serve_worktree(action, host, decision, payload)
     if decision.get('state') == 'rebinding':
         import laya_settings_rebind
         proof = laya_settings_rebind.verify_read_only(decision)
@@ -1659,6 +1661,68 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     return {}
 
 
+WORKTREE_NOTICE = ('[laya-index] linked git worktree: search serves the main checkout\'s '
+                   'last published wiki index read-only. Sync, wiki compile, wiki lifecycle '
+                   'and learning run only from the main checkout.')
+
+
+def _worktree_label(decision: dict) -> str:
+    main = decision['mainRoute']['projectRoot']
+    return ('[laya-index] read-only from the main checkout ' + main + ': this cwd is a '
+            'linked git worktree. Cards and paths below are the main checkout\'s last '
+            'published wiki index; changes made only in this worktree are not indexed.')
+
+
+def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> dict:
+    """Linked git worktree: serve the main checkout's published generation only.
+
+    The selector proved the worktree shares the main checkout's git common dir
+    and derived settings identity. No sync, compile or index wake, wiki grant,
+    provider start or learning capture is recorded, and edit events are not
+    validated against the main project's paths.
+    """
+    from laya_install_journal import verify_selected_route_read_only as recheck
+    main = decision.get('mainRoute')
+    if not isinstance(main, dict) or main.get('state') != 'candidate':
+        _fail('worktree_route_invalid')
+    proof = recheck(main)
+    if proof.get('readOnlyAllowed') is not True:
+        _fail('worktree_read_only_unapproved')
+    if action == 'recall':
+        response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
+                                 read_only_label='worktree')
+        # Learning belongs to the main checkout's own sessions.
+        _LEARNING_CAPTURE[:] = []
+        key = 'context' if host == 'hermes' else None
+        holder = response if key else response.get('hookSpecificOutput', {})
+        field = key or 'additionalContext'
+        if isinstance(holder, dict) and holder.get(field):
+            labelled = _worktree_label(decision) + '\n' + holder[field]
+            if len(labelled.encode('utf-8')) > MAX_CONTEXT_BYTES:
+                _fail('result_context_too_large')
+            holder[field] = labelled
+        return response
+    if action in ('update', 'update-queued'):
+        if payload.get('hook_event_name') != 'SessionStart':
+            _fail('invalid_session_event')
+        if recheck(main) != proof:
+            _fail('selected_proof_changed')
+        if host == 'hermes':
+            return {'status': 'worktree_read_only', 'notice': WORKTREE_NOTICE}
+        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                       'additionalContext': WORKTREE_NOTICE}}
+    if recheck(main) != proof:
+        _fail('selected_proof_changed')
+    if action == 'gate':
+        if host == 'hermes':
+            return {'action': 'continue'}
+        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                                       'permissionDecision': 'allow'}}
+    # posttool/compile/index/file-change-event and topical no-ops: the main
+    # checkout's own scan owns its sources; nothing is queued from here.
+    return {}
+
+
 SETTINGS_REBIND_NOTICE = ('[laya-index] settings rebind in progress or interrupted; '
                           'search serves the last published index read-only and sync '
                           'waits. Run the setup migrate-minimal-settings step again to '
@@ -1710,7 +1774,8 @@ def _serve_settings_rebind(action: str, host: str, decision: dict, payload: dict
 
 
 def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
-                  recheck, *, degraded: bool = False) -> dict:
+                  recheck, *, degraded: bool = False,
+                  read_only_label: str = 'bundle_drift') -> dict:
     # The approved provider only connects to an already warm owner process.
     # The hook never starts a model or derives paths from the event or env.
     from laya_index_runtime import LayaIndexRuntime
@@ -1845,14 +1910,16 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         if not v2 or not (_is_sealed_manifest_stale(exc) or returned_stale):
             raise
         if degraded:
-            # No sync may be recorded until the bundle upgrade completes.
-            _fail('selected_bundle_upgrade_index_stale')
+            # No sync may be recorded until the bundle upgrade completes, and
+            # never from a linked worktree.
+            _fail('selected_worktree_index_stale' if read_only_label == 'worktree'
+                  else 'selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
     vector_fallback = None
     if vector_off and degraded:
         # A drifted bundle never wakes or starts a provider. Still name why
         # this answer has no vector list.
-        vector_fallback = 'selected_bundle_drift_' + vector_off[0]
+        vector_fallback = 'selected_' + read_only_label + '_' + vector_off[0]
     elif vector_off:
         # Still request the owner wake; its vector-side state never empties
         # this answer. Proof/integrity/terminal/transition outcomes raise.
@@ -1922,12 +1989,14 @@ def main(argv: list[str] | None = None) -> int:
             selection = select_hook_route(action, payload_file, fallback_cwd)
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        if selection["state"] not in ("candidate", "preview", "rebinding"):
+        if selection["state"] not in ("candidate", "preview", "rebinding", "worktree"):
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = select_route(cwd, action=action)
         if isinstance(decision, dict) and isinstance(decision.get("projectRoot"), str):
             project_root = decision["projectRoot"]
+        elif isinstance(decision, dict) and isinstance(decision.get("mainRoute"), dict):
+            project_root = decision["mainRoute"].get("projectRoot")
         if decision != selection:
             _fail("selected_route_changed")
         response = (serve_preview(action, host, decision, payload)

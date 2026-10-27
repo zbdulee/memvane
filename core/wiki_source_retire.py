@@ -72,18 +72,66 @@ def archive_card(root: Path, card: Path, text: str, proof_hash: str) -> bool:
     return True
 
 
+_LINEAGE_CACHE: dict = {}
+LINEAGE_CACHE_SECONDS = 60.0
+
+
+def _lineage_for(root: Path):
+    """``(judge|None, hold_reason|None)``, reused per process while HEAD holds still.
+
+    The compile worker retires one ``sourceDelete`` row per call; one judge
+    keeps its HEAD tree and branch-tip lookups bounded across those rows.
+    """
+    import time
+    import git_branch_safety
+    cached = _LINEAGE_CACHE.get(str(root))
+    if (cached is not None and time.monotonic() - cached[1] < LINEAGE_CACHE_SECONDS
+            and cached[0].still_valid()):
+        return cached[0], None
+    judge, reason = git_branch_safety.deletion_gate(root)
+    if judge is not None:
+        _LINEAGE_CACHE[str(root)] = (judge, time.monotonic())
+    else:
+        _LINEAGE_CACHE.pop(str(root), None)
+    return judge, reason
+
+
+def lineage_hold(lineage, rel: str, cards) -> str | None:
+    """First reason any of ``cards`` must keep ``rel``; None when all may retire."""
+    if lineage is None:
+        return None
+    for card in cards:
+        verdict, reason = lineage.judge(rel, card)
+        if verdict != 'retire':
+            return reason
+    return None
+
+
 def retire_deleted_source(root: Path, config: dict, selected, collection: str,
-                          rel: str, prior_hash: str) -> dict:
+                          rel: str, prior_hash: str, *, lineage=None) -> dict:
     """Archive single-source machine cards; defer shared cards for regeneration.
 
     No source bytes or model call are needed. A shared card is never unlinked
     while it may still be the only completed account of another live source.
     The caller retains its queue row on ``shared_pending`` or ``blocked``.
+
+    In a git checkout the absence must be a deletion in HEAD's lineage for
+    every citing card (``git_branch_safety.LineageJudge``); a source that is
+    only invisible on this branch, a linked worktree, an in-progress
+    rebase/merge/cherry-pick/bisect or an unanswerable git returns
+    ``held_branch`` and nothing is retired. ``lineage`` is the caller's
+    per-run judge; without it one is opened here.
     """
     root = Path(root).resolve()
     source = root / rel
     if source.is_symlink() or source.exists():
         return {'state': 'source_reappeared', 'survivors': []}
+    if lineage is None:
+        lineage, hold = _lineage_for(root)
+        if hold is not None:
+            return {'state': 'held_branch', 'survivors': [], 'reason': hold}
+    elif not lineage.still_valid():
+        return {'state': 'held_branch', 'survivors': [], 'reason': 'git_state_changed'}
     wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
@@ -138,6 +186,10 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 continue
             retiring.append((card, text))
 
+        hold = lineage_hold(lineage, rel, [card for card, _ in retiring] +
+                            [card for card, _, _ in shared_cards])
+        if hold is not None:
+            return {'state': 'held_branch', 'survivors': [], 'reason': hold}
         shared = set()
         if shared_cards:
             from laya_host_response import _verified_wiki_row
