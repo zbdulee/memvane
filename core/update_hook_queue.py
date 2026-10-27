@@ -143,6 +143,9 @@ def _setup_notice(cwd, queue, guard=None):
     if reason is None and settings.is_file():
         import setup_readiness
         reason = setup_readiness.laya_preflight()['reason']
+        # The detached worker re-attests adapter-only drift; notice only on failure.
+        if reason == 'laya_current_adapter_required' and not setup_readiness.adapter_refresh_failed(queue):
+            reason = None
     if reason is None and version_changed:
         reason = 'plugin_version_changed'
     version_state = {'schema': 'qmd-setup-version-v1', 'version': version,
@@ -237,6 +240,17 @@ def enqueue(raw):
         stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
     runtime_work.hook_wake()
 
+
+def _refresh_laya_adapter(queue, output):
+    """Plugin updates ship a new Laya adapter; re-attest it off the hook path."""
+    try:
+        import setup_readiness
+        result = setup_readiness.refresh_adapter_attestation(queue)
+    except Exception as exc:  # Never turn a finished index update into a failure.
+        result = {'status': 'failed', 'reason': type(exc).__name__}
+    if result.get('status') not in ('not_required', 'current'):
+        output.write(f"{time.time():.3f} laya adapter refresh {result.get('status')} "
+                     f"{result.get('reason', '')}\n"); output.flush()
 
 def worker(key):
     if len(key) != 32 or any(c not in '0123456789abcdef' for c in key):
@@ -342,6 +356,7 @@ def worker(key):
                 else:
                     import runtime_work
                     runtime_work.request('update',key)
+                _refresh_laya_adapter(queue, output)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 output.write(f'{time.time():.3f} update failed:{type(exc).__name__}\n')
                 _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',

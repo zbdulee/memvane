@@ -94,5 +94,58 @@ class Readiness(unittest.TestCase):
     update_hook_queue._setup_notice(self.project,queue,{'status':'ready'})
   self.assertEqual(out.getvalue().count('setup skill'),1);self.assertIn('laya_managed_runtime_not_prepared',out.getvalue())
   self.assertFalse(self.root.exists());self.probe_mock.assert_not_called()
+ def stale_adapter(self):
+  old=self.home/'old-adapter.py';old.write_text('# preserved old adapter\n')
+  value=json.loads(self.pointer.read_text());value['adapter_path']=str(old);value['attestation']['adapter_sha256']=hashlib.sha256(old.read_bytes()).hexdigest();self.pointer.write_text(json.dumps(value))
+ def generation(self):
+  gen=self.root/'generations/g-one';self.exe=gen/'venv/bin/python';self.exe.parent.mkdir(parents=True);self.exe.write_bytes(b'#!/bin/sh\nexit 0\n');self.exe.chmod(0o700)
+  for d in (self.root,self.root/'generations',gen):d.chmod(0o700)
+  identity=R.probe_runtime(self.exe,managed_root=self.root)['runtime_identity_sha256']
+  prepared=gen/'prepared.json';prepared.write_text(json.dumps({'schema_version':1,'executable':str(self.exe),'runtime_identity_sha256':identity,'uv_sha256':'a'*64,'lock_sha256':'b'*64}));prepared.chmod(0o600)
+  value=json.loads(self.pointer.read_text());value.update(executable=str(self.exe),runtime_identity_sha256=identity);value['attestation']['runtime_identity_sha256']=identity;self.pointer.write_text(json.dumps(value))
+ def proof(self,executable,adapter,model):
+  identity=R.probe_runtime(executable,managed_root=self.root)['runtime_identity_sha256']
+  return {'probe':{'runtime_identity_sha256':identity},'attestation':{'schema_version':1,'runtime_identity_sha256':identity,'base_model_sha256':model_identity(model),'adapter_sha256':hashlib.sha256(Path(adapter).read_bytes()).hexdigest(),'data_kind':'synthetic_compact_wiki','checks':dict.fromkeys(R.CHECKS,True)}}
+ def queue(self):
+  queue=self.home/'queue';queue.mkdir(mode=0o700,exist_ok=True);return queue
+ def test_adapter_only_drift_is_reattested_by_session_maintenance(self):
+  import functools,setup_readiness
+  from context_learning.runtime_installer import reattest_active
+  self.prepare();self.generation();self.stale_adapter();before=json.loads(self.pointer.read_text())
+  self.assertIn('laya_current_adapter_required',setup_entry.check_update(self.project)['reasons'])
+  row=setup_readiness.refresh_adapter_attestation(self.queue(),reattest=functools.partial(reattest_active,prover=self.proof,probe=R.probe_runtime))
+  self.assertEqual(row['status'],'reattested',row)
+  after=json.loads(self.pointer.read_text());self.assertEqual(after['executable'],before['executable']);self.assertEqual(after['model_dir'],before['model_dir'])
+  self.assertEqual(after['adapter_path'],str(self.adapter))
+  row=setup_entry.check_update(self.project);self.assertEqual(row['status'],'up_to_date',row);self.assertTrue(row['layaReady'])
+ def test_adapter_drift_with_other_drift_is_left_for_review(self):
+  import setup_readiness
+  self.prepare();self.stale_adapter();(self.model/'model.safetensors').unlink();before=self.pointer.read_bytes()
+  self.assertEqual(setup_readiness.laya_preflight()['reason'],'laya_local_model_required')
+  row=setup_readiness.refresh_adapter_attestation(self.queue(),reattest=lambda *a,**k:self.fail('must not re-attest'))
+  self.assertEqual(row['status'],'not_required');self.assertEqual(self.pointer.read_bytes(),before)
+ def test_failed_refresh_is_not_retried_and_keeps_notice(self):
+  import contextlib,io,setup_readiness
+  self.prepare();self.stale_adapter();calls=[]
+  def broken(*a,**k):
+   calls.append(a)
+   if len(calls)==1:raise __import__('subprocess').TimeoutExpired('smoke',120)
+   raise ValueError('managed_compatibility_failed')
+  queue=self.queue()
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed')
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed_previously');self.assertEqual(len(calls),1)
+  out=io.StringIO()
+  with patch('qmd_route.project_paths',return_value={'shared':True}),contextlib.redirect_stdout(out):update_hook_queue._setup_notice(self.project,queue,{'status':'ready'})
+  self.assertIn('laya_current_adapter_required',out.getvalue())
+ def test_resource_deferred_refresh_is_retried_without_notice(self):
+  import contextlib,io,setup_readiness
+  from resource_deferred import ResourceDeferred
+  self.prepare();self.stale_adapter();queue=self.queue()
+  def busy(*a,**k):raise ResourceDeferred('trainer_system_pressure')
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=busy)['status'],'deferred')
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=busy)['status'],'deferred')
+  out=io.StringIO()
+  with patch('qmd_route.project_paths',return_value={'shared':True}),contextlib.redirect_stdout(out):update_hook_queue._setup_notice(self.project,queue,{'status':'ready'})
+  self.assertEqual(out.getvalue(),'')
 
 if __name__=='__main__':unittest.main(verbosity=2)

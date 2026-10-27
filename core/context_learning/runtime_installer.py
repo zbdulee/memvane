@@ -16,7 +16,7 @@ import tempfile
 import uuid
 
 from .dataset import read_private_json
-from .runtime_setup import (MANAGED_DEPENDENCIES, PYTHON_PIN,
+from .runtime_setup import (MANAGED_DEPENDENCIES, PYTHON_PIN, _sha_file,
     attest_runtime, probe_runtime, verify_compatibility)
 from .store import canonical
 
@@ -225,6 +225,41 @@ def activate_generation(root, executable, adapter_path, model_dir,
                 'runtime_identity_sha256':inspected['runtime_identity_sha256'],
                 'previous_available':old is not None}
 
+
+def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_runtime):
+    """Re-attest the selected generation after only the plugin adapter changed.
+
+    Executable, runtime identity, model and one-step rollback stay unchanged.
+    """
+    root=_private_directory(root)
+    adapter_path=Path(adapter_path)
+    if not adapter_path.is_absolute() or adapter_path.is_symlink() or not adapter_path.is_file():
+        raise ValueError('invalid_compatibility_source_path')
+    with _activation_lock(root):
+        active=root/'active.json'
+        pointer=read_private_json(active)
+        if (not isinstance(pointer,dict) or not {'executable','runtime_identity_sha256',
+            'attestation','model_dir'}<=set(pointer) or not isinstance(pointer['attestation'],dict)):
+            raise ValueError('invalid_managed_pointer')
+        old=pointer['attestation']
+        adapter_sha=_sha_file(adapter_path)
+        if old.get('adapter_sha256')==adapter_sha:
+            return {'status':'current','executable':pointer['executable']}
+        executable=_generation_executable(root,pointer['executable'])
+        inspected=probe(executable,managed_root=root)
+        if (inspected.get('status')!='metadata_compatible' or
+            inspected['runtime_identity_sha256']!=pointer['runtime_identity_sha256']):
+            raise ValueError('managed_runtime_changed')
+        proof=prover(str(executable),str(adapter_path),str(pointer['model_dir']))
+        attestation=proof['attestation']
+        if (proof['probe']['runtime_identity_sha256']!=pointer['runtime_identity_sha256'] or
+            attestation['base_model_sha256']!=old.get('base_model_sha256') or
+            attestation['adapter_sha256']!=adapter_sha or
+            not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
+            raise ValueError('managed_compatibility_failed')
+        pointer.update(attestation=attestation,adapter_path=str(adapter_path))
+        _write_pointer(active,pointer)
+        return {'status':'reattested','executable':str(executable)}
 
 def rollback_generation(root, adapter_path, model_dir,
                         *, prover=attest_runtime, probe=probe_runtime):

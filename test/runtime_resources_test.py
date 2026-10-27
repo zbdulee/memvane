@@ -177,9 +177,11 @@ class RuntimeChecks(unittest.TestCase):
              patch.object(setup_guard,'status',return_value={'status':'ready'}), \
              patch.object(qmd_route,'project_paths',return_value={'selected':True}), \
              patch.object(update,'readiness'),patch.object(update.subprocess,'run',side_effect=run), \
-             patch.object(runtime,'request') as hint:
+             patch.object(runtime,'request') as hint, \
+             patch.object(update,'_refresh_laya_adapter') as laya:
             update.worker(key);self.assertTrue(job.exists());hint.assert_called_with('update',key)
             phase[0]='completed';update.worker(key);self.assertFalse(job.exists())
+            self.assertEqual(laya.call_count,2)
 
     def test_small_qmd_child_obeys_the_shared_boundary(self):
         runtime=self.runtime()
