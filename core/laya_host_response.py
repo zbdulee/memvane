@@ -379,6 +379,8 @@ def _selection_view_unchanged(decision, chosen, expected_head=None):
     from contextlib import closing
     from laya_incremental_docs_query import _readonly
     from laya_incremental_docs import FILE
+    completed_gen = ('preview-' + decision['installId']
+                     if isinstance(decision.get('installId'), str) else None)
     with closing(_readonly(Path(decision['dbPath']))) as index:
         if expected_head is not None:
             head = index.execute('SELECT gen FROM head WHERE scope=?',
@@ -392,7 +394,7 @@ def _selection_view_unchanged(decision, chosen, expected_head=None):
                for row in chosen):
             return False
         for row in chosen:
-            if row['generation'].startswith('preview-'):
+            if row['generation'] == completed_gen:
                 continue
             if expected_head is None or row['generation'] != expected_head:
                 return False
@@ -401,7 +403,7 @@ def _selection_view_unchanged(decision, chosen, expected_head=None):
                 (expected_head, decision['scopeId'], row['path'])).fetchone()
             if current != (row['hash'],):
                 return False
-    completed = [row for row in chosen if row['generation'].startswith('preview-')]
+    completed = [row for row in chosen if row['generation'] == completed_gen]
     if completed:
         state = Path(decision.get('previewStateRoot') or
                      Path(decision['journalPath']).parent)
@@ -1227,6 +1229,8 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
     import config
     settings = config.load_project_config(decision['projectRoot'])
     chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    answer_limit = min(decision['recallSettings']['topN'], 3)
+    chosen = chosen[:answer_limit]
     if reason != 'selected' or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
@@ -1235,7 +1239,7 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
         _fail('initial_preview_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     context = render_context({**decision, 'buildPhase': refreshed['buildPhase']},
-                             chosen, limit=3, ranking='laya_selection',
+                             chosen, limit=answer_limit, ranking='laya_selection',
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in
                                                locations.items() if path in chosen_paths})
@@ -1580,15 +1584,17 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         rows = [row for row, _origin in sorted(
             ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
     chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    answer_limit = min(top_n, 3)
+    chosen = chosen[:answer_limit]
     if reason != 'selected' or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
-    if verify_selected_route(decision) != proof or not _selection_view_unchanged(
+    if recheck(decision) != proof or not _selection_view_unchanged(
             decision, chosen, pinned_generation[0] if pinned_generation else None):
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
-    context = render_context(decision, chosen, limit=3,
+    context = render_context(decision, chosen, limit=answer_limit,
                              ranking="laya_selection",
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in locations.items()

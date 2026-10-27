@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import config
@@ -86,6 +86,8 @@ class Checks(unittest.TestCase):
         proof = {'productRouteAllowed': True, 'selectionEpoch': 1,
                  'vectorProfile': PROFILE, 'providerManifest': {}}
         rows = [card(i) for i in range(20)]
+        settings = {**decision['recallSettings'],
+                    'contextLearning': {'liveSelection': False}}
         runtime = SimpleNamespace(index=object(), scope=SCOPE)
         with ExitStack() as stack:
             enter = stack.enter_context
@@ -100,8 +102,7 @@ class Checks(unittest.TestCase):
             enter(patch.object(response, 'query_selected_v2',
                         return_value=(rows, frozenset())))
             enter(patch.object(response, '_selection_view_unchanged', return_value=True))
-            enter(patch.object(config, 'load_project_config', return_value={
-                **decision['recallSettings'], 'contextLearning': {'liveSelection': False}}))
+            enter(patch.object(config, 'load_project_config', return_value=settings))
             with patch('context_learning.seam._private_state',
                        return_value=Path('/synthetic/state')), \
                  patch('context_learning.live_select.choose', return_value=(
@@ -113,6 +114,18 @@ class Checks(unittest.TestCase):
             self.assertIn('wiki/card14.md', context)
             self.assertIn('wiki/card03.md', context)
             self.assertNotIn('wiki/card15.md', context)
+            decision['recallSettings']['topN'] = settings['topN'] = 1
+            with patch('context_learning.seam._private_state',
+                       return_value=Path('/synthetic/state')), \
+                 patch('context_learning.live_select.choose', return_value=(
+                     [rows[14]['path'], rows[3]['path']], 'selected', {})):
+                limited = response.serve_selected('recall', 'codex', decision,
+                                                  {'prompt': 'find card'})
+            self.assertIn('wiki/card14.md',
+                          limited['hookSpecificOutput']['additionalContext'])
+            self.assertNotIn('wiki/card03.md',
+                             limited['hookSpecificOutput']['additionalContext'])
+            decision['recallSettings']['topN'] = settings['topN'] = 3
             with patch('context_learning.seam._private_state', return_value=None):
                 empty = response.serve_selected('recall', 'codex', decision,
                                                 {'prompt': 'find card'})
@@ -133,6 +146,18 @@ class Checks(unittest.TestCase):
                                             'selected_proof_changed'):
                     response.serve_selected('recall', 'codex', decision,
                                             {'prompt': 'find card'})
+            read_only = Mock(return_value=proof)
+            with patch('context_learning.seam._private_state',
+                       return_value=Path('/synthetic/state')), \
+                 patch('context_learning.live_select.choose', return_value=(
+                     [rows[14]['path']], 'selected', {})), \
+                 patch.object(laya_install_journal, 'verify_selected_route',
+                              side_effect=AssertionError('wrong recheck')):
+                degraded = response._serve_recall('codex', decision,
+                    {'prompt': 'find card'}, proof, read_only, degraded=True)
+            self.assertIn('wiki/card14.md',
+                          degraded['hookSpecificOutput']['additionalContext'])
+            self.assertGreaterEqual(read_only.call_count, 2)
 
 
 if __name__ == '__main__':
