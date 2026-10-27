@@ -143,7 +143,7 @@ class ProjectFixture(unittest.TestCase):
         self.project = base / 'project'
         for rel, text in {
             'docs/a.md': '# a\n', 'docs/b.md': '# b\n', 'docs/c.md': '# c\n',
-            'docs/note.txt': 'not markdown\n', 'docs/.draft/h.md': '# hidden\n',
+            'docs/note.py': 'print(1)\n', 'docs/.draft/h.md': '# hidden\n',
             'src/s.md': '# source role\n', 'wiki/w.md': '# wiki role\n',
         }.items():
             path = self.project / rel
@@ -160,7 +160,7 @@ class ProjectFixture(unittest.TestCase):
         }
         root = lambda name: str(self.project / name)
         self.changed = {
-            'docs': {'root': root('docs'), 'created': ['c.md', 'note.txt', '.draft/h.md'],
+            'docs': {'root': root('docs'), 'created': ['c.md', 'note.py', '.draft/h.md'],
                      'updated': ['b.md', 'a.md'], 'deleted': ['gone.md']},
             'src': {'root': root('src'), 'created': ['s.md'], 'updated': [], 'deleted': []},
             'wiki': {'root': root('wiki'), 'created': ['w.md'], 'updated': [], 'deleted': []},
@@ -264,7 +264,7 @@ class EnqueueThroughSeam(ProjectFixture):
         self.assertEqual(self.compare(not_indexing)[0]['reason'], 'compile_disabled')
 
     def test_no_sources_when_only_ineligible_paths_changed(self):
-        self.changed = {'docs': {'root': str(self.project / 'docs'), 'created': ['note.txt'],
+        self.changed = {'docs': {'root': str(self.project / 'docs'), 'created': ['note.py'],
                                  'updated': ['.draft/h.md'], 'deleted': ['a.md']},
                         'wiki': {'root': str(self.project / 'wiki'), 'created': ['w.md'],
                                  'updated': [], 'deleted': []}}
