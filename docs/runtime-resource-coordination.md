@@ -55,7 +55,12 @@ development execution guard is separate; see
   after 5–60 seconds. The service adopts an installation by holding its
   `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
   writing its owner state; a route change (upgrade fence, restore,
-  withdrawal) releases that installation within one second. It forwards at
+  withdrawal) releases that installation within one second. A dead worker
+  releases its installations as `worker_exited`; the service itself re-loads
+  and re-adopts them from its registry (bounded by the same three-failure
+  budget), without waiting for a hook. The full artifact rehash
+  (`verify_worker_attestation`) runs once per installation identity, only when
+  the service binds it. It forwards at
   most three queries and three documents to the worker at once, so a burst
   from many projects waits at the service instead of overflowing the
   worker's seven-request queue. A failed query or probe outlives the client's
@@ -473,7 +478,9 @@ from injected analytical tests; the shared OS reporter always attaches it.
   (bounded at 330 seconds), owner leases are released with owner state
   `starting` (not an attempt), then one successor holding `successor.lock`
   takes the service lease and re-adopts every registered installation. An
-  older or equal version never drains a newer one; it attaches while the
+  older or equal version never drains a newer one (a rewrite of the same
+  version leaves the running service in place until it is stopped); it
+  attaches while the
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.

@@ -604,6 +604,7 @@ class Service:
         self.stopped = threading.Event()
         self.wake = threading.Event()
         self.adopting = threading.Lock()
+        self.attested = set()
         self.lease = None
         self.control = None
         self.control_inode = None
@@ -826,6 +827,11 @@ class Service:
                 self._release(project, reason='starting' if owned or worker is None
                               or worker.alive() else 'worker_exited')
 
+    def _forget(self, project):
+        name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
+        with suppress(OSError):
+            os.unlink(self.root / PROJECTS / name)
+
     def _later(self, project, seconds):
         with self.lock:
             self.retry[project] = time.monotonic() + seconds
@@ -839,8 +845,9 @@ class Service:
             manifest = proof['providerManifest']
             if decision.get('projectRoot') != project:
                 _fail('provider_owner_identity_invalid')
-            self.attest(decision, proof, mode)
         except Exception:
+            if not os.path.isdir(project):
+                self._forget(project)  # the project is gone: stop re-proving it
             self._later(project, 5)
             return
         path = manifest['serviceSocketPath']
@@ -855,6 +862,9 @@ class Service:
             self._load(project, manifest, key)
             return
         owner_fd = _private_lock(path + '.resident.lock')
+        seal = hashlib.sha256(json.dumps([project, identity], sort_keys=True,
+                                         default=str).encode()).hexdigest()
+        attested = seal in self.attested
         try:
             fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -865,6 +875,18 @@ class Service:
                 self.retire(project, path)
             self._later(project, 1)
             return
+        if not attested:
+            # Full artifact rehash: once per installation identity, only on
+            # the path that binds, never on a tick that merely waits.
+            try:
+                self.attest(decision, proof, mode)
+            except Exception:
+                os.close(owner_fd)
+                with suppress(Exception):
+                    _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
+                self._later(project, 60)
+                return
+            self.attested.add(seal)
         service_fd = listener = None
         try:
             service_fd = _private_lock(path + '.lock')
@@ -1063,9 +1085,12 @@ def _learning_host(learning_root):
     def host(stopped):
         from context_learning import inference_service as learning
         root = Path(learning_root)
+        from runtime_cpu import lease
         while not stopped.is_set():
             try:
-                learning._serve(root, stop=stopped, hosted=True)
+                # The CPU share gates learning only, never the embedding host.
+                with lease(root):
+                    learning._serve(root, stop=stopped, hosted=True)
                 return
             except BlockingIOError:
                 # A learning-only service of an earlier bundle holds the lease;
@@ -1097,12 +1122,7 @@ def main(argv=None):
     if not service.acquire(successor_fd=successor_fd):
         return 75
     try:
-        if learning_root is None:
-            service.run()
-        else:
-            from runtime_cpu import lease
-            with lease(learning_root):
-                service.run()
+        service.run()
     except Exception:
         service.close()
         return 1

@@ -426,6 +426,85 @@ class ServiceChecks(Fixture):
         self.assertEqual(len(kills), 1)
 
 
+    def test_full_attestation_runs_once_per_installation_and_only_to_bind(self):
+        projects = [self.project(name) for name in ('alpha', 'beta')]
+        for project, _manifest in projects:
+            svc.register(project, root=self.root)
+        attested = []
+        slow = self.start_worker
+
+        def start_worker(manifest, admit):
+            time.sleep(.5)  # many ticks pass during the cold load
+            return slow(manifest, admit)
+        service = self.service(start=False)
+        service.attest = lambda decision, proof, mode: attested.append(decision['projectRoot'])
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        for _project, manifest in projects:
+            self.wait(lambda m=manifest: self.ready(m))
+        time.sleep(.3)  # further ticks re-check ownership without rehashing
+        self.assertEqual(sorted(attested), sorted(p for p, _m in projects))
+
+    def test_failed_attestation_is_terminal_for_that_installation_only(self):
+        good, good_manifest = self.project('alpha')
+        bad, bad_manifest = self.project('beta')
+        for project in (good, bad):
+            svc.register(project, root=self.root)
+        service = self.service(start=False)
+
+        def attest(decision, proof, mode):
+            if decision['projectRoot'] == bad:
+                raise IndexContractError('provider_attestation_invalid')
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.wait(lambda: self.ready(good_manifest))
+        self.wait(lambda: (resident.read_owner_state(bad_manifest) or {}).get('terminal') is True)
+        self.assertEqual(resident.probe(bad_manifest), 'absent')
+        self.assertFalse(resident.owner_lock_held(bad_manifest))
+
+
+class ProofChecks(unittest.TestCase):
+    def test_drifted_bundle_is_served_by_read_only_proof(self):
+        import laya_install_journal as journal
+        import laya_index_host_route as route
+        manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
+        decision = {'state': 'candidate', 'projectRoot': '/synthetic/p'}
+        drift = journal.JournalEvidenceError('bundle_drift') if hasattr(
+            journal, 'JournalEvidenceError') else ValueError('bundle_drift')
+        with patch.object(resident, '_owned_route', side_effect=drift), \
+                patch.object(journal, 'is_bundle_drift', return_value=True), \
+                patch.object(route, 'select_route', return_value=decision), \
+                patch.object(journal, 'verify_selected_route_read_only',
+                             return_value={'readOnlyAllowed': True, 'providerManifest': manifest}):
+            _decision, proof, mode = svc.default_prove('/synthetic/p')
+        self.assertEqual((mode, proof['providerManifest']), ('read_only', manifest))
+        for allowed, drifted, state in ((True, False, 'candidate'), (False, True, 'candidate'),
+                                        (True, True, 'blocked')):
+            with patch.object(resident, '_owned_route', side_effect=drift), \
+                    patch.object(journal, 'is_bundle_drift', return_value=drifted), \
+                    patch.object(route, 'select_route', return_value={**decision, 'state': state}), \
+                    patch.object(journal, 'verify_selected_route_read_only',
+                                 return_value={'readOnlyAllowed': allowed,
+                                               'providerManifest': manifest}):
+                with self.assertRaises(type(drift)):
+                    svc.default_prove('/synthetic/p')
+
+    def test_full_attestation_applies_to_selected_routes_only(self):
+        import laya_install_journal as journal
+        manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
+        proof = {'providerManifest': manifest}
+        with patch.object(journal, 'verify_worker_attestation', return_value=manifest) as verify:
+            svc.default_attest({}, proof, 'selected')
+            svc.default_attest({}, proof, 'preview')
+            svc.default_attest({}, proof, 'read_only')
+        self.assertEqual(verify.call_count, 1)
+        with patch.object(journal, 'verify_worker_attestation', return_value={**manifest, 'x': 1}):
+            with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
+                svc.default_attest({}, proof, 'selected')
+
+
 class ClientChecks(Fixture):
     def setUp(self):
         super().setUp()
