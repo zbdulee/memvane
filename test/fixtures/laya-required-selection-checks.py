@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic checks for mandatory selection over published Laya cards."""
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -331,6 +332,32 @@ class Checks(unittest.TestCase):
                 response.serve_selected('recall', 'codex', decision,
                                         {'prompt': 'find card'})
             wake.assert_not_called()
+
+    def test_drifted_bundle_names_missing_vector_without_waking_owner(self):
+        from laya_index_a import IndexContractError
+        with ExitStack() as stack:
+            decision, wake, calls, seen, log = self.vector_host(
+                stack, provider=IndexContractError('provider_identity_mismatch'))
+            read_only = Mock(return_value={'productRouteAllowed': True,
+                                           'selectionEpoch': 1,
+                                           'vectorProfile': PROFILE,
+                                           'providerManifest': {}})
+            stderr = stack.enter_context(patch('sys.stderr', new_callable=io.StringIO))
+            result = response._serve_recall('codex', decision, {'prompt': 'find card'},
+                                            read_only.return_value, read_only,
+                                            degraded=True)
+            self.assertIn('wiki/card00.md',
+                          result['hookSpecificOutput']['additionalContext'])
+            self.assertEqual(calls, [1])  # one socket attempt per prompt
+            self.assertEqual(seen, ['provider_identity_mismatch'] * 2)
+            wake.assert_not_called()  # a drifted bundle never starts a provider
+            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(
+                [line['reason'] for line in lines],
+                ['laya_vector_selected_bundle_drift_provider_identity_mismatch',
+                 'selected'])
+            self.assertIn('selected_bundle_drift_provider_identity_mismatch; '
+                          'serving lexical results', stderr.getvalue())
 
 if __name__ == '__main__':
     unittest.main()

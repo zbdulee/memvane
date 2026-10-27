@@ -182,6 +182,34 @@ class IncrementalReadChecks(unittest.TestCase):
             self.assertEqual(rows, [])
             self.assertEqual(shadow, ('wiki/a.md', 'wiki/b.md'))
 
+    def test_full_fts_page_with_few_proved_documents_is_capped(self):
+        docs = [('wiki/n%03d.md' % n, '# N%03d\nneedle %03d\n' % (n, n))
+                for n in range(100)]
+        self.assertEqual(self.index.stage('future', SCOPE,
+                                          [(path, body, True) for path, body in docs]),
+                         'prepared')
+        with incremental._open(str(self.state)) as side:
+            incremental._setup(side, self.identity)
+            side.execute('BEGIN IMMEDIATE')
+            for path, body in docs:
+                title = qmd_markdown_title(body, path)
+                self.vectors.insert_chunk_set(digest(body), title, self.profile_id,
+                                              [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}])
+                rowid = side.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
+                                     (path, digest(body), title, body,
+                                      self.profile_id, 1, 'scan')).lastrowid
+                side.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
+                             (rowid, path, title, body))
+            side.commit()
+        keep = 'wiki/n042.md'
+        # One proved card in a full 100-row FTS page: served, never refused.
+        with mock.patch('laya_host_response._verified_wiki_row',
+                        side_effect=lambda row, *_a, **_k: row['path'] == keep):
+            rows, _titles, _locations, _shadow, _base = query_incremental(
+                'needle', self.decision, {'vectorProfile': self.profile},
+                self.fixture_provider)
+        self.assertEqual([row['path'] for row in rows], [keep])
+
     def test_empty_preview_reports_building_without_selected_route(self):
         decision = {**self.decision, 'state': 'preview', 'buildPhase': 'building'}
         context = render_context(decision, [], limit=5, ranking='hybrid_rrf')
