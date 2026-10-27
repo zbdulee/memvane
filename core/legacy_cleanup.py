@@ -15,8 +15,9 @@ right before acting:
   left in place.
 * A tree is removed only when no install attestation under
   ``~/.local/state/laya`` still names a file inside it (the historical
-  ``profileDependencyClosure`` rows are data, not files) and no QMD daemon
-  from that tree is still running.
+  ``profileDependencyClosure`` rows are data, not files), no install route is
+  still bound to a bundle that ships the QMD backend (it would recreate the
+  QMD directories), and no QMD daemon from that tree is still running.
 
 The plugin-owned trees are the QMD runtime, the shared QMD store and the QMD
 backend state. ``~/.cache/qmd`` and ``~/.config/qmd`` also hold the user's own
@@ -122,6 +123,32 @@ def attestation_references(home, roots):
         if named:
             found.append({'attestation': str(path), 'paths': named[:5],
                           'count': len(named)})
+    return found
+
+
+def older_bundles(home):
+    """Installs still bound to a bundle that ships the QMD backend.
+
+    Such a bundle recreates ``~/.cache/qmd`` and ``~/.config/qmd`` on its next
+    hook, so cleanup waits until every install moved to a bundle without it.
+    """
+    base = home / '.local' / 'state' / 'laya'
+    found = []
+    try:
+        installs = sorted(path for path in base.iterdir() if path.is_dir())
+    except FileNotFoundError:
+        return found
+    for install in installs:
+        route = install / 'reviewed-route.json'
+        if not route.is_file():
+            continue
+        try:
+            root = json.loads(route.read_text('utf-8')).get('pluginRoot')
+        except (OSError, UnicodeError, ValueError, AttributeError):
+            found.append({'route': str(route), 'reason': 'route_unreadable'})
+            continue
+        if isinstance(root, str) and (Path(root) / 'core' / 'backend_manager.sh').exists():
+            found.append({'route': str(route), 'pluginRoot': root})
     return found
 
 
@@ -242,13 +269,16 @@ def plan(home=None, *, include_user_data=False, ps=_ps, sizes=True):
     references = attestation_references(home, roots)
     if references:
         blockers.append('attestation_references_legacy_path')
+    older = older_bundles(home)
+    if older:
+        blockers.append('older_host_bundle_bound')
     for row in paths:
         if row['action'] == 'refused_symlink':
             blockers.append('legacy_cleanup_target_symlink')
     return {'schema': 'qmd-auto-context-legacy-cleanup-v1', 'home': str(home),
             'includeUserData': include_user_data, 'daemons': found,
             'launchAgents': agents, 'paths': paths,
-            'attestationReferences': references,
+            'attestationReferences': references, 'olderBundles': older,
             'blockers': sorted(set(blockers)), 'changesApplied': 0}
 
 

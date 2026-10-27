@@ -369,6 +369,17 @@ class LegacyCleanup(unittest.TestCase):
         self.assertEqual(self.killed, [])
         self.assertTrue(self.runtime.exists())
 
+    def test_install_bound_to_an_older_bundle_blocks_everything(self):
+        old_bundle = self.home / 'plugins' / '0.39.1'
+        write(old_bundle / 'core' / 'backend_manager.sh', '#!/bin/sh\n')
+        install = self.home / '.local' / 'state' / 'laya' / ('e' * 32)
+        write(install / 'reviewed-route.json', json.dumps({'pluginRoot': str(old_bundle)}))
+        result = self.apply(approved=True)
+        self.assertEqual(result['blockers'], ['older_host_bundle_bound'])
+        self.assertEqual(self.killed, [])
+        (old_bundle / 'core' / 'backend_manager.sh').unlink()
+        self.assertEqual(C.plan(self.home, ps=self.ps)['blockers'], [])
+
     def test_profile_closure_rows_alone_do_not_block(self):
         install = self.home / '.local' / 'state' / 'laya' / ('d' * 32)
         write(install / 'production-provider-attestation.json', json.dumps({
