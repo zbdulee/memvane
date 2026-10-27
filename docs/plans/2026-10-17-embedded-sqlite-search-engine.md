@@ -14,8 +14,8 @@ scoped vector 수정은 후보 알고리즘을 검토하는 격리 원형이지 
 것이다. 사용자가 별도로 설치한 global QMD 자체는 삭제·업그레이드·비활성화하지
 않는다. 엔진 전환은 기존 색인·설정의 이관, 무결성 검증과 실패 시 rollback
 경로가 준비된 뒤에만 검토한다. 플러그인이 독립 설치·관리한 QMD runtime은
-전환 검증 후 [소유권이 증명된 정리 절차](2026-10-17-embedded-engine-data-migration.md)에
-따라 후속 정리한다. 소유권이 불확실한 파일이나 공유 파일·모델은 삭제하지 않는다.
+전환 검증 후 소유권이 증명된 owner 정리 절차(`skills/setup/SKILL.md`의
+`plan-legacy-cleanup`·`apply-legacy-cleanup`)에 따라 후속 정리한다. 소유권이 불확실한 파일이나 공유 파일·모델은 삭제하지 않는다.
 
 Laya Index의 현재 구현은 `core/laya_*.py` 모듈이며 선택된 Laya route에서만
 쓰인다. hook은 `core/laya_index_host_route.py classify-hook`으로 요청을
@@ -115,8 +115,8 @@ endpoint에 결합된 부분을 그대로 제품 엔진 스키마로 들여오�
 
 ## 관련 문서와 남은 목표
 
-기존 설정·원문·위키·QMD index의 이전과 플러그인 소유 QMD runtime 정리는
-[데이터 이전 계획](2026-10-17-embedded-engine-data-migration.md)에, 원문
+플러그인 소유 QMD runtime 정리는 [setup 스킬](../../skills/setup/SKILL.md)의
+owner 정리 절차에, 원문
 최신성과 worktree 정책은 [worktree 동기화 문서](../git-worktree-search-sync-policy.md)에
 둔다.
 

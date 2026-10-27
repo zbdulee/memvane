@@ -4,14 +4,13 @@
 보통은 에이전트에게 자연어로 요청해서 만들거나 조정하고, 직접 편집할 때는 이
 문서를 기준으로 필요한 값만 바꾸면 됩니다.
 
-**설정 파일에는 기본값과 다른 값만 적으십시오.** 생성기(추천 온보딩·`--enable-compile`·
-`--init-wiki`)도 그렇게 씁니다. 기본값을 그대로 옮겨 적으면 나중에 기본값이 바뀌어도
+**설정 파일에는 기본값과 다른 값만 적으십시오.** 기본값을 그대로 옮겨 적으면 나중에 기본값이 바뀌어도
 그 프로젝트만 옛 값에 고정되고, 파일이 길어져 실제로 조정한 값이 묻힙니다.
 
 **이 문서는 2단 구성입니다.** 앞쪽 [전체 키 레퍼런스](#전체-키-레퍼런스)는 훑어보는
 용도의 표 한 장이고, 뒤쪽 [근거 부록](#근거-부록)은 "왜 이 기본값인가"를 설명합니다.
 값을 바꾸기 전에 해당 항목의 부록 절을 읽으십시오 — 순위 컷으로 동작하는 `minScore`,
-유사도가 아닌 daemon score, 유료 호출 예산의 곱처럼 이름과 다르게 동작하는 설정이
+유사도가 아닌 검색 score, 유료 호출 예산의 곱처럼 이름과 다르게 동작하는 설정이
 거기에 설명돼 있습니다.
 
 ## Minimal settings
@@ -39,8 +38,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 | `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
 
 정규화된 effective config에는 `settingsModel: "minimal"`이 붙습니다. legacy 파일에는
-이 키가 없습니다. minimal 해석은 `.auto-context/settings.json`에만 적용되고, 레거시 위치
-(`.auto-context.json`, `.agents/qmd-recall.json`)의 파일은 키가 같아도 legacy로 읽습니다.
+이 키가 없습니다. 설정 파일은 `.auto-context/settings.json` 하나만 읽습니다.
 
 **minimal이 아닌 경우.** 두 키 외의 키가 하나라도 있으면 legacy 파일이며 아래
 [전체 키 레퍼런스](#전체-키-레퍼런스)대로 읽습니다. 일부 키만 유도하지 않습니다.
@@ -57,23 +55,18 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 - `.auto-context`: 위키 생성 원천에서 제외됩니다. 그 안의 `.auto-context/wiki`는
   wiki collection 루트이므로 검색 대상입니다.
 
-**인덱싱 끄기.** minimal settings에는 `indexing` 키가 없습니다. settings 파일이 있으면
-켜지고, 사용자 로컬 optout marker(`~/.config/qmd/optout/<프로젝트 루트 해시>.json`)가
-있으면 꺼집니다. 이 marker는 프로젝트 settings보다 먼저 확인되고 settings 형식과
-무관하게 적용됩니다. 에이전트에게 "이 프로젝트에서는 auto-context 꺼줘"라고 요청하면
-marker가 기록됩니다.
+**인덱싱 끄기.** minimal settings에는 `indexing` 키가 없고, settings 파일이 있으면 켜짐으로
+해석합니다. 실제 색인·검색·compile·학습은 선택된 Laya route가 있는 프로젝트에서만 돕니다.
+route가 없는 프로젝트는 아무 작업도 받지 않고, settings 파일이 있으면 SessionStart에서
+setup skill로 온보딩하라는 안내 한 줄만 받습니다.
 
 **선택된 laya-db route.** route record는 settings 파일 바이트가 아니라 해석된 settings
 identity를 묶습니다(아래 "route의 settings binding"). minimal settings로 선택된 route는
 유도된 legacy 모양으로 검사합니다.
 
-**QMD 인덱스.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
-선택된 route의 원천 신선도 기준일 뿐, QMD collection이 아닙니다. `resolve_paths`는 이를
-`sourceEntries`로 내보내므로 `update.sh`는 QMD에 추가·`update`·`embed`하지 않고, 이전에
-등록된 같은 이름의 collection은 해제합니다. 공용 QMD store registry에서는 같은 owner·같은
-경로의 이 collection만 `indexed: false`로 내려갈 수 있고, 그 사이에도 다른 프로젝트의
-공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
-reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
+**raw collection.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
+선택된 route의 원천 신선도 기준입니다. `resolve_paths`는 이를 `sourceEntries`로 내보내고,
+laya route에서의 role은 `raw`입니다.
 
 ### Laya 온보딩과 settings binding
 
@@ -91,9 +84,57 @@ digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `sk
 같은 사유로 막힙니다.
 
 이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
-revision 판정, 원문 삭제 시 카드 정리, SessionStart lifecycle)이 같은 규칙으로 다룹니다.
+revision 판정, 원문 삭제 시 카드 정리, wiki lifecycle)이 같은 규칙으로 다룹니다.
 settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
 wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다.
+
+### 임베딩 런타임과 retired QMD 정리 (유지보수 명령)
+
+Laya 색인의 임베딩 provider는 `~/.local/state/laya/embed-runtime`의 로컬 런타임입니다
+(`active.json`·`previous.json`·`generations/`). 사용자는 setup skill에 자연어로 요청하고,
+아래는 그 skill이 쓰는 유지보수 명령입니다. `ROOT`는 설치된 플러그인 루트이며 이 명령들은
+`--project`가 필요 없습니다.
+
+```bash
+python3 -B "$ROOT/core/setup_entry.py" index-runtime-status
+python3 -B "$ROOT/core/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
+python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]
+python3 -B "$ROOT/core/setup_entry.py" plan-legacy-cleanup [--include-user-qmd-data]
+python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cleanup [--include-user-qmd-data]
+```
+
+- **`provision-index-runtime`** — 이전 설치가 없는 머신에서 런타임을 만듭니다. Node는 `PATH`를
+  먼저 보고, 다음으로 mise·fnm·nvm·volta·asdf 설치와 Homebrew·시스템 경로(`/opt/homebrew/bin`,
+  `/usr/local/bin`, `/usr/bin`)를 봅니다. 메이저 22·24·26이고 shim이 아닌 실제 바이너리(Mach-O·ELF)만
+  받습니다. `locks/laya-embed-runtime`을 `npm ci --ignore-scripts`로 설치해 node-llama-cpp 3.18.1과
+  prebuilt `@node-llama-cpp/mac-arm64-metal`을 얻고, GGUF는
+  `https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`에서
+  받아 sha256 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`일 때만 채택합니다.
+  `--provider-model-file`은 같은 GGUF의 로컬 사본을 씁니다. npm registry·모델 호스트 접근이라
+  `--approve-index-runtime-download` 없이는 거부합니다(`laya_embed_runtime_download_approval_required`).
+- **`gc-index-runtime`** — 세대 목록을 보여 주고, `--approve-index-runtime-gc`가 있으면 active·previous가
+  아니고 `~/.local/state/laya/*/production-provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
+  attestation의 `profileDependencyClosure` 기록은 참조로 세지 않습니다. 읽을 수 없는 attestation이
+  있으면 `attestation_unreadable`로 막힙니다.
+- **`plan-legacy-cleanup`** — 읽기 전용입니다. 플러그인 QMD 데몬 pid 파일
+  (`~/Library/Application Support/qmd-auto-context/backend/daemon-*.pid`)과 각 pid가 검증된 살아 있는
+  데몬인지, `managed-by: qmd-auto-context` 마커가 있는 LaunchAgent(`com.qmd-mcp-daemon`·
+  `com.qmd-keepalive`·`com.qmd-logrotate`·`com.qmd-index-worker`), 대상 트리와 크기, blocker를
+  보여 줍니다.
+- **`apply-legacy-cleanup --approve-legacy-cleanup`** — 명령줄이 정확히
+  `<node> <플러그인 QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http --port <pid 파일의 port>`인
+  데몬만 신호 직전에 다시 확인한 뒤 `SIGTERM`으로 멈춥니다(`SIGKILL`·패턴 검색은 쓰지 않습니다).
+  마커가 있는 LaunchAgent plist만 bootout 후 지우고(`.bak` 사본은 그대로), 이어서
+  `~/Library/Application Support/qmd-auto-context/`의 `runtimes/qmd`·`shared-qmd`·`backend`를 지웁니다.
+  `~/.cache/qmd`·`~/.config/qmd`에는 사용자 자신의 QMD 인덱스·설정·모델 캐시도 있으므로
+  `--include-user-qmd-data`를 함께 줄 때만 지웁니다. 같은 디렉터리의 `learning`·`laya-inference`·
+  `live-selection`·`runtimes/laya`는 남깁니다.
+- **blocker** — 설치 attestation이 대상 트리 안의 파일을 아직 가리키면
+  `attestation_references_legacy_path`, `~/.local/state/laya/*/reviewed-route.json`의 `pluginRoot`가
+  `core/backend_manager.sh`를 가진 이전 번들을 가리키면 `older_host_bundle_bound`입니다. plan은 blocker를
+  보고하고 apply는 아무것도 바꾸지 않고 `blocked`로 끝납니다(이전 번들은 `~/.cache/qmd`·`~/.config/qmd`를 다시 만듭니다). 그래서 정리는 Claude·Codex
+  host 캐시가 모두 이 릴리스를 로드하고, 모든 설치가 SessionStart 번들 업그레이드로 이 번들로 옮겨
+  가고, 모든 설치가 Laya 임베딩 런타임으로 재attest된 뒤에 한 번 실행합니다.
 
 ## 기본 예시
 
@@ -113,9 +154,7 @@ wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥�
     "my-project": "raw",
     "my-project-wiki": "wiki"
   },
-  "recallStrategy": "hierarchical",
   "minScore": 0.33,
-  "rawFallbackMinScore": 0.5,
   "topN": 3,
   "queryTimeout": 5,
   "wikiPath": ".auto-context/wiki"
@@ -135,22 +174,22 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 |---|---:|---|
 | `indexing` | `null` | `true`면 이 프로젝트에서 recall·indexing을 씁니다. `false`면 설정 파일이 있어도 effective collection이 비어 비활성처럼 동작합니다. |
 | `name` | `""` | 프로젝트 이름입니다. legacy 파일에서는 동작에 영향이 없고, [minimal settings](#minimal-settings)에서는 collection 이름을 정합니다. |
-| `collections` | `[]` | qmd에 등록할 logical collection 이름 목록입니다. 비어 있으면 recall은 무동작입니다. |
-| `collectionPaths` | `{}` | collection별 프로젝트 상대 경로입니다. **인덱싱 범위를 정하는 유일한 설정입니다** → [인덱싱 범위를 줄이는 방법](#인덱싱-범위를-줄이는-방법) |
+| `collections` | `[]` | logical collection 이름 목록입니다. 비어 있으면 recall은 무동작입니다. |
+| `collectionPaths` | `{}` | collection별 프로젝트 상대 경로입니다 → [인덱싱 범위를 줄이는 방법](#인덱싱-범위를-줄이는-방법) |
 | `collectionRoles` | `{}` | collection 역할(`raw`·`wiki`·`session`·`source`)입니다. 미설정은 `raw`, 오타 등 미지 값은 fail-closed로 전부 제외 → [Collection Roles](#collection-roles) |
-| `recallStrategy` | `"hierarchical"` | `flat`(전부 함께) · `hierarchical`(wiki 먼저, 없으면 raw fallback) · `wikiOnly`(wiki만) → [Recall Strategy](#recall-strategy) |
+| `recallStrategy` | `"hierarchical"` | `flat`(전부 함께) · `hierarchical`(wiki 먼저, 없으면 raw fallback) · `wikiOnly`(wiki만). 선택된 Laya 경로는 이 값과 관계없이 wiki만 검색합니다 → [Recall Strategy](#recall-strategy) |
 | `minScore` | `0.0` | recall 주입 하한입니다. **유사도 임계가 아니라 순위 컷입니다**(score = `1/순위`) → [minScore는 유사도가 아니라 순위입니다](#minscore는-유사도가-아니라-순위입니다) |
-| `rawFallbackMinScore` | `minScore` | `hierarchical`의 raw fallback에 적용할 순위 컷입니다 → [Raw Fallback Tuning](#raw-fallback-tuning) |
+| `rawFallbackMinScore` | `minScore` | `hierarchical`의 raw fallback에 적용할 순위 컷입니다. 선택된 Laya 경로는 raw fallback을 쓰지 않습니다. |
 | `topN` | `3` | 주입할 최대 문서 수입니다. `minScore`가 이보다 강하게 자를 수 있습니다. |
-| `queryTimeout` | `5` | qmd query **1건**의 응답 대기(초)입니다. 전체 훅 예산이 아닙니다 → [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) |
-| `staleQueueThreshold` | `20` | dirty queue 적체 안내를 표시할 기준 줄 수입니다. |
-| `skipPaths` | `[]` | 기존 QMD에서는 recall 결과 경로 substring 필터입니다. 선택된 Laya와 [minimal settings](#minimal-settings)에서는 위키 생성에서 제외할 원문 디렉터리이고, 선택된 Laya에서는 기존 위키 출처 보호에도 쓰입니다 → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
+| `queryTimeout` | `5` | query **1건**의 응답 대기(초)입니다. 전체 훅 예산이 아닙니다 → [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) |
+| `staleQueueThreshold` | `20` | 큐 적체 안내 기준 줄 수입니다. 값은 정규화되지만 이 값을 읽는 경로가 없습니다. |
+| `skipPaths` | `[]` | 위키 생성에서 제외할 원문 디렉터리이고, 기존 위키 출처 보호에도 쓰입니다 → [recall 결과에서 특정 경로 제외](#recall-결과에서-특정-경로-제외) |
 | `allowRoots` | `[]` | 프로젝트 밖 절대경로 collection을 허용할 root 목록입니다. 보통 비워 둡니다. |
 | `prefixStyle` | `"full"` | recall 출력 prefix 스타일입니다(`full`·`tag`). |
 | `injectSummaryMaxChars` | `600` | wiki 카드 1장당 주입할 본문 문자 상한입니다. raw 결과는 원문 본문을 자동 주입하지 않습니다. `0`=끔, 4000으로 클램프 → [카드 본문 주입](#카드-본문-주입) |
 | `injectSourcePathsPerCard` | `3` | 카드 1장당 주입할 원문 경로(`sources[].path`) 수입니다. `0`=끔, 10으로 클램프 → [원문 경로 주입](#원문-경로-주입) |
 | `events` | `["sessionStart","userPromptSubmit","postToolUse"]` | 자동 동작을 켤 이벤트 목록입니다 → [Events](#events) |
-| `sessionStartSync` | `true` | SessionStart에서 허용된 collection의 생성·수정·삭제를 스냅샷과 비교해 인덱스 큐에 반영합니다. 키를 생략하면 `true`, 명시한 `false`는 그대로 유지합니다. bool이 아닌 값은 OFF로 처리하고 `session_start_sync_invalid`로 알립니다. OFF이면 `session_start_source` 동의가 있어도 이 경로의 위키 큐 등록은 실행되지 않습니다. ON이어도 위키 큐 등록에는 `compile.mode`와 `session_start_source` 동의가 따로 필요하며 학습 동의는 바꾸지 않습니다. → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
+| `sessionStartSync` | `true` | SessionStart 스냅샷 동기화 스위치입니다. 값은 정규화되지만 이 값을 읽는 경로가 없습니다. 선택된 Laya route의 sync는 full-scan worker가 맡습니다 → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
 | `wikiPath` | `".auto-context/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
@@ -172,12 +211,12 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.budget.extractorPerRun` | `10` | run당 extractor 호출 상한입니다(50 클램프). 초과분은 requeue → [compile.budget](#compilebudget--한-run의-유료-호출-총량) |
 | `compile.budget.cardsPerSource` | `10` | 소스 1개에서 쓸 카드 수 상한입니다(50 클램프). 초과분은 기록만 하고 requeue하지 않습니다. |
 | `compile.budget.verifyPerRun` | `3` | 검수 예산의 **하한**입니다(50 클램프). 실제 예산은 그 run의 생산량으로 커집니다. |
-| `compile.budget.dedupPairsPerScan` | `8` | retroactive dedup scan 1회의 **유료** judge 호출 상한입니다. |
+| `compile.budget.dedupPairsPerScan` | `8` | scan 단위 **유료** judge 호출 상한입니다. 값은 읽히지만 이 예산을 쓰는 scan 경로가 없습니다. |
 | `compile.budget.dedupPairsPerCompile` | `1` | write-time dedup gate 1회의 **유료** judge 호출 상한입니다. |
 | `compile.batch.idleSeconds` | `90` | **시작 조건**: 가장 오래된 잡이 이만큼 묵으면 개수가 모자라도 시작합니다. |
 | `compile.batch.maxItems` | `5` | **시작 조건**: 큐가 이만큼 모이면 즉시 시작합니다. 상한이 아닙니다(상한은 `budget`). |
 | `compile.semanticDedup.enabled` | `true` | 중복 카드 생성 방지 전체를 켜고 끕니다. |
-| `compile.semanticDedup.maxPairsPerScan` | `10` | 무료 score gate가 scan 1회에 볼 쌍 수입니다(유료 예산은 `budget.dedupPairsPerScan`). |
+| `compile.semanticDedup.maxPairsPerScan` | `10` | 무료 score gate가 scan 1회에 볼 쌍 수입니다. 값은 읽히지만 이 값을 쓰는 scan 경로가 없습니다. |
 | `compile.semanticDedup.candidateMinScore` | `0.3` | judge에 넘길 후보의 retrieval floor입니다. **판정 임계가 아닙니다** → [Semantic Dedup](#semantic-dedup) |
 | `compile.semanticDedup.judge.enabled` | `true` | LLM 본문 대조 판정을 씁니다. 끄면 레거시 무료 score 게이트로 degrade합니다. |
 | `compile.semanticDedup.judge.crossEngine` | `"prefer"` | 판정 엔진을 생산 엔진과 분리합니다(`prefer`·`require`·`off`). **write-time gate에만 적용됩니다** → [판정 엔진 분리 (dedup)](#판정-엔진-분리-dedup) |
@@ -191,12 +230,9 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.verify.crossEngine` | `"prefer"` | 검수 엔진을 카드를 만든 엔진과 분리합니다(`prefer`·`require`·`off`) → [검수 엔진 분리 (`crossEngine`)](#검수-엔진-분리-crossengine) |
 | `compile.verify.builtins` | `[]` | 검수 후보 엔진입니다. 비면 `compile.extractor` 풀을 물려받습니다. |
 | `compile.verify.cooldownSeconds` | `600` | 검수 실패 뒤 cooldown입니다(24h 클램프). |
-| `compile.sourceScan.enabled` | `true` | **wiki 수명 주기 조치**(원문 소실·지문 없음 카드 삭제, 해시 변경 재생성 enqueue)를 켜고 끕니다(provenance 결측 집계는 끄지 않습니다). **`true`/`false`만** 유효하고, `"false"`처럼 bool이 아닌 값은 기본값(유지)으로 폴백한 뒤 SessionStart에 알림이 나옵니다 → [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) |
+| `compile.sourceScan.enabled` | `true` | **wiki 수명 주기 조치**(원문 소실·지문 없음 카드 삭제, 해시 변경 재생성 enqueue)를 켜고 끕니다(provenance 결측 집계는 끄지 않습니다). **`true`/`false`만** 유효하고, `"false"`처럼 bool이 아닌 값은 기본값(유지)으로 폴백합니다 → [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) |
 | `compile.sourceScan.maxCardsPerScan` | `300` | 수명 주기가 한 회차에 원문 해시를 대조할 카드 수입니다(5000 클램프). 초과분은 순환 커서가 다음 회차에 이어 봅니다. `QMD_SOURCE_SCAN_MAX`가 이 값을 덮습니다. |
-| `maintenance.orphanVectors.enabled` | `true` | 죽은(orphan) 벡터 자동 회수입니다 → [orphan 벡터 자동 회수](#orphan-벡터-자동-회수) |
-| `maintenance.orphanVectors.minRatio` | `0.2` | 기회적 회수의 orphan 비율 하한입니다(`0`~`1`). |
-| `maintenance.orphanVectors.minCount` | `200` | 기회적 회수의 절대 개수 하한입니다. 두 조건을 **모두** 넘겨야 회수합니다. |
-| `maintenance.orphanVectors.cooldownSeconds` | `86400` | 회수 **시도** 간 최소 간격입니다. 양수만 유효합니다. |
+| `maintenance.orphanVectors.*` | `enabled: true`, `minRatio: 0.2`, `minCount: 200`, `cooldownSeconds: 86400` | 값은 정규화되지만 이 값을 읽는 회수 경로가 없습니다. |
 
 ### compile.mode
 
@@ -207,37 +243,35 @@ compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. 예
 
 | 값 | 동작 |
 |---|---|
-| `off` | 아무것도 하지 않습니다(기본값). enqueue·worker·검수·dedup scan·SessionStart 원장 알림이 전부 멈춥니다. |
+| `off` | 아무것도 하지 않습니다(기본값). enqueue·worker·검수가 전부 멈춥니다. |
 | `candidates` | 후보를 `candidates.jsonl`에 기록만 하고 wiki 카드를 쓰지 않습니다. 파이프라인을 관찰할 때 씁니다. |
 | `guarded` | `confidence: "high"` 후보만 카드로 씁니다. 나머지는 candidate로 강등됩니다. |
-| `auto-wiki` | clean candidate를 wiki Markdown으로 직접 씁니다. 추천 온보딩의 기본값입니다. |
+| `auto-wiki` | clean candidate를 wiki Markdown으로 직접 씁니다. minimal settings의 유도 값입니다. |
 
 미지 값(오타 포함)은 `off`로 fail-closed 처리됩니다 — 유료 파이프라인이 오타 하나로
 켜지지 않게 하기 위함입니다.
 
 ### Wiki source freshness와 legacy migration
 
-구 QMD recall에서 이는 설정이 아니라 고정된 정책입니다. 새 카드와 자동 업데이트 카드는
-`generated` 또는 `tentative`처럼 `verified`가 아닌 상태로 시작하며,
-`qmd-auto-context`가 만든 `verified` 카드라도 유효한 compiler-owned
-`sourceRevisions`가 있을 때만 원문 revision을 엄격히 대조한 뒤 주입합니다.
-원문이 바뀌면 compile cooldown·queue 지연·hook 실패와 무관하게 그 카드는 주입되지 않습니다.
+이는 설정이 아니라 고정된 정책입니다. 새 카드와 자동 업데이트 카드는
+`generated` 또는 `tentative`처럼 `verified`가 아닌 상태로 시작하며, 원문 revision 대조의
+기준은 `qmd-auto-context`가 만든 카드의 compiler-owned `sourceRevisions`입니다.
 
-binding store가 있는 **선택 Laya 위키 전용 검색**은 다릅니다. 검색 시 원문을 다시 열거나
+binding store가 있는 **선택 Laya 위키 전용 검색**은 검색 시 원문을 다시 열거나
 해시를 계산하지 않고, 마지막으로 완료·게시된 위키 색인의 본문 해시·범위·세대·명시
 제외를 확인합니다. 변경 감지와 원문 해시 비교, 위키 생성·수정, 색인 게시는 비동기
 인덱스 작업의 책임입니다. 갱신 중에는 이전 완료 위키가 검색될 수 있으며, 이는 최신
 원문이라는 보증이 아닙니다. 카드 자체의 `verifiedBodyHash`와 출처 구조 검사는 검색에도
-남습니다. `verifiedBodyHash`가 없는 카드는 구 QMD recall과 같이 "결속 없음"으로 보고
+남습니다. `verifiedBodyHash`가 없는 카드는 "결속 없음"으로 보고
 검색하며, 값이 있으면 본문과 일치해야 합니다. `sourceRevisions`가 없는 카드는 검색하지 않습니다.
 `sourceRevisions`의 collection 이름이 현재 route에 없는 이름(이름이 바뀌었거나 복사된 프로젝트)이면
-구 QMD recall처럼 경로로 판정합니다. 프로젝트 기준 경로가 raw collection 루트 안에 있어야 합니다.
+경로로 판정합니다. 프로젝트 기준 경로가 raw collection 루트 안에 있어야 합니다.
 검색된 카드가 있는데 모두 걸러지면 stderr와 `QMD_RECALL_LOG`(`laya_wiki_rows_filtered`)에 사유별 개수를 남깁니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
 평가해 최대 3개를 주입합니다. 체크포인트가 없거나 모델이 응답하지 못하면 검증된
 후보를 하이브리드 순위대로 최대 3개 주입합니다.
 binding store가 없는 구형 Laya 선택 경로도 직접 RRF 결과를 주입하지 않습니다.
 
-**구 QMD 검사가 보장하는 것과 보장하지 않는 것을 구분하십시오.** `verified` + 신선도 통과는
+**신선도 검사가 보장하는 것과 보장하지 않는 것을 구분하십시오.** `verified` + 신선도 통과는
 **"원문이 컴파일 시점 이후 바뀌지 않았다"**는 뜻이며, **"지금 이 카드에 적힌 내용이
 검증됐다"는 뜻이 아닙니다.** 지문(`sourceRevisions`)은 원문 파일에만 걸려 있고 카드 파일
 자체에는 무결성 검사가 없습니다 — 원문을 그대로 둔 채 카드 본문만 고치면 그 내용이
@@ -255,10 +289,8 @@ compile, 성공적인 verification이 끝날 때까지 이 카드는 recall에 �
 status를 쓰지 않으며, `wiki-review` UI·skill·agent도 제공하지 않습니다. `merge-needed.jsonl`은
 승인 대기열이 아닌 non-trusted collision diagnostic입니다.
 
-운영 중 drop 원인은 `QMD_RECALL_LOG`의 `qmd_recall_selection`에서 봅니다. 특히
-`dropped_stale`, `freshness_unknown`, `dropped_unverified`가 source freshness/provenance 필터 결과입니다.
-`freshness_checked`는 그 요청에서 source revision을 검사한 후보 수이며 drop 사유가 아닙니다.
-로그와 injected context에는 원문 본문·secret value·SHA-256을 기록하지 않습니다.
+운영 중 drop 원인은 `QMD_RECALL_LOG`의 `qmd_recall_selection`과
+`laya_wiki_rows_filtered`(사유별 개수)에서 봅니다. 로그와 injected context에는 원문 본문·secret value·SHA-256을 기록하지 않습니다.
 
 P0는 `.env`를 source로 등록하지 않습니다. P1 structured-evidence adapter 전에는 `prod.env`의
 repository-config evidence 또는 runtime-current proof를 주장하지 않습니다.
@@ -288,10 +320,10 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
   파생되어 애초에 설정 대상이 아니었습니다 — 반쪽 추상화였고, 오타 하나가 과금 루프를
   만든 실패 클래스(`verify_skipped_path`)도 여기서 사라집니다.
 - **dedup score 레버 4종** — `threshold`·`autoMergeThreshold`·`topK`·`similarPageMaxChars`는
-  상수가 됐습니다. daemon score가 유사도가 아니라 **RRF 순위의 함수**라 어떤 임계도
+  상수가 됐습니다. 검색 score가 유사도가 아니라 **RRF 순위의 함수**라 어떤 임계도
   "두 카드가 같은 사실을 말한다"를 표현할 수 없었습니다([Semantic Dedup](#semantic-dedup)).
 - **`compile.sourceMissingPath`** — 위 "산출물 경로 9종"과 같은 경로 키입니다. 읽는 소비자가
-  없으므로 적어 두면 SessionStart 알림이 "지우십시오"라고 안내합니다.
+  없으므로 적어 두어도 읽히지 않습니다.
   (`compile.sourceScan.enabled`·`maxCardsPerScan`은 경로 키가 아니라 수명 주기 동작 값이라
   읽힙니다 — 위 [전체 키 레퍼런스](#전체-키-레퍼런스)를 보십시오.)
 - **클램프 상수** — `MAX_COMPILE_PER_RUN`(50)·`MAX_CARDS_PER_SOURCE`(50)·
@@ -299,17 +331,15 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
   "설정 오류나 모델 출력이 과금 규모를 정하지 못한다"를 보장하는 자리라 설정으로
   열지 않습니다.
 
-제거된 키가 파일에 남아 있으면 SessionStart에 1줄 알림이 나옵니다(값이 무시되고 있다는
-뜻이며, 옮겨간 키는 행선지를 함께 알려 줍니다). 알림을 없애려면 그 키를 지우거나
-새 위치에 다시 적으십시오.
+제거된 키가 파일에 남아 있으면 그 값은 무시됩니다. 옮겨간 키의 행선지는
+`core/config.py`의 `deprecated_keys`가 정합니다. 그 키를 지우거나 새 위치에 다시 적으십시오.
 
 **예외 하나 — `compile.maxCardsPerSource`는 값이 잠정 반영됩니다.** 새 키
 `compile.budget.cardsPerSource`를 **적지 않은 경우에만** 옛 값이 그 자리를 대신하고
-(같은 50 클램프를 통과합니다), 새 키를 적으면 새 키가 이깁니다. 알림은 그대로 나오므로
-알림 문구의 "값은 무시됩니다"는 이 키에 대해서만 부분적으로 사실이 아닙니다 — 잠정 반영이지
-스키마가 아니니 새 위치로 옮겨 적으십시오. **옮겨간 나머지 4키
+(같은 50 클램프를 통과합니다), 새 키를 적으면 새 키가 이깁니다. 잠정 반영이지 스키마가
+아니니 새 위치로 옮겨 적으십시오. **옮겨간 나머지 4키
 (`batch.maxPerRun`·`verify.maxPerRun`·`semanticDedup.judge.maxPairsPer*`)는 반영되지
-않습니다**(알림만). 이 비대칭은 의도된 것입니다: 그 4키를 반영하면 라이브 프로젝트의
+않습니다**. 이 비대칭은 의도된 것입니다: 그 4키를 반영하면 라이브 프로젝트의
 **유료 호출 예산이 플러그인 업그레이드만으로 올라가는데**,
 `maxCardsPerSource`는 라이브 사용이 0건이라 반영해도 지금 예산이 바뀌는 프로젝트가 없고,
 이 키를 적는 동기 자체가 카드 수를 **줄이는** 것(비용 감소 방향)입니다.
@@ -322,69 +352,42 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 읽으십시오.
 
 - [blocking 훅의 시간 예산](#blocking-훅의-시간-예산) · [Collection Roles](#collection-roles) · [Recall Strategy](#recall-strategy)
-- [카드 본문 주입](#카드-본문-주입) · [원문 경로 주입](#원문-경로-주입) · [lex 게이트](#lex-게이트--무관-주입-차단) · [minScore는 유사도가 아니라 순위입니다](#minscore는-유사도가-아니라-순위입니다) · [Raw Fallback Tuning](#raw-fallback-tuning)
-- [Recall 품질 진단 (shadow query)](#recall-품질-진단-shadow-query) · [Events](#events)
+- [카드 본문 주입](#카드-본문-주입) · [원문 경로 주입](#원문-경로-주입) · [lex 게이트](#lex-게이트--무관-주입-차단) · [minScore는 유사도가 아니라 순위입니다](#minscore는-유사도가-아니라-순위입니다)
+- [Events](#events)
 - [Wiki Compile](#wiki-compile) · [처리량과 유료 호출 예산](#처리량과-유료-호출-예산) · [Verify](#verify) · [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) · [Semantic Dedup](#semantic-dedup)
-- [orphan 벡터 자동 회수](#orphan-벡터-자동-회수) · [cooldown·lock의 "영구 정지" 방어](#cooldownlock의-영구-정지-방어)
+- [cooldown·lock의 "영구 정지" 방어](#cooldownlock의-영구-정지-방어)
 - [Common Recipes](#common-recipes) · [Troubleshooting](#troubleshooting)
 
 ## blocking 훅의 시간 예산
 
 `UserPromptSubmit` recall은 **blocking hook**입니다 — 이 훅이 끝날 때까지 사용자 프롬프트가
-모델로 가지 않습니다. 그래서 "예산이 얼마인가"가 실제 UX 수치인데, 코드에 있는 값은
-**`queryTimeout` 하나이고 그것은 per-query 값**입니다. 기본값은 `5`초입니다
-(`core/config.py`의 `DEFAULT_CONFIG["queryTimeout"]`, `core/recall.py`의 `QUERY_TIMEOUT`).
-설정을 생략하면 이 5초가 적용됩니다.
+모델로 가지 않습니다. 설정 키는 **`queryTimeout` 하나이고 그것은 per-query 값**입니다.
+기본값은 `5`초입니다(`core/config.py`의 `DEFAULT_CONFIG["queryTimeout"]`). 설정을 생략하면
+이 5초가 적용됩니다.
 
-**전체 훅 deadline은 없습니다(의도된 부재입니다).** 따라서 최악 소요는 `queryTimeout`보다
-큽니다:
+선택된 Laya 경로의 검색 단계는 `core/laya_host_response.py` 안의 고정 deadline으로도 묶입니다.
+lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전체**가 1초입니다(term 당 질의는
+최대 6개) → [lex term 선택](#lex-term-선택--코퍼스에-있는-단어만-and-에-넣습니다).
 
-| 항목 | 최악 | 비고 |
-|---|---:|---|
-| 데몬 health 확인 | 2초 | `QMD_HEALTH_TIMEOUT`(기본 2, 잘못된 값은 2로 폴백) |
-| 데몬 query | 5초 × **최대 2회** | `hierarchical`은 wiki 질의 후 부족하면 raw backfill 질의를 **직렬로** 한 번 더 합니다 |
-| DF 좁히기 프로브 | 1초 | **패스 전체**의 상한입니다(term 당 1회씩 최대 6회를 보내지만 합쳐서 1초). 일반 lex term 이 있을 때만 → [lex term 선택](#lex-term-선택--코퍼스에-있는-단어만-and-에-넣습니다) |
-| lex 게이트 프로브 | 1초 | recall 실행당 **최대 1회**. 주입할 카드 본문·원문 경로가 있을 때만 → [lex 게이트](#lex-게이트--무관-주입-차단) |
-| 카드 읽기 | 유계 | 카드당 파일 I/O 1회 × `topN`, 읽기 창·`injectSummaryMaxChars`로 상한 |
-| shadow query | 2.5초 | **기본 완전 비활성**. `QMD_SHADOW_QUERY=1`일 때만, per-query 1초 |
-
-즉 기본 설정의 구조적 최악은 약 **14초**이고(`2 + 5 + 5 + 1 + 1`), `wikiOnly`·`flat`은 본
-질의가 1회이므로 약 **9초**입니다. 두 프로브는 `queryTimeout`과 별도로 각각 1초에
-묶여 있습니다 — 정밀도 최적화가 blocking 예산에 per-query 5초를 통째로 더하지 않게
-하기 위해서이고, 프로브가 timeout하면 각각 "위치 컷 폴백"·"게이트 열림"으로 도입 전과
-동일하게 동작합니다. DF 프로브는 term 수가 아니라 **패스 전체**에 상한이 걸려 있어
-term 이 늘어도 예산이 곱해지지 않습니다(실측 5 term 62ms, 단건 18ms). 실측은 이보다 훨씬 짧습니다 — 라이브 두 프로젝트에서
-**0.85 ~ 1.19초**(데몬 warm, 카드 3장 주입)입니다. 3.2초 지연을 주입한 stub 데몬에서는
-`elapsed 3.45초`로, 5초 안에서는 timeout 없이 끝까지 기다립니다.
-
-**전체 deadline을 도입하지 않은 이유**는 그것이 만드는 실패 모드가 더 나쁘기 때문입니다.
-deadline에 걸린 recall은 **조용히 주입 0건**이 되는데, 빈 출력은 이 플러그인의 정상 동작
-(결과 없음·데몬 부재·sandbox)과 구분되지 않습니다. 즉 느린 머신에서 컨텍스트가 사라지고
-그 사실이 표면화되지 않습니다 — 이 저장소가 반복해서 닫아 온 "종점 없는 차단" 클래스입니다.
-차단을 도입하려면 종점(사용자 표면화 경로)을 함께 설계해야 하고, 실측이 예산의 1/4 수준인
-현재 상태에서는 `queryTimeout` 하나로 조절하는 편이 낫습니다. 예산을 줄여야 하는 환경은
-`queryTimeout`을 내리십시오(질의 1회 기준이므로 `hierarchical`에서는 실효 상한이 2배입니다).
-
-> 이 문서를 읽는 사람과 도구를 위해 못박습니다: **"queryTimeout 3초 예산"이라는 글로벌 판정 기준은 존재하지 않습니다.** 글로벌 기본값은 일관되게 5초이며, 3초는 이 저장소의 `.auto-context/settings.json` 프로젝트 오버라이드 값입니다. **3초를 기본값이나 글로벌 판정 기준으로 인용하지 마십시오.**
+> 이 문서를 읽는 사람과 도구를 위해 못박습니다: **"queryTimeout 3초 예산"이라는 글로벌 판정 기준은 존재하지 않습니다.** 글로벌 기본값은 일관되게 5초입니다. **3초를 기본값이나 글로벌 판정 기준으로 인용하지 마십시오.**
 
 ## Collection Roles
 
-`collectionRoles`는 같은 qmd collection이라도 recall과 compile에서 다르게 취급하기
-위한 역할입니다. 네 role은 **두 축의 조합**입니다 — qmd 인덱스에 등록되는가(= recall
-대상이 되는가), wiki compile의 입력이 되는가.
+`collectionRoles`는 같은 collection이라도 검색과 compile에서 다르게 취급하기 위한
+역할입니다. 선택된 Laya route는 `wiki` role만 색인·검색·주입하고([Recall Strategy](#recall-strategy)),
+나머지 role은 wiki compile의 입력이 되는지를 정합니다.
 
-| Role | qmd 등록·인덱싱 | recall 질의 | hierarchical raw fallback | wiki compile 입력 |
-|---|:---:|:---:|:---:|:---:|
-| `raw` | O | O | O | O |
-| `session` | O | O | O | O |
-| `wiki` | O | O | X (wiki phase에서 **먼저** 검색) | X |
-| `source` | **X** | **X** | **X** | O |
+| Role | Laya 색인·검색 | wiki compile 입력 |
+|---|:---:|:---:|
+| `raw` | X | O |
+| `session` | X | O |
+| `wiki` | O | X |
+| `source` | X | O |
 
 - `raw` — 원본 문서입니다. 자세하지만 파편적일 수 있습니다.
-- `wiki` — 정리된 장기기억입니다. `hierarchical` recall에서 먼저 검색되고, 결과에는
-  카드 본문과 원문 경로가 함께 주입됩니다.
+- `wiki` — 정리된 장기기억입니다. 검색 결과에는 카드 본문과 원문 경로가 함께 주입됩니다.
 - `session` — 세션 요약이나 중간 후보입니다. compile source가 될 수 있지만 일반 raw보다
-  낮은 우선순위로 운용하는 용도입니다. 인덱싱·recall 취급은 `raw`와 같습니다.
+  낮은 우선순위로 운용하는 용도입니다. compile 취급은 `raw`와 같습니다.
 - `source` — **카드의 원천이지만 검색 대상은 아닌 문서**입니다. 아래 참고.
 
 **role 값을 적지 않은 것과 인식할 수 없는 값을 적은 것은 다르게 처리합니다.**
@@ -394,15 +397,9 @@ deadline에 걸린 recall은 **조용히 주입 0건**이 되는데, 빈 출력�
 | `collectionRoles`에 키가 없음 | `raw` (fail-open) | role 도입 전 프로젝트입니다. 하위호환이 맞습니다. |
 | 키가 있는데 값이 미지 (`"sourse"`, `"Source"`, `5` 등) | 색인·recall·compile에서 **전부 제외** (fail-closed) | 사용자가 무언가를 의도했는데 읽지 못한 것입니다. 여기서 `raw`로 넘기면 오타 하나가 "색인 제외"를 실제 색인으로 뒤집어, 의도하지 않은 문서가 인덱싱됩니다. |
 
-미지 값인 collection은 **새로 등록하지 않을 뿐 이미 등록된 인덱스를 지우지도 않습니다** —
-오타 하나로 인덱스를 삭제하는 것은 파괴적이고 재색인 비용이 들기 때문입니다. 제외 상태가
-조용히 지속되지 않도록 SessionStart에 한 줄 안내가 나옵니다(같은 조건에서는 TTL 동안 한 번만,
-값을 고치면 재무장). 값 하나만 고치면 다음 세션에 정상 등록됩니다.
-
 ### role `source` — 인덱싱하지 않고 카드만 만든다
 
-`source`는 그 문서를 **qmd에 등록하지 않습니다.** 따라서 recall이 그 문서를 직접
-찾아내는 일은 없고, 그 내용은 **그 문서로 만들어진 wiki 카드를 통해서만** recall에
+`source` 문서는 검색 대상이 아닙니다. 그 내용은 **그 문서로 만들어진 wiki 카드를 통해서만** recall에
 들어옵니다. 카드가 없는 `source` 문서는 recall 관점에서 존재하지 않습니다.
 
 ```json
@@ -421,118 +418,11 @@ deadline에 걸린 recall은 **조용히 주입 0건**이 되는데, 빈 출력�
 }
 ```
 
-경로별로 정리하면 이렇습니다.
-
-- **빠지는 것**: `qmd collection add`/`update`/`embed`, 편집 후 자동 인덱싱(dirty queue),
-  recall의 데몬 질의 대상, `hierarchical`의 raw fallback, `wikiOnly`의 wiki 판정
-- **그대로 남는 것**: 편집 훅과 sync의 wiki compile source 큐잉, compile worker의 소스
-  범위 검사, `collectionPaths` 경로 매핑
-
-이미 인덱싱된 collection을 `source`로 바꾸면 다음 SessionStart에 `qmd collection remove`로
-**실제로 인덱스에서 제거합니다.** 등록만 건너뛰면 그 문서는 collection scope에서만 빠지고
-전역 검색 후보 창은 계속 점유하기 때문입니다.
-
-제거에 실패하면(데몬 문제 등) 다음 세션마다 재시도하고, 계속 실패하면 SessionStart에
-"제거하지 못했습니다" 안내가 나옵니다 — 그 사이 그 collection은 **계속 색인·검색됩니다.**
-안내가 반복되면 `qmd collection remove <이름>`을 직접 실행하세요.
-
-> **알려진 한계 (qmd 2.5.3 상류 동작)**: `qmd collection remove`는 `documents`·`content`만
-> 삭제하고 **벡터는 남깁니다**(`dist/store.js`의 `removeCollection`). 실측한 인덱스에서
-> `content_vectors` 41,285행 중 26,267행(63.6%)이 이미 orphan이었고, qmd는 벡터 후보를
-> orphan을 포함한 채로 뽑습니다. 따라서 `source` 전환으로 확실히 제거되는 것은 **어휘(FTS)
-> 검색 점유뿐이고 벡터 점유는 남습니다.** 벡터까지 비우려면 인덱스를 재구축해야 합니다.
-
-**되돌리기는 role 값 하나만 바꾸면 됩니다.** `source` 기간에도 `collections`와
-`collectionPaths`는 그대로 두므로, `raw`로 되돌리면 다음 SessionStart의
-`collection add` + `update` + `embed`가 재등록·재인덱싱합니다(재색인 시간·임베딩 비용은
-다시 듭니다). 설정 파일에서 collection을 지우는 것과 다른 점이 이것입니다.
-
-모든 collection이 `source`이면 recall은 질의 없이 무출력으로 끝납니다(진단 로그의
-`reason`은 `no_indexed_collections`).
-
-## 등록 경로와 설정 경로의 대조
-
-`qmd collection add`는 **이름이 이미 있으면 실패하고 경로를 갱신하지 않습니다**(같은
-경로로 다시 호출해도 실패합니다). 즉 그 이름을 먼저 잡은 경로가 계속 소유합니다. 그래서
-설정의 `collectionPaths`를 고쳐도 이미 등록된 collection의 인덱싱 대상은 바뀌지 않습니다.
-
-이것이 실제로 문제가 되는 대표 상황은 **git worktree**입니다. `.auto-context/`를 저장소에
-커밋하면 worktree마다 같은 설정이 복제되고, worktree 안에서 세션을 열면 같은 이름이 그
-worktree 경로로 등록됩니다. 그 worktree를 지우면 collection은 존재하지 않는 경로를 가리킨
-채 남고, 문서가 0건이라 recall이 아무것도 찾지 못합니다. 설정에 적힌 경로는 살아 있으므로
-"root가 사라진 collection 정리"에도 걸리지 않습니다.
-
-SessionStart의 백그라운드 인덱싱 작업이 이 대조를 양방향으로 수행합니다.
-
-- **설정 → 레지스트리.** collection마다 등록 경로를 읽어 설정이 해석한 경로와 비교하고,
-  **실제로 다를 때만** 등록을 지운 뒤 곧바로 올바른 경로로 다시 등록합니다. 비교는
-  양쪽이 존재하면 **같은 대상을 가리키는지**로 판정합니다(심볼릭 링크·`..`뿐 아니라
-  대소문자 표기 차이·한글 NFC/NFD 표기 차이도 같은 경로로 봅니다) — 표기만 다른 경우에
-  재등록이 돌면 매 세션 전량 재색인·재임베딩이 됩니다. 한쪽이 존재하지 않으면
-  정규화한 경로 문자열로 비교하며, 그 경우가 바로 사라진 worktree를 가리키는
-  등록입니다.
-  재등록이 실패하면 **옛 경로로 되돌립니다**(등록이 아예 없는 상태로 남기지 않습니다).
-  안내는 등록 경로를 다시 읽어 새 경로임을 확인한 collection에 대해서만 나갑니다 —
-  실패했거나 확인되지 않았으면 알리지 않습니다. 판정과 재등록은 백그라운드 작업이
-  하고 안내는 그 다음 세션에 나오므로, **안내를 볼 때는 재색인이 이미 진행 중이거나
-  끝나 있습니다.**
-- **레지스트리 → 디스크.** **등록 경로가 없거나 접근할 수 없는** collection을 목록으로
-  알립니다. 삭제는 하지 않습니다 — 경로가 정말 사라진 것인지, 마운트하지 않은 볼륨·권한
-  문제로 보이지 않는 것인지 구분할 수 없기 때문입니다(그래서 문구도 "존재하지 않음"이
-  아니라 "없거나 접근할 수 없음"입니다). 알림은 에이전트에게 "각 경로의 존재·권한을
-  읽기만으로 확인하고 그 결과와 함께 삭제 여부를 사용자에게 물어라"를 지시합니다 —
-  실제 `qmd collection remove`는 확인을 받은 뒤에만 실행합니다.
-  경로가 다시 보이면 알림은 스스로 사라지고, 다시 소실되면 다시 알립니다.
-  이 대조는 **인덱싱 대상 collection이 하나라도 있는 경우에만** 돕니다(전부 role
-  `source`이거나 경로 해석이 실패한 세션에서는 건너뜁니다 — 그런 세션에는 전역 인덱스를
-  판정할 근거가 없습니다).
-
-**두 번째 대조의 범위를 "이 프로젝트 설정에 없는 등록"으로 넓히지 마세요.** qmd 인덱스는
-머신 전역에 하나이고 SessionStart는 프로젝트 단위로 돕니다. 그래서 이 프로젝트 설정에 없는
-이름은 대개 **다른 프로젝트의 정상 collection**입니다(문서가 살아 있고 그 프로젝트의
-recall이 그것을 씁니다). 반면 "등록 경로가 존재하지 않는다"는 소유 프로젝트와 무관하게
-죽은 등록이므로, 프로젝트 단위로 도는 경로에서도 안전하게 판정할 수 있는 유일한 기준입니다.
-
-레지스트리를 읽지 못했거나, 등록 경로를 파싱하지 못했거나, `qmd collection show` 자체가
-실패를 보고했으면 **아무것도 하지 않습니다**(출력에 경로처럼 보이는 줄이 있어도 쓰지
-않습니다). 여기서 잘못 판정하면 정상 collection을 지우고 전량 재색인·재임베딩이 뒤따르기
-때문에, "root가 사라진 collection 정리"(판정 불가면 지우는 쪽을 시도합니다)와 방향이
-반대입니다.
-
 ## Recall Strategy
 
-이 설정은 기존 QMD 검색에서 사용합니다. 별도로 선택한 Laya 경로는
-`recallStrategy` 값으로 검색 방식을 고르지 않고 항상 wiki 카드만
-색인·검색·주입합니다. 기존 프로젝트의 `hierarchical`·`wikiOnly` 값은
-설정 호환성 검증을 위해 읽으며, Laya에서 raw fallback을 켜지 않습니다.
-
-`recallStrategy: "flat"`이면 모든 `collections`를 한 번에 검색합니다.
-
-```json
-{
-  "recallStrategy": "flat",
-  "collections": ["my-project", "my-project-wiki"]
-}
-```
-
-`recallStrategy: "hierarchical"`이면 다음 순서로 동작합니다.
-
-1. `collectionRoles`가 `wiki`인 collection만 먼저 검색합니다.
-2. wiki 결과가 `minScore`, `skipPaths`, status 필터를 통과하면 wiki 결과만 주입합니다.
-3. wiki 결과가 없거나 모두 필터링되면 `raw`/기타 collection을 fallback으로 검색합니다.
-4. raw fallback 결과에는 `rawFallbackMinScore`가 적용됩니다.
-
-```json
-{
-  "recallStrategy": "hierarchical",
-  "collectionRoles": {
-    "my-project": "raw",
-    "my-project-wiki": "wiki"
-  },
-  "minScore": 0.7,
-  "rawFallbackMinScore": 0.9
-}
-```
+선택된 Laya 경로는 `recallStrategy` 값으로 검색 방식을 고르지 않고 항상 wiki 카드만
+색인·검색·주입합니다. `flat`·`hierarchical`·`wikiOnly` 값은 설정 호환성 검증을 위해
+읽으며, raw fallback을 켜지 않습니다.
 
 ## 카드 본문 주입
 
@@ -549,10 +439,8 @@ wiki role collection의 결과는 경로와 title만이 아니라 **카드 본�
 ```
 
 - **경로**는 카드 파일의 실제 위치입니다(`cwd` 하위면 상대경로, 그 밖이면 절대경로).
-  qmd 데몬이 주는 `collection/path` 형태는 어떤 base로도 열리지 않으므로 쓰지 않습니다.
-- **title**은 카드 frontmatter의 `title`입니다. 데몬이 주는 `title`은 frontmatter가
-  아니라 첫 섹션 헤딩(`## Summary`)이라 카드 이름이 아니므로, 카드 파일을 읽은 wiki
-  결과에서는 폴백하지 않습니다(title이 없으면 경로만 주입합니다).
+  `collection/path` 형태는 어떤 base로도 열리지 않으므로 쓰지 않습니다.
+- **title**은 카드 frontmatter의 `title`입니다. title이 없으면 경로만 주입합니다.
 - **본문**은 `qmd:auto` 블록의 Summary + `qmd:auto:end` **밖**의 수동 섹션입니다.
   수동 섹션을 포함하는 이유는 wiki dedup 병합이 삭제 카드의 고유 사실을 블록 밖에
   접어 넣기 때문입니다(블록 안은 소스 변경 시 재생성으로 덮입니다).
@@ -737,13 +625,7 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 
 > **raw 검색은 불필요한 것이 아니라 설계된 폴백 경로입니다.** `wikiOnly`는 "raw를 검색하지
 > 않는다"가 아니라 "**자동 주입**은 wiki만 한다"는 뜻이고, raw는 에이전트의 명시적 검색으로
-> 계속 쓰입니다(`hierarchical`은 wiki가 비었을 때 자동 폴백까지 합니다).
->
-> **그리고 `wikiOnly`는 "raw 인덱스를 제거한다"가 아닙니다.** 둘은 별개이고 후자는 하지
-> 않습니다 — raw 인덱스 제거의 recall 이득은 lex·vec 양 경로에서 **0**입니다(qmd는 컬렉션별로 독립 검색하므로 비-wiki 인덱스가 wiki 후보를 밀어낼
-> 경로가 없습니다). raw 컬렉션은 등록된 채로 두고 자동 주입 범위만 `wikiOnly`로 좁히는 것이
-> 현재 권고입니다 — 인덱스를 지우면 위 아키텍처의 후반부(에이전트의 raw 검색)가 함께
-> 사라집니다.
+> 계속 쓰입니다.
 
 주입·drop 여부는 `QMD_RECALL_LOG`의 `qmd_recall_selection` 줄에서 확인합니다 —
 `inject_source_paths_per_card` / `source_entries`(본 항목 수) / `sources_injected` /
@@ -771,7 +653,7 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 
 무관한 프롬프트에도 매번 주입이 일어났습니다(실측 4/4, 550~790자). 원인은
 [minScore가 유사도가 아니라 순위](#minscore는-유사도가-아니라-순위입니다)라는 것입니다 —
-데몬이 BM25 점수도 코사인 거리도 노출하지 않고 RRF 순위로 덮으므로, "관련 없으면 넣지
+검색 score가 BM25 점수도 코사인 거리도 아닌 RRF 순위이므로, "관련 없으면 넣지
 않기"를 점수로 표현할 방법이 없습니다.
 
 무관/관련을 가르는 신호는 하나였습니다: **lex(전문 검색) 히트 수**.
@@ -812,7 +694,7 @@ DF 좁히기가 **위치 컷 안** term을 버려서 만든 히트는 게이트�
 
 ## lex term 선택 — 코퍼스에 있는 단어만 AND 에 넣습니다
 
-qmd 는 한 lex 문자열 안의 term 을 **AND** 로 결합합니다. 그래서 색인에 없는 토큰이 하나만
+lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래서 색인에 없는 토큰이 하나만
 섞여도 그 질의는 **항상 0건**이 되고, 위 lex 게이트가 본문 인용을 걷어냅니다.
 
 **앞에서 3개**만 남기는 위치 컷은 이 문제를 줄입니다(활용형 어미는 문장 끝에 오므로
@@ -850,7 +732,7 @@ qmd 는 한 lex 문자열 안의 term 을 **AND** 로 결합합니다. 그래서
 
 ## 매칭 위치 기반 본문 인용
 
-카드 본문이 `injectSummaryMaxChars`를 넘고 데몬이 준 `line`이 `qmd:auto` 블록 **안**을
+카드 본문이 `injectSummaryMaxChars`를 넘고 검색 결과의 `line`이 `qmd:auto` 블록 **안**을
 가리키면, 카드 서두가 아니라 **그 문단부터** 인용합니다(앞을 건너뛴 사실은
 `… (앞부분 생략)` 표식으로 남습니다). `line`이 frontmatter나 블록 밖이면 기존대로 서두를
 인용합니다 — 그쪽 매칭은 title이 이미 주입돼 있어 본문으로 반복할 가치가 없습니다.
@@ -859,8 +741,9 @@ qmd 는 한 lex 문자열 안의 term 을 **AND** 로 결합합니다. 그래서
 
 ## minScore는 유사도가 아니라 순위입니다
 
-**중요.** recall은 qmd 데몬에 `rerank: false`로 질의하고, 이 경로에서 qmd가 돌려주는
-`score`는 의미 유사도가 아니라 **RRF(reciprocal rank fusion) 순위의 역수**입니다.
+**중요.** 선택된 Laya recall은 QMD 2.5.3의 RRF 순서와 skip-rerank score 규칙을 고정해
+씁니다(`core/laya_host_response.py`). 그래서 `score`는 의미 유사도가 아니라
+**RRF(reciprocal rank fusion) 순위의 역수**입니다.
 즉 `score = 1 / rank`이므로 값은 결과의 내용과 무관하게 순위만으로 결정됩니다.
 
 | 순위 | score |
@@ -896,106 +779,11 @@ EP 번호와 파일명이 정확히 맞는 결과는 원래 순위와 무관하�
 덮어써집니다. 이때는 `1.0`이 복수로 생기므로 `minScore`가 높아도 여러 건이 통과하고
 `topN`이 다시 실제 상한으로 동작합니다. 즉 소설 프로젝트처럼 EP 매칭이 잦은
 코퍼스에서는 "1위만" 규칙이 그대로 적용되지 않습니다. 원래 순위는 덮어쓰기 전
-값이므로 로그에서 확인하려면 `qmd_recall_shadow`의 `selected[].original_rank`를
-봐야 합니다(`score`로는 복원되지 않습니다).
-
-`rawFallbackMinScore`도 동일한 순위 컷입니다. `1.01`처럼 1보다 크게 두면 어떤 결과도
-통과하지 못해 raw fallback 주입을 사실상 차단하는 용도로 쓸 수 있지만, 이는 의도를
-직접 표현하는 전용 옵션이 아닌 임시 조정으로 보는 편이 좋습니다.
+값이며 `score`로는 복원되지 않습니다.
 
 > 이 문서는 현재 동작을 기술합니다. `rerank: true` 전환(실제 semantic score를 얻되
-> LLM 호출 비용·지연이 붙고 single-thread 데몬의 timeout 위험이 커집니다)이나 순위
+> LLM 호출 비용·지연이 붙습니다)이나 순위
 > 컷 제거는 정책 판단이 필요한 별도 사안입니다.
-
-### Raw Fallback Tuning
-
-wiki를 기본 기억으로 쓰고 raw noise를 줄이고 싶다면 `rawFallbackMinScore`를
-`minScore`보다 높게 둡니다. 위 순위 컷 표를 기준으로 값을 고르세요 — 예를 들어
-`minScore: 0.33`(wiki 상위 3건) + `rawFallbackMinScore: 0.5`(raw는 상위 2건만)처럼
-`topN`과 어긋나지 않게 맞춥니다.
-
-```json
-{
-  "topN": 3,
-  "minScore": 0.33,
-  "rawFallbackMinScore": 0.5
-}
-```
-
-## Recall 품질 진단 (shadow query)
-
-recall이 무엇을 놓쳤는지 정량화하는 **opt-in 진단 모드**입니다. 상시 기능이 아니라
-"개선 전/후를 수치로 비교해야 할 때" 잠깐 켜는 계측입니다. 프로젝트 설정 파일에는
-스위치가 없습니다(켠 채로 방치되는 것을 막기 위해 env 전용입니다).
-
-```bash
-export QMD_RECALL_LOG=/tmp/qmd-recall.log   # 필수 — 기록할 곳
-export QMD_SHADOW_QUERY=1                   # shadow 진단 켜기
-# 선택: shadow 질의 1건당 timeout(초). 기본 1.0
-export QMD_SHADOW_TIMEOUT=1.0
-```
-
-`QMD_RECALL_LOG`가 없으면 `QMD_SHADOW_QUERY`는 완전 no-op입니다(추가 query 0건).
-진단은 **로그 파일에만** 기록되며 모델 컨텍스트(stdout)에는 절대 나가지 않습니다.
-
-**비용.** 켜면 프롬프트마다 데몬 질의가 최대 3건 추가됩니다(lex 단독, vec 단독, raw
-대조). qmd 데몬은 single-thread이고 `UserPromptSubmit`은 blocking hook이라 이 질의는
-본 recall에 직렬로 붙습니다. 그래서 shadow 질의에는 본 recall의 `queryTimeout`이
-아니라 훨씬 짧은 별도 timeout(기본 1초)과 전체 예산(2.5초)이 걸려 있고, 본 recall
-결과는 shadow보다 먼저 출력되므로 shadow가 늦거나 실패해도 주입 내용은 바뀌지
-않습니다. 상시로 켜 두지는 마세요.
-
-로그에는 기존 `qmd_recall_selection` 라인 옆에 `qmd_recall_shadow` 라인이 한 줄
-추가됩니다(기계 집계 가능한 JSON 한 줄).
-
-| Field | 답하는 질문 |
-|---|---|
-| `strategy`, `min_score`, `top_n_limit` | 어떤 설정에서 측정된 값인가 |
-| `score_model` | score 해석 규약(`1/rank (rerank=false)`) — 위 순위 컷 절 참고 |
-| `lex_query`, `lex_terms` | 실제로 보낸 lex 쿼리 문자열과 term 수. qmd의 lex는 positive term을 **AND**로 묶으므로 term 하나가 색인에 없으면 lex 전체가 0건입니다 |
-| `queried_collections`, `raw_collections` | 무엇을 질의했고 무엇이 비교 대상인가 |
-| `primary` | 실제 recall 대상(wiki 등)이 낸 결과: `count` + `top[]`의 `rank`/`score`/`file`/`status`/`trusted` |
-| `lex_only` | lex만으로 질의했을 때의 결과 — 0건이면 lex가 죽은 것 |
-| `vec_only` | vec만으로 질의했을 때의 결과 — 어느 쪽이 죽었는지 가릅니다 |
-| `raw` | 같은 쿼리로 raw collection을 질의한 결과(wikiOnly에서 놓친 컨텍스트 확인용) |
-| `selected[]` | 실제로 주입된 문서: `file` + `original_rank`(데몬 순위) + `final_rank`(주입 순위) + `ep_promoted` + `status`/`trusted` |
-| `selection_reason`, `dropped_skip`, `dropped_min_score`, `dropped_unverified`, `dropped_top_n` | 후보가 어느 필터에서 몇 건 빠졌는가 |
-| `verdict.lex_dead` / `verdict.vec_dead` | lex/vec 중 어느 쪽이 0건을 냈는가 |
-| `verdict.selected_empty_raw_nonempty` | **핵심 판정.** 최종적으로 아무것도 주입하지 못했는데 raw엔 있었는가(= 놓친 컨텍스트) |
-
-`top[]`에 `score`와 함께 **`rank`를 반드시 남깁니다.** `rerank: false` 경로에서는
-score가 순위의 역수라 값만으로는 순위를 복원할 수 없고, EP exact-match promotion이
-score를 `1.0`으로 덮어쓰면 정보가 완전히 사라집니다. 같은 이유로 `selected[]`는
-`original_rank`와 `ep_promoted`를 함께 남깁니다 — `top[]`은 상위 몇 건만 담으므로
-원래 4위 이하였던 결과가 promotion으로 올라온 경우 그 흔적이 여기에만 있습니다.
-
-`verdict.selected_empty_raw_nonempty`는 데몬 후보 수가 아니라 **최종 주입 결과**를
-기준으로 봅니다. 실제 손실은 대부분 데몬이 결과를 냈는데 후속 필터(순위 컷 ×
-`recallVerifiedOnly` × `excludeStatusesFromRecall` × `topN`)가 곱해져 0건이 되는
-경우이기 때문입니다. `primary.count`와 `dropped_*`를 같이 보면 "색인에 아예 없음"과
-"필터로 전멸"을 구분할 수 있습니다.
-
-이 라인은 `qmd_recall_selection`의 `reason`·`dropped_*`를 복제해 **한 줄로 자족**합니다.
-두 라인을 join할 필요가 없으므로 동시 hook 실행으로 라인이 섞여도 짝을 잘못 맺을
-여지가 없습니다.
-
-서로 다른 query의 score는 비교할 수 없으므로(위 순위 컷 절) wiki와 raw의 관련성 우열은
-자동 판정하지 않습니다. `raw.top[]`의 `file`/`title`을 보고 사람이나 집계 쪽에서
-판단해야 합니다.
-
-읽는 예:
-
-```bash
-# lex가 죽은 프롬프트만 세기
-jq -r 'select(.event=="qmd_recall_shadow" and .verdict.lex_dead) | .lex_query' /tmp/qmd-recall.log
-
-# 최종 0건인데 raw엔 있던 건수(놓친 컨텍스트) — 원인 필터까지 함께
-jq -c 'select(.event=="qmd_recall_shadow" and .verdict.selected_empty_raw_nonempty)
-       | {lex_query, primary: .primary.count, dropped_min_score, dropped_unverified}' /tmp/qmd-recall.log
-```
-
-`QMD_QUERY_FIXTURE`로 돌릴 때는 하위 질의를 실행하지 않고(`skipped_fixture`)
-`primary` 스냅샷만 기록합니다.
 
 ## Events
 
@@ -1016,8 +804,7 @@ jq -c 'select(.event=="qmd_recall_shadow" and .verdict.selected_empty_raw_nonemp
 `compile`은 raw/session/source Markdown에서 `.auto-context/wiki` 문서를 자동으로
 초안 작성하고 검증하는 설정입니다.
 
-권장 onboarding(`--optin --recommended` 또는 `--enable-compile`)을 쓰면 보통 이만큼만
-들어갑니다. 나머지는 전부 기본값입니다.
+minimal settings가 유도하는 compile 값은 이만큼이고, 나머지는 전부 기본값입니다.
 
 ```json
 {
@@ -1029,18 +816,12 @@ jq -c 'select(.event=="qmd_recall_shadow" and .verdict.selected_empty_raw_nonemp
 }
 ```
 
-`triggers`의 `post_sync_source`는 수동 sync가 스냅샷 diff로 찾아낸 변경(`git pull`·
-rebase·외부 편집 — PostToolUse 훅을 타지 않는 경로)을 compile 큐에 넣게 합니다.
-하위호환으로 `post_tool_source`만 있어도 sync 경유 enqueue는 허용됩니다.
-SessionStart 파일 감지는 `sessionStartSync`로 기본 활성화됩니다. 설정을 생략한
-신규·기존 프로젝트는 이전 스냅샷이 없으면 완료된 QMD update/embed 뒤 기준점을
-기록하고, 다음 변경부터 인덱스 큐에 반영합니다. 명시적 `false`는 보존합니다.
-`session_start_source`는 **위키 컴파일에만** 별도 opt-in입니다. 지정하면
-SessionStart의 비동기 worker가 QMD update/embed 후 소스 snapshot을 비교하여
-변경된 Markdown을 compile 큐에 넣습니다.
-한 차례에 최대 50개를 큐에 넣고 나머지는 다음 SessionStart에 미루며, 변경이 없는
-반복 실행은 다시 큐에 넣지 않습니다. 이 설정은 host CLI를 통한 wiki 생성과 검수를
-자동으로 시작할 수 있으므로 프로젝트에서 명시적으로 켜야 합니다.
+`triggers`의 `post_sync_source`는 sync가 찾아낸 변경(`git pull`·rebase·외부 편집 —
+PostToolUse 훅을 타지 않는 경로)을 compile 큐에 넣게 합니다. 하위호환으로
+`post_tool_source`만 있어도 sync 경유 enqueue는 허용됩니다.
+`session_start_source`는 **위키 컴파일에만** 별도 opt-in이고, `post_tool_source`·
+`post_sync_source` 동의를 SessionStart 자동 컴파일로 넓히지 않습니다. 이 설정은 host CLI를
+통한 wiki 생성과 검수를 자동으로 시작할 수 있으므로 프로젝트에서 명시적으로 켜야 합니다.
 `post_session_summary`는 **자동 발화 경로가 없습니다**(compact session summary를 훅에
 넘겨주는 host가 없습니다) — 수동 `wiki-compile` skill의 레코드 라벨로만 쓰입니다.
 세션 결론의 자동 수집은 세션 노트를 `raw`/`session`/`source` collection의 `.md`로
@@ -1086,7 +867,7 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 > 이 문서의 숫자는 `test/cost-budget-docs.test.mjs`가 **코드 상수에서 다시 계산해 대조**하므로,
 > 기본값이나 클램프가 바뀌면 문서가 아니라 테스트가 먼저 실패합니다.
 >
-> **⚠ 고아 claim 회수(리퍼)의 재추출 승수.** 비정상 종료 등으로 중단된 `*.claimed.*` 잡을 회수(reclaim)할 때 재추출 억제가 없어 회수 1회당 배치 전량이 다시 extractor로 재호출됩니다. `MAX_REQUEUE_COUNT`(3) 제한으로 한 잡은 최초 실행 1회 + 최대 3회 회수 = 최대 **4배**까지 재추출 승수가 적용될 수 있습니다. `MAX_REQUEUE_COUNT` 초과분은 큐에서 폐기되고 원장(`discard-ledger.jsonl`) 기록 및 SessionStart 알림으로 종료됩니다.
+> **⚠ 고아 claim 회수(리퍼)의 재추출 승수.** 비정상 종료 등으로 중단된 `*.claimed.*` 잡을 회수(reclaim)할 때 재추출 억제가 없어 회수 1회당 배치 전량이 다시 extractor로 재호출됩니다. `MAX_REQUEUE_COUNT`(3) 제한으로 한 잡은 최초 실행 1회 + 최대 3회 회수 = 최대 **4배**까지 재추출 승수가 적용될 수 있습니다. `MAX_REQUEUE_COUNT` 초과분은 큐에서 폐기되고 원장(`discard-ledger.jsonl`) 기록으로 종료됩니다.
 
 
 `batch.maxItems`와 `budget.extractorPerRun`을 혼동하지 마십시오. 예전에는 상한이 아예
@@ -1301,10 +1082,9 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 `verify-log.jsonl`에 `delete_blocked` / `suppression_ledger_unwritable`을 남깁니다. 그리고
 fail-closed만으로는 "판정(유료) → 기록 실패 → 잡 보존 → 재판정(유료)" 루프가 남으므로,
 `onInconclusive`가 `delete`인 프로젝트에서는 **유료 호출 전에** 이 파일의 쓰기 가능성을
-확인하고 불가하면 그 run의 검수를 아예 시작하지 않습니다(host CLI 호출 0회). 이 상태는
-SessionStart 안내로 표면화됩니다. 이 원장 경로들은 이제 설정이 아니라 상수라
-(`core/compile_paths.py`) 경로 오타로 마커가 유실될 경로 자체가 없습니다 — 설정 가능한
-동안에는 `verify_skipped_path` 오타 하나가 곧 과금 루프였습니다.
+확인하고 불가하면 그 run의 검수를 아예 시작하지 않습니다(host CLI 호출 0회). 이 원장
+경로들은 설정이 아니라 상수라(`core/compile_paths.py`) 경로 오타로 마커가 유실될 경로 자체가
+없습니다.
 `dedup-skipped.jsonl`(semantic dedup의 `distinct` 판정 억제)도 같은 preflight를 받습니다:
 쓸 수 없으면 LLM judge를 호출하지 않고 무료 score 게이트로 degrade합니다.
 
@@ -1327,9 +1107,8 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 
 ### wiki 수명 주기 (원문 소실·변경)
 
-SessionStart의 **백그라운드 worker**가 생성 카드마다 기록된 원문 경로와 해시
-(`sourceRevisions`)로 카드를 판정합니다(`core/wiki_lifecycle.py`). blocking hook 예산을 쓰지
-않고, 데몬·embed·LLM에 의존하지 않습니다.
+`core/wiki_lifecycle.py`가 생성 카드마다 기록된 원문 경로와 해시(`sourceRevisions`)로
+카드를 판정합니다. embed·LLM에 의존하지 않습니다.
 
 | 원문 상태 | 처리 |
 |---|---|
@@ -1342,7 +1121,7 @@ SessionStart의 **백그라운드 worker**가 생성 카드마다 기록된 원�
 `superseded`가 아닌 카드입니다. 사람이 쓴 페이지, 심볼릭 링크, `.`으로 시작하는 경로,
 `index.md`/`log.md`, wiki root 밖의 파일은 건드리지 않습니다. 형식이 틀린 `sourceRevisions`,
 `allowRoots` 밖을 가리키는 원문, 읽을 수 없는 원문은 "판정 불가"로 남기고 로그만 씁니다.
-원문 존재 판정은 주입 경로와 **같은 함수**(`recall.resolve_existing_source`)를 씁니다.
+원문 존재 판정은 주입 경로와 **같은 함수**(`wiki_card.resolve_existing_source`)를 씁니다.
 
 **삭제는 복구할 수 있습니다.** 옛 바이트는 `.auto-context/compile/retired-wiki/`에
 `<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워지고 `index.md` 줄이
@@ -1359,35 +1138,34 @@ discovery)는 기존 compile 큐로 변경을 넣고 삭제된 원문을 `source
 **대량 삭제 가드.** 증명된 카드 중 원문이 없는 카드가 3장보다 많고 25%를 넘으면 그 run은
 아무것도 지우거나 넣지 않고 로그(`DEFER: mass-deletion guard`)만 남깁니다. 디스크가 마운트되지
 않았거나 브랜치를 바꿨거나 checkout을 옮긴 경우가 여기에 걸립니다. 조건이 사라지면 다음
-SessionStart가 정상 처리합니다. `sourceRevisions`가 없는 카드는 카드 자체의 성질이라 비율
+run이 정상 처리합니다. `sourceRevisions`가 없는 카드는 카드 자체의 성질이라 비율
 계산에서 빠지고 run당 상한을 받습니다. 가드가 발동한 run은 그 카드들도 보류합니다.
 
 **한 run의 폭은 유계입니다.** 원문 해시 대조는 `compile.sourceScan.maxCardsPerScan`(기본 300,
 5000 클램프)장 창을 순환 커서로 보고, 삭제는 run당 25장, enqueue는 compile per-wake
 상한(`QMD_SYNC_COMPILE_MAX`, 기본 50)까지입니다. 상한에 걸리면 커서가 그 카드에서 멈추고 다음
-SessionStart가 이어 봅니다. `QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레버이고 설정값을
+run이 이어 봅니다. `QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레버이고 설정값을
 덮습니다.
 
 **멱등입니다.** 지운 카드는 다음 run에 없고, 보관은 같은 내용을 재사용하며, 아직 큐에 있는
 같은 행은 다시 넣지 않습니다. 이미 넣은 같은 원문 해시의 재생성은 7일 안에 다시 넣지 않습니다
 (상태는 sync state 디렉터리의 `<key>-wiki-lifecycle.json`). 처리 내역은
-`~/.cache/qmd/wiki-lifecycle.log`(`QMD_WIKI_LIFECYCLE_LOG`)에 남습니다.
+`~/.local/state/laya/auto-context/logs/wiki-lifecycle.log`(`QMD_WIKI_LIFECYCLE_LOG`)에 남고,
+순환 커서 같은 scan 상태는 `~/.local/state/laya/auto-context/scan-state/`에 둡니다.
 
-**선택된 laya-db route에서만 조치합니다.** legacy QMD route에서는 카드를 판정하지 않고
-provenance 결측 카드 수만 셉니다.
+**선택된 laya-db route에서만 조치합니다.** route가 없는 프로젝트는 아무 작업도 받지 않습니다.
 
 **`compile.sourceScan.enabled:false`가 끄는 것과 끄지 않는 것.** 끄는 것은 수명 주기 조치
 (삭제·enqueue)입니다. 끄지 않는 것은 같은 run이 함께 세는 **provenance 결측 카드 수**입니다 —
 그것은 "원문 지문 없이 남아 recall에 주입되지 않는 카드가 N장"이라는 별개 신호이고 별개
 알림을 가지므로, 조치를 껐다고 0으로 보고되면 안 됩니다(그 알림은 "남은 수는 이 알림이
 사라지면 0입니다"라고 안내합니다). `enabled`에 bool이 아닌 값(`"false"`·`1`·`null`)을 적으면
-끄지 않고 기본값으로 폴백한 뒤 다음 SessionStart에 1줄 알림이 나옵니다. 알림은 값을 고치면
-사라집니다.
+끄지 않고 기본값으로 폴백합니다.
 
 **기계 검수는 원문 소실 카드를 바꾸지 않습니다.** 검수 큐에서 원문이 전부 없는 잡을 만나면
 `skipped`/`source_missing`으로 기록하고 카드는 수명 주기에 맡깁니다.
 
-**주입 표식은 두지 않습니다.** 원문이 없는 카드는 다음 SessionStart 수명 주기가 정리하고,
+**주입 표식은 두지 않습니다.** 원문이 없는 카드는 수명 주기가 정리하고,
 `missing` 항목에는 `↳` 줄을 두지 않습니다(깨진 경로 표식은 토큰만 늘리고 모델이 할 수 있는
 일이 없습니다). 대신 진단 로그의 `cards_all_sources_missing`이
 "소스가 전멸한 카드가 실제로 주입됐다"는 사실을 토큰 비용 0으로 남깁니다. 이 카운터는
@@ -1401,7 +1179,7 @@ provenance 결측 카드 수만 셉니다.
 `compile.semanticDedup`은 새 wiki 후보가 기존 wiki page와 너무 비슷할 때 자동
 중복 생성을 막고 검토 대상으로 돌리는 설정입니다.
 
-**판정은 score가 아니라 LLM이 합니다.** daemon score는 유사도가 아니라 **RRF 순위의
+**판정은 score가 아니라 LLM이 합니다.** 검색 score는 유사도가 아니라 **RRF 순위의
 함수**입니다 — `rerank`를 켜도 `blendedScore = w·(1/rrfRank) + (1-w)·rerankScore`로 순위가
 섞여 점수 상한이 순위로 고정됩니다(실측 125카드 wiki: rank1 {0.88, 0.93} / rank2
 {0.55, 0.56} / rank3 [0.40, 0.44]). 자기 본문은 항상 rank1 self-match이므로 진짜 중복은
@@ -1411,10 +1189,8 @@ rank ≥ 2에만 올 수 있고, 거기서는 옛 `autoMergeThreshold` 기본값
 `semanticDedup.candidateMinScore`(후보 retrieval floor)로만 남고, "두 카드가 같은 사실을
 말하는가"는 judge가 본문 대 본문으로 판정합니다.
 
-judge는 **절대 merge/delete하지 않고 큐에만 넣습니다.** 비용 상한은
-`budget.dedupPairsPerScan`(기본 8)·`budget.dedupPairsPerCompile`(기본 1)이고,
-`distinct`/`unclear` 판정은 body-hash와 함께 `dedup-skipped.jsonl`에 남아 본문이 바뀔
-때까지 재판정(재과금)되지 않습니다. judge를 쓸 수 없는 머신(extractor 미설정·CLI 부재)
+judge는 **절대 merge/delete하지 않습니다.** 비용 상한은 write-time gate 1회당
+`budget.dedupPairsPerCompile`(기본 1)입니다. judge를 쓸 수 없는 머신(extractor 미설정·CLI 부재)
 에서는 위 상수로 동결된 레거시 무료 score 게이트로 degrade합니다.
 `QMD_DEDUP_JUDGE=off`는 프로세스 단위 kill switch입니다.
 
@@ -1422,21 +1198,7 @@ judge는 **절대 merge/delete하지 않고 큐에만 넣습니다.** 비용 상
 
 **write-time gate만** 교차 엔진으로 동작합니다. 그 경로의 신규 후보 생산 엔진은 큐 잡이 정하는
 사실(`candidate.engine`은 worker가 잡의 값으로 덮어씁니다)이므로 "무엇이 자기검증인지"가
-확정됩니다. **retroactive scan(`wiki_dedup_scan`)은 확장하지 않습니다** — 이미 디스크에 있는
-카드 두 장의 생산자는 어디에도 기록되지 않고(실측: judge가 실제로 돈 12쌍 전부
-`generated-manifest.jsonl`에 생산 엔진이 없었습니다), 두 생산자가 서로 다르면 어떤 엔진도
-중립이 아니어서 교차라는 개념 자체가 성립하지 않습니다. 이 경로는 예전 선택(host engine →
-풀의 첫 후보)을 그대로 쓰고 판정 행에 `judgedMode: unknown`을 남깁니다.
-
-**그래서 `require`는 retroactive scan에 적용되지 않습니다.** `require`는 "생성 엔진이 **아닌**
-엔진이 판정한다"는 약속인데 그 경로에는 약속의 주체가 존재하지 않으므로 **어떤 설정으로도 만족될
-수 없는 조건**입니다. 여기에 fail-closed를 걸면 지켜지는 것 없이 그 경로의 판정만 사라집니다
-(judge를 "없음"으로 선판정 → retrieval floor가 레거시 merge 임계 상수(0.9)로 올라가 사실상 아무것도
-queueing되지 않음 = judge가 대체하려고 만들어진 무료 score 게이트로 회귀). 적용되지 않은 사실은
-`~/.cache/qmd/dedup.log`의 scan 요약 줄에 `crossEngine=require:waived_unattributable_path`로
-남습니다(쌍이 하나도 판정되지 않은 scan에서도 남습니다). write-time gate는 그대로 fail-closed입니다
-— 거기서는 생산 엔진이 큐 잡의 사실이라 `require`가 만족될 수 있고, 못 지킬 때의 종점도 레거시
-score 게이트로 존재합니다.
+확정됩니다.
 
 **호출 수는 늘지 않습니다.** judge는 쌍당 1회이고 엔진만 바뀝니다. 후보 사이를 넘어가는 조건은
 **exit 127(host CLI 부재, 토큰 0)뿐**이며, 실제로 실행된 첫 후보가 순회를 끝냅니다.
@@ -1448,81 +1210,23 @@ degrade**하게 합니다. 후보가 소진되면 전역 `dedup-judge-cooldown`�
 (0.x 동작). 두 기록이 모두 실패하면 그 사실을 `cooldownWriteFailed`로 표면화합니다 —
 식힘 기록이 degrade의 유일한 메커니즘이므로 조용히 삼키면 판정이 영구 정지합니다.
 
-**그 표면화의 종점은 두 곳입니다.** scan은 `~/.cache/qmd/dedup.log`에 `JUDGE pair=… outcome=…
-reason=… engine=… engineCooldown=… cooldownWriteFailed=…` 줄을, write-time은
-`candidates.jsonl` 행의 `judge` 필드에 같은 값을 남깁니다(어느 쪽도 정상 판정에는 아무것도 쓰지
-않으므로 기존 행 모양은 그대로입니다). 이 종점이 없던 동안 요약 줄의 `judged=1 queued=0`만 남아
-"judge가 유료로 실패했다"와 "judge가 unclear로 판정했다"가 구분되지 않았습니다.
+**그 표면화의 종점은 `candidates.jsonl` 행의 `judge` 필드입니다.** `outcome`·`reason`·`engine`·
+`engineCooldown`·`cooldownWriteFailed`를 남기며, 정상 판정에는 아무것도 쓰지 않으므로 기존 행
+모양은 그대로입니다.
 
 **판정 불가 출력은 재과금되지 않습니다.** judge가 유효 verdict를 내지 못한 경우
 (`invalid_verdict` / `invalid_extractor_json` — exit 0 + 쓰레기 stdout)는 timeout과 달리 같은
 입력에서 재현되는 설정·adapter 오류이므로, 남은 후보가 있으면 그 후보만 식혀 **다음 run이 다음
-후보로 degrade**하고, 후보가 소진되면 그 쌍을 `dedup-skipped.jsonl`에 `judgeVerdict: unclear`로
-기록해 **본문이 바뀔 때까지 재판정하지 않습니다**. 모델이 정말 판단하지 못한 진짜 `unclear`도 같은
-성질(같은 본문 = 같은 무응답)이라 같이 억제합니다. `duplicate`는 큐 행 자체가 기록이라 별도
-억제가 없고, transient·식힘·CLI 부재는 **판정이 일어나지 않았으므로** 억제하지 않습니다.
+후보로 degrade**하고, 후보가 소진되면 그 쌍을 `unclear` 유효 판정으로 돌리고 judge 전체를
+식힙니다. transient·식힘·CLI 부재는 **판정이 일어나지 않았으므로** 억제하지 않습니다.
 (verify의 `UNUSABLE_OUTPUT_REASONS`/`defer_or_drop`와 같은 규칙이고 종점의 모양만 다릅니다 —
 verify는 잡을 폐기, dedup은 쌍을 억제.)
 
 `merge-needed.jsonl`은 write-time collision을 보존하는 passive, non-trusted diagnostic입니다.
 자동 merge나 trust 승격, SessionStart resolver 입력으로 사용되지 않습니다. 판정 기록은
-`merge-needed.jsonl`(write-time)과 `dedup-needed.jsonl`·`dedup-skipped.jsonl`
-(scan)에 `judgedBy`(판정 엔진) / `judgedMode`(달성된 관계) / `producedBy`(생산 엔진,
-write-time만)로 남습니다. 판정이 없었던 행에는 이 필드들을 쓰지 않습니다.
-
-## orphan 벡터 자동 회수
-
-```json
-{
-  "maintenance": {
-    "orphanVectors": { "enabled": true, "minRatio": 0.2, "minCount": 200, "cooldownSeconds": 86400 }
-  }
-}
-```
-
-**왜 필요한가.** qmd 2.5.3의 `qmd collection remove`(`removeCollection`)는 `documents`와
-`content`만 삭제하고 **벡터는 남깁니다**(상류 동작). 남은 벡터는 디스크 문제가 아니라
-**검색 문제**입니다 — 데몬이 vec 후보를 뽑는 창(deep 40)을 죽은 행이 차지하기 때문입니다.
-실측에서 41,455행 중 26,438행(63.8%)이 orphan이었고, 그 상태에서는 컬렉션
-필터 질의가 전역 창 **밖**의 문서를 하나도 내지 못했습니다. 정리 후 두 라이브 프로젝트가
-`scoped_retrieval_proven`으로 뒤집혔습니다. 컬렉션 제거 없이도 쌓입니다 — 파일을 편집하면
-새 content hash가 생기고 옛 hash의 벡터가 orphan이 됩니다(정리 3시간 뒤 재측정: 1,112 /
-16,590 = 6.7%).
-
-**두 트리거.**
-
-1. **제거 직후** — `qmd collection remove`가 실제로 성공하면 그 순간 orphan이 생긴 것이
-   확실하므로 비율 임계를 보지 않고 회수합니다. 제거는 일회성 이벤트라 스스로 유계입니다.
-2. **기회적** — 외부에서 `qmd collection remove`를 직접 쓰거나 편집 churn으로 쌓인 경우를
-   위해, **임계를 넘을 때만** 회수합니다. 매 세션 돌리지 않는 이유는 `qmd cleanup`이
-   vacuum을 포함하기 때문입니다(26,438행 정리 + 1.0GB DB vacuum 실측 7초).
-
-**임계 근거.** orphan 비율은 vec 후보 창에서 낭비되는 칸의 기대 비율과 같습니다 — 20%면
-40칸 창에서 약 8칸입니다. 63.8%에서는 창이 포화돼 측정 자체가 불가능했고(위), 6.7%는
-실해가 관측되지 않는 수준입니다. `minCount` 200은 총 벡터가 적은 인덱스에서 비율이 잡음이
-되는 것을 막습니다(예: 20행 중 10행 orphan = 50%지만 실제 창 오염은 무의미). 활발한
-편집에서는 하루 정도면 20%에 도달하므로 회수는 대략 하루 1회 붙습니다.
-
-**어디서 도는가.** SessionStart의 백그라운드 `qmd embed` 서브셸 안, retroactive dedup scan
-**뒤**입니다(새 스케줄러를 만들지 않고 기존 배수 경로를 재사용합니다). blocking hook 예산을
-쓰지 않고 stdout에 아무 것도 내지 않습니다. 회수는 항상 공식 경로인 `qmd cleanup`을 부르며
-(`cleanupOrphanedVectors`는 sqlite-vec 미가용 시 우아하게 degrade합니다) 플러그인이 vec0
-가상 테이블에 직접 SQL을 쓰지 않습니다. orphan **판정**은 평범한 두 테이블
-(`content_vectors` × `documents`)의 read-only 조인이며 실측 10ms입니다.
-
-**데몬은 멈추지 않습니다.** `qmd cleanup`의 VACUUM이 데몬과 경합하는지 실측했습니다 —
-데몬이 DB를 잡고 있어도, 다른 연결이 열린 read 트랜잭션을 들고 있어도 rc=0으로 성공하고,
-배타적 write 트랜잭션이 열려 있으면 SQLite busy timeout으로 5.1초 기다린 뒤 성공했습니다.
-따라서 daemon stop/reload가 필요하지 않고, 세션 중 recall 중단도 없습니다.
-
-**실패하면.** 회수 실패는 전역 상태 파일에 남고 다음 SessionStart가 `notice_once`(TTL 4h)로
-1회 알립니다. 재시도는 cooldown 주기(기본 24h)로 계속되며 성공하면 상태가 지워져 다시
-무장합니다. cooldown은 **성공이 아니라 시도** 기준입니다 — sqlite-vec가 없으면 `cleanup`은
-0건 삭제로 성공하므로 성공 기준 cooldown이면 매 세션 vacuum이 돌게 됩니다.
-
-**끄는 방법.** `maintenance.orphanVectors.enabled: false`(프로젝트 단위) 또는
-`QMD_ORPHAN_RECLAIM=off`(프로세스 단위 kill switch). 미설정·optout 프로젝트에서는 애초에
-동작하지 않습니다 — 컬렉션이 없으면 전역 인덱스를 만질 근거도 없습니다.
+`merge-needed.jsonl`(write-time)에 `judgedBy`(판정 엔진) / `judgedMode`(달성된 관계) /
+`producedBy`(생산 엔진)로 남습니다. `wiki-dedup` skill은 이미 쌓인 `dedup-needed.jsonl`을
+resolver agent로 처리합니다(잠금 `~/.local/state/laya/auto-context/dedup-resolve-lock/`). 판정이 없었던 행에는 이 필드들을 쓰지 않습니다.
 
 ## cooldown·lock의 "영구 정지" 방어
 
@@ -1541,60 +1245,26 @@ dedup judge cooldown(`semanticDedup.judge.cooldownSeconds`)과 그 엔진 단위
 **② mtime 나이로 판정하는 창은 미래 mtime을 "창이 끝났다"로 읽습니다.** 미래 mtime은 시계
 되돌림·백업 복원·파일시스템 이관으로 실제로 생기고, `now - mtime`을 그대로 쓰면 나이가
 음수가 되어 창이 영원히 끝나지 않습니다. 방향은 지점마다 다르지만 병리는 하나입니다 —
-dedup 스캔 영구 skip, orphan 회수 영구 skip, `sync` lock의 stale 회수 불가(영구
-`sync_busy`), SessionStart 알림 영구 억제, `--skip` 마커의 2시간 TTL 무기한화(편집 gate
-영구 우회). 60초 이내의 시계 오차(NTP 미세 조정·타임스탬프 반올림)는 "방금 쓴 것"으로 보아
+stale lock 회수 불가, 알림 영구 억제. 60초 이내의 시계 오차(NTP 미세 조정·타임스탬프 반올림)는 "방금 쓴 것"으로 보아
 존중합니다.
 
 **stale lock 회수는 모든 lock에 있습니다.** 프로세스가 비정상 종료해 lock만 남으면 그
-파이프라인이 영구 정지하므로, 잡힌 지 10분이 넘은 lock 디렉터리는 회수됩니다(bash 5곳의
-`find -mmin +10` 관례와 같은 임계). orphan 회수는 회수한 사실과 skip한 lock의 나이를
-로그·`--json`(`lockAgeSecs`)에 남깁니다 — 그 값 없이는 "지금 다른 프로세스가 돈다"와
-"영구히 막혔다"를 구분할 수 없습니다.
+파이프라인이 영구 정지하므로, 잡힌 지 10분이 넘은 lock 디렉터리는 회수됩니다.
 
 ## Common Recipes
-
-### Wiki 우선, raw는 상위만 보강
-
-```json
-{
-  "topN": 3,
-  "recallStrategy": "hierarchical",
-  "minScore": 0.33,
-  "rawFallbackMinScore": 0.5
-}
-```
-
-wiki는 상위 3위까지, raw fallback은 상위 2위까지만 봅니다(순위 컷).
-
-### Wiki 우선, raw fallback 주입 거의 차단
-
-```json
-{
-  "recallStrategy": "hierarchical",
-  "minScore": 0.33,
-  "rawFallbackMinScore": 1.01
-}
-```
-
-이 설정은 raw collection을 지우지 않으므로 indexing과 wiki compile source 흐름은
-유지됩니다. 단, explicit한 `wikiOnly` 옵션은 아니므로 값의 의도를 주석이나 팀
-문서에 남기는 편이 좋습니다.
 
 ### Prompt-time recall 줄이기
 
 ```json
 {
   "topN": 2,
-  "minScore": 0.5,
-  "rawFallbackMinScore": 0.5
+  "minScore": 0.5
 }
 ```
 
-`topN`을 줄이면 자동 주입되는 문서 수가 줄어듭니다. `minScore`/`rawFallbackMinScore`는
-순위 컷이므로 `topN`과 어긋나지 않게 `1/topN` 근처로 맞추는 편이 예측 가능합니다
-(`topN: 2` → `0.5`). 실제 값은 `QMD_RECALL_LOG`(필요하면 `QMD_SHADOW_QUERY`)로
-로그를 보면서 조정하는 것이 좋습니다.
+`topN`을 줄이면 자동 주입되는 문서 수가 줄어듭니다. `minScore`는 순위 컷이므로 `topN`과
+어긋나지 않게 `1/topN` 근처로 맞추는 편이 예측 가능합니다(`topN: 2` → `0.5`). 실제 값은
+`QMD_RECALL_LOG` 로그를 보면서 조정하는 것이 좋습니다.
 
 ### recall 결과에서 특정 경로 제외
 
@@ -1609,25 +1279,11 @@ wiki는 상위 3위까지, raw fallback은 상위 2위까지만 봅니다(순위
 }
 ```
 
-기존 QMD에서 `skipPaths`는 **recall 결과 필터일 뿐입니다.**
-`core/recall.py`는 결과 경로의 substring으로 판정하며 인덱싱 대상을 줄이지
-않습니다. 구 Codex의 설정과 동작은 그대로입니다. 설정하지 않으면 추가 경로
-제외는 없습니다.
-
-여기 걸린 문자열은 결과 경로에 **substring으로 포함되면** 제외됩니다. 즉
-`dist`는 `frontend/dist/a.md`뿐 아니라 `distribution-plan.md`도 걸러냅니다.
-
-추가로 문자열 `.auto-context-ignore`는 항상 skip 목록에 들어갑니다. **이것은
-ignore 파일이 아닙니다** — 플러그인은 `.auto-context-ignore`라는 파일을 읽지
-않으며, gitignore 류의 패턴 해석도 하지 않습니다. 경로에 그 문자열이 들어간
-결과를 recall에서 빼는 substring 필터가 전부입니다.
-
 선택된 **Laya**는 `recallStrategy` 값과 관계없이 위키만 색인·검색합니다.
 이 경로에서 `skipPaths`는 원문 **파일명이 아닌 부모 디렉터리 경로**에 substring이
 들어 있는지 판정해 새 위키 생성 후보를 제외합니다. 예를 들어 `build`는
 `docs/build/a.md`와 `docs/build-tools/a.md`를 제외하지만 `docs/build-notes.md`는
-제외하지 않습니다. 기존 QMD의 결과 경로 substring 의미와 다르므로 선택 전
-설정의 영향을 검토해야 합니다. 기존 위키에서 제외된 출처가 하나라도 발견되면
+제외하지 않습니다. 기존 위키에서 제외된 출처가 하나라도 발견되면
 카드 전체를 검색·주입에서 숨깁니다. 여러 출처를 가진 카드는 일부 내용만
 안전하게 분리할 수 없어 전부 숨기며, 원문과 위키 파일은 삭제하지 않습니다.
 제외 설정을 해제하면 원본 카드가 다시 검증 대상이 됩니다. 이미 색인된 벡터는
@@ -1636,49 +1292,22 @@ ignore 파일이 아닙니다** — 플러그인은 `.auto-context-ignore`라는
 
 ### 인덱싱 범위를 줄이는 방법
 
-**기존 QMD의 인덱싱 대상을 줄이는 수단은 `collectionPaths`를 좁히는 것뿐입니다.**
-`core/update.sh`는 `qmd collection add "<경로>"`로 디렉터리만 넘기므로 glob이나
-ignore 파일 같은 축소 인수가 없고, `skipPaths`·`.auto-context-ignore`는 위에
-적은 대로 recall 결과 필터라 색인을 막지 못합니다.
-
-```json
-{
-  "collections": ["proj-docs", "proj-wiki"],
-  "collectionPaths": {
-    "proj-docs": "docs",
-    "proj-wiki": ".auto-context/wiki"
-  }
-}
-```
-
-특히 `collectionPaths`에 `.`(저장소 루트)을 지정하면 **저장소 전체 Markdown이
-색인 대상**이 됩니다. 워크트리 중복 체크아웃(`.worktrees`), vendored 문서,
-`node_modules`의 README까지 들어와 색인 비용과 recall 노이즈가 함께 늘어납니다.
-큰 저장소에서 루트를 지정한 경우 SessionStart에서 안내가 1회 표시됩니다.
-`docs`, `docs/current`처럼 실제로 recall되기를 바라는 경로만 지정하세요.
-
-단 `recallStrategy: "wikiOnly"`에서는 이 안내가 표시되지 않습니다. wiki role
-collection만 질의하므로 raw가 넓게 색인돼도 recall 결과에 들어오지 않아 노이즈가
-늘지 않고, collection을 쪼개는 것 말고는 좁힐 수단도 없기 때문입니다. `hierarchical`
-(raw fallback)과 `flat`(항상 raw)에서는 그대로 표시됩니다.
-
-`collections`에 있는데 `collectionPaths`에 대응 항목이 없는 collection도 경로가
-`.`으로 해석됩니다. collection 이름마다 경로를 명시하세요.
+선택된 Laya route는 wiki collection만 색인합니다. 위키 생성 원천을 줄이는 수단은
+`skipPaths`(위 절)와 `collectionPaths`입니다. `collectionPaths`에 `.`(저장소 루트)을
+지정하면 저장소 전체 Markdown이 위키 생성 원천이 됩니다 — minimal settings의 raw
+collection이 이 모양입니다. `collections`에 있는데 `collectionPaths`에 대응 항목이 없는
+collection도 경로가 `.`으로 해석되므로 collection 이름마다 경로를 명시하세요.
 
 ## Troubleshooting
 
-컨텍스트가 기대와 다르게 들어오면 에이전트에게 recall 진단을 요청하세요. 진단
-시에는 `empty_stdin`, `invalid_payload_json`, `prompt_too_short`, `event_disabled`,
-`no_keywords`, `no_collections`, `no_indexed_collections`, `daemon_unreachable`,
-`query_failed`, `no_results_after_filter`, `selected` 같은 reason과 함께 score, drop 수,
-선택된 collection을 확인할 수 있습니다.
+컨텍스트가 기대와 다르게 들어오면 에이전트에게 recall 진단을 요청하세요. 선택된 Laya
+recall은 `QMD_RECALL_LOG`에 `route: "laya"`인 `qmd_recall_selection` 줄을 남깁니다. reason은
+`selected`, `no_results_after_filter`, `laya_wiki_rows_filtered`(사유별 개수),
+`laya_selector_candidate_invalid` 등이고, `selected[]`는 실제로 주입된 문서입니다.
 
-**recall이 건너뛴 경우에도 줄이 남습니다.** 앞의 세 reason이 그것입니다 —
-`empty_stdin`(stdin이 비었음), `invalid_payload_json`(payload가 JSON이 아님),
-`prompt_too_short`(프롬프트가 10자 미만이라 키워드가 나오지 않음, `prompt_chars` 동반).
-줄이 **하나도 없다**는 것은 "건너뜀"이 아니라 **훅이 실행되지 않았다**는 뜻입니다(디스패처
-오류·plugin root 미주입으로 인한 exit 127·sandbox). 이 구분이 E2E 진단의 출발점이므로
-`QMD_RECALL_LOG`를 켜고 줄의 유무를 먼저 확인하세요. sandbox(`QMD_SANDBOX`)는 "즉시 무출력
+줄이 **하나도 없다**면 훅이 실행되지 않았거나 그 프로젝트에 선택된 Laya route가 없는
+것입니다(route가 없는 프로젝트는 recall을 하지 않습니다). `QMD_RECALL_LOG`를 켜고 줄의 유무를
+먼저 확인하세요. sandbox(`QMD_SANDBOX`)는 "즉시 무출력
 종료"가 계약이라 파일에도 쓰지 않는 유일한 예외입니다.
 
 설정을 바꿨는데도 동작이 이상하면 다음을 먼저 봅니다.
@@ -1686,12 +1315,7 @@ collection만 질의하므로 raw가 넓게 색인돼도 recall 결과에 들어
 - `collections`에 대상 collection이 있는지
 - `collectionPaths`가 실제 존재하는 경로인지
 - `collectionRoles`가 collection 이름과 정확히 맞는지, role 값에 오타가 없는지
-  (인식할 수 없는 값은 `raw`로 처리되고 SessionStart에 한 줄 안내가 나옵니다)
-- `recallStrategy`가 `hierarchical`인지 `flat`인지
-- `minScore`/`rawFallbackMinScore`가 `topN`과 어긋나지 않는지 — 순위 컷이라
+  (인식할 수 없는 값은 색인·compile에서 전부 제외됩니다)
+- `minScore`가 `topN`과 어긋나지 않는지 — 순위 컷이라
   `0.8`이면 `topN`과 무관하게 1건만 주입됩니다([위 절 참고](#minscore는-유사도가-아니라-순위입니다))
 - `compile.excludeStatusesFromRecall` 때문에 wiki page가 제외된 것은 아닌지
-
-무엇이 왜 빠졌는지 수치로 봐야 한다면 `QMD_SHADOW_QUERY` 진단 모드를 잠깐 켭니다
-([Recall 품질 진단](#recall-품질-진단-shadow-query)). lex/vec 중 어느 쪽이 0건을
-냈는지, wiki가 비었을 때 raw엔 뭐가 있었는지를 로그 한 줄로 남깁니다.

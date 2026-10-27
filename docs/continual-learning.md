@@ -3,19 +3,20 @@
 Capture and training remain opt-in through `contextLearning.capture` and
 `autoCycle`. An enabled `autoCycle` project can launch a detached, one-shot
 local cycle at SessionStart. Card selection is a required stage of selected
-Laya recall and is not a project setting. The synthetic tests leave the operating QMD
-database, plugin configuration, and global hooks unchanged. Use an owner-only
+Laya recall and is not a project setting. The synthetic tests leave the operating
+index, plugin configuration, and global hooks unchanged. Use an owner-only
 absolute `state-dir` dedicated to one project. Do not put that directory in the
 repository.
 
-Capture and corpus snapshots apply to the legacy QMD recall route
-(`core/recall.py`). The selected Laya response path (`core/laya_host_response.py`)
-reads at most 15 proved, published wiki candidates. With a prepared selector
-(an approved shared trial/profile or a local `active-checkpoint.json`, the same
-predicate as the QMD route) the selector's choice is final, including zero
-cards. Without one, or when the prepared selector cannot answer at query time,
-recall injects the verified candidates in hybrid rank (at most 3) and logs the
-reason. It never captures training evidence during a query.
+Capture and corpus snapshots apply to the selected Laya route. The selected
+Laya response path (`core/laya_host_response.py`) reads at most 15 proved,
+published wiki candidates. With a prepared selector (an approved shared
+trial/profile or a local `active-checkpoint.json`) the selector's choice is
+final, including zero cards. Without one, or when the prepared selector cannot
+answer at query time, recall injects the verified candidates in hybrid rank (at
+most 3) and logs the reason. Learning capture
+(`context_learning.laya_learning.capture_recall`) runs only after the hook
+response is flushed, never raises, and records only a fixed status.
 
 ## Evidence and labels
 
@@ -91,10 +92,13 @@ doubles the interval. This normalized signal is not a claim that true accuracy
 exceeds 95%, and it never activates a model. Insufficient evidence cannot
 extend the interval.
 
-## Current corpus and live selection (legacy QMD route)
+## Current corpus and live selection
 
-Each opt-in capture on the legacy QMD route records a SHA-256 fingerprint of active QMD document
-paths/hashes and search configuration when that snapshot is available.
+Each opt-in capture records a SHA-256 fingerprint of the sealed Laya head
+(learning policy, scope, vector profile and every eligible, non-excluded
+`[collection, relative, sha256]` row) when that snapshot is available. A
+captured candidate whose revision differs from that snapshot is recorded as a
+`candidate_index_stale` failure.
 Changing the active corpus or index configuration creates a new immutable
 snapshot and queues old candidate pools for review; it does not rewrite old
 samples. Automatic cycles default to `dataMode: current` and refuse an
@@ -104,11 +108,12 @@ Re-search, whole-body review, and approval of replacement labels remain human
 steps. Capture or an attempted current auto cycle performs reconciliation;
 there is no continuous corpus watcher.
 
-On the legacy QMD route, the primary QMD request cap is 15. After source freshness and eligibility checks, the local Laya adapter sees
-each candidate's complete compact wiki body and returns 0–3 card IDs. The
+The selected route passes at most 15 verified candidates. The local Laya
+adapter sees each candidate's complete compact wiki body and returns 0–3 card
+IDs. The
 hook logs hashed candidate and selected IDs, snapshot fingerprint, fallback
 reason and observed time/RSS. Missing state, invalid model output, changed
-checkpoint or runtime failure restores the ordinary bounded QMD choice.
+checkpoint or runtime failure keeps the verified candidates in hybrid rank.
 `live-selector.json` and an active local checkpoint are separately required.
 
 Installed-package byte identity, a `ready` setup gate and resolution of an
@@ -128,7 +133,7 @@ the normal trainer/runtime/attestation checks still run.
 
 Missing historical cache files, modified adapters, unsafe paths, ambiguous or
 unavailable install metadata, local/directory marketplace relocations and
-custom Codex homes fail back to ordinary QMD selection. The exact
+custom Codex homes fail back to hybrid-rank selection. The exact
 current-adapter case is supported. Cross-path Codex inventory lookup is
 bounded to two seconds or the caller’s remaining deadline, whichever is shorter.
 Expired budgets or less than one second remaining return `timeout` without
@@ -141,7 +146,7 @@ bounded synthetic inference check is needed before claiming live execution.
 
 Verified prediction only reads existing compatibility evidence. A missing,
 expired, unsafe, unreadable or incompatible proof returns
-`inference_attestation_required` and preserves ordinary QMD fallback. Prediction
+`inference_attestation_required` and preserves the hybrid-rank fallback. Prediction
 never calls the training attestation prover, runs synthetic smoke/training,
 renews a proof timestamp or writes a training grant. Capture/autoCycle settings
 do not change this prediction-only boundary.
@@ -172,7 +177,7 @@ The parent directory must already have been prepared locally with owner-only
 permissions, outside indexed collection roots. Resolving an omitted setting
 does not create that parent, move/copy state, prepare a model/checkpoint, enable
 capture/training, or call a provider. Missing local preparation retains the
-ordinary QMD fallback. Other users need their own local runtime/state setup;
+hybrid-rank fallback. Other users need their own local runtime/state setup;
 do not commit a personal absolute home path to shared settings. Before removing
 an existing explicit root, verify the default resolves to the same prepared
 namespace; custom roots require retaining their explicit setting.
@@ -200,7 +205,7 @@ operator. Second opinions are advisory and never become reviewed gold.
 cadence/promotion, teacher-budget and 200-question end-to-end fixtures.
 The mock trainer fails once, resumes, compares on validation, reports separate
 evaluation, promotes, rolls back, and rejects a stale source. No private data,
-Laya runtime, external model or operating QMD state is used by these tests.
+Laya runtime, external model or operating index state is used by these tests.
 `test/context-learning-real-laya.test.mjs` is opt-in and runs an actual local
 Laya runtime and local multilingual checkpoint on synthetic cards only. It
 exercises runtime attestation, train/predict protocol, a head-only update,
@@ -270,7 +275,7 @@ Python 3.12.
 
 ## Shared inference service
 
-`live_select.choose` checks explicitly prepared inference-only evidence when present; an unprepared state retains read-only VerifiedLayaTrainer proof admission. It then sends ordinary and experimental selection to `inference_service.py`. One plugin-owned Unix socket/startup lock/kernel lease under the OS account home serves both host cache copies and project namespaces. A process HOME override does not choose another service root. The per-user Laya resident service (`laya_resident_service.py`) hosts this service in its own process together with the embedding model and owns its lifecycle; it starts with the first selected sync wake or eligible request and never idle-exits. QMD retrieval/daemon remains separate.
+`live_select.choose` checks explicitly prepared inference-only evidence when present; an unprepared state retains read-only VerifiedLayaTrainer proof admission. It then sends ordinary and experimental selection to `inference_service.py`. One plugin-owned Unix socket/startup lock/kernel lease under the OS account home serves both host cache copies and project namespaces. A process HOME override does not choose another service root. The per-user Laya resident service (`laya_resident_service.py`) hosts this service in its own process together with the embedding model and owns its lifecycle; it starts with the first selected sync wake or eligible request and never idle-exits.
 
 The controller has one synchronous model owner and at most eight pending inference requests. Each request retains its own canonical private namespace, current policy digest, checkpoint/artifact hash, input view, case hash and deadline. Owner UID/private paths and current scope/evidence are checked again after queueing and after inference. Overflow, expired/disconnected callers and denied sockets fall back explicitly; no requests or source bodies are stored in service files. A crashed worker's released kernel lease allows only the next request to reclaim stale socket/PID files. A hosted service refuses the `shutdown` command; a learning request that needs another interpreter or a newer release asks the resident service to drain and restart. A learning-only worker from another code version is replaced only while it reports idle (no busy request, empty queue): the next request asks it to shut down over the socket and reports `starting` until the current version's worker is up. A worker without the shutdown command receives SIGTERM only when its private PID file matches the current socket inode and that PID runs this account's inference worker command for the same root; anything else stays untouched and the request reports `starting`. A busy old worker is never interrupted.
 
@@ -298,7 +303,7 @@ Synthetic tests cover semantic duplication, holdout fences, inherited-child clai
 
 ## Scoped profiles and candidate application
 
-Ordinary setup offers `local-auto-apply`, `local-staged` and `off` without accepting any profile. Exact acceptance binds one prepared project/namespace, existing train/evaluate grant, local runtime/base/view and code identities, shared/live policy bytes, settings preferences and expiry (at most fourteen days). New-profile defaults keep capture false. Preserving migration retains explicit false capture, autoCycle, shared learning and application choices. `off` disables local learning and checkpoint application; selected Laya recall then serves its verified candidates in hybrid rank. No profile adds data sources, external teacher access, billing, package execution or permission to change model/device. An interrupted profile installation resumes the same accepted settings CAS/journal; changed settings require a new review even when QMD installation already succeeded.
+Ordinary setup offers `local-auto-apply`, `local-staged` and `off` without accepting any profile. Exact acceptance binds one prepared project/namespace, existing train/evaluate grant, local runtime/base/view and code identities, shared/live policy bytes, settings preferences and expiry (at most fourteen days). New-profile defaults keep capture false. Preserving migration retains explicit false capture, autoCycle, shared learning and application choices. `off` disables local learning and checkpoint application; selected Laya recall then serves its verified candidates in hybrid rank. No profile adds data sources, external teacher access, billing, package execution or permission to change model/device. An interrupted profile installation resumes the same accepted settings CAS/journal; changed settings require a new review even when index onboarding already succeeded.
 
 The selected worker processes admitted local training and quality evaluation only. It does not run the legacy timed cycle, historical sync or teacher pipeline. Automatic application waits for at least the quality minimum of fresh train cases (currently 100), within the already approved batch cap. An insufficient cap blocks profile planning for budget review; it is never silently raised and quality thresholds are never lowered. Actual trained cases must cover five train families; disjoint validation still needs fifty cases, five families and ten empty-choice cases. No fresh admitted data means waiting.
 
