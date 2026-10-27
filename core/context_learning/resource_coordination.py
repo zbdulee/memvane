@@ -326,6 +326,16 @@ class Coordinator:
         try:yield fd
         finally:gate.__exit__(None,None,None)
 
+    @contextmanager
+    def quiesce_provider(self):
+        """Exclude provider writers for a metadata-only transition.
+
+        This does not load a model or reserve inference resources.  A busy
+        provider lane defers the transition before it changes any selection.
+        """
+        with self._gate('provider.lock') as fd:
+            yield fd
+
 
 def admission_policy(policy):
     return {'minAvailableMib':policy.get('minAvailableMib',768),

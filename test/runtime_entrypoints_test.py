@@ -45,6 +45,15 @@ class EntryPoints(unittest.TestCase):
                 with Coordinator(self.root).activity('provider',a.POLICY,self.report):self.fail('second provider')
         with self.c.activity('provider',a.POLICY,self.report):pass
 
+    def test_metadata_quiescence_excludes_provider_without_model_admission(self):
+        a=self.admission()
+        with self.c.quiesce_provider():
+            with self.c.inference_compute(time.monotonic()+.05):pass
+            with self.assertRaises(ResourceDeferred):
+                with Coordinator(self.root).activity('provider',a.POLICY,self.report):
+                    self.fail('selected writer crossed metadata fence')
+        with self.c.activity('provider',a.POLICY,self.report):pass
+
     def test_foreground_demand_refuses_new_remote_work_without_waiting(self):
         a=self.admission()
         with self.c.inference(time.monotonic()+1,'search'):

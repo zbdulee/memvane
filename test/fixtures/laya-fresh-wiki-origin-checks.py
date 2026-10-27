@@ -30,11 +30,12 @@ class FakeJournal:
 
     def inspect(self, _path):
         return {'state': self.state, 'epoch': self.epoch,
+                'previous': None,
                 'pendingRouteSha256': self.route_sha if self.state == 'candidate_ready' else None,
-                'selectedRouteSha256': self.route_sha if self.state == 'active' else None,
+                'selectedRouteSha256': self.route_sha if self.state in ('active', 'restored_old') else None,
                 'newWriteSeen': self.new_write,
-                'providerAttestationSha256': 'a' * 64 if self.state == 'active' else None,
-                'providerFileIdentitySha256': 'b' * 64 if self.state == 'active' else None}
+                'providerAttestationSha256': 'a' * 64 if self.state in ('active', 'restored_old') else None,
+                'providerFileIdentitySha256': 'b' * 64 if self.state in ('active', 'restored_old') else None}
 
     def approve(self, _path):
         return {'pendingRouteSha256': self.route_sha,
@@ -158,6 +159,37 @@ class FreshWikiChecks(unittest.TestCase):
             fresh.restore(self.project, self.journal)
         self.assertEqual(self.selection(), 'candidate')
         self.assertTrue(self.route.is_file())
+
+    def test_previous_laya_restoration_remains_selected_and_cannot_restore_qmd(self):
+        self.bind()
+        fresh.activate(self.project, self.journal, self.route_bytes)
+        self.fake.state = 'restored_old'
+        self.assertEqual(self.selection(), 'candidate')
+        self.assertEqual(fresh.recover(self.project, self.journal,
+                                       self.route_bytes)['phase'], 'active')
+        with self.assertRaisesRegex(fresh.FreshWikiBlocked, 'forward_only'):
+            with mock.patch.object(fresh, 'inspect_journal',
+                                   side_effect=lambda path:
+                                   {**self.fake.inspect(path), 'previous': {'pluginRoot': '/old'}}):
+                fresh.restore(self.project, self.journal)
+
+    def test_active_upgrade_ledger_writer_fences_selected_readers(self):
+        from laya_active_upgrade import _replace_ledger
+        self.bind()
+        fresh.activate(self.project, self.journal, self.route_bytes)
+        old = fresh._load(self.ledger)
+        fenced = fresh._change(self.ledger, old['epoch'], 'active', 'upgrading')
+        self.assertEqual(self.selection(), 'blocked')
+        next_row = {**fenced, 'epoch': fenced['epoch'] + 1,
+                    'routeSha256': '1' * 64,
+                    'attestationSha256': '2' * 64,
+                    'providerFileIdentitySha256': '3' * 64}
+        _replace_ledger(self.ledger, fenced, next_row)
+        self.assertEqual(fresh._load(self.ledger), next_row)
+        self.assertEqual(self.selection(), 'blocked')
+        _replace_ledger(self.ledger, fenced, next_row)  # exact resume
+        with self.assertRaisesRegex(Exception, 'active_upgrade_ledger_changed'):
+            _replace_ledger(self.ledger, old, fenced)
 
     def test_interrupted_activation_with_pending_journal_withdraws_exact_route(self):
         self.bind()

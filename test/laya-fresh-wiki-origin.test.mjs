@@ -9,5 +9,5 @@ test('fresh wiki origin preserves QMD and recovers interrupted selection', () =>
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 5 tests/);
+  assert.match(result.stderr, /Ran 7 tests/);
 });
