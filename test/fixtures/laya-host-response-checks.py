@@ -1185,5 +1185,179 @@ class ResponseChecks(unittest.TestCase):
                                      f'[laya-index] {code}; QMD fallback refused\n')
 
 
+class BundleDriftChecks(unittest.TestCase):
+    """Host plugin update: read-only published generation, every write fenced."""
+
+    def setUp(self):
+        import laya_embed_resident
+        admission = patch.object(laya_embed_resident, 'admit_query')
+        admission.start()
+        self.addCleanup(admission.stop)
+        self.decision = {**DECISION,
+                         'pluginRoot': '/synthetic/old-claude-cache/0.36.25',
+                         'projectRoot': '/synthetic/project',
+                         'journalPath': '/synthetic/state/install-journal.sqlite',
+                         'dbPath': '/synthetic/index.sqlite',
+                         'queuePath': '/synthetic/queue.sqlite',
+                         'dbIncarnation': 'a' * 32, 'vectorProfile': VECTOR_PROFILE}
+        self.read_only = {'productRouteAllowed': False, 'readOnlyAllowed': True,
+                          'selectionEpoch': 9, 'vectorProfile': VECTOR_PROFILE,
+                          'providerManifest': {'approvedProviderId': 'synthetic-provider'}}
+
+    def drifted(self, stack, code='executing_code_outside_bundle'):
+        import laya_install_journal
+        import runtime_work
+        full = stack.enter_context(patch.object(
+            laya_install_journal, 'verify_selected_route',
+            side_effect=laya_install_journal.JournalEvidenceError(code)))
+        ro = stack.enter_context(patch.object(
+            laya_install_journal, 'verify_selected_route_read_only',
+            return_value=self.read_only))
+        wake = stack.enter_context(patch.object(runtime_work, 'request'))
+        return full, ro, wake
+
+    def test_bundle_mismatch_recall_serves_published_rows_lexically_without_sync(self):
+        from contextlib import ExitStack, nullcontext
+        import config
+        import laya_index_runtime
+        import laya_local_embed_provider
+        from laya_index_a import IndexContractError
+
+        def cold_provider(_text, _profile):
+            raise IndexContractError('provider_unavailable')
+
+        def hybrid(runtime, prompt, route_profile, approved, provider, **_kw):
+            # The published generation's verified lexical list; the vector
+            # list is empty because the owner of the old bundle is cold.
+            vector = None
+            try:
+                provider(prompt, route_profile)
+            except response._VectorUnavailable:
+                vector = []
+            self.assertEqual(vector, [])
+            return [row()]
+
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with ExitStack() as stack:
+            _full, ro, wake = self.drifted(stack)
+            stack.enter_context(patch.object(laya_index_runtime, 'LayaIndexRuntime',
+                                             return_value=nullcontext(runtime)))
+            stack.enter_context(patch.object(laya_local_embed_provider,
+                                             'ReviewedLocalQmdProvider',
+                                             return_value=cold_provider))
+            stack.enter_context(patch.object(config, 'load_project_config',
+                                             return_value={'topN': 3, 'lexicalPatterns': []}))
+            stack.enter_context(patch.object(response, 'query_selected_hybrid',
+                                             side_effect=hybrid))
+            payload = response.serve_selected('recall', 'claude', self.decision,
+                                              {'prompt': 'find alpha'})
+        context = payload['hookSpecificOutput']['additionalContext']
+        self.assertIn('docs/a.md', context)
+        wake.assert_not_called()
+        self.assertEqual(ro.call_count, 2)  # proof, then the post-query recheck
+
+    def test_degraded_vector_unavailable_yields_empty_vector_list_only(self):
+        import laya_index_vector
+
+        class Pinned:
+            def __init__(self, _index):
+                pass
+
+            def profile_for_pin(self, _token):
+                return sealed_profile()
+
+        def unavailable(_prompt, _profile):
+            raise response._VectorUnavailable('provider_unavailable')
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with patch.object(laya_index_vector, 'LayaVectorIndex', Pinned):
+            self.assertEqual(response._pinned_vector(runtime, 't', 'q', VECTOR_PROFILE,
+                                                     unavailable, 5), [])
+            from laya_index_a import IndexContractError
+
+            def broken(_prompt, _profile):
+                raise IndexContractError('provider_unavailable')
+            with self.assertRaisesRegex(IndexContractError, 'provider_unavailable'):
+                response._pinned_vector(runtime, 't', 'q', VECTOR_PROFILE, broken, 5)
+
+    def test_bundle_mismatch_session_start_reports_reason_and_queues_upgrade_only(self):
+        from contextlib import ExitStack
+        import laya_bundle_upgrade
+        with ExitStack() as stack:
+            _full, _ro, wake = self.drifted(stack)
+            upgrade = stack.enter_context(patch.object(
+                laya_bundle_upgrade, 'request', return_value={'status': 'queued'}))
+            payload = response.serve_selected('update-queued', 'claude', self.decision,
+                                              {'hook_event_name': 'SessionStart'})
+        notice = payload['hookSpecificOutput']['additionalContext']
+        self.assertEqual(notice.count('\n'), 0)
+        self.assertIn('executing_code_outside_bundle', notice)
+        self.assertIn('read-only', notice)
+        upgrade.assert_called_once_with('/synthetic/project',
+                                        '/synthetic/state/install-journal.sqlite',
+                                        'executing_code_outside_bundle')
+        wake.assert_not_called()
+        with ExitStack() as stack:
+            self.drifted(stack)
+            stack.enter_context(patch.object(
+                laya_bundle_upgrade, 'request',
+                return_value={'status': 'refused',
+                              'reason': 'provider_changed_rebuild_required'}))
+            payload = response.serve_selected('update', 'codex', self.decision,
+                                              {'hook_event_name': 'SessionStart'})
+        self.assertIn('provider_changed_rebuild_required',
+                      payload['hookSpecificOutput']['additionalContext'])
+
+    def test_bundle_mismatch_defers_index_compile_and_change_events(self):
+        from contextlib import ExitStack
+        for action, payload in (('index', {'tool_name': 'Write'}),
+                                ('file-change-event', {'tool_name': 'Bash'}),
+                                ('posttool', {}), ('topical-stop', {})):
+            with self.subTest(action=action), ExitStack() as stack:
+                _full, _ro, wake = self.drifted(stack)
+                self.assertEqual(response.serve_selected(action, 'claude', self.decision,
+                                                         payload), {})
+                wake.assert_not_called()
+
+    def test_non_drift_or_unprovable_read_only_keeps_the_real_refusal(self):
+        import laya_install_journal
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self.drifted(stack, code='journal_unavailable')
+            with self.assertRaisesRegex(laya_install_journal.JournalEvidenceError,
+                                        '^journal_unavailable$'):
+                response.serve_selected('recall', 'claude', self.decision,
+                                        {'prompt': 'find alpha'})
+        with ExitStack() as stack:
+            self.drifted(stack)
+            stack.enter_context(patch.object(
+                laya_install_journal, 'verify_selected_route_read_only',
+                side_effect=laya_install_journal.JournalEvidenceError(
+                    'production_attestation_changed')))
+            with self.assertRaisesRegex(laya_install_journal.JournalEvidenceError,
+                                        '^executing_code_outside_bundle$'):
+                response.serve_selected('recall', 'claude', self.decision,
+                                        {'prompt': 'find alpha'})
+
+    def test_main_reports_journal_evidence_code_instead_of_generic_failure(self):
+        import contextlib
+        import io
+        import laya_install_journal
+        selection = {'state': 'candidate'}
+        with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
+            payload = Path(temp) / 'payload.json'
+            payload.write_text(json.dumps({'prompt': 'find alpha', 'cwd': temp}),
+                               encoding='utf-8')
+            out, err = io.StringIO(), io.StringIO()
+            raised = laya_install_journal.JournalEvidenceError('executing_bundle_not_selected')
+            with patch.object(response, 'select_hook_route', return_value=selection), \
+                 patch.object(response, 'select_route', return_value=selection), \
+                 patch.object(response, 'serve_selected', side_effect=raised), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                status = response.main(['serve-hook', 'recall', 'claude', str(payload), temp])
+        self.assertEqual(status, 3)
+        self.assertEqual(err.getvalue(),
+                         '[laya-index] executing_bundle_not_selected; QMD fallback refused\n')
+
+
 if __name__ == "__main__":
     unittest.main()
