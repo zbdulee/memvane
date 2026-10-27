@@ -54,7 +54,14 @@ development execution guard is separate; see
   sync result deferred by `laya_service_preparing` is recorded as
   `target_preparing`: retried after 15 seconds and not counted as an attempt.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
-  private `runtime-wake-failures.json` beside the wake queue.
+  private `runtime-wake-failures.json` beside the wake queue; a deferred
+  child result records its fixed `state`/`reason` codes there instead.
+- A selected sync yields (`laya_sync_yield_priority`) only to a due `index` or
+  `update` wake that has failed fewer than 3 times; a repeatedly failing
+  legacy row keeps its own backoff without blocking the sync. The index worker
+  drops legacy dirty entries whose project now selects a Laya route, and the
+  update worker ACKs the wake of such a project's setup-required job (the job
+  stays for a route rollback).
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
