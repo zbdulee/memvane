@@ -72,7 +72,10 @@ route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파�
 **QMD 인덱스.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
 선택된 route의 원천 신선도 기준일 뿐, QMD collection이 아닙니다. `resolve_paths`는 이를
 `sourceEntries`로 내보내므로 `update.sh`는 QMD에 추가·`update`·`embed`하지 않고, 이전에
-등록된 같은 이름의 collection은 해제합니다. laya route에서의 role은 그대로 `raw`입니다.
+등록된 같은 이름의 collection은 해제합니다. 공용 QMD store registry에서는 같은 owner·같은
+경로의 이 collection만 `indexed: false`로 내려갈 수 있고, 그 사이에도 다른 프로젝트의
+공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
+reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
 
 ### legacy settings를 minimal로 바꾸기
 
