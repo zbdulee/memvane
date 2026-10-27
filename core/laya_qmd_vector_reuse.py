@@ -1,11 +1,14 @@
-"""Reuse an origin QMD build's vectors for identical laya-db chunks.
+"""Reuse existing QMD vectors for identical laya-db chunks in an initial build.
 
-Migration-only: a QMD-origin initial build embeds the same documents with the
-same GGUF and the same ported chunk recipe, so a document whose content hash,
-chunk count and positions already exist in the origin QMD DB has equivalent
-vectors (measured cosine >= 0.999 on a real project). Sampled documents are
+Migration-only: an initial build embeds the same documents with the same GGUF
+and the same ported chunk recipe as QMD, so a document whose content hash,
+chunk count and positions already exist in a QMD DB has equivalent vectors
+(measured cosine >= 0.999 on a real project). The source is the identity's
+``sourceDb`` for a QMD-origin build and the selected plugin-owned shared QMD
+DB, opened read-only, for a fresh wiki-only build. Sampled documents are
 re-embedded and compared; any disagreement turns reuse off for the run, and
-every other failure falls back to embedding. Removed with the QMD origin path.
+every other failure falls back to embedding. Removed with the QMD migration
+path.
 """
 from __future__ import annotations
 
@@ -123,10 +126,13 @@ def _cosine(a, b):
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
 
 
-def for_initial_build(identity, manifest, dimension):
-    """Reuse source for a QMD-origin build; None for fresh builds or no origin."""
-    if identity.get('originMode') == 'fresh_wiki_only' or not identity.get('sourceDb'):
-        return None
+def for_initial_build(identity, manifest, dimension, *, home=None):
+    """Reuse source for an initial build, or None to embed everything.
+
+    A QMD-origin build reads its identity's ``sourceDb``. A fresh wiki-only
+    build reads the selected shared QMD store when one is proved; the store
+    is optional runtime input and never part of the build identity.
+    """
     # Optional: a manifest without these fields just embeds as before.
     module, model = manifest.get('moduleEntryPath'), manifest.get('modelPath')
     if not isinstance(module, str) or not isinstance(model, str):
@@ -134,5 +140,20 @@ def for_initial_build(identity, manifest, dimension):
     node_modules = next((p for p in Path(module).parents if p.name == 'node_modules'), None)
     if node_modules is None:
         return None
+    if identity.get('originMode') == 'fresh_wiki_only':
+        source = _selected_shared_db(home)
+    else:
+        source = identity.get('sourceDb')
+    if not source:
+        return None
     extension = node_modules / 'sqlite-vec-darwin-arm64' / 'vec0'
-    return QmdVectorReuse(identity['sourceDb'], extension, model, dimension)
+    return QmdVectorReuse(source, extension, model, dimension)
+
+
+def _selected_shared_db(home=None):
+    """The selected shared QMD DB path; read-only selection, None when absent."""
+    try:
+        import qmd_shared_store
+        return qmd_shared_store.select(home)['INDEX_PATH']
+    except Exception:  # Not prepared, unsafe or unreadable: embed instead.
+        return None
