@@ -195,7 +195,7 @@ def _activation_lock(root):
 
 
 def activate_generation(root, executable, adapter_path, model_dir,
-                        *, prover=attest_runtime, probe=probe_runtime):
+                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None):
     """Select a fully checked prepared generation; preserve one-step rollback."""
     root=_private_directory(root)
     executable=_generation_executable(root,executable)
@@ -221,20 +221,43 @@ def activate_generation(root, executable, adapter_path, model_dir,
             'runtime_identity_sha256':inspected['runtime_identity_sha256'],
             'attestation':attestation,'adapter_path':str(adapter_path),
             'model_dir':str(model_dir),'previous':old}
+        _record_owner(root,attestation['adapter_sha256'],plugin_version or _installed_plugin_version())
         _write_pointer(active,pointer)
         return {'status':'activated','executable':str(executable),
                 'runtime_identity_sha256':inspected['runtime_identity_sha256'],
                 'previous_available':old is not None}
 
 
-MARKER_GLOB='laya-adapter-refresh-*.failed.json'
 # Sidecar, not a pointer key: older hosts validate active.json's exact key set.
 ADAPTER_OWNER='adapter-owner.json'
 
 
 def _version_key(value):
-    match=re.match(r'(\d+)\.(\d+)\.(\d+)',value) if isinstance(value,str) else None
-    return tuple(int(x) for x in match.groups()) if match else None
+    """SemVer precedence: a prerelease (0.35.2-dev.1) sorts before 0.35.2."""
+    match=(re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?',value)
+           if isinstance(value,str) else None)
+    if not match:
+        return None
+    core=tuple(int(x) for x in match.groups()[:3])
+    if match.group(4) is None:
+        return core+(1,())
+    ids=tuple((0,int(x),'') if x.isdigit() else (1,0,x) for x in match.group(4).split('.'))
+    return core+(0,ids)
+
+
+def _installed_plugin_version():
+    try:
+        return json.loads((Path(__file__).resolve().parents[2]/'package.json').read_text())['version']
+    except (OSError,ValueError,KeyError,TypeError):
+        return None
+
+
+def _record_owner(root, adapter_sha, plugin_version):
+    """Written before the pointer: bound to the adapter hash, a stale sidecar is ignored."""
+    if _version_key(plugin_version) is None:
+        return
+    _write_pointer(Path(root)/ADAPTER_OWNER,{'schema':'qmd-laya-adapter-owner-v1',
+        'version':plugin_version,'adapter_sha256':adapter_sha})
 
 
 def adapter_owner_version(root, pointer):
@@ -289,7 +312,11 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
             raise ValueError('invalid_managed_pointer')
         old=pointer['attestation']
         adapter_sha=_sha_file(adapter_path)
+        marker=adapter_refresh_marker(marker_dir,pointer,adapter_sha) if marker_dir is not None else None
         if old.get('adapter_sha256')==adapter_sha:
+            # This combination is proved: its old failure record no longer applies.
+            if marker is not None:
+                marker.unlink(missing_ok=True)
             attested=Path(pointer.get('adapter_path') or '')
             if (pointer.get('adapter_path')==str(adapter_path) or
                 (attested.is_absolute() and not attested.is_symlink() and attested.is_file()
@@ -299,12 +326,12 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
             pointer['adapter_path']=str(adapter_path)
             _write_pointer(active,pointer)
             return {'status':'repointed','executable':pointer['executable']}
+        plugin_version=plugin_version or _installed_plugin_version()
         owner=adapter_owner_version(root,pointer)
         recorded,current=_version_key(owner),_version_key(plugin_version)
         if recorded is not None and current is not None and current<recorded:
             return {'status':'older_host','executable':pointer['executable'],
                     'attestedVersion':owner}
-        marker=adapter_refresh_marker(marker_dir,pointer,adapter_sha) if marker_dir is not None else None
         if marker is not None and (marker.exists() or marker.is_symlink()):
             return {'status':'failed_previously','executable':pointer['executable']}
         from resource_deferred import ResourceDeferred
@@ -327,18 +354,13 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
             if marker is not None:
                 _record_refresh_failure(marker,str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
             raise
+        _record_owner(root,adapter_sha,plugin_version)
         pointer.update(attestation=attestation,adapter_path=str(adapter_path))
         _write_pointer(active,pointer)
-        if current is not None:
-            _write_pointer(root/ADAPTER_OWNER,{'schema':'qmd-laya-adapter-owner-v1',
-                'version':plugin_version,'adapter_sha256':adapter_sha})
-        if marker_dir is not None:
-            for stale in Path(marker_dir).glob(MARKER_GLOB):
-                stale.unlink(missing_ok=True)
         return {'status':'reattested','executable':str(executable)}
 
 def rollback_generation(root, adapter_path, model_dir,
-                        *, prover=attest_runtime, probe=probe_runtime):
+                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None):
     root=_private_directory(root)
     with _activation_lock(root):
         active=root/'active.json'
@@ -359,5 +381,6 @@ def rollback_generation(root, adapter_path, model_dir,
             raise ValueError('previous_generation_incompatible')
         restored={k:v for k,v in previous.items() if k!='previous'}
         restored.update(attestation=attestation,adapter_path=str(adapter_path),model_dir=str(model_dir))
+        _record_owner(root,attestation['adapter_sha256'],plugin_version or _installed_plugin_version())
         _write_pointer(active,restored)
         return {'status':'rolled_back','executable':str(executable)}

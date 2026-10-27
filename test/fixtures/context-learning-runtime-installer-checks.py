@@ -7,7 +7,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
-from context_learning.runtime_installer import (_write_pointer, activate_generation,
+from context_learning.runtime_installer import (_version_key, _write_pointer, activate_generation,
     install_commands, reattest_active, rollback_generation, stage_generation)
 from context_learning.runtime_setup import (MANAGED_DEPENDENCIES, choose_runtime,
     probe_runtime)
@@ -89,6 +89,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
         prover=proof,probe=full_probe)
     assert first['status']=='activated' and first['previous_available'] is False
     one=json.loads((root/'active.json').read_text())
+    owner=json.loads((root/'adapter-owner.json').read_text())
+    assert owner['adapter_sha256']==one['attestation']['adapter_sha256'] and owner['version']
+    assert _version_key('0.35.2-dev.20261013-rc43')<_version_key('0.35.2')<_version_key('0.36.22')
+    assert _version_key('0.36.22-dev.1')<_version_key('0.36.22-dev.2')<_version_key('0.36.22')
     assert one['executable']==staged['executable']
     assert choose_runtime(managed_root=root,runner=fake_runtime)['status']=='selected'
     fake_adapter.write_text('synthetic adapter changed')
@@ -150,11 +154,13 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     assert reattest_active(root,copy_a,prover=failing,probe=full_probe,
                            marker_dir=queue)['status']=='repointed'
     assert len(smokes)==1
+    unrelated=queue/('laya-adapter-refresh-'+'0'*32+'.failed.json');unrelated.write_text('{}')
     adapter_b=home/'adapter-b.py';adapter_b.write_text('synthetic adapter B')
     done=reattest_active(root,adapter_b,prover=proof,probe=full_probe,marker_dir=queue,
                          plugin_version='0.36.31')
     assert done['status']=='reattested'
-    assert not list(queue.glob('laya-adapter-refresh-*.failed.json'))
+    # A's record went with its proved repoint; another runtime's record survives.
+    assert sorted(queue.glob('laya-adapter-refresh-*.failed.json'))==[unrelated]
     newest=json.loads((root/'active.json').read_text())
     assert newest['previous']==explicit['previous'] and 'adapter_plugin_version' not in newest
     assert json.loads((root/'adapter-owner.json').read_text())['version']=='0.36.31'
