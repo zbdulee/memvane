@@ -144,7 +144,7 @@ def _setup_notice(cwd, queue, guard=None):
         import setup_readiness
         reason = setup_readiness.laya_preflight()['reason']
         # The detached worker re-attests adapter-only drift; notice only on failure.
-        if reason == 'laya_current_adapter_required' and not setup_readiness.adapter_refresh_failed(queue):
+        if reason == 'laya_current_adapter_required' and not setup_readiness.adapter_refresh_blocked(queue):
             reason = None
     if reason is None and version_changed:
         reason = 'plugin_version_changed'
@@ -356,8 +356,11 @@ def worker(key):
                 else:
                     import runtime_work
                     runtime_work.request('update',key)
-                # Test overrides keep the real HOME; never touch its Laya runtime.
-                if product_update and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+                # Test overrides and sandboxes keep the real HOME; never touch its
+                # Laya runtime. Only a proved, completed product update refreshes.
+                if (product_update and status == 'completed'
+                        and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1'
+                        and not os.environ.get('QMD_SANDBOX')):
                     _refresh_laya_adapter(queue, output)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 output.write(f'{time.time():.3f} update failed:{type(exc).__name__}\n')

@@ -181,7 +181,7 @@ class RuntimeChecks(unittest.TestCase):
              patch.object(update,'_refresh_laya_adapter') as laya:
             update.worker(key);self.assertTrue(job.exists());hint.assert_called_with('update',key)
             phase[0]='completed';update.worker(key);self.assertFalse(job.exists())
-            self.assertEqual(laya.call_count,2)
+            self.assertEqual(laya.call_count,1)  # only after the completed update
 
     def test_update_worker_never_refreshes_laya_under_test_overrides(self):
         import hashlib
@@ -189,7 +189,7 @@ class RuntimeChecks(unittest.TestCase):
         import config,setup_guard,qmd_route
         from context_learning import synthetic_scope
         runtime=self.runtime();cwd=str(self.root);key=hashlib.sha256(cwd.encode()).hexdigest()[:32]
-        for env in ({'QMD_SETUP_GUARD_FIXTURE':'1'},{'QMD_CORE_UPDATE_SCRIPT':'/bin/true'}):
+        for env in ({'QMD_SETUP_GUARD_FIXTURE':'1'},{'QMD_CORE_UPDATE_SCRIPT':'/bin/true'},{'QMD_SANDBOX':'1'}):
             job=self.root/(key+'.job.json')
             update._write(job,{'schema':'qmd-update-hook-job-v1','cwd':cwd})
             def run(argv,**kw):

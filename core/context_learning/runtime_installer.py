@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import time
 import tempfile
 import uuid
 
@@ -226,10 +227,55 @@ def activate_generation(root, executable, adapter_path, model_dir,
                 'previous_available':old is not None}
 
 
-def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_runtime):
+MARKER_GLOB='laya-adapter-refresh-*.failed.json'
+# Sidecar, not a pointer key: older hosts validate active.json's exact key set.
+ADAPTER_OWNER='adapter-owner.json'
+
+
+def _version_key(value):
+    match=re.match(r'(\d+)\.(\d+)\.(\d+)',value) if isinstance(value,str) else None
+    return tuple(int(x) for x in match.groups()) if match else None
+
+
+def adapter_owner_version(root, pointer):
+    """Plugin version that last proved the pointer's current adapter, if recorded."""
+    path=Path(root)/ADAPTER_OWNER
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        owner=read_private_json(path)
+    except (OSError,ValueError):
+        return None
+    if (not isinstance(owner,dict) or owner.get('adapter_sha256')!=
+            (pointer.get('attestation') or {}).get('adapter_sha256')):
+        return None  # Another writer proved a different adapter since.
+    return owner.get('version')
+
+
+def adapter_refresh_marker(marker_dir, pointer, adapter_sha):
+    """One failed smoke per adapter bytes and exact selected runtime/model."""
+    attestation=pointer.get('attestation') or {}
+    key='\0'.join((adapter_sha,pointer['runtime_identity_sha256'],pointer['executable'],
+                   str(pointer['model_dir']),str(attestation.get('base_model_sha256'))))
+    return Path(marker_dir)/('laya-adapter-refresh-'+hashlib.sha256(key.encode()).hexdigest()[:32]+'.failed.json')
+
+
+def _record_refresh_failure(marker, reason):
+    try:
+        fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd,'w',encoding='utf8') as out:
+        json.dump({'schema':'qmd-laya-adapter-refresh-v1','reason':reason,'at':time.time()},out,sort_keys=True)
+
+
+def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_runtime,
+                    marker_dir=None, plugin_version=None):
     """Re-attest the selected generation after only the plugin adapter changed.
 
     Executable, runtime identity, model and one-step rollback stay unchanged.
+    The failure marker is read and written under the activation lock for the
+    exact pointer that was checked; an older host never reverts a newer proof.
     """
     root=_private_directory(root)
     adapter_path=Path(adapter_path)
@@ -244,26 +290,51 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
         old=pointer['attestation']
         adapter_sha=_sha_file(adapter_path)
         if old.get('adapter_sha256')==adapter_sha:
-            if pointer.get('adapter_path')==str(adapter_path):
+            attested=Path(pointer.get('adapter_path') or '')
+            if (pointer.get('adapter_path')==str(adapter_path) or
+                (attested.is_absolute() and not attested.is_symlink() and attested.is_file()
+                 and _sha_file(attested)==adapter_sha)):
                 return {'status':'current','executable':pointer['executable']}
             # Same attested bytes at a new plugin path: the proof still holds.
             pointer['adapter_path']=str(adapter_path)
             _write_pointer(active,pointer)
             return {'status':'repointed','executable':pointer['executable']}
-        executable=_generation_executable(root,pointer['executable'])
-        inspected=probe(executable,managed_root=root)
-        if (inspected.get('status')!='metadata_compatible' or
-            inspected['runtime_identity_sha256']!=pointer['runtime_identity_sha256']):
-            raise ValueError('managed_runtime_changed')
-        proof=prover(str(executable),str(adapter_path),str(pointer['model_dir']))
-        attestation=proof['attestation']
-        if (proof['probe']['runtime_identity_sha256']!=pointer['runtime_identity_sha256'] or
-            attestation['base_model_sha256']!=old.get('base_model_sha256') or
-            attestation['adapter_sha256']!=adapter_sha or
-            not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
-            raise ValueError('managed_compatibility_failed')
+        owner=adapter_owner_version(root,pointer)
+        recorded,current=_version_key(owner),_version_key(plugin_version)
+        if recorded is not None and current is not None and current<recorded:
+            return {'status':'older_host','executable':pointer['executable'],
+                    'attestedVersion':owner}
+        marker=adapter_refresh_marker(marker_dir,pointer,adapter_sha) if marker_dir is not None else None
+        if marker is not None and (marker.exists() or marker.is_symlink()):
+            return {'status':'failed_previously','executable':pointer['executable']}
+        from resource_deferred import ResourceDeferred
+        try:
+            executable=_generation_executable(root,pointer['executable'])
+            inspected=probe(executable,managed_root=root)
+            if (inspected.get('status')!='metadata_compatible' or
+                inspected['runtime_identity_sha256']!=pointer['runtime_identity_sha256']):
+                raise ValueError('managed_runtime_changed')
+            proof=prover(str(executable),str(adapter_path),str(pointer['model_dir']))
+            attestation=proof['attestation']
+            if (proof['probe']['runtime_identity_sha256']!=pointer['runtime_identity_sha256'] or
+                attestation['base_model_sha256']!=old.get('base_model_sha256') or
+                attestation['adapter_sha256']!=adapter_sha or
+                not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
+                raise ValueError('managed_compatibility_failed')
+        except ResourceDeferred:
+            raise
+        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
+            if marker is not None:
+                _record_refresh_failure(marker,str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
+            raise
         pointer.update(attestation=attestation,adapter_path=str(adapter_path))
         _write_pointer(active,pointer)
+        if current is not None:
+            _write_pointer(root/ADAPTER_OWNER,{'schema':'qmd-laya-adapter-owner-v1',
+                'version':plugin_version,'adapter_sha256':adapter_sha})
+        if marker_dir is not None:
+            for stale in Path(marker_dir).glob(MARKER_GLOB):
+                stale.unlink(missing_ok=True)
         return {'status':'reattested','executable':str(executable)}
 
 def rollback_generation(root, adapter_path, model_dir,
