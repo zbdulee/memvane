@@ -237,14 +237,15 @@ def known_collections(config: dict) -> frozenset[str]:
 
 
 def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
-                   known: frozenset[str]) -> dict:
+                   known: frozenset[str], label=None) -> dict:
     """Judge a card without `sourceRevisions` by its declared `sources:` files.
 
     Resolution is the same SSOT as recorded revisions
     (`recall.resolve_existing_source`: project root, then `allowRoots`); the
     declared `collection` is carried verbatim and decides only whether a
     missing path is provably gone (a collection this project defines) or may
-    belong to another checkout (undecidable).
+    belong to another checkout (undecidable). ``label`` (``source_label.resolver``)
+    maps a renamed raw collection's old label, by path, to the current one.
     """
     import recall
 
@@ -273,7 +274,9 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
         resolved, reason = recall.resolve_existing_source(source["path"], root, allow_roots)
         if resolved is not None:
             info["present"].append((source, resolved))
-        elif reason == "missing" and source["collection"] in known:
+        elif reason == "missing" and (
+                label(source["collection"], source["path"]) if label is not None
+                else source["collection"]) in known:
             info["missing"].append(source)
         else:
             info["state"] = UNDECIDABLE
@@ -294,7 +297,7 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
 
 
 def inspect_card(page: Path, root: Path, allow_roots: list[Path],
-                 known: frozenset[str] = frozenset()) -> dict | None:
+                 known: frozenset[str] = frozenset(), label=None) -> dict | None:
     """Ownership and provenance of one card, without hashing sources.
 
     Returns None for a card this lifecycle does not own. `missing` lists the
@@ -316,7 +319,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     block = match.group(1)
     info = {"text": text, "state": KEEP, "revisions": [], "missing": [], "present": []}
     if not has_revisions_header(block):
-        return inspect_legacy(info, block, root, allow_roots, known)
+        return inspect_legacy(info, block, root, allow_roots, known, label)
     revisions = recall.frontmatter_source_revisions(block)
     if not revisions:
         info["state"] = UNDECIDABLE
@@ -488,7 +491,10 @@ def run(cwd: str) -> dict:
     allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
     rels = [page.relative_to(wiki_root).as_posix() for page in pages]
-    infos = {rel: inspect_card(wiki_root / rel, root, allow_roots, known) for rel in rels}
+    import source_label
+    label = source_label.resolver(root, config)
+    infos = {rel: inspect_card(wiki_root / rel, root, allow_roots, known, label)
+             for rel in rels}
     verdict = guard_verdict(infos)
     if verdict["tripped"]:
         result["guard"] = {key: value for key, value in verdict.items() if key != "tripped"}
@@ -665,7 +671,9 @@ def dry_run(cwd: str) -> dict:
         report["skip"] = f"bytes_over_MAX_TOTAL_BYTES_{MAX_TOTAL_BYTES}"
     allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
-    infos = {page: inspect_card(page, root, allow_roots, known) for page in pages}
+    import source_label
+    label = source_label.resolver(root, config)
+    infos = {page: inspect_card(page, root, allow_roots, known, label) for page in pages}
     counts = report["counts"]
     reasons = report["undecidableReasons"]
     names = {KEEP: "keep", BACKFILL: "backfill", MISSING: "missing",

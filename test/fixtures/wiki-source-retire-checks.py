@@ -10,7 +10,7 @@ import wiki_source_retire as retire
 import yaml_scalars
 
 
-class DeletedSourceRetirement(unittest.TestCase):
+class RetireFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -30,11 +30,12 @@ class DeletedSourceRetirement(unittest.TestCase):
                                           {'name': 'raw', 'role': 'raw',
                                            'sourceRoot': str(self.root / 'docs')}]}, {})
 
-    def card(self, name='card.md', shared=False, authored=False, survivor_only=False):
-        revisions = [{'kind': 'file', 'path': 'docs/gone.md', 'collection': 'raw',
+    def card(self, name='card.md', shared=False, authored=False, survivor_only=False,
+             label='raw', path='docs/gone.md'):
+        revisions = [{'kind': 'file', 'path': path, 'collection': label,
                       'sha256': self.hash, 'size': 10, 'mtimeNs': 1}]
         if shared:
-            revisions.append({'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
+            revisions.append({'kind': 'file', 'path': 'docs/still.md', 'collection': label,
                               'sha256': 'b' * 64, 'size': 12, 'mtimeNs': 1})
         if survivor_only:
             revisions = [{'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
@@ -54,14 +55,16 @@ class DeletedSourceRetirement(unittest.TestCase):
         card.write_text(text, encoding='utf-8')
         return card
 
-    def run_retire(self):
+    def run_retire(self, config=None, collection='raw', rel='docs/gone.md', full=False):
         with patch.object(retire.wiki_selected_laya, 'recheck'), \
              patch.object(retire.wiki_selected_laya, 'request_sync') as wake, \
              patch.object(retire.wc, 'remove_from_index'):
-            result = retire.retire_deleted_source(self.root, {'wikiPath': '.auto-context/wiki'},
-                                                   self.selected, 'raw', 'docs/gone.md', self.hash)
-            return result['state'], wake.call_count
+            result = retire.retire_deleted_source(
+                self.root, config or {'wikiPath': '.auto-context/wiki'},
+                self.selected, collection, rel, self.hash)
+            return result if full else (result['state'], wake.call_count)
 
+class DeletedSourceRetirement(RetireFixture):
     def test_single_source_is_archived_and_replay_is_safe(self):
         card = self.card()
         old = card.read_bytes()
@@ -121,6 +124,32 @@ class DeletedSourceRetirement(unittest.TestCase):
         card = self.card()
         (self.root / 'docs/gone.md').write_text('new source', encoding='utf-8')
         self.assertEqual(self.run_retire(), ('source_reappeared', 0))
+        self.assertTrue(card.exists())
+
+
+class RenamedRawLabelRetirement(RetireFixture):
+    """Cards citing a renamed raw collection (old label) after a minimal migration."""
+    CONFIG = {'wikiPath': '.auto-context/wiki', 'indexing': True,
+              'collections': ['raw', 'raw-wiki'],
+              'collectionPaths': {'raw': 'docs', 'raw-wiki': '.auto-context/wiki'},
+              'collectionRoles': {'raw': 'raw', 'raw-wiki': 'wiki'}}
+
+    def test_old_label_card_is_retired_for_the_current_collection(self):
+        card = self.card(label='raw-docs')
+        self.assertEqual(self.run_retire(self.CONFIG), ('retired', 1))
+        self.assertFalse(card.exists())
+
+    def test_old_label_shared_card_reports_survivors_under_the_current_label(self):
+        shared = self.card('shared.md', shared=True, label='raw-docs')
+        result = self.run_retire(self.CONFIG, full=True)
+        self.assertEqual(result, {'state': 'shared_pending',
+                                  'survivors': [('raw', 'docs/still.md')]})
+        self.assertTrue(shared.exists())
+
+    def test_unknown_label_outside_raw_root_is_not_matched(self):
+        (self.root / 'notes').mkdir()
+        card = self.card(label='raw-docs', path='notes/gone.md')
+        self.assertEqual(self.run_retire(self.CONFIG, rel='notes/gone.md')[0], 'retired')
         self.assertTrue(card.exists())
 
 
