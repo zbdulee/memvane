@@ -482,6 +482,10 @@ def _provision(*, node, module_entry, model, expect, home=None):
         os.mkdir(generations, 0o700)
     _owner_dir(generations)
     with _lock(runtime):
+        # A provisioner killed mid-copy leaves its staging tree; the lock
+        # holder is the only writer, so every leftover is stale.
+        for leftover in generations.glob('.staging-*'):
+            _remove_staging(leftover)
         staging = generations / ('.staging-' + uuid.uuid4().hex)
         os.mkdir(staging, 0o700)
         try:

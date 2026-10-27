@@ -338,7 +338,15 @@ class Provisioning(Base):
         self.assertEqual(list((runtime_root / 'generations').iterdir()), [])
 
     def test_attested_bytes_are_copied_once_and_sha_checked(self):
+        # A copy killed mid-way left a staging tree behind.
+        stale = R.root() / 'generations' / '.staging-killed'
+        write(stale / 'node_modules' / 'partial.js', 'partial')
+        R.root().chmod(0o700)
+        for path in (R.root().parents[2], R.root().parents[1], R.root().parent,
+                     R.root() / 'generations'):
+            path.chmod(0o700)
         runtime = R.ensure_for_attestation(self.old_att)
+        self.assertFalse(stale.exists())
         self.assertTrue(R.matches(runtime, self.old_att['providerManifest'],
                                   self.old_closure))
         # Already provisioned: no second copy.

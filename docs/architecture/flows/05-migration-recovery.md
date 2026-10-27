@@ -16,8 +16,8 @@ route는 settings 파일 바이트가 아니라 해석된 settings identity(`set
 provider 검토는 QMD 패키지·QMD 런타임 세대·`~/.cache/qmd`를 읽지 않습니다. `~/.local/state/laya/embed-runtime/generations/g-<id>/`(0700, symlink·hardlink 없음)의 `bin/node`, `node_modules/`(node-llama-cpp와 그 런타임 의존, `@node-llama-cpp/mac-arm64-metal`), `models/embeddinggemma-300M-Q8_0.gguf`를 읽습니다. `<id>`는 모든 파일의 상대 경로·sha256·크기·실행 비트를 담은 `runtime.json`의 digest라서 같은 바이트는 항상 같은 경로에 놓입니다. 활성 세대는 `active.json`이 가리킵니다.
 
 - 공급: `provision-index-runtime --approve-index-runtime-copy`는 QMD 관리 런타임의 node-llama-cpp 트리와 QMD 모델 캐시의 GGUF(고정 sha256)를 복사합니다. 번들 자동 업그레이드 worker는 검토 전에 설치 attestation이 가리키는 node·module entry·native closure·모델을 attestation의 sha256과 대조하며 복사합니다. 어느 경로도 hardlink를 쓰지 않고, 아무것도 내려받지 않습니다. 원본이 없으면 `laya_embed_runtime_source_unavailable`로 거부합니다.
-- 기존 설치: 바이트가 같으므로 내용 기반 재증명(`laya_provider_reproof.reattest`)이 기존 vector profile을 유지합니다. 재빌드나 벡터 변경은 없습니다. 재증명 뒤에는 QMD 디렉터리를 지워도 검색·동기화·온보딩이 런타임만 씁니다.
-- 손상: 파일이 하나라도 바뀌거나 늘거나 빠지면 `laya_embed_runtime_corrupt`이고, 같은 내용의 세대를 덮어쓰지 않습니다(`laya_embed_runtime_generation_conflict`).
+- 기존 설치: 바이트가 같으므로 내용 기반 재증명(`laya_provider_reproof.reattest`)이 기존 vector profile을 유지합니다. 재빌드나 벡터 변경은 없습니다. 재증명 뒤에는 QMD 디렉터리를 지워도 검색·동기화·온보딩의 provider는 런타임만 씁니다(hook 로그는 계속 `~/.cache/qmd`에 디렉터리를 만들어 씁니다).
+- 손상: 파일이 하나라도 바뀌거나 늘거나 빠지면 `laya_embed_runtime_corrupt`이고, 같은 내용의 세대를 덮어쓰지 않습니다(`laya_embed_runtime_generation_conflict`). attestation이 이미 Laya 런타임을 가리키면 그 세대를 다시 전수 검증해 활성화할 뿐 복사하지 않습니다. 복구는 `index-runtime-status`로 사유를 확인하고 `~/.local/state/laya/embed-runtime`을 지운 뒤 `provision-index-runtime`(또는 다음 번들 업그레이드)으로 다시 공급하는 것입니다. 이때 원본 파일이 필요합니다. 중단된 복사의 `.staging-*`는 다음 공급이 lock 아래에서 지웁니다.
 - `runtimeId`는 `qmd-2.5.3-node-llama-cpp-3.18.1` 그대로입니다. 고정된 provider가 이 id를 embedding fingerprint에 묶기 때문입니다.
 
 restore는 첫 selected write 이전에만 가능하며, 이 선택이 게시한 route 파일만 철회합니다. 첫 selected write 이후에는 전진(forward) 복구만 적용됩니다. bind된 뒤 활성화하지 않을 빌드는 `retire-index-origin`으로 ledger를 `retired`로 옮기고 marker와 빌드 pointer만 놓아 줍니다. 저장소와 journal은 지우지 않습니다.
