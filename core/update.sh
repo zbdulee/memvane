@@ -1740,9 +1740,20 @@ PY
   #   (b) The model-facing spawn hint. WORKFLOW stays SSOT in
   #       agents/wiki-dedup-resolver.md (read here, never re-copied).
   dedup_queue="$workdir/.auto-context/compile/dedup-needed.jsonl"
-  if [ -s "$dedup_queue" ]; then
-    dedup_count=$(grep -c '[^[:space:]]' "$dedup_queue" 2>/dev/null || echo 0)
-    notice_once wiki-dedup "$workdir" "[qmd] wiki 중복 후보 ${dedup_count}건 대기 — 정리하려면 '/wiki-dedup' 또는 '위키 중복 정리해줘'라고 요청하세요."
+  dedup_claimed=0
+  for claimed in "$dedup_queue".claimed.*; do
+    if [ -f "$claimed" ]; then dedup_claimed=1; break; fi
+  done
+  if [ -s "$dedup_queue" ] || [ "$dedup_claimed" -eq 1 ]; then
+    dedup_count=0
+    if [ -s "$dedup_queue" ]; then
+      dedup_count=$(grep -c '[^[:space:]]' "$dedup_queue" 2>/dev/null || echo 0)
+    fi
+    if [ "$dedup_claimed" -eq 1 ]; then
+      notice_once wiki-dedup "$workdir" "[qmd] wiki 중복 처리 복구 확인 대기 — 정리하려면 '/wiki-dedup' 또는 '위키 중복 정리해줘'라고 요청하세요."
+    else
+      notice_once wiki-dedup "$workdir" "[qmd] wiki 중복 후보 ${dedup_count}건 대기 — 정리하려면 '/wiki-dedup' 또는 '위키 중복 정리해줘'라고 요청하세요."
+    fi
     agent_file="$(cd "$(dirname "$0")/.." && pwd)/agents/wiki-dedup-resolver.md"
     if [ -f "$agent_file" ]; then
       dedup_workflow="$(awk '/<!-- WORKFLOW:START -->/{f=1;next}/<!-- WORKFLOW:END -->/{f=0}f' "$agent_file")"
