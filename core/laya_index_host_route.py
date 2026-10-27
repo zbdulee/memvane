@@ -6,6 +6,13 @@ sticky: malformed, stale, or unverifiable records block the hook instead of
 falling back to QMD. This module validates only the route record and settings
 binding. The product runtime must independently verify the database incarnation
 and package identity before serving or writing anything.
+
+The route's ``settingsSha256`` binds the resolved settings identity
+(``settings_identity_digest``: project root plus each collection's name, role
+and source root, which include the wiki root). Editing ``skipPaths`` keeps that
+identity; renaming a collection changes it and blocks. A route written before
+identity binding holds the settings file's byte digest instead; it stays
+selectable, byte-bound, until ``laya_origin_detach`` converts it.
 """
 from __future__ import annotations
 
@@ -46,6 +53,52 @@ ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "postto
                             "index", "compile", "file-change-event",
                             "topical-event", "topical-stop", "topical-reconcile"})
 MAX_HOOK_BYTES = 2 * 1024 * 1024
+SETTINGS_IDENTITY_SCHEMA = "laya-settings-identity-v1"
+
+
+def settings_identity_digest(project_root, collections) -> str:
+    """Digest of the settings identity a selected route binds.
+
+    ``collections`` are the route's ``{name, role, sourceRoot}`` entries as
+    resolved from the project settings; their order does not matter.
+    """
+    rows = sorted(({"name": item["name"], "role": item["role"],
+                    "sourceRoot": item["sourceRoot"]} for item in collections),
+                  key=lambda item: item["name"])
+    canonical = json.dumps({"schema": SETTINGS_IDENTITY_SCHEMA,
+                            "projectRoot": str(project_root),
+                            "collections": rows},
+                           sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def settings_binding_form(record: dict, settings_bytes: bytes):
+    """``'identity'`` or ``'bytes'`` for the route's settings digest, else None.
+
+    Only the identity form is checked against the route's own collections
+    here; ``_classify_record`` derives them from the settings file first.
+    """
+    digest = record.get("settingsSha256") if isinstance(record, dict) else None
+    if not isinstance(digest, str):
+        return None
+    try:
+        if digest == settings_identity_digest(record["projectRoot"],
+                                              route_collections(record)):
+            return "identity"
+    except (KeyError, TypeError):
+        pass
+    if digest == hashlib.sha256(settings_bytes).hexdigest():
+        return "bytes"
+    return None
+
+
+def route_collections(record: dict) -> list:
+    """The ``{name, role, sourceRoot}`` collections a v1 or v2 route binds."""
+    if record.get("schema") == SCHEMA:
+        return [{"name": record["collectionName"], "role": "raw",
+                 "sourceRoot": record["sourceRoot"]}]
+    return record["collections"]
 
 
 def wiki_index_roots(collections):
@@ -262,6 +315,24 @@ def _source_for_collection(root: Path, relative: object) -> str:
     return str(canonical)
 
 
+def _derived_collections(record: dict, root: Path, settings_bytes: bytes) -> list:
+    """The ``{name, role, sourceRoot}`` set the settings file resolves to."""
+    raw = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
+    if not isinstance(raw, dict):
+        raise ValueError("invalid_route_settings")
+    cfg = config.normalize_config(config.expand_minimal_settings(raw))
+    names, mappings = cfg.get("collections"), cfg.get("collectionPaths")
+    if (not isinstance(names, list) or not isinstance(mappings, dict) or
+            any(not isinstance(name, str) for name in names) or
+            set(mappings) != set(names)):
+        raise ValueError("explicit_collection_path_required")
+    roles = config.role_map(cfg)
+    return [{"name": name,
+             "role": "raw" if record["schema"] == SCHEMA else roles.get(name),
+             "sourceRoot": _source_for_collection(root, mappings[name])}
+            for name in sorted(names)]
+
+
 def _candidate_paths(cwd: Path):
     # Search all ancestors for a *blocking* marker. Ordinary QMD config search
     # stops at HOME (or cwd outside HOME), but a nested cwd outside HOME must
@@ -344,8 +415,18 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
         settings_bytes = (_read_regular(settings, MAX_SETTINGS_BYTES)
                           if settings_raw is None else settings_raw)
         settings_digest = hashlib.sha256(settings_bytes).hexdigest()
+        # A byte-bound route (written before identity binding) matches the
+        # exact bytes; an identity-bound one matches the derived identity.
         if settings_digest != record["settingsSha256"]:
-            raise ValueError("route_settings_changed")
+            try:
+                derived = _derived_collections(record, root, settings_bytes)
+            except (ValueError, TypeError, KeyError, UnicodeError):
+                derived = None
+            # Settings that no longer resolve to the bound identity are a
+            # settings change, whatever would have failed first.
+            if (derived is None or record["settingsSha256"] !=
+                    settings_identity_digest(root, derived)):
+                raise ValueError("route_settings_changed")
         raw_settings = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
         if not isinstance(raw_settings, dict):
             raise ValueError("invalid_route_settings")

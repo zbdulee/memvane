@@ -502,6 +502,13 @@ def _restore(intent):
 
 def _archive_finished_intent(state, project, intent):
     """Retain the old receipt when a later exact bundle is requested."""
+    target = finished_intent_receipt(state, project, intent)
+    os.rename(_intent_path(state), target)
+    inactive._fsync(state)
+
+
+def finished_intent_receipt(state, project, intent):
+    """Receipt path of a settled intent; read-only, refuses an unsettled one."""
     ledger = _intent_ledger(intent)
     row = ledger.load(state / ledger.name)
     journal = inspect_journal(state / 'install-journal.sqlite')
@@ -522,8 +529,7 @@ def _archive_finished_intent(state, project, intent):
     target = state / ('active-upgrade-' + tag + '-settled.json')
     if target.exists() or target.is_symlink():
         _fail('active_upgrade_receipt_exists')
-    os.rename(_intent_path(state), target)
-    inactive._fsync(state)
+    return target
 
 
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
