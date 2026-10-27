@@ -218,8 +218,9 @@ class GenerationEngine:
             self.footprint_mib = footprint
         return result, timing
 
-# Protocol is independent of host cache paths. Different code never silently
-# shuts down or replaces a running user's service.
+# Protocol is independent of host cache paths. A service from another bundle
+# is replaced only while idle: a graceful shutdown request, or for a service
+# without that command, SIGTERM to its exact verified PID. Never mid-request.
 import fcntl
 from functools import lru_cache
 import json
@@ -284,19 +285,127 @@ def _exchange(root, envelope, deadline):
         return resident._read(conn, deadline=deadline)
 
 
-def _ready(root, deadline):
+def _version(root, deadline):
+    """The listening service's version answer, or None when none listens."""
     try:
-        answer = _exchange(root, {'command': 'version'}, min(deadline, time.monotonic()+.5))
+        return _exchange(root, {'command': 'version'}, min(deadline, time.monotonic()+.5))
     except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        return None
+
+
+def _current(answer):
+    return (isinstance(answer, dict) and answer.get('protocol') == PROTOCOL
+            and answer.get('signature') == _signature())
+
+
+def _idle(answer):
+    return (isinstance(answer, dict) and answer.get('status') == 'ready'
+            and answer.get('busy') is False and answer.get('queued') == 0)
+
+
+def _ready(root, deadline):
+    answer = _version(root, deadline)
+    if answer is None:
         return False
-    if (not isinstance(answer, dict) or answer.get('protocol') != PROTOCOL
-            or answer.get('signature') != _signature()):
+    if not _current(answer):
         raise ServiceFailure('version_mismatch')
     return answer.get('status') == 'ready'
 
 
+def _waiting_ready(root, deadline):
+    """Readiness while a lease changes hands; a closing service is not ready."""
+    try:
+        return _ready(root, deadline)
+    except ServiceFailure as exc:
+        if exc.code != 'version_mismatch':
+            raise
+        return False
+    except (ConnectionResetError, BrokenPipeError, ValueError):
+        # A stopping service may accept and close without an answer.
+        return False
+
+
+def _process_command(pid):
+    """(uid, full command line) of one exact PID, or None."""
+    try:
+        shown = subprocess.run(['ps', '-ww', '-o', 'uid=', '-o', 'command=', '-p', str(pid)],
+                               stdin=subprocess.DEVNULL, capture_output=True,
+                               text=True, timeout=1, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    line = shown.stdout.strip()
+    if shown.returncode != 0 or not line:
+        return None
+    uid, _, command = line.partition(' ')
+    try:
+        return int(uid), command.strip()
+    except ValueError:
+        return None
+
+
+def _terminate_idle(root, deadline):
+    """SIGTERM one idle service that predates the shutdown command.
+
+    The PID must come from the private PID file bound to the current socket
+    inode, run as this user with this root's worker command line, and still
+    report idle immediately before the signal. Anything else is left alone.
+    """
+    import signal
+    path = _address(root)
+    pid_path = root / PID_NAME
+    try:
+        resident._safe_file(pid_path, max_size=512)
+        row = json.loads(pid_path.read_text(encoding='utf-8'))
+        current = path.lstat()
+    except (OSError, ValueError):
+        raise ServiceFailure('starting') from None
+    pid = row.get('pid') if isinstance(row, dict) else None
+    if (type(pid) is not int or pid <= 1 or pid == os.getpid()
+            or (row.get('socket_dev'), row.get('socket_ino')) != (current.st_dev, current.st_ino)):
+        raise ServiceFailure('starting')
+    shown = _process_command(pid)
+    if (shown is None or shown[0] != os.getuid()
+            or 'context_learning.inference_service' not in shown[1]
+            or 'worker' not in shown[1] or str(root) not in shown[1]):
+        raise ServiceFailure('starting')
+    if _idle(_version(root, deadline)) is not True:
+        raise ServiceFailure('starting')
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def _retire_stale(root, deadline):
+    """Stop an idle service from another bundle; the caller then respawns.
+
+    Runs under service-start.lock. A busy or queued old service keeps
+    serving; the caller reports ``starting`` and a later request retries.
+    """
+    answer = _version(root, deadline)
+    if answer is None or _current(answer):
+        return
+    if not _idle(answer):
+        raise ServiceFailure('starting')
+    try:
+        reply = _exchange(root, {'command': 'shutdown'}, min(deadline, time.monotonic()+.5))
+    except (FileNotFoundError, ConnectionRefusedError):
+        return
+    except (socket.timeout, OSError, ValueError):
+        raise ServiceFailure('starting') from None
+    status = reply.get('status') if isinstance(reply, dict) else None
+    if status == 'stopped':
+        return
+    if status == 'busy':
+        raise ServiceFailure('starting')
+    _terminate_idle(root, deadline)
+
+
 def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
-    """No signaling: a held kernel lease forbids stale cleanup or respawn."""
+    """Start the current bundle's service, replacing an idle stale one.
+
+    A held kernel lease is never stolen: the stale owner exits first.
+    """
     root = resident._private_state(root)
     fd = _lock(root / 'service-start.lock')
     try:
@@ -308,8 +417,13 @@ def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
                 break
             except BlockingIOError:
                 time.sleep(.01)
-        if _ready(root, deadline):
-            return
+        try:
+            if _ready(root, deadline):
+                return
+        except ServiceFailure as exc:
+            if exc.code != 'version_mismatch':
+                raise
+            _retire_stale(root, deadline)
         lease = _lock(root / LEASE_NAME)
         try:
             while True:
@@ -317,7 +431,7 @@ def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
                     fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if _ready(root, deadline):
+                    if _waiting_ready(root, deadline):
                         return
                     if time.monotonic() >= deadline:
                         raise ServiceFailure('starting')

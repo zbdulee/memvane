@@ -43,7 +43,18 @@ development execution guard is separate; see
   (`maxRssMib` 2048, `minAvailableMib` 768, `maxLoadPerCpu` 1,
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. The detached resident embed service
-  (`laya_embed_resident._serve`) uses the same activity and check.
+  (`laya_embed_resident._serve`) uses the same activity and check. While the
+  provider lane is contended (`learning_compute_busy`,
+  `learning_deferred_inference`, `learning_deferred_resource`) it keeps its
+  owner lease and retries every 2 seconds for up to 45 attempts before
+  recording `resource_deferred`. A selected recall that finds no owner socket
+  with owner state `starting` or `resource_deferred` starts the owner directly
+  (detached, behind the owner's own 5-second backoff) and pulls a backed-off
+  `laya-sync` wake's due time forward without changing its attempt count. A
+  sync result deferred by `laya_service_preparing` is recorded as
+  `target_preparing`: retried after 5 seconds and not counted as an attempt.
+  A failed sync/compile child's last 4 KB of stderr is kept per wake in the
+  private `runtime-wake-failures.json` beside the wake queue.
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
