@@ -83,7 +83,7 @@ backend/   ← qmd MCP HTTP 데몬(:8483) launcher + keepalive/logrotate/index w
 
 host route: `hooks/run-hook`은 등록된 모든 action을 먼저 `core/laya_index_host_route.py classify-hook`으로 분류한다(`legacy|candidate|preview|blocked`). 선택된 Laya route(candidate/preview)는 `core/laya_host_response.py serve-stdin`이 응답하고, 그 검색은 위키 전용이며 질의 시점에 원문을 다시 읽지 않는다. blocked는 QMD로 폴백하지 않고 exit 3으로 끝난다. 이 문서의 QMD 데몬·dirty 큐 경로는 legacy route다. 수동 skill(query/sync/update/wiki-compile)은 route 분류 없이 QMD 경로를 실행한다.
 
-코드·테스트 주석의 "로드맵 N단계"는 주입 품질 로드맵의 단계 번호다: 1=주입에 카드 본문·경로 포함, 2=sources.path 주입, 3=source_missing 정책, 4=verify 엔진 분리(crossEngine), 5=crowding_probe 측정 도구, 6=verify 처리량·per-run cap, 7=role source, 8=raw 인덱스 유지 판정과 orphan 벡터 회수, F1=write-time dedup 교차 엔진. "3.8"은 sourceRevisions 백필(scripts/wiki-revision-backfill.py)이다. 테스트 주석의 "계획 2026-08-19 §N"(recall 효용 회복 계획)은 §2.1=사라진 worktree를 가리키는 컬렉션 경로, §3.4=죽은 설정 키(sourceScan·sourceMissingPath·maxCardsPerSource) 처리, §3.5=설정 경로와 qmd 레지스트리 경로 대조를 가리킨다.
+코드·테스트 주석의 "로드맵 N단계"는 주입 품질 로드맵의 단계 번호다: 1=주입에 카드 본문·경로 포함, 2=sources.path 주입, 3=원문 소실 정책(현재 `wiki_lifecycle`), 4=verify 엔진 분리(crossEngine), 5=crowding_probe 측정 도구, 6=verify 처리량·per-run cap, 7=role source, 8=raw 인덱스 유지 판정과 orphan 벡터 회수, F1=write-time dedup 교차 엔진. "3.8"은 sourceRevisions 백필(scripts/wiki-revision-backfill.py)이다. 테스트 주석의 "계획 2026-08-19 §N"(recall 효용 회복 계획)은 §2.1=사라진 worktree를 가리키는 컬렉션 경로, §3.4=죽은 설정 키(sourceScan·sourceMissingPath·maxCardsPerSource) 처리, §3.5=설정 경로와 qmd 레지스트리 경로 대조를 가리킨다.
 
 ### 코어 (`core/`)
 - `recall.py` — UserPromptSubmit 핵심. 흐름: `config.load_project_config(cwd)` → 키워드 추출(`keywords.py`) → 데몬 `/query`(lex+vec 하이브리드, 또는 `QMD_QUERY_FIXTURE`) → skipPaths/minScore 필터 → topN → `additionalContext` 포맷. **CLI fallback은 없음** — 데몬 죽었거나 timeout이면 graceful하게 빈 출력(에러 아님).
@@ -103,6 +103,7 @@ host route: `hooks/run-hook`은 등록된 모든 action을 먼저 `core/laya_ind
 - `preflight_gate.py` — PreToolUse hook. pending 프로젝트에서 Edit/Write/apply_patch 등 편집 도구를 deny로 차단(Claude·Codex). sandbox·skip 마커·pending 아닌 상태면 즉시 통과.
 - `wiki_compile_defaults.py` — recommended 온보딩·`--enable-compile`·SessionStart notice가 공유하는 compile 설정 블록 생성 헬퍼. generated config에는 절대 adapter 경로를 쓰지 않고 `compile.extractor.builtins`에 `claude`/`codex`/`hermes` 같은 symbolic engine만 저장한다.
 - `wiki_compile_enqueue.py` / `wiki_compile_worker.py` — 자동 compile source는 `raw`/`session` Markdown만 허용하며, relative path의 어느 segment라도 `.`로 시작하면 skip/reject한다. `.agents/skills`, `.claude`, `.codex`, `.github`, `.auto-context` 같은 agent/tooling metadata를 wiki로 승격하지 않기 위한 기본 안전장치다.
+- `wiki_lifecycle.py` — SessionStart wiki 수명 주기. `update.sh` worker에서 plugin 소유 카드(`createdBy: qmd-auto-context` + auto 블록)만 기록된 `sourceRevisions`로 판정한다: 원문 없음·`sourceRevisions` 없음 → `retired-wiki/`에 보관 후 삭제하고 `laya-sync`를 깨운다, 해시 변경 → compile source 큐에 재생성(`session_start_source` 동의 필요), 같음 → 유지. 선택된 laya-db route에서만 조치하고, 순환 커서 창·run당 퇴역 상한·대량 삭제 가드(원문 소실 카드 비율)·재생성 재시도 간격으로 유계·멱등이다. 심볼릭 링크·dot 경로·wiki root 밖은 건드리지 않는다.
 - `extractors/` — host-CLI wiki extractor adapters (`claude_adapter.py`, `codex_adapter.py`, `hermes_adapter.py`) + `lib.py`. Pure `payload→{candidates}` functions run in an isolated temp cwd with tools/custom context disabled. Worker는 `compile.extractor.argv`(legacy explicit) → `compile.extractor.backends[engine]`(explicit) → `compile.extractor.builtins`(runtime-resolved adapter) → `extractor.default` 순서로 선택한다. **플러그인 install = consent**: 설치 후 첫 SessionStart에 일회성 안내 notice가 표시되며, recommended 온보딩(`--optin --recommended`)·`--enable-compile`이 기본으로 compile을 활성화한다. Exit 127 = host CLI absent (worker then tries `extractor.default`). 격리: `lib.run_isolated`가 자식 env에 `QMD_SANDBOX=1`을 넣어 nested CLI의 qmd 훅을 즉시 무력화(재귀 차단)하고, claude는 `--safe-mode`·`--tools ""`·`--no-session-persistence`, codex는 `--ephemeral`·`--ignore-user-config`·`--ignore-rules`, hermes는 `--safe-mode`·`--ignore-user-config`·`--ignore-rules`·`-t ""`로 MCP/skills/plugins/rules/tool context를 최소화한다(hermes는 동등 persistence-off 플래그 없어 ~/.hermes에 1회성 기록이 남을 수 있음).
 
 ### skills (`skills/`)
@@ -113,7 +114,6 @@ host route: `hooks/run-hook`은 등록된 모든 action을 먼저 `core/laya_ind
 - `enable-compile` — opt-in된 프로젝트에 자동 wiki compile을 켠다(`core/update.sh --enable-compile`). 편집 시 host CLI가 백그라운드로 실행된다는 점을 사용자에게 알린다.
 - `wiki-compile` — compact durable summary/candidate JSON을 `core/wiki_extract.py` → `core/wiki_compile.py`로 수동 실행한다. raw transcript를 입력하지 않으며 query-time hook에서는 쓰지 않는다.
 - `wiki-dedup` — retroactive scan(`core/wiki_dedup_scan.py`)이 `dedup-needed.jsonl`에 큐한 이미 존재하는 wiki 카드 쌍을 `agents/wiki-dedup-resolver.md` 에이전트로 정리한다. write-time `merge-needed.jsonl`은 passive diagnostic이라 이 workflow 밖이다.
-- `wiki-source-repair` — `source-missing.jsonl`의 원문 소실 카드에 명시된 `repoint`/`dismiss`를 적용한다. 카드를 삭제하거나 status를 바꾸지 않는다.
 - `hint`에 해당하는 skill은 만들지 않는다. PostToolUse posttool은 편집 직후 자동 실행되는 hook-only 연속성 힌트다.
 - `gate`에 해당하는 skill은 만들지 않는다. gate는 pending 프로젝트 편집 차단용 내부 안전장치다.
 

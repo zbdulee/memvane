@@ -127,10 +127,9 @@ DEFAULT_CONFIG = {
         "triggers": [],
         "maxAutoPageLines": 120,
         "maxSourceChars": 12000,
-        # 소스 소실 스캐너(`core/wiki_source_scan.py`). **유료 호출이 없는 값이다** —
-        # 카드 frontmatter의 stat 검사뿐이라 budget 블록에 두지 않는다. 그래도 설정
-        # 가능해야 하는 이유는 `enabled`다: 이 스캔은 update worker에서 항상 돌고
-        # 사용자가 끌 수단이 문서에만 있었다(정규화 밖이라 `false`를 적어도 돌았다).
+        # wiki 수명 주기(`core/wiki_lifecycle.py`). 카드 판정 자체는 유료 호출이 없어
+        # budget 블록에 두지 않는다(재생성 enqueue는 compile triggers 동의를 따른다).
+        # `enabled:false`는 update worker의 수명 주기 조치(삭제·enqueue)를 끈다.
         "sourceScan": {
             "enabled": True,
             # 한 회차의 창. 초과분은 순환 커서가 다음 회차에 이어 본다(유실 없음).
@@ -694,19 +693,16 @@ def compile_config(value):
     ]
     result["maxAutoPageLines"] = coerce_int(value.get("maxAutoPageLines", defaults["maxAutoPageLines"]), defaults["maxAutoPageLines"])
     result["maxSourceChars"] = coerce_int(value.get("maxSourceChars", defaults["maxSourceChars"]), defaults["maxSourceChars"])
-    # sourceScan은 정규화 화이트리스트 밖이라 **한 번도 읽힌 적이 없었다** —
-    # `wiki_source_scan.run`이 `enabled`·`maxCardsPerScan`을 읽는데도 `enabled:false`를
-    # 적은 프로젝트에서 스캔이 계속 돌았고, 폭은 `QMD_SOURCE_SCAN_MAX` env만 유효했다.
+    # sourceScan은 `wiki_lifecycle.run`이 `enabled`·`maxCardsPerScan`을 읽는다.
     #
-    # `enabled`는 bool만 받는다. **비-bool이면 기본값(True = 스캔 유지)으로 폴백하되
+    # `enabled`는 bool만 받는다. **비-bool이면 기본값(True = 수명 주기 유지)으로 폴백하되
     # 침묵하지 않는다** — 폴백만 하면 사용자가 적어 둔 opt-out이 무력화되는데(`"false"`
     # 문자열도 결과가 "껐는데 돈다"다) 그 사실이 어디에도 나타나지 않는다. 종점은
     # `invalid_compile_flags` → SessionStart `notice_once`이고, `COLLECTION_ROLE_INVALID`
     # 와 같은 규칙이다("키 없음"과 "키 있음 + 값 미지"를 구분하고 후자는 조용하면 안 된다).
-    # **끄는 쪽으로 읽지 않는 이유**: 비-bool 집합에는 켜려는 의도의 값(`1`·`"true"`·
-    # `"yes"`)도 들어 있어, 전부 off로 읽으면 그 오타가 소실 감지를 조용히 죽인다.
-    # 잘못 켜진 스캔의 대가는 stat 몇 번(유료 호출·카드 변경 없음)이고 잘못 꺼진 스캔의
-    # 대가는 감지 부재이므로 방향이 비대칭이다.
+    # **끄는 쪽으로 읽지 않는 이유**: 수명 주기는 제품 기본 동작이고, 비-bool 집합에는
+    # 켜려는 의도의 값(`1`·`"true"`·`"yes"`)도 들어 있다. 켜진 쪽의 삭제는 보관본
+    # (`retired-wiki/`)으로 복구할 수 있고 대량 삭제 가드가 한 run의 폭을 막는다.
     raw_scan = value.get("sourceScan")
     scan = raw_scan if isinstance(raw_scan, dict) else {}
     default_scan = defaults["sourceScan"]
@@ -931,9 +927,7 @@ DEPRECATED_REMOVED_KEYS = (
     "compile.verify.logPath",
     "compile.verify.skippedPath",
     "compile.verify.deletedPath",
-    # 10번째 경로. `compile_paths`가 이름을 상수화할 때 이 키만 목록에서 빠져
-    # **알림조차 없었다**(정규화 밖이라 값도 무시). 소비자(`wiki_source_missing.ledger_path`)
-    # 는 이제 설정을 아예 읽지 않으므로 살릴 대상이 아니라 알릴 대상이다.
+    # 원문 소실 원장 경로 키. 소비자가 없으므로 알림 대상이다.
     "compile.sourceMissingPath",
     "compile.extractor.argv",
     "compile.extractor.dispatch",
@@ -979,7 +973,7 @@ def deprecated_keys(input_config):
 def deprecated_key_notice(input_config):
     """SessionStart 알림 1줄. 제거된 키가 없으면 빈 문자열.
 
-    문구를 bash가 아니라 여기서 만드는 것은 형제 알림(role-invalid·source-missing)과
+    문구를 bash가 아니라 여기서 만드는 것은 형제 알림(role-invalid·dead-registration)과
     다르다 — 저쪽은 python이 숫자/이름만 주고 bash가 문장을 만든다. 여기서는 문장이
     **세 갈래로 갈리고** 각 갈래가 키 목록을 끼고 있어 bash에서 조립하면 세 벌의
     분기가 생기고, 그 분기가 위 세 상수와 갈리는 순간 알림이 틀린 행선지를 말한다.

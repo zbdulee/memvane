@@ -292,8 +292,7 @@ test('§3.4 sourceScan은 살아난 키라 알림 대상이 아니다', () => {
 });
 
 test('§3.4 sourceMissingPath는 알림만 나간다 (경로는 compile_paths 상수)', () => {
-  // 소비자(`wiki_source_missing.ledger_path`)가 설정을 아예 읽지 않으므로 살릴 대상이
-  // 아니라 알릴 대상이다. 예전에는 목록에도 없어 **알림조차 없었다**.
+  // 이 경로 키를 읽는 소비자가 없으므로 살릴 대상이 아니라 알릴 대상이다.
   const { records, notice } = detectRaw({
     compile: { mode: 'auto-wiki', sourceMissingPath: '.auto-context/compile/mine.jsonl' },
   });
