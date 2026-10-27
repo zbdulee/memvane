@@ -188,6 +188,11 @@ def in_flight_decision(cwd):
     if len(records) != 1 or not requested.is_dir():
         return None
     root, auto, path = records[0]
+    markers = [directory for directory in (current, *current.parents)
+               if (directory / '.auto-context' / MARKER).exists() or
+               (directory / '.auto-context' / MARKER).is_symlink()]
+    if markers != [root]:
+        return None
     raw = _read_regular(path, MAX_RECORD_BYTES)
     record = json.loads(raw.decode('utf-8'))
     journal = record.get('journalPath') if isinstance(record, dict) else None
@@ -376,10 +381,11 @@ def _settle_active_upgrade(project, state):
     """A finished bundle upgrade keeps its intent until the next upgrade; that
     next upgrade checks the route digest, so settle the receipt first."""
     import laya_active_upgrade as active
-    if not (Path(state) / active.INTENT).exists():
+    path = Path(state) / active.INTENT
+    if not path.exists() and not path.is_symlink():
         return
-    intent = active._load_intent(Path(state), Path(project))
     try:
+        intent = active._load_intent(Path(state), Path(project))
         active._archive_finished_intent(Path(state), Path(project), intent)
     except Exception as exc:
         _fail('active_upgrade_unsettled', error=str(exc) or type(exc).__name__)

@@ -329,6 +329,38 @@ class RebindChecks(SelectedProject):
         (self.settings).write_bytes(b'{"name": "other"}\n')
         self.assertEqual(self.decision()['state'], 'blocked')
 
+    def active_upgrade_intent(self, old_route_sha):
+        """A finished bundle-upgrade receipt naming the current route as new."""
+        route = self.route_raw.decode()
+        return {'schema': 'laya-active-upgrade-intent-v1',
+                'projectRoot': str(self.project), 'stateRoot': str(self.state),
+                'oldRecord': {'identity': {'projectRoot': str(self.project),
+                                           'stateRoot': str(self.state)}},
+                'oldLedger': {**self.ledger, 'routeSha256': old_route_sha},
+                'newLedger': {**self.ledger, 'phase': 'upgrading'},
+                'oldRoute': route, 'newRoute': route, 'oldAttestation': '{}',
+                'newAttestation': '{}', 'oldMarker': '{}', 'newMarker': '{}',
+                'backup': str(self.state / 'backup')}
+
+    def test_finished_bundle_upgrade_receipt_is_settled_first(self):
+        path = self.state / active.INTENT
+        self.private_write(path, canon(self.active_upgrade_intent('f' * 64)))
+        proposal = settings_migration.plan(str(self.project))
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        self.assertFalse(path.exists())
+        self.assertEqual(len(list(self.state.glob('active-upgrade-*-settled.json'))), 1)
+
+    def test_unsettled_bundle_upgrade_refuses_before_any_write(self):
+        path = self.state / active.INTENT
+        self.private_write(path, b'{"schema":"unknown"}')
+        proposal = settings_migration.plan(str(self.project))
+        refused = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(refused['reason'], 'active_upgrade_unsettled', refused)
+        self.assertEqual(self.settings.read_bytes(), self.legacy)
+        self.assertFalse(rebind.intent_path(self.state).exists())
+        self.assert_selected_and_readable()
+
     def test_stale_qmd_setup_journal_is_reported_not_rewritten(self):
         journal = self.auto / 'install-update-journal.json'
         journal.write_text(json.dumps({'schema': 'qmd-install-update-v1',
