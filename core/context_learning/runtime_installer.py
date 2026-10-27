@@ -244,7 +244,12 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
         old=pointer['attestation']
         adapter_sha=_sha_file(adapter_path)
         if old.get('adapter_sha256')==adapter_sha:
-            return {'status':'current','executable':pointer['executable']}
+            if pointer.get('adapter_path')==str(adapter_path):
+                return {'status':'current','executable':pointer['executable']}
+            # Same attested bytes at a new plugin path: the proof still holds.
+            pointer['adapter_path']=str(adapter_path)
+            _write_pointer(active,pointer)
+            return {'status':'repointed','executable':pointer['executable']}
         executable=_generation_executable(root,pointer['executable'])
         inspected=probe(executable,managed_root=root)
         if (inspected.get('status')!='metadata_compatible' or

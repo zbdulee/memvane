@@ -74,7 +74,10 @@ def laya_preflight():
                        (encoder.get('max_position_embeddings'), tokenizer.get('model_max_length')))):
             raise ValueError('edit_model_required')
         # Checked last: this reason means every other local input still matches.
-        if attestation.get('adapter_sha256') != runtime._sha_file(ADAPTER):
+        attested_adapter = Path(active.get('adapter_path') or '')
+        if (attestation.get('adapter_sha256') != runtime._sha_file(ADAPTER)
+                or not attested_adapter.is_absolute() or attested_adapter.is_symlink()
+                or not attested_adapter.is_file()):
             raise ValueError('current_adapter_required')
         result['status'] = 'prepared_unverified'
     except (OSError, ValueError, KeyError, TypeError) as exc:
