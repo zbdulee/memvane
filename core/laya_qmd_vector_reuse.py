@@ -127,9 +127,12 @@ def for_initial_build(identity, manifest, dimension):
     """Reuse source for a QMD-origin build; None for fresh builds or no origin."""
     if identity.get('originMode') == 'fresh_wiki_only' or not identity.get('sourceDb'):
         return None
-    module = Path(manifest['moduleEntryPath'])
-    node_modules = next((p for p in module.parents if p.name == 'node_modules'), None)
+    # Optional: a manifest without these fields just embeds as before.
+    module, model = manifest.get('moduleEntryPath'), manifest.get('modelPath')
+    if not isinstance(module, str) or not isinstance(model, str):
+        return None
+    node_modules = next((p for p in Path(module).parents if p.name == 'node_modules'), None)
     if node_modules is None:
         return None
     extension = node_modules / 'sqlite-vec-darwin-arm64' / 'vec0'
-    return QmdVectorReuse(identity['sourceDb'], extension, manifest['modelPath'], dimension)
+    return QmdVectorReuse(identity['sourceDb'], extension, model, dimension)
