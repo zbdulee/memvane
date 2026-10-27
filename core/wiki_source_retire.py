@@ -185,3 +185,57 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
     # Also reconciles an old sidecar row whose canonical card disappeared.
     wiki_selected_laya.request_sync(root, selected)
     return {'state': 'retired', 'survivors': []}
+
+
+def retire_card(root: Path, wiki_root: Path, selected, card: Path,
+                expected: str, proof_hash: str) -> str:
+    """Archive and unlink one machine card whose bytes are still ``expected``.
+
+    The SessionStart lifecycle uses this for a card it already judged; the
+    judgement is repeated here under the card and wiki locks so a concurrent
+    compiler rewrite or a human edit is never retired. Symlinks, dot paths,
+    index/log pages and paths outside ``wiki_root`` are refused. The caller
+    requests one laya-sync wake for the whole run.
+    """
+    root = Path(root).resolve()
+    wiki_root = Path(wiki_root)
+    if wiki_root.is_symlink() or not wiki_root.is_dir():
+        return 'blocked'
+    with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        wiki_selected_laya.recheck(selected)
+        try:
+            subpath = card.relative_to(wiki_root)
+        except ValueError:
+            return 'blocked'
+        if (any(part.startswith('.') for part in subpath.parts)
+                or card.name in ('index.md', 'log.md')):
+            return 'blocked'
+        try:
+            before = card.lstat()
+        except FileNotFoundError:
+            return 'gone'
+        if (not stat.S_ISREG(before.st_mode) or card.is_symlink()
+                or card.resolve() != card or before.st_size > MAX_CARD_BYTES):
+            return 'blocked'
+        try:
+            text = card.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            return 'blocked'
+        if text != expected:
+            return 'changed'
+        if not wc.auto_writable_text(text)[0]:
+            return 'blocked'
+        if not archive_card(root, card, text, proof_hash):
+            return 'blocked'
+        after = card.lstat()
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            return 'blocked'
+        card.unlink()
+        wc.remove_from_index(wiki_root, card)
+        directory = os.open(card.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    return 'retired'

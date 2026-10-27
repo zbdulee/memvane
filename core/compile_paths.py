@@ -44,7 +44,6 @@ DEDUP_NEEDED = "dedup-needed.jsonl"
 DEDUP_SKIPPED = "dedup-skipped.jsonl"
 DEDUP_DELETED = "dedup-deleted.jsonl"
 DISCARD_LEDGER = "discard-ledger.jsonl"
-SOURCE_MISSING = "source-missing.jsonl"
 REVIEWED_MIGRATION = "reviewed-state-migration.jsonl"
 
 # --- 커서·식힘·로그 ---------------------------------------------------------

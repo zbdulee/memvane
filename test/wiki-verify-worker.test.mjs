@@ -541,24 +541,18 @@ test('소스 전부 소실 → source_missing skip, generated 유지(미검수 �
   } finally { removeTemp(project); }
 });
 
-test('source_missing은 트림되지 않는 원장(source-missing.jsonl)에도 남는다', () => {
+test('source_missing은 카드를 바꾸지 않고 원장도 쓰지 않는다 (정리는 SessionStart 수명 주기 몫)', () => {
   const verifier = mockVerifier({ verdict: 'pass', claims: [{ claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
   const project = setupProject({ extractorArgv: ['python3', verifier], withSource: false });
   try {
+    const before = readFileSync(join(project, CARD_REL), 'utf8');
     runVerifyWorker(project);
-    const rows = jsonl(join(project, '.auto-context', 'compile', 'source-missing.jsonl'));
-    assert.equal(rows.length, 1, 'verify-log.jsonl은 트림 대상이라 이 신호가 유실됐다 — 원장에 별도 보존');
-    assert.equal(rows[0].targetPath, CARD_REL);
-    assert.equal(rows[0].action, 'detected');
-    assert.equal(rows[0].origin, 'verify');
-    assert.equal(rows[0].status, 'generated');
-    assert.deepEqual(rows[0].missingSources, ['docs/source.md']);
-    // 카드는 그대로 남는다(삭제·downgrade 없음).
-    assert.equal(existsSync(join(project, CARD_REL)), true);
+    assert.equal(readFileSync(join(project, CARD_REL), 'utf8'), before);
+    assert.equal(existsSync(join(project, '.auto-context', 'compile', 'source-missing.jsonl')), false);
   } finally { removeTemp(project); }
 });
 
-test('소스가 살아 있으면(읽기 실패 등) 원장에 소실로 기록하지 않는다', () => {
+test('소스가 살아 있으면(읽기 실패 등) 소실 원장 파일이 생기지 않는다', () => {
   const verifier = mockVerifier({ verdict: 'pass', claims: [{ claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
   const project = setupProject({ extractorArgv: ['python3', verifier] });
   try {

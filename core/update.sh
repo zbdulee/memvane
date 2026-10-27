@@ -126,7 +126,7 @@ qmd_healthcheck() {
 #   - **자율 처리형**(완결 신호가 파일 상태로 존재 — dedup 큐가 비면 조건이 꺼진다):
 #     모델용 지시를 `notice_once` **밖**에 두고 매 run 무조건 emit한다. 잔소리가 스스로
 #     끝나므로 TTL이 필요 없고, TTL이 있으면 그 4시간 창을 태운 세션이 지시를 못 받는다.
-#   - **사용자 확인형**(source-missing·dead-registration — 사람이 결정해야 조건이 꺼진다):
+#   - **사용자 확인형**(dead-registration — 사람이 결정해야 조건이 꺼진다):
 #     지시까지 `notice_once` **안**에 두고 TTL 억제를 받는다. 조건이 저절로 꺼지지 않으니
 #     무조건 emit은 매 세션 같은 지시를 반복하는 것이고, 그 대가로 marker 소진(전달 여부와
 #     무관하게 창을 태운다)을 감수한다.
@@ -191,7 +191,7 @@ notice_once() {
     age=$((now - mtime))
     # 미래 mtime 가드(시계 되돌림·백업 복원·파일시스템 이관). age가 음수면 `-lt $ttl`이
     # 참이 되어 그 marker가 **모든 알림을 영구 억제**한다 — 이 함수는 orphan 회수 실패·
-    # unregister 실패·source_missing·invalid role 등 **모든 종점**이 사용자에게 닿는
+    # unregister 실패·dead registration·invalid role 등 **모든 종점**이 사용자에게 닿는
     # 유일한 채널이므로, 여기서 조용해지면 다른 어떤 가드도 표면화되지 않는다.
     # python 쪽 동일 규칙은 `core/cooldown.py:window_elapsed`(관용 60초)다.
     if [ "$age" -ge -60 ] && [ "$age" -lt "$ttl" ]; then
@@ -1391,24 +1391,19 @@ PY
     report_search_readiness failed
   fi
 
-  # 소스 소실 스캔(로드맵 3단계). 여기(worker 경로)인 이유:
+  # wiki 수명 주기(`wiki_lifecycle.py`). 여기(worker 경로)인 이유:
   #   (a) blocking hook 예산을 쓰지 않는다 — worker는 이미 백그라운드 fork다.
-  #   (b) 데몬·embed·LLM에 의존하지 않는 파일시스템 stat 검사이므로 dedup 스캔처럼
-  #       embed 서브셸 안에 둘 이유가 없다. 그 안에 두면 embed lock 경합이나
-  #       `qmd update` 실패로 소실 감지가 조용히 건너뛰어진다.
+  #   (b) 데몬·embed·LLM에 의존하지 않는 파일 읽기·해시 검사이므로 embed 서브셸 안에
+  #       둘 이유가 없다. 그 안에 두면 embed lock 경합이나 `qmd update` 실패로
+  #       수명 주기 판정이 조용히 건너뛰어진다.
   #   (c) 새 스케줄러를 만들지 않고 기존 배수 경로를 재사용한다.
-  # 비용 상한과 순환 커서는 스캐너 안에 있다(compile.sourceScan.maxCardsPerScan).
-  # 같은 run이 "provenance가 없어 recall이 주입할 수 없는 카드 수"도 세어 준다
-  # (`ineligible`). 그 수를 상태 파일로 남기고 **다음 SessionStart의 동기 경로**가
-  # notice_once로 알린다 — unregister-failed와 같은 패턴이고 이유도 같다: worker는
-  # 백그라운드 fork라 stdout이 사용자에게 닿지 않는다.
-  #
-  # 왜 필요한가: source freshness 도입으로 compiler-owned `sourceRevisions`가 없는
-  # **기존 카드 전부**가 한 번에 recall에서 빠진다(라이브 실측 service-engineering
-  # 931/931, ai-proxy 26/26). 자동 재검증은 없으므로 각 카드는 그 원문을 다시 편집해
-  # 재컴파일될 때만 돌아온다. 그 절벽 자체는 의도된 정책이지만, **조용하면 안 된다** —
-  # 사용자에게는 "어느 날 wiki recall이 그냥 비었다"로 보이고 그것은 버그로 신고된다.
-  # 0이 되면 아래 notice_clear가 재무장하므로 복구가 끝나면 알림이 저절로 사라진다.
+  # 생성 카드마다 기록된 원문 경로·해시(`sourceRevisions`)로 판정한다: 원문 소실과
+  # 지문 없음은 보관 후 삭제하고 laya-sync를 깨우며, 해시 변경은 compile 큐에 재생성을
+  # 넣는다. 상한·순환 커서·대량 삭제 가드·멱등성은 모듈 docstring에 있다.
+  # 같은 run이 "provenance가 없어 recall이 주입할 수 없는 카드 수"(`ineligible`)도
+  # 전량으로 센다. 그 수를 상태 파일로 남기고 **다음 SessionStart의 동기 경로**가
+  # notice_once로 알린다 — worker는 백그라운드 fork라 stdout이 사용자에게 닿지 않는다.
+  # 0이 되면 아래 notice_clear가 재무장하므로 정리가 끝나면 알림이 저절로 사라진다.
   # 손상된 source-refresh-pending.jsonl 격리. 여기(worker)인 이유는 위 (a)~(c)와 같고,
   # 특히 **recall(blocking hook)은 절대 쓰지 않는다** — 손상 상태의 recall fail-closed
   # (전 후보 unknown)는 그대로 옳고, 치우는 것은 다음 worker run의 몫이다.
@@ -1430,7 +1425,7 @@ except Exception:
     log "PENDING: quarantined corrupt source-refresh ledger -> $quarantined"
   fi
 
-  scan_json="$(python3 "$(dirname "$0")/wiki_source_scan.py" --cwd "$workdir" --json 2>>"$LOG" || true)"
+  scan_json="$(python3 "$(dirname "$0")/wiki_lifecycle.py" --cwd "$workdir" --json 2>>"$LOG" || true)"
   printf '%s\n' "$scan_json" >> "$LOG"
   # **"0"과 "안 셌다"를 구분한다.** 스캐너가 `ineligibleMeasured`를 주고, 미측정 run은
   # 상태 파일을 쓰지도 **지우지도** 않는다. 지우면 다음 SessionStart의
@@ -1536,7 +1531,7 @@ main() {
   fi
 
   # source freshness 도입으로 provenance 없는 기존 카드가 recall에서 빠진 상태를 알린다.
-  # **이 알림만 상태형으로 남는다**(source-missing·dead-registration은 지시형이다).
+  # **이 알림은 상태형이다**(dead-registration은 지시형이다).
   # 여기서 지시할 수 있는 것은 "일괄 재검증에 동의하는지 사용자에게 물어라"뿐이고 — 그
   # 문의 자체는 무료·비변경이다 — 그것을 알림에 두면 4시간마다 되살아나는 지출 권유가
   # 된다. 상태 한 줄이 그보다 낫다. 무료로 **건전하게** 복구되는 부분집합(원문이 컴파일
@@ -1593,7 +1588,7 @@ main() {
   # "등록 경로가 존재하지 않는 것"으로 좁혀진 근거는 scan_dead_registrations docstring과
   # docs/settings.md에 있다(다른 프로젝트의 정상 컬렉션을 잡지 않기 위함).
   # 매 worker run이 다시 세는 **수준**이라 0이 되면 notice_clear로 재무장한다.
-  # 문구는 source-missing과 같은 지시형이고 같은 이유로 적용은 사용자 확인 뒤다(경로가
+  # 문구는 지시형이고 적용은 사용자 확인 뒤다(경로가
   # 사라진 것인지 지금 안 보이는 것인지 구분 불가 → 자율 remove는 파괴적이다).
   dead_registrations=""
   dead_registration_file="$(dead_registration_state "$workdir")"
@@ -1766,48 +1761,7 @@ PY
     notice_clear wiki-dedup "$workdir"
   fi
 
-  # 소스 소실 표면화(로드맵 3단계): 원장(source-missing.jsonl)의 대기 건수를 알린다.
-  # 대기 판정("최신 행이 detected")은 Python이 SSOT다(bash에서 재구현하지 않는다).
-  # compile 디렉터리가 없으면 원장도 없으므로 python3 호출 자체를 생략한다.
-  #
-  # **문구는 지시형이고 수신자가 둘이다.** 숫자만 보고하는 알림은 무시된다 — 라이브에서
-  # 이 알림이 반복 표시되는 동안 `/wiki-source-repair`는 한 세션도 실행되지 않았다. 반면
-  # dedup 힌트처럼 지시 형태를 취한 알림은 모델이 사용자 요청 없이 자율 처리했다. 그래서
-  # 사람용 한 문장 뒤에 `에이전트:` 로 수신자를 바꿔 절차를 지시한다.
-  # **단 적용은 사용자 확인 뒤다** — 소스 재지정은 사람이 "이 파일이 그 문서다"를 확인해야
-  # 하는 판단이고, 잘못 매칭하면 카드가 무관한 원문을 가리킨 채 verify에서 삭제된다.
-  # dismiss도 사람 판단이다(같은 소실 집합을 억제해 다음 진짜 소실을 가린다). 그래서 지시는
-  # "목록을 읽고 후보를 제시하라"까지다.
-  # **지시에 실행 순서를 명시한다.** dedup 힌트는 "지금 즉시"인데 이 알림은 아니다 — 그 차이는
-  # 위임 가능성이다: dedup은 subagent가 자율 처리해 메인 턴을 쓰지 않지만, 이 작업은 사용자
-  # 확인이 필수라 정의상 메인 턴에서 일어난다. "지금 즉시"로 두면 세션 첫 턴이 사용자 질문
-  # 대신 유지보수로 소모된다(알림은 SessionStart에 붙는다).
-  # **지시에 배치 상한을 명시한다** — 라이브 실측으로 한 프로젝트의 대기가 278건이고 전량
-  # 목록이 111KB다. 상한 없이 "제시하라"고 지시하면 그 한 번으로 세션 예산이 타고, 그러면
-  # 지시형으로 바꾼 목적(실제로 조치가 일어나게 하는 것)이 그 자리에서 무너진다. 같은 큐를
-  # 여러 세션에 걸쳐 빼내는 것이 정상 동작이고 `--limit`의 정렬(trusted 먼저)이 그것을
-  # 재현 가능하게 만든다.
-  # **절차 본문은 여기 복제하지 않는다** — skill 이름만 가리키고 SSOT는
-  # `skills/wiki-source-repair/SKILL.md`다(dedup이 agent 파일에서 WORKFLOW를 추출하는 것과
-  # 같은 규칙이며, 매 세션 stdout에 절차 전문을 붓지 않는 이유도 같다).
   if [ -d "$workdir/.auto-context/compile" ]; then
-    source_missing_json="$(python3 "$(dirname "$0")/wiki_source_missing.py" --cwd "$workdir" --pending-summary 2>/dev/null || true)"
-    source_missing_pending="$(printf '%s' "$source_missing_json" | python3 -c 'import json,sys
-try:
-    print(int(json.load(sys.stdin).get("pending") or 0))
-except Exception:
-    print(0)' 2>/dev/null || echo 0)"
-    source_missing_verified="$(printf '%s' "$source_missing_json" | python3 -c 'import json,sys
-try:
-    print(int(json.load(sys.stdin).get("verified") or 0))
-except Exception:
-    print(0)' 2>/dev/null || echo 0)"
-    if [ "${source_missing_pending:-0}" -gt 0 ] 2>/dev/null; then
-      notice_once source-missing "$workdir" "[qmd] wiki 카드 원문 소실 ${source_missing_pending}건 대기(검수 카드 ${source_missing_verified}건). 에이전트: 이것은 사용자 요청과 독립적인 백그라운드 유지보수다 — 사용자의 현재 요청을 먼저 처리하고 그 답변 끝에 'wiki-source-repair' skill로 대기 목록을 최대 10건씩 읽고(단위는 카드가 아니라 **소실 파일**이다 — 한 파일을 카드 수십 장이 인용하므로 결정 1회가 그 전부를 해소한다. 전량을 한 번에 제시하지 말 것) 각 소실 파일의 개명 후보를 사용자에게 제시해라. 어느 후보가 같은 문서인지는 사람만 확인할 수 있고 일괄 재지정을 잘못하면 카드 수십 장이 한 번에 무관한 원문을 가리키므로, repoint·dismiss를 임의로 적용하지 말 것."
-    else
-      notice_clear source-missing "$workdir"
-    fi
-
     # fail-closed 원장에 쓸 수 없으면 기계 검수가 **아무 카드도 검수하지 못한다**(유료 호출
     # 전 preflight가 멈춘다). 그 상태로 두면 새 카드가 계속 `generated`로 쌓이고
     # `recallVerifiedOnly` 기본값에서 recall에 하나도 나오지 않는데, 흔적은 트림되는

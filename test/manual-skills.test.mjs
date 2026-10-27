@@ -9,7 +9,8 @@ test("manual skills expose setup and existing skills; review and hint are not sk
     .filter((name) => name !== "qmd")
     .sort();
 
-  assert.deepEqual(skillDirs, ["enable-compile", "query", "setup", "sync", "update", "wiki-compile", "wiki-dedup", "wiki-source-repair"]);
+  assert.deepEqual(skillDirs, ["enable-compile", "query", "setup", "sync", "update", "wiki-compile", "wiki-dedup"]);
+  assert.equal(existsSync("skills/wiki-source-repair"), false);
   assert.equal(existsSync("skills/hint"), false);
   assert.equal(existsSync("test/hint-skill.test.mjs"), false);
 });
@@ -25,7 +26,8 @@ test("plugin descriptions list manual skills without hint", () => {
 
   for (const file of files) {
     const text = readFileSync(file, "utf8");
-    assert.match(text, /setup\/sync\/query\/update\/wiki-compile\/wiki-dedup\/wiki-source-repair\/enable-compile manual skills/);
+    assert.match(text, /setup\/sync\/query\/update\/wiki-compile\/wiki-dedup\/enable-compile manual skills/);
+    assert.doesNotMatch(text, /wiki-source-repair/);
     assert.doesNotMatch(text, /wiki-review/);
   }
 });
@@ -80,7 +82,7 @@ test("active operator docs expose automatic trust and no removed review lifecycl
     assert.equal(existsSync(surface), false, `removed review surface is back: ${surface}`);
   }
 
-  const files = ["CLAUDE.md", "docs/settings.md", "skills/wiki-source-repair/SKILL.md"];
+  const files = ["CLAUDE.md", "docs/settings.md"];
   for (const file of files) {
     assert.doesNotMatch(readFileSync(file, "utf8"), REVIEW_SURFACE_POINTER, file);
   }
