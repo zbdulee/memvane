@@ -119,7 +119,8 @@ def _verify_bound_seal(index, gen, profile_id):
 
 
 def _run_bound_leased(index, queue, catalog, store, job, token, *,
-                      require_vector=False, vector_profile_id=None):
+                      require_vector=False, vector_profile_id=None,
+                      before_head_publish=None):
     import laya_index_capacity as capacity
     decision = queue.decide(index, job)
     if decision == ACK:
@@ -166,6 +167,8 @@ def _run_bound_leased(index, queue, catalog, store, job, token, *,
                 # snapshot before staging, so this is not a loop for it.)
                 return ('replan' if queue.mark_replan(job, token, 'index_stale')
                         else LEASE_LOST)
+        if before_head_publish is not None:
+            before_head_publish(index, binding, job)
         published = capacity.publish_bound(index, catalog, store, binding, job,
                                            require_vector=require_vector)
     except IndexContractError as exc:
@@ -221,7 +224,8 @@ def process_one(index, queue, root, claim, *, recover=False,
 
 
 def process_bound_one(index, queue, catalog, store, claim, *, recover=False,
-                      require_vector=False, vector_profile_id=None):
+                      require_vector=False, vector_profile_id=None,
+                      before_head_publish=None):
     """``process_one`` for a bound catalog claim; same returns and lease rules.
 
     With ``require_vector`` the staged generation is sealed from cached chunk
@@ -237,6 +241,9 @@ def process_bound_one(index, queue, catalog, store, claim, *, recover=False,
     if require_vector and not (isinstance(vector_profile_id, str)
                                and len(vector_profile_id) == 64):
         raise IndexContractError('vector_profile_required')
+    if before_head_publish is not None and not callable(before_head_publish):
+        raise TypeError('before_head_publish_invalid')
     return _process_leased(queue, claim, recover, lambda job, token: _run_bound_leased(
         index, queue, catalog, store, job, token, require_vector=require_vector,
-        vector_profile_id=vector_profile_id))
+        vector_profile_id=vector_profile_id,
+        before_head_publish=before_head_publish))

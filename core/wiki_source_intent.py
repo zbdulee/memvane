@@ -80,7 +80,14 @@ def revision_key(record):
     collection, path, trigger = source.get("collection"), source.get("path"), record.get("trigger")
     if not all(isinstance(value, str) and value for value in (collection, path, trigger)):
         return None
-    return (collection, path, revision, trigger)
+    key = (collection, path, revision, trigger)
+    if record.get('sourceDelete') is True:
+        key += ('delete',)
+    if record.get('forceRecompile') is True:
+        key += ('force',)
+    if record.get('sharedEnqueued') is True:
+        key += ('shared',)
+    return key
 
 
 def without_queued(candidates, queued_keys):

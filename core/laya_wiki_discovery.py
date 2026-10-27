@@ -577,14 +577,14 @@ def seed_source_snapshot(decision, baseline):
         return baseline
 
 
-def _changed_files(pending, roots):
+def _changed_files(pending, roots, snapshot):
     """The changedFiles shape enqueue_changed_sources already consumes."""
     files = {}
     for path, sha in sorted(pending.items()):
         name, rel = path.split('/', 1)
         entry = files.setdefault(name, {'root': roots[name], 'created': [], 'updated': [],
                                         'deleted': [], 'revisions': {}})
-        entry['updated'].append(rel)
+        entry['updated' if path in snapshot else 'deleted'].append(rel)
         entry['revisions'][rel] = sha
     return files
 
@@ -682,6 +682,12 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
             old = state['rawSnapshot']
             pending = {path: sha for path, sha in snapshot.items()
                        if path in before or old.get(path) != sha}
+            # Deletion has no new bytes to hash. Keep the last proved revision
+            # as the durable queue key until a retirement job is acknowledged.
+            pending.update({path: sha for path, sha in old.items()
+                            if path not in snapshot})
+            pending.update({path: sha for path, sha in before.items()
+                            if path not in snapshot})
             if len(pending) > MAX_PENDING:
                 raise _PendingOverflow(len(pending))
         overflow = None
@@ -711,7 +717,7 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
     for kind in live:
         recheck()
         result = wiki_compile_enqueue.enqueue_changed_sources(
-            decision['projectRoot'], cfg, _changed_files(pending, roots),
+            decision['projectRoot'], cfg, _changed_files(pending, roots, snapshot),
             session_start=kind == 'session_start')
         if not isinstance(result, dict) or not isinstance(result.get('deferredFiles'), list):
             raise DiscoveryBlocked('enqueue_result_invalid')

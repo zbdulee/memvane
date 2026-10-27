@@ -348,7 +348,7 @@ def _head_sealed(index, gen, profile_id):
 
 
 def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False,
-              vector_profile_id=None,
+              vector_profile_id=None, before_head_publish=None,
               max_files=200, max_bytes=5_000_000, max_stats=2_000,
               max_claims=8, rescan=False) -> dict:
     """One finite capacity-path sync unit for a product worker; call repeatedly.
@@ -404,6 +404,8 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
         raise TypeError('explicit_runtime_required')
     if not callable(before_publish):
         raise TypeError('before_publish_required')
+    if before_head_publish is not None and not callable(before_head_publish):
+        raise TypeError('before_head_publish_invalid')
     if (type(require_vector) is not bool or type(rescan) is not bool
             or type(max_claims) is not int or max_claims < 1):
         raise TypeError('invalid_sync_step')
@@ -460,7 +462,8 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
             ensure_fenced()
             outcome = process_bound_one(index, queue, catalog, store, job['claim'],
                                         recover=recover, require_vector=require_vector,
-                                        vector_profile_id=vector_profile_id)
+                                        vector_profile_id=vector_profile_id,
+                                        before_head_publish=before_head_publish)
             if outcome == 'replan' and generation_digest(job['gen']) is not None:
                 # A member may have changed after the snapshot; only a new
                 # complete scan can produce a publishable binding.

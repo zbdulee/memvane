@@ -811,7 +811,8 @@ class CapacityWorkerChecks(unittest.TestCase):
             marked.append(1);seen['cas']+=1;return {'epoch':8,'newWriteSeen':True}
         seen={'steps':[],'fills':0,'runtime':None,'scans':0,'cas':0}
         answers=iter(steps);fill_answers=iter(fills)
-        def step(runtime,*,before_publish,require_vector,vector_profile_id):
+        def step(runtime,*,before_publish,require_vector,vector_profile_id,
+                 before_head_publish=None):
             self.assertTrue(require_vector)
             self.assertEqual(seen['scans'],1)  # the wake asked for its scan first
             seen['steps'].append(vector_profile_id)

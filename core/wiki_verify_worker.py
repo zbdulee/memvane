@@ -43,8 +43,10 @@ path); queue/log records never store source bodies.
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -427,6 +429,102 @@ def reindex_wiki(root: Path, config: dict) -> None:
             wiki_selected_laya.request_sync(root, selected)
 
 
+def wake_pending_retirement(root: Path) -> None:
+    """Recheck a held deletion only after a successful replacement review."""
+    import wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is None:
+        return
+    queue = _safe_queue_path(root, cp.rel(cp.SOURCE_QUEUE))
+    if queue is None:
+        return
+    try:
+        pending = wcw.read_queue(queue)
+    except OSError:
+        return
+    if any(isinstance(job, dict) and job.get('sourceDelete') is True
+           and job.get('sharedEnqueued') is True for _, job in pending):
+        wiki_selected_laya.request_compile(root, selected)
+
+
+def pending_replacement(root: Path, wiki_root: Path, job: dict,
+                        live_target: Path) -> tuple[Path, str] | None:
+    """Accept only the compiler's hidden pending path for this exact target/job."""
+    rel = job.get('pendingPath')
+    if rel is None:
+        return None
+    job_hash = job.get('sourceHash')
+    expected = job.get('expectedTargetHash')
+    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', job_hash)
+            or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
+            or not isinstance(rel, str)):
+        raise ValueError('pending_replacement_invalid')
+    root = root.resolve()
+    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash[:16])
+    if (pending.is_symlink() or pending.relative_to(root).as_posix() != rel
+            or pending.parent != live_target.parent
+            or not pending.is_relative_to(wiki_root)):
+        raise ValueError('pending_replacement_invalid')
+    return pending, expected
+
+
+def publish_pending_replacement(root: Path, config: dict, job: dict,
+                                pending: Path, live_target: Path,
+                                expected: str) -> str:
+    """Return published, stale or retry; only transient I/O stays queued."""
+    try:
+        pending_text, pending_meta, pending_status, pending_hash = card_state(pending)
+        if (live_target.is_symlink() or pending.is_symlink()
+                or pending_status != 'verified'
+                or pending_hash != job.get('sourceHash')
+                or not isinstance(pending_text, str)
+                or pending_meta.get('verifiedBodyHash') !=
+                    yaml_scalars.card_body_hash(pending_text)):
+            return 'stale'
+        try:
+            old_bytes = live_target.read_bytes()
+        except (FileNotFoundError, IsADirectoryError):
+            return 'stale'
+        if hashlib.sha256(old_bytes).hexdigest() != expected:
+            return 'stale'
+        # Once the reviewed candidate is published, the previous completed
+        # card must remain recoverable just like a source-deletion retirement.
+        import wiki_source_retire
+        if not wiki_source_retire.archive_card(
+                root, live_target, live_target.read_text(encoding='utf-8'), expected):
+            return 'retry'
+        os.replace(pending, live_target)
+        directory = os.open(live_target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        return 'retry'
+    wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
+    wc.update_index(wiki_root, live_target, str(pending_meta.get('title') or live_target.stem))
+    wc.append_log(wiki_root, 'updated', live_target,
+                  str(pending_meta.get('title') or live_target.stem))
+    reindex_wiki(root, config)
+    return 'published'
+
+
+def finish_stale_pending(root: Path, pending: Path, job: dict,
+                         log_path: Path) -> tuple[bool, bool]:
+    """Ack a superseded candidate without touching the current live card."""
+    try:
+        if pending.is_symlink():
+            raise OSError('pending_symlink')
+        pending.unlink(missing_ok=True)
+    except OSError:
+        log_verdict(log_path, {**base_record(job), 'result': 'deferred',
+                               'reason': 'stale_pending_cleanup_failed'})
+        return False, True
+    log_verdict(log_path, {**base_record(job), 'result': 'stale_replacement'})
+    wake_pending_retirement(root)
+    return True, False
+
+
 def card_state(target: Path) -> tuple[str | None, dict, str, str]:
     """(text, frontmatter, status, block sourceHash) — 읽기 실패 시 text None."""
     try:
@@ -700,14 +798,30 @@ def apply_verify_verdict_locked(
                                      source_spans=bound or None):
             log_verdict(log_path, {**record, "result": "stamp_failed", "stampStatus": "verified"})
             return False, True
-        reindex_wiki(root, config)
+        pending = job.get('pendingPath')
+        if pending is not None:
+            live_target = root / job['targetPath']
+            expected = job['expectedTargetHash']
+            outcome = publish_pending_replacement(root, config, job, target,
+                                                  live_target, expected)
+            if outcome == 'stale':
+                return finish_stale_pending(root, target, job, log_path)
+            if outcome != 'published':
+                log_verdict(log_path, {**record, 'result': 'publish_pending',
+                                       'reason': 'write_failed'})
+                return False, True
+        if pending is None:
+            reindex_wiki(root, config)
+        wake_pending_retirement(root)
         log_verdict(log_path, {**record, "result": "verified", "sourceSpans": len(bound)})
         return True, False
 
     action = vcfg.get("onFail", "delete") if verdict == "fail" else vcfg.get("onInconclusive", "delete")
+    pending_only = job.get('pendingPath') is not None
     applied = apply_negative_verdict(
         root, config, compile_cfg, vcfg, target, engine, verified_mode, action, verdict,
-        sources, record, log_path, yaml_scalars.card_body_hash(payload_text)
+        sources, {**record, 'pendingOnly': True} if pending_only else record,
+        log_path, yaml_scalars.card_body_hash(payload_text), pending_only=pending_only
     )
     return (True, False) if applied else (False, True)
 
@@ -723,12 +837,62 @@ def process_verify_job(
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
         return True, False
     wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
-    target = (root / rel).resolve()
+    live_target = root / rel
+    if live_target.is_symlink():
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'unsafe_target_path'})
+        return True, False
+    target = live_target.resolve()
     try:
         target.relative_to(wiki_root)
     except ValueError:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "unsafe_target_path"})
         return True, False
+
+    try:
+        staged = pending_replacement(root, wiki_root, job, target)
+    except ValueError:
+        log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                               'reason': 'pending_replacement_invalid'})
+        return True, False
+    if staged is not None:
+        target, expected = staged
+        if not target.exists():
+            # A crash after atomic replacement but before queue ACK is a
+            # completed replay. Otherwise the pending candidate is missing.
+            live_text, live_meta, live_status, live_hash = card_state(live_target)
+            if (live_text is not None and live_status == 'verified'
+                    and live_hash == job.get('sourceHash')
+                    and live_meta.get('verifiedBodyHash') ==
+                        yaml_scalars.card_body_hash(live_text)):
+                wc.update_index(wiki_root, live_target,
+                                str(live_meta.get('title') or live_target.stem))
+                reindex_wiki(root, config)
+                wake_pending_retirement(root)
+                log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+                return True, False
+            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                                   'reason': 'pending_replacement_missing'})
+            return True, False
+        if target.is_symlink():
+            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                                   'reason': 'pending_replacement_unsafe'})
+            return True, False
+        staged_text, _, staged_status, staged_hash = card_state(target)
+        if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
+            try:
+                with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+                    outcome = publish_pending_replacement(
+                        root, config, job, target, live_target, expected)
+                    if outcome == 'published':
+                        wake_pending_retirement(root)
+                        log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
+                        return True, False
+                    if outcome == 'stale':
+                        return finish_stale_pending(root, target, job, log_path)
+            except OSError:
+                pass
+            return False, True
 
     text, meta, status, block_hash = card_state(target)
     if text is None:
@@ -983,7 +1147,7 @@ def defer_or_drop(
 def apply_negative_verdict(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, target: Path, engine: str,
     verified_mode: str, action: str, verdict: str, sources: list[dict], record: dict,
-    log_path: Path, body_hash: str | None = None,
+    log_path: Path, body_hash: str | None = None, *, pending_only: bool = False,
 ) -> bool:
     """Apply a fail/inconclusive verdict. Only inconclusive leaves a suppression marker.
 
@@ -1025,6 +1189,10 @@ def apply_negative_verdict(
         _, dead_meta, _, _ = card_state(target)
         dead_title = str(dead_meta.get("title") or target.stem)
         target.unlink(missing_ok=True)
+        if pending_only:
+            log_verdict(log_path, {**record, 'result': 'pending_deleted',
+                                   'suppressedSources': suppressed})
+            return True
         # 인덱스 줄도 같이 걷는다(사유는 wiki_compile.remove_from_index). 위 감사 원장·억제
         # 마커와 달리 여기는 fail-closed하지 않는다 — 인덱스는 캐논이 아니라 항법이고,
         # 실패해도 이 함수가 없던 시절의 어긋남으로 되돌아갈 뿐 새 손상은 아니다.
