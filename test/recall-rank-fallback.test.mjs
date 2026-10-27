@@ -3,7 +3,7 @@
 // rerank=false 경로에서 데몬 score는 1/rank라 minScore는 유사도 임계가 아니라 순위
 // 컷이다(rank1=1.0, rank2=0.5). 컷을 통과한 소수의 결과가 hard filter
 // (skipPaths·recallVerifiedOnly·excludeStatusesFromRecall)에서 떨어지면 recall이 통째로
-// 0건이 됐다 — docs/plans/2026-07-29-wiki-only-architecture-review.md 5.0의 라이브 증거.
+// 0건이 됐다.
 // 여기서는 hierarchical/wikiOnly 전략에서 "wiki rescue → raw backfill" 순서와
 // raw 누출 금지를 검증한다.
 //

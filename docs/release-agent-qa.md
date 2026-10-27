@@ -8,23 +8,9 @@ scenario captures objective evidence. Record each run with
 [the run record template](templates/release-agent-qa-run.md). The
 [release checklist](release.md) links here.
 
-For the current candidate and an auditable mapping of all 25 scenario IDs,
-see the [QA status](release-agent-qa-status.md). The dated implementation
-notes below are historical; they are not the latest QA verdict.
-The 2026-10-25 minimum main-merge run used exact product candidate
-`b1188c2281bb5221fdaf64f2131e18fdd1b0a6cc` and its passing
-[CI run 40196920336](https://github.com/zbdulee/qmd-auto-context/actions/runs/40196920336).
-For `RQA-INST-04`, a synthetic fixture stopped the executing setup process
-during `enrolling`, resumed the identical shared-install request, and then
-served an officially verified synthetic wiki card plus source in a fresh
-Claude session. Its final state was `compile.mode=off`, verification queue 0,
-shared journal `completed` and DB quick-check `ok`; additional QA calls used
-7/10 bounded slots. This is process-interruption and new-session evidence,
-not a whole-host interruption or power-loss claim. The status record maps
-the other required data-safety evidence and the five user-deferred assertions;
-none of those deferrals is a PASS or a waiver of the four safety rows.
-The [Claude QA change review](qa-reviews/2026-10-25-claude-qa-change-review.md)
-records code-level findings separately from row verdicts.
+Open QA items, including the user-deferred assertions, are tracked in
+[TODO.md](TODO.md). Dated notes in this document record past runs; they are
+not the current QA verdict.
 The [architecture flow charts](architecture/flows/README.md) explain the
 implemented paths and boundaries; they are not L1 verdicts.
 
@@ -387,29 +373,6 @@ Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선�
 필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
 않는다.
 
-**2026-10-20 후속 L0 기록 (설치 후보 QA 아님):** 비활성 초기 빌드와
-QMD 결속 전환/복구, 기존 승인 소유자의 Laya 경로, durable 학습 child 및
-overflow wake를 소스와 합성 fixture에 연결했다. 전체 `npm test` 출력은
-1,648건 중 1,639 PASS·9 SKIP·0 FAIL이었지만 실행 도구 시간 한계로
-guard supervisor가 정산 전에 종료됐다. 소유 프로세스가 모두 종료됐음을
-검사하고 해당 checkpoint를 `stopped`/`settled`/`completed:false`로 기록했다.
-동일한 273개 test 파일을 직렬 guard 6회로 재실행해 1,645건 중
-1,636 PASS·9 SKIP·0 FAIL을 얻었고, Node가 자동 발견하는 helper 파일
-3개도 별도 guard에서 모두 PASS였다. 정산된 범위 합계는 1,648건 중
-1,639 PASS·9 SKIP·0 FAIL이며 **하나의 정산된 full-suite 실행은 아니다**.
-세부 run ID와 Opus 사용량은
-[후속 통합 기록](plans/2026-10-20-laya-index-followup-integration.md)에 있다.
-이 기록은 `LI-*` 또는 `RQA-*` 설치 후보 행을 통과시키지 않는다.
-후속 독립 Opus 소스 리뷰는 v3 선택 검색이 **반환된** 외부 수정 후보를
-조용히 버려 짧거나 빈 결과를 정상으로 제공할 수 있음을 확인했다. 이는
-반환 후보의 현재 파일 검증 정책과 어긋난다. 미반환 새 파일은 색인 지연으로
-별도 취급하며 매 검색의 전체 코퍼스 증명은 확정 정책이 아니다. QMD digest 변경 뒤
-같은 Laya 세대를 재결속할 위험, 제품 복구 진입점 부재, 전체 벡터 seal을
-질의 기한 전에 재검사하던 지연 문제도 지적했다. 반환 후보의 명시적 실패,
-drift 거부·제품 복구 진입점, 벡터 검사 기한은 합성 수정과 직렬 가드로
-확인했다. 큰 세대의 벡터 가용성과 drift 후 재빌드, 설치 후보 QA는 남았다.
-이 기록은 L1 행을 변경하지 않는다.
-
 ## 1. Source verification and installed-candidate QA are separate
 
 | Level | What runs | Can it satisfy this gate? |
@@ -418,10 +381,8 @@ drift 거부·제품 복구 진입점, 벡터 검사 기한은 합성 수정과 
 | L1 installed-candidate QA (this gate) | Host marketplace install of the exact candidate, then fresh host sessions in which the real hooks fire, with natural-language requests and exposed skills | Yes. This is the only level that counts. |
 
 Hook-path evidence cannot be replaced by a direct script call. A cached plugin
-directory can carry the same version string while containing different code;
-[the hook-path E2E plan](plans/2026-07-30-hook-path-e2e-test-plan.md) records
-such a case. Identity is therefore proved by content hashes (section 5), not by
-version strings.
+directory can carry the same version string while containing different code, so
+identity is proved by content hashes (section 5), not by version strings.
 
 Operator rules:
 
@@ -460,13 +421,11 @@ Operator rules:
   both as non-PASS. Save only those disposable calibration records and the
   verdict in `$EVID`; never alter real host logs. If either is accepted as
   PASS, the QA evidence procedure is `BLOCKED` until repaired and repeated.
-- Some expected outcomes below are policy goals that the
-  [architecture boundaries](plans/2026-10-17-architecture-boundaries.md) and the
-  [worktree policy](git-worktree-search-sync-policy.md) still list as
-  unimplemented. Examples: query-time freshness, single-generation reads, and
-  wiki revision idempotency. The gate keeps those outcomes as the expected
-  result. Until they are implemented, they will `FAIL` and block a formal
-  release. The gate must not be weakened to describe the current gap as correct.
+- Some expected outcomes below are policy goals that the current code does not
+  fully meet, for example revision idempotency across compile triggers
+  (RQA-WIKI-01). The gate keeps those outcomes as the expected result. Until
+  they are met, they `FAIL` and block a formal release. The gate must not be
+  weakened to describe the current gap as correct.
 
 ## 3. QA environment and isolation
 
@@ -1312,10 +1271,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
 
 **Legacy QMD route limitation.** A project that has not been migrated still
 uses the preserved QMD writer, which has no QA barrier or inactive DB
-publication path
-([published view investigation](plans/2026-10-17-qmd-published-view-options.md)).
-That historical document does not decide the Laya engine, and this release
-does not build a QMD A-copy. Late-worker safety is not claimed for the legacy
+publication path. This release does not build a QMD A-copy. Late-worker safety is not claimed for the legacy
 QMD route. Release notes must say "late-worker race verified only on the
 selected Laya Index engine" until a separate decision changes that.
 
@@ -1361,9 +1317,13 @@ selected Laya Index engine" until a separate decision changes that.
   - at most one extractor call and one verifier pass;
   - at most one card created or updated;
   - no second paid call.
-- **Known gap:** the [architecture boundaries](plans/2026-10-17-architecture-boundaries.md)
-  record that revision idempotency is not yet implemented. Until it is, this
-  scenario is expected to `FAIL` and blocks a formal release.
+- **Known gap:** revision idempotency is partial. The compile queue drops a
+  duplicate row only for the same `(collection, path, revision, trigger)`
+  (`core/wiki_source_intent.py` `revision_key`), and on the selected Laya route
+  the worker skips a revision that already has a compiled card
+  (`already_compiled_revision`). The same revision arriving through a different
+  trigger is still queued. Until this scenario passes, it blocks a formal
+  release.
 - **Evidence:** ledger and queue diffs per path, revision and engine; compile
   logs; card diff.
 - **Timeout:** T_WIKI + T_SCENARIO.
@@ -1545,9 +1505,7 @@ selected Laya Index engine" until a separate decision changes that.
 
 ## 10. Domain ownership
 
-Scenarios respect the six owners in
-[the architecture boundaries](plans/2026-10-17-architecture-boundaries.md).
-Two rules apply:
+Scenarios respect domain ownership. Two rules apply:
 
 - A verdict uses evidence produced by the owning domain.
 - A scenario must never edit another domain's state (queues, snapshots,

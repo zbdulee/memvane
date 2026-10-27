@@ -1,40 +1,25 @@
 # Plugin runtime resource coordination
 
-Initial scope audit: [remaining entry points and hardening](plans/2026-10-16-runtime-resource-audit.md).
-The source follow-up below connects the four identified gaps. Neither the earlier
-56-case result nor the new fake-signal checks establish operating safety.
-The newer user instruction also adds [running-training control and daemon
-monitoring](plans/2026-10-16-running-training-monitor.md), described at the end.
-
-This change belongs to `feat/general-project-auto-learning`. It has not been
-installed or activated. Existing sessions and inbox automation remain enabled.
-The development execution guard and its heavy-work hold remain separate.
-
-## Existing coverage and gaps
-
-`context_learning/resource_coordination.py` already provided one per-OS-user
-trainer lease, inference-demand slots and a compute lease. Laya optimizer groups
-used that compute lease and `training_cursor.py` committed their heads/RNG before
-advancing. The singleton inference service shared those leases, and additive
-model-memory policy reduced microbatch size without changing the effective group.
-
-Ordinary QMD retrieval did not advertise inference demand. QMD update/embed had
-writer/embed locks independent of model compute. Some non-adaptive workers did
-not collect OS pressure; retained jobs often depended on another hook after a
-short learning-only waiter expired. These were the runtime gaps, separate from
-development test/backup scheduling.
+`context_learning/resource_coordination.py` provides the Coordinator: one
+per-OS-user trainer lease, inference-demand slots and a compute lease. Laya
+optimizer groups use that compute lease, and `training_cursor.py` commits their
+heads/RNG before advancing. `runtime_work.py` owns the durable wake queue. The
+development execution guard is separate; see
+[development resource safety](development-resource-safety.md).
 
 ## Connected runtime paths
 
-- `recall.main` advertises demand throughout retrieval and context construction;
-  it does not acquire compute or wait for a background QMD command to finish.
-  The existing Laya service still owns model inference serialization. Optional
-  priority-registration failure does not discard otherwise available retrieval.
-- `update.sh` update/embed and `backend/index_worker.sh` QMD operations enter the
+- Legacy QMD route: `recall.main` advertises foreground demand
+  (`runtime_work.foreground`) throughout retrieval and context construction; it
+  does not acquire compute or wait for a background QMD command to finish. The
+  shared selector inference service owns model inference serialization.
+  Optional priority-registration failure does not discard otherwise available
+  retrieval.
+- Legacy QMD route: `update.sh` update/embed and `backend/index_worker.sh` QMD operations enter the
   same Coordinator compute lease as learning. A busy lease, foreground demand or
   resource refusal returns 75; the worker releases writer/embed locks and retains
   its durable job/claim. Resource refusal bypasses in-lock shell retry sleeps.
-- Post-embed orphan cleanup uses that same lease. Resource refusal preserves
+- Legacy QMD route: post-embed orphan cleanup uses that same lease. Resource refusal preserves
   its pending marker and a routed cleanup wake without consuming a failure
   cooldown. Retry resolves the current project's index again, instead of
   inheriting another project's INDEX_PATH.
@@ -45,16 +30,36 @@ development test/backup scheduling.
   their existing per-group TrainingGuard, avoiding recursive acquisition. Raw
   QMD and legacy children inherit their operation lease, so parent exit cannot
   release compute while that child is still running.
+- Selected Laya route wakes: `core/laya_host_response.py` queues `laya-sync` and
+  `laya-compile` through `runtime_work.request`. Both are kinds in
+  `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
+  because their handlers own admission. `runtime_handlers.laya_sync` and
+  `laya_compile` call `laya_runtime_dispatch.run`, which routes the wake into the
+  sealed installed bundle with the wake's lease FD; the target process repeats
+  the full owner proof before any model or store work.
+- Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
+  `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
+  policy immediately before the embed service loads its model. `EMBED_POLICY`
+  (`maxRssMib` 2048, `minAvailableMib` 768, `maxLoadPerCpu` 1,
+  `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
+  measured peak. The detached resident embed service
+  (`laya_embed_resident._serve`) uses the same activity and check.
+- Selected Laya route queries: `laya_embed_resident.admit_query` checks
+  `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
+  budget and acquires no compute lease. Refusal reports
+  `laya_query_resource_deferred`, keeps the loaded model, and persists no prompt.
+  Laya recall does not call `runtime_work.foreground`, so it advertises no
+  foreground demand to background QMD or learning work.
 - Runtime OS reports include macOS pressure level plus `memory_pressure -Q`,
   total/available memory and system load. Linux keeps PSI semantics rather than
   inventing a macOS free percentage. Denied/unknown observations defer work.
-  Foreground inference has its existing lower absolute admission floor and now
-  also shrinks its batch at high CPU load.
+  Foreground inference has a lower absolute admission floor and also shrinks
+  its batch at high CPU load.
 - Background compute concurrency is at most one at the shared boundary. CPU
   load over 75% of its configured load threshold shrinks training microbatch
   to one. Memory admission requires additional task memory plus an explicit
-  system reserve. The earlier unconditional35% admission/40% recovery floors
-  have been removed;35% is a soft post-allocation expansion goal. Unverified
+  system reserve. There is no unconditional35% admission or40% recovery floor;
+  35% is a soft post-allocation expansion goal. Unverified
   batch shapes stay at one. Existing peak estimates and measured owned resident
   credit stay with memory policy; the wake queue does not reserve or add that
   model peak a second time. System observations include other projects,
@@ -88,11 +93,11 @@ never compute, trainer, writer or embed locks. Resource recovery during that
 window can resume without another hook. A dispatch already executing at the end
 of that budget finishes its current operation, so this is not a hard task wall
 time. Backoff grows from five seconds to at most 300 seconds, and pending work
-remains durable when the waiter exits. **With the shared Laya daemon and its new
-monitor alive, retained wake hints can now restart a waiter without a new hook.
-When that daemon/monitor is absent, after logout or reboot the next normal hook
-is still needed.** No boot/login service,
-LaunchAgent, new credential or security permission is installed.
+remains durable when the waiter exits. **While the shared selector inference
+daemon and its monitor are alive, retained wake hints restart a waiter without a
+new hook. When that daemon/monitor is absent, after logout or reboot the next
+normal hook is needed.** No boot/login service,
+LaunchAgent, extra credential or security permission is used.
 
 Learning retries recheck the common setup guard and retain the existing history
 worker fence. The runtime dispatcher starts at most one owned learning child
@@ -128,39 +133,9 @@ not been invented through undocumented CLI flags. Foreground retrieval gets
 admission priority but cannot preempt an already running atomic QMD operation;
 SQLite/backend contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
-tools outside these plugin paths are not intercepted. Real model/load/overload
-and full-suite validation remain unexecuted and operating rollout remains held.
+tools outside these plugin paths are not intercepted.
 
-## Lightweight verification
-
-Only sequential synthetic unit checks are authorized for this change. They use
-fake OS signals, private temporary SQLite/files and tiny Python children; they
-load no model and send no source/API requests. Tests cover pressure rise/recovery,
-per-group cursor resume, cross-session priority and compute exclusion, inherited
-lease lifetime, durable running-job recovery, coalescing, revision-safe ACK,
-single consumer, queue backoff/budget, hook wake, dirty wake persistence and real
-embed-phase ACK. Existing additive-memory and learning coordination checks are
-run separately, sequentially. Independent read-only review follows all checks.
-
-Recorded result: 25 runtime unit checks, 17 existing coordination/cursor checks
-and 14 analytical adaptive-memory checks passed sequentially (56 cases total).
-The final runtime check run took 0.194 seconds; no live model or stress test was
-run. Bash syntax and the modified Python sources were also parsed. Independent
-read-only review identified cleanup lease/cooldown and setup-transition gaps;
-the added regressions cover those fixes, and the final review reported no
-remaining P1/P2 within its scope, conditional on keeping operating rollout held.
-The Node full-suite wrapper was added for future CI but not executed here.
-
-One intermediate failing cleanup test omitted its temporary wake-root patch.
-Opening the real runtime-wakes file was denied by the workspace sandbox before
-creation/write; no operating DB was changed. The test now explicitly pins the
-temporary root and mocks wake spawning. No sandbox permission was expanded.
-
-## Remaining entry points follow-up
-
-Implementation stays on the same dirty feature branch (HEAD `a3cb36c`); it is
-uncommitted and uninstalled. Existing sessions and inbox remain running. No old
-PID list is an execution prerequisite. The development hold remains true.
+## Additional entry points
 
 | Entry point | Ownership and admission | Bounded refusal/fallback |
 |---|---|---|
@@ -184,31 +159,7 @@ The common coordinator still does not preempt an indivisible already-admitted
 QMD/model operation or impose an OS hard CPU limit. Raw operator tools outside
 the supported plugin entry points remain outside this contract.
 
-The original **60-second bounded waiter** is unchanged. The newer daemon monitor
-can now wake another bounded waiter while the shared daemon is alive; outside
-that lifetime the next-normal-hook dependency remains. No login/boot service was
-created. No provider/model was called to validate this admission follow-up;
-synthetic provider responses are in-memory mocks. Installation, activation,
-full regression, bulk backup and overload tests
-remain held. In particular, no claim about current rc46 behavior follows from
-these source edits.
-
-The initial focused checks passed sequentially:21 new entry-point cases,10 prior
-hardening cases,25 prior runtime cases and3 existing mocked gold receipt cases.
-The new batch took0.176s and the reused gold cases0.070s; test RSS was not measured.
-Twenty-two affected Python sources parsed. Independent review is in progress;
-this paragraph will be updated with the final reviewed result.
-
-Before operating use, retain the earlier minimal plan: finish source review and
-appropriate later CI of the complete dirty feature; then, only under future
-explicit authorization, a normal-host tiny synthetic index/query/update pilot
-with existing models and process-tree/system measurements. Check two-session
-contention, worker restart/queue retention and real hook loading. No teacher or
-training call is needed for that first pilot, and no operating DB pointer change
-or user-session restart is implied. Real cold peaks can be GiB; the prior
-model-free waiter tens-of-MiB estimate remains unmeasured.
-
-Final source review corrections and limits:
+Startup, provider, preparation and probe limits:
 
 - Startup publishes/fsyncs `startup-reservation.json` before a child can be
   launched or an owned reload can stop its daemon. A parent crash or unproved
@@ -234,7 +185,7 @@ Final source review corrections and limits:
   request deadline and leaving that parent lease intact. Foreground preparation
   verifies its own inference-slot capability rather than ignoring global demand.
   Oversized cold identity work may exhaust its short budget and return the
-  original QMD result; real selector frequency/latency remains to be measured.
+  original QMD result.
 - Probe time is included. `resource_report` shares one deadline across all macOS
   subprocess probes: at most two seconds or the caller's shorter remaining
   budget. Exhaustion starts no later probe, makes the report unready, and is
@@ -244,31 +195,11 @@ Final source review corrections and limits:
   `resource-defer.json` with `completionAck:false`; it does not invent a planned
   batch or consume a training operation.
 
-Final sequential verification:32 new entry-point cases (last run0.226s),10 prior
-hardening,25 runtime,17 coordination/cursor and3 in-memory gold-receipt cases
-passed (87 unique cases). The87-case run preceded the last one-line diagnostic
-receipt restoration; all32 new cases were then rerun with that assertion and
-passed. Twenty-two affected Python sources parsed, and the final receipt change
-was parsed again. No actual OS resource probe, model, account/provider CLI or
-operating workload ran. The existing runtime batches may create one tiny Python
-fixture child at a time. Node backend expectations were updated for deferred warm
-but the Node wrapper/full suite and the larger staging/teacher fixture suites were
-not run. Test RSS and real resource peaks remain unmeasured.
-
-The sequential independent read-only review found and resolved startup-parent
-loss, final-send freshness, compute self-contention, foreground self-demand and
-probe-budget gaps. Final review found no remaining P1/P2 in that reviewed scope,
-conditional on the orphan fallback and held real-host verification. The final
-diagnostic restoration is a reuse of the existing receipt writer, covered by the
-last new-test run. None of this is an operating rollout approval.
-
 ## Running training and daemon lifetime monitoring
 
-The user subsequently authorized continuous decision-making during the existing
-daemon's lifetime. The earlier unconditional hook-only limitation is superseded
-for **the shared Laya inference daemon with its monitor attached**. A QMD HTTP
-daemon running alone does not host this new monitor. No daemon was started or
-updated in this work; current operating behavior remains unchanged.
+The monitor runs only inside the shared Laya selector inference daemon
+(`context_learning/inference_service.py`); a QMD HTTP daemon running alone does
+not host it.
 
 `inference_service._serve` supervises one separate model-free monitor child.
 Sampling therefore does not wait behind its model scoring thread, GPU work or
@@ -294,18 +225,18 @@ The real v2 trainer path is `laya_adapter.train -> run_updates -> TrainingGuard`
 Each full optimizer group holds compute through its two-slot head/RNG cursor
 commit. Resource admission can reduce microbatch2to1 while retaining effective
 batch2. The next group reevaluates system memory/load and foreground demand.
-New stop-pipe polling also occurs before each microbatch and before optimizer
+Stop-pipe polling also occurs before each microbatch and before optimizer
 mutation; parent EOF is a one-way yield request. An interrupted partial group's
 gradients are discarded, then a fresh process resumes its last committed cursor.
 It never leaves a SIGSTOPed process holding model memory or locks.
 
-The existing LocalTrainer parent now observes coordinated train/evaluation
-children while they run, rather than skipping their OS pressure checks. Process
+The LocalTrainer parent observes coordinated train/evaluation children while
+they run, including their OS pressure checks. Process
 group RSS/CPU is sampled at most twice a second with a0.25s probe timeout.
 Internal system probes share a0.5s budget and run about once a second; child
 per-group admission retains its own short freshness contract. CPU load is an
 OS moving average, not instant app-launch detection. Foreground search demand
-is an explicit live kernel slot; no app surveillance permission was added.
+is an explicit live kernel slot; no app surveillance permission is used.
 
 Routine warning/low background headroom, CPU overload or foreground demand sends
 one cooperative stop byte. If the child has not yielded within2seconds of that
@@ -314,7 +245,7 @@ then KILL and another0.5s. Critical OS memory pressure, free percentage<=5%,
 remaining memory below256MiB, RSS overflow or unavailable required
 monitoring skip that grace and use KILL plus a0.5s reap wait. After either path,
 an additional bounded0.5s group-presence check must prove the process group
-absent; leader exit alone never establishes success. These are initial
+absent; leader exit alone never establishes success. These are
 conservative policy values, not measured safety thresholds. Normal scheduling
 and bounded probe assumptions suggest roughly2–3seconds for an emergency
 observation/stop cycle and up to about5–6seconds for an unresponsive routine
@@ -336,7 +267,7 @@ normal-host diagnosis; no guard is disabled to force cleanup.
 
 Only fully committed optimizer groups advance the durable cursor. Killing a
 write to the inactive head slot keeps the preceding normal head/RNG intact.
-Cursor rows now also pin total group count. Before any update, the adapter pins
+Cursor rows also pin total group count. Before any update, the adapter pins
 the actual generated groups' hash/count and request identity independently in
 private `group-plan.json` (exclusive creation, file/directory fsync). Existing
 plans must match actual groups and are never overwritten. Fast final recovery
@@ -356,30 +287,10 @@ RSS is expected to be tens of MiB, **unmeasured**. Active training has extra
 process-stat/system probes and cursor writes; exact CPU cost and GPU/RSS peaks
 remain unmeasured. No performance certification follows from mock clocks.
 
-Verification after review repairs:25 running-watch/monitor cases and
-32 entry-point,10 hardening,25 runtime,17 coordination/cursor and14 analytical
-memory cases passed sequentially (123cases). The new batch took0.303s; other
-batches were below0.52s. The existing three mocked gold receipt
-cases were retained as earlier evidence rather than rerun. Real trainer-loop
-wiring was checked using an analytical fake model/optimizer, and the daemon
-attach/tick/close boundary used a fake socket, not a real daemon/model. Eleven
-affected training/monitor Python sources parsed. Full regression, actual
-model/training, GPU/OS overload, install/activation and operating recovery remain
-unexecuted and held. The first independent review found the exited-leader and
-cursor-count defects above; both were reproduced before repair. Narrow
-independent re-review confirmed both resolved, with no remaining P1/P2 in that
-scope. This is conditional source approval, not operational readiness: actual
-GPU release, OS latency and monitor lifetime are still unverified.
+Recovery preparation runs only when its cursor exists; the no-cursor
+uncertainty check completes before that path.
 
-One cursor regression initially entered the default preparation path without a
-temporary coordination-root patch. It ran small read-only OS resource probes and
-was then denied opening the actual control lock by the sandbox. No operating DB
-or model changed. Recovery preparation now runs only when its cursor exists;
-the no-cursor uncertainty check completes before that path, and the17-case batch
-passed without expanding permissions. This accidental probe attempt is distinct
-from the deliberately fake observations in the final verification batches.
-
-## Explicit CPU parallelism follow-up
+## Explicit CPU parallelism
 
 `runtime_cpu.py` centralizes the25% CPU fraction used by the development guard
 and the managed child's nominal parallelism reservation. A private UID kernel
@@ -406,12 +317,9 @@ CPU intra-op and inter-op threads explicitly and reads back both values. It does
 this once per process/module before model construction, eager or autograd work;
 later getter drift or unavailable/too-late API calls fail closed. All train,
 predict, smoke and loaded inference paths use it. Direct script execution finds
-the helper before the request's training guard runs. No real Torch was imported
-to verify these settings in this follow-up.
+the helper before the request's training guard runs.
 
-The installed PyTorch2.14 `torch/_torch_docs.py` (setters near10185), installed
-Transformers `pipelines/base.py` (tokenizer setting near1206) and installed NumPy
-build metadata were read as text. Official references:
+Official references:
 [Torch intra-op](https://docs.pytorch.org/docs/2.14/generated/torch.set_num_threads.html),
 [Torch inter-op](https://docs.pytorch.org/docs/2.14/generated/torch.set_num_interop_threads.html),
 [OMP/MKL](https://docs.pytorch.org/docs/2.14/threading_environment_variables.html),
@@ -439,49 +347,31 @@ threshold uses the same fraction but is not an observed aggregate meter across
 every operating plugin and development process. No hard global25% guarantee is
 claimed. Missing observations/cleanup continue to defer; no OS guard is disabled.
 
-Verification:19 new CPU cases plus25 running-watch,32 entrypoint,10 hardening,
-16 guard,14 analytical memory and1 analytical adapter-resume case passed
-sequentially (117total). The largest batch took0.475s. Popen/Torch/system probes
-were mocks; files, pipes and kernel locks were private temporary state. Tests
-cover aggregate slot contention, inherited-FD retention, settings/readback,
-idempotence/drift/failure, standalone bootstrap, launch environment, provider
-pre-send refusal, daemon CPU-only inheritance and unlaunched QMD reservation
-cleanup. Fixture checks prove the default UID root is not opened before the
-test-only short circuit; all operating processes must leave that flag unset.
-Fake CPU counts make these tests independent of the CI host's capacity. One
-existing analytical fake lacked the newly required setters; its test double
-was completed and the batch rerun. Ten sources parsed. Independent read-only
-review, including the final fixture-isolation fix, found no remaining P1/P2 in
-this scope (conditional source approval). Real library application/CPU behavior, GPU/native
-limits, installation and actual learning remain unexecuted and held.
+## Platform observation, controls and memory admission
 
-## Platform observation, controls and memory admission (2026-10-16 follow-up)
-
-The approved [source plan](plans/2026-10-16-platform-resource-policy.md) separates
-`resource_platform.py` observations, `resource_controls.py` library controls and
-the common memory/coordinator policy. `shared.resource_report` retains its
-injectable path, subprocess and clock boundary and one shared query deadline.
-This source has not been installed. The development hold remains true and its
-separate historical memory-pressure threshold is unchanged.
+`resource_platform.py` owns OS observations, `resource_controls.py` library
+controls, and `context_learning/memory_policy.py` the additive memory admission
+used by the Coordinator. `shared.resource_report` keeps an injectable path,
+subprocess and clock boundary and one shared query deadline. The development
+guard's memory-pressure threshold is separate.
 
 The common start condition is **available >= additional task budget + system
-reserve**, alongside independent pressure/load/freshness/lease vetoes. No
-unconditional35% total-RAM admission or40% recovery floor remains. Recovery
-still requires five observed stable seconds and its lower CPU load threshold.
+reserve**, alongside independent pressure/load/freshness/lease vetoes. There is
+no unconditional35% total-RAM admission or40% recovery floor. Recovery
+requires five observed stable seconds and its lower CPU load threshold.
 The35% value is only a soft post-allocation headroom goal for expanding an
 explicitly verified microbatch shape; missing verification defaults to batch1.
 Effective optimizer batch2 is unchanged. A low ratio can fit on a large machine;
 an adequate ratio cannot substitute for missing task memory on a small one.
 
-Existing `minAvailableMib` and `maxRssMib` values are preserved. Non-adaptive
+Configured `minAvailableMib` and `maxRssMib` values apply as declared. Non-adaptive
 commands label the RSS cap as `configured_max_rss_proxy`, an unmeasured upper
 proxy rather than a model minimum. Adaptive profiles can declare a sourced
 `systemReserveMib` and uncertainty. This does not calibrate the reserve or prove
-the source statement. Existing profiles without it retain their explicit legacy
-`reserveFraction` RAM reserve, labeled `legacy_configured_ratio_not_calibrated`;
-the source never silently converts installed policies to a smaller reserve.
-The same fraction also retains its separate MPS working-set check meaning.
-No new operating reserve/profile has been selected or installed.
+the source statement. Profiles without it use their `reserveFraction` RAM
+reserve, labeled `legacy_configured_ratio_not_calibrated`; a policy is never
+silently converted to a smaller reserve. The same fraction also keeps its
+separate MPS working-set check meaning.
 
 Cold starts and new-process resume use the full configured envelope. Another
 inference daemon's allocation is already reflected in host availability and
@@ -494,23 +384,32 @@ second allocation of its entire peak or a fixed fraction of total RAM. Unknown
 or malformed required budgets fail closed. Existing pressure/CPU/owned-group
 RSS monitoring, checkpoint boundaries and cleanup barriers remain active.
 
-The historical singleton budget is
-`ceil(2633.515625 * 1.10) + ceil(249.09375 * 1.25) = 3209MiB`.
-The first maximum includes a failed cold reload; the second term is entire
-update/checkpoint RSS growth, not a universal per-pair linear measurement. The
-successful training lifetime peak2601.09375MiB already includes model loading.
-These were short63/67-token MPS examples on an older adapter, with heuristic
-margins. They establish neither an exact minimum nor current-adapter safety.
-The new1024MiB reserve and200MiB warm values in unit fixtures are synthetic
-examples only; they are not recommended operating values.
+Estimates are configured, not measured: admission reports carry
+`estimate_kind: configured_estimate_not_measurement`. Reserve and warm values in
+unit fixtures are synthetic examples, not recommended operating values.
+
+`context_learning/memory_policy.py` is the source of truth for the
+`adaptiveMemory` profile. Unknown keys fail with `invalid_adaptive_memory`.
+
+| Field | Required | Rule |
+| --- | --- | --- |
+| `device` | yes | `cpu` or `mps` |
+| `fixedMib`, `perPairMib` | yes | integers 1–65536; peak estimate is `fixedMib + perPairMib × microbatch` |
+| `estimateSource` | yes | string, 1–256 characters |
+| `modelIdentitySha256` | yes | 64 lowercase hex characters |
+| `reserveFraction` | no | 0.10–0.50, default 0.10; used only when `systemReserveMib` is absent |
+| `systemReserveMib` + `reserveSource` | no, paired | integer 1–65536 with a 1–256 character source; the reserve is the larger of it and `minAvailableMib` |
+| `warmAdditionalMib` + `warmEstimateSource` | no, paired | integer 0–65536 with a 1–256 character source; used only for `loaded_self` with positive owned credit |
+| `uncertainty` | no | string, 1–512 characters |
+| `maxVerifiedMicrobatchSize` | no | 1 or 2, default 1 |
 
 | Platform | Observations / memory interpretation | Controls and validation status |
 | --- | --- | --- |
-| macOS Apple Silicon | vm_stat free+inactive+speculative estimate; pressure level and memory_pressure percentage are separate; unified memory | CPU library soft controls; MPS own-process memory check; prior narrow MacBook evidence, current model path unverified |
+| macOS Apple Silicon | vm_stat free+inactive+speculative estimate; pressure level and memory_pressure percentage are separate; unified memory | CPU library soft controls; MPS own-process memory check; current model path unverified |
 | macOS Intel | Same host memory probes; GPU memory topology unknown | MPS profile deferred without supported host unified-memory proof; CPU profile unaffected; mocked metadata only |
 | Linux | MemAvailable, total RAM and PSI full avg10; no invented macOS percentage | Current model adapter CPU path; no CUDA path; fake /proc tests, no native live verification |
 | WSL | Linux guest observations only | Windows host RAM/GPU/thermal visibility and end-to-end operation unverified |
-| Native Windows | Unsupported; observations stay None | Existing POSIX runtime is not ported by this refactor; no native execution claim |
+| Native Windows | Unsupported; observations stay None | The POSIX runtime is not ported; no native execution claim |
 
 `memory_pressure` percentage is not vm_stat available bytes divided by RAM.
 Inactive/reclaimable memory is a heuristic, not guaranteed immediately free
@@ -519,27 +418,11 @@ CPU setters/environment limits are soft controls, not an OS CPU quota. MPS
 driver allocation and recommended working set describe own-process memory;
 they are neither global GPU utilization nor free VRAM. No allocator-limit API,
 GPU compute quota, thermal bridge, privileged probe, service or permission is
-added. RSS and MPS counters overlap and are not summed as independent memory.
-Unknown telemetry does not support a GPU/thermal safety claim; current source
-stays at unverified-batch1 and the actual model trial remains held. Sampled
-checkpoint/stop timing cannot preempt one GPU kernel or guarantee OS/GPU latency.
+used. RSS and MPS counters overlap and are not summed as independent memory.
+Unknown telemetry does not support a GPU/thermal safety claim; unverified shapes
+stay at batch1. Sampled checkpoint/stop timing cannot preempt one GPU kernel or guarantee OS/GPU latency.
 
-Verification:179 distinct mocked/analytical cases passed sequentially under
-the shared read-only development lock: platform25,
-CPU19, running-watch25, entrypoint32, hardening10, guard16, adaptive-memory14,
-runtime resources22 and coordination16. Four existing actual-child cases were
-explicitly excluded. There were no real model, GPU, OS-load, installation,
-operating DB or session/automation changes. The earlier117-case CPU result is
-historical; it is not a separate additional179 cases or operating acceptance.
-
-Independent read-only review found one P2: observed Intel/unknown GPU topology
-could still admit an MPS profile from host RAM alone. A regression first
-reproduced refusal/metadata errors; live MPS reports now require supported
-`darwin + host + unified` evidence. Unknown/unsupported/guest/malformed topology
-defers, while CPU profiles retain their separate admission. Reports without
-platform metadata remain compatible only with old injected analytical tests;
-the actual shared OS reporter always attaches that metadata. Final narrow
-read-only re-review confirmed this P2 resolved and found no remaining P1/P2 in
-the reviewed scope: conditional source approval only. Real resource calibration,
-models/GPU/OS trials, installation and operating activation remain unexecuted
-and held. No operating readiness is claimed.
+Live MPS reports require supported `darwin + host + unified` platform evidence.
+Unknown, unsupported, guest or malformed topology defers, while CPU profiles keep
+their separate admission. Reports without platform metadata are accepted only
+from injected analytical tests; the shared OS reporter always attaches it.

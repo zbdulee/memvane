@@ -10,9 +10,9 @@ Resolve wiki cards whose `sources[].path` entries no longer exist on disk. The s
 verifier both append detections to `.auto-context/compile/source-missing.jsonl`, and the
 SessionStart notice surfaces the pending count.
 
-**Why repointing and not deletion**: measured on a live corpus of 855 cards, sources went
-missing because files were *renamed* (`…07-20.md` → `…07-21.md`), not deleted — and a rename
-is indistinguishable from a deletion on the filesystem. A card whose source is gone may be
+**Why repointing and not deletion**: sources usually go missing because files are *renamed*
+(`…07-20.md` → `…07-21.md`), not deleted — and a rename is indistinguishable from a deletion
+on the filesystem. A card whose source is gone may be
 the **only remaining record** of that knowledge, so this skill never deletes a card and never
 downgrades `verified` → `generated` (that would hide the card from recall under the default
 `recallVerifiedOnly: true`).
@@ -29,10 +29,9 @@ downgrades `verified` → `generated` (that would hide the card from recall unde
 
    `pending: 0` → tell the user there is nothing to repair and stop.
 
-   **The decision unit is the missing file, not the card.** Measured on the live corpus: 73
-   pending cards cited only **13 distinct missing files** (one project had 65 cards ← 9
-   files, and a single file was cited by 30 cards). A per-card list therefore showed the same
-   file over and over and split 13 decisions across many sessions.
+   **The decision unit is the missing file, not the card.** Many pending cards usually cite a
+   few missing files, so a per-card list would show the same file over and over and split one
+   decision across many sessions.
 
    Each entry is one missing file: `missingSource`, `cardCount` (how many pending cards cite
    it), `trustedCount`, `detectedAt` (the oldest card's detection), `candidates` (rename

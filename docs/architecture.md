@@ -42,9 +42,8 @@ The main architectural rule is:
   unless a user explicitly asks for them.
 - **Queue first, work later.** Post-edit indexing and wiki compile are enqueued
   from hooks and drained by one-shot workers.
-- **Current state over historical plans.** [docs/history/](history/) preserves
-  design history. This document describes the code paths that are intended to
-  be true now.
+- **Current state only.** This document describes the code paths that are
+  true now. Plans under `docs/plans/` describe direction, not shipped behavior.
 
 ## Repository Map
 
@@ -223,9 +222,10 @@ long-running backend startup.
 Claude/Codex path:
 
 ```text
-hooks/run-hook update <engine>
-  -> backend_manager.sh ensure/warm/rotate in background
-  -> core/update.sh
+hooks/run-hook update-queued <engine>
+  -> core/update_hook_queue.py enqueue   (records the project path, returns)
+  -> core/update_hook_queue.py worker    (detached one-shot)
+       -> core/update.sh
 ```
 
 Hermes path:
@@ -252,6 +252,45 @@ hermes_adapter.core_bridge.session_update()
 
 The update path still depends on qmd CLI commands. Replacing qmd for indexing
 requires replacing this contract, not only changing `QMD_DAEMON_URL`.
+
+### Hook Budget and Detached Jobs
+
+Every command in `hooks/hooks.json` and `hooks/hooks-codex.json` carries an
+explicit host `timeout`: 22 seconds for `recall` and `posttool`, 5 seconds for
+`update-queued`, `index`, `compile`, `topical-event` and `file-change-event`,
+3 seconds for `gate`, `topical-stop` and `topical-reconcile`. Prompt injection
+and the gate stay synchronous; maintenance hooks record a durable job and
+return.
+
+`UserPromptSubmit` recall and `posttool` share one absolute monotonic deadline
+from `core/hook_budget.py` (SSOT). The default is 18 seconds;
+`QMD_HOOK_TOTAL_SECONDS` accepts 2–20 seconds and falls back to the default
+outside that range. The deadline is exported as `QMD_HOOK_DEADLINE_MONO`, so a
+child process inherits it and never resets an exhausted parent budget. QMD
+health, primary and backfill queries, lexical probes, shadow diagnostics and
+selector work all draw from that deadline, and the per-call limits are clamped
+by it. Budget exhaustion returns no injection and exit 0; `posttool` kills its
+recall subprocess group on timeout. Only a ticket-bound deferred capture replay
+(`QMD_DEFERRED_CAPTURE_REPLAY=1` with a 32-hex ticket) uses the 55-second
+default / 60-second maximum.
+
+SessionStart persists only a canonical project path in
+`~/.cache/qmd/update-hook-jobs` (`QMD_UPDATE_HOOK_QUEUE_DIR` overrides it; the
+directory must be owner-only and not a symlink) and starts an independent
+one-shot worker. The worker writes a private per-job log and
+`<key>.status.json`, rotates logs at 1 MiB, and leaves failed jobs for the
+next SessionStart. Enqueue errors go to `enqueue.log` and
+`enqueue.status.json`. Enqueue completion means the work was accepted, not
+that indexing or embedding finished. The first unresolved project opt-in
+decision is resolved read-only and shown synchronously; other SessionStart
+notices go to the worker log.
+
+Stop and SessionStart topical actions are recorded as jobs in the opted-in
+project's `.topical-hook-jobs` (`core/topical_hook_queue.py`). The worker
+runs them in order, writes `topical-hook-status.json` and a rotating
+`topical-hook-worker.log`, and stores no source or conversation body in a
+job. `flock` serializes workers; an interrupted worker leaves its job, and the
+next boundary enqueues a wake-up.
 
 ### 2. UserPromptSubmit Recall
 

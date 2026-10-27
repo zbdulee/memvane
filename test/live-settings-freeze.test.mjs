@@ -5,7 +5,7 @@
 // **새로** 만드는 프로젝트고, 이쪽은 손으로 편집된 값을 가진 **기존** 파일이다
 // (`verify.maxPerRun` 15/3/60 · `semanticDedup.maxPairsPerScan` 100 · 커스텀 `skipPaths` ·
 // `recallStrategy: wikiOnly` · legacy novel 컬렉션). 스키마 정리 리팩터
-// (`docs/plans/2026-08-03-settings-schema-consolidation.md` H단계)는 이 파일들을
+// (H단계)는 이 파일들을
 // 진리표대로 마이그레이션하는데, 마이그레이션 후 effective가 여기와 달라지면 그것이 곧
 // **조용한 동작 변경**이다(§7.2가 경고하는 "새 키로 이관하지 않으면 기본값으로 떨어진다").
 //

@@ -1,8 +1,8 @@
 # Laya Index 사용자 데이터 이전 계획 (설계 전용)
 
-**2026-10-18 추가 합성 경계:** 사전 계산 벡터로 준비한 임시 QMD 형식 후보를 명시적으로 A-int `publish(require_vector=True)`에 넘겨 source 증거 불일치 거부, 정상 게시, receipt 재전달 및 재개방 뒤 `integrity_check`·seal·pin을 검증했다(당시 Python 26+Node 1, 가드 `f1009aa5ea4c45bb9722a3fe22f1086e`). 후속 검토에서 QMD title-only 변경이 source digest에 빠진 결함을 고쳐 제목을 inventory/digest에 포함했고, 같은 body hash에 서로 다른 title이 결속되는 벡터 후보를 모델 호출 전 거부한다. tagged QMD-origin 합성 원장은 첫 새 쓰기 전 restore와 이후 forward-only 차단을 리허설했다(집중 가드 `6dc4cd9fcbe9440cb18b0513ce37dc37`, Node 10/10, QMD Python 28·전환 Python 8). **제품 설치 소유 journal의 QMD 선택/rollback과 연결하지 않았다.** 실제 후보 작성 API는 계속 `cutover_ready=False`다. 다중 collection, 독립 queue instance ID, 승인 provider, 제품 route 선택과 첫 쓰기 전/후 복구는 TODO다. 최종 모델 제외 전체 회귀는 1,617건 중 1,608 PASS·9 SKIP·0 FAIL(`608c3a4808a94c1294cb407de09e5c5d`, `passed/settled:true`)였다. 아래 1,601 PASS는 이전 기록이다.
+QMD-origin 전환은 installer만 수행한다(`core/laya_qmd_cutover.py`). QMD DB는 읽기 전용으로 열고 원본 DB와 backup은 지우지 않는다. 원장 v1(단일 collection)과 v2(raw+wiki)는 full-scan producer가 게시한 후보를, v3는 비활성 initial build가 capacity path에서 seal한 후보를 결속한다. v3 증명은 저장된 generation binding, 그것이 가리키는 catalog snapshot과 vector seal로 하며 원문 트리를 스캔하지 않는다. route 선택은 설치 소유 journal의 `cas_activate`로, QMD 선택 복원은 `cas_restore_qmd`로 기록한다. project marker는 중단된 선택 route가 legacy QMD hook 호출로 조용히 바뀌지 않게 한다. QMD 형식 읽기 adapter(`core/laya_qmd_migration.py`)는 제목을 inventory/digest에 포함하고, 결과에 `candidate_ready`와 별개로 `cutover_ready=False`를 기록한다.
 
-학습은 이관 범위에서 빠진 기능이 아니다. 설치된 프로젝트 안에서 학습 작업의 내구 대기·OS 자원 admission·소유 프로세스 중지·정확한 cursor 재개를 제품 게이트로 유지한다. 검색·embedding **기능**과 이관은 이번 목표이고, 검색·embedding 작업의 별도 부하 대기열 확장은 v2를 완전히 연 뒤 사용량을 보고 정한다. 학습 실행 및 운영 학습 DB의 이관은 이번 합성 리허설에 포함되지 않는다.
+학습은 이관 범위에서 빠진 기능이 아니다. 설치된 프로젝트 안에서 학습 작업의 내구 대기·OS 자원 admission·소유 프로세스 중지·정확한 cursor 재개를 제품 게이트로 유지한다. 검색·embedding **기능**과 이관은 이 계획의 목표이고, 검색·embedding 작업의 별도 부하 대기열 확장은 v2를 완전히 연 뒤 사용량을 보고 정한다. 학습 실행과 운영 학습 DB 이관은 이 계획의 실행 범위가 아니다.
 학습의 모델 없는 검사와 실제 한정 시험의 선행조건은
 [학습 runtime 게이트](2026-10-18-laya-training-runtime-gate.md)에 기록한다.
 
@@ -22,7 +22,7 @@ global QMD 프로그램과 다른 용도의 색인·설정은 이관 대상이 �
 
 | 데이터 | 이전 계약 |
 |---|---|
-| 원문·위키 | 원본 경로와 바이트, 카드의 출처·원문 revision·승인/동의 경계를 보존한다. 엔진은 읽기 전용 입력으로 받아 새 파생 색인을 만든다. 원본을 제자리 변환하지 않는다. |
+| 원문·위키 | 원본 경로와 바이트, 카드의 출처·원문 revision·승인/동의 경계를 보존한다. 원본을 제자리 변환하지 않는다. Laya는 위키 카드만 색인하고, 원문은 path·hash cursor로 freshness 판단과 위키 생성에만 쓴다. |
 | 프로젝트 설정·collection | 기존 이름·role·허용 root와 opt-out을 명시적으로 매핑한다. 새 worktree는 자동 승인하지 않는다. 지원 불가 설정은 경고 후 해당 프로젝트를 이전하지 않는다. |
 | QMD index | 물리 DB 스키마와 벡터 바이트 동일성은 요구하지 않는다. 문서 멤버십, 검색 범위, 모델/청킹 provenance와 결과의 근거를 대조한다. 벡터를 안전하게 재사용할 수 없으면 별도 승인된 재생성 계획이 필요하다. |
 | 학습·평가 | 기존 이력·gold·평가·checkpoint 참조는 독립 저장소의 책임으로 유지한다. 새 엔진 corpus/view ID와의 대응 표를 검증하기 전 자동 학습·모델 적용을 켜지 않는다. |
@@ -33,7 +33,9 @@ global QMD 프로그램과 다른 용도의 색인·설정은 이관 대상이 �
 전환 후 **플러그인이 독립 설치·관리한 QMD runtime**은 정리 대상이다.
 사용자가 별도로 설치한 global QMD와 다른 프로그램이 공유하는 실행 파일·
 라이브러리·모델 캐시는 정리 대상이 아니다. 경로가 QMD처럼 보인다는 이유만으로
-소유권을 추론하지 않는다.
+소유권을 추론하지 않는다. Laya product bundle은 자기 엔진 파일의
+`ownership-manifest.json`을 기록하지만, 아래의 manifest 기반 QMD runtime 정리는
+구현되지 않은 목표다.
 
 - 설치·업데이트 journal과 별도의 **ownership manifest**로 install ID,
   플러그인 소유 root, 세대, 설치 출처/receipt, 각 패키지·설정·DB·캐시의
@@ -61,13 +63,13 @@ global QMD 프로그램과 다른 용도의 색인·설정은 이관 대상이 �
 
 ## 단계와 실패 시 처리
 
-### 2026-10-18 합성 예행 상태와 다음 게이트
+### 현재 구현과 남은 목표
 
-`core/laya_index_migration_rehearsal.py`는 명시적으로 표시한 임시 디렉터리와 전용 application ID의 **합성 입력 DB만** 받는다. 온라인 SQLite backup, 별도 restore 대조, source 전체 재스캔, 불변 A-int 후보 준비, 선택 journal의 중단·재개·CAS·첫 새 쓰기 뒤 rollback 차단을 시험한다. opt-out, worktree scope, 삭제 문서 tombstone, 임베딩 모델·차원·fingerprint·본문 hash가 맞지 않는 경우도 합성 검증했다. 후속 Opus 리뷰의 journal 생성 충돌/동기화, backup·restore 증거 결속, candidate incarnation·scope·claim allow-list, source root 재검사, tombstone 경로, 삭제·부적격 embedding 제외, 같은 plan 재전달 CAS를 보강했다. Python **28건**과 Node 래퍼 **1건**이 가드 run `100f8d466a87491ead3f16b3a962ca96`에서 `passed/settled:true`였다. 이것은 실제 QMD schema parser, 운영 데이터 백업, 모델/벡터 재생성, 설치 또는 선택 전환의 증거가 아니다.
+`core/laya_index_migration_rehearsal.py`는 운영 이관 도구가 아니라 예행 도구다. 이 모듈의 합성 application ID를 가진 DB만 입력으로 받고, 모든 경로는 호출자가 만든 표시된 예행 디렉터리 안에 있어야 한다. QMD parser, hook, 설치, runtime 선택은 포함하지 않는다.
 
-TODO: 실제 QMD 버전별 schema와 설치 소유권을 read-only로 분류하는 adapter, 사용자 설정·worktree·opt-out과 삭제 증거의 일관된 snapshot, 임베딩 provenance 검증 또는 승인된 재생성, 복원 가능한 백업과 후보 간 범위·검색 대조, 설치 소유 활성 journal/호스트 route의 원자 선택 및 첫 새 쓰기 뒤 복구 절차를 구현·검증한다. 별도 global QMD는 제외하고, 플러그인 소유 runtime도 증명된 대상만 복구 가능한 격리 후보로 삼는다. L1 설치 후보 QA가 `NOT RUN`인 동안 제품 전환 완료로 기록하지 않는다.
+QMD 2.5.3과 고정 fork `f4633f9` 형식의 읽기 전용 adapter는 `core/laya_qmd_migration.py`이고, 설치 소유 전환은 위의 `core/laya_qmd_cutover.py`가 맡는다. QMD-origin initial build는 content hash·chunk 수·위치가 같은 문서에 한해 QMD 벡터를 재사용하며, 표본 재임베딩 대조가 어긋나면 그 실행의 재사용을 끄고 임베딩한다(`core/laya_qmd_vector_reuse.py`).
 
-**v4 후속 상태:** QMD 2.5.3과 고정 fork의 실제 형식에 대한 읽기 전용 어댑터를 임시 합성 DB로 시험했다. 승인된 사전 계산 벡터의 전체 범위·모델 profile·source/backup digest·세대 seal을 확인해 단일 collection의 A-int v4 **후보**를 만들었고, Python 25건·Node 1건이 가드 `636c6030a8d64f8489bc89b029e101c1`에서 통과했다. 기존 QMD 벡터를 재사용하지 않고 게시·선택·rollback 실행도 하지 않는다. `candidate_ready=True`는 `cutover_ready=False`와 함께 기록된다. 설치본 버전·실제 모델 artifact·native 의존성 결속, 다중 collection 범위, 제품 publish/route/rollback 연결은 남았다. 현재 코드의 모델 제외 전체 회귀는 1,601 PASS·9 SKIP·0 FAIL(가드 `8c4c845fede54f37996632128eb5a9ef`, `passed/settled:true`)이지만 운영 이관 승인은 아니다.
+남은 목표: 사용자 설정·worktree·opt-out과 삭제 증거의 일관된 snapshot, 복원 가능한 백업과 후보 간 범위·검색 대조의 운영 절차, 아래 6단계의 ownership manifest 기반 플러그인 소유 QMD runtime 정리. 별도 global QMD는 제외하고, 플러그인 소유 runtime도 증명된 대상만 복구 가능한 격리 후보로 삼는다. 필수 설치 후보 QA가 `NOT RUN`인 동안 제품 전환 완료로 기록하지 않는다.
 
 1. **명시적 inventory 계획:** 허용된 프로젝트·worktree, 기존 설정과 선택된
    색인/학습 세대, collection별 경로·문서 수·해시·모델/청킹 지문, 위키
@@ -77,7 +79,7 @@ TODO: 실제 QMD 버전별 schema와 설치 소유권을 read-only로 분류하�
    엔진 schema 변환·재색인, 범위별 FTS/벡터 검색, 삭제·rename·공유 해시,
    누락·중복·교차 프로젝트 누출과 중단 복구를 검증한다. 모델이 필요하면
    별도 승인·자원 게이트를 따른다. 기존 QMD DB를 쓰기 열지 않는다.
-3. **비활성 후보:** 사용자 전용 `laya-index` root에만 후보를 준비한다. 원본
+3. **비활성 후보:** 설치별 `~/.local/state/laya/<install id>` root에만 후보를 준비한다. 원본
    revision, 승인 scope, schema version, 모델 지문, 데이터·검색 검증 receipt를
    묶는다. 후보 오류·불완전한 위키 의존성·불확실한 queue ACK가 있으면 기존
    선택을 유지한다.
@@ -98,26 +100,19 @@ TODO: 실제 QMD 버전별 schema와 설치 소유권을 read-only로 분류하�
    보관·복원 회귀와 실제 대상 목록의 별도 검토를
    마치기 전에는 실행하지 않는다. 영구 삭제는 다시 별도로 확인한다.
 
-## Claude 이관 레드팀 검토와 남은 게이트 (2026-10-17)
-
-사용자 승인 뒤 Claude Code Sonnet의 무도구·무세션 호출로 이 계획과
-`docs/release.md`를 검토했다. 검토는 **설계 반례 제안**이며 운영 자료의
-inventory, 복사, 백업, 설치 또는 전환 실행 결과가 아니다. 다음을 이관
-전의 확인 항목으로 채택한다.
+## 이관 전 확인 게이트
 
 | 게이트 | 확인할 증거·결정 |
 |---|---|
 | 백업 일관성 | 변경 중인 SQLite를 파일 복사만으로 백업했다고 주장하지 않는다. 선택한 세대·설정·원문 revision·위키 provenance·학습 참조를 한 시점의 inventory와 묶고, 비운영 사본에서 restore rehearsal 및 행·해시·scope 대조를 한다. |
 | 전환 뒤 쓰기 | 첫 새 쓰기와 학습 소비가 발생한 뒤의 rollback 가능 범위를 따로 정의한다. 역이전과 전진 복구 중 무엇을 지원할지 결정하기 전에는 이를 단순 되돌림으로 표기하지 않는다. 기존 세션을 임의 종료하는 것을 전제하지 않는다. |
-| 철회·보존 | 승인된 기본 계약은 opt-out·색인 제외를 현재 세대뿐 아니라 보존된 rollback 세대와 장기 pin의 제공에서 즉시 차단하고 물리 삭제를 보류한다. 이를 실제 제품 경로에 연결해야 한다. 학습 평가의 재현성과 개인정보 보존 요구가 충돌할 때의 물리 삭제 범위·기간과 대상별 계약은 별도로 정한다. |
+| 철회·보존 | opt-out·색인 제외는 현재 세대뿐 아니라 보존된 rollback 세대와 장기 pin의 제공에서도 즉시 차단하고 물리 삭제는 보류한다. 학습 평가의 재현성과 개인정보 보존 요구가 충돌할 때의 물리 삭제 범위·기간과 대상별 계약은 별도로 정한다. |
 | 정리 | manifest의 소유 증거가 불확실하면 보존한다. 격리 이동 직전 파일 identity를 다시 확인하고, 복원 경로와 보존 기간을 시험한다. 영구 삭제는 별도 승인 대상이다. |
 | 릴리스 QA | `docs/release.md`의 새 Claude·Codex 실제 host 검증에 설치/upgrade, 이관 중단·재개, 첫 쓰기 전후 rollback/복구, 운영 QMD와 별도 global QMD 공존, runtime 격리·복원 시나리오를 필수 행으로 편입할지 결정한다. 필수 행의 `FAIL`/`BLOCKED`/`NOT RUN`을 통과로 간주하지 않는다. AGY를 자동으로 필수 gate로 추가하지 않는다. |
 
-이 항목은 TODO이며 실행 승인이 아니다. 사용자 자료를 쓰는 inventory·전환,
+이 항목은 실행 승인이 아니다. 사용자 자료를 쓰는 inventory·전환,
 모델/학습 실행, 플러그인 전용 runtime 격리 이동과 영구 삭제는 각각 실제
 대상과 복구 증거를 준비한 뒤 별도 판단을 받는다.
-
-A-int의 source·철회·queue 복구 기본값은 [제품 연결 전 계약 게이트](2026-10-17-laya-index-a-product-contract-gates.md)에 별도 정리했다. 그 설계는 이 문서의 사용자 데이터 이관 실행 승인이 아니다.
 
 제품 이름 결정과 QMD 호환 CLI 제공은 이 이전의 전제 조건이 아니다.
 사용자 데이터의 의미·출처·권한과 복구 가능성은 전제 조건이다. 플러그인이
