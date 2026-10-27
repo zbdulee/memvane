@@ -74,7 +74,7 @@ class WorkerChecks(unittest.TestCase):
             runtime_work.drain(queue,execute=failed,ready=lambda:True,clock=lambda:0,
                                wall=lambda wall=wall:wall,sleep=lambda _s:None,max_runs=1)
         row,=queue.pending()
-        self.assertEqual(row['attempts'],worker.PRIORITY_YIELD_MAX_ATTEMPTS)
+        self.assertEqual(row['attempts'],3)
         self.assertLessEqual(row['due'],time.time())
         # Due, but already failing on its own backoff: the sync keeps going.
         self.assertFalse(worker._higher_priority_wake(controller))
