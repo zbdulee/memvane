@@ -137,17 +137,27 @@ class Readiness(unittest.TestCase):
   row=setup_readiness.refresh_adapter_attestation(self.queue(),reattest=lambda *a,**k:self.fail('must not re-attest'))
   self.assertEqual(row['status'],'not_required');self.assertEqual(self.pointer.read_bytes(),before)
  def test_failed_refresh_is_not_retried_and_keeps_notice(self):
-  import contextlib,io,setup_readiness
-  self.prepare();self.stale_adapter();calls=[]
-  def broken(*a,**k):
-   calls.append(a)
-   if len(calls)==1:raise __import__('subprocess').TimeoutExpired('smoke',120)
-   raise ValueError('managed_compatibility_failed')
-  queue=self.queue()
-  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed')
-  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed_previously');self.assertEqual(len(calls),1)
+  import contextlib,functools,io,setup_readiness,subprocess as sp
+  from context_learning.runtime_installer import reattest_active
+  self.prepare();self.generation();self.stale_adapter();calls=[]
+  def broken(*a,**k):calls.append(a);raise sp.TimeoutExpired('smoke',120)
+  queue=self.queue();real=functools.partial(reattest_active,prover=broken,probe=R.probe_runtime)
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=real)['status'],'failed')
+  self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=real)['status'],'failed_previously');self.assertEqual(len(calls),1)
   out=io.StringIO()
   with patch('qmd_route.project_paths',return_value={'shared':True}),contextlib.redirect_stdout(out):update_hook_queue._setup_notice(self.project,queue,{'status':'ready'})
+  self.assertIn('laya_current_adapter_required',out.getvalue())
+ def test_older_host_never_reverts_a_newer_attestation(self):
+  import contextlib,functools,io,setup_readiness
+  from context_learning.runtime_installer import reattest_active
+  self.prepare();self.generation();self.stale_adapter()
+  value=json.loads(self.pointer.read_text());owner=self.root/'adapter-owner.json'
+  owner.write_text(json.dumps({'schema':'qmd-laya-adapter-owner-v1','version':'99.0.0','adapter_sha256':value['attestation']['adapter_sha256']}));owner.chmod(0o600);before=self.pointer.read_bytes()
+  def no_smoke(*a,**k):self.fail('an older host must not run a smoke')
+  row=setup_readiness.refresh_adapter_attestation(self.queue(),reattest=functools.partial(reattest_active,prover=no_smoke,probe=R.probe_runtime))
+  self.assertEqual(row['status'],'older_host');self.assertEqual(self.pointer.read_bytes(),before)
+  out=io.StringIO()
+  with patch('qmd_route.project_paths',return_value={'shared':True}),contextlib.redirect_stdout(out):update_hook_queue._setup_notice(self.project,self.queue(),{'status':'ready'})
   self.assertIn('laya_current_adapter_required',out.getvalue())
  def test_resource_deferred_refresh_is_retried_without_notice(self):
   import contextlib,io,setup_readiness

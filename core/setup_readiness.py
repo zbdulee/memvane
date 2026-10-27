@@ -86,17 +86,26 @@ def laya_preflight():
     return result
 
 
-def _adapter_refresh_marker(queue):
-    active = read_private_json(runtime.default_managed_root() / 'active.json')
-    token = hashlib.sha256((runtime._sha_file(ADAPTER) + '\0'
-                            + active['runtime_identity_sha256']).encode()).hexdigest()[:32]
-    return Path(queue) / ('laya-adapter-refresh-' + token + '.failed.json')
-
-
-def adapter_refresh_failed(queue):
-    """True once a re-attestation of this adapter/runtime pair has failed."""
+def _plugin_version():
     try:
-        marker = _adapter_refresh_marker(queue)
+        return json.loads((Path(__file__).resolve().parent.parent / 'package.json').read_text())['version']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def adapter_refresh_blocked(queue):
+    """True when the worker will not re-attest on its own: a recorded failure
+    for this exact adapter/runtime, or a newer host already owns the proof."""
+    from context_learning.runtime_installer import (_version_key, adapter_owner_version,
+                                                    adapter_refresh_marker)
+    try:
+        root = runtime.default_managed_root()
+        active = read_private_json(root / 'active.json')
+        recorded = _version_key(adapter_owner_version(root, active))
+        current = _version_key(_plugin_version())
+        if recorded is not None and current is not None and current < recorded:
+            return True
+        marker = adapter_refresh_marker(queue, active, runtime._sha_file(ADAPTER))
     except (OSError, ValueError, KeyError, TypeError):
         return True
     return marker.exists() or marker.is_symlink()
@@ -105,31 +114,24 @@ def adapter_refresh_failed(queue):
 def refresh_adapter_attestation(queue, *, reattest=None):
     """Re-attest adapter-only drift of the selected Laya generation.
 
-    Resource pressure defers to a later SessionStart; any other failure is
-    recorded once so the setup notice returns instead of retrying every session.
+    Resource pressure defers to a later SessionStart; a failed smoke is
+    recorded once (under the activation lock) so the setup notice returns
+    instead of retrying every session.
     """
     from resource_deferred import ResourceDeferred
     if laya_preflight()['reason'] != 'laya_current_adapter_required':
         return {'status': 'not_required'}
-    if adapter_refresh_failed(queue):
-        return {'status': 'failed_previously'}
-    marker = _adapter_refresh_marker(queue)
     if reattest is None:
         from context_learning.runtime_installer import reattest_active as reattest
     try:
-        return reattest(runtime.default_managed_root(), ADAPTER.resolve())
+        return reattest(runtime.default_managed_root(), ADAPTER.resolve(),
+                        marker_dir=Path(queue), plugin_version=_plugin_version())
     except ResourceDeferred as exc:
         return {'status': 'deferred', 'reason': str(exc)}
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        try:
-            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, 'w', encoding='utf8') as out:
-                json.dump({'schema': 'qmd-laya-adapter-refresh-v1', 'reason': reason,
-                           'at': time.time()}, out, sort_keys=True)
-        except FileExistsError:
-            pass
         return {'status': 'failed', 'reason': reason}
+
 
 def _preparation_stamp():
     pointer = runtime.default_managed_root() / 'active.json'

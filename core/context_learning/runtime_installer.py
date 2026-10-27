@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import time
 import tempfile
 import uuid
 
@@ -194,7 +195,7 @@ def _activation_lock(root):
 
 
 def activate_generation(root, executable, adapter_path, model_dir,
-                        *, prover=attest_runtime, probe=probe_runtime):
+                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None):
     """Select a fully checked prepared generation; preserve one-step rollback."""
     root=_private_directory(root)
     executable=_generation_executable(root,executable)
@@ -220,16 +221,84 @@ def activate_generation(root, executable, adapter_path, model_dir,
             'runtime_identity_sha256':inspected['runtime_identity_sha256'],
             'attestation':attestation,'adapter_path':str(adapter_path),
             'model_dir':str(model_dir),'previous':old}
+        _record_owner(root,attestation['adapter_sha256'],plugin_version or _installed_plugin_version())
         _write_pointer(active,pointer)
         return {'status':'activated','executable':str(executable),
                 'runtime_identity_sha256':inspected['runtime_identity_sha256'],
                 'previous_available':old is not None}
 
 
-def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_runtime):
+# Sidecar, not a pointer key: older hosts validate active.json's exact key set.
+ADAPTER_OWNER='adapter-owner.json'
+
+
+def _version_key(value):
+    """SemVer precedence: a prerelease (0.35.2-dev.1) sorts before 0.35.2."""
+    match=(re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?',value)
+           if isinstance(value,str) else None)
+    if not match:
+        return None
+    core=tuple(int(x) for x in match.groups()[:3])
+    if match.group(4) is None:
+        return core+(1,())
+    ids=tuple((0,int(x),'') if x.isdigit() else (1,0,x) for x in match.group(4).split('.'))
+    return core+(0,ids)
+
+
+def _installed_plugin_version():
+    try:
+        return json.loads((Path(__file__).resolve().parents[2]/'package.json').read_text())['version']
+    except (OSError,ValueError,KeyError,TypeError):
+        return None
+
+
+def _record_owner(root, adapter_sha, plugin_version):
+    """Written before the pointer: bound to the adapter hash, a stale sidecar is ignored."""
+    if _version_key(plugin_version) is None:
+        return
+    _write_pointer(Path(root)/ADAPTER_OWNER,{'schema':'qmd-laya-adapter-owner-v1',
+        'version':plugin_version,'adapter_sha256':adapter_sha})
+
+
+def adapter_owner_version(root, pointer):
+    """Plugin version that last proved the pointer's current adapter, if recorded."""
+    path=Path(root)/ADAPTER_OWNER
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        owner=read_private_json(path)
+    except (OSError,ValueError):
+        return None
+    if (not isinstance(owner,dict) or owner.get('adapter_sha256')!=
+            (pointer.get('attestation') or {}).get('adapter_sha256')):
+        return None  # Another writer proved a different adapter since.
+    return owner.get('version')
+
+
+def adapter_refresh_marker(marker_dir, pointer, adapter_sha):
+    """One failed smoke per adapter bytes and exact selected runtime/model."""
+    attestation=pointer.get('attestation') or {}
+    key='\0'.join((adapter_sha,pointer['runtime_identity_sha256'],pointer['executable'],
+                   str(pointer['model_dir']),str(attestation.get('base_model_sha256'))))
+    return Path(marker_dir)/('laya-adapter-refresh-'+hashlib.sha256(key.encode()).hexdigest()[:32]+'.failed.json')
+
+
+def _record_refresh_failure(marker, reason):
+    try:
+        fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd,'w',encoding='utf8') as out:
+        json.dump({'schema':'qmd-laya-adapter-refresh-v1','reason':reason,'at':time.time()},out,sort_keys=True)
+
+
+def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_runtime,
+                    marker_dir=None, plugin_version=None):
     """Re-attest the selected generation after only the plugin adapter changed.
 
     Executable, runtime identity, model and one-step rollback stay unchanged.
+    The failure marker is read and written under the activation lock for the
+    exact pointer that was checked; an older host never reverts a newer proof.
     """
     root=_private_directory(root)
     adapter_path=Path(adapter_path)
@@ -243,31 +312,55 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
             raise ValueError('invalid_managed_pointer')
         old=pointer['attestation']
         adapter_sha=_sha_file(adapter_path)
+        marker=adapter_refresh_marker(marker_dir,pointer,adapter_sha) if marker_dir is not None else None
         if old.get('adapter_sha256')==adapter_sha:
-            if pointer.get('adapter_path')==str(adapter_path):
+            # This combination is proved: its old failure record no longer applies.
+            if marker is not None:
+                marker.unlink(missing_ok=True)
+            attested=Path(pointer.get('adapter_path') or '')
+            if (pointer.get('adapter_path')==str(adapter_path) or
+                (attested.is_absolute() and not attested.is_symlink() and attested.is_file()
+                 and _sha_file(attested)==adapter_sha)):
                 return {'status':'current','executable':pointer['executable']}
             # Same attested bytes at a new plugin path: the proof still holds.
             pointer['adapter_path']=str(adapter_path)
             _write_pointer(active,pointer)
             return {'status':'repointed','executable':pointer['executable']}
-        executable=_generation_executable(root,pointer['executable'])
-        inspected=probe(executable,managed_root=root)
-        if (inspected.get('status')!='metadata_compatible' or
-            inspected['runtime_identity_sha256']!=pointer['runtime_identity_sha256']):
-            raise ValueError('managed_runtime_changed')
-        proof=prover(str(executable),str(adapter_path),str(pointer['model_dir']))
-        attestation=proof['attestation']
-        if (proof['probe']['runtime_identity_sha256']!=pointer['runtime_identity_sha256'] or
-            attestation['base_model_sha256']!=old.get('base_model_sha256') or
-            attestation['adapter_sha256']!=adapter_sha or
-            not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
-            raise ValueError('managed_compatibility_failed')
+        plugin_version=plugin_version or _installed_plugin_version()
+        owner=adapter_owner_version(root,pointer)
+        recorded,current=_version_key(owner),_version_key(plugin_version)
+        if recorded is not None and current is not None and current<recorded:
+            return {'status':'older_host','executable':pointer['executable'],
+                    'attestedVersion':owner}
+        if marker is not None and (marker.exists() or marker.is_symlink()):
+            return {'status':'failed_previously','executable':pointer['executable']}
+        from resource_deferred import ResourceDeferred
+        try:
+            executable=_generation_executable(root,pointer['executable'])
+            inspected=probe(executable,managed_root=root)
+            if (inspected.get('status')!='metadata_compatible' or
+                inspected['runtime_identity_sha256']!=pointer['runtime_identity_sha256']):
+                raise ValueError('managed_runtime_changed')
+            proof=prover(str(executable),str(adapter_path),str(pointer['model_dir']))
+            attestation=proof['attestation']
+            if (proof['probe']['runtime_identity_sha256']!=pointer['runtime_identity_sha256'] or
+                attestation['base_model_sha256']!=old.get('base_model_sha256') or
+                attestation['adapter_sha256']!=adapter_sha or
+                not verify_compatibility(inspected,attestation,attestation['base_model_sha256'])):
+                raise ValueError('managed_compatibility_failed')
+        except ResourceDeferred:
+            raise
+        except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
+            if marker is not None:
+                _record_refresh_failure(marker,str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
+            raise
+        _record_owner(root,adapter_sha,plugin_version)
         pointer.update(attestation=attestation,adapter_path=str(adapter_path))
         _write_pointer(active,pointer)
         return {'status':'reattested','executable':str(executable)}
 
 def rollback_generation(root, adapter_path, model_dir,
-                        *, prover=attest_runtime, probe=probe_runtime):
+                        *, prover=attest_runtime, probe=probe_runtime, plugin_version=None):
     root=_private_directory(root)
     with _activation_lock(root):
         active=root/'active.json'
@@ -288,5 +381,6 @@ def rollback_generation(root, adapter_path, model_dir,
             raise ValueError('previous_generation_incompatible')
         restored={k:v for k,v in previous.items() if k!='previous'}
         restored.update(attestation=attestation,adapter_path=str(adapter_path),model_dir=str(model_dir))
+        _record_owner(root,attestation['adapter_sha256'],plugin_version or _installed_plugin_version())
         _write_pointer(active,restored)
         return {'status':'rolled_back','executable':str(executable)}

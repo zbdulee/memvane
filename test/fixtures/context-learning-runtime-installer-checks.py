@@ -7,7 +7,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
-from context_learning.runtime_installer import (activate_generation,
+from context_learning.runtime_installer import (_version_key, _write_pointer, activate_generation,
     install_commands, reattest_active, rollback_generation, stage_generation)
 from context_learning.runtime_setup import (MANAGED_DEPENDENCIES, choose_runtime,
     probe_runtime)
@@ -89,6 +89,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
         prover=proof,probe=full_probe)
     assert first['status']=='activated' and first['previous_available'] is False
     one=json.loads((root/'active.json').read_text())
+    owner=json.loads((root/'adapter-owner.json').read_text())
+    assert owner['adapter_sha256']==one['attestation']['adapter_sha256'] and owner['version']
+    assert _version_key('0.35.2-dev.20261013-rc43')<_version_key('0.35.2')<_version_key('0.36.22')
+    assert _version_key('0.36.22-dev.1')<_version_key('0.36.22-dev.2')<_version_key('0.36.22')
     assert one['executable']==staged['executable']
     assert choose_runtime(managed_root=root,runner=fake_runtime)['status']=='selected'
     fake_adapter.write_text('synthetic adapter changed')
@@ -116,13 +120,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
     assert reattest_active(root,fake_adapter,prover=proof,probe=full_probe)['status']=='current'
     copied=home/'copied-adapter.py';copied.write_text(fake_adapter.read_text())
     def no_smoke(*_a,**_k): raise AssertionError('same adapter content needs no smoke')
-    moved=reattest_active(root,copied,prover=no_smoke,probe=full_probe)
-    assert moved['status']=='repointed'
-    pointed=json.loads((root/'active.json').read_text())
-    assert pointed['adapter_path']==str(copied) and pointed['attestation']==after['attestation']
-    assert pointed['previous']==after['previous']
-    assert reattest_active(root,fake_adapter,prover=no_smoke,probe=full_probe)['status']=='repointed'
-    after=json.loads((root/'active.json').read_text())
+    # The attested path still holds the same bytes: never ping-pong between host caches.
+    assert reattest_active(root,copied,prover=no_smoke,probe=full_probe)['status']=='current'
+    assert json.loads((root/'active.json').read_text())==after
     weight=fake_model/MODEL_FILES[0];original=weight.read_text()
     weight.write_text('synthetic weight drift');fake_adapter.write_text('synthetic adapter again')
     try:
@@ -132,6 +132,42 @@ with tempfile.TemporaryDirectory(prefix='qmd-installer-check-') as tmp:
         assert str(exc)=='managed_compatibility_failed'
     assert json.loads((root/'active.json').read_text())==after
     weight.write_text(original);fake_adapter.write_text('synthetic adapter')
+    queue=home/'queue';queue.mkdir(mode=0o700)
+    smokes=[]
+    def failing(*a,**k):smokes.append(a);raise ValueError('synthetic_smoke_failed')
+    adapter_a=home/'adapter-a.py';adapter_a.write_text('synthetic adapter A')
+    try:
+        reattest_active(root,adapter_a,prover=failing,probe=full_probe,marker_dir=queue)
+        raise AssertionError('a failed smoke must raise')
+    except ValueError as exc:
+        assert str(exc)=='synthetic_smoke_failed'
+    assert len(list(queue.glob('laya-adapter-refresh-*.failed.json')))==1
+    assert reattest_active(root,adapter_a,prover=failing,probe=full_probe,
+                           marker_dir=queue)['status']=='failed_previously'
+    assert len(smokes)==1
+    # An explicit activation later proves A; only its cache path disappears.
+    explicit=json.loads((root/'active.json').read_text())
+    explicit.update(attestation=proof(explicit['executable'],adapter_a,fake_model)['attestation'],
+                    adapter_path=str(home/'removed-cache/adapter.py'))
+    _write_pointer(root/'active.json',explicit)
+    copy_a=home/'adapter-a-copy.py';copy_a.write_text(adapter_a.read_text())
+    assert reattest_active(root,copy_a,prover=failing,probe=full_probe,
+                           marker_dir=queue)['status']=='repointed'
+    assert len(smokes)==1
+    unrelated=queue/('laya-adapter-refresh-'+'0'*32+'.failed.json');unrelated.write_text('{}')
+    adapter_b=home/'adapter-b.py';adapter_b.write_text('synthetic adapter B')
+    done=reattest_active(root,adapter_b,prover=proof,probe=full_probe,marker_dir=queue,
+                         plugin_version='0.36.31')
+    assert done['status']=='reattested'
+    # A's record went with its proved repoint; another runtime's record survives.
+    assert sorted(queue.glob('laya-adapter-refresh-*.failed.json'))==[unrelated]
+    newest=json.loads((root/'active.json').read_text())
+    assert newest['previous']==explicit['previous'] and 'adapter_plugin_version' not in newest
+    assert json.loads((root/'adapter-owner.json').read_text())['version']=='0.36.31'
+    adapter_c=home/'adapter-c.py';adapter_c.write_text('synthetic adapter C')
+    assert reattest_active(root,adapter_c,prover=failing,probe=full_probe,marker_dir=queue,
+                           plugin_version='0.36.30')['status']=='older_host'
+    assert len(smokes)==1 and json.loads((root/'active.json').read_text())==newest
     result=rollback_generation(root,fake_adapter,fake_model,prover=proof,probe=full_probe)
     assert result['status']=='rolled_back'
     rolled=json.loads((root/'active.json').read_text())
