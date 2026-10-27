@@ -63,8 +63,8 @@ def _policy(project: Path):
 
 
 def run(project: Path) -> dict:
-    import setup_guard
-    if setup_guard.status(project)['status'] != 'ready':
+    from context_learning.laya_learning import ready
+    if not ready(project):
         return {'status': 'setup_required'}
     item = _policy(project)
     if item is None:
@@ -118,8 +118,8 @@ def run(project: Path) -> dict:
 
 
 def launch(project: Path, *, data_mode: str | None = None) -> dict:
-    import setup_guard
-    if setup_guard.status(project)['status'] != 'ready':
+    from context_learning.laya_learning import ready
+    if not ready(project):
         return {'status': 'setup_required'}
     item = _policy(project)
     if item is None:
@@ -140,9 +140,16 @@ def launch(project: Path, *, data_mode: str | None = None) -> dict:
             env['QMD_SETUP_GUARD_FIXTURE'] = '1'
         # The current-corpus gate must read the exact QMD index/config that the
         # preceding worker updated, including an isolated project override.
-        route = qmd_route.project_paths(project)
-        for key in qmd_route.PATH_KEYS:
-            env[key] = route[key]
+        # A selected Laya route has no QMD store; its gate reads laya-db.
+        from context_learning.laya_learning import selected
+        try:
+            laya_route = selected(project) is not None
+        except Exception:
+            laya_route = True
+        if not laya_route:
+            route = qmd_route.project_paths(project)
+            for key in qmd_route.PATH_KEYS:
+                env[key] = route[key]
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
         import runtime_work

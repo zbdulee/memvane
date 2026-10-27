@@ -196,14 +196,18 @@ def _provider_receipts(story, generation_id, card_id, record):
 
 
 def _ack(project, source_rows, card_suffix, card_sha, *, require_vector=True):
+    expected = [[row['collection'], row['path'].split('/', 1)[1], row['sha256']]
+                for row in source_rows]
+    expected.append([WIKI_COLLECTION, card_suffix, card_sha])
+    from .laya_learning import selected as laya_selected
+    bound = laya_selected(project)
+    if bound is not None:
+        return _laya_ack(bound, project, expected, require_vector=require_vector)
     import qmd_route
     import sqlite_read
     route = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
     if route.get('selected') is not True:
         raise ValueError('topical_worker_index_unselected')
-    expected = [[row['collection'], row['path'].split('/', 1)[1], row['sha256']]
-                for row in source_rows]
-    expected.append([WIKI_COLLECTION, card_suffix, card_sha])
     with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
         for collection, relative, revision in expected:
             rows = index.execute('SELECT hash FROM documents WHERE collection=? AND '
@@ -214,6 +218,26 @@ def _ack(project, source_rows, card_suffix, card_sha, *, require_vector=True):
                 'SELECT 1 FROM content_vectors WHERE hash=? LIMIT 1',
                 (card_sha,)).fetchone():
             raise ValueError('topical_worker_vector_unacknowledged')
+    return expected
+
+
+def _laya_ack(bound, project, expected, *, require_vector):
+    """Selected Laya route: sealed head membership (and vector rows) for the
+    card; raw sources, never indexed by a v2 route, by their current bytes."""
+    from .laya_learning import file_revision, membership_ack
+    story = story_for(Path(project))
+    for collection, relative, revision in expected[:-1]:
+        if file_revision(Path(story) / generated_path(
+                collection + '/' + relative)) != revision:
+            raise ValueError('topical_worker_index_unacknowledged')
+    try:
+        membership_ack(project, [expected[-1]], require_vector=require_vector,
+                       bound=bound)
+    except ValueError as exc:
+        reason = ('topical_worker_vector_unacknowledged'
+                  if str(exc) == 'laya_learning_vector_unacknowledged'
+                  else 'topical_worker_index_unacknowledged')
+        raise ValueError(reason) from exc
     return expected
 
 
@@ -386,13 +410,21 @@ def reconcile_pending(root, project):
             archive = story / 'topical-retired' / gid / (cid + '.md')
             if archive.is_symlink() or not archive.is_file() or _sha(archive.read_bytes()) != sha:
                 raise ValueError('topical_worker_retirement_unproven')
-            import qmd_route, sqlite_read
-            route = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
-            with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
-                if index.execute('SELECT 1 FROM documents WHERE collection=? AND path=? '
-                                 'AND active=1 LIMIT 1', (WIKI_COLLECTION,
-                                  'topical-v2/' + gid + '/' + cid + '.md')).fetchone():
+            from .laya_learning import path_absent, selected as laya_selected
+            bound = laya_selected(project)
+            if bound is not None:
+                if not path_absent(project, WIKI_COLLECTION,
+                                   'topical-v2/' + gid + '/' + cid + '.md', bound=bound):
                     raise ValueError('topical_worker_retirement_unindexed')
+            else:
+                import qmd_route, sqlite_read
+                route = qmd_route.project_paths(str(project), isolated=True,
+                                                reject_conflicts=True)
+                with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
+                    if index.execute('SELECT 1 FROM documents WHERE collection=? AND path=? '
+                                     'AND active=1 LIMIT 1', (WIKI_COLLECTION,
+                                      'topical-v2/' + gid + '/' + cid + '.md')).fetchone():
+                        raise ValueError('topical_worker_retirement_unindexed')
             db.execute("UPDATE topical_worker_versions SET state='retired' WHERE "
                        "card_path=? AND card_sha256=? AND state='active'", (relative,sha))
             retired += 1

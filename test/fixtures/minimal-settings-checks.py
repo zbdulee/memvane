@@ -298,20 +298,20 @@ class GenerationSkipChecks(Project):
                                                    cfg, "claude")
 
     def test_minimal_settings_skip_dot_folders_and_skip_paths(self):
-        self.write({"name": "project", "skipPaths": ["build"]})
+        self.write({"name": "project", "skipPaths": ["drafts"]})
         cfg = config.find_project_config(str(self.root))["config"]
         self.assertEqual(self.record_for("docs/a.md", cfg)["source"],
                          {"kind": "file", "path": "docs/a.md", "collection": "project"})
         for rel in ("docs/.draft/a.md", ".claude/a.md", ".auto-context/wiki/concepts/a.md",
-                    "build/a.md", "docs/build/a.md"):
+                    "drafts/a.md", "docs/drafts/a.md"):
             with self.subTest(rel=rel):
                 self.assertIsNone(self.record_for(rel, cfg))
 
     def test_legacy_skip_paths_stay_recall_only(self):
-        self.write({**LEGACY_EQUIVALENT, "skipPaths": ["build"]})
+        self.write({**LEGACY_EQUIVALENT, "skipPaths": ["drafts"]})
         cfg = config.find_project_config(str(self.root))["config"]
         self.assertIsNone(config.generation_skip_paths(cfg))
-        self.assertEqual(self.record_for("build/a.md", cfg)["source"]["path"], "build/a.md")
+        self.assertEqual(self.record_for("drafts/a.md", cfg)["source"]["path"], "drafts/a.md")
 
 
 if __name__ == "__main__":

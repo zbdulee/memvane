@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enqueue source markdown files for automatic wiki compile.
+"""Enqueue source text documents for automatic wiki compile.
 
 This hook-side command is intentionally silent. It records source metadata only;
 it never stores source content or calls an extractor/LLM.
@@ -22,6 +22,7 @@ import posttool
 import wiki_freshness
 import wiki_source_intent as intent
 from collection_match import select_collections
+import source_text
 
 
 DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
@@ -30,17 +31,17 @@ DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
 # 라벨 리터럴의 SSOT는 wiki_source_intent다(이 모듈의 이름은 기존 import 호환용 별칭).
 POST_TOOL_TRIGGER = intent.POST_TOOL_TRIGGER
 
-# compile source가 절대 될 수 없는 segment. `.auto-context`는 이 플러그인의 관리 영역
-# (wiki 카드·큐·로그)이라 소스로 승격하면 카드가 자기 자신을 재컴파일해 증식한다.
-# 나머지는 collectionPaths에 등록될 일이 거의 없지만 방어적으로 막는다.
-DENIED_SOURCE_SEGMENTS = frozenset({".auto-context", ".git", ".hg", ".svn", "node_modules"})
+# compile source가 절대 될 수 없는 디렉터리 이름. 원천은 source_text 한 곳이며 raw scan
+# walk와 같은 집합을 쓴다. `.auto-context`는 이 플러그인의 관리 영역(wiki 카드·큐·로그)이라
+# 소스로 승격하면 카드가 자기 자신을 재컴파일해 증식한다. 나머지는 VCS·의존성·빌드 산출물이다.
+DENIED_SOURCE_SEGMENTS = source_text.DENIED_SOURCE_SEGMENTS
 
 
 # sync 경유 compile enqueue의 trigger 라벨. 편집 훅이 아니라 스냅샷 diff가 출처이므로
 # `post_tool_source`로 기록하면 감사 로그에서 출처가 왜곡된다.
 COMPILE_TRIGGER = intent.SYNC_TRIGGER
 # `post_tool_source`만 켜 둔 기존 프로젝트에서도 git pull 구멍이 닫히도록 동등 grant로
-# 인정한다. 그 trigger가 이미 표현하는 동의는 "소스 .md가 바뀌면 컴파일한다"이고, sync는
+# 인정한다. 그 trigger가 이미 표현하는 동의는 "소스 문서가 바뀌면 컴파일한다"이고, sync는
 # 같은 사건을 다른 방법으로 탐지할 뿐이다(게다가 sync는 사용자가 직접 호출한다).
 # 반대로 두 라벨 모두 없는 프로젝트(예: triggers=["manual"])는 그대로 skip된다.
 COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
@@ -99,7 +100,7 @@ def compile_engine(compile_cfg):
 def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER):
     """변경 파일 중 compile source가 될 수 있는 것만 (컬렉션, 상대경로, 레코드)로 추린다.
 
-    per-file 게이팅(.md 확장자 / raw·session role / dot-prefix / DENIED_SOURCE_SEGMENTS)은
+    per-file 게이팅(source_text 확장자 / raw·session role / dot-prefix / DENIED_SOURCE_SEGMENTS)은
     `wiki_compile_enqueue._source_record`를 그대로 재사용한다. 삭제된 파일은 읽을 소스가
     없으므로 제외한다(카드 정리는 compile 경로의 책임이 아니다).
     """
@@ -162,7 +163,7 @@ def _stable_revision(path):
 
 def enqueue_changed_sources(project_root, config, changed_files,
                             *, session_start=False):
-    """sync가 감지한 변경 .md를 compile source-queue에도 넣는다.
+    """sync가 감지한 변경 소스 문서를 compile source-queue에도 넣는다.
 
     git pull·rebase·외부 도구 편집은 PostToolUse 훅을 타지 않아 wiki 카드가 조용히 낡는다.
     dirty-queue enqueue(컬렉션 단위)는 qmd 인덱스만 최신으로 만들 뿐이므로 이 경로가 없으면
@@ -216,7 +217,7 @@ def _is_hidden_source_path(rel_path: str) -> bool:
 
 
 def _is_denied_source_path(rel_path: str) -> bool:
-    return any(part in DENIED_SOURCE_SEGMENTS for part in Path(rel_path).parts)
+    return source_text.is_denied_source_path(rel_path)
 
 
 def _engine(payload):
@@ -366,7 +367,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         resolved = abs_path.resolve()
     except OSError:
         return None
-    if resolved.suffix.lower() != ".md":
+    if not source_text.is_source_text(resolved.name):
         return None
     selected = select_collections([str(resolved)], project_root, config)
     if not selected:

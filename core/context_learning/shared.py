@@ -2500,7 +2500,7 @@ def _run_owned_training(project, lease_fd):
     returns ``deferred_resource``; the durable wake then waits for runtime
     admission before a fresh child resumes from the committed cursor.
     """
-    import setup_guard
+    from .laya_learning import ready
     project, _, root = _owned_root(project)
     if root is None:
         return {"status": "disabled"}
@@ -2511,7 +2511,7 @@ def _run_owned_training(project, lease_fd):
         state = _training_worker_state(root)
         if state is None or state["outcome"] is not None:
             return {"status": "idle"}
-        if setup_guard.status(project)["status"] != "ready":
+        if not ready(project):
             result = {"status": "setup_in_progress"}
         else:
             try:

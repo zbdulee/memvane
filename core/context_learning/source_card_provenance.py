@@ -202,6 +202,11 @@ def _card_source_ref(story, source_relative, source_collection, source_raw,
 
 def _index_ack(project, story, source_collection, source_suffix, source_sha,
                card_suffix, card_sha):
+    from .laya_learning import selected as laya_selected
+    bound = laya_selected(project)
+    if bound is not None:
+        return _laya_index_ack(bound, project, story, source_collection, source_suffix,
+                               source_sha, card_suffix, card_sha)
     import qmd_route
     import sqlite_read
     route = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
@@ -218,6 +223,23 @@ def _index_ack(project, story, source_collection, source_suffix, source_sha,
                 raise ValueError('source_card_index_unacknowledged')
             rows.append([collection, relative, revision])
     return rows
+
+
+def _laya_index_ack(bound, project, story, source_collection, source_suffix,
+                    source_sha, card_suffix, card_sha):
+    """Selected Laya route: the card is a sealed head member; the raw source,
+    which a v2 route never indexes, is acknowledged by its current bytes."""
+    from .laya_learning import file_revision, membership_ack
+    from .synthetic_scope import generated_path
+    if file_revision(Path(story) / generated_path(
+            source_collection + '/' + source_suffix)) != source_sha:
+        raise ValueError('source_card_index_unacknowledged')
+    try:
+        membership_ack(project, [[WIKI_COLLECTION, card_suffix, card_sha]], bound=bound)
+    except ValueError as exc:
+        raise ValueError('source_card_index_unacknowledged') from exc
+    return [[source_collection, source_suffix, source_sha],
+            [WIKI_COLLECTION, card_suffix, card_sha]]
 
 
 def _archived_predecessor(db, root, story, source_relative, old_source_sha,

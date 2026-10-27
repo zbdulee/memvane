@@ -157,6 +157,14 @@ class ProviderRuleChecks(Base):
                 self.assertFalse(auto.provider_equivalent(
                     self.old, self.review(**dict(changed)), '/new'))
 
+    def test_scan_vocabulary_stays_outside_provider_identity(self):
+        # Provider identity hashes these two files; source-scan rules
+        # (core/source_text.py) must change without forcing a rebuild.
+        core = Path(__file__).resolve().parents[2] / 'core'
+        for name in ('laya_local_embed_provider.py', 'laya_local_embed_worker.mjs'):
+            with self.subTest(name=name):
+                self.assertNotIn('source_text', (core / name).read_text(encoding='utf-8'))
+
 
 class WorkerChecks(Base):
     def setUp(self):

@@ -237,12 +237,13 @@ class ResponseChecks(unittest.TestCase):
              patch.object(response, "query_selected_hybrid", return_value=[row()]) as queried:
             payload = response.serve_selected("recall", "codex", decision,
                                              {"prompt": "find alpha"})
+            # Deferred query admission no longer refuses recall by itself; the
+            # legacy (non-wiki) route still serves no context.
             with patch.object(laya_embed_resident, 'admit_query',
                               side_effect=ResourceDeferred('pressure')):
-                with self.assertRaisesRegex(response.HostResponseError,
-                                            '^selected_provider_resource_deferred$'):
-                    response.serve_selected('recall', 'codex', decision,
-                                            {'prompt': 'find alpha'})
+                deferred = response.serve_selected('recall', 'codex', decision,
+                                                   {'prompt': 'find alpha'})
+            self.assertEqual(deferred["hookSpecificOutput"]["additionalContext"], "")
         self.assertEqual(built.call_count, 2)
         self.assertTrue(all(call.args == (proof['providerManifest'],)
                             for call in built.call_args_list))
