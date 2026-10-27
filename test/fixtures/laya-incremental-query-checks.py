@@ -99,7 +99,7 @@ class IncrementalReadChecks(unittest.TestCase):
         finally:
             self.index.release(token)
 
-    def test_stale_incremental_revision_still_shadows_old_head(self):
+    def test_last_completed_incremental_revision_shadows_old_head(self):
         old = '# Old\nold term\n'
         new = '# New\nunique new term\n'
         self.assertEqual(self.index.stage('head', SCOPE,
@@ -136,14 +136,26 @@ class IncrementalReadChecks(unittest.TestCase):
                 {'vectorProfile': self.profile}, self.fixture_provider)
             self.assertEqual([row['path'] for row in vector_rows], ['wiki/a.md'])
             self.assertEqual(vector_titles, frozenset({'wiki/a.md'}))
-            # A newer edit has no completed vector set yet. It must not reveal
-            # either the obsolete incremental row or the older head row.
+            # A newer file edit has no completed vector set yet. Search keeps
+            # the last completed sidecar snapshot, never the unwritten body.
             (self.wiki / 'a.md').write_text('# Third\nnot embedded\n', encoding='utf-8')
             rows, _titles, _locations, shadow, base = query_incremental(
                 'unique', self.decision, {'vectorProfile': self.profile},
                 self.fixture_provider)
-            self.assertEqual(rows, [])
+            self.assertEqual([row['body'] for row in rows], [new])
             self.assertEqual((shadow, base), (('wiki/a.md',), 'head'))
+            # The selected reader trusts a completed DB row, but never a
+            # sidecar body that no longer matches its published digest.
+            with incremental._open(str(self.state)) as side:
+                side.execute('UPDATE docs SET body=? WHERE path=?',
+                             ('# Forged\nunique new term\n', 'wiki/a.md'))
+            with self.assertRaisesRegex(Exception, 'preview_document_invalid'):
+                query_incremental('unique', self.decision,
+                                  {'vectorProfile': self.profile},
+                                  self.fixture_provider)
+            with incremental._open(str(self.state)) as side:
+                side.execute('UPDATE docs SET body=? WHERE path=?',
+                             (new, 'wiki/a.md'))
             # An exclusion appended after the sidecar commit still applies.
             self.index.exclude(SCOPE, path='wiki/a.md')
             rows, _titles, _locations, shadow, _base = query_incremental(

@@ -211,6 +211,44 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertEqual(self.skip_reasons(), [])
         self.assertIn('B', calls[2:])
 
+    def test_pending_partial_card_cannot_resolve_event_from_sibling_job(self):
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(
+            self.root, 'docs/source.md', 'claude'))
+        calls = []
+
+        def two_candidates(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            return {'candidates': [{'title': 'A', 'summary': 'a'},
+                                   {'title': 'B', 'summary': 'b'}]}, None, 0
+
+        def a_then_reject(root, candidate):
+            calls.append(candidate.get('title'))
+            if candidate.get('title') == 'B' and len(calls) <= 2:
+                return {'action': 'rejected'}
+            return self.fake_compile(root, candidate)
+
+        with patch.object(worker, 'run_extractor', side_effect=two_candidates), \
+                patch.object(worker, 'compile_candidate', side_effect=a_then_reject):
+            first = self.job('post_tool_source')
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], first)[:2],
+                (False, True))
+            self.verify(self.cards[0])
+            self.assertIsNotNone(wiki_freshness.latest_unresolved_pending(
+                self.root, 'docs/source.md'))
+            sibling = self.job('session_start')  # no partialCompile flag
+            snapshot = wiki_freshness.snapshot_bytes(self.source)[0]
+            revision = {'kind': 'file', 'path': 'docs/source.md',
+                        'collection': 'proj-docs', **snapshot}
+            self.assertIsNone(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision, content_only=True))
+            outcome = worker.process_job(
+                self.root, self.config, self.config['compile'], sibling)
+            self.assertEqual(outcome[:2], (True, False))
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertIn('B', calls[2:])
+        self.assertEqual(self.skip_reasons(), [])
+
     def test_unverified_card_does_not_skip(self):
         self.process('post_tool_source')
         self.process('session_start')  # card is still `generated`
@@ -225,20 +263,28 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertEqual(len(self.extractor_calls), 2)
         self.assertEqual(self.skip_reasons(), [])
 
-    def test_stale_or_tampered_card_does_not_skip(self):
+    def test_mtime_only_change_reuses_verified_card_but_tamper_does_not(self):
         self.compile_verified_once()
         stat = self.source.stat()
         os.utime(self.source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-        self.process('session_start')  # same bytes, new mtime: selected recall would not serve it
-        self.assertEqual(len(self.extractor_calls), 2)
-        self.verify(self.cards[1])
-        card = self.cards[1]
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 1)
+        card = self.cards[0]
         card.write_text(card.read_text(encoding='utf-8') + 'tampered\n', encoding='utf-8')
         self.process('manual')  # verifiedBodyHash no longer matches
-        self.assertEqual(len(self.extractor_calls), 3)
+        self.assertEqual(len(self.extractor_calls), 2)
 
-    def test_pending_refresh_or_unknown_ledger_does_not_skip(self):
+    def test_same_content_pending_refresh_is_resolved_without_extraction(self):
         self.compile_verified_once()
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude'))
+        self.process('post_tool_source')
+        self.assertEqual(len(self.extractor_calls), 1)
+        self.assertEqual(len(self.skip_reasons()), 1)
+        self.assertIsNone(wiki_freshness.latest_unresolved_pending(self.root, 'docs/source.md'))
+
+    def test_changed_content_pending_refresh_still_extracts(self):
+        self.compile_verified_once()
+        self.source.write_text('# Source\nA new decision requires a wiki update.\n', encoding='utf-8')
         self.assertIsNotNone(wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude'))
         self.process('post_tool_source')
         self.assertEqual(len(self.extractor_calls), 2)

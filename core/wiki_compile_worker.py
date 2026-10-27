@@ -31,6 +31,7 @@ from wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
 import wiki_compile as wc
 import wiki_freshness
+import yaml_scalars
 
 
 DEFAULT_SOURCE_QUEUE = cp.rel(cp.SOURCE_QUEUE)
@@ -448,23 +449,24 @@ def _read_proof_card_bounded(path: Path, limit: int) -> bytes | None:
         os.close(fd)
 
 
-def selected_compiled_revision_card(root: Path, bound, source_revision: dict) -> str | None:
-    """Wiki-relative card that proves this exact source revision is already
+def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
+                                    *, content_only: bool = False) -> str | None:
+    """Wiki-relative card that proves this source content is already
     compiled and currently trusted on the selected Laya route, else None.
 
     Checked BEFORE any extractor spawn so one content revision is paid for once
     across triggers and after a claim/replay. The proof is the durable card
     itself (no new ledger), judged by the selected recall contract
     (`laya_host_response._verified_wiki_row`: qmd-created, verified, body digest,
-    raw-collection revisions whose sha256/size/mtimeNs match the file now) — a
+    raw-collection revisions whose sha256/size match the file now) — a
     skipped source is exactly one that recall would serve.
 
     Unlike verify_suppression_hash this guard fails CLOSED to the existing paid
     path: a wrong skip silently leaves the wiki without the revision. Unreadable,
     oversized, symlinked or malformed evidence, and any matching card that is not
-    trusted, return None. An unresolved pending refresh for the source also
-    returns None: card frontmatter does not record which refresh event it
-    fulfilled, so existing code cannot prove the card settles that event.
+    trusted, return None. An unresolved refresh normally blocks reuse. The
+    index worker may compare content only for a metadata-only edit, then
+    resolve that exact pending event under the existing ledger lock.
     """
     if bound is None:
         return None
@@ -476,8 +478,12 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict) ->
         if pending is None:
             return None
         pending_sources = frozenset(item["sourcePath"] for item in pending)
-        if source_revision.get("path") in pending_sources:
+        bound_event = next((item for item in pending
+                            if item["sourcePath"] == source_revision.get("path")), None)
+        if source_revision.get("path") in pending_sources and not content_only:
             return None
+        if content_only:
+            pending_sources = pending_sources - {source_revision.get("path")}
         wiki_root = Path(next(item["sourceRoot"] for item in decision["collections"]
                               if item["role"] == "wiki"))
         if wiki_root.is_symlink() or wiki_root.resolve(strict=True) != wiki_root:
@@ -507,8 +513,34 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict) ->
             revisions = recall.frontmatter_source_revisions(block)
             if not revisions and source_revision["path"] in block:
                 return None  # names this source but its provenance is unreadable
-            if not any(wiki_freshness.same_revision(item, source_revision) for item in revisions):
+            if not any((item.get("path") == source_revision.get("path")
+                        and item.get("collection") == source_revision.get("collection")
+                        and item.get("sha256") == source_revision.get("sha256")
+                        and item.get("size") == source_revision.get("size"))
+                       if content_only else wiki_freshness.same_revision(item, source_revision)
+                       for item in revisions):
                 continue
+            if content_only and bound_event is not None:
+                # A verified sibling produced DURING an unfinished event is
+                # not proof that all its cards were produced. Reuse only a
+                # card verified before this metadata-only event began.
+                try:
+                    stamps = [line.split(':', 1)[1] for line in block.splitlines()
+                              if line.startswith('verifiedAt:')]
+                    if len(stamps) != 1:
+                        return None
+                    stamp, issue = yaml_scalars.load_with_issue(stamps[0])
+                    if issue or not stamp:
+                        return None
+                    verified_at = datetime.fromisoformat(
+                        stamp.replace("Z", "+00:00"))
+                    event_at = datetime.fromisoformat(
+                        bound_event["ts"].replace("Z", "+00:00"))
+                    if (verified_at.tzinfo is None or event_at.tzinfo is None
+                            or verified_at >= event_at):
+                        return None
+                except (AttributeError, TypeError, ValueError):
+                    return None
             if not laya_host_response._verified_wiki_row({"body": body}, decision, pending_sources):
                 return None
             proof = proof or rel_card.as_posix()
@@ -945,11 +977,15 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     # A job kept after a partial failure (one card written, another rejected)
     # is exactly the case where a trusted sibling does not prove the revision
     # finished, so it is never skipped here.
-    if (selected_route is not None and bound_pending is None
-            and job.get("partialCompile") is not True):
-        proof_card = selected_compiled_revision_card(root, selected_route, source_revision)
+    if selected_route is not None and job.get("partialCompile") is not True:
+        proof_card = selected_compiled_revision_card(
+            root, selected_route, source_revision, content_only=True)
         if proof_card is not None:
             wiki_selected_laya.recheck(selected_route)
+            if bound_pending is not None and not wiki_freshness.resolve_pending_refresh(
+                    root, bound_pending, source_revision, [source_revision],
+                    compiled_event_id=bound_pending["eventId"]):
+                return True, True, []
             append_jsonl(cpath, {
                 **bounded_failure("skipped", job, "already_compiled_revision"),
                 "card": proof_card,

@@ -102,8 +102,9 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
     """Atomically expose one wiki document after the candidate sealed its vectors.
 
     A failed or interrupted sidecar write never exposes an FTS-only document.
-    The host rechecks the live file, scope and pending install identity before
-    returning any row. Replays of the same document are idempotent.
+    The writer checks the live wiki file before publication. The reader checks
+    the completed sidecar row and selected identity without reopening source
+    files. Replays of the same document are idempotent.
     """
     from laya_index_host_route import wiki_index_roots
     if (profile_id != identity['vectorProfileId'] or

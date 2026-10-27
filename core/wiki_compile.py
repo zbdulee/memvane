@@ -1163,7 +1163,11 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
     return patch_frontmatter_fields(path, {
         "status": status,
         "verifiedBy": str(engine or "unknown"),
-        "verifiedAt": now_iso(),
+        # Pending-refresh events retain microseconds. Verification stamps need
+        # the same precision so the index worker can distinguish a completed
+        # card from a sibling written during an unfinished event.
+        "verifiedAt": datetime.now(timezone.utc).isoformat(
+            timespec="microseconds").replace("+00:00", "Z"),
         "verifiedMode": mode if mode in qmd_config.VERIFIED_MODES else qmd_config.VERIFIED_MODE_UNKNOWN,
         # 검증기가 실제로 읽은 본문의 지문. **호출자가 넘긴다** — 여기서 파일을 다시 읽어
         # 계산하면 검수 중에 본문이 바뀐 경우 "검증되지 않은 새 본문"에 verified 가 찍힌다.

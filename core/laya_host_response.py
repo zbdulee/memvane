@@ -568,9 +568,9 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
               source_filter=None, excluded_paths=None):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
-    Without ``candidates`` every row is checked against one live scan of all
-    roots. With a ``CandidateQuery`` only returned rows are read and rehashed;
-    any non-excluded drop blocks the complete selected answer at delivery.
+    Without ``candidates`` the legacy path checks one live scan of all roots.
+    With a ``CandidateQuery`` the selected route checks published row bytes
+    against their indexed hashes without reopening source files.
     """
     from keywords import build_lexical_terms, select_general_terms_explained
     from laya_index_a import IndexContractError
@@ -593,7 +593,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
             # Same row shape as the full-scan path; the catalog snapshot id
             # is query evidence, not part of a result row.
             return [{key: row[key] for key in _ROW_KEYS}
-                    for row in candidates.verify_rows(rows, collection_names=names)]
+                    for row in candidates.verify_indexed_rows(rows, collection_names=names)]
         vector_check = check
     prefixes = tuple(name + '/' for name in names)
 
@@ -696,17 +696,17 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
 def _verified_wiki_row(row: dict, decision: dict,
                        pending_sources: frozenset[str] = frozenset(),
                        source_locations: dict | None = None,
-                       source_skip_paths=()) -> bool:
-    """Accept only compiler-proven wiki bytes whose raw revisions are current.
+                       source_skip_paths=(), *, current_source: bool = True) -> bool:
+    """Accept compiler-proven wiki bytes, optionally checking current raw data.
 
-    An optional ``sourceSpans`` list must be complete and current: each span is
-    bound to one of the card's revisions and re-hashed against the same full
-    source bytes the revision check reads. A malformed or stale present list
-    rejects the card (without a raw fallback); an absent list is a legacy
-    file-level card. Verified locators go to ``source_locations[path]``.
+    An optional ``sourceSpans`` list must be bound to the card's revisions.
+    The compile writer re-hashes the current raw bytes; selected recall checks
+    published card provenance without reopening the raw files. A malformed
+    list rejects the card; an absent list is a legacy file-level card.
+    Locators describe the published revision, not current raw freshness.
     """
     located = _verified_wiki_locations(row, decision, pending_sources,
-                                       source_skip_paths)
+                                       source_skip_paths, current_source=current_source)
     if located is None:
         return False
     if source_locations is not None and located:
@@ -716,7 +716,8 @@ def _verified_wiki_row(row: dict, decision: dict,
 
 def _verified_wiki_locations(row: dict, decision: dict,
                              pending_sources: frozenset[str],
-                             source_skip_paths=()) -> tuple[str, ...] | None:
+                             source_skip_paths=(), *,
+                             current_source: bool = True) -> tuple[str, ...] | None:
     import recall
     import source_spans
     import wiki_freshness
@@ -752,17 +753,19 @@ def _verified_wiki_locations(row: dict, decision: dict,
         normalized = yaml_scalars.normalize_source_revision(revision)
         if (normalized is None or roles.get(normalized['collection']) != 'raw'
                 or excluded_source(normalized['path'], source_skip_paths)
-                or normalized['path'] in pending_sources):
+                or (current_source and normalized['path'] in pending_sources)):
             return None
         raw_root = Path(roots[normalized['collection']])
         try:
             candidate = project / normalized['path']
             relative = candidate.relative_to(raw_root)
             if (not relative.parts or any(part in ('', '.', '..') for part in relative.parts)
-                    or candidate.resolve(strict=True) != candidate):
+                    or (current_source and candidate.resolve(strict=True) != candidate)):
                 return None
         except (OSError, RuntimeError, ValueError):
             return None
+        if not current_source:
+            continue
         # One stable read serves both the revision check and every span on it.
         snapshot = wiki_freshness.snapshot_bytes(candidate)
         if snapshot is None:
@@ -819,17 +822,13 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                 candidates.require_returned_verified()
                 candidates.finish()
             return rows, title_only
-        import wiki_freshness
-        pending = wiki_freshness.unresolved_pending_refreshes_strict(
-            Path(decision['projectRoot']))
-        if pending is None:
-            _fail('wiki_pending_refresh_unknown')
-        pending_sources = frozenset(item['sourcePath'] for item in pending)
+        # Recall reads the last published wiki snapshot. Pending raw changes
+        # are consumed by the index/compile owner, not revalidated here.
         source_filter = lambda row: (
             not auxiliary_wiki_row(row['path'], row.get('body'), roots) and
-            (not settings['skipPaths'] or _verified_wiki_row(
-                row, decision, pending_sources,
-                source_skip_paths=tuple(settings['skipPaths']))))
+            _verified_wiki_row(row, decision,
+                               source_skip_paths=tuple(settings['skipPaths']),
+                               current_source=False))
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
@@ -837,8 +836,9 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
                 if not auxiliary_wiki_row(row['path'], row.get('body'), roots)
-                and _verified_wiki_row(row, decision, pending_sources, located,
-                                       tuple(settings['skipPaths']))]
+                and _verified_wiki_row(row, decision, source_locations=located,
+                                       source_skip_paths=tuple(settings['skipPaths']),
+                                       current_source=False)]
         if rows:
             delivered = deliver(rows, (frozenset() if body_evidence else
                                        frozenset(row['path'] for row in rows)))

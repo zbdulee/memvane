@@ -33,14 +33,13 @@ Two correctness claims are kept apart
     published. ``capture_generation_binding`` records which complete snapshot,
     source manifest, A-int incarnation and root ``(dev, ino)`` identities that
     generation was built from.
-  * Returned-candidate correctness (live). ``CandidateQuery`` /
-    ``search_candidates_verified`` serve only rows whose *current* bytes,
-    re-read no-follow under the bound roots, hash to the row's indexed hash.
-    A candidate that fails is dropped. The whole query fails if the binding,
-    seal, incarnation or a root identity does not match. Ranking reflects the
-    pinned generation, not the live corpus: new or changed files are not
-    discoverable until async sync (index lag), but a stale body is never
-    returned. Stat signatures and TTLs are never acceptance evidence.
+  * Returned-candidate correctness has two explicit modes. The audit/legacy
+    ``verify_rows`` and ``search_candidates_verified`` re-read current files
+    no-follow. Selected wiki recall uses ``verify_indexed_rows``: immutable
+    published content joined to eligible membership is hash-checked without
+    reading current source bytes. Binding, seal, incarnation, exclusions and
+    root identities still fail closed. Index lag leaves the last completed
+    wiki snapshot visible until the sync worker publishes a replacement.
   * ``search_catalog_verified`` is kept as an optional full-proof audit
     oracle: one fresh full enumeration and byte hash per call, bounded by
     ``max_proof_files``/``max_proof_bytes``. Above budget it raises
@@ -48,7 +47,7 @@ Two correctness claims are kept apart
     not the large-corpus query gate.
   * ``verify_unchanged`` (stat sweep) is an early-rejection hint only. With
     an explicit binding, stage/publish skip it, so its ``max_stats`` is no
-    corpus cap there; returned candidates are byte-checked at query time.
+    corpus cap there; selected wiki recall checks published DB bytes instead.
   * A single file larger than one step's byte budget defers the scan: stdlib
     hash state cannot be persisted, so one file's hash cannot span steps.
   * ``stage_from_catalog`` still materializes the whole generation because
@@ -1693,7 +1692,7 @@ Verdict = Tuple[str, ...]  # ('ok', sha256, text) or ('drop', reason)
 
 
 class CandidateQuery:
-    """Live verification of returned candidates for one pinned, bound generation.
+    """Bounded verification of candidates for one pinned, bound generation.
 
     Opening checks the whole query: binding present and well formed, view
     seal scope/generation/manifest equal to the binding, A-int incarnation
@@ -1705,7 +1704,9 @@ class CandidateQuery:
 
     Rows returned by ``phase``/``search`` are deliverable only after
     ``finish()`` returns. ``finish`` re-checks seal, incarnation and live root
-    identities. If it raises, every row of the query must be discarded.
+    identities. If it raises, every row of the query must be discarded. The
+    selected wiki route checks published body bytes, while legacy/audit calls
+    can still verify current source files.
     """
 
     def __init__(self, index: Any, token: Any, binding: Any, *,
@@ -1785,6 +1786,55 @@ class CandidateQuery:
                 verified, _path, _reason = self._verify_row(row, names)
                 if verified is not None:
                     served.append(verified)
+        except BaseException:
+            self._failed = True
+            raise
+        return served
+
+    def verify_indexed_rows(self, rows: Iterable[Any], *,
+                            collection_names: Optional[Tuple[str, ...]] = None
+                            ) -> List[Dict[str, Any]]:
+        """Verify published wiki rows without reopening their live source files.
+
+        The pin, binding, exclusions and root identities are still checked by
+        this query and ``finish()``. A-int returns immutable content joined to
+        eligible membership; this checks its hash and selection before the
+        caller may render the last completed indexed snapshot. Freshness of
+        raw files and wiki publication belongs to the sync worker.
+        """
+        self._require_open()
+        names = _selected(self.binding.collections, collection_names)
+        served: List[Dict[str, Any]] = []
+        base_keys = {'scope', 'generation', 'path', 'hash', 'body', 'score'}
+        try:
+            for row in rows:
+                if (not isinstance(row, dict) or
+                    set(row) not in (base_keys, base_keys | {'seq', 'position'})):
+                    _raise_stale('malformed indexed candidate row')
+                path, row_hash, body = row['path'], row['hash'], row['body']
+                if row['scope'] != self.binding.scope or row['generation'] != self.binding.generation:
+                    _raise_stale('indexed candidate outside the pinned generation')
+                if (not isinstance(path, str) or not isinstance(row_hash, str)
+                    or not _HEX64.fullmatch(row_hash) or not isinstance(body, str)):
+                    _raise_stale('malformed indexed candidate row')
+                self.stats['candidates'] += 1
+                reason = self._path_reason(path, names)
+                if reason == 'out_of_selection':
+                    _raise_stale('indexed candidate outside the selected collections')
+                excluded_paths, excluded_hashes = self._exclusions
+                if reason is None and (path in excluded_paths or row_hash in excluded_hashes):
+                    reason = 'excluded'
+                if reason is not None:
+                    counts = self.stats['dropped']
+                    counts[reason] = counts.get(reason, 0) + 1
+                    continue
+                try:
+                    matching = hashlib.sha256(body.encode('utf-8')).hexdigest() == row_hash
+                except UnicodeError:
+                    matching = False
+                if not matching:
+                    _raise_stale('indexed candidate body hash mismatch')
+                served.append({**row, 'snapshot': self.binding.catalog_scan_id})
         except BaseException:
             self._failed = True
             raise
