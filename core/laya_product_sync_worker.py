@@ -811,13 +811,26 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     if not proof_ok():
                         raise IndexContractError('initial_build_proof_changed')
                     state['service'] = ensure_running(project, approval['providerManifest'])
-                stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+                from laya_qmd_vector_reuse import for_initial_build
+                reuse = for_initial_build(identity, provider.manifest,
+                                          provider.profile['dimension'])
+                if reuse is not None:
+                    stack.callback(reuse.close)
+                # Copying origin vectors and scanning need no model: a reuse
+                # build takes the provider lane only when it starts the model.
+                lane = {'held': reuse is None}
+                if lane['held']:
+                    stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
 
                 def ensure_service():
                     if state['service'] is not None:
                         return
                     if not proof_ok():
                         raise IndexContractError('initial_build_proof_changed')
+                    if not lane['held']:
+                        stack.enter_context(controller.activity(
+                            'provider', EMBED_POLICY, resource_report(EMBED_POLICY, detailed=True)))
+                        lane['held'] = True
                     try:
                         service = start_service(approval['providerManifest'], admit=admitted)
                     except IndexContractError as exc:
@@ -827,20 +840,26 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                     stack.callback(service.stop)
                     state['service'] = service
 
-                from laya_qmd_vector_reuse import for_initial_build
-                reuse = for_initial_build(identity, provider.manifest,
-                                          provider.profile['dimension'])
-                if reuse is not None:
-                    stack.callback(reuse.close)
-
                 class AdmittedProvider:
                     manifest = provider.manifest
                     profile = provider.profile
 
                     def embed_document_chunks(self, body, path):
                         reused = reuse.lookup(body) if reuse is not None else None
-                        if reused is not None and not reuse.take_sample():
-                            return reused  # Origin QMD vectors; no model needed.
+                        if reused is not None:
+                            if not reuse.take_sample():
+                                return reused  # Origin QMD vectors; no model needed.
+                            try:
+                                fresh = self._embed(body, path)
+                            except ResourceDeferred:
+                                # Parity waits for the model; copying continues.
+                                reuse.defer_sample()
+                                return reused
+                            reuse.verify(reused, fresh)
+                            return fresh
+                        return self._embed(body, path)
+
+                    def _embed(self, body, path):
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
                         if not admitted():
@@ -850,13 +869,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         # idle limit. The reviewed provider and embedding
                         # recipe remain byte-identical to existing vectors.
                         if _large_initial_document(body):
-                            fresh = provider.embed_document_chunks(body, path,
-                                                                   timeout=270)
-                        else:
-                            fresh = provider.embed_document_chunks(body, path)
-                        if reused is not None:
-                            reuse.verify(reused, fresh)
-                        return fresh
+                            return provider.embed_document_chunks(body, path,
+                                                                  timeout=270)
+                        return provider.embed_document_chunks(body, path)
 
                 with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
                                       db_path=identity['candidateDb'],

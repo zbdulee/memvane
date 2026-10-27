@@ -99,6 +99,10 @@ class QmdVectorReuse:
         self._lookups += 1
         return sample
 
+    def defer_sample(self):
+        """The sample could not run (no model admission); the next reuse takes it."""
+        self._lookups = max(0, self._lookups - 1)
+
     def verify(self, reused, fresh):
         """Same chunk layout and cosine >= MIN_COSINE per chunk, else reuse stops."""
         ok = (isinstance(fresh, list) and len(fresh) == len(reused) and all(
@@ -123,9 +127,12 @@ def for_initial_build(identity, manifest, dimension):
     """Reuse source for a QMD-origin build; None for fresh builds or no origin."""
     if identity.get('originMode') == 'fresh_wiki_only' or not identity.get('sourceDb'):
         return None
-    module = Path(manifest['moduleEntryPath'])
-    node_modules = next((p for p in module.parents if p.name == 'node_modules'), None)
+    # Optional: a manifest without these fields just embeds as before.
+    module, model = manifest.get('moduleEntryPath'), manifest.get('modelPath')
+    if not isinstance(module, str) or not isinstance(model, str):
+        return None
+    node_modules = next((p for p in Path(module).parents if p.name == 'node_modules'), None)
     if node_modules is None:
         return None
     extension = node_modules / 'sqlite-vec-darwin-arm64' / 'vec0'
-    return QmdVectorReuse(identity['sourceDb'], extension, manifest['modelPath'], dimension)
+    return QmdVectorReuse(identity['sourceDb'], extension, model, dimension)

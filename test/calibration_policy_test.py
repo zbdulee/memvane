@@ -31,8 +31,10 @@ class Calibration(unittest.TestCase):
             'load_per_cpu':.2,'swap_used_mib':1000.,'query_status':{'memory_pressure':'ok'},
             'memory_pressure':{'level':'warning','system_free_percent':38},**kw}
 
-    def test_ordinary_warning_stays_closed(self):
-        self.assertFalse(self.m.pressure_ready(self.row(17),self.policy,now=17.))
+    def test_ordinary_warning_opens_only_with_free_memory(self):
+        self.assertTrue(self.m.pressure_ready(self.row(17),self.policy,now=17.))
+        scarce=self.row(17,memory_pressure={'level':'warning','system_free_percent':9})
+        self.assertFalse(self.m.pressure_ready(scarce,self.policy,now=17.))
 
     def test_explicit_stable_warning_can_fit_below_ratio(self):
         self.assertTrue(self.m.pressure_ready(self.row(17),self.scoped,now=17.))

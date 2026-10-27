@@ -20,13 +20,18 @@ def number(value):
 
 
 def normal_pressure(report):
+    """OS pressure gate; memory admission checks available bytes separately.
+
+    macOS reports 'warning' whenever swap is in use. 'normal' and 'warning'
+    both pass while at least 10% of memory is free; 'critical' never does.
+    """
     status=report.get('query_status');pressure=report.get('memory_pressure')
     if (not isinstance(status,dict) or status.get('memory_pressure')!='ok'
-            or not isinstance(pressure,dict) or pressure.get('level')!='normal'):return False
+            or not isinstance(pressure,dict) or pressure.get('level') not in ('normal','warning')):return False
     if 'system_free_percent' in pressure:
         value=pressure['system_free_percent']
         return number(value) and 10<=value<=100
-    if 'psi_full_avg10' in pressure:
+    if 'psi_full_avg10' in pressure and pressure['level']=='normal':
         value=pressure['psi_full_avg10']
         return number(value) and value<1
     return False

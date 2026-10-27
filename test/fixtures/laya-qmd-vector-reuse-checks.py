@@ -56,6 +56,10 @@ class Reuse(unittest.TestCase):
     def test_sampling_and_parity_failure_turn_reuse_off(self):
         source = self.source(sample_every=3)
         self.assertEqual([source.take_sample() for _ in range(6)], [True, False, False, True, False, False])
+        source.defer_sample()  # the 6th call's slot is retried by the next one
+        self.assertEqual(source.take_sample(), False)
+        fresh = self.source(sample_every=3)
+        self.assertTrue(fresh.take_sample()); fresh.defer_sample(); self.assertTrue(fresh.take_sample())
         rows = source.lookup(self.body)
         close = [{'seq': r['seq'], 'pos': r['pos'], 'vector': [x * 2 for x in r['vector']]} for r in rows]
         self.assertTrue(source.verify(rows, close)); self.assertTrue(source.enabled)
@@ -72,6 +76,15 @@ class Reuse(unittest.TestCase):
         bad_ext = reuse.QmdVectorReuse(self.db, Path(self.tmp.name) / 'no-vec0', MODEL, DIM)
         self.assertIsNone(bad_ext.lookup(self.body)); self.assertEqual(bad_ext.disabled_reason, 'qmd_vector_reuse_unavailable')
 
+
+    def test_initial_build_without_provider_paths_does_not_reuse(self):
+        identity = {'sourceDb': str(self.db)}
+        self.assertIsNone(reuse.for_initial_build(identity, {'recipeId': 'x'}, DIM))
+        self.assertIsNone(reuse.for_initial_build({'originMode': 'fresh_wiki_only'}, {}, DIM))
+        found = reuse.for_initial_build(identity, {'moduleEntryPath': '/r/package/node_modules/node-llama-cpp/dist/index.js',
+                                                   'modelPath': MODEL}, DIM)
+        self.addCleanup(found.close)
+        self.assertEqual(found.extension, Path('/r/package/node_modules/sqlite-vec-darwin-arm64/vec0'))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
