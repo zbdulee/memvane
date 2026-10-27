@@ -127,7 +127,10 @@ class Readiness(unittest.TestCase):
  def test_failed_refresh_is_not_retried_and_keeps_notice(self):
   import contextlib,io,setup_readiness
   self.prepare();self.stale_adapter();calls=[]
-  def broken(*a,**k):calls.append(a);raise ValueError('managed_compatibility_failed')
+  def broken(*a,**k):
+   calls.append(a)
+   if len(calls)==1:raise __import__('subprocess').TimeoutExpired('smoke',120)
+   raise ValueError('managed_compatibility_failed')
   queue=self.queue()
   self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed')
   self.assertEqual(setup_readiness.refresh_adapter_attestation(queue,reattest=broken)['status'],'failed_previously');self.assertEqual(len(calls),1)

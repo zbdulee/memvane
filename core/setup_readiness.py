@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import time
 
 from context_learning import runtime_setup as runtime
@@ -116,7 +117,7 @@ def refresh_adapter_attestation(queue, *, reattest=None):
         return reattest(runtime.default_managed_root(), ADAPTER.resolve())
     except ResourceDeferred as exc:
         return {'status': 'deferred', 'reason': str(exc)}
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
         try:
             fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
