@@ -562,29 +562,31 @@ class RawMoveChecks(RawMove):
         row = {'path': self.WIKI + '/c.md', 'body': card(self.project, self.new_raw(),
                                                          'README.md')}
         self.assertTrue(response._verified_wiki_row(row, decision))
-        self.assertFalse(response._verified_wiki_row(row, before))
         out, calls = self.serve('recall', decision, {'prompt': 'alpha',
                                                      'cwd': str(self.project)})
         self.assertEqual(calls, [{'state': 'candidate', 'degraded': True, 'readOnly': True}])
         self.assertEqual(settings_migration.plan(str(self.project))['status'],
                          'already_minimal')
 
-    def test_card_citing_old_raw_name_refuses(self):
-        (self.auto / 'wiki' / 'a.md').write_text(card(self.project, self.RAW, 'docs/a.md'))
+    def test_card_citing_old_raw_name_keeps_serving(self):
+        row = {'path': self.WIKI + '/a.md', 'body': card(self.project, self.RAW, 'docs/a.md')}
+        (self.auto / 'wiki' / 'a.md').write_text(row['body'])
         compile_dir = self.auto / 'compile'
         compile_dir.mkdir()
         (compile_dir / 'source-queue.jsonl').write_text(
             json.dumps({'source': {'collection': self.RAW, 'path': 'docs/b.md'}}) + '\n')
-        result = settings_migration.plan(str(self.project))
-        self.assertEqual(result['reason'], 'raw_collection_bound_by_wiki_state', result)
-        self.assertEqual((result['rawCollection'], result['citingCards'],
-                          result['citingCardSample'], result['queuedRecords']),
-                         (self.RAW, 1, ['a.md'], 1))
-        applied = settings_migration.apply(str(self.project), 'f' * 64)
-        self.assertEqual(applied['reason'], 'raw_collection_bound_by_wiki_state')
-        self.assertEqual(self.settings.read_bytes(), self.legacy)
-        self.assertEqual(self.cursor.read_bytes(), self.old_cursor)
-        self.assert_selected_and_readable()
+        self.assertTrue(response._verified_wiki_row(row, self.decision()))
+        proposal = settings_migration.plan(str(self.project))
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        self.assertEqual(proposal['legacyRawLabel'],
+                         {'name': self.RAW, 'citingCards': 1, 'citingCardSample': ['a.md'],
+                          'queuedRecords': 1})
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        decision, _proof = self.assert_selected_and_readable()
+        self.assertNotIn(self.RAW, decision['collectionRoots'])
+        # Selected recall resolves the old label by its path under the new raw root.
+        self.assertTrue(response._verified_wiki_row(row, decision))
 
     def crash_and_check(self, step):
         proposal = self.crash_after(step)

@@ -119,6 +119,11 @@ digest와 함께 바뀌고, claim queue 옆 raw discovery cursor
 들어갑니다. 제안의 `rebind.rawCollection`이 이전·새 raw collection을 보여 줍니다.
 QMD-origin 선택에서 raw 이름이 바뀌면 QMD source digest를 다시 증명할 수 없으므로
 `rebind.forfeits`에 `qmd_origin_restore`가 표시되고, 이후 QMD로의 복원은 거부됩니다.
+이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall이 경로로 raw 루트를 찾으므로
+계속 검색됩니다. plan은 그런 카드와 live compile queue 행 수를 `legacyRawLabel`로 따로
+보여 줍니다(compile이 계속 쓰므로 제안 digest에는 넣지 않습니다). compile 쪽 revision
+대조와 원문 소실 검사는 이름으로 비교하므로, 이전 이름 카드의 원문이 바뀌면 그 카드를
+고치지 않고 새 카드가 생깁니다.
 
 intent가 남아 있는 동안(중단된 경우 포함):
 
@@ -134,7 +139,6 @@ intent가 남아 있는 동안(중단된 경우 포함):
 | reason | 조건 |
 |---|---|
 | `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다르고, 그 차이가 raw collection 이동(위)으로 설명되지 않습니다(wiki collection 변경, raw 루트 축소 등). `identityDiff`가 차이를 collection별로 보여 줍니다 |
-| `raw_collection_bound_by_wiki_state` | raw 이름이 바뀌는데 wiki 카드 frontmatter(`sources`·`sourceRevisions`)나 `compile/source-queue.jsonl`·`verify-queue.jsonl`이 이전 raw 이름을 가리킵니다. 옮기면 그 카드가 recall에서 거부되므로 바꾸지 않습니다(`citingCards`, `citingCardSample`, `queuedRecords`) |
 | `raw_discovery_rebase_refused` | raw discovery cursor가 없거나 새 루트를 스캔할 수 없습니다(`discoveryReason`) |
 | `selected_route_not_verified` | route record가 있지만 installer journal·ledger·marker가 뒷받침하는 active 선택이 아닙니다 |
 | `selected_route_busy` | install·cutover 작업 또는 provider lane이 사용 중입니다. 나중에 다시 실행합니다 |

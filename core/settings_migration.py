@@ -17,9 +17,10 @@ Installed state that binds the current settings bytes:
   The derived raw collection may differ from the bound one (a new name, or
   its root expanded to an ancestor such as the project root) while the wiki
   collection is equal: the route, ledger and raw discovery cursor move with
-  it. Wiki cards and live compile queues that cite the old raw name would
-  stop resolving, so such a rename refuses with
-  ``raw_collection_bound_by_wiki_state``.
+  it. Cards that cite the old raw name keep serving: selected recall resolves
+  a label that is not a route collection by its path under the raw root. The
+  plan reports them in ``legacyRawLabel`` (outside the proposal digest, since
+  the compiler keeps writing); the compiler still matches revisions by label.
   While it is between steps, recall serves the published generation
   read-only. QMD-side records that only the legacy QMD path reads (a finished
   setup journal, a shared-store approval) are not rewritten; the proposal
@@ -291,9 +292,9 @@ def _cites(text: str, name: str) -> bool:
 def raw_name_citations(project: Path, wiki_root: str, name: str) -> dict:
     """Wiki cards (frontmatter) and live compile queue rows that cite raw ``name``.
 
-    Card provenance (``sources``/``sourceRevisions``) names the raw collection;
-    recall and the compiler resolve it through the selected collections, so a
-    renamed raw collection would reject every such card.
+    Card provenance (``sources``/``sourceRevisions``) names the raw collection.
+    After a rename recall still resolves such a card by path; the compiler's
+    revision matching and source-missing checks compare the label.
     """
     cards = []
     root = Path(wiki_root)
@@ -330,20 +331,6 @@ def _selected_binding(project: Path, derived: dict, payload: bytes, route: Path)
             return "bound_collection_identity_changed", {
                 "bindingPath": str(route), "boundCollections": bound,
                 "identityDiff": identity_diff({"collections": bound}, derived)}, None
-        old, new = move
-        if old["name"] != new["name"]:
-            wiki = next(row for row in bound if row["role"] == "wiki")
-            try:
-                cited = raw_name_citations(project, wiki["sourceRoot"], old["name"])
-            except OSError as exc:
-                return _probe_failed("wiki_citations", exc), {}, None
-            if cited["cards"] or cited["queued"]:
-                return "raw_collection_bound_by_wiki_state", {
-                    "bindingPath": str(route), "boundCollections": bound,
-                    "identityDiff": identity_diff({"collections": bound}, derived),
-                    "rawCollection": old["name"], "citingCards": len(cited["cards"]),
-                    "citingCardSample": cited["cards"][:5],
-                    "queuedRecords": cited["queued"]}, None
         new_collections = derived["collections"]
     import laya_settings_rebind
     try:
@@ -407,6 +394,24 @@ def settings_binding(project: Path, derived: dict, payload: bytes):
     if reason:
         return reason, {}, None
     return None, {}, None
+
+
+def _legacy_raw_label(project: Path, rebind):
+    """Informational: wiki state citing a renamed raw collection (not hashed)."""
+    moved = (rebind or {}).get("rawCollection")
+    if not moved or moved["from"]["name"] == moved["to"]["name"]:
+        return {}
+    bound = _route_collections(project / config.CONFIG_DIR_NAME / ROUTE_RECORD) or []
+    try:
+        wiki = next(row["sourceRoot"] for row in bound if row["role"] == "wiki")
+        cited = raw_name_citations(project, wiki, moved["from"]["name"])
+    except (OSError, StopIteration) as exc:
+        return {"legacyRawLabel": {"name": moved["from"]["name"],
+                                   "error": str(exc) or type(exc).__name__}}
+    return {"legacyRawLabel": {"name": moved["from"]["name"],
+                               "citingCards": len(cited["cards"]),
+                               "citingCardSample": cited["cards"][:5],
+                               "queuedRecords": cited["queued"]}}
 
 
 def _changed_fields(current: dict, derived: dict) -> list:
@@ -486,7 +491,7 @@ def plan(project_root, name=None) -> dict:
             proposal, sort_keys=True, ensure_ascii=False,
             separators=(",", ":")).encode("utf-8")).hexdigest()
         return {"status": "review_required", "proposalSha256": proposal_sha,
-                "changesApplied": 0, **proposal}
+                "changesApplied": 0, **proposal, **_legacy_raw_label(project, rebind)}
     except MigrationRefused as exc:
         return {"status": "refused", "reason": exc.reason, "projectRoot": str(project),
                 "changesApplied": 0, **exc.detail}
