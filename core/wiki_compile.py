@@ -1823,7 +1823,14 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     if selected is not None and action == "updated":
         from laya_host_response import _verified_wiki_row
         wiki_name = next((item['name'] for item in selected[0]['collections']
-                          if item['role'] == 'wiki' and Path(item['sourceRoot']) == wiki_root), None)
+                          if item['role'] == 'wiki' and
+                          Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
+        if wiki_name is None:
+            record['action'] = 'merge-needed'
+            record['lint'] = {'verdict': 'needs_review',
+                              'findings': ['selected_wiki_unresolved']}
+            append_jsonl(candidate_path, record)
+            return 0
         if wiki_name is not None and _verified_wiki_row(
                 {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
                  'body': old}, selected[0], current_source=False):
@@ -1840,9 +1847,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                 append_jsonl(candidate_path, record)
                 return 0
             pending_path = target.with_name('.' + target.name + '.pending-' + h[:16])
-            expected_target_hash = hashlib.sha256(old.encode('utf-8')).hexdigest()
+            expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
             if pending_path.is_symlink() or (pending_path.exists() and
-                    pending_path.read_text(encoding='utf-8') != pending_page):
+                    (not pending_path.is_file() or
+                     pending_path.read_text(encoding='utf-8') != pending_page)):
                 record['action'] = 'merge-needed'
                 record['lint'] = {'verdict': 'needs_review',
                                   'findings': ['pending_replacement_conflict']}

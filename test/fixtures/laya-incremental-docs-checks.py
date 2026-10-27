@@ -235,6 +235,27 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(self.rows()[0][1], hashlib.sha256(old.encode()).hexdigest(),
                          'the old completed body remains pinned after head replacement')
 
+        final = self.verified_card('new complete fact')
+        self.write('card.md', final)
+        self.runtime.catalog.request_scan()
+        for _ in range(100):
+            if self.runtime.catalog.step()['status'] == 'complete':
+                break
+        else:
+            self.fail('final catalog did not complete')
+        capacity.vector_fill_step(self.runtime, self.provider)
+        self.assertEqual(index.stage('final', SCOPE, [('wiki/card.md', final, True)]),
+                         'prepared')
+        vectors.seal_generation('final', self.profile)
+        self.assertEqual(incremental.preserve_previous_head(
+            index, self.identity, 'new', 'final'), 0)
+        self.assertEqual(len(self.rows()), 1, 'pin remains until the head CAS')
+        self.assertEqual(index.publish('new', 'final', 'claim-final', require_vector=True),
+                         'published')
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=lambda: None), 1)
+        self.assertEqual(self.rows(), [], 'verified head replaces the old pin after CAS')
+
     def test_first_completed_document_visible_before_full_generation(self):
         self.write('a.md', '# A\nalpha\n')
         self.write('b.md', '# B\nbeta\n')

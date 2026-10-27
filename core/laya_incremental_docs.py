@@ -281,30 +281,56 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
 
 
 def retire_missing_documents(runtime, identity, *, before_write):
-    """Remove obsolete sidecar rows only after a complete wiki catalog scan.
+    """Remove obsolete sidecar rows after a complete wiki catalog scan.
 
     This is owned by the index worker. A pending scan or a staged replacement
-    cannot retire the previous completed row. The full-generation head has its
-    own CAS; the sidecar cleanup prevents that old row from shadowing it later.
+    cannot retire the previous completed row. After a head CAS, a newly
+    verified head also retires an older pinned head; it must not be removed
+    before the CAS, when the old completed bytes may still be needed.
     """
     if (runtime.scope != identity['scopeId'] or
             runtime.index.incarnation() != identity['dbIncarnation'] or
             str(runtime.index.path) != identity['candidateDb']):
         _fail('incremental_document_identity_changed')
     snapshot = runtime.catalog.require_complete()
+    from laya_host_response import _verified_wiki_row
+    from laya_source_catalog import load_exclusions
+    excluded_paths, excluded_hashes = load_exclusions(runtime.index, runtime.scope)
+    decision = {'projectRoot': identity['projectRoot'],
+                'collections': identity['collections'],
+                'collectionRoots': {item['name']: item['sourceRoot']
+                                    for item in identity['collections']}}
+    head = runtime.index.db.execute('SELECT gen FROM head WHERE scope=?',
+                                    (runtime.scope,)).fetchone()
     db = _open(identity['stateRoot'])
     removed = 0
     try:
         _setup(db, identity)
-        rows = db.execute('SELECT path,rowid,hash FROM docs ORDER BY path').fetchall()
-        for path, rowid, old_hash in rows:
-            if runtime.catalog.lookup(snapshot, path) is not None:
+        rows = db.execute('SELECT path,rowid,hash,scan_id FROM docs ORDER BY path').fetchall()
+        for path, rowid, old_hash, scan_id in rows:
+            member = runtime.catalog.lookup(snapshot, path)
+            remove = (member is None or path in excluded_paths
+                      or (member is not None and member[0] in excluded_hashes))
+            if not remove and isinstance(scan_id, str) and scan_id.startswith('head-') \
+                    and head is not None:
+                published = runtime.index.db.execute(
+                    'SELECT member.hash,content.body FROM membership member '
+                    'JOIN content ON content.hash=member.hash '
+                    'WHERE member.gen=? AND member.scope=? AND member.path=? '
+                    'AND member.eligible=1',
+                    (head[0], runtime.scope, path)).fetchone()
+                remove = (published is not None and published[0] != old_hash
+                          and hashlib.sha256(published[1].encode('utf-8')).hexdigest()
+                              == published[0]
+                          and _verified_wiki_row({'path': path, 'body': published[1]},
+                                                 decision, current_source=False))
+            if not remove:
                 continue
             before_write()
             db.execute('BEGIN IMMEDIATE')
             try:
-                if db.execute('SELECT rowid,hash FROM docs WHERE path=?',
-                              (path,)).fetchone() == (rowid, old_hash):
+                if db.execute('SELECT rowid,hash,scan_id FROM docs WHERE path=?',
+                              (path,)).fetchone() == (rowid, old_hash, scan_id):
                     db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
                     db.execute('DELETE FROM docs WHERE rowid=?', (rowid,))
                     removed += 1

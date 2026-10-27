@@ -14,11 +14,13 @@ class DeletedSourceRetirement(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.wiki = self.root / '.auto-context/wiki/concepts'
         self.wiki.mkdir(parents=True)
         (self.root / '.auto-context/compile').mkdir()
         (self.root / 'docs').mkdir()
+        self.survivor = self.root / 'docs/still.md'
+        self.survivor.write_bytes(b'still source')
         self.hash = hashlib.sha256(b'old source').hexdigest()
         self.selected = ({'projectRoot': str(self.root),
                           'collectionRoots': {'wiki': str(self.wiki.parent),
@@ -33,10 +35,12 @@ class DeletedSourceRetirement(unittest.TestCase):
                       'sha256': self.hash, 'size': 10, 'mtimeNs': 1}]
         if shared:
             revisions.append({'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
-                              'sha256': 'b' * 64, 'size': 10, 'mtimeNs': 1})
+                              'sha256': 'b' * 64, 'size': 12, 'mtimeNs': 1})
         if survivor_only:
             revisions = [{'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
-                          'sha256': 'b' * 64, 'size': 10, 'mtimeNs': 1}]
+                          'sha256': hashlib.sha256(self.survivor.read_bytes()).hexdigest(),
+                          'size': self.survivor.stat().st_size,
+                          'mtimeNs': self.survivor.stat().st_mtime_ns}]
         card = self.wiki / name
         text = ('---\ntitle: Card\nstatus: verified\ncreatedBy: ' +
                         ('human' if authored else 'qmd-auto-context') + '\n' +
@@ -90,6 +94,28 @@ class DeletedSourceRetirement(unittest.TestCase):
         self.assertEqual(self.run_retire(), ('retired', 1))
         self.assertFalse(shared.exists())
         self.assertTrue(replacement.exists())
+
+    def test_shared_card_retires_when_every_source_is_deleted(self):
+        shared = self.card('shared.md', shared=True)
+        self.survivor.unlink()
+        self.assertEqual(self.run_retire(), ('retired', 1))
+        self.assertFalse(shared.exists())
+
+    def test_archive_sidecar_identifies_the_original_card(self):
+        card = self.card('recoverable.md')
+        self.assertEqual(self.run_retire(), ('retired', 1))
+        sidecars = list((self.root / '.auto-context/compile/retired-wiki').glob('*.json'))
+        self.assertEqual(len(sidecars), 1)
+        self.assertIn('concepts/recoverable.md', sidecars[0].read_text())
+
+    def test_forced_refresh_and_shared_wait_keep_distinct_queue_keys(self):
+        import wiki_source_intent as intent
+        base = {'source': {'collection': 'raw', 'path': 'docs/still.md'},
+                'contentRevision': 'a' * 64, 'trigger': 'post_sync_source'}
+        keys = [intent.revision_key({**base, **flags}) for flags in
+                ({}, {'sourceDelete': True}, {'forceRecompile': True},
+                 {'sourceDelete': True, 'sharedEnqueued': True})]
+        self.assertEqual(len(set(keys)), 4)
 
     def test_reappeared_source_cancels_stale_deletion(self):
         card = self.card()

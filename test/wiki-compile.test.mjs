@@ -169,6 +169,41 @@ test('selected replacement stages a hidden candidate without overwriting the pub
   } finally { removeTemp(work); }
 });
 
+test('selected replacement fails closed when its wiki collection root cannot be matched', () => {
+  const work = repoTemp('wiki-compile-unresolved-selected-root');
+  try {
+    writeSettings(work, { verify: { enabled: true } });
+    const candidate = { trigger: 'manual', title: 'Stable Card',
+      canonicalKey: 'stable-card', summary: 'Replacement fact.',
+      suggestedType: 'concept', confidence: 'high',
+      targetPath: '.auto-context/wiki/concepts/stable-card.md' };
+    runCompile(work, { ...candidate, summary: 'Original published fact.' });
+    const card = join(work, candidate.targetPath);
+    const original = readFileSync(card, 'utf8');
+    const script = [
+      'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
+      'sys.path.insert(0,"core")',
+      'import wiki_compile as wc, wiki_selected_laya, laya_host_response, config',
+      'root=Path(sys.argv[1]); candidate=json.loads(sys.argv[2])',
+      'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
+      'decision={"projectRoot":str(root),"recallSettings":{"skipPaths":[]},',
+      ' "collections":[{"name":"proj-wiki","role":"wiki",',
+      ' "sourceRoot":str(root/"different-wiki")}],',
+      ' "collectionRoots":{"proj-wiki":str(root/"different-wiki")}}',
+      'with patch.object(wiki_selected_laya,"selected",return_value=(decision,{})):',
+      ' with patch.object(wiki_selected_laya,"recheck"):',
+      '  with patch.object(laya_host_response,"_verified_wiki_row",return_value=True):',
+      '   wc._compile_locked(root,cfg,cfg["compile"],"auto-wiki",wiki,candidate,False)',
+    ].join('\n');
+    execFileSync('python3', ['-B', '-c', script, work, JSON.stringify(candidate)],
+      { cwd: process.cwd(), env: { ...process.env, QMD_DIRTY_QUEUE: join(work, 'dirty-queue') } });
+    assert.equal(readFileSync(card, 'utf8'), original);
+    const rows = readJsonl(join(work, '.auto-context/compile/candidates.jsonl'));
+    assert.equal(rows.at(-1).action, 'merge-needed');
+    assert.ok(rows.at(-1).lint.findings.includes('selected_wiki_unresolved'));
+  } finally { removeTemp(work); }
+});
+
 test('wiki_compile: reuses existing page by canonicalKey when title changes and targetPath is omitted', () => {
   const work = repoTemp('wiki-compile-reuse-canonical');
   try {

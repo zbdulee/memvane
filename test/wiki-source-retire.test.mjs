@@ -6,5 +6,5 @@ test('selected source retirement archives only single-source machine cards', () 
   const result = spawnSync('python3', ['-B', 'test/fixtures/wiki-source-retire-checks.py'],
     { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 5 tests/);
+  assert.match(result.stderr, /Ran 8 tests/);
 });

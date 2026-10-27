@@ -961,7 +961,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         if (selected_route is None or not isinstance(revision, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', revision)):
             append_jsonl(cpath, bounded_failure('skipped', job, 'delete_proof_invalid'))
-            return False, True, []
+            return True, False, []
         outcome = wiki_source_retire.retire_deleted_source(
             root, config, selected_route, collection, rel, revision)
         state = outcome['state']
@@ -989,6 +989,16 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             wait = {**job, 'sharedEnqueued': True, 'ts': enqueue._utc_now()}
             queue = enqueue._safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
             if queue is None:
+                return False, True, []
+            # A crash after the append but before acknowledging this claimed
+            # row must not schedule another set of paid survivor refreshes.
+            try:
+                if queue.exists() and queue.stat().st_size > enqueue.QUEUE_SCAN_MAX_BYTES:
+                    return False, True, []
+                marker_key = enqueue.intent.revision_key(wait)
+                if marker_key in enqueue._queued_revision_keys(queue):
+                    return True, False, []
+            except OSError:
                 return False, True, []
             append_source_jobs(queue, records + [wait])
             wiki_selected_laya.request_compile(root, selected_route)

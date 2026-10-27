@@ -138,9 +138,41 @@ test('pending replacement publishes only after verification and preserves the ol
     assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: verified$/m);
     assert.match(readFileSync(join(project, CARD_REL), 'utf8'), new RegExp(revision));
     assert.equal(existsSync(join(project, pendingRel)), false);
-    const archived = readdirSync(join(project, '.auto-context', 'compile', 'retired-wiki'));
+    const archived = readdirSync(join(project, '.auto-context', 'compile', 'retired-wiki'))
+      .filter(name => name.endsWith('.md'));
     assert.equal(archived.length, 1);
     assert.equal(readFileSync(join(project, '.auto-context', 'compile', 'retired-wiki', archived[0]), 'utf8'), old);
+  } finally { removeTemp(project); }
+});
+
+test('superseded pending replacement is acknowledged without overwriting the newer verified card', () => {
+  const firstHash = 'a'.repeat(64);
+  const secondHash = 'b'.repeat(64);
+  const original = cardText('verified');
+  const verifier = mockVerifier({ verdict: 'pass', claims: [
+    { claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
+  const project = setupProject({ cardStatus: 'verified', extractorArgv: ['python3', verifier],
+    jobOverrides: { sourceHash: firstHash,
+      pendingPath: '.auto-context/wiki/concepts/.test-card.md.pending-' + firstHash.slice(0, 16),
+      expectedTargetHash: createHash('sha256').update(original).digest('hex') } });
+  try {
+    const queue = join(project, '.auto-context', 'compile', 'verify-queue.jsonl');
+    const firstJob = JSON.parse(readFileSync(queue, 'utf8'));
+    writeFileSync(join(project, firstJob.pendingPath),
+      cardText('generated').replaceAll(HASH, firstHash));
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const newer = readFileSync(join(project, CARD_REL), 'utf8');
+    const staleJob = { ...firstJob, sourceHash: secondHash,
+      pendingPath: '.auto-context/wiki/concepts/.test-card.md.pending-' + secondHash.slice(0, 16) };
+    writeFileSync(join(project, staleJob.pendingPath),
+      cardText('generated').replaceAll(HASH, secondHash));
+    writeFileSync(queue, JSON.stringify(staleJob) + '\n');
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    assert.equal(readFileSync(join(project, CARD_REL), 'utf8'), newer);
+    assert.equal(existsSync(join(project, staleJob.pendingPath)), false);
+    assert.equal(readFileSync(queue, 'utf8'), '');
+    assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl')).at(-1).result,
+      'stale_replacement');
   } finally { removeTemp(project); }
 });
 
