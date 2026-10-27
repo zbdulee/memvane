@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""SessionStart wiki lifecycle: judge every generated card by its recorded sources.
+"""Wiki lifecycle: judge every generated card by its recorded sources.
 
-Runs in the `core/update.sh` worker (background fork, off the hook foreground).
+On a selected Laya route, SessionStart, an edit inside the project and a
+successful agent Bash record a request (`wiki_lifecycle_request`); the
+project's `laya-compile` wake runs this module as a bounded child before the
+compile worker, off the hook foreground.
 A card is in scope only when the plugin owns its bytes
 (`wiki_compile.auto_writable_text`: `createdBy: qmd-auto-context`, managed
 auto block, not `superseded`). Human pages and anything outside the project's
@@ -45,9 +48,9 @@ that still has live sources is retired only once those survivors are covered;
 otherwise the deleted path goes to the compile queue as a `sourceDelete` row,
 whose worker refreshes the survivors first.
 
-The source-edit path needs no second hook: PostToolUse and raw discovery
-(`laya_wiki_discovery`) already enqueue changed sources and `sourceDelete`
-rows for deleted ones.
+PostToolUse and raw discovery (`laya_wiki_discovery`) also enqueue the
+edited source and `sourceDelete` rows directly; the lifecycle run after an
+edit covers the other cards that cite a changed or deleted source.
 
 Bounds: hashing runs on a rotating window of cards (`compile.sourceScan.
 maxCardsPerScan`, cursor in the sync state dir); retirements are capped per run
