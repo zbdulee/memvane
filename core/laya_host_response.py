@@ -24,8 +24,9 @@ MAX_PATH_CHARS = 512
 MAX_CONTEXT_BYTES = 32768
 HYBRID_LIST_LIMIT = 20
 # A-int supports at most 100 rows per query. When a selected source exclusion
-# is active, fetch up to that bound before RRF; if it cannot supply a complete
-# eligible list, report the limitation instead of silently returning no match.
+# is active, fetch up to that bound before RRF. Require enough eligible rows
+# for the configured answer, not all 20 internal RRF candidates: a corpus may
+# contain many historical cards that are ineligible but still rank in A-int.
 EXCLUSION_FETCH_LIMIT = 100
 RRF_K = 60
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
@@ -565,7 +566,8 @@ def _v2_body_evidence(built, present, mode, selected, lex_hits, ep_hits):
 
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
               patterns, min_score, skip_paths, candidates=None,
-              source_filter=None, excluded_paths=None):
+              source_filter=None, excluded_paths=None,
+              needed_eligible=MAX_ROWS):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
     Without ``candidates`` the legacy path checks one live scan of all roots.
@@ -597,7 +599,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         vector_check = check
     prefixes = tuple(name + '/' for name in names)
 
-    def verified_batch(queries, limit, *, deadline_seconds, needed=HYBRID_LIST_LIMIT):
+    def verified_batch(queries, limit, *, deadline_seconds, needed=needed_eligible):
         if not queries:
             return []
         batches = runtime.index.search_many(token, tuple(queries), limit,
@@ -681,7 +683,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
                                  excluded_paths=excluded_paths)
     if source_filter is not None:
         eligible = [row for row in vector_rows if source_filter(row)]
-        if len(vector_rows) == EXCLUSION_FETCH_LIMIT and len(eligible) < HYBRID_LIST_LIMIT:
+        if len(vector_rows) == EXCLUSION_FETCH_LIMIT and len(eligible) < needed_eligible:
             _fail('selected_source_exclusion_candidate_limit')
         vector_rows = eligible[:HYBRID_LIST_LIMIT]
     lists.append(vector_rows)
@@ -832,7 +834,8 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
-            (), candidates, source_filter, excluded_paths)
+            (), candidates, source_filter, excluded_paths,
+            needed_eligible=settings.get('topN', MAX_ROWS))
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
                 if not auxiliary_wiki_row(row['path'], row.get('body'), roots)

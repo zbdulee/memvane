@@ -653,6 +653,24 @@ class ResponseChecks(unittest.TestCase):
                 ('wiki',), (), 0, (), source_filter=lambda item: item['path'] == keep['path'])
             self.assertEqual([item['path'] for item in found], ['wiki/keep.md'])
             self.assertEqual(vector.call_args.args[5], response.EXCLUSION_FETCH_LIMIT)
+        # The internal RRF list may request 20 rows, while the host renders
+        # only three. A full top-100 with twelve proved cards is usable.
+        keepers = [row(path=f'wiki/keep-{n}.md') for n in range(12)]
+        full = [row(path=f'wiki/excluded-{n}.md') for n in range(88)] + keepers
+        with patch.object(source_port, '_seal', return_value=seal), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': [], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=full):
+            found, _ = response._v2_phase(
+                runtime, 'token', 'find card', VECTOR_PROFILE,
+                lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (),
+                source_filter=lambda item: item['path'].startswith('wiki/keep-'),
+                needed_eligible=3)
+            self.assertEqual(len(found), 12)
         with patch.object(source_port, '_seal', return_value=seal), \
              patch.object(source_port, 'scan_collections',
                           return_value=SimpleNamespace(manifest='manifest')), \
