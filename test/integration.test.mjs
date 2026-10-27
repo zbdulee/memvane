@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
 
@@ -911,8 +912,10 @@ test('hierarchical recall can relax raw fallback below the wiki minScore', async
 });
 
 test('디스패처가 잘못된 stdin에도 graceful(크래시 없음)', () => {
-  const out = execFileSync('bash', ['hooks/run-hook', 'recall', 'claude'], {
+  // A neutral cwd: a checkout of this repository can itself be a selected Laya project.
+  const out = execFileSync('bash', [join(process.cwd(), 'hooks/run-hook'), 'recall', 'claude'], {
     input: 'not json',
+    cwd: tmpdir(),
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_PLUGIN_ROOT: process.cwd() },
   });

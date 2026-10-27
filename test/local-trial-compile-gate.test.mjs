@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp, repoTemp } from './helpers/temp.mjs';
 
@@ -58,8 +59,9 @@ test('local runtime file scopes QMD paths to the plugin process', () => {
     writeFileSync(update, `#!/usr/bin/env bash\nprintf '%s\\n' "$QMD_BIN" "$QMD_DIRTY_QUEUE" "$INDEX_PATH" "$QMD_DAEMON_PORT" > "${capture}"\n`, { mode: 0o755 });
     const manager = join(root, 'manager.sh');
     writeFileSync(manager, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
-    execFileSync('bash', ['hooks/run-hook', 'update', 'codex'], {
-      cwd: process.cwd(), encoding: 'utf8', input: '{}',
+    // A neutral cwd: a checkout of this repository can itself be a selected Laya project.
+    execFileSync('bash', [join(process.cwd(), 'hooks/run-hook'), 'update', 'codex'], {
+      cwd: tmpdir(), encoding: 'utf8', input: '{}',
       env: { ...process.env, PLUGIN_ROOT: root, QMD_CORE_UPDATE_SCRIPT: update,
         QMD_BACKEND_MANAGER: manager, QMD_CACHE_DIR: join(root, 'cache'), QMD_RECALL_LOG: '' },
     });
@@ -91,8 +93,9 @@ test('local runtime parser rejects shell commands without executing them', () =>
     writeFileSync(update, `#!/usr/bin/env bash\ntouch "${marker}"\n`, { mode: 0o755 });
     writeFileSync(join(root, '.qmd-local-runtime.env'),
       `export QMD_BIN="$(touch ${marker})"\n`, { mode: 0o600 });
-    const out = execFileSync('bash', ['hooks/run-hook', 'update', 'codex'], {
-      cwd: process.cwd(), encoding: 'utf8',
+    // A neutral cwd: a checkout of this repository can itself be a selected Laya project.
+    const out = execFileSync('bash', [join(process.cwd(), 'hooks/run-hook'), 'update', 'codex'], {
+      cwd: tmpdir(), encoding: 'utf8',
       env: { ...process.env, PLUGIN_ROOT: root, QMD_CORE_UPDATE_SCRIPT: update,
         QMD_TOPICAL_SANDBOX_ROOT: '', QMD_RECALL_LOG: '' },
     });
