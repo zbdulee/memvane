@@ -443,182 +443,90 @@ print(json.dumps(result))'''
                                     'unsafe_host_orphan_metadata'):
             bundle.inspect_full_plugin_candidate(installed)
 
-    def test_local_provider_review_is_deterministic_and_requires_new_digest_on_change(self):
-        proof = self.candidate('plugin-v1', self.commit1)
-        package = self.root / 'qmd-package'
-        (package / 'bin').mkdir(parents=True)
-        (package / 'bin/qmd').write_text('synthetic executable')
-        (package / 'package.json').write_text('{"version":"2.5.3"}')
-        module_pkg = package / 'node_modules/node-llama-cpp'
+    def laya_runtime(self, native=b'synthetic native'):
+        """A sealed Laya embedding runtime in this HOME, copied from a vendor tree."""
+        import laya_embed_runtime
+        vendor = self.root / 'vendor'
+        if vendor.exists():
+            shutil.rmtree(vendor)
+        module_pkg = vendor / 'node_modules/node-llama-cpp'
         (module_pkg / 'dist').mkdir(parents=True)
-        (module_pkg / 'package.json').write_text('{"version":"3.18.1"}')
+        (module_pkg / 'package.json').write_text(json.dumps({
+            'version': '3.18.1',
+            'optionalDependencies': {'@node-llama-cpp/mac-arm64-metal': '3.18.1'}}))
         (module_pkg / 'dist/index.js').write_text('export const synthetic = true;')
-        native_pkg = package / 'node_modules/@node-llama-cpp/mac-arm64-metal'
+        native_pkg = vendor / 'node_modules/@node-llama-cpp/mac-arm64-metal'
         (native_pkg / 'bins').mkdir(parents=True)
         (native_pkg / 'package.json').write_text('{"version":"3.18.1"}')
-        native = native_pkg / 'bins/llama-addon.node'
-        native.write_bytes(b'synthetic native')
+        (native_pkg / 'bins/llama-addon.node').write_bytes(native)
         (native_pkg / 'bins/libllama.dylib').write_bytes(b'synthetic dylib')
-        model = self.root / 'embeddinggemma-300M-Q8_0.gguf'
+        model = vendor / 'model.gguf'
         model.write_bytes(b'GGUFsynthetic model')
-        runtime = {'proof': {'version': '2.5.3',
-                             'qmd': str(package / 'bin/qmd'),
-                             'node': str(self.node)},
-                   'generation': 'synthetic-runtime'}
-        with (mock.patch('qmd_runtime.select', return_value=runtime),
-              mock.patch('platform.system', return_value='Linux'),
+        return laya_embed_runtime._provision(
+            node=str(self.node), module_entry=str(module_pkg / 'dist/index.js'),
+            model=str(model), expect={})
+
+    def test_local_provider_review_reads_only_the_laya_runtime(self):
+        proof = self.candidate('plugin-v1', self.commit1)
+
+        def review(**extra):
+            return product_install.review_local_provider(
+                source_root=self.source, plugin_root=proof['pluginRoot'],
+                state_root=self.install, commit_id=self.commit1,
+                **{'dimension': 3, **extra})
+        with (mock.patch('platform.system', return_value='Linux'),
               mock.patch('platform.machine', return_value='x86_64')):
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'reviewed_native_platform_unsupported'):
-                product_install.review_local_provider(
-                    source_root=self.source, plugin_root=proof['pluginRoot'],
-                    state_root=self.install, commit_id=self.commit1,
-                    model_path=str(model), dimension=3)
+                review()
         # The reviewed closure is mac-arm64-metal; pin the host so the positive
         # path is deterministic on Linux CI without loosening the real gate.
-        with (mock.patch('qmd_runtime.select', return_value=runtime),
+        # QMD's runtime module cannot even be imported here.
+        with (mock.patch.dict(sys.modules, {'qmd_runtime': None}),
               mock.patch('platform.system', return_value='Darwin'),
               mock.patch('platform.machine', return_value='arm64')):
-            first = product_install.review_local_provider(
-                source_root=self.source, plugin_root=proof['pluginRoot'],
-                state_root=self.install, commit_id=self.commit1,
-                model_path=str(model), dimension=3)
-            second = product_install.review_local_provider(
-                source_root=self.source, plugin_root=proof['pluginRoot'],
-                state_root=self.install, commit_id=self.commit1,
-                model_path=str(model), dimension=3)
-            self.assertEqual(first, second)
             with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'provider_review_model_path_required'):
-                product_install.review_local_provider(
-                    source_root=self.source, plugin_root=proof['pluginRoot'],
-                    state_root=self.install, commit_id=self.commit1)
+                                        '^provider_review_laya_embed_runtime_missing$'):
+                review()
+            runtime = self.laya_runtime()
+            first, second = review(), review()
+            self.assertEqual(first, second)
+            self.assertEqual(first['embedRuntimeGeneration'], runtime['generation'])
+            manifest = first['reviewedProvider']['providerManifest']
+            generation = runtime['generation'] + '/'
+            for key in ('nodePath', 'moduleEntryPath', 'modelPath'):
+                self.assertTrue(manifest[key].startswith(generation), key)
+            self.assertEqual(manifest['runtimeId'], 'qmd-2.5.3-node-llama-cpp-3.18.1')
+            closure = first['reviewedProvider']['dependencyClosure']
+            self.assertEqual([Path(row['path']).name for row in closure],
+                             ['libllama.dylib', 'llama-addon.node'])
+            self.assertTrue(all(row['path'].startswith(runtime['nativePackage'] + '/')
+                                for row in closure))
+            # An explicit model must be the runtime's own model file.
+            self.assertEqual(review(model_path=manifest['modelPath']), first)
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'provider_review_model_not_laya_runtime'):
+                review(model_path=str(self.root / 'vendor/model.gguf'))
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'provider_review_dimension_invalid'):
+                review(dimension=None)
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'unsupported_state_root_creation'):
                 product_install.review_local_provider(
                     source_root=self.source, plugin_root=proof['pluginRoot'],
                     state_root=self.root / 'not-created-state', commit_id=self.commit1,
-                    model_path=str(model), dimension=3)
-            self.assertEqual(len(first['reviewedProvider']['dependencyClosure']), 2)
-            cache = self.root / 'models'
-            cache.mkdir()
-            cached_model = cache / 'hf_ggml-org_embeddinggemma-300M-Q8_0.gguf'
-            cached_model.write_bytes(model.read_bytes())
-            cached = product_install.review_local_provider(
-                source_root=self.source, plugin_root=proof['pluginRoot'],
-                state_root=self.install, commit_id=self.commit1,
-                model_path=str(cached_model), dimension=3)
-            cached_manifest = cached['reviewedProvider']['providerManifest']
-            self.assertEqual(cached_manifest['modelPath'], str(cached_model))
-            self.assertEqual(cached_manifest['modelSha256'], hashlib.sha256(model.read_bytes()).hexdigest())
-            self.assertNotEqual(cached['proposalSha256'], first['proposalSha256'])
-            partial = cache / (cached_model.name + '.ipull')
-            partial.write_bytes(model.read_bytes())
-            with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'provider_review_model_identity_invalid'):
-                product_install.review_local_provider(
-                    source_root=self.source, plugin_root=proof['pluginRoot'],
-                    state_root=self.install, commit_id=self.commit1,
-                    model_path=str(partial), dimension=3)
-            linked_cache = self.root / 'models-link'
-            linked_cache.symlink_to(cache, target_is_directory=True)
-            with self.assertRaisesRegex(IndexContractError,
-                                        'provider_artifact_path_invalid'):
-                product_install.review_local_provider(
-                    source_root=self.source, plugin_root=proof['pluginRoot'],
-                    state_root=self.install, commit_id=self.commit1,
-                    model_path=str(linked_cache / cached_model.name), dimension=3)
+                    dimension=3)
+            # A changed byte in the sealed runtime refuses; it is never re-proposed.
+            native = Path(runtime['nativePackage']) / 'bins/llama-addon.node'
             native.write_bytes(b'changed synthetic native')
-            changed = product_install.review_local_provider(
-                source_root=self.source, plugin_root=proof['pluginRoot'],
-                state_root=self.install, commit_id=self.commit1,
-                model_path=str(model), dimension=3)
-            self.assertNotEqual(changed['proposalSha256'], first['proposalSha256'])
-
-    def test_local_provider_review_accepts_npm_ci_hoisted_layout_only_unambiguously(self):
-        # Official pinned `npm ci` hoists node-llama-cpp and its Metal build to
-        # the generation's top-level node_modules beside @tobilu/qmd.
-        proof = self.candidate('plugin-v1', self.commit1)
-        top = self.root / 'qmd-generation/node_modules'
-        package = top / '@tobilu/qmd'
-        (package / 'bin').mkdir(parents=True)
-        (package / 'bin/qmd').write_text('synthetic executable')
-        (package / 'package.json').write_text('{"version":"2.5.3"}')
-        def llama(base, module_version='3.18.1', native_version='3.18.1'):
-            module_pkg = base / 'node-llama-cpp'
-            (module_pkg / 'dist').mkdir(parents=True)
-            (module_pkg / 'package.json').write_text(json.dumps({'version': module_version}))
-            (module_pkg / 'dist/index.js').write_text('export const synthetic = true;')
-            native_pkg = base / '@node-llama-cpp/mac-arm64-metal'
-            (native_pkg / 'bins').mkdir(parents=True)
-            (native_pkg / 'package.json').write_text(json.dumps({'version': native_version}))
-            (native_pkg / 'bins/llama-addon.node').write_bytes(b'synthetic native')
-            (native_pkg / 'bins/libllama.dylib').write_bytes(b'synthetic dylib')
-            return module_pkg, native_pkg
-        module_pkg, native_pkg = llama(top)
-        model = self.root / 'embeddinggemma-300M-Q8_0.gguf'
-        model.write_bytes(b'GGUFsynthetic model')
-        runtime = {'proof': {'version': '2.5.3', 'qmd': str(package / 'bin/qmd'),
-                             'node': str(self.node)},
-                   'generation': 'synthetic-runtime'}
-        def review():
-            return product_install.review_local_provider(
-                source_root=self.source, plugin_root=proof['pluginRoot'],
-                state_root=self.install, commit_id=self.commit1,
-                model_path=str(model), dimension=3)
-        def blocked(reason):
-            with self.assertRaisesRegex(product_install.InstallBlocked, reason):
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        '^provider_review_laya_embed_runtime_corrupt$'):
                 review()
-        with (mock.patch('qmd_runtime.select', return_value=runtime),
-              mock.patch('platform.system', return_value='Darwin'),
-              mock.patch('platform.machine', return_value='arm64')):
-            hoisted = review()
-            manifest = hoisted['reviewedProvider']['providerManifest']
-            self.assertEqual(manifest['moduleEntryPath'], str(module_pkg / 'dist/index.js'))
-            closure = hoisted['reviewedProvider']['dependencyClosure']
-            self.assertEqual(sorted(item['path'] for item in closure),
-                             sorted(str(native_pkg / name) for name in
-                                    ('bins/libllama.dylib', 'bins/llama-addon.node')))
-            self.assertEqual(review(), hoisted)
-            # The pinned native hash still binds the reviewed digest.
-            (native_pkg / 'bins/llama-addon.node').write_bytes(b'changed native')
-            self.assertNotEqual(review()['proposalSha256'], hoisted['proposalSha256'])
-            # A shadowing native build inside the hoisted module is refused.
-            shadow = module_pkg / 'node_modules/@node-llama-cpp/mac-arm64-metal'
-            shadow.mkdir(parents=True)
-            blocked('provider_review_package_layout_unsupported')
-            shutil.rmtree(module_pkg / 'node_modules')
-            # Mixed: a nested copy beside the hoisted one is ambiguous.
-            nested = package / 'node_modules'
-            (nested / 'node-llama-cpp').mkdir(parents=True)
-            blocked('provider_review_package_layout_unsupported')
-            shutil.rmtree(nested)
-            # Partial hoisting (native absent) and wholly absent packages fail.
-            shutil.move(str(native_pkg), str(self.root / 'native-aside'))
-            blocked('provider_review_package_layout_unsupported')
-            shutil.move(str(module_pkg), str(self.root / 'module-aside'))
-            blocked('provider_review_package_layout_unsupported')
-            # Symlinked hoisted package is refused, not followed.
-            (top / 'node-llama-cpp').symlink_to(self.root / 'module-aside',
-                                                target_is_directory=True)
-            shutil.move(str(self.root / 'native-aside'), str(native_pkg))
-            blocked('provider_review_package_symlink')
-            (top / 'node-llama-cpp').unlink()
-            shutil.move(str(self.root / 'module-aside'), str(module_pkg))
-            # Exact versions are still required in the hoisted layout.
-            (module_pkg / 'package.json').write_text('{"version":"3.18.2"}')
-            blocked('provider_review_package_version_changed')
-            (module_pkg / 'package.json').write_text('{"version":"3.18.1"}')
-            self.assertEqual(len(review()['reviewedProvider']['dependencyClosure']), 2)
-        # The original nested layout keeps working (covered above as well),
-        # but only when the QMD package is not itself a symlink.
-        linked = self.root / 'qmd-generation/node_modules/@tobilu/qmd-link'
-        linked.symlink_to(package, target_is_directory=True)
-        runtime['proof']['qmd'] = str(linked / 'bin/qmd')
-        with (mock.patch('qmd_runtime.select', return_value=runtime),
-              mock.patch('platform.system', return_value='Darwin'),
-              mock.patch('platform.machine', return_value='arm64')):
-            blocked('provider_review_package_symlink')
+            # A new runtime generation with other native bytes is a new digest.
+            changed_runtime = self.laya_runtime(native=b'other synthetic native')
+            self.assertNotEqual(changed_runtime['generation'], runtime['generation'])
+            changed = review()
+            self.assertNotEqual(changed['proposalSha256'], first['proposalSha256'])
 
     def test_production_attestation_needs_journal_bound_review_digest(self):
         proof = self.candidate('plugin-v1', self.commit1)

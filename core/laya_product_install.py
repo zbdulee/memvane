@@ -259,12 +259,16 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
                           model_path=None, dimension=None):
     """Read-only exact local artifact proposal for human/release review.
 
-    Inventory covers every packaged native binary for the pinned Metal build.
-    It neither asserts that native execution works nor issues approval: the
+    The executable inventory is the active Laya embedding runtime
+    (``laya_embed_runtime``): its node, node-llama-cpp entry, every packaged
+    native binary of the pinned Metal build and its GGUF model. The runtime
+    is fully re-hashed; a missing or changed file refuses. A ``model_path``
+    argument, when given, must name the runtime's own model file. Review
+    neither asserts that native execution works nor issues approval: the
     caller must accept the returned digest, and prepare repeats every check.
     """
     import platform
-    import qmd_runtime
+    import laya_embed_runtime
     from laya_index_vector import profile_identity
     from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
@@ -298,52 +302,43 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
         if original != installed or _git_blob_oid(original, object_format) != committed:
             _fail('provider_review_installed_blob_changed')
         artifacts[name] = hashlib.sha256(installed).hexdigest()
-    runtime = qmd_runtime.select()
-    proof = runtime['proof']
-    if proof.get('version') != '2.5.3':
-        _fail('provider_review_qmd_version_unsupported')
-    qmd = Path(proof['qmd'])
-    package = qmd.parent.parent
-    node = Path(proof['node'])
-    module_pkg, native_pkg = _llama_packages(package)
-    module = module_pkg / 'dist' / 'index.js'
-    for package_file, expected in ((package / 'package.json', '2.5.3'),
-                                   (module_pkg / 'package.json', '3.18.1'),
-                                   (native_pkg / 'package.json', '3.18.1')):
+    try:
+        runtime = laya_embed_runtime.select()
+    except laya_embed_runtime.RuntimeUnavailable as exc:
+        _fail('provider_review_' + str(exc))
+    module_pkg = Path(runtime['modulePackage'])
+    native_pkg = Path(runtime['nativePackage'])
+    for package_file in (module_pkg / 'package.json', native_pkg / 'package.json'):
         item = json.loads(_read_private_or_package(package_file))
-        if not isinstance(item, dict) or item.get('version') != expected:
+        if not isinstance(item, dict) or item.get('version') != laya_embed_runtime.LLAMA_VERSION:
             _fail('provider_review_package_version_changed')
-    native_files = []
-    for directory, dirs, files in os.walk(native_pkg, followlinks=False):
-        for name in dirs + files:
-            if (Path(directory) / name).is_symlink():
-                _fail('provider_review_native_symlink')
-        native_files.extend(Path(directory) / name for name in files
-                            if Path(name).suffix in ('.node', '.dylib', '.so'))
-    if (not any(path.suffix == '.node' for path in native_files) or
-            not any(path.suffix == '.dylib' for path in native_files) or
-            len(native_files) > 4096):
+    closure = runtime['dependencyClosure']
+    if (not any(row['path'].endswith('.node') for row in closure) or
+            not any(row['path'].endswith('.dylib') for row in closure) or
+            len(closure) > 4096):
         _fail('provider_review_native_closure_incomplete')
-    closure = [{'path': str(path), 'sha256': _hash_file(str(path)),
-                'bytes': path.stat().st_size} for path in sorted(native_files)]
-    if model_path is None:
-        _fail('provider_review_model_path_required')
     if type(dimension) is not int or not 1 <= dimension <= 2048:
         _fail('provider_review_dimension_invalid')
-    # QMD's local resolver prefixes the same GGUF basename in its cache.
-    # The explicit physical path and its content hash remain review-bound.
-    if (not isinstance(model_path, str) or
-            Path(model_path).name not in _REVIEWED_MODEL_BASENAMES):
+    if model_path is not None and model_path != runtime['modelPath']:
+        _fail('provider_review_model_not_laya_runtime')
+    model_path = runtime['modelPath']
+    if Path(model_path).name not in _REVIEWED_MODEL_BASENAMES:
         _fail('provider_review_model_identity_invalid')
-    model_sha = _hash_file(str(model_path))
-    node_sha, module_sha = _hash_file(str(node)), _hash_file(str(module))
+    node, module = runtime['nodePath'], runtime['moduleEntryPath']
+    # Same bytes the runtime sealed; re-read through the provider's own hasher.
+    model_sha = _hash_file(model_path)
+    node_sha, module_sha = _hash_file(node), _hash_file(module)
+    if (model_sha, node_sha, module_sha) != (runtime['modelSha256'], runtime['nodeSha256'],
+                                             runtime['moduleEntrySha256']):
+        _fail('provider_review_laya_embed_runtime_corrupt')
     closure_sha = hashlib.sha256(_canonical(closure)).hexdigest()
     provider_sha = artifacts['core/laya_local_embed_provider.py']
     worker_sha = artifacts['core/laya_local_embed_worker.mjs']
     model_id = DEFAULT_EMBED_MODEL_URI
+    runtime_id = runtime['runtimeId']
     fingerprint = recipe_fingerprint(
         model_id=model_id, model_sha256=model_sha,
-        runtime_id='qmd-2.5.3-node-llama-cpp-3.18.1',
+        runtime_id=runtime_id,
         recipe_id='qmd-regex-token-chunks-candidate-v1',
         provider_sha256=provider_sha, worker_sha256=worker_sha,
         node_sha256=node_sha, module_entry_sha256=module_sha,
@@ -366,60 +361,22 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
                 'nodePath': str(node), 'nodeSha256': node_sha,
                 'moduleEntryPath': str(module), 'moduleEntrySha256': module_sha,
                 'modelPath': str(model_path), 'modelSha256': model_sha,
-                'runtimeId': 'qmd-2.5.3-node-llama-cpp-3.18.1',
+                'runtimeId': runtime_id,
                 'modelId': model_id, 'embeddingFingerprint': fingerprint,
                 'dimension': dimension,
                 'recipeId': 'qmd-regex-token-chunks-candidate-v1',
                 'dependencyClosureApproved': True,
                 'dependencyClosureSha256': closure_sha}
-    proposal = {'schema': 'laya-local-provider-review-v1',
+    proposal = {'schema': 'laya-local-provider-review-v2',
                 'sourceCommit': commit_id, 'pluginRoot': str(root),
-                'stateRoot': str(state), 'qmdRuntimeGeneration': runtime['generation'],
+                'stateRoot': str(state),
+                'embedRuntimeGeneration': runtime['generation'],
                 'reviewedProvider': {'vectorProfile': profile,
                                      'providerManifest': manifest,
                                      'dependencyClosure': closure}}
     return {'status': 'review_required',
             'proposalSha256': hashlib.sha256(_canonical(proposal)).hexdigest(),
             **proposal}
-
-
-_LLAMA_MODULE = ('node-llama-cpp',)
-_LLAMA_NATIVE = ('@node-llama-cpp', 'mac-arm64-metal')
-
-
-def _llama_packages(package):
-    """Locate node-llama-cpp as Node resolves it from the QMD package.
-
-    Only two layouts are accepted: nested under QMD's own node_modules, or
-    hoisted by npm ci to the node_modules that holds the scoped QMD package.
-    Both packages must sit in exactly one of them; a mixed, partial or
-    shadowing layout (where Node could load a different native build) fails.
-    """
-    def entry(base, parts):
-        path = base.joinpath(*parts)
-        return path, path.exists() or path.is_symlink()
-    bases = [package / 'node_modules']
-    scope = package.parent
-    if scope.name.startswith('@') and scope.parent.name == 'node_modules':
-        if scope.is_symlink() or package.is_symlink():
-            _fail('provider_review_package_symlink')
-        bases.append(scope.parent)
-    found = []
-    for base in bases:
-        present = [entry(base, _LLAMA_MODULE)[1], entry(base, _LLAMA_NATIVE)[1]]
-        if any(present):
-            found.append((base, all(present)))
-    if len(found) != 1 or not found[0][1]:
-        _fail('provider_review_package_layout_unsupported')
-    base = found[0][0]
-    module_pkg = entry(base, _LLAMA_MODULE)[0]
-    native_pkg = entry(base, _LLAMA_NATIVE)[0]
-    if entry(module_pkg / 'node_modules', _LLAMA_NATIVE)[1]:
-        _fail('provider_review_package_layout_unsupported')
-    for path in (base, module_pkg, module_pkg / 'dist', native_pkg.parent, native_pkg):
-        if path.is_symlink() or not path.is_dir():
-            _fail('provider_review_package_symlink')
-    return module_pkg, native_pkg
 
 
 def _read_private_or_package(path):
@@ -588,8 +545,12 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
                               commit_id, expected_proposal_sha256, install_id,
                               accepted_provider_sha256, user_qmd_roots=None,
                               model_path=None, dimension=None):
-    """Register an inactive wiki-only build; do not touch QMD or activate."""
-    if model_path is None or dimension is None:
+    """Register an inactive wiki-only build; do not touch QMD or activate.
+
+    The provider is the active Laya embedding runtime; ``model_path`` is
+    optional and, when given, must be that runtime's model file.
+    """
+    if dimension is None:
         _fail('fresh_wiki_model_proof_required')
     if (not isinstance(expected_proposal_sha256, str) or
             not re.fullmatch(r'[0-9a-f]{64}', expected_proposal_sha256) or

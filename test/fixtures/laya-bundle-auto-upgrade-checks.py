@@ -71,6 +71,13 @@ class Base(unittest.TestCase):
                                            'GIT_CONFIG_NOSYSTEM': '1'})
         env.start()
         self.addCleanup(env.stop)
+        # The Laya embedding runtime is provisioned by its own checks
+        # (laya-embed-runtime); here only the call before review is recorded.
+        self.ensured = []
+        ensure = mock.patch.object(auto, '_ensure_embed_runtime',
+                                   side_effect=self.ensured.append)
+        ensure.start()
+        self.addCleanup(ensure.stop)
 
     def claude_root(self, version='0.37.0'):
         root = (self.home / '.claude' / 'plugins' / 'cache' / 'mkt' /
@@ -224,7 +231,9 @@ class WorkerChecks(WorkerBase):
         self.assertEqual(results[0]['status'], 'active_upgrade_complete')
         self.assertEqual(calls['active']['accepted_provider_sha256'], '9' * 64)
         self.assertEqual(calls['active']['plugin_root'], str(self.root))
-        self.assertEqual(calls['active']['model_path'], '/m/model.gguf')
+        # Review reads the model from the Laya runtime, not the old QMD path.
+        self.assertIsNone(calls['active']['model_path'])
+        self.assertEqual(self.ensured, [self.attestation])
         wake.assert_called_once_with(str(self.project))
         self.assertEqual(auto.read_status(self.state)['status'], 'complete')
 
