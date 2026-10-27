@@ -1255,7 +1255,8 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state) -> None:
     if state is None or state['reason'] not in ('starting', 'resource_deferred'):
         return
     manifest = proof['providerManifest']
-    if os.path.lexists(manifest['serviceSocketPath']):
+    path = manifest.get('serviceSocketPath')
+    if not isinstance(path, str) or os.path.lexists(path):
         return
     if decision.get('pluginRoot') != str(Path(__file__).resolve().parent.parent):
         return
