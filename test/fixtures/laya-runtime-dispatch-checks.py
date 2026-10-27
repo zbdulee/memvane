@@ -152,6 +152,26 @@ class DispatchBoundary(unittest.TestCase):
                 with self.assertRaises(DispatchFailure) as caught:
                     dispatch.run('laya-sync', self.project)
                 self.assertEqual(caught.exception.code, code)
+                if code == 'target_deferred':
+                    # The child's fixed reason code survives for the failure record.
+                    self.assertEqual(caught.exception.detail,
+                                     'deferred:deferred:laya_service_backoff')
+        with patch('laya_index_host_route.select_route', return_value=self.route()), \
+             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+             patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
+                 returncode=0, stdout=json.dumps({'state': 'deferred',
+                     'reason': 'laya_sync_yield_priority', 'detail': 'Private Path/x.md'}).encode())):
+            with self.assertRaises(DispatchFailure) as caught:
+                dispatch.run('laya-sync', self.project)
+        self.assertEqual(caught.exception.detail,
+                         'deferred:deferred:laya_sync_yield_priority:_rivate__ath_x.md')
+        with patch('laya_index_host_route.select_route', return_value=self.route()), \
+             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+             patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
+                 returncode=0, stdout=b'{"state":"pending"}')):
+            with self.assertRaises(DispatchFailure) as caught:
+                dispatch.run('laya-sync', self.project)
+        self.assertEqual(caught.exception.detail, 'deferred:pending:unlabeled')
 
     def test_failed_child_keeps_a_bounded_stderr_tail(self):
         root = self.bundles[0]

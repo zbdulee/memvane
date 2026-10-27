@@ -420,3 +420,34 @@ esac
   assert.match(calls, /^embed/m);           // embed 호출됨  (BUG-1: 기존엔 스킵됨)
   assert.equal(readFileSync(q, "utf8").trim(), ""); // 큐 비워짐
 });
+
+test("selected Laya 프로젝트의 legacy dirty 항목은 claim을 붙잡지 않고 버려진다", () => {
+  const d = mkdtempSync(join(tmpdir(), "wk-"));
+  const log = join(d, "calls.log");
+  const stub = makeStubQmd(d, log);
+  const selected = join(d, "selected"); mkdirSync(join(selected, "wiki"), { recursive: true });
+  const legacy = join(d, "legacy"); mkdirSync(join(legacy, "docs"), { recursive: true });
+  const route = join(d, "route.py");
+  writeFileSync(route, `import sys\nprint('candidate' if sys.argv[3]==${JSON.stringify(selected)} else 'legacy')\n`);
+  const q = join(d, "queue");
+  const env = {
+    ...process.env, QMD_SETUP_GUARD_FIXTURE: "1", QMD_DIRTY_QUEUE: q, QMD_FAKE_QMD: stub,
+    QMD_INDEX_WORKER_LOCKDIR: join(d, "wlock.d"), QMD_INDEX_WORKER_LOG: join(d, "worker.log"),
+    QMD_WRITER_LOCKDIR: join(d, "ulock.d"), QMD_EMBED_LOCKDIR: join(d, "elock.d"),
+    QMD_NO_RELOAD: "1", QMD_CORE_LAYA_ROUTE_SCRIPT: route,
+  };
+  // Only the selected project's entries: ACKed without any QMD write.
+  writeFileSync(q, `sel\t${join(selected, "wiki")}\t${selected}\nsel-raw\t${selected}\t${selected}\n`);
+  execFileSync("bash", ["backend/index_worker.sh"], { encoding: "utf8", env });
+  assert.equal(readFileSync(q, "utf8").trim(), "");
+  assert.equal(existsSync(log), false);
+  assert.match(readFileSync(join(d, "worker.log"), "utf8"),
+    /selected Laya route owns sel — legacy entry dropped/);
+  // Mixed with a legacy project: only the legacy collection is written.
+  writeFileSync(q, `sel\t${join(selected, "wiki")}\t${selected}\nold\t${join(legacy, "docs")}\n`);
+  execFileSync("bash", ["backend/index_worker.sh"], { encoding: "utf8", env });
+  const calls = readFileSync(log, "utf8");
+  assert.match(calls, /collection add .*legacy\/docs --name old/);
+  assert.doesNotMatch(calls, /--name sel/);
+  assert.equal(readFileSync(q, "utf8").trim(), "");
+});

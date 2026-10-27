@@ -241,6 +241,21 @@ def _failure_detail(child):
     return ('exit ' + str(child.returncode) + ('\n' + text if text else ''))
 
 
+def _code(value):
+    return (re.sub(r'[^a-z0-9_.:-]', '_', value)[:80]
+            if isinstance(value, str) and value else None)
+
+
+def _deferred_detail(result):
+    """Fixed-code why of a not-done target result, for the failure record."""
+    parts = ['deferred', _code(result.get('state')) or 'unlabeled',
+             _code(result.get('reason')) or 'unlabeled']
+    extra = _code(result.get('detail'))
+    if extra:
+        parts.append(extra)
+    return ':'.join(parts)
+
+
 def run(kind, value, *, owner_fd=None):
     target = resolve(kind, value)
     if target['terminal']:
@@ -278,7 +293,8 @@ def run(kind, value, *, owner_fd=None):
             # The target just started (or is still loading) its detached
             # embedding owner. Waiting on that owner is not a failed attempt.
             raise DispatchFailure('target_preparing', commit, bundle_sha)
-        raise DispatchFailure('target_deferred', commit, bundle_sha)
+        raise DispatchFailure('target_deferred', commit, bundle_sha,
+                              detail=_deferred_detail(result))
     current = resolve(kind, value)
     if (current['terminal'] or any(current[field] != target[field]
                                    for field in STABLE_TARGET_FIELDS)):

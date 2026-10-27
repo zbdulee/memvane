@@ -264,6 +264,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-clean-start-', dir=Path.cwd().paren
         assert runtime_handlers.update({'target': key, 'revision': 2}) is False
         assert job.is_file()
         status_path.unlink()
+        # A selected Laya route owns this project's updates: the legacy job
+        # stays for a route rollback, but its wake is ACKed, not retried forever.
+        with mock.patch.object(update_hook_queue, '_laya_selected', return_value=True):
+            assert update_hook_queue.worker(key) == update_hook_queue.SETUP_REQUIRED
+            selected_status = json.loads(status_path.read_text())
+            assert (selected_status['status'], selected_status['reason']) == (
+                'setup_required', 'laya_route_selected'), selected_status
+            assert runtime_handlers.update({'target': key, 'revision': 3}) is True
+        assert job.is_file()
+        assert update_hook_queue._laya_selected(str(project)) is False
+        status_path.unlink()
         with mock.patch.object(setup_guard, 'status', return_value={'status': 'ready'}):
             expect_raise('plugin_qmd_store_not_ready')
         # A configured project without its store is not a first install either.

@@ -222,12 +222,20 @@ def qa_sync_barrier(decision, *, environ=None):
     return QaSyncBarrier(root, armed)
 
 
+# A QMD wake that already failed this many times is retried on its own
+# backoff without making selected syncs yield to it. Otherwise one stuck
+# legacy index/update row (setup required, fail-closed store) comes due every
+# few minutes and no long sync can ever finish.
+PRIORITY_YIELD_MAX_ATTEMPTS = 3
+
+
 def _higher_priority_wake(controller):
     """Yield for due QMD work; preserve an unavailable probe as a distinct deferral."""
     from runtime_work import WakeQueue
     try:
         rows = WakeQueue(controller.root).pending()
         return any(row['kind'] in ('index', 'update') and row['due'] <= time.time()
+                   and row['attempts'] < PRIORITY_YIELD_MAX_ATTEMPTS
                    for row in rows)
     except (OSError, ValueError, sqlite3.Error) as exc:
         # Keep the fail-closed behavior, but never label a queue access error
