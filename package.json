@@ -1,6 +1,6 @@
 {
   "name": "qmd-auto-context",
-  "version": "0.36.24",
+  "version": "0.36.25",
   "private": true,
   "type": "module",
   "engines": {

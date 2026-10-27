@@ -32,9 +32,13 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIsNotNone(importlib.util.find_spec('runtime_work'),'runtime wake queue missing')
         return importlib.import_module('runtime_work')
 
-    def test_os_warning_and_unknown_pressure_defer_even_when_free_pages_look_ok(self):
-        for pressure in ({'system_free_percent':70,'level':'warning'},None):
+    def test_unknown_critical_or_scarce_warning_pressure_defer(self):
+        for pressure in (None,{'system_free_percent':70,'level':'critical'},
+                         {'system_free_percent':5,'level':'warning'}):
             self.assertFalse(decision(self.policy,{**self.report,'memory_pressure':pressure})['ready'])
+        # Swap alone makes macOS say 'warning'; ample free memory still admits.
+        self.assertTrue(decision(self.policy,{**self.report,'memory_pressure':
+                                 {'system_free_percent':70,'level':'warning'}})['ready'])
 
     def test_low_relative_headroom_uses_one_batch_and_absolute_budget_defers(self):
         self.assertEqual(decision(self.policy,{**self.report,'available_mib':6500})['microbatch_size'],1)
@@ -137,18 +141,19 @@ class RuntimeChecks(unittest.TestCase):
             self.assertEqual(hook_main.run(lambda:None),0)
             wake.assert_called_once()
 
-    def test_mac_resource_report_rejects_os_warning(self):
+    def test_mac_resource_report_os_warning_needs_free_memory(self):
         from context_learning import shared
-        def probe(argv,**kw):
-            data={'vm_stat':'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 2000000.\nPages inactive: 2000000.\nPages speculative: 1000000.\n',
-                'hw.memsize':'25769803776','memory_pressure':'System-wide memory free percentage: 70%',
-                'kern.memorystatus_vm_pressure_level':'2','vm.swapusage':'used = 0M'}
-            key=argv[-1] if argv[0].endswith('sysctl') else Path(argv[0]).name
-            return subprocess.CompletedProcess(argv,0,stdout=data[key])
-        with patch.object(shared.sys,'platform','darwin'),patch.object(Path,'is_file',return_value=False), \
-             patch.object(shared.subprocess,'run',side_effect=probe),patch.object(shared.os,'getloadavg',return_value=(0,0,0)):
-            report=shared.resource_report(self.policy,detailed=True)
-        self.assertFalse(report['ready']);self.assertEqual(report['memory_pressure']['level'],'warning')
+        for free,ready in ((70,True),(8,False)):
+            def probe(argv,**kw):
+                data={'vm_stat':'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 2000000.\nPages inactive: 2000000.\nPages speculative: 1000000.\n',
+                    'hw.memsize':'25769803776','memory_pressure':f'System-wide memory free percentage: {free}%',
+                    'kern.memorystatus_vm_pressure_level':'2','vm.swapusage':'used = 0M'}
+                key=argv[-1] if argv[0].endswith('sysctl') else Path(argv[0]).name
+                return subprocess.CompletedProcess(argv,0,stdout=data[key])
+            with patch.object(shared.sys,'platform','darwin'),patch.object(Path,'is_file',return_value=False), \
+                 patch.object(shared.subprocess,'run',side_effect=probe),patch.object(shared.os,'getloadavg',return_value=(0,0,0)):
+                report=shared.resource_report(self.policy,detailed=True)
+            self.assertEqual(report['ready'],ready);self.assertEqual(report['memory_pressure']['level'],'warning')
 
     def test_dirty_enqueue_persists_recovery_hint_after_content(self):
         import dirty_queue
