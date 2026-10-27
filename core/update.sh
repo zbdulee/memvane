@@ -1142,6 +1142,14 @@ print(found['projectRoot'])
 PY
 )" || exit 0
   [ -n "$collection_base" ] || exit 0
+  # A selected Laya route owns this project's index and embedding service:
+  # no QMD store registration, update, embed, daemon reload or dedup scan.
+  local laya_state
+  laya_state="$(python3 "$_QMD_CORE_DIR/laya_index_host_route.py" classify update "$workdir" 2>/dev/null)" || laya_state=blocked
+  if [ "$laya_state" != "legacy" ]; then
+    log "SKIP: Laya route $laya_state owns this project; QMD update refused"
+    exit 0
+  fi
   # A selected project shadow DB is the only writable index for this project.
   # Invalid pointers fail closed instead of falling back to the user's DB.
   local selected_qmd_env

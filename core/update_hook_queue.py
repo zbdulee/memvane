@@ -308,8 +308,10 @@ def worker(key):
             output.write(f'{time.time():.3f} update started\n'); output.flush()
             try:
                 import setup_guard
-                if setup_guard.status(cwd)['status'] != 'ready':
-                    laya = _laya_selected(cwd)
+                # A selected Laya route owns this project even when the legacy
+                # store still lists it as ready: never run the QMD update.
+                laya = _laya_selected(cwd)
+                if laya or setup_guard.status(cwd)['status'] != 'ready':
                     _write(queue/(key+'.status.json'), {'schema': 'qmd-update-hook-status-v1',
                         'cwdHash': key, 'status': 'setup_required', 'at': time.time(),
                         **({'reason': 'laya_route_selected'} if laya else {})})

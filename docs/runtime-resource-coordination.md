@@ -42,16 +42,30 @@ development execution guard is separate; see
   policy immediately before the embed service loads its model. `EMBED_POLICY`
   (`maxRssMib` 2048, `minAvailableMib` 768, `maxLoadPerCpu` 1,
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
-  measured peak. The detached resident embed service
-  (`laya_embed_resident._serve`) uses the same activity and check. While the
-  provider lane is contended (`learning_compute_busy`,
-  `learning_deferred_inference`, `learning_deferred_resource`) it keeps its
-  owner lease and retries every 2 seconds for up to 45 attempts before
-  recording `resource_deferred`. A selected recall that finds no owner socket
-  with owner state `starting` or `resource_deferred` starts the owner directly
-  (detached, behind the owner's own 5-second backoff) and pulls a backed-off
-  `laya-sync` wake's due time forward without changing its attempt count. A
-  sync result deferred by `laya_service_preparing` is recorded as
+  measured peak. One per-user resident service
+  (`laya_resident_service.py`, private root
+  `<account home>/.local/state/laya/service/`, same-owner peer check on every
+  socket) hosts the embedding model for every selected or pending
+  installation and the learning inference service. It loads one exact worker
+  per provider identity through `start_owned_embed_service`; the cold load
+  passes `Coordinator.check(EMBED_POLICY)` (control lock, learning demand,
+  memory/pressure admission: under 10% free memory refuses) and never holds
+  the provider lane. A refusal records `resource_deferred` (not an attempt)
+  for each waiting installation and the service retries the load itself
+  after 5–60 seconds. The service adopts an installation by holding its
+  `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
+  writing its owner state; a route change (upgrade fence, restore,
+  withdrawal) releases that installation within one second. It forwards at
+  most three queries and three documents to the worker at once, so a burst
+  from many projects waits at the service instead of overflowing the
+  worker's seven-request queue. A failed query or probe outlives the client's
+  timeout (read as unavailable, served lexically), never an empty answer.
+  A selected recall that finds no owner socket with owner state `starting`
+  or `resource_deferred` asks the service to adopt the installation
+  (detached, behind the owner state's 5-second backoff) and pulls a
+  backed-off `laya-sync` wake's due time forward without changing its
+  attempt count. A sync result deferred by `laya_service_preparing` is
+  recorded as
   `target_preparing`: retried after 15 seconds and not counted as an attempt.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
@@ -216,8 +230,8 @@ Startup, provider, preparation and probe limits:
 ## Running training and daemon lifetime monitoring
 
 The monitor runs only inside the shared Laya selector inference daemon
-(`context_learning/inference_service.py`); a QMD HTTP daemon running alone does
-not host it.
+(`context_learning/inference_service.py`, hosted by the per-user resident
+service); a QMD HTTP daemon running alone does not host it.
 
 `inference_service._serve` supervises one separate model-free monitor child.
 Sampling therefore does not wait behind its model scoring thread, GPU work or
@@ -444,3 +458,30 @@ Live MPS reports require supported `darwin + host + unified` platform evidence.
 Unknown, unsupported, guest or malformed topology defers, while CPU profiles keep
 their separate admission. Reports without platform metadata are accepted only
 from injected analytical tests; the shared OS reporter always attaches it.
+
+## Per-user resident service lifecycle
+
+- Start: the first `laya-sync` wake (queued by SessionStart) or the first
+  learning prediction registers its project under `service/projects/` and
+  starts the service detached; hooks never wait for it. It never idle-exits.
+  A login item is not installed by the plugin.
+- Identity: the service reports protocol, plugin version, code digest and
+  interpreter. Two host caches of one release share the service.
+- Replacement: a client from a strictly newer version asks the service to
+  drain. Listeners close first (clients see an absent socket and serve lexical
+  results, never exit 3), in-flight requests and the learning queue finish
+  (bounded at 330 seconds), owner leases are released with owner state
+  `starting` (not an attempt), then one successor holding `successor.lock`
+  takes the service lease and re-adopts every registered installation. An
+  older or equal version never drains a newer one; it attaches while the
+  protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
+  A learning client of the same version that needs its trainer interpreter
+  replaces the service under that interpreter, which is then remembered.
+- An installation still owned by a per-project resident of an earlier bundle
+  is adopted after the shared worker is ready: the service signals only the
+  one process whose argv is exactly that installation's
+  `laya_embed_resident.py serve <project> <socket>` owner, re-verified by
+  UID and argv just before SIGTERM.
+- Learning: the hosted inference service refuses the socket `shutdown`
+  command; an idle learning-only service of an earlier bundle is retired as
+  before.
