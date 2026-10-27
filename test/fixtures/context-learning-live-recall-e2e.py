@@ -17,6 +17,16 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-recall-', dir=Path.home() / 'w
     sources.mkdir()
     state_parent = base / 'private-state'
     state_parent.mkdir(mode=0o700)
+    namespace = hashlib.sha256(str(project).encode()).hexdigest()
+    state = state_parent / namespace
+    state.mkdir(mode=0o700)
+    artifact = state / 'synthetic-base.artifact'
+    artifact.write_text('synthetic-only artifact')
+    artifact.chmod(0o600)
+    active = state / 'active-checkpoint.json'
+    active.write_text(json.dumps({'schema_version': 1, 'artifact_path': str(artifact),
+        'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
+    active.chmod(0o600)
     index = base / 'qmd-db/index.sqlite'
     index.parent.mkdir()
     qmd_config = base / 'qmd-config/index.yml'
@@ -46,8 +56,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-recall-', dir=Path.home() / 'w
         'collectionPaths': {'wiki': '.auto-context/wiki'},
         'collectionRoles': {'wiki': 'wiki'}, 'recallStrategy': 'wikiOnly',
         'topN': 3, 'minScore': 0, 'events': ['userPromptSubmit'],
-        'contextLearning': {'capture': True, 'liveSelection': True,
-                            'stateRoot': str(state_parent)}}))
+        'contextLearning': {'capture': True, 'stateRoot': str(state_parent)}}))
     fixture = base / 'hits.json'
     fixture.write_text(json.dumps({'results': hits}))
     log = base / 'recall.log'
@@ -119,15 +128,6 @@ hook_main.run(recall.main)
     assert not expired.stdout.strip()
     assert __import__('time').monotonic() - started < 3.5
     assert 'qmd_hook_deadline_exceeded' in log.read_text()
-    namespace = hashlib.sha256(str(project).encode()).hexdigest()
-    state = state_parent / namespace
-    artifact = state / 'synthetic-base.artifact'
-    artifact.write_text('synthetic-only artifact')
-    artifact.chmod(0o600)
-    active = state / 'active-checkpoint.json'
-    active.write_text(json.dumps({'schema_version': 1, 'artifact_path': str(artifact),
-        'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}))
-    active.chmod(0o600)
     policy = state / 'live-selector.json'
     missing_model = base / 'missing-model'; missing_model.mkdir()
     policy.write_text(json.dumps({'schema': 'qmd-live-selector-v1',
