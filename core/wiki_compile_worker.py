@@ -398,9 +398,13 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
         return None
 
 
-# Same bounded envelope as wiki_selected_laya.wiki_matches (selected v2 capacity).
-SELECTED_PROOF_MAX_CARDS = 200
-SELECTED_PROOF_MAX_BYTES = 5_000_000
+# This is an off-hook paid-call dedup proof, not the selected query result cap.
+# A selected project with 1,574 wiki pages exceeded the old 200-card ceiling,
+# making every same-revision proof fail closed and allowing repeated extraction.
+# Keep both the whole scan and each individual allocation bounded.
+SELECTED_PROOF_MAX_CARDS = 2_048
+SELECTED_PROOF_MAX_BYTES = 24_000_000
+SELECTED_PROOF_MAX_CARD_BYTES = 5_000_000
 _SELECTED_PROOF_READ_CHUNK = 64 * 1024
 _SELECTED_PROOF_READ_FLAGS = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                               | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
@@ -501,10 +505,17 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
             if path.is_symlink() or path.resolve(strict=True) != path or not path.is_file():
                 return None
             # Per-card and remaining aggregate budget are enforced before allocation.
-            data = _read_proof_card_bounded(path, SELECTED_PROOF_MAX_BYTES - total_bytes)
+            data = _read_proof_card_bounded(
+                path, min(SELECTED_PROOF_MAX_CARD_BYTES,
+                          SELECTED_PROOF_MAX_BYTES - total_bytes))
             if data is None:
                 return None
             total_bytes += len(data)
+            if not data.startswith(b'---\n'):
+                # A page without frontmatter cannot name a source revision.
+                # Release its bytes before reading the next bounded page.
+                data = b''
+                continue
             body = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             end = body.find("\n---\n", 4) if body.startswith("---\n") else -1
             if end < 0:
@@ -943,6 +954,60 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     if not qmd_config.is_compile_source_collection(roles, collection):
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
+    if job.get('sourceDelete') is True:
+        import re
+        import wiki_source_retire
+        revision = job.get('contentRevision')
+        if (selected_route is None or not isinstance(revision, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', revision)):
+            append_jsonl(cpath, bounded_failure('skipped', job, 'delete_proof_invalid'))
+            return True, False, []
+        outcome = wiki_source_retire.retire_deleted_source(
+            root, config, selected_route, collection, rel, revision)
+        state = outcome['state']
+        if state == 'shared_pending' and job.get('sharedEnqueued') is not True:
+            # One forced refresh per surviving source. The wait marker and its
+            # source jobs enter the same durable queue append, so a replay
+            # sees the marker before it could schedule another paid refresh.
+            import wiki_compile_enqueue as enqueue
+            records = []
+            for survivor_collection, survivor_path in outcome['survivors']:
+                record = enqueue._source_record(
+                    str(root / survivor_path), str(root), str(root), config,
+                    job.get('engine', qmd_config.UNKNOWN_ENGINE),
+                    trigger=job.get('trigger', 'post_sync_source'))
+                if record is None or record['source']['collection'] != survivor_collection:
+                    return False, True, []
+                stable = wiki_freshness.snapshot_bytes(root / survivor_path)
+                if stable is None:
+                    return False, True, []
+                record['contentRevision'] = stable[0]['sha256']
+                record['forceRecompile'] = True
+                records.append(record)
+            if not records:
+                return False, True, []
+            wait = {**job, 'sharedEnqueued': True, 'ts': enqueue._utc_now()}
+            queue = enqueue._safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
+            if queue is None:
+                return False, True, []
+            # A crash after the append but before acknowledging this claimed
+            # row must not schedule another set of paid survivor refreshes.
+            try:
+                if queue.exists() and queue.stat().st_size > enqueue.QUEUE_SCAN_MAX_BYTES:
+                    return False, True, []
+                marker_key = enqueue.intent.revision_key(wait)
+                if marker_key in enqueue._queued_revision_keys(queue):
+                    return True, False, []
+            except OSError:
+                return False, True, []
+            append_source_jobs(queue, records + [wait])
+            wiki_selected_laya.request_compile(root, selected_route)
+            append_jsonl(cpath, bounded_failure('deferred', job, 'shared_refresh_queued'))
+            return True, False, []
+        append_jsonl(cpath, bounded_failure(
+            'retired' if state == 'retired' else 'deferred', job, state))
+        return (True, False, []) if state in ('retired', 'source_reappeared') \
+            else (False, True, [])
     # Bind the ledger's latest unresolved event immediately before the stable
     # source capture.  A queue token is only transport metadata and may be stale
     # after a crash/replay; it never decides which edit this compile resolves.
@@ -977,7 +1042,8 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     # A job kept after a partial failure (one card written, another rejected)
     # is exactly the case where a trusted sibling does not prove the revision
     # finished, so it is never skipped here.
-    if selected_route is not None and job.get("partialCompile") is not True:
+    if (selected_route is not None and job.get("partialCompile") is not True
+            and job.get('forceRecompile') is not True):
         proof_card = selected_compiled_revision_card(
             root, selected_route, source_revision, content_only=True)
         if proof_card is not None:
@@ -1107,6 +1173,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         file_source = {"kind": "file", "path": rel, "collection": source.get("collection", "")}
         raw_sources = candidate.get("sources")
         model_sources = raw_sources if isinstance(raw_sources, list) else []
+        if job.get('forceRecompile') is True:
+            # A deleted source can survive in the model's similar-page hints.
+            # The survivor refresh is proved against this live source only;
+            # never carry an obsolete model-suggested source into its card.
+            model_sources = []
         candidate["sources"] = [file_source] + [
             item for item in model_sources if not is_same_file_source(item, rel)
         ]

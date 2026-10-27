@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -950,20 +951,26 @@ def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bo
     compiler-owned source lists, generated status, and verification proof are
     replaced/cleared in the same complete text passed to ``write_text_atomic``.
     """
+    rewritten = compose_generated_card(old_text, generated_page)
+    return rewritten is not None and write_text_atomic(path, rewritten)
+
+
+def compose_generated_card(old_text: str, generated_page: str) -> str | None:
+    """Build a replacement without changing the published wiki card."""
     old_match = FRONTMATTER_RE.match(old_text)
     new_match = FRONTMATTER_RE.match(generated_page)
     old_blocks = list(AUTO_BLOCK_RE.finditer(old_text))
     new_blocks = list(AUTO_BLOCK_RE.finditer(generated_page))
     if old_match is None or new_match is None or len(old_blocks) != 1 or len(new_blocks) != 1:
-        return False
+        return None
     old_sections = _frontmatter_sections(old_match.group(1))
     new_sections = _frontmatter_sections(new_match.group(1))
     if old_sections is None or new_sections is None:
-        return False
+        return None
     new_by_key = {key: lines for key, lines in new_sections}
     required = {"status", "sources"}
     if not required.issubset(new_by_key):
-        return False
+        return None
 
     replaced: set[str] = set()
     merged: list[str] = []
@@ -992,10 +999,37 @@ def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bo
 
     body = old_text[old_match.end():]
     if len(list(AUTO_BLOCK_RE.finditer(body))) != 1:
-        return False
+        return None
     body = AUTO_BLOCK_RE.sub(new_blocks[0].group(0), body, count=1)
     rewritten = "---\n" + "\n".join(merged) + "\n---\n" + body
-    return write_text_atomic(path, rewritten)
+    return rewritten
+
+
+def write_pending_card(path: Path, text: str) -> bool:
+    """Durably stage private candidate bytes without replacing the live card."""
+    if path.exists():
+        return path.is_file() and not path.is_symlink() and path.read_text(encoding='utf-8') == text
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=path.parent, prefix='.qmd-pending-',
+                                         delete=False) as handle:
+            name = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+    except OSError:
+        return False
+    finally:
+        if name is not None and os.path.exists(name):
+            os.unlink(name)
 
 
 @wiki_mutation_lock.guard_path
@@ -1778,9 +1812,56 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지
     # 알 수 없다) verify는 반쪽 카드를 원문과 대조한다. 다음 회차 덮어쓰기에 의존하면
     # 그 사이 세션이 잘린 카드를 캐논으로 본다. 실패는 아래 write_failure로 표면화한다.
+    # A selected wiki that is already verified stays published while its
+    # replacement is reviewed. The hidden pending file is a complete candidate,
+    # never part of the wiki scan. The verify worker performs the final atomic
+    # replacement after checking the old target has not changed.
+    pending_path = None
+    expected_target_hash = None
+    verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
-    write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
-                else write_text_atomic(target, page))
+    if selected is not None and action == "updated":
+        from laya_host_response import _verified_wiki_row
+        wiki_name = next((item['name'] for item in selected[0]['collections']
+                          if item['role'] == 'wiki' and
+                          Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
+        if wiki_name is None:
+            record['action'] = 'merge-needed'
+            record['lint'] = {'verdict': 'needs_review',
+                              'findings': ['selected_wiki_unresolved']}
+            append_jsonl(candidate_path, record)
+            return 0
+        if wiki_name is not None and _verified_wiki_row(
+                {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
+                 'body': old}, selected[0], current_source=False):
+            if (not verify_cfg.get("enabled", True)
+                    or cp.ledger(root, cp.VERIFY_QUEUE) is None):
+                record['action'] = 'merge-needed'
+                record['lint'] = {'verdict': 'needs_review',
+                                  'findings': ['verified_replacement_requires_review']}
+                append_jsonl(candidate_path, record)
+                return 0
+            pending_page = compose_generated_card(old, page)
+            if pending_page is None:
+                record['action'] = 'merge-needed'
+                append_jsonl(candidate_path, record)
+                return 0
+            pending_path = target.with_name('.' + target.name + '.pending-' + h[:16])
+            expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+            if pending_path.is_symlink() or (pending_path.exists() and
+                    (not pending_path.is_file() or
+                     pending_path.read_text(encoding='utf-8') != pending_page)):
+                record['action'] = 'merge-needed'
+                record['lint'] = {'verdict': 'needs_review',
+                                  'findings': ['pending_replacement_conflict']}
+                append_jsonl(candidate_path, record)
+                return 0
+            write_ok = write_pending_card(pending_path, pending_page)
+        else:
+            write_ok = rewrite_generated_card(target, old, page)
+    else:
+        write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
+                    else write_text_atomic(target, page))
     if not write_ok:
         record["action"] = "write-failed"
         append_jsonl(candidate_path, record)
@@ -1797,11 +1878,12 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 인덱스 쓰기 실패는 카드 쓰기 실패처럼 중단시키지 않는다 — 카드는 이미 캐논으로
     # 디스크에 있고 인덱스는 항법(navigation)이다. 대신 조용히 넘기지 않고 출력·후보
     # 레코드에 남긴다(인덱스가 카드와 어긋난 채 남았다는 사실을 알 수 있어야 한다).
-    index_ok = update_index(wiki_root, target, title)
-    append_log(wiki_root, action, target, title)
+    index_ok = True if pending_path is not None else update_index(wiki_root, target, title)
+    if pending_path is None:
+        append_log(wiki_root, action, target, title)
 
     collection, collection_path = find_wiki_collection(config)
-    if collection and collection_path:
+    if pending_path is None and collection and collection_path:
         if selected is None:
             enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
         else:
@@ -1809,7 +1891,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
-    verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     verify_queued = False
     if verify_cfg.get("enabled", True) and status == "generated":
         verify_queue_path = cp.ledger(root, cp.VERIFY_QUEUE)
@@ -1821,6 +1902,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             append_jsonl(verify_queue_path, {
                 "ts": now_iso(),
                 "targetPath": record["targetPath"],
+                **({'pendingPath': pending_path.relative_to(root).as_posix(),
+                    'expectedTargetHash': expected_target_hash}
+                   if pending_path is not None else {}),
                 "sources": record["sources"],
                 "sourceRevisions": record["sourceRevisions"],
                 **({"authoritativeSources": authoritative} if authoritative else {}),

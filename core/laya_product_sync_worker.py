@@ -573,8 +573,11 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                                   binding_store_path=capacity[1],
                                   wiki_only='collections' in decision) as runtime:
                 publish_complete = None
+                preserve_previous = None
                 if 'collections' in decision:
-                    from laya_incremental_docs import publish_document
+                    from laya_incremental_docs import (publish_document,
+                                                       preserve_previous_head,
+                                                       retire_missing_documents)
                     incremental_identity = {
                         'projectRoot': decision['projectRoot'],
                         'stateRoot': str(Path(decision['journalPath']).parent),
@@ -594,11 +597,26 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                         # journal's first-write fence before the sidecar commit.
                         before_publish()
                         publish_document(runtime, incremental_identity, snapshot, path,
-                                         sha, title, body, profile_id)
+                                         sha, title, body, profile_id,
+                                         require_verified=True)
+
+                    def preserve_previous(index, binding, job):
+                        if not proof_ok():
+                            raise IndexContractError('selected_proof_changed')
+                        preserve_previous_head(index, incremental_identity,
+                                               job['base_gen'], job['gen'])
+                        if not proof_ok():
+                            raise IndexContractError('selected_proof_changed')
 
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
-                                        on_document_complete=publish_complete)
+                                        on_document_complete=publish_complete,
+                                        before_head_publish=preserve_previous,
+                                        retire_missing=(
+                                            lambda: retire_missing_documents(
+                                                runtime, incremental_identity,
+                                                before_write=before_publish)
+                                            if publish_complete is not None else None))
             if not proof_ok():
                 raise IndexContractError('selected_proof_changed')
     except ResourceDeferred as exc:
@@ -607,7 +625,8 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
 
 
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
-                   on_document_complete=None):
+                   on_document_complete=None, before_head_publish=None,
+                   retire_missing=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -632,7 +651,8 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
         if proof_changed():
             raise IndexContractError('selected_proof_changed')
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
-                           vector_profile_id=profile_id)
+                           vector_profile_id=profile_id,
+                           before_head_publish=before_head_publish)
         if result.get('reason') == 'scan_pending' and on_document_complete is not None:
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,
@@ -642,6 +662,8 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                 return {key: partial[key] for key in ('state', 'reason', 'path', 'detail')
                         if key in partial}
         if result['state'] != 'pending':
+            if (retire_missing is not None and result['state'] in ('indexed', 'unchanged')):
+                retire_missing()
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
@@ -828,7 +850,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         if not proof_ok():
                             raise IndexContractError('initial_build_proof_changed')
                         publish_document(runtime, identity, snapshot, path, sha,
-                                         title, body, profile_id)
+                                         title, body, profile_id,
+                                         require_verified=True)
 
                     deadline = clock() + BUILD_WAKE_SECONDS
                     # A bundle upgraded in place may already have a durable
@@ -842,7 +865,8 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         # Cached vectors need no model lane. Give this
                         # at-most-15s metadata pass progress even while a
                         # due QMD wake makes new embedding work yield.
-                        should_yield=lambda: False)
+                        should_yield=lambda: False,
+                        require_verified=True)
                     result = (backfill if backfill['reason'] in
                               ('laya_sync_yield_priority',)
                               else _build_rounds(runtime, AdmittedProvider(), before_publish,
