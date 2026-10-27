@@ -276,12 +276,12 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
                  "hybrid rank score")
         lines.append(f'- "{path}" sha256:{digest[:12]} {label} {number:.4g}')
         if path.split('/', 1)[0] in wiki_names:
-            import recall
+            import wiki_card
             normalized = body.replace('\r\n', '\n').replace('\r', '\n')
             end = normalized.find('\n---\n', 4)
             if not normalized.startswith('---\n') or end < 0:
                 _fail('wiki_result_unverified')
-            title = recall.parse_frontmatter_scalars(normalized[4:end]).get('title')
+            title = wiki_card.parse_frontmatter_scalars(normalized[4:end]).get('title')
             if not title or _UNSAFE_BODY.search(title):
                 _fail('wiki_result_unverified')
             lines.append('  | title: ' + title[:200])
@@ -293,7 +293,7 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
                 if path not in title_only_paths:
                     lines.append(_location_line(source_locations[row["path"]]))
             if path not in title_only_paths:
-                summary, _complete = recall.extract_card_body(normalized, end + 5)
+                summary, _complete = wiki_card.extract_card_body(normalized, end + 5)
                 if summary:
                     lines.extend(_quoted_body(summary))
         else:
@@ -357,9 +357,9 @@ def _write_selection_log(project_root, reason: str, entries: list, **fields) -> 
     if not log_path:
         return
     try:
-        import recall
-        recall.set_log_project_root(project_root)
-        recall.log_recall_event(log_path, reason, route="laya",
+        import wiki_card
+        wiki_card.set_log_project_root(project_root)
+        wiki_card.log_recall_event(log_path, reason, route="laya",
                                 selected=entries, selected_count=len(entries),
                                 **fields)
     except Exception:
@@ -891,7 +891,7 @@ def _verified_wiki_locations(row: dict, decision: dict,
                              source_skip_paths=(), *,
                              current_source: bool = True,
                              reasons: dict | None = None) -> tuple[str, ...] | None:
-    import recall
+    import wiki_card
     import source_spans
     import wiki_freshness
     import yaml_scalars
@@ -903,12 +903,12 @@ def _verified_wiki_locations(row: dict, decision: dict,
     if end < 0:
         return _rejected(reasons, 'frontmatter_missing')
     block = body[4:end]
-    fields = recall.parse_frontmatter_scalars(block)
-    revisions = recall.frontmatter_source_revisions(block)
+    fields = wiki_card.parse_frontmatter_scalars(block)
+    revisions = wiki_card.frontmatter_source_revisions(block)
     meta = {'status': fields.get('status'), 'createdBy': fields.get('createdBy'),
             'sourceRevisions': revisions}
-    if not recall.is_auto_trusted_card(meta):
-        if meta['status'] not in recall.TRUSTED_WIKI_STATUSES:
+    if not wiki_card.is_auto_trusted_card(meta):
+        if meta['status'] not in wiki_card.TRUSTED_WIKI_STATUSES:
             return _rejected(reasons, 'status_not_verified')
         if meta['createdBy'] != 'qmd-auto-context':
             return _rejected(reasons, 'creator_foreign')

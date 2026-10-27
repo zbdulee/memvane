@@ -477,7 +477,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
         return None
     try:
         import laya_host_response
-        import recall
+        import wiki_card
         decision = bound[0]
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:
@@ -528,7 +528,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
             if end < 0:
                 continue
             block = body[4:end]
-            revisions = recall.frontmatter_source_revisions(block)
+            revisions = wiki_card.frontmatter_source_revisions(block)
             if not revisions and source_revision["path"] in block:
                 return None  # names this source but its provenance is unreadable
             # A card citing a renamed raw collection is the same source when

@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-import recall
+import wiki_card
 import wiki_compile
 import wiki_freshness
 import wiki_topical as topical
@@ -383,7 +383,7 @@ def card_fingerprint(card: dict) -> tuple:
 def render_card(card: dict) -> str:
     # The lead comes from the sidecar, never from a prefix of frontmatter/Markdown.
     lines = [f"- [v2] {card['title']} ({card['cardId']})"]
-    lines.extend(recall.quote_body_lines(card["lead"]))
+    lines.extend(wiki_card.quote_body_lines(card["lead"]))
     seen = set()
     for claim in card["claims"]:
         for evidence in claim["evidence"]:

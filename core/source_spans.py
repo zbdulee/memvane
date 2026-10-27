@@ -150,8 +150,8 @@ def card_revisions(text: str) -> list[dict]:
     block = _frontmatter_block(text)
     if block is None:
         return []
-    import recall
-    return recall.frontmatter_source_revisions(block)
+    import wiki_card
+    return wiki_card.frontmatter_source_revisions(block)
 
 
 def bound_to_revisions(spans, revisions) -> bool:

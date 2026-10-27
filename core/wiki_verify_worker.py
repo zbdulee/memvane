@@ -61,7 +61,6 @@ import wiki_freshness
 import wiki_source_missing as wsm
 import source_spans
 import yaml_scalars
-from dirty_queue import enqueue_project_collections
 from wiki_compile_enqueue import _safe_queue_path
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
@@ -72,6 +71,18 @@ MAX_SOURCES = 3
 # "호출은 됐지만 출력이 판정으로 쓸 수 없다" — 같은 입력에서 재현되는 설정 오류이므로
 # 후보가 다 떨어지면 종점이 있다(defer_or_drop). transient(timeout·실행 실패)와 구분된다.
 UNUSABLE_OUTPUT_REASONS = {"invalid_extractor_json", "invalid_verdict"}
+
+
+def enqueue_project_collections(project_root, selected):
+    """Queue a QMD reindex for a project that has no selected Laya route.
+
+    The import stays inside this function so the selected path never loads
+    the QMD queue modules.
+    """
+    from dirty_queue import enqueue_project_collections as enqueue
+    enqueue(project_root, selected)
+
+
 def extractor_builtins(compile_cfg: dict) -> list[str]:
     raw = compile_cfg.get("extractor")
     extractor = raw if isinstance(raw, dict) else {}
@@ -621,7 +632,7 @@ def snapshot_revision_evidence(
     if not isinstance(raw_revisions, list) or not raw_revisions:
         return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}, {}
 
-    import recall
+    import wiki_card
 
     allow_roots = wsm.allow_roots_of(config)
     loaded = []
@@ -630,7 +641,7 @@ def snapshot_revision_evidence(
         expected = yaml_scalars.normalize_source_revision(raw)
         if expected is None:
             return [], {"state": wiki_freshness.UNKNOWN, "reason": "invalid_source_revision"}, {}
-        resolved, reason = recall.resolve_existing_source(expected["path"], root, allow_roots)
+        resolved, reason = wiki_card.resolve_existing_source(expected["path"], root, allow_roots)
         if resolved is None:
             state = wiki_freshness.STALE if reason == "missing" else wiki_freshness.UNKNOWN
             return [], {"state": state, "reason": reason or "source_unavailable"}, {}
@@ -1029,7 +1040,7 @@ def process_verify_job(
     claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
     if verdict == "pass" and not any(isinstance(item, dict) and item for item in claims):
         # **`pass`는 근거를 요구한다.** `pass`가 `status: verified`의 유일한 입구이고
-        # `verified`는 `recall.is_auto_trusted_card`를 통과해 캐논급으로 주입되므로, 근거 0인
+        # `verified`는 `wiki_card.is_auto_trusted_card`를 통과해 캐논급으로 주입되므로, 근거 0인
         # `pass`는 곧 "무관한 요약이 trusted 카드가 된다"다(재현: 원문 `blue` · 카드 요약
         # `red` · verifier `{"verdict":"pass","claims":[]}` → `verified`). 자동 경로도 같은
         # 성질이지만 수동 경로는 caller 가 **어느 파일인가**까지 정하므로 노출이 넓다.

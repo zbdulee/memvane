@@ -110,7 +110,7 @@ def _detect(db, story, files):
 
 
 def _referencing_cards(story, source_path, before_sha):
-    from recall import frontmatter_source_revisions
+    from wiki_card import frontmatter_source_revisions
     wiki = story / '.auto-context/wiki'
     if wiki.is_symlink() or not wiki.is_dir():
         raise ValueError('synthetic_reconcile_unsafe_wiki')
