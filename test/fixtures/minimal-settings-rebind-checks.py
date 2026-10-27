@@ -448,6 +448,29 @@ class MinimalQmdIndexChecks(unittest.TestCase):
             self.assertEqual([row['name'] for row in resolved['indexEntries']],
                              ['project-wiki'])
 
+    def test_shared_registry_drops_index_flag_only_for_minimal_raw(self):
+        import qmd_shared_store as store
+        with tempfile.TemporaryDirectory(prefix='minimal-registry-') as temp:
+            base = Path(temp).resolve() / 'store'
+            base.mkdir(mode=0o700)
+            row = {'scope': '/p', 'path': '/p', 'indexed': True}
+            registry = base / 'collections.json'
+            registry.write_text(json.dumps({'project': row}))
+            registry.chmod(0o600)
+            demoted = {'project': {**row, 'indexed': False}}
+            # An explicit role edit (no minimal settings) still needs reconciliation.
+            with self.assertRaisesRegex(ValueError, 'path_change_requires_migration'):
+                store._reserve_owners(base, demoted)
+            minimal = config.normalize_config({'name': 'project', 'skipPaths': []})
+            self.assertEqual(store.minimal_raw_names(minimal), {'project'})
+            self.assertEqual(store.minimal_raw_names(
+                config.normalize_config(legacy_settings('project', 'project-wiki'))), set())
+            store._reserve_owners(base, demoted, demoted=store.minimal_raw_names(minimal))
+            self.assertIs(json.loads(registry.read_text())['project']['indexed'], False)
+            moved = {'project': {**row, 'path': '/q', 'indexed': False}}
+            with self.assertRaisesRegex(ValueError, 'path_change_requires_migration'):
+                store._reserve_owners(base, moved, demoted={'project'})
+
 
 if __name__ == '__main__':
     unittest.main()

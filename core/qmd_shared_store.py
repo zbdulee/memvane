@@ -430,16 +430,40 @@ def register_config(scope, config, *, home=None):
     scope = Path(scope).resolve(strict=True)
     check_project(scope,selected,home=home)
     wanted=_collection_owners(scope, config)
+    demoted=minimal_raw_names(config)
     if selected.get('approvedProjects') is None:
         pending,grant=_legacy_enrollment(base,selected)
         if str(scope)!=pending:
             existing=_registry(base)
-            if any(existing.get(name)!=owner for name,owner in wanted.items()):
+            if any(existing.get(name)!=owner and not
+                   (name in demoted and _demoted(existing.get(name), owner))
+                   for name,owner in wanted.items()):
                 raise ValueError('project_shared_migration_not_approved')
         elif grant is None:
             raise ValueError('project_shared_migration_not_approved')
-    _reserve_owners(base, wanted)
+    _reserve_owners(base, wanted, demoted=demoted)
     return selected
+
+
+def minimal_raw_names(config):
+    """Raw collections of minimal settings: compile sources, never QMD-indexed.
+
+    A row registered while such a collection was indexed may flip to
+    ``indexed: False`` at the same owner and path; update.sh then unregisters
+    it. An explicit role edit to ``source`` still needs reconciliation.
+    """
+    import config as qmd_config
+    if not qmd_config.is_minimal_config(config):
+        return frozenset()
+    roles = qmd_config.role_map(config)
+    return frozenset(name for name in config.get('collections') or []
+                     if qmd_config.collection_role(roles, name) == qmd_config.COLLECTION_ROLE_RAW)
+
+
+def _demoted(current, owner):
+    return (isinstance(current, dict) and current.get('scope') == owner['scope'] and
+            current.get('path') == owner['path'] and current.get('indexed') is True and
+            owner['indexed'] is False)
 
 
 def _collection_owners(scope, config):
@@ -468,11 +492,12 @@ def _collection_owners(scope, config):
     return wanted
 
 
-def _reserve_owners(base, wanted):
+def _reserve_owners(base, wanted, *, demoted=frozenset()):
     """Reserve names before opening a newly approved project's route.
 
     A crash leaves metadata reservations for an identical approved retry;
     never reassign another owner's name or write a QMD collection here.
+    ``demoted`` names may only drop ``indexed`` at the same owner and path.
     """
     lock = base / 'collections.lock'
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -485,12 +510,7 @@ def _reserve_owners(base, wanted):
         for name, owner in wanted.items():
             if name not in current or current[name] == owner:
                 continue
-            # Only the indexed flag of the same owner and path moves when a
-            # collection stops being indexed (role `source`, or the raw root of
-            # minimal settings); update.sh then unregisters it.
-            if (current[name].get('scope') == owner['scope'] and
-                    current[name].get('path') == owner['path'] and
-                    current[name].get('indexed') is True and owner['indexed'] is False):
+            if name in demoted and _demoted(current[name], owner):
                 continue
             # A path move needs an explicit index migration. Reassigning the
             # registry first would let an old qmd://name/relative hit resolve
@@ -699,13 +719,12 @@ def assert_all_enrolled(*, home=None):
             current = {row['name']: str((scope / row['path']).resolve(strict=True))
                        for row in resolved.get('entries', [])}
             current_indexed = {row['name'] for row in resolved.get('indexEntries', [])}
-            # An indexed collection that its owner now resolves as not indexed
-            # (same path) is a pending unregister by that owner, not a revoked
-            # one: QMD may still update it, but no owner was withdrawn.
-            current_source = {row['name'] for row in resolved.get('sourceEntries', [])}
+            # A minimal raw root registered as indexed is a pending unregister
+            # by its own owner (same path), not a withdrawn collection.
+            demoted = minimal_raw_names(cfg)
             if any(current.get(name) != path or not Path(path).is_dir()
                    or ((name in current_indexed) is not was_indexed and
-                       not (was_indexed is True and name in current_source))
+                       not (was_indexed is True and name in demoted))
                    for name, path, was_indexed in entries):
                 raise ValueError('revoked')
         except (OSError, ValueError, KeyError, TypeError):
