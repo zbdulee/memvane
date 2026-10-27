@@ -99,6 +99,10 @@ class QmdVectorReuse:
         self._lookups += 1
         return sample
 
+    def defer_sample(self):
+        """The sample could not run (no model admission); the next reuse takes it."""
+        self._lookups = max(0, self._lookups - 1)
+
     def verify(self, reused, fresh):
         """Same chunk layout and cosine >= MIN_COSINE per chunk, else reuse stops."""
         ok = (isinstance(fresh, list) and len(fresh) == len(reused) and all(
