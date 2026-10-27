@@ -691,8 +691,6 @@ def dry_run(cwd: str) -> dict:
 
 
 def main() -> int:
-    if os.environ.get("QMD_SANDBOX"):
-        return 0
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--json", action="store_true")
@@ -700,8 +698,11 @@ def main() -> int:
                         help="print per-state counts and the guard verdict; write nothing")
     args = parser.parse_args()
     if args.dry_run:
-        # 운영자가 직접 부르는 진단 경로다 — fail-open이 아니라 오류를 그대로 보여 준다.
+        # 운영자가 직접 부르는 진단 경로다 — 쓰기가 없으므로 sandbox에서도 돌고,
+        # fail-open이 아니라 오류를 그대로 보여 준다.
         print(json.dumps(dry_run(args.cwd), ensure_ascii=False, indent=2))
+        return 0
+    if os.environ.get("QMD_SANDBOX"):
         return 0
     try:
         result = run(args.cwd)
