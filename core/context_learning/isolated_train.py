@@ -24,7 +24,7 @@ from .store import canonical
 
 
 SCHEMA = 'qmd-isolated-multilingual-runtime-approval-v1'
-APPROVAL_RELATIVE = '.config/qmd/isolated-train-approval/current.json'
+APPROVAL_RELATIVE = '.config/laya/isolated-train-approval/current.json'
 OUTPUT_RELATIVE = '.local/share/qmd-auto-context/isolated-runs'
 _CASE_KEYS = {'requestId', 'inputSha256', 'goldSha256', 'evidenceSha256',
               'ticketSha256'}
@@ -195,7 +195,7 @@ def _mapping(root, project, policy, *, require_output_missing):
         'policy_sha': value['sharedPolicySha256'] == _sha(root / 'shared-policy.json'),
         'parent_sha': value['parentApprovalSha256'] == _sha(APPROVAL_FILE),
         'edit_sha': value['realEditApprovalSha256'] == _sha(
-            Path.home() / '.config/qmd/real-edit-approval/current.json'),
+            Path.home() / '.config/laya/real-edit-approval/current.json'),
         'project_root': value['projectRoot'] == str(project),
         'shared_root': value['sharedRoot'] == str(root),
     }

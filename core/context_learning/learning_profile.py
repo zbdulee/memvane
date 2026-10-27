@@ -158,8 +158,8 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
              enable_learning=False,staged_no_selection=False,fault=lambda _:None):
     root=resident._private_state(Path(root));project=Path(project).resolve(strict=True)
     # This same project settings lock is used by setup/install writers.
-    import install_update
-    with install_update._locked(project):
+    import settings_lock
+    with settings_lock.locked(project):
         fd=_lock(root/'learning-profile.lock')
         try:
             fcntl.flock(fd,fcntl.LOCK_EX)

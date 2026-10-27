@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import json
 import hashlib
-import os
 from pathlib import Path
 import sqlite3
-import subprocess
-import sys
 import time
 
 from .store import canonical
@@ -362,26 +359,9 @@ def resume_ready(project, *, timeout=60, allow_replay=True, return_more=False):
                 continue
             replayed += 1
             replay_attempted = True
-            env = os.environ.copy()
-            env.update(QMD_ENGINE=host, QMD_EDIT_INTERNAL='1',
-                       QMD_DEFERRED_CAPTURE_REPLAY='1',
-                       QMD_DEFERRED_CAPTURE_TICKET=ticket_id,
-                       QMD_HOOK_TOTAL_SECONDS='55',
-                       PYTHONDONTWRITEBYTECODE='1')
-            env.pop('QMD_HOOK_DEADLINE_MONO', None)
-            try:
-                result = subprocess.run([sys.executable,
-                    str(Path(__file__).parents[1] / 'recall.py')],
-                    input=encoded, text=True, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, env=env, timeout=timeout,
-                    cwd=story, check=False)
-                if 'qmd_deferred_capture_deadline_exceeded' in (
-                        getattr(result, 'stderr', '') or ''):
-                    error = 'deferred_recall_deadline_exceeded'
-                else:
-                    error = None if result.returncode == 0 else 'recall_failed'
-            except (OSError, subprocess.TimeoutExpired):
-                error = 'recall_timeout_or_unavailable'
+            # Replay ran the QMD recall hook, which is gone. The capture stays
+            # pending until it expires or a case commits.
+            error = 'recall_unavailable'
             state = 'pending'
             if state == 'pending' and error is None:
                 error = 'candidate_capture_pending'

@@ -1,34 +1,30 @@
 ---
 name: update
-description: Use when the user asks to manually refresh or rebuild the qmd auto-context index for a project — e.g. "qmd 갱신해줘", "인덱스 새로고침", "refresh the index", SessionStart-style refresh. Runs core/update.sh and honors .auto-context/settings.json opt-in. For recovering missed filesystem create/update/delete events, prefer the sync skill instead.
+description: Use when the user asks to manually refresh, resync, or reconcile the auto-context index for a project — e.g. "인덱스 새로고침", "동기화해줘", "놓친 변경 반영", "refresh the index". Queues the selected Laya index's full-scan sync, which reconciles created, changed and deleted files.
 ---
 
 # Update
 
-Run the qmd auto-context update path manually for the current project.
+Queue a full-scan sync of the project's selected Laya index.
 
 ## Workflow
 
 1. Confirm the target cwd.
-2. Resolve the plugin root: the directory where the qmd-auto-context plugin is installed, which differs from the target project (`$PWD`). Use the env var the hooks already set; the git-toplevel fallback is correct only inside a qmd-auto-context checkout. The wrapper itself derives the plugin root from its own location:
+2. Resolve the plugin root: the directory where the plugin is installed, which differs from the target project (`$PWD`). Use the env var the hooks already set; the git-toplevel fallback is correct only inside a plugin checkout. The wrapper itself derives the plugin root from its own location:
 
    ```bash
    ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"
    ```
-3. Run the bundled wrapper. Flags pass through to `core/update.sh` (e.g. `--recommend` for read-only recommendation, `--resolve-only`):
+3. Run the bundled wrapper:
 
    ```bash
    bash "$ROOT/skills/update/scripts/update.sh" "$PWD"
    ```
 
-4. If qmd is missing or unsupported, report the wrapper's pinned install guidance.
-5. Report whether update ran, skipped, or was blocked by missing config/qmd.
+4. Report the wake as queued, not as completed. The durable worker runs it off the hook.
 
 ## Safety
 
-- Do not bypass `.auto-context/settings.json` opt-in.
-- Do not auto-install qmd. The wrapper checks the plugin-tested qmd version and prints install guidance when needed.
-- Prefer `sync` when the user specifically asks to detect missed filesystem CUD events.
+- The wrapper acts only for a selected Laya route. A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- A selected route whose proof fails exits 3; report the reason.
 - Preserve empty output as a valid graceful no-op state.
-- The wrapper ensures, warms, and rotates the plugin-managed backend before update.
-- The wrapper runs the QMD update path via `core/update.sh`. It does not perform the hook's Laya route classification.

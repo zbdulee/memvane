@@ -188,77 +188,6 @@ test('dedup judge cooldown: 오염된 만료값이 판정을 영구 정지시키
 // 3. mtime 나이 형태 (sync lock / preflight skip TTL / dedup scan 경로 종류)
 // ---------------------------------------------------------------------------
 
-test('sync lock: 미래 mtime lock은 stale 회수 대상이다 (sync 영구 sync_busy 방지)', () => {
-  const dir = scratch('sync-lock');
-  try {
-    const lock = join(dir, 'qmd-sync.lock.d');
-    mkdirSync(lock, { recursive: true });
-    // pid 파일 없는 lock = 비정상 종료로 남은 lock. 그 회수 경로가 나이 판정이다.
-    utimesSync(lock, FUTURE, FUTURE);
-    assert.equal(py([
-      'import sync',
-      'from pathlib import Path',
-      `print(sync.lock_is_stale(Path(${JSON.stringify(lock)})))`,
-    ]), 'True', '미래 mtime lock이 stale로 안 보이면 sync는 영구히 sync_busy다');
-
-    // 방금 만든 lock은 여전히 stale이 아니다(single-flight 유지).
-    const fresh = join(dir, 'fresh.lock.d');
-    mkdirSync(fresh, { recursive: true });
-    assert.equal(py([
-      'import sync',
-      'from pathlib import Path',
-      `print(sync.lock_is_stale(Path(${JSON.stringify(fresh)})))`,
-    ]), 'False');
-  } finally { removeTemp(dir); }
-});
-
-test('preflight skip 마커: 미래 mtime은 TTL을 무기한으로 만들지 않는다 (gate 영구 우회 방지)', () => {
-  const dir = scratch('skip-ttl');
-  const fakeHome = join(dir, 'home');
-  try {
-    const cwd = join(dir, 'proj');
-    mkdirSync(cwd, { recursive: true });
-    mkdirSync(join(fakeHome, '.config', 'qmd', 'skip'), { recursive: true });
-    const marker = py([
-      'import hashlib, os',
-      `print(hashlib.sha256(os.path.realpath(${JSON.stringify(cwd)}).encode()).hexdigest())`,
-    ], { HOME: fakeHome });
-    const path = join(fakeHome, '.config', 'qmd', 'skip', marker);
-    writeFileSync(path, '');
-    // 방금 만든 마커는 유효(2h TTL).
-    assert.equal(py([
-      'import preflight_gate as g',
-      `print(g.has_skip_marker(${JSON.stringify(cwd)}))`,
-    ], { HOME: fakeHome }), 'True');
-    // 미래 mtime → 만료로 본다. 안 그러면 pending 프로젝트의 편집 gate가 영구 우회된다.
-    writeFileSync(path, '');
-    utimesSync(path, FUTURE, FUTURE);
-    assert.equal(py([
-      'import preflight_gate as g',
-      `print(g.has_skip_marker(${JSON.stringify(cwd)}))`,
-    ], { HOME: fakeHome }), 'False', '미래 mtime 마커가 유효하면 gate는 영구히 열려 있다');
-  } finally { removeTemp(dir); }
-});
-
-test('dedup cooldown 경로가 파일이면 scan이 죽지 않는다 (mkdir FileExistsError → 영구 사망)', () => {
-  const dir = scratch('dedup-path-kind');
-  try {
-    const lock = join(dir, 'dedup-cooldown-key');
-    writeFileSync(lock, 'not a directory\n');
-    // cooldown_ready 가 is_dir()만 보고 True를 내면 직후 touch_cooldown의 mkdir이
-    // FileExistsError(17)로 죽고 main의 except가 그것을 삼켜 scan이 영구 사망한다
-    // (실측: 연속 3회 전부 errno 17, scan 0회).
-    assert.equal(py([
-      'import wiki_dedup_scan as s',
-      'from pathlib import Path',
-      `lock = Path(${JSON.stringify(lock)})`,
-      'ready = s.cooldown_ready(lock)',
-      's.touch_cooldown(lock)',  // 가드가 없으면 여기서 FileExistsError로 죽는다
-      'print(ready, lock.is_dir())',
-    ]), 'True True');
-  } finally { removeTemp(dir); }
-});
-
 // ---------------------------------------------------------------------------
 // 4. 전수 회귀 가드
 // ---------------------------------------------------------------------------
@@ -280,33 +209,4 @@ test('시간 게이트 판정은 cooldown.py 한 벌을 거친다 (판정이 두
   }
   assert.deepEqual(offenders, [],
     `mtime 나이 판정은 cooldown.window_elapsed를 쓸 것 (미래 mtime에서 창이 영구화된다): ${offenders.join(', ')}`);
-});
-
-test('lock 획득 지점은 전부 stale 회수를 갖는다 (죽은 프로세스가 파이프라인을 멈추지 못한다)', () => {
-  // index worker는 죽은 pid를 즉시 회수하고, 다른 shell 경로는 나이로 회수한다. 새 lock이 회수 없이
-  // 추가되면 그 파이프라인은 프로세스 한 번의 비정상 종료로 영구 정지한다.
-  const shell = [
-    ['backend/keepalive.sh', /-mmin \+10/],
-    ['backend/index_worker.sh', /reclaim_dead_lock "\$WORKER_LOCK"/],
-    ['core/backend_manager.sh', /-mmin \+10/],
-  ];
-  for (const [file, pattern] of shell) {
-    assert.match(readFileSync(join(process.cwd(), file), 'utf8'), pattern, `${file}: stale lock 회수 누락`);
-  }
-  // orphan_reclaim: FileExistsError 분기가 나이 판정 + 회수로 이어져야 한다.
-  const reclaim = readFileSync(join(CORE, 'orphan_reclaim.py'), 'utf8');
-  assert.match(reclaim, /LOCK_STALE_SECS/, 'orphan_reclaim lock에 stale 임계가 없다');
-  assert.match(reclaim, /lock\.rmdir\(\)\s*\n\s*lock\.mkdir\(\)/, 'stale lock 회수(rmdir→mkdir)가 없다');
-  // sync: pid 판정 + 나이 폴백.
-  assert.match(readFileSync(join(CORE, 'sync.py'), 'utf8'), /window_elapsed/, 'sync lock 나이 판정이 SSOT를 안 쓴다');
-});
-
-test('notice_once는 미래 mtime marker에 영구 침묵하지 않는다 (모든 종점의 유일한 채널)', () => {
-  // notice_once가 조용해지면 orphan 회수 실패·unregister 실패·source_missing·invalid role
-  // 등 **모든 가드의 종점**이 사용자에게 닿지 못한다 — 그래서 여기에도 같은 가드가 있다.
-  const script = readFileSync(join(CORE, 'update.sh'), 'utf8');
-  const fn = script.slice(script.indexOf('notice_once() {'), script.indexOf('notice_clear() {'));
-  assert.match(fn, /age=\$\(\(now - mtime\)\)/);
-  assert.match(fn, /"\$age" -ge -60/, '미래 mtime 가드 없으면 marker 하나가 알림을 영구 억제한다');
-  assert.match(fn, /"\$age" -lt "\$ttl"/, 'TTL 억제 자체는 유지되어야 한다');
 });

@@ -82,8 +82,6 @@ test('문서가 verify 항의 +1 예약을 셈에 명시한다', () => {
 test('문서가 blocking 훅 예산을 코드 기본값(5초)으로 기술한다', () => {
   const timeout = pyJson('c.DEFAULT_CONFIG["queryTimeout"]');
   assert.equal(timeout, 5, '코드 기본값이 5초');
-  const recall = readFileSync('core/recall.py', 'utf8');
-  assert.match(recall, /^QUERY_TIMEOUT = 5\.0$/m, 'recall 상수도 같은 값이어야 한다');
   assert.match(DOC, /기본값은 `5`초입니다/, '문서가 5초를 명시');
   // "3초 예산"은 이 저장소 어디에도 근거가 없는 수치였다 — 문서에 기준으로 남으면 안 된다.
   assert.ok(!/queryTimeout 3초|3초 예산/.test(DOC.replace(/\*\*"queryTimeout 3초 예산"[^*]*\*\*/g, '')),

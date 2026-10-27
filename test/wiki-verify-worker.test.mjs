@@ -115,7 +115,6 @@ test('verify pass → status verified + verifiedBy/verifiedAt 패치 + 재인덱
     assert.match(text, /^verifiedBy: "?claude"?$/m);
     assert.match(text, /^verifiedAt: /m);
     assert.match(text, /Durable claim/, '관리 블록 본문은 보존');
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /^proj-wiki\t/);
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
     assert.equal(log[0].result, 'verified');
     assert.equal(readFileSync(join(project, '.auto-context', 'compile', 'verify-queue.jsonl'), 'utf8'), '');
@@ -298,7 +297,6 @@ test('verify fail + onFail 기본(delete) → 카드 삭제, tombstone 없음, �
     assert.equal(existsSync(join(project, CARD_REL)), false, '반증된 카드는 즉시 삭제');
     const tombstones = join(project, '.auto-context', 'compile', 'tombstones.jsonl');
     assert.equal(jsonl(tombstones).length, 0, 'tombstone을 세우지 않아 소스 수정 후 재생성 가능');
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /^proj-wiki\t/);
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
     assert.equal(log[0].result, 'deleted');
     assert.equal(log[0].reasons[0], 'source contradicts claim');
@@ -405,7 +403,6 @@ test('inconclusive + onInconclusive 기본(delete) → 카드 삭제 + 억제 �
     assert.equal(existsSync(join(project, CARD_REL)), false, '판정 불가 카드도 삭제');
     assert.equal(jsonl(join(project, '.auto-context', 'compile', 'tombstones.jsonl')).length, 0,
       'tombstone 없음 — 소스 변경 시 재생성 가능');
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /^proj-wiki\t/, '삭제 후 wiki 재인덱싱');
 
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
     assert.equal(log[0].result, 'deleted');

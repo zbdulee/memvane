@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import stat
 
 from .compact_input import derive
@@ -24,7 +23,7 @@ from .safe_source import snapshot_beneath
 POLICY_NAME = "synthetic-teacher-policy.json"
 PROVENANCE_NAME = "synthetic-provenance.json"
 SCHEMA = "qmd-synthetic-teacher-v1"
-APPROVAL_FILE = Path.home() / ".config/qmd/synthetic-approval/current.json"
+APPROVAL_FILE = Path.home() / ".config/laya/synthetic-approval/current.json"
 NOVEL_ROOT = Path.home() / "work/novel"
 COLLECTION_PATHS = {
     "fantasy-20261008-settings": "01_Settings",
@@ -105,8 +104,6 @@ def generated_path(candidate_id):
 
 def _experiment_config(root, project):
     import config as qmd_config
-    import setup_guard
-    import qmd_route
     from .synthetic_experiment import private_for
     from .synthetic_experiment import story_for
     found = qmd_config.find_project_config(str(story_for(project)))
@@ -135,17 +132,9 @@ def _experiment_config(root, project):
             or cfg.get("injectSourcePathsPerCard") != 0
             or cfg.get("allowRoots") != []):
         raise ValueError("synthetic_project_config_mismatch")
-    state = setup_guard.status(str(project))
-    if state.get("status") != "ready" or state.get("project") != str(project):
-        raise ValueError("synthetic_project_index_not_selected")
-    try:
-        selected = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
-        if selected.get('shared') is True:
-            import qmd_shared_store
-            if set(paths) != qmd_shared_store.owned_collections(project, cfg):
-                raise ValueError("synthetic_project_collection_scope_unselected")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ValueError("synthetic_project_index_not_selected") from exc
+    # The experiment's raw story collections lived in an isolated QMD index.
+    # The Laya index holds wiki collections only, so no index can prove them.
+    raise ValueError("synthetic_project_index_not_selected")
 
 
 def _active_edit_revisions(db, root, project, story):
@@ -299,60 +288,14 @@ def _generated_collections_only(root, project, *, recovery_episode=None,
 
 def _indexed_collections_only(root, project, *, recovery=None,
                               partial_revisions=None, edits=None):
-    """Reject stale or foreign active QMD records before any external CLI call."""
-    import qmd_route
-    import sqlite_read
-    from .shared import _db
-    try:
-        selected = qmd_route.project_paths(str(project), isolated=True,
-                                           reject_conflicts=True)
-        if selected.get("selected") is not True:
-            raise ValueError("synthetic_project_index_not_selected")
-        index_path = Path(selected["INDEX_PATH"])
-        if index_path.is_symlink() or not index_path.is_file():
-            raise ValueError("synthetic_project_index_not_selected")
-        with _db(root) as db:
-            latest = dict(db.execute(
-                "SELECT relative_path,sha256 FROM experiment_generated ORDER BY entry_id"))
-            from .source_card_provenance import latest_paths
-            latest.update({relative: revision for relative, (_, revision)
-                           in latest_paths(db).items()})
-        from .synthetic_experiment import story_for
-        story = story_for(project)
-        with sqlite_read.connect(str(index_path), timeout=1) as index:
-            active = index.execute(
-                "SELECT collection,path,hash FROM documents WHERE active=1 "
-                "AND collection IN (?,?,?,?,?,?)",
-                (*COLLECTION_PATHS, PROJECT_WIKI_COLLECTION)).fetchall()
-        settled_edits = set()
-        for collection, relative, revision in active:
-            if collection not in COLLECTION_PATHS:
-                raise ValueError("synthetic_index_contains_foreign_document")
-            physical = generated_path(f"{collection}/{relative}")
-            edited = (edits or {}).get(physical.as_posix())
-            if edited is not None:
-                # Wait for QMD to reflect a changed raw document, or to drop
-                # a deleted one. A stale indexed preimage cannot authorize a
-                # new gold call, even when its bytes were synthetic.
-                if (edited[1] is None or revision != edited[1] or
-                        hashlib.sha256(snapshot_beneath(story, physical)).hexdigest()
-                        != edited[1]):
-                    raise ValueError('synthetic_index_edit_not_settled')
-                settled_edits.add(physical.as_posix())
-                continue
-            allowed = (partial_revisions or {}).get(physical.as_posix(), ())
-            if allowed and revision in allowed and hashlib.sha256(
-                    snapshot_beneath(story, physical)).hexdigest() in allowed:
-                continue
-            expected = latest.get(physical.as_posix())
-            if revision not in (expected, (recovery or {}).get(physical.as_posix())) or hashlib.sha256(
-                    snapshot_beneath(story, physical)).hexdigest() != revision:
-                raise ValueError("synthetic_index_contains_unproven_document")
-        if any(after is not None and path not in settled_edits
-               for path, (_, after) in (edits or {}).items()):
-            raise ValueError('synthetic_index_edit_not_settled')
-    except (OSError, KeyError, TypeError, sqlite3.Error) as exc:
-        raise ValueError("synthetic_project_index_not_selected") from exc
+    """Reject before any external CLI call: no index proves the story collections.
+
+    The experiment's raw story collections were proved against an isolated
+    QMD index. The Laya index holds wiki collections only.
+    """
+    raise ValueError("synthetic_project_index_not_selected")
+
+
 def _parent_approval(root, project, policy):
     """An operator-held pin outside the project and shared queue is mandatory."""
     from .synthetic_experiment import load as experiment_control, approval as experiment_approval

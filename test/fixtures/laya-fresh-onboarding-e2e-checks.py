@@ -181,7 +181,7 @@ class FreshOnboarding(BUILD['BuildCase']):
             expected_proposal_sha256=plan['proposalSha256'],
             install_id=BUILD['INSTALL'],
             accepted_provider_sha256=self.review['proposalSha256'],
-            user_qmd_roots=[str(self.user_qmd)], model_path='/models/m.gguf',
+            model_path='/models/m.gguf',
             dimension=2)
         self.assertEqual(prepared['status'], 'initial_build_registered', prepared)
         route_bytes = (self.state / 'reviewed-route.json').read_bytes()

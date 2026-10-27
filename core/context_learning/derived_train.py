@@ -19,7 +19,7 @@ from .store import canonical
 
 
 SCHEMA = 'qmd-isolated-derived-runtime-approval-v1'
-APPROVAL_RELATIVE = '.config/qmd/isolated-derived-approval/current.json'
+APPROVAL_RELATIVE = '.config/laya/isolated-derived-approval/current.json'
 APPROVAL_KEYS = {
     'schema', 'enabled', 'operation', 'projectRoot', 'sharedRoot',
     'manifestPath', 'manifestSha256', 'planPath', 'auditPath', 'screenPath',
@@ -106,7 +106,7 @@ def preflight(project, *, require_output_missing=True):
             'policy': value['sharedPolicySha256'] == isolated_train._sha(root / 'shared-policy.json'),
             'parent': value['parentApprovalSha256'] == isolated_train._sha(APPROVAL_FILE),
             'edit': value['realEditApprovalSha256'] == isolated_train._sha(
-                Path.home() / '.config/qmd/real-edit-approval/current.json'),
+                Path.home() / '.config/laya/real-edit-approval/current.json'),
             'adapter_path': value['approvedAdapterPath'] == str(adapter),
             'adapter_sha': value['approvedAdapterSha256'] == isolated_train._sha(adapter),
             'runner_sha': value['runnerSha256'] == isolated_train._sha(isolated_train.__file__),

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeTemp } from './helpers/temp.mjs';
 
@@ -19,36 +19,43 @@ test("update skill metadata and wrapper contract", () => {
   const skill = readFileSync("skills/update/SKILL.md", "utf8");
   const meta = frontmatter(skill);
   assert.equal(meta.name, "update");
-  assert.match(meta.description, /qmd/i);
-  assert.match(meta.description, /SessionStart/i);
-  assert.match(meta.description, /\.auto-context\/settings\.json/);
-  assert.match(meta.description, /index/i);
-  assert.match(skill, /core\/update\.sh/);
-  assert.match(skill, /hook/i);
+  assert.match(meta.description, /sync/i);
+  assert.match(meta.description, /Laya/);
+  assert.match(skill, /setup skill/);
 
   const wrapper = readFileSync("skills/update/scripts/update.sh", "utf8");
   assert.match(wrapper, /SKILL_DIR=.*dirname/);
-  assert.match(wrapper, /PLUGIN_ROOT/);
-  assert.match(wrapper, /QMD_BACKEND_MANAGER/);
-  assert.match(wrapper, /check-qmd --manual/);
-  assert.match(wrapper, /ensure --wait/);
-  assert.match(wrapper, /warm/);
-  assert.match(wrapper, /rotate/);
-  assert.match(wrapper, /core\/update\.sh/);
-  assert.match(wrapper, /cd "\$TARGET_CWD"/);
+  assert.match(wrapper, /laya_index_host_route\.py" classify update/);
+  assert.match(wrapper, /run-hook" update claude/);
+  assert.doesNotMatch(wrapper, /backend_manager|setup_guard|recall\.py|core\/update\.sh/);
   assert.ok((statSync("skills/update/scripts/update.sh").mode & 0o111) !== 0, "wrapper must be executable");
 });
 
-test("update wrapper can invoke update path in sandbox without side effects", () => {
-  const base = join(homedir(), ".cache");
-  mkdirSync(base, { recursive: true });
-  const dir = mkdtempSync(join(base, "qmd-test-update-skill-proj-"));
+test("update wrapper names onboarding for a project without a selected route", () => {
+  const home = mkdtempSync(join(tmpdir(), "qmd-test-update-skill-"));
+  const dir = join(home, "project");
+  mkdirSync(join(dir, ".auto-context"), { recursive: true });
+  writeFileSync(join(dir, ".auto-context", "settings.json"), JSON.stringify({ name: "demo", skipPaths: [] }));
   try {
-    const out = execFileSync("bash", ["skills/update/scripts/update.sh", dir], {
-      encoding: "utf8",
-      env: { ...process.env, QMD_SANDBOX: "1" },
+    const result = spawnSync("bash", ["skills/update/scripts/update.sh", dir], {
+      encoding: "utf8", env: { ...process.env, HOME: home, QMD_SANDBOX: "" },
     });
-    assert.equal(out, "");
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /setup skill/);
+  } finally {
+    removeTemp(home);
+  }
+});
+
+test("update wrapper is a no-op in a sandbox", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qmd-test-update-skill-sandbox-"));
+  try {
+    const result = spawnSync("bash", ["skills/update/scripts/update.sh", dir], {
+      encoding: "utf8", env: { ...process.env, QMD_SANDBOX: "1" },
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(result.stdout, "");
   } finally {
     removeTemp(dir);
   }

@@ -1139,25 +1139,6 @@ def _successful_edit(payload: dict) -> bool:
             and response.get("success", True) is not False)
 
 
-def _route_external_edits(decision: dict, payload: dict, current: Path,
-                          outside: list[str]) -> None:
-    """Wake each other approved Laya owner of an outside edit; raises on refusal.
-
-    The selected project's search scope and wake are untouched. Ownership is
-    proved per path by laya_owner_projection; the diagnostic carries a fixed
-    reason, never a path.
-    """
-    if not _successful_edit(payload):
-        _fail("external_edit_unconfirmed")
-    import laya_owner_projection
-    _woken, refused = laya_owner_projection.route_external(
-        outside, str(current), selected_root=decision["projectRoot"])
-    if refused:
-        order = {raw: index for index, raw in reversed(list(enumerate(outside)))}
-        first = min(refused, key=lambda item: order.get(item[0], len(outside)))
-        _fail("external_" + first[1])
-
-
 def _request_stale_sync(decision: dict, proof: dict):
     """Record one durable full-scan wake for a stale view; always raises.
 
@@ -1511,13 +1492,13 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             current, inside, outside = _edit_targets(decision, payload, "index",
                                                      allow_outside=True)
             if outside:
-                # Paths inside the project keep the selected wake below
-                # unchanged; only the outside ones go to owner routing.
+                # Paths inside the project keep the selected wake below. An
+                # outside path belongs to another project; that project's own
+                # full-scan sync reconciles it, so nothing is routed here.
                 if verify_selected_route(decision) != proof:
                     _fail("selected_proof_changed")
                 if inside:
                     _request_selected_sync(action, decision, proof)
-                _route_external_edits(decision, payload, current, outside)
                 return {}
         elif action != "file-change-event" and payload.get("hook_event_name") != "SessionStart":
             _fail("invalid_session_event")

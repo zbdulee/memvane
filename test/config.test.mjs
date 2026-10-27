@@ -395,25 +395,6 @@ test('rawFallbackMinScore 누락 시 정규화된 minScore를 따른다', () => 
   assert.equal(cfg.rawFallbackMinScore, 0.7);
 });
 
-test('find_project_config: cwd .auto-context.json root/path 반환', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, '.auto-context.json'), JSON.stringify({
-    indexing: true,
-    collections: ['story'],
-  }));
-  try {
-    const result = findProjectConfig(dir, { HOME: home });
-    assert.equal(result.projectRoot, realpathSync(dir));
-    assert.equal(result.configPath, join(realpathSync(dir), '.auto-context.json'));
-    assert.equal(result.configFormat, 'auto-context-json');
-    assert.deepEqual(result.config.collections, ['story']);
-  } finally {
-    removeTemp(home);
-  }
-});
-
 test('find_project_config: .auto-context/settings.json preferred', () => {
   const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
   const dir = join(home, 'proj');
@@ -450,44 +431,6 @@ test('find_project_config: settings.json beats legacy .auto-context.json when bo
     assert.equal(result.configPath, join(realpathSync(dir), '.auto-context', 'settings.json'));
     assert.equal(result.configFormat, 'auto-context-dir');
     assert.deepEqual(result.config.collections, ['settings']);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('find_project_config: parent .auto-context.json found from child cwd', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  const child = join(dir, 'docs', 'nested');
-  mkdirSync(child, { recursive: true });
-  writeFileSync(join(dir, '.auto-context.json'), JSON.stringify({
-    indexing: true,
-    collections: ['parent'],
-  }));
-  try {
-    const result = findProjectConfig(child, { HOME: home });
-    assert.equal(result.projectRoot, realpathSync(dir));
-    assert.equal(result.configPath, join(realpathSync(dir), '.auto-context.json'));
-    assert.equal(result.configFormat, 'auto-context-json');
-    assert.deepEqual(result.config.collections, ['parent']);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('find_project_config: legacy .agents/qmd-recall.json still works', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(join(dir, '.agents'), { recursive: true });
-  writeFileSync(join(dir, '.agents', 'qmd-recall.json'), JSON.stringify({
-    collections: ['legacy'],
-  }));
-  try {
-    const result = findProjectConfig(dir, { HOME: home });
-    assert.equal(result.projectRoot, realpathSync(dir));
-    assert.equal(result.configPath, join(realpathSync(dir), '.agents', 'qmd-recall.json'));
-    assert.equal(result.configFormat, 'agents-legacy');
-    assert.deepEqual(result.config.collections, ['legacy']);
   } finally {
     removeTemp(home);
   }
@@ -537,78 +480,6 @@ print(json.dumps(result, ensure_ascii=False))
     assert.equal(result.configPath, null);
     assert.equal(result.configFormat, 'none');
     assert.deepEqual(result.config.collections, []);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('migrate_legacy_config moves .auto-context.json to .auto-context/settings.json and deletes old file', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, '.auto-context.json'), JSON.stringify({
-    indexing: true,
-    collections: ['legacy'],
-    minScore: 0.7,
-  }));
-  try {
-    const result = migrateLegacyConfig(dir, { HOME: home });
-    assert.equal(result.migrated, true);
-    assert.equal(result.from, join(realpathSync(dir), '.auto-context.json'));
-    assert.equal(result.to, join(realpathSync(dir), '.auto-context', 'settings.json'));
-    assert.equal(existsSync(join(dir, '.auto-context.json')), false);
-    const cfg = JSON.parse(readFileSync(join(dir, '.auto-context', 'settings.json'), 'utf8'));
-    assert.deepEqual(cfg.collections, ['legacy']);
-    assert.equal(cfg.minScore, 0.7);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('migrate_legacy_config is no-op when settings.json already exists', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(join(dir, '.auto-context'), { recursive: true });
-  writeFileSync(join(dir, '.auto-context.json'), JSON.stringify({ collections: ['legacy-root'] }));
-  writeFileSync(join(dir, '.auto-context', 'settings.json'), JSON.stringify({ collections: ['settings'] }));
-  try {
-    const result = migrateLegacyConfig(dir, { HOME: home });
-    assert.equal(result.migrated, false);
-    assert.equal(result.reason, 'settings_exists');
-    assert.equal(existsSync(join(dir, '.auto-context.json')), true);
-    assert.deepEqual(JSON.parse(readFileSync(join(dir, '.auto-context', 'settings.json'), 'utf8')).collections, ['settings']);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('migrate_legacy_config leaves legacy file on invalid JSON', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, '.auto-context.json'), '{not json');
-  try {
-    const result = migrateLegacyConfig(dir, { HOME: home });
-    assert.equal(result.migrated, false);
-    assert.equal(result.reason, 'invalid_json');
-    assert.equal(existsSync(join(dir, '.auto-context.json')), true);
-    assert.equal(existsSync(join(dir, '.auto-context', 'settings.json')), false);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('migrate_legacy_config does not migrate .agents/qmd-recall.json', () => {
-  const home = mkdtempSync(join(tmpdir(), 'qmd-cfg-home-'));
-  const dir = join(home, 'proj');
-  mkdirSync(join(dir, '.agents'), { recursive: true });
-  writeFileSync(join(dir, '.agents', 'qmd-recall.json'), JSON.stringify({ collections: ['agents'] }));
-  try {
-    const result = migrateLegacyConfig(dir, { HOME: home });
-    assert.equal(result.migrated, false);
-    assert.equal(result.reason, 'agents_legacy_not_migrated');
-    assert.equal(existsSync(join(dir, '.auto-context', 'settings.json')), false);
-    assert.equal(existsSync(join(dir, '.agents', 'qmd-recall.json')), true);
   } finally {
     removeTemp(home);
   }

@@ -543,7 +543,7 @@ def _finish_interrupted_claim_queue_link(queue, incarnation):
 
 def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_root,
                               commit_id, expected_proposal_sha256, install_id,
-                              accepted_provider_sha256, user_qmd_roots=None,
+                              accepted_provider_sha256,
                               model_path=None, dimension=None):
     """Register an inactive wiki-only build; do not touch QMD or activate.
 
@@ -557,8 +557,7 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             not isinstance(install_id, str) or
             not re.fullmatch(r'[0-9a-f]{32}', install_id) or
             not isinstance(accepted_provider_sha256, str) or
-            not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256) or
-            (user_qmd_roots is not None and not isinstance(user_qmd_roots, list))):
+            not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256)):
         _fail('invalid_origin_preparation_request')
     if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
         _fail('source_checkout_cannot_be_installed_root')
@@ -582,19 +581,15 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             provider_proposal_sha256=accepted_provider_sha256,
             source_root=source_root, plugin_root=plugin_root, state=state,
             journal=journal, socket=socket, commit_id=commit_id,
-            install_id=install_id, user_qmd_roots=user_qmd_roots)
+            install_id=install_id)
 
 
 def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
-                      user_qmd_roots, state, journal, socket):
+                      state, journal, socket):
     """Adopt the host-loaded exact bundle and stage its provider attestation."""
     proof = adopt_host_loaded_plugin(source_root, plugin_root,
                                      commit_id=commit_id,
                                      vector_profile=reviewed_provider['vectorProfile'])
-    if user_qmd_roots:
-        # Optional legacy overlap check; the install never binds these roots.
-        from laya_package import _user_qmd_inventory
-        _user_qmd_inventory(Path(plugin_root), user_qmd_roots)
     profile = proof['vectorProfile']
     manifest = reviewed_provider['providerManifest']
     if manifest.get('serviceSocketPath') != str(socket):
@@ -651,7 +646,7 @@ def _request_build_wake(project_root):
 
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
                             source_root, plugin_root, state, journal, socket,
-                            commit_id, install_id, user_qmd_roots):
+                            commit_id, install_id):
     """Create every store of an inactive initial build and register it once.
 
     Under the install lock, in order, each step verified-or-created so an
@@ -670,7 +665,7 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
     roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
     proof, profile, _manifest = _adopt_and_attest(
         source_root=source_root, plugin_root=plugin_root, commit_id=commit_id,
-        reviewed_provider=reviewed_provider, user_qmd_roots=user_qmd_roots,
+        reviewed_provider=reviewed_provider,
         state=state, journal=journal, socket=socket)
     candidate = state / BUILD_CANDIDATE
     queue = state / BUILD_QUEUE
@@ -714,8 +709,7 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
     staged = stage_host_loaded_candidate(
         source_root=source_root, plugin_root=plugin_root,
         state_root=state, commit_id=commit_id, route_bytes=route_bytes,
-        reviewed_provider=reviewed_provider,
-        user_qmd_roots=user_qmd_roots, _already_locked=True)
+        reviewed_provider=reviewed_provider, _already_locked=True)
     identity = {'projectRoot': plan['projectRoot'], 'stateRoot': str(state),
                 'installId': install_id, 'scopeId': plan['scopeId'],
                 'collections': plan['collections'], 'candidateDb': str(candidate),
@@ -1526,7 +1520,7 @@ def _restore_fresh_wiki_selection(project, state, journal):
 
 
 def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,
-                                route_bytes, reviewed_provider, user_qmd_roots=None,
+                                route_bytes, reviewed_provider,
                                 _already_locked=False):
     """Seal an installed commit and stage its attested, inactive journal.
 
@@ -1552,8 +1546,7 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
             route_hint.get('pluginRoot') != str(root) or
             not isinstance(reviewed_provider, dict) or
             set(reviewed_provider) != {'vectorProfile', 'providerManifest',
-                                       'dependencyClosure'} or
-            (user_qmd_roots is not None and not isinstance(user_qmd_roots, list))):
+                                       'dependencyClosure'}):
         _fail('invalid_install_request')
     journal = parent / 'install-journal.sqlite'
     with (nullcontext() if _already_locked else _install_lock(parent)):
@@ -1583,8 +1576,7 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
                     observed['providerAttestationSha256'] is not None):
                 _fail('existing_install_journal_requires_review')
         else:
-            observed = create_journal(journal, proof, route_bytes,
-                                      user_qmd_roots=user_qmd_roots)
+            observed = create_journal(journal, proof, route_bytes)
         preflight = preflight_product_candidate(journal)
         if preflight['attestationSha256'] != receipt['attestationSha256']:
             _fail('staged_attestation_changed')
@@ -1609,7 +1601,6 @@ def main(argv=None):
     stage.add_argument('--state-root', required=True)
     stage.add_argument('--route-file', required=True)
     stage.add_argument('--provider-review-file', required=True)
-    stage.add_argument('--user-qmd-roots-file')
     fresh_plan = sub.add_parser('plan-fresh-wiki',
                                 help='review a new wiki-only generation')
     fresh_plan.add_argument('--project-root', required=True)
@@ -1627,7 +1618,6 @@ def main(argv=None):
         fresh_prepare.add_argument('--' + key, required=True)
     fresh_prepare.add_argument('--model-file')
     fresh_prepare.add_argument('--dimension', type=int)
-    fresh_prepare.add_argument('--user-qmd-root', action='append')
     status = sub.add_parser('status', help='inspect the inactive or active install journal')
     status.add_argument('--state-root', required=True)
     build_status = sub.add_parser('build-status', help='inspect a registered initial build')
@@ -1682,16 +1672,13 @@ def main(argv=None):
             expected_proposal_sha256=args.proposal_sha256,
             install_id=args.install_id,
             accepted_provider_sha256=args.accepted_provider_sha256,
-            model_path=args.model_file, dimension=args.dimension,
-            user_qmd_roots=args.user_qmd_root)
+            model_path=args.model_file, dimension=args.dimension)
     elif args.action == 'stage':
         result = stage_host_loaded_candidate(
             source_root=args.source_root, plugin_root=root,
             state_root=args.state_root, commit_id=args.commit,
             route_bytes=_read_private(args.route_file, 8192),
-            reviewed_provider=_json_input(args.provider_review_file),
-            user_qmd_roots=(_json_input(args.user_qmd_roots_file)
-                            if args.user_qmd_roots_file else None))
+            reviewed_provider=_json_input(args.provider_review_file))
     elif args.action == 'status':
         proof = inspect_full_plugin_candidate(root)
         result = {'bundle': proof, 'journal': inspect_journal(journal)}

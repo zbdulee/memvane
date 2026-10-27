@@ -19,9 +19,9 @@ summary; from the `wiki-dedup` skill on an explicit user request → report the 
 
 <!-- WORKFLOW:START -->
 0. Acquire the per-project resolver run-lock before touching anything:
-   `mkdir ~/.config/qmd/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
+   `mkdir ~/.local/state/laya/auto-context/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
    is not something you need to compute yourself — use the exact literal path segment
-   `mkdir -p ~/.config/qmd/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
+   `mkdir -p ~/.local/state/laya/auto-context/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
    If `mkdir` fails and the existing lock dir's mtime is under 60 minutes old, another resolver is
    active — stop immediately, do nothing further. If it is 60+ minutes old, it is stale: remove it
    and re-create it, then continue. Remove the lock dir when you finish, whatever the outcome.

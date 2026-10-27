@@ -6,7 +6,6 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-import posttool
 from context_learning import shared
 from context_learning.laya_adapter import EDIT_INPUT_VIEW
 
@@ -67,10 +66,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
             assert shared.inference_argv(policy, 'predict') == expected
             assert shared.inference_argv({**policy, 'trainerArgv': expected},
                                          'segment') == expected
-            with patch('context_learning.shared._policy', return_value=policy):
-                result = posttool._segment_change('Synthetic multilingual edit question', root)
-            assert result[0]['text'] == 'Synthetic multilingual edit question'
-            assert observed == [expected]
             assert json.dumps(policy, sort_keys=True) == frozen
             rejected(lambda: shared.inference_argv(policy, 'train'),
                      'invalid_shared_inference_operation')
@@ -95,14 +90,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
             adapter.write_text('tampered')
             rejected(lambda: shared.inference_argv(policy, 'predict'),
                      'historical_inference_adapter_unverified')
-            with patch('context_learning.shared._policy', return_value=policy):
-                rejected(lambda: posttool._segment_change('Synthetic edit', root),
-                         'historical_inference_adapter_unverified')
             adapter.unlink()
-            with patch('context_learning.shared._policy', return_value=policy):
-                rejected(lambda: posttool._segment_change('Synthetic edit', root),
-                         'historical_inference_adapter_unverified')
-            assert observed == [expected]
 
 print(json.dumps({'missingOldCacheResolved': True,
                   'currentAdapterHashAndViewPinned': True,

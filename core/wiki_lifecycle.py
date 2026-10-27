@@ -127,7 +127,8 @@ DELETING = (MISSING, LEGACY_MISSING, UNPROVEN)
 
 def log_path() -> Path:
     return Path(os.environ.get(
-        "QMD_WIKI_LIFECYCLE_LOG", str(Path.home() / ".cache" / "qmd" / "wiki-lifecycle.log")))
+        "QMD_WIKI_LIFECYCLE_LOG",
+        str(Path.home() / ".local" / "state" / "laya" / "auto-context" / "logs" / "wiki-lifecycle.log")))
 
 
 def log(message: str) -> None:

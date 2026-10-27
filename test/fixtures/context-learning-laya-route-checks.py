@@ -167,9 +167,6 @@ class LayaProject:
         else:
             stack.enter_context(patch.object(laya_install_journal, 'verify_selected_route',
                                              side_effect=ValueError('journal_changed')))
-        import qmd_route
-        stack.enter_context(patch.object(qmd_route, 'project_paths',
-                                         side_effect=AssertionError('QMD read on Laya route')))
         return stack
 
 
@@ -353,9 +350,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(last['status'], 'ineligible')
 
     def test_training_gate_accepts_verified_laya_route(self):
-        import setup_guard
         lock = self.base / 'lease.lock'
-        not_ready = {'status': 'setup_required', 'reason': 'plugin_qmd_store_not_selected'}
 
         def run_owned():
             fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
@@ -370,13 +365,12 @@ class Checks(unittest.TestCase):
                               side_effect=lambda _r, _n, _s, result, _p: result):
                 return shared._run_owned_training(self.laya.project, fd)
 
-        with patch.object(setup_guard, 'status', return_value=not_ready):
-            with self.laya.route():
-                self.assertEqual(run_owned(), {'status': 'trained'})
-                self.assertTrue(laya_learning.ready(self.laya.project))
-            with self.laya.route(verified=False):
-                self.assertEqual(run_owned(), {'status': 'setup_in_progress'})
-                self.assertFalse(laya_learning.ready(self.laya.project))
+        with self.laya.route():
+            self.assertEqual(run_owned(), {'status': 'trained'})
+            self.assertTrue(laya_learning.ready(self.laya.project))
+        with self.laya.route(verified=False):
+            self.assertEqual(run_owned(), {'status': 'setup_in_progress'})
+            self.assertFalse(laya_learning.ready(self.laya.project))
 
     def test_laya_publish_wakes_learning_without_changing_sync_result(self):
         import runtime_handlers

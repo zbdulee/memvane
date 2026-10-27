@@ -100,19 +100,6 @@ class Checks(unittest.TestCase):
   self.assertIsNotNone(P,'learning profile missing')
   self.write(self.root/P.INSTALL,{'fixture':'interrupted'})
   self.assertTrue(P.present(self.root))
- def test_install_keeps_qmd_success_if_settings_need_new_profile_acceptance(self):
-  import setup_entry,shared_install,io
-  from contextlib import redirect_stdout
-  self.assertIsNotNone(P,'learning profile missing');plan=self.plan()
-  def installed(args):
-   self.write(self.settings,{**self.raw,'topN':7})
-   return {'status':'completed','qmdReady':True,'overallReady':True}
-  args=['install','--project',str(self.project),'--learning-namespace',str(self.root),'--learning-choice','local-auto-apply','--learning-migration','new','--learning-expires-at-unix-ms',str(self.expiry),'--accepted-learning-profile',P.digest(plan)]
-  out=io.StringIO()
-  with patch.object(shared_install,'install',side_effect=installed),redirect_stdout(out):status=setup_entry.main(args)
-  answer=json.loads(out.getvalue());self.assertEqual(status,0)
-  self.assertTrue(answer['qmdReady']);self.assertEqual(answer['learningProfile']['status'],'profile_review_required')
-  self.assertFalse((self.root/P.NAME).exists())
  def test_selected_profile_uses_only_local_worker_and_disables_legacy_autocycle(self):
   self.assertIsNotNone(P,'learning profile missing')
   import config,context_learning_auto as auto

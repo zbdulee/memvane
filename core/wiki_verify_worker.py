@@ -73,16 +73,6 @@ MAX_SOURCES = 3
 UNUSABLE_OUTPUT_REASONS = {"invalid_extractor_json", "invalid_verdict"}
 
 
-def enqueue_project_collections(project_root, selected):
-    """Queue a QMD reindex for a project that has no selected Laya route.
-
-    The import stays inside this function so the selected path never loads
-    the QMD queue modules.
-    """
-    from dirty_queue import enqueue_project_collections as enqueue
-    enqueue(project_root, selected)
-
-
 def extractor_builtins(compile_cfg: dict) -> list[str]:
     raw = compile_cfg.get("extractor")
     extractor = raw if isinstance(raw, dict) else {}
@@ -434,9 +424,7 @@ def reindex_wiki(root: Path, config: dict) -> None:
     if collection and collection_path:
         import wiki_selected_laya
         selected = wiki_selected_laya.selected(root)
-        if selected is None:
-            enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
-        else:
+        if selected is not None:
             wiki_selected_laya.request_sync(root, selected)
 
 

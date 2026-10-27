@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-isolated-train-', dir='/tmp') as tm
     project = home / 'story'
     root = home / 'shared'
     project.mkdir(); root.mkdir()
-    approval_dir = home / '.config/qmd/isolated-train-approval'
+    approval_dir = home / '.config/laya/isolated-train-approval'
     approval_dir.mkdir(parents=True)
     approval_dir.chmod(0o700)
     output_parent = home / isolated_train.OUTPUT_RELATIVE
@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-isolated-train-', dir='/tmp') as tm
     output_parent.chmod(0o700)
     parent_approval = home / 'parent-approval.json'
     parent_approval.write_text('{}')
-    real_edit = home / '.config/qmd/real-edit-approval/current.json'
+    real_edit = home / '.config/laya/real-edit-approval/current.json'
     real_edit.parent.mkdir(parents=True)
     real_edit.write_text('{}')
     policy_file = root / 'shared-policy.json'
@@ -254,7 +254,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-isolated-train-', dir='/tmp') as tm
         assert loaded['modelIdentitySha256'] == isolated_train.isolated_model_identity(model)
         assert loaded['modelInputView'] == policy['modelInputView']
         assert loaded['realEditApprovalSha256'] == isolated_train._sha(
-            Path.home() / '.config/qmd/real-edit-approval/current.json')
+            Path.home() / '.config/laya/real-edit-approval/current.json')
         assert isolated_train.preflight(project)['evidence_sha256']
         mutations = [
             ('operation', 'predict', 'isolated_runtime_approval_invalid'),

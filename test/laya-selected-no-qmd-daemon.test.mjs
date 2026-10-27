@@ -38,24 +38,3 @@ for (const [skill, args] of [['query', ['검색 결과는?']], ['update', []]]) 
     }
   });
 }
-
-test('wiki dedup scan never queries QMD for a non-legacy Laya route', () => {
-  const {dir} = blockedProject();
-  try {
-    const result = spawnSync('python3', ['-B', '-c', `
-import sys
-sys.path.insert(0, 'core')
-import qmd_endpoint, wiki_dedup_scan
-def refuse(*_a, **_k):
-    raise AssertionError('QMD daemon queried')
-qmd_endpoint.optional_url = refuse
-logged = []
-wiki_dedup_scan.log = logged.append
-wiki_dedup_scan.run(sys.argv[1])
-assert logged == ['ABORT: selected Laya route unavailable'], logged
-`, dir], {encoding: 'utf8', timeout: 30000, env: {...process.env, QMD_RECALL_LOG: ''}});
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-  } finally {
-    removeTemp(dir);
-  }
-});

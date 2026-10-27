@@ -26,7 +26,7 @@ test('isolated train CLI dispatches both operations and fails closed without a g
       assert.ok(payload.reason);
       assert.equal(result.stderr, '');
     }
-    assert.equal(existsSync(join(home, '.config/qmd/isolated-train-approval/current.json')), false);
+    assert.equal(existsSync(join(home, '.config/laya/isolated-train-approval/current.json')), false);
     assert.equal(existsSync(join(home, '.local/share/qmd-auto-context/isolated-runs')), false);
   } finally {
     removeTemp(home);

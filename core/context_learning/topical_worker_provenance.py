@@ -203,22 +203,7 @@ def _ack(project, source_rows, card_suffix, card_sha, *, require_vector=True):
     bound = laya_selected(project)
     if bound is not None:
         return _laya_ack(bound, project, expected, require_vector=require_vector)
-    import qmd_route
-    import sqlite_read
-    route = qmd_route.project_paths(str(project), isolated=True, reject_conflicts=True)
-    if route.get('selected') is not True:
-        raise ValueError('topical_worker_index_unselected')
-    with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
-        for collection, relative, revision in expected:
-            rows = index.execute('SELECT hash FROM documents WHERE collection=? AND '
-                                 'path=? AND active=1', (collection, relative)).fetchall()
-            if rows != [(revision,)]:
-                raise ValueError('topical_worker_index_unacknowledged')
-        if require_vector and not index.execute(
-                'SELECT 1 FROM content_vectors WHERE hash=? LIMIT 1',
-                (card_sha,)).fetchone():
-            raise ValueError('topical_worker_vector_unacknowledged')
-    return expected
+    raise ValueError('topical_worker_index_unselected')
 
 
 def _laya_ack(bound, project, expected, *, require_vector):
@@ -417,14 +402,7 @@ def reconcile_pending(root, project):
                                    'topical-v2/' + gid + '/' + cid + '.md', bound=bound):
                     raise ValueError('topical_worker_retirement_unindexed')
             else:
-                import qmd_route, sqlite_read
-                route = qmd_route.project_paths(str(project), isolated=True,
-                                                reject_conflicts=True)
-                with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
-                    if index.execute('SELECT 1 FROM documents WHERE collection=? AND path=? '
-                                     'AND active=1 LIMIT 1', (WIKI_COLLECTION,
-                                      'topical-v2/' + gid + '/' + cid + '.md')).fetchone():
-                        raise ValueError('topical_worker_retirement_unindexed')
+                raise ValueError('topical_worker_index_unselected')
             db.execute("UPDATE topical_worker_versions SET state='retired' WHERE "
                        "card_path=? AND card_sha256=? AND state='active'", (relative,sha))
             retired += 1

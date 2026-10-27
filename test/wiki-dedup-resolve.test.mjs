@@ -86,7 +86,7 @@ function runResolveAllowReject(work, index, action, extra = [], env = {}) {
   }
 }
 
-test('wiki_dedup_resolve: merge deletes the named loser, logs full content first, enqueues the collection', () => {
+test('wiki_dedup_resolve: merge deletes the named loser, logs full content first', () => {
   const work = repoTemp('dedup-resolve-merge');
   const dirtyQueue = join(work, 'dirty-queue');
   try {
@@ -109,8 +109,8 @@ test('wiki_dedup_resolve: merge deletes the named loser, logs full content first
     assert.equal(deleted[0].score, 0.95);
     assert.ok(deleted[0].resolvedAt);
 
-    assert.equal(existsSync(dirtyQueue), true);
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /proj-wiki\t.*\.auto-context\/wiki/);
+    // A project without a selected Laya route has no index to wake.
+    assert.equal(existsSync(dirtyQueue), false);
     assert.deepEqual(readDedupNeeded(work), []);
   } finally {
     removeTemp(work);

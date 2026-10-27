@@ -151,7 +151,6 @@ print(json.dumps({'candidates': [{
     assert.equal(verifyJob.sourceRevisions[0].sha256,
       createHash('sha256').update(sourceBytes).digest('hex'));
     assert.equal(readFileSync(join(project, '.auto-context', 'compile', 'source-queue.jsonl'), 'utf8'), '');
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /^proj-wiki\t/);
     const refreshRows = jsonl(join(project, '.auto-context', 'compile', 'source-refresh-pending.jsonl'));
     assert.deepEqual(refreshRows.map((row) => row.state), ['pending_refresh', 'resolved']);
     assert.equal(refreshRows[1].pendingEventId, pending.eventId);
@@ -357,7 +356,6 @@ print(json.dumps({'candidates': [{
     assert.equal(existsSync(page), true);
     const text = readFileSync(page, 'utf8');
     assert.match(text, /Builtin Adapter Decision/);
-    assert.match(readFileSync(dirtyQueue, 'utf8'), /^proj-wiki\t/);
   } finally {
     removeTemp(project);
   }
@@ -970,123 +968,6 @@ print(json.dumps(result, ensure_ascii=False))
   });
 }
 
-test('gather_similar_pages: queries the daemon with rerank=true (async background worker, not the hot per-edit path)', async () => {
-  const project = setupProject();
-  const requests = [];
-  const server = createServer((req, res) => {
-    if (req.method === 'POST' && req.url === '/query') {
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', (chunk) => { body += chunk; });
-      req.on('end', () => {
-        requests.push(JSON.parse(body));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ results: [] }));
-      });
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  try {
-    await new Promise((resolve, reject) => {
-      server.listen(0, resolve);
-      server.on('error', (err) => {
-        if (err.code === 'EPERM') resolve();
-        else reject(err);
-      });
-    });
-    if (!server.address()) return;
-    const { port } = server.address();
-    const sourcePath = join(project, 'docs', 'source.md');
-
-    await callGatherSimilarPagesAsync(project, sourcePath, { QMD_DAEMON_URL: `http://127.0.0.1:${port}` });
-
-    assert.equal(requests.length, 1, 'expected exactly one /query call from gather_similar_pages');
-    assert.equal(requests[0].rerank, true, 'background worker lookup must opt into rerank=true');
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: above-threshold match is included with full page content', () => {
-  const project = setupProject();
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'known.md'), [
-      '---', 'title: "Known"', 'canonicalKey: "known"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'The known fact.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    const sourcePath = join(project, 'docs', 'source.md');
-    const fixture = writeFixture(project, [
-      { file: 'proj-wiki/entities/known.md', score: 0.9 },
-    ]);
-
-    const out = JSON.parse(callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture }));
-    assert.equal(out.length, 1);
-    assert.equal(out[0].path, '.auto-context/wiki/entities/known.md');
-    assert.equal(out[0].score, 0.9);
-    assert.match(out[0].content, /The known fact\./);
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: below-threshold match is dropped, returns null', () => {
-  const project = setupProject();
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'weak.md'), [
-      '---', 'title: "Weak"', 'canonicalKey: "weak"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'Barely related.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    const sourcePath = join(project, 'docs', 'source.md');
-    const fixture = writeFixture(project, [
-      { file: 'proj-wiki/entities/weak.md', score: 0.1 },
-    ]);
-
-    const out = callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture });
-    assert.equal(out, 'null');
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: a resolved match whose file was since deleted is skipped, not fatal', () => {
-  const project = setupProject();
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki'), { recursive: true });
-    const sourcePath = join(project, 'docs', 'source.md');
-    const fixture = writeFixture(project, [
-      { file: 'proj-wiki/entities/gone.md', score: 0.95 },
-    ]);
-
-    const out = callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture });
-    assert.equal(out, 'null');
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: malformed fixture fails open to null', () => {
-  const project = setupProject();
-  try {
-    const sourcePath = join(project, 'docs', 'source.md');
-    const fixture = join(project, 'bad-fixture.json');
-    writeFileSync(fixture, 'not json');
-
-    const out = callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture });
-    assert.equal(out, 'null');
-  } finally {
-    removeTemp(project);
-  }
-});
-
 test('gather_similar_pages: semanticDedup.enabled false short-circuits without touching the daemon', () => {
   const project = setupProject({ semanticDedup: { enabled: false } });
   try {
@@ -1102,97 +983,6 @@ test('gather_similar_pages: semanticDedup.enabled false short-circuits without t
     // hit a real network call. enabled:false must short-circuit before that ever happens.
     const out = callGatherSimilarPages(project, sourcePath);
     assert.equal(out, 'null');
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: non-numeric score in result does not crash, treated as below-threshold', () => {
-  const project = setupProject();
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    // Write a valid wiki page that would be included if score were numeric
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'numeric.md'), [
-      '---', 'title: "Numeric"', 'canonicalKey: "numeric"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'A valid numeric score.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    // Write another page with bad score
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'bad-score.md'), [
-      '---', 'title: "BadScore"', 'canonicalKey: "bad-score"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'Should be skipped.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    const sourcePath = join(project, 'docs', 'source.md');
-    // First result has a non-numeric score (string)
-    const fixture = writeFixture(project, [
-      { file: 'proj-wiki/entities/bad-score.md', score: 'bad' },
-      { file: 'proj-wiki/entities/numeric.md', score: 0.9 },
-    ]);
-
-    const out = JSON.parse(callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture }));
-    // Should succeed (not crash) and include only the numeric score result
-    assert.equal(out.length, 1);
-    assert.equal(out[0].path, '.auto-context/wiki/entities/numeric.md');
-    assert.equal(out[0].score, 0.9);
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('gather_similar_pages: null score in result does not crash, treated as below-threshold', () => {
-  const project = setupProject();
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'valid.md'), [
-      '---', 'title: "Valid"', 'canonicalKey: "valid"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'Good score.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    const sourcePath = join(project, 'docs', 'source.md');
-    const fixture = writeFixture(project, [
-      { file: 'proj-wiki/entities/valid.md', score: null },
-    ]);
-
-    const out = callGatherSimilarPages(project, sourcePath, { QMD_QUERY_FIXTURE: fixture });
-    // Should not crash; null is below threshold, so returns null
-    assert.equal(out, 'null');
-  } finally {
-    removeTemp(project);
-  }
-});
-
-test('process_job includes similarPages in the extractor payload when the daemon finds a match', () => {
-  const extractorDir = mkdtempSync(join(tmpdir(), 'extractor-similar-'));
-  const extractor = join(extractorDir, 'extract.py');
-  const dump = join(extractorDir, 'received-wiki.json');
-  writeFileSync(extractor, `#!/usr/bin/env python3
-import json, sys
-payload = json.loads(sys.stdin.read())
-open(${JSON.stringify(dump)}, 'w').write(json.dumps(payload['wiki']))
-print(json.dumps({'candidates': []}))
-`);
-  const project = setupProject({ extractor: { backends: { claude: ['python3', extractor] }, timeout: 30 } });
-  try {
-    mkdirSync(join(project, '.auto-context', 'wiki', 'entities'), { recursive: true });
-    writeFileSync(join(project, '.auto-context', 'wiki', 'entities', 'known.md'), [
-      '---', 'title: "Known"', 'canonicalKey: "known"', 'type: entity', 'status: generated',
-      'createdBy: qmd-auto-context', '---', '',
-      '<!-- qmd:auto:start id="main" sourceHash="abc123" -->', '## Summary', 'The known fact.',
-      '<!-- qmd:auto:end -->', '',
-    ].join('\n'));
-    const fixture = join(project, 'daemon-fixture.json');
-    writeFileSync(fixture, JSON.stringify({ results: [{ file: 'proj-wiki/entities/known.md', score: 0.9 }] }));
-
-    runWorker(project, { QMD_QUERY_FIXTURE: fixture });
-
-    const receivedWiki = JSON.parse(readFileSync(dump, 'utf8'));
-    assert.equal(receivedWiki.similarPages.length, 1);
-    assert.equal(receivedWiki.similarPages[0].path, '.auto-context/wiki/entities/known.md');
-    assert.match(receivedWiki.similarPages[0].content, /The known fact\./);
   } finally {
     removeTemp(project);
   }

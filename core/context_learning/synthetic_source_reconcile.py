@@ -304,8 +304,13 @@ def _restore_current_cards(root, story, latest):
     return restored
 
 
+def _request_index(project):
+    """Ask the project's selected Laya index to rescan; no-op without a route."""
+    import wiki_selected_laya
+    wiki_selected_laya.request_sync(project)
+
+
 def _process(root, project, story):
-    from dirty_queue import enqueue_project_collections
     with _db(root) as db:
         latest = {path: sha for path, (_kind, sha) in _ledger(db).items()}
     processed = 0
@@ -344,18 +349,16 @@ def _process(root, project, story):
                            ('needs_origin', time.time(), event_id, 'pending'))
             processed += 1
     # Queue retirement before attempting any restoration. An unrelated
-    # user-edited restore target must not strand a stale active QMD row.
+    # user-edited restore target must not strand a stale active index row.
     with _db(root) as db:
         pending = db.execute("SELECT COUNT(*) FROM synthetic_retired_cards WHERE state='pending'").fetchone()[0]
-    wiki_name = next(name for name, base in COLLECTION_PATHS.items()
-                     if base == '.auto-context/wiki')
     if pending:
-        enqueue_project_collections(project, {wiki_name: str(story / '.auto-context/wiki')})
+        _request_index(project)
         with _db(root) as db:
             db.execute("UPDATE synthetic_retired_cards SET state='queued' WHERE state='pending'")
     restored = _restore_current_cards(root, story, latest)
     if restored:
-        enqueue_project_collections(project, {wiki_name: str(story / '.auto-context/wiki')})
+        _request_index(project)
         with _db(root) as db:
             db.execute("UPDATE synthetic_retired_cards SET state='restored' "
                        "WHERE state='restore_pending_index'")

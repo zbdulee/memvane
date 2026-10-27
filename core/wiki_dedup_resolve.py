@@ -31,16 +31,6 @@ from wiki_compile_worker import claim_queue, requeue_lines
 ACTIONS = {"merge", "skip"}
 
 
-def enqueue_project_collections(project_root, selected):
-    """Queue a QMD reindex for a project that has no selected Laya route.
-
-    The import stays inside this function so the selected path never loads
-    the QMD queue modules.
-    """
-    from dirty_queue import enqueue_project_collections as enqueue
-    enqueue(project_root, selected)
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -321,11 +311,6 @@ def main() -> int:
         remaining_raw = [r for i, (r, _) in enumerate(rows) if i != args.index]
         requeue_lines(queue_path, remaining_raw)
     claimed.unlink(missing_ok=True)
-
-    if result.get("action") == "deleted" and laya_bound is None:
-        collection, collection_path = wc.find_wiki_collection(config)
-        if collection and collection_path:
-            enqueue_project_collections(root, {collection: str((root / collection_path).resolve())})
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("action") != "rejected" else 1

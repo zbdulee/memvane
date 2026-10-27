@@ -1,6 +1,6 @@
 // 제거된 설정 키 알림(계획 §5 / 단계 G)의 두 반쪽을 검증한다.
 //
-// 1. **왕복 무잔소리**(계획 §6.2 T2) — writer 4벌(=5경로)이 방금 쓴 settings.json을
+// 1. **왕복 무잔소리**(계획 §6.2 T2) — settings writer가 방금 쓴 settings.json을
 //    `config.deprecated_keys()`에 통과시키면 **0건**이어야 한다. 하나라도 나오면
 //    도구가 자기가 쓴 설정에 대해 영구히 잔소리하는 루프가 된다(자기 잔소리 루프).
 //    이 가드가 없으면 delta-only 생성기에 제거된 키가 한 줄 되살아나도 아무도 모른다.
@@ -18,15 +18,6 @@ import { isolatedHomeProject, removeTemp, tempCacheDir } from './helpers/temp.mj
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const CORE = join(REPO_ROOT, 'core');
 const LIVE_DIR = join(REPO_ROOT, 'test', 'fixtures', 'live-settings');
-
-// update.sh --worker의 detached embed fork가 호출자 반환 뒤에도 workdir에 써서
-// removeTemp와 경합한다(ENOTEMPTY). 이 파일 전역에서 끈다.
-process.env.QMD_SKIP_BACKGROUND_EMBED = '1';
-// worker fork 자체도 막는다. 그 자식은 스크립트를 처음부터 재실행하며 선두의
-// `mkdir -p "$_QMD_CACHE_DIR"` 로 이 파일이 이미 지운 임시 디렉터리를 되살린다
-// (`removeTemp` 는 성공하는데 그 **뒤에** 되살아나 정리 쪽에서는 막을 수 없다).
-// embed 가드는 fork **안**의 단계만 끄므로 이 잔해를 막지 못한다.
-process.env.QMD_SKIP_BACKGROUND_WORKER = '1';
 
 const CACHE = tempCacheDir('deprecated-keys');
 const PROJECT_NAME = 'depproj';
@@ -76,17 +67,9 @@ function captureWriter(prefix, run) {
   }
 }
 
-function sh(args, dir, env) {
-  execFileSync('bash', [join(CORE, 'update.sh'), ...args, dir], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    env,
-  });
-}
 
-// --- 1. 왕복 무잔소리 (writer 4벌 = 5경로) ---------------------------------
-// 모집단은 config-emission-freeze.test.mjs와 같다(그쪽은 effective 동결, 이쪽은
-// deprecated 0건). writer가 늘면 두 파일 모두에 추가해야 한다.
+// --- 1. 왕복 무잔소리 --------------------------------------------------------
+// settings writer가 늘면 여기에 추가한다.
 
 const WRITERS = {
   'wiki_compile_defaults.compile_block': () => captureWriter('dep-block', (dir, env) => {
@@ -102,30 +85,6 @@ with open(sys.argv[2], "w", encoding="utf-8") as fh:
     });
   }),
 
-  'update.sh --init-wiki': () => captureWriter('dep-initwiki', (dir, env) => {
-    sh(['--init-wiki'], dir, env);
-  }),
-
-  'update.sh --init-wiki --preset novel': () => captureWriter('dep-novel', (dir, env) => {
-    sh(['--init-wiki', '--preset', 'novel'], dir, env);
-  }),
-
-  'update.sh --enable-compile': () => captureWriter('dep-enable', (dir, env) => {
-    mkdirSync(join(dir, '.auto-context'), { recursive: true });
-    mkdirSync(join(dir, 'docs'), { recursive: true });
-    writeFileSync(join(dir, '.auto-context', 'settings.json'), `${JSON.stringify({
-      indexing: true,
-      collections: [`${PROJECT_NAME}-docs`],
-      collectionPaths: { [`${PROJECT_NAME}-docs`]: 'docs' },
-    }, null, 2)}\n`);
-    sh(['--enable-compile'], dir, env);
-  }),
-
-  'update.sh --optin --recommended': () => captureWriter('dep-optin', (dir, env) => {
-    mkdirSync(join(dir, 'docs', 'current'), { recursive: true });
-    mkdirSync(join(dir, 'docs', 'plans'), { recursive: true });
-    sh(['--optin', '--recommended'], dir, env);
-  }),
 };
 
 for (const [name, capture] of Object.entries(WRITERS)) {
@@ -234,42 +193,6 @@ function sessionStartProject(prefix, compileBlock) {
   return { home, dir, env };
 }
 
-test('SessionStart가 구형 config에 알림 1줄을 내고 2회차는 억제한다', () => {
-  const { home, dir, env } = sessionStartProject('dep-notice', {
-    enabled: true,
-    mode: 'auto-wiki',
-    verify: { maxPerRun: 15 },
-    candidatePath: '.auto-context/compile/candidates.jsonl',
-  });
-  try {
-    const first = runSessionStart(dir, env);
-    const lines = first.split('\n').filter((l) => l.includes('더 이상 읽지 않는 설정 키'));
-    assert.equal(lines.length, 1, `알림이 1줄이 아니다:\n${first}`);
-    assert.match(lines[0], /^\[qmd\] /);
-    assert.match(lines[0], /compile\.verify\.maxPerRun → compile\.budget\.verifyPerRun/);
-    assert.match(lines[0], /compile\.enabled/);
-    assert.match(lines[0], /compile\.candidatePath/);
-    // 2회차: marker TTL(4h) 안이므로 침묵.
-    const second = runSessionStart(dir, env);
-    assert.equal(second.includes('더 이상 읽지 않는 설정 키'), false, `2회차가 억제되지 않았다:\n${second}`);
-  } finally {
-    removeTemp(home);
-  }
-});
-
-test('SessionStart가 정리된 config에는 아무 알림도 내지 않는다', () => {
-  const { home, dir, env } = sessionStartProject('dep-notice-clean', {
-    mode: 'auto-wiki',
-    budget: { verifyPerRun: 15 },
-  });
-  try {
-    const out = runSessionStart(dir, env);
-    assert.equal(out.includes('더 이상 읽지 않는 설정 키'), false, out);
-  } finally {
-    removeTemp(home);
-  }
-});
-
 // --- 4. 죽은 설정 키 3개의 처리 방식 (계획 2026-08-19 §3.4) -----------------
 // 세 키가 서로 **다른** 처리를 받으므로 그 차이를 한 자리에서 못박는다. 하나라도
 // 뒤집히면(예: sourceScan을 다시 removed 목록에 넣거나 sourceMissingPath를 살리면)
@@ -321,35 +244,3 @@ test('§3.4 maxCardsPerSource는 값이 이전되어도 알림은 유지된다',
 
 // 값을 못 읽어 기본값으로 폴백한 사실의 **종점**. 판정 함수 단위 테스트만으로는
 // "update.sh에서 아무도 안 부른다"를 잡지 못한다(위 deprecated 알림과 같은 이유).
-test('SessionStart가 읽을 수 없는 compile 스위치 값을 알리고 고치면 재무장한다', () => {
-  const { home, dir, env } = sessionStartProject('dep-flag', {
-    mode: 'auto-wiki',
-    sourceScan: { enabled: 'false' },
-  });
-  const settings = join(dir, '.auto-context', 'settings.json');
-  const write = (sourceScan) => writeFileSync(settings, `${JSON.stringify({
-    indexing: true,
-    collections: [`${PROJECT_NAME}-docs`],
-    collectionPaths: { [`${PROJECT_NAME}-docs`]: 'docs' },
-    compile: { mode: 'auto-wiki', sourceScan },
-  }, null, 2)}\n`);
-  try {
-    const first = runSessionStart(dir, env);
-    const lines = first.split('\n').filter((l) => l.includes('compile 설정 값을 읽을 수 없어'));
-    assert.equal(lines.length, 1, `알림이 1줄이 아니다:\n${first}`);
-    assert.match(lines[0], /compile\.sourceScan\.enabled/);
-    // fail-open 방향(스캔 유지)이 안내에 있어야 한다 — 무엇이 지금 일어나는지 모르면
-    // 사용자는 자기 opt-out이 무력화된 것을 알 수 없다.
-    assert.match(lines[0], /스캔이 계속 돕니다/);
-
-    // TTL 억제.
-    assert.doesNotMatch(runSessionStart(dir, env), /compile 설정 값을 읽을 수 없어/);
-    // 값을 고치면 조용해지고(notice_clear) 다시 틀리면 또 알린다.
-    write({ enabled: false });
-    assert.doesNotMatch(runSessionStart(dir, env), /compile 설정 값을 읽을 수 없어/);
-    write({ enabled: 'nope' });
-    assert.match(runSessionStart(dir, env), /compile 설정 값을 읽을 수 없어/);
-  } finally {
-    removeTemp(home);
-  }
-});

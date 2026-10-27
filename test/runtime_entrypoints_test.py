@@ -110,18 +110,6 @@ class EntryPoints(unittest.TestCase):
                     with self.c.inference_compute(time.monotonic()):self.fail('startup overlap')
         with self.c.inference_compute(time.monotonic()+.05):pass
 
-    def test_existing_healthy_endpoint_does_not_require_cold_admission(self):
-        a=self.admission();import qmd_endpoint as endpoint
-        row={'pid':12345,'port':8584,'url':'http://127.0.0.1:8584','runtime':'a','store':'b'}
-        with patch.object(endpoint,'limits',return_value=(8584,1,.1)),patch.object(endpoint,'expected',return_value={'runtime':'a','store':'b'}),patch.object(endpoint,'raw',return_value=row),patch.object(endpoint,'alive',return_value=True),patch.object(endpoint,'owned',return_value=True),patch.object(endpoint,'healthy',return_value=True),patch.object(a,'sample',side_effect=AssertionError('cold probe on reuse')):
-            self.assertEqual(endpoint.ensure_locked(self.root),row)
-
-    def test_cold_refusal_creates_no_daemon(self):
-        a=self.admission();import qmd_endpoint as endpoint
-        with patch.object(endpoint,'limits',return_value=(8584,1,.1)),patch.object(endpoint,'expected',return_value={}),patch.object(endpoint,'raw',return_value=None),patch.object(endpoint,'log_path',return_value=self.root/'daemon.log'),patch.object(endpoint,'spawn') as spawn,patch.object(a,'sample',return_value=None):
-            with self.assertRaises(ResourceDeferred):endpoint.ensure_locked(self.root)
-        spawn.assert_not_called()
-
     def test_warm_without_server_cancellation_is_deferred_even_when_healthy(self):
         a=self.admission()
         with patch.object(a.subprocess,'Popen',side_effect=AssertionError('warm request sent')):
@@ -173,20 +161,6 @@ class EntryPoints(unittest.TestCase):
             result=a.provider_run(['/synthetic/provider'],env={'INDEX_PATH':'/synthetic/index'},timeout=1,capture_output=True,text=True)
         self.assertEqual(result.stdout,'answer')
 
-    def test_endpoint_start_lock_contention_is_immediate_defer(self):
-        a=self.admission();import qmd_endpoint as endpoint
-        import fcntl
-        path=self.root/'endpoint-start.lock';path.touch(mode=0o600)
-        fd=os.open(path,os.O_RDWR);fcntl.flock(fd,fcntl.LOCK_EX)
-        def nonblocking(lock,flags):
-            self.assertTrue(flags&fcntl.LOCK_NB,'endpoint lock could wait indefinitely')
-            return fcntl.flock(lock,flags)
-        try:
-            with patch.object(endpoint,'root',return_value=self.root),patch.object(endpoint.install_deadline,'flock',side_effect=nonblocking):
-                with self.assertRaises(ResourceDeferred):
-                    with endpoint.locked():self.fail('second starter')
-        finally:os.close(fd)
-
     def test_an_unlocked_inherited_fd_cannot_bypass_resource_admission(self):
         a=self.admission()
         path=self.root/'provider.lock';path.touch(mode=0o600)
@@ -208,24 +182,6 @@ class EntryPoints(unittest.TestCase):
             os.fstat(fd)
             with self.assertRaises(ResourceDeferred):
                 with Coordinator(self.root).activity('provider',a.POLICY,self.report):self.fail('lease lost')
-
-    def test_cold_timeout_releases_compute_and_never_inherits_it_to_daemon(self):
-        a=self.admission();import qmd_endpoint as endpoint
-        child=Mock(pid=22222);child.poll.return_value=None
-        child.wait.return_value=0
-        with patch.object(endpoint,'limits',return_value=(8584,1,.1)),patch.object(endpoint,'expected',return_value={}),patch.object(endpoint,'raw',return_value=None),patch.object(endpoint,'log_path',return_value=self.root/'daemon.log'),patch.object(endpoint,'port_busy',return_value=False),patch.object(endpoint,'spawn',return_value=child),patch.object(endpoint,'bound',return_value=set()),patch.object(endpoint.time,'sleep'):
-            with self.assertRaisesRegex(ValueError,'timeout'):endpoint.ensure_locked(self.root)
-        child.terminate.assert_called_once()
-        with self.c.inference_compute(time.monotonic()+.05):pass
-        def spawn_cpu_only(*args,**options):
-            self.assertEqual(len(options['pass_fds']),1)
-            actual=os.fstat(options['pass_fds'][0])
-            expected=(self.root/'cpu-share-0.lock').stat()
-            self.assertEqual((actual.st_dev,actual.st_ino),(expected.st_dev,expected.st_ino))
-            return child
-        with patch('context_learning.resource_coordination.Coordinator',return_value=self.c),patch.object(endpoint,'child_environment',return_value={}),patch.object(endpoint.subprocess,'Popen',side_effect=spawn_cpu_only) as spawn:
-            endpoint.spawn(8584,subprocess.DEVNULL)
-        self.assertTrue(spawn.call_args.kwargs['pass_fds'])  # CPU only; never compute.
 
     def test_final_launch_rechecks_even_an_existing_provider_lease(self):
         a=self.admission()

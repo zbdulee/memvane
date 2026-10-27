@@ -149,29 +149,6 @@ def validate_wiki_candidates(root, candidates):
         if (not isinstance(relative, str) or not isinstance(lead, str)
                 or not re.fullmatch(r'topical-v2/[0-9a-f]{24}/[a-z0-9][a-z0-9-]*\.md', relative)):
             raise ValueError('topical_story_candidate_unscoped')
-    import qmd_route
-    import sqlite_read
-    import wiki_topical as topical
-    import wiki_topical_publish as publisher
-    import wiki_topical_experiment as experiment
-    route = qmd_route.project_paths(scope['project'], isolated=True, reject_conflicts=True)
-    if route.get('selected') is not True:
-        raise ValueError('topical_story_candidate_unscoped')
-    with sqlite_read.connect(route['INDEX_PATH'], timeout=1) as index:
-        for row in candidates:
-            relative, lead = row['path'], row['lead']
-            _prefix, gid, filename = relative.split('/')
-            cid = filename[:-3]
-            page = scope['wiki'] / relative
-            if (page.is_symlink() or page.parent.is_symlink()
-                    or page.parent.parent.is_symlink() or not page.is_file()):
-                raise ValueError('topical_story_candidate_unscoped')
-            card = experiment.load_staged_card(scope['story'], gid, cid)
-            publisher._attested(scope['story'], gid, cid)
-            if lead != card['lead'][:600]:
-                raise ValueError('topical_story_candidate_unscoped')
-            revision = hashlib.sha256(page.read_bytes()).hexdigest()
-            rows = index.execute('SELECT hash FROM documents WHERE collection=? AND path=? '
-                                 'AND active=1', (scope['collection'],relative)).fetchall()
-            if rows != [(revision,)]:
-                raise ValueError('topical_story_candidate_unscoped')
+    # Candidates were proved against the story's isolated QMD index, which no
+    # longer exists; no candidate context leaves for a model.
+    raise ValueError('topical_story_candidate_unscoped')

@@ -127,11 +127,9 @@ class SelectedWikiChecks(unittest.TestCase):
         import wiki_verify_worker
         with patch('wiki_compile.find_wiki_collection', return_value=('wiki', '.auto-context/wiki')), \
              patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
-             patch.object(selected, 'request_sync') as sync, \
-             patch.object(wiki_verify_worker, 'enqueue_project_collections') as qmd:
+             patch.object(selected, 'request_sync') as sync:
             wiki_verify_worker.reindex_wiki(self.root, {})
             sync.assert_called_once()
-            qmd.assert_not_called()
 
     def test_durable_worker_does_not_ack_pending_source(self):
         queue = self.root / '.auto-context' / 'compile' / 'source-queue.jsonl'

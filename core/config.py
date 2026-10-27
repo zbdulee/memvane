@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 import argparse
-import fcntl
-import hashlib
 import json
 import math
-import os
-import stat
 import sys
-import tempfile
 from pathlib import Path
 
 
 CONFIG_DIR_NAME = ".auto-context"
 SETTINGS_FILE_NAME = "settings.json"
-LEGACY_CONFIG_FILE_NAME = ".auto-context.json"
-LEGACY_AGENTS_DIR = ".agents"
-LEGACY_AGENTS_FILE_NAME = "qmd-recall.json"
-LOCAL_OPTOUT_DIR = Path(".config") / "qmd" / "optout"
 
 # ---------------------------------------------------------------------------
 # Collection roles (SSOT)
@@ -380,7 +371,7 @@ def expand_minimal_settings(raw):
     펼친 결과는 legacy 소비자(resolve_paths, update.sh `--raw`, laya route 검사)가 읽는
     모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `.auto-context/wiki`가 wiki이고,
     검색은 wiki 전용, compile은 host builtin extractor의 auto-wiki, 학습은 켜짐이다.
-    indexing은 settings 파일이 있으면 켜짐이고 사용자 로컬 optout marker가 끈다.
+    indexing은 settings 파일이 있으면 켜짐이다.
     """
     if not is_minimal_settings(raw):
         return raw
@@ -1242,83 +1233,9 @@ def project_identity_root(cwd):
     return path
 
 
-def _local_optout_marker_path(root):
-    key = hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()
-    return Path.home() / LOCAL_OPTOUT_DIR / f"{key}.json"
-
-
-def local_optout_marker_path(cwd):
-    return _local_optout_marker_path(project_identity_root(cwd))
-
-
-def find_local_optout(cwd):
-    cwd_path = Path(cwd).resolve()
-    direct = local_optout_marker_path(cwd_path)
-    if direct.is_file():
-        return {"marker": direct, "root": project_identity_root(cwd_path)}
-
-    marker_dir = Path.home() / LOCAL_OPTOUT_DIR
-    try:
-        candidates = list(marker_dir.glob("*.json"))
-    except OSError:
-        return None
-
-    matches = []
-    for marker in candidates:
-        try:
-            raw = json.loads(marker.read_text(encoding="utf-8"))
-            root_value = raw.get("root") if isinstance(raw, dict) else None
-            if not isinstance(root_value, str):
-                continue
-            root = Path(root_value).resolve()
-        except (OSError, json.JSONDecodeError):
-            continue
-        if _is_within(cwd_path, root):
-            matches.append((len(root.parts), marker, root))
-    if not matches:
-        return None
-    _, marker, root = max(matches, key=lambda item: item[0])
-    return {"marker": marker, "root": root}
-
-
-def has_local_optout(cwd):
-    return find_local_optout(cwd) is not None
-
-
-
-def write_local_optout(cwd):
-    root = project_identity_root(cwd)
-    marker = _local_optout_marker_path(root)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(marker.parent), prefix=marker.name + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"indexing": False, "root": str(root)}, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, marker)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return marker
-
-
-def clear_local_optout(cwd):
-    found = find_local_optout(cwd)
-    marker = found["marker"] if found else local_optout_marker_path(cwd)
-    try:
-        marker.unlink()
-    except FileNotFoundError:
-        pass
-    return marker
-
-
 def _candidate_configs(project_dir):
     return [
         (project_dir / CONFIG_DIR_NAME / SETTINGS_FILE_NAME, "auto-context-dir", project_dir),
-        (project_dir / LEGACY_CONFIG_FILE_NAME, "auto-context-json", project_dir),
-        (project_dir / LEGACY_AGENTS_DIR / LEGACY_AGENTS_FILE_NAME, "agents-legacy", project_dir),
     ]
 
 
@@ -1375,17 +1292,6 @@ def find_project_config(cwd):
 
 def _find_project_config_unsafe(cwd):
     path = Path(cwd).resolve()
-    local_optout = find_local_optout(path)
-    if local_optout:
-        config = normalize_config({"indexing": False})
-        config["collections"] = []
-        return {
-            "config": config,
-            "configPath": str(local_optout["marker"]),
-            "configFormat": "local-optout",
-            "projectRoot": str(local_optout["root"]),
-            "projectOwner": str(local_optout["root"]),
-        }
     config_file = None
     config_format = "none"
     project_root = path
@@ -1402,9 +1308,7 @@ def _find_project_config_unsafe(cwd):
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 parsed = json.load(f)
-            # minimal settings는 canonical `.auto-context/settings.json`에만 적용한다.
-            config = (normalize_config(parsed) if config_format == "auto-context-dir"
-                      else _normalize_expanded_config(parsed))
+            config = normalize_config(parsed)
             if config.get("indexing") is False:
                 config["collections"] = []
             return {
@@ -1427,21 +1331,6 @@ def _find_project_config_unsafe(cwd):
     }
 
 
-def find_legacy_auto_context_json(cwd):
-    """Find the nearest legacy .auto-context.json, unless new settings already exist first."""
-    for d in _project_search_dirs(cwd):
-        settings = d / CONFIG_DIR_NAME / SETTINGS_FILE_NAME
-        legacy_json = d / LEGACY_CONFIG_FILE_NAME
-        agents_legacy = d / LEGACY_AGENTS_DIR / LEGACY_AGENTS_FILE_NAME
-        if settings.exists():
-            return {"path": None, "projectRoot": str(d), "reason": "settings_exists"}
-        if legacy_json.exists():
-            return {"path": str(legacy_json), "projectRoot": str(d), "reason": None}
-        if agents_legacy.exists():
-            return {"path": None, "projectRoot": str(d), "reason": "agents_legacy_not_migrated"}
-    return {"path": None, "projectRoot": str(Path(cwd).resolve()), "reason": "no_legacy_config"}
-
-
 def _read_json_object(path):
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -1455,115 +1344,8 @@ def _read_json_object(path):
     return parsed, None
 
 
-def _safe_project_settings_dir(project_root):
-    """Return .auto-context only if it is a real directory inside project_root."""
-    root = Path(project_root).resolve()
-    settings_dir = root / CONFIG_DIR_NAME
-    if settings_dir.exists():
-        if settings_dir.is_symlink() or not settings_dir.is_dir():
-            return None, "unsafe_settings_dir"
-    else:
-        try:
-            settings_dir.mkdir(parents=True, exist_ok=False)
-        except OSError:
-            return None, "write_error"
-    try:
-        resolved = settings_dir.resolve()
-        resolved.relative_to(root)
-    except (OSError, ValueError):
-        return None, "unsafe_settings_dir"
-    if resolved != settings_dir:
-        return None, "unsafe_settings_dir"
-    return settings_dir, None
-
-
-def migrate_legacy_config(cwd):
-    """Move .auto-context.json to .auto-context/settings.json safely.
-
-    This is intentionally separate from read-only config lookup so query-time
-    hooks can load config without mutating the project.
-    """
-    found = find_legacy_auto_context_json(cwd)
-    if not found.get("path"):
-        return {"migrated": False, "reason": found.get("reason", "no_legacy_config")}
-
-    legacy_path = Path(found["path"]).resolve()
-    project_root = Path(found["projectRoot"]).resolve()
-    settings_dir, dir_reason = _safe_project_settings_dir(project_root)
-    settings_path = project_root / CONFIG_DIR_NAME / SETTINGS_FILE_NAME
-    if dir_reason:
-        return {"migrated": False, "reason": dir_reason, "from": str(legacy_path), "to": str(settings_path)}
-    assert settings_dir is not None
-    # Share the setup transaction lock so SessionStart cannot move a frozen
-    # legacy source between the journal check and the migration write.
-    lock_path = settings_dir / ".install-update.lock"
-    try:
-        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    except OSError:
-        return {"migrated": False, "reason": "unsafe_setup_lock"}
-    try:
-        info = os.fstat(lock_fd)
-        if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-            return {"migrated": False, "reason": "unsafe_setup_lock"}
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return {"migrated": False, "reason": "managed_setup_in_progress"}
-        setup_journal = settings_dir / "install-update-journal.json"
-        if setup_journal.exists() or setup_journal.is_symlink():
-            return {"migrated": False, "reason": "managed_setup_in_progress",
-                    "from": str(legacy_path), "to": str(settings_path)}
-        tmp_path = None
-
-        if settings_path.exists():
-            return {"migrated": False, "reason": "settings_exists"}
-
-        parsed, reason = _read_json_object(legacy_path)
-        if reason:
-            return {"migrated": False, "reason": reason, "from": str(legacy_path)}
-        normalized = normalize_config(parsed)
-
-        try:
-            fd, tmp_name = tempfile.mkstemp(
-                dir=str(settings_dir),
-                prefix=f"{SETTINGS_FILE_NAME}.",
-                suffix=".tmp",
-                text=True,
-            )
-            tmp_path = Path(tmp_name)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(parsed, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-
-            tmp_parsed, reason = _read_json_object(tmp_path)
-            if reason or normalize_config(tmp_parsed) != normalized:
-                try:
-                    tmp_path.unlink()
-                except OSError:
-                    pass
-                return {"migrated": False, "reason": reason or "verification_failed", "from": str(legacy_path), "to": str(settings_path)}
-
-            tmp_path.replace(settings_path)
-
-            final_parsed, reason = _read_json_object(settings_path)
-            if reason or normalize_config(final_parsed) != normalized:
-                return {"migrated": False, "reason": reason or "verification_failed", "from": str(legacy_path), "to": str(settings_path)}
-
-            legacy_path.unlink()
-            return {"migrated": True, "from": str(legacy_path), "to": str(settings_path)}
-        except OSError as exc:
-            try:
-                if tmp_path and tmp_path.exists():
-                    tmp_path.unlink()
-            except OSError:
-                pass
-            return {"migrated": False, "reason": "write_error", "error": str(exc), "from": str(legacy_path), "to": str(settings_path)}
-    finally:
-        os.close(lock_fd)
-
-
 def load_project_config(cwd):
-    """Load effective config: local optout marker, then project settings/legacy config.
+    """Load the effective config from the nearest `.auto-context/settings.json`.
     indexing:false means collections=[] (검색/인덱싱 skip). 못 찾으면 빈 설정(collections=[])."""
     return find_project_config(cwd)["config"]
 
@@ -1590,12 +1372,7 @@ def main():
     parser = argparse.ArgumentParser(description="Normalize qmd recall configuration.")
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--raw", action="store_true", help="Print raw discovered project config JSON instead of stdin normalization.")
-    parser.add_argument("--migrate", action="store_true", help="Migrate .auto-context.json to .auto-context/settings.json.")
     args = parser.parse_args()
-
-    if args.migrate:
-        print(json.dumps(migrate_legacy_config(args.cwd), ensure_ascii=False))
-        return
 
     if args.raw:
         print(json.dumps(load_project_config_raw(args.cwd), ensure_ascii=False))

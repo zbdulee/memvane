@@ -89,8 +89,7 @@ def exercise():
               patch.object(dedup.wiki_selected_laya, 'recheck', side_effect=recheck),
               patch.object(dedup.wiki_selected_laya, 'request_sync', side_effect=request_sync),
               patch.object(dedup.cp, 'card_write_lock', side_effect=tracked_card),
-              patch.object(dedup.wiki_mutation_lock, 'lock', side_effect=tracked_wiki),
-              patch.object(dedup, 'enqueue_project_collections', side_effect=AssertionError('QMD queue used'))):
+              patch.object(dedup.wiki_mutation_lock, 'lock', side_effect=tracked_wiki)):
             try:
                 run('merge', '--delete', 'entities/loser.md')
             except RuntimeError as exc:
