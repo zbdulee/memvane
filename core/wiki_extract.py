@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import recall as qmd_recall
+import wiki_card
 import resolve_paths as qmd_resolve_paths
 import wiki_compile as wc
 import wiki_freshness
@@ -44,7 +44,7 @@ TRANSCRIPT_RE = re.compile(r"(?im)^\s*(user|assistant|system|human|ai)\s*:")
 # 코드에서 유도해 단정한다. **상한이 걸리는 대상은 중복 제거 뒤 서로 다른 파일 수**다 —
 # 항목 수에 걸면 같은 파일의 별칭이 폭을 소진한다.
 MAX_PROVENANCE_FILE_SOURCES = 3
-# 조사할 **항목** 수는 상한의 2배로 따로 유계다(`recall.collect_source_paths`가 카드당 조사
+# 조사할 **항목** 수는 상한의 2배로 따로 유계다(`wiki_card.collect_source_paths`가 카드당 조사
 # 예산을 같은 방식으로 두는 것과 같은 이유 — 목록은 caller 가 주므로 개수 보장이 없고,
 # 중복 제거는 항목을 다 열어 본 뒤에야 확정된다). 별칭 중복은 이 창 안에서 접히고, 창을
 # 넘기면 기존 ">상한" 과 같이 전무다.
@@ -57,7 +57,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
     **사실은 컴파일러가 정하고 caller 는 의견만 낸다.** 자동 훅 경로는
     `wiki_compile_worker`가 자기가 읽은 파일의 스냅샷을 candidate 에 대입해 provenance 를
     소유한다(모델 값 미채택). 수동 경로에는 큐도 worker 도 없어 provenance 가 아예 비고,
-    그러면 그 카드는 `recall.is_auto_trusted_card`(status + createdBy + **비어 있지 않은**
+    그러면 그 카드는 `wiki_card.is_auto_trusted_card`(status + createdBy + **비어 있지 않은**
     `sourceRevisions`)를 영구히 통과하지 못해 **recall 에 절대 주입되지 않는다**. 그래서
     같은 규칙을 여기서도 적용한다 — 파일 소스를 **컴파일러가 직접 읽어** 스냅샷한다.
 
@@ -69,7 +69,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
     - **두 필드는 한 번의 읽기에서 함께 나온다**(`snapshot_bytes`는 fstat 를 같은 fd 에서
       두 번 떠 안정 이미지만 돌려준다). 소스 집합을 두 벌로 만들면 "검증은 A 를 보는데
       provenance 는 B 를 가리킨다"가 된다.
-    - **`kind: file` 만**(`recall.SOURCE_KIND_FILE`). url/slack 등 비파일 출처는 스냅샷
+    - **`kind: file` 만**(`wiki_card.SOURCE_KIND_FILE`). url/slack 등 비파일 출처는 스냅샷
       대상이 아니고, 그런 항목만 있는 카드는 기존대로 provenance 없이 나간다.
     - **전부 아니면 전무.** 나열된 파일 소스 중 하나라도 스냅샷하지 못하면 아무것도 내지
       않는다 — `yaml_scalars.dump_source_revisions`가 형제 하나가 깨지면 목록 전체를
@@ -94,7 +94,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
     allow_roots = qmd_resolve_paths.allowed_roots(project_config or {})
     file_sources = [
         item for item in sources
-        if isinstance(item, dict) and item.get("kind") == qmd_recall.SOURCE_KIND_FILE
+        if isinstance(item, dict) and item.get("kind") == wiki_card.SOURCE_KIND_FILE
     ]
     if not file_sources or len(file_sources) > MAX_PROVENANCE_SOURCE_SCAN:
         return [], []
@@ -106,7 +106,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
         if not isinstance(raw_path, str) or not raw_path.strip():
             return [], []
         # 존재·격리 판정 SSOT. base 는 cwd 가 아니라 project root 다.
-        resolved, _reason = qmd_recall.resolve_existing_source(raw_path, root, allow_roots)
+        resolved, _reason = wiki_card.resolve_existing_source(raw_path, root, allow_roots)
         if resolved is None:
             return [], []
         try:

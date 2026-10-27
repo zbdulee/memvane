@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """카드 소스 존재 판정 helper — wiki root 격리, allow-root, 소스 분류.
 
-존재 판정은 `recall.resolve_existing_source`(주입·검수·수명 주기 공용 SSOT) 하나만
+존재 판정은 `wiki_card.resolve_existing_source`(주입·검수·수명 주기 공용 SSOT) 하나만
 쓴다. 판정이 갈리면 "주입은 링크를 지웠는데 검수는 정상으로 본다"가 된다. 소실된
 카드의 처리(보관 후 삭제, 재생성 enqueue)는 SessionStart `wiki_lifecycle`이 한다.
 이 모듈은 카드를 수정하거나 원장을 쓰지 않는다.
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import recall as qmd_recall
+import wiki_card
 import resolve_paths as qmd_resolve_paths
 import wiki_compile as wc
 import yaml_scalars
@@ -21,7 +21,7 @@ import yaml_scalars
 # 파싱 실패·루트 밖·길이 초과는 "없다"가 아니라 "판정 불가"이므로 소실로 세지 않는다 —
 # 미지원 표기(block mapping·여러 줄 flow)를 소실로 분류하면 "카드를 고치면 되는 표기
 # 문제"와 "원문이 사라졌다"가 섞인다.
-IGNORED_ENTRY_REASONS = qmd_recall.NON_FILE_SOURCE_REASONS
+IGNORED_ENTRY_REASONS = wiki_card.NON_FILE_SOURCE_REASONS
 
 
 def wiki_root_of(root: Path, config: dict) -> Path | None:
@@ -62,11 +62,11 @@ def declared_source_records(block: str) -> tuple[list[dict], str]:
             break
     if lines is None:
         return [], SOURCES_ABSENT
-    inline = qmd_recall.sources_inline_entry(lines[0].split(":", 1)[1])
+    inline = wiki_card.sources_inline_entry(lines[0].split(":", 1)[1])
     children = [line for line in lines[1:] if line.strip()]
     if any(not line.strip().startswith("- ") for line in children):
         return [], SOURCES_INVALID
-    entries = qmd_recall.frontmatter_source_entries(block)
+    entries = wiki_card.frontmatter_source_entries(block)
     if len(entries) != len(children) + (1 if inline else 0):
         return [], SOURCES_INVALID
     records = []
@@ -74,7 +74,7 @@ def declared_source_records(block: str) -> tuple[list[dict], str]:
         record, problem = yaml_scalars.load_flow_mapping(raw)
         if problem or not isinstance(record, dict):
             return [], SOURCES_INVALID
-        if record.get("kind") == qmd_recall.SOURCE_KIND_FILE:
+        if record.get("kind") == wiki_card.SOURCE_KIND_FILE:
             path = record.get("path")
             if not isinstance(path, str) or not path:
                 return [], SOURCES_INVALID
@@ -95,13 +95,13 @@ def missing_key(paths) -> list[str]:
 def classify_entries(entries, project_root: Path, allow_roots: list[Path]) -> dict:
     """sources 표기 목록 → {present, missing, unknown, entries}.
 
-    항목별 판정은 `recall.classify_source_entry` 하나만 쓴다(주입과 같은 판정).
+    항목별 판정은 `wiki_card.classify_source_entry` 하나만 쓴다(주입과 같은 판정).
     """
     present: list[str] = []
     missing: list[str] = []
     unknown: dict[str, int] = {}
     for entry in entries:
-        resolved, reason, raw_path = qmd_recall.classify_source_entry(
+        resolved, reason, raw_path = wiki_card.classify_source_entry(
             entry, project_root, allow_roots)
         if resolved is not None:
             present.append(raw_path)
@@ -122,14 +122,14 @@ def classify_card(text: str, project_root: Path, allow_roots: list[Path]) -> dic
         return {"present": [], "missing": [], "unknown": {"frontmatter_missing": 1},
                 "entries": 0}
     return classify_entries(
-        qmd_recall.frontmatter_source_entries(block), project_root, allow_roots)
+        wiki_card.frontmatter_source_entries(block), project_root, allow_roots)
 
 
 def classify_records(sources, project_root: Path, allow_roots: list[Path]) -> dict:
     """`sources` **레코드(dict) 목록** → 같은 판정.
 
     큐 잡(`wiki_verify_worker`)·candidate는 frontmatter 문자열이 아니라 dict를 들고 있다.
-    표기 파싱만 건너뛰고 존재 판정은 동일 함수(`recall.resolve_existing_source`)를 쓴다.
+    표기 파싱만 건너뛰고 존재 판정은 동일 함수(`wiki_card.resolve_existing_source`)를 쓴다.
     """
     present: list[str] = []
     missing: list[str] = []
@@ -141,12 +141,12 @@ def classify_records(sources, project_root: Path, allow_roots: list[Path]) -> di
         if not isinstance(src, dict):
             continue
         entries += 1
-        if src.get("kind") != qmd_recall.SOURCE_KIND_FILE:
+        if src.get("kind") != wiki_card.SOURCE_KIND_FILE:
             continue
         raw_path = src.get("path")
         if not isinstance(raw_path, str) or not raw_path:
             continue
-        resolved, reason = qmd_recall.resolve_existing_source(
+        resolved, reason = wiki_card.resolve_existing_source(
             raw_path, project_root, allow_roots)
         if resolved is not None:
             present.append(raw_path)
@@ -158,16 +158,16 @@ def classify_records(sources, project_root: Path, allow_roots: list[Path]) -> di
 
 
 def all_sources_missing(info: dict) -> bool:
-    """"소스 전부 소실" 판정 — 규칙은 `recall.sources_all_missing`(SSOT)에 있다.
+    """"소스 전부 소실" 판정 — 규칙은 `wiki_card.sources_all_missing`(SSOT)에 있다.
 
     소실 항목이 하나 이상이고, 살아 있는 파일 소스가 하나도 없고, 판정 불가 항목도 없을
     때만 참이다. **일부만 소실은 대상이 아니다**(살아 있는 원문으로 대조가 가능하므로
     "stale 링크가 유일 진실"이 성립하지 않는다). 소스 항목이 0인 메타 카드
     (SCHEMA/index/log)도 대상이 아니다 — 소실이 0이라 자동으로 빠진다.
     이 경로는 항목을 **전부** 조사하므로 recall의 stat 예산 절단이 없다(그 차이는
-    `recall.sources_all_missing` docstring 참고).
+    `wiki_card.sources_all_missing` docstring 참고).
     """
-    return qmd_recall.sources_all_missing(
+    return wiki_card.sources_all_missing(
         len(info.get("missing") or ()), len(info.get("present") or ()),
         sum((info.get("unknown") or {}).values()))
 

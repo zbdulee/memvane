@@ -491,7 +491,7 @@ def compare_revision(path: Path, expected: dict) -> tuple[str, str]:
     """Compare a previously captured source revision with a safe resolved path.
 
     Path containment is intentionally not duplicated here.  ``check_card``
-    first asks ``recall.resolve_existing_source`` for the project's shared
+    first asks ``wiki_card.resolve_existing_source`` for the project's shared
     allow-root decision, then passes its resolved result here.
     """
     if yaml_scalars.normalize_source_revision(expected) is None:
@@ -538,10 +538,10 @@ def check_card(card: dict, project_root: Path, allow_roots: list[Path]) -> dict:
 
     # Import lazily so recall can later import this module without a module-load
     # cycle.  This remains the one source containment decision for all users.
-    import recall
+    import wiki_card
 
     for expected in revisions:
-        resolved, reason = recall.resolve_existing_source(
+        resolved, reason = wiki_card.resolve_existing_source(
             expected["path"], project_root, allow_roots)
         if resolved is None:
             state = STALE if reason == "missing" else UNKNOWN

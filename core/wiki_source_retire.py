@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 import compile_paths as cp
-import recall
+import wiki_card
 import wiki_compile as wc
 import wiki_mutation_lock
 import wiki_selected_laya
@@ -166,7 +166,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             match = wc.FRONTMATTER_RE.match(text)
             if match is None:
                 continue
-            revisions = recall.frontmatter_source_revisions(match.group(1))
+            revisions = wiki_card.frontmatter_source_revisions(match.group(1))
             normalized = [yaml_scalars.normalize_source_revision(item) for item in revisions]
             observed.append((card, text, normalized))
             # A source may have several historical card revisions. The deleted

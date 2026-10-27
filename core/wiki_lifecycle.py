@@ -87,7 +87,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
-import sync as qmd_sync
+import scan_state
 import wiki_compile as wc
 import wiki_source_missing as wsm
 import wiki_source_retire
@@ -141,7 +141,7 @@ def log(message: str) -> None:
 
 
 def state_path(project_key: str) -> Path:
-    return qmd_sync.state_dir() / f"{project_key}-wiki-lifecycle.json"
+    return scan_state.state_dir() / f"{project_key}-wiki-lifecycle.json"
 
 
 def max_cards(scan_cfg: dict) -> int:
@@ -183,12 +183,12 @@ def card_paths(wiki_root: Path) -> list[Path]:
 
 
 def count_recall_ineligible(pages: list[Path]) -> int:
-    """Cards `recall.is_auto_trusted_card` rejects, over **all** cards (not the window).
+    """Cards `wiki_card.is_auto_trusted_card` rejects, over **all** cards (not the window).
 
     This is the user-facing total behind the `wiki-ineligible` notice, so a
     partial count would report a wrong number. The judgement is recall's own.
     """
-    import recall
+    import wiki_card
 
     ineligible = 0
     for page in pages:
@@ -202,9 +202,9 @@ def count_recall_ineligible(pages: list[Path]) -> int:
             ineligible += 1
             continue
         end = head.find("\n---", 3)
-        meta = recall.parse_frontmatter_scalars(head[4:end] if end > 0 else head)
+        meta = wiki_card.parse_frontmatter_scalars(head[4:end] if end > 0 else head)
         meta["sourceRevisions"] = ["present"] if "\nsourceRevisions:\n" in head else []
-        if not recall.is_auto_trusted_card(meta):
+        if not wiki_card.is_auto_trusted_card(meta):
             ineligible += 1
     return ineligible
 
@@ -256,13 +256,13 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     """Judge a card without `sourceRevisions` by its declared `sources:` files.
 
     Resolution is the same SSOT as recorded revisions
-    (`recall.resolve_existing_source`: project root, then `allowRoots`); the
+    (`wiki_card.resolve_existing_source`: project root, then `allowRoots`); the
     declared `collection` is carried verbatim and decides only whether a
     missing path is provably gone (a collection this project defines) or may
     belong to another checkout (undecidable). ``label`` (``source_label.resolver``)
     maps a renamed raw collection's old label, by path, to the current one.
     """
-    import recall
+    import wiki_card
 
     records, parsed = wsm.declared_source_records(block)
     if parsed == wsm.SOURCES_INVALID:
@@ -272,21 +272,21 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     seen = set()
     files = []
     for record in records:
-        if record.get("kind") != recall.SOURCE_KIND_FILE:
+        if record.get("kind") != wiki_card.SOURCE_KIND_FILE:
             continue
         collection = record.get("collection")
         collection = collection if isinstance(collection, str) else ""
         key = (record["path"], collection)
         if key not in seen:
             seen.add(key)
-            files.append({"kind": recall.SOURCE_KIND_FILE, "path": record["path"],
+            files.append({"kind": wiki_card.SOURCE_KIND_FILE, "path": record["path"],
                           "collection": collection})
     if not files:
         info["state"] = UNPROVEN
         return info
     info["legacy"] = True
     for source in files:
-        resolved, reason = recall.resolve_existing_source(source["path"], root, allow_roots)
+        resolved, reason = wiki_card.resolve_existing_source(source["path"], root, allow_roots)
         if resolved is not None:
             info["present"].append((source, resolved))
         elif reason == "missing" and (
@@ -316,11 +316,11 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     """Ownership and provenance of one card, without hashing sources.
 
     Returns None for a card this lifecycle does not own. `missing` lists the
-    recorded revisions whose file is gone (`recall.resolve_existing_source`
+    recorded revisions whose file is gone (`wiki_card.resolve_existing_source`
     is the existence SSOT); `present` maps the rest to their resolved path.
     A card with no `sourceRevisions` block goes to `inspect_legacy`.
     """
-    import recall
+    import wiki_card
 
     text = read_card(page)
     if text is None:
@@ -335,14 +335,14 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     info = {"text": text, "state": KEEP, "revisions": [], "missing": [], "present": []}
     if not has_revisions_header(block):
         return inspect_legacy(info, block, root, allow_roots, known, label)
-    revisions = recall.frontmatter_source_revisions(block)
+    revisions = wiki_card.frontmatter_source_revisions(block)
     if not revisions:
         info["state"] = UNDECIDABLE
         info["reason"] = "invalid_source_revisions"
         return info
     info["revisions"] = revisions
     for revision in revisions:
-        resolved, reason = recall.resolve_existing_source(revision["path"], root, allow_roots)
+        resolved, reason = wiki_card.resolve_existing_source(revision["path"], root, allow_roots)
         if resolved is not None:
             info["present"].append((revision, resolved))
         elif reason == "missing":
@@ -390,9 +390,9 @@ def backfill_revisions(info: dict) -> list[dict] | None:
 
 def legacy_still_missing(info: dict, root: Path, allow_roots: list[Path]) -> bool:
     """Recheck right before retirement: every judged-missing legacy source is still gone."""
-    import recall
+    import wiki_card
 
-    return all(recall.resolve_existing_source(source["path"], root, allow_roots)[1] == "missing"
+    return all(wiki_card.resolve_existing_source(source["path"], root, allow_roots)[1] == "missing"
                for source in info["missing"])
 
 
@@ -578,9 +578,9 @@ def run(cwd: str) -> dict:
             f"nothing retired, backfilled or enqueued")
         return result
 
-    project_key = qmd_sync.project_key(str(root), found.get("configPath"))
+    project_key = scan_state.project_key(str(root), found.get("configPath"))
     state_file = state_path(project_key)
-    state = qmd_sync.read_state(state_file)
+    state = scan_state.read_state(state_file)
     cursor = state.get("cursor") if isinstance(state.get("cursor"), str) else ""
     refreshed = state.get("refreshed") if isinstance(state.get("refreshed"), dict) else {}
     window = rotate(rels, cursor, max_cards(scan_cfg))
@@ -709,7 +709,7 @@ def run(cwd: str) -> dict:
     if len(refreshed) > MAX_REFRESH_STATE:
         keep = sorted(refreshed.items(), key=lambda item: -float(item[1].get("ts") or 0))
         refreshed = dict(keep[:MAX_REFRESH_STATE])
-    qmd_sync.write_state_atomic(state_file, {
+    scan_state.write_state_atomic(state_file, {
         "version": STATE_VERSION, "projectRoot": str(root), "cursor": last,
         "refreshed": refreshed,
     })

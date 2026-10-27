@@ -26,10 +26,19 @@ import wiki_mutation_lock
 import wiki_compile as wc
 import wiki_dedup_scan as dedup_scan
 import wiki_selected_laya
-from dirty_queue import enqueue_project_collections
 from wiki_compile_worker import claim_queue, requeue_lines
 
 ACTIONS = {"merge", "skip"}
+
+
+def enqueue_project_collections(project_root, selected):
+    """Queue a QMD reindex for a project that has no selected Laya route.
+
+    The import stays inside this function so the selected path never loads
+    the QMD queue modules.
+    """
+    from dirty_queue import enqueue_project_collections as enqueue
+    enqueue(project_root, selected)
 
 
 def now_iso() -> str:

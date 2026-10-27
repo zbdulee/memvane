@@ -58,18 +58,18 @@ def selected(project_root, *, action='recall'):
 
 
 def ready(project) -> bool:
-    """Learning readiness: legacy QMD setup, or a verified selected Laya route.
+    """Learning readiness: a verified selected Laya route, or legacy QMD setup.
 
-    ``setup_guard.status`` keeps its meaning for QMD writers. Only learning
-    workers accept the Laya route as an alternative ready state.
+    The selected route is checked first so a selected project never loads the
+    QMD setup guard. ``setup_guard.status`` keeps its meaning for QMD writers.
     """
-    import setup_guard
-    if setup_guard.status(project)['status'] == 'ready':
-        return True
     try:
-        return selected(project) is not None
+        if selected(project) is not None:
+            return True
     except Exception:
-        return False
+        pass
+    import setup_guard
+    return setup_guard.status(project)['status'] == 'ready'
 
 
 def wiki_names(decision):
@@ -210,9 +210,9 @@ def _log(project_root, status):
     if not log_path:
         return
     try:
-        import recall
-        recall.set_log_project_root(project_root)
-        recall.log_recall_event(log_path, 'learning_capture', route='laya',
+        import wiki_card
+        wiki_card.set_log_project_root(project_root)
+        wiki_card.log_recall_event(log_path, 'learning_capture', route='laya',
                                 event_override='qmd_context_capture', status=status)
     except Exception:
         pass

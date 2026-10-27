@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
 import cooldown as qmd_cooldown
-import sync as qmd_sync
+import scan_state
 import compile_paths as cp
 import wiki_compile as wc
 import wiki_dedup_judge as judge
@@ -129,7 +129,7 @@ def touch_cooldown(lock: Path) -> None:
 
 
 def snapshot_path(project_key: str) -> Path:
-    return qmd_sync.state_dir() / f"{project_key}-wiki-dedup.json"
+    return scan_state.state_dir() / f"{project_key}-wiki-dedup.json"
 
 
 def scan_set(wiki_root: Path) -> list[Path]:
@@ -337,14 +337,14 @@ def run(cwd: str) -> None:
         log("SKIP: no wiki collection configured")
         return
 
-    project_key = qmd_sync.project_key(str(root), found.get("configPath"))
+    project_key = scan_state.project_key(str(root), found.get("configPath"))
     lock = cooldown_dir(project_key)
     if not cooldown_ready(lock):
         return
     touch_cooldown(lock)
 
     snap_path = snapshot_path(project_key)
-    previous = qmd_sync.read_state(snap_path)
+    previous = scan_state.read_state(snap_path)
     previous_files = previous.get("files", {}) if isinstance(previous.get("files"), dict) else {}
 
     pages = scan_set(wiki_root)
@@ -535,7 +535,7 @@ def run(cwd: str) -> None:
     # 없고 실패는 예외이며 main()이 로그에 EXCEPTION으로 남긴다. 스냅샷이 전진하지 않으면
     # 다음 scan이 같은 카드를 다시 본다 — 유료 judge 재호출은 `dedup-skipped.jsonl`의
     # body-hash 억제가 막고, 큐 중복은 `already_queued`가 막는다.
-    qmd_sync.write_state_atomic(snap_path, snapshot)
+    scan_state.write_state_atomic(snap_path, snapshot)
     log(
         f"pages={len(pages)} scanned_ok={scanned_ok} scanned_failed={scanned_failed} "
         f"queued={queued_this_scan} suppressed={suppressed_this_scan} "

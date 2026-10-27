@@ -163,7 +163,7 @@ def _ticket(db, project, story, relative, raw, prior_revision,
 
 def _card_source_ref(story, source_relative, source_collection, source_raw,
                      card_raw):
-    import recall
+    import wiki_card
     import wiki_compile
     try:
         text = card_raw.decode('utf8')
@@ -179,7 +179,7 @@ def _card_source_ref(story, source_relative, source_collection, source_raw,
                 raise ValueError('source_card_sources_invalid')
             source_entries.append(fields)
         marker = text.find('\n---', 3)
-        refs = recall.frontmatter_source_revisions(text[3:marker]) if marker >= 0 else []
+        refs = wiki_card.frontmatter_source_revisions(text[3:marker]) if marker >= 0 else []
         source_stat = (story / source_relative).stat()
         expected = {'kind': 'file',
                     'path': story.name + '/' + source_relative,

@@ -26,7 +26,6 @@ import config as qmd_config
 import wiki_dedup_judge
 import wiki_markers
 import yaml_scalars
-from dirty_queue import enqueue_project_collections
 
 ALLOWED_TYPES = {
     "concept",
@@ -84,6 +83,16 @@ _NON_SECRET_VALUE_RE = re.compile(
         | str|string|int|integer|number|float|bool|boolean|optional|required|any|object
     ) [.,;:)\]}'"`]* $""",
 )
+
+
+def enqueue_project_collections(project_root, selected):
+    """Queue a QMD reindex for a project that has no selected Laya route.
+
+    The import stays inside this function so the selected path never loads
+    the QMD queue modules.
+    """
+    from dirty_queue import enqueue_project_collections as enqueue
+    enqueue(project_root, selected)
 
 
 def is_non_secret_value(value: str) -> bool:
