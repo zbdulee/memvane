@@ -22,7 +22,7 @@ from pathlib import Path
 import laya_active_upgrade as active
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
-import laya_qmd_cutover as qmd
+from laya_ledger_common import _operation_lock
 from laya_install_journal import (PRODUCTION_ATTESTATION, _canon as journal_canon,
                                   _provider_file_identity, _route as checked_route,
                                   cas_replace_inactive_candidate, inspect_journal,
@@ -120,7 +120,7 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
     if (row['phase'] != 'prepared' or row['journalPath'] != str(journal_path) or
             row['routeSha256'] != identity['routeSha256'] or
             row['attestationSha256'] != identity['attestationSha256'] or
-            (ledger.origin == 'qmd' and row['schema'] != qmd.SCHEMA_V3)):
+            (ledger.origin == 'qmd' and row['schema'] != ledger.module.SCHEMA_V3)):
         _fail('bound_upgrade_ledger_changed')
     marker = _read(auto / ledger.marker_name)
     route_file = Path(identity['routeFile'])
@@ -280,7 +280,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
     journal_path = state / 'install-journal.sqlite'
     ledger = active._origin(state)
     _ledger_path, marker, _route = ledger.paths(project, journal_path)
-    with _install_lock(state), qmd._operation_lock(marker), build.owner(state) as owned:
+    with _install_lock(state), _operation_lock(marker), build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
         intent = _load_intent(state, project)

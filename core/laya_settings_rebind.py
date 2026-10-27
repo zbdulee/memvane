@@ -294,10 +294,13 @@ def verify_read_only(decision):
 
 class _Ledger:
     def __init__(self, origin):
-        import laya_fresh_wiki_origin as fresh
-        import laya_qmd_cutover as qmd
         self.origin = origin
-        self.module = fresh if origin == 'fresh' else qmd
+        if origin == 'fresh':
+            import laya_fresh_wiki_origin as module
+        else:
+            # Only a QMD-origin ledger loads the QMD cutover module.
+            import laya_qmd_cutover as module
+        self.module = module
         self.name = dict(LEDGERS)[origin]
 
     def load(self, path):
@@ -443,10 +446,10 @@ def _provider_lane():
 def locks(project, state):
     """The locks a selected bundle upgrade takes, in the same order."""
     from laya_product_install import _install_lock
-    import laya_qmd_cutover as qmd
+    from laya_ledger_common import _operation_lock
     marker = Path(project) / '.auto-context' / MARKER
     try:
-        with _install_lock(Path(state)), qmd._operation_lock(marker), _provider_lane():
+        with _install_lock(Path(state)), _operation_lock(marker), _provider_lane():
             yield
     except RebindRefused:
         raise
