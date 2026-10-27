@@ -667,7 +667,9 @@ class V2WorkerChecks(unittest.TestCase):
 
     def fresh_context(self,cwd):
         status,out,err=self.recall(cwd)
-        self.assertEqual((status,err),(0,''))
+        # Only the matched-but-unservable diagnostic may accompany a fresh answer.
+        self.assertEqual(status,0)
+        self.assertRegex(err,r'\A(\[laya-index\] \d+ matched wiki cards, none servable \([^\n]*\)\n)?\Z')
         return json.loads(out)['hookSpecificOutput']['additionalContext']
 
     def assert_refused(self,cwd,code):

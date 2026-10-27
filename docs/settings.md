@@ -274,7 +274,10 @@ binding store가 있는 **선택 Laya 위키 전용 검색**은 다릅니다. �
 인덱스 작업의 책임입니다. 갱신 중에는 이전 완료 위키가 검색될 수 있으며, 이는 최신
 원문이라는 보증이 아닙니다. 카드 자체의 `verifiedBodyHash`와 출처 구조 검사는 검색에도
 남습니다. `verifiedBodyHash`가 없는 카드는 구 QMD recall과 같이 "결속 없음"으로 보고
-검색하며, 값이 있으면 본문과 일치해야 합니다. `sourceRevisions`가 없는 카드는 검색하지 않습니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
+검색하며, 값이 있으면 본문과 일치해야 합니다. `sourceRevisions`가 없는 카드는 검색하지 않습니다.
+`sourceRevisions`의 collection 이름이 현재 route에 없는 이름(이름이 바뀌었거나 복사된 프로젝트)이면
+구 QMD recall처럼 경로로 판정합니다. 프로젝트 기준 경로가 raw collection 루트 안에 있어야 합니다.
+검색된 카드가 있는데 모두 걸러지면 stderr와 `QMD_RECALL_LOG`(`laya_wiki_rows_filtered`)에 사유별 개수를 남깁니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
 평가해 최대 3개를 주입합니다. 체크포인트가 없거나 모델이 응답하지 못하면 검증된
 후보를 하이브리드 순위대로 최대 3개 주입합니다.
 binding store가 없는 구형 Laya 선택 경로도 직접 RRF 결과를 주입하지 않습니다.

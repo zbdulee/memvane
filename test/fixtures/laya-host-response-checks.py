@@ -580,6 +580,73 @@ class ResponseChecks(unittest.TestCase):
                          [('wiki',)])
         self.assertTrue(index.released)
 
+    def test_v2_revision_label_outside_route_resolves_by_raw_path(self):
+        # A backfilled card may carry the collection label of a renamed or
+        # copied project. Like the QMD reader, the path decides, not the label.
+        with tempfile.TemporaryDirectory(prefix='laya-revision-label-') as temp:
+            project, revision, decision = self.span_project(temp)
+
+            def card(collection, path='docs/a.md'):
+                return self.span_card({**revision, 'collection': collection,
+                                       'path': path})
+            for current in (False, True):
+                self.assertTrue(response._verified_wiki_row(
+                    card('raw'), decision, current_source=current))
+                self.assertTrue(response._verified_wiki_row(
+                    card('other-project'), decision, current_source=current))
+            why = {}
+            self.assertFalse(response._verified_wiki_row(
+                card('wiki'), decision, current_source=False, reasons=why))
+            self.assertEqual(why, {'source_outside_raw_roots': 1})
+            (project / 'outside.md').write_bytes(self.SPAN_SOURCE)
+            why = {}
+            self.assertFalse(response._verified_wiki_row(
+                card('other-project', 'outside.md'), decision,
+                current_source=False, reasons=why))
+            self.assertEqual(why, {'source_outside_raw_roots': 1})
+            why = {}
+            self.assertFalse(response._verified_wiki_row(
+                row(path='wiki/card.md', body='---\ntitle: Draft\nstatus: generated\n'
+                    'createdBy: qmd-auto-context\n---\nbody\n'),
+                decision, current_source=False, reasons=why))
+            self.assertEqual(why, {'status_not_verified': 1})
+
+    def test_v2_all_matches_filtered_is_reported_not_silent(self):
+        import io
+        import laya_index_capacity
+        index = FakeIndex()
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
+        decision = v2_decision()
+        decision['recallSettings'] = {**decision['recallSettings'],
+                                      'recallStrategy': 'wikiOnly'}
+        draft = row(path='wiki/draft.md', body='---\ntitle: Draft\nstatus: generated\n'
+                    'createdBy: qmd-auto-context\n---\nbody\n')
+        legacy = row(path='wiki/legacy.md', body='---\ntitle: Old\nstatus: verified\n'
+                     'createdBy: qmd-auto-context\n---\nbody\n')
+
+        def phase(*args, **kwargs):
+            source_filter = args[11]
+            kept = [item for item in (draft, legacy, draft) if source_filter(item)]
+            return kept, False
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / 'recall.log'
+            with patch.object(response, '_v2_phase', side_effect=phase), \
+                 patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                              return_value=FakeBoundCandidates()), \
+                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                found, _ = response.query_selected_v2(
+                    runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
+                    lambda *_: None, decision)
+            self.assertEqual(found, [])
+            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual([line['reason'] for line in lines], ['laya_wiki_rows_filtered'])
+            self.assertEqual(lines[0]['filtered_count'], 2)
+            self.assertEqual(lines[0]['filtered_reasons'],
+                             {'source_revisions_missing': 1, 'status_not_verified': 1})
+            self.assertIn('2 matched wiki cards, none servable', stderr.getvalue())
+
     def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
         import laya_index_capacity
         import wiki_freshness
