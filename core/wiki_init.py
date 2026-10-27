@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 
+import config as qmd_config
 import wiki_mutation_lock
 
 
@@ -146,6 +147,13 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
         for path, content in files.items():
             if ensure_project_file(path, content):
                 created.append(str(path))
+
+        # minimal settings는 wiki collection·compile을 플러그인이 유도한다. scaffold만
+        # 만들고 settings는 바이트 그대로 둔다(키를 더하면 legacy 파일이 된다).
+        if initial_config is None and qmd_config.is_minimal_settings(config):
+            if not quiet:
+                print(f"[qmd] wiki scaffold ready: {wiki} ({len(created)} files created)")
+            return
 
         def slug(name: str) -> str:
             cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in name).strip("-")

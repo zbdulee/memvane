@@ -2183,7 +2183,9 @@ found = qmd_config.find_project_config(sys.argv[1])
 cfg = found["config"]
 fmt = found.get("configFormat", "none")
 own_root = Path(found["projectRoot"]).resolve() == Path(sys.argv[1]).resolve()
-if cfg.get("indexing") is True and own_root and fmt == "auto-context-dir":
+if qmd_config.is_minimal_config(cfg) and own_root and fmt == "auto-context-dir":
+    print("minimal")
+elif cfg.get("indexing") is True and own_root and fmt == "auto-context-dir":
     print("optin")
 elif cfg.get("indexing") is True and own_root and fmt in ("auto-context-json", "agents-legacy"):
     print("legacy")
@@ -2191,6 +2193,13 @@ else:
     print("no")
 PY
 )"
+  if [ "$state" = "minimal" ]; then
+    # minimal settings({name, skipPaths})는 auto-wiki compile을 플러그인이 유도한다.
+    # compile 블록을 쓰면 legacy 파일이 되므로 scaffold만 보장하고 settings는 두지 않는다.
+    bash "$0" --init-wiki "$target" >/dev/null 2>&1 || true
+    printf '[qmd] 이 프로젝트는 minimal settings(name·skipPaths)를 씁니다. wiki auto-compile은 플러그인 기본값으로 이미 켜져 있습니다: %s\n' "$target"
+    exit 0
+  fi
   if [ "$state" = "legacy" ]; then
     printf '[qmd] 이 프로젝트는 레거시 config(.auto-context.json 또는 .agents/qmd-recall.json)로 opt-in되어 있습니다.\n'
     printf '      --enable-compile을 실행하면 새 .auto-context/settings.json이 레거시 config를 섀도잉해 기존 설정이 유실됩니다.\n'

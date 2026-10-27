@@ -350,6 +350,7 @@ def _preflight_multi_settings(route, project_root):
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
         _fail('cutover_settings_unsupported')
+    parsed = config.expand_minimal_settings(parsed)
     cfg = config.normalize_config(parsed)
     declared = route['collections']
     names = tuple(item['name'] for item in declared)

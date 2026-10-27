@@ -417,7 +417,8 @@ def main(argv=None):
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin','retire-index-origin',
                                           'abandon-index-build','abandon-inactive-index-build',
-                                          'seal-host-copy'))
+                                          'seal-host-copy',
+                                          'plan-minimal-settings','migrate-minimal-settings'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -471,8 +472,22 @@ def main(argv=None):
     parser.add_argument('--approve-inactive-index-upgrade', action='store_true')
     parser.add_argument('--approve-active-index-upgrade', action='store_true')
     parser.add_argument('--wake-revision', type=int)
+    parser.add_argument('--accepted-settings-proposal-sha256')
+    parser.add_argument('--approve-settings-rewrite', action='store_true')
     args = parser.parse_args(argv)
     try:
+        if args.action in ('plan-minimal-settings', 'migrate-minimal-settings'):
+            import settings_migration
+            project = str(Path(args.project).resolve())
+            if args.action == 'plan-minimal-settings':
+                result = settings_migration.plan(project)
+            elif not args.approve_settings_rewrite:
+                raise ValueError('settings_rewrite_approval_required')
+            else:
+                result = settings_migration.apply(
+                    project, args.accepted_settings_proposal_sha256)
+            print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+            return 1 if result.get('status') == 'refused' else 0
         if args.action in ('plan-index-origin','plan-fresh-wiki-origin',
                            'review-index-provider',
                            'prepare-index-origin','prepare-fresh-wiki-origin',

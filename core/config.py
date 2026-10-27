@@ -315,6 +315,114 @@ DEFAULT_REASONING_EFFORT = {
     "engines": {},
 }
 
+# ---------------------------------------------------------------------------
+# Minimal settings model
+#
+# 프로젝트 settings가 `name`(필수)과 `skipPaths`(선택)만 가지면 나머지 effective 설정은
+# 플러그인이 결정적으로 유도한다. 다른 키가 하나라도 있으면 legacy 파일이며 지금까지와
+# 똑같이 정규화한다(부분 유도 없음). 이미 선택된 laya-db route는 settings 바이트 해시에
+# 묶여 있으므로 legacy 파일의 해석은 이 모델 때문에 바뀌지 않는다.
+MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths"})
+MINIMAL_SETTINGS_MODEL = "minimal"
+MINIMAL_RAW_COLLECTION_PATH = "."
+MINIMAL_WIKI_COLLECTION_PATH = ".auto-context/wiki"
+MINIMAL_WIKI_SUFFIX = "-wiki"
+# laya_index_host_route.COLLECTION_NAME 상한(64)에서 "-wiki" 접미를 뺀 길이.
+MINIMAL_SLUG_MAX = 64 - len(MINIMAL_WIKI_SUFFIX)
+MINIMAL_COMPILE_TRIGGERS = ("post_tool_source", "post_sync_source", "manual")
+MINIMAL_EXTRACTOR_BUILTINS = ("claude", "codex", "hermes")
+
+
+def settings_slug(name):
+    """`name` → collection 이름 접두. 영숫자 시작, `[a-z0-9._-]`, 59자 이하. 실패 시 ""."""
+    if not isinstance(name, str):
+        return ""
+    cleaned = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "-"
+                      for ch in name.strip().lower())
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned.strip("-._")[:MINIMAL_SLUG_MAX].rstrip("-._")
+    return cleaned
+
+
+def _minimal_skip_paths(value):
+    """유효한 skipPaths(비어 있지 않은 문자열 목록)면 복사본, 아니면 None."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        return None
+    return list(value)
+
+
+def is_minimal_settings(raw):
+    """`{name, skipPaths?}`만 가진 유효한 settings인가.
+
+    `name`이 없거나 slug가 비거나 `skipPaths`가 비어 있지 않은 문자열 목록이 아니면
+    minimal이 아니다 — legacy 정규화로 떨어져 collection이 비고(pending) 아무것도
+    인덱싱하지 않는다(fail-closed).
+    """
+    return (isinstance(raw, dict) and "name" in raw
+            and set(raw) <= MINIMAL_SETTINGS_KEYS
+            and bool(settings_slug(raw.get("name")))
+            and _minimal_skip_paths(raw.get("skipPaths")) is not None)
+
+
+def minimal_collection_names(name):
+    """(raw collection, wiki collection) 이름. slug가 비면 ValueError."""
+    slug = settings_slug(name)
+    if not slug:
+        raise ValueError("minimal_settings_name_invalid")
+    return slug, slug + MINIMAL_WIKI_SUFFIX
+
+
+def expand_minimal_settings(raw):
+    """minimal settings를 같은 의미의 legacy 모양 dict로 펼친다. 아니면 raw 그대로 반환.
+
+    펼친 결과는 legacy 소비자(resolve_paths, update.sh `--raw`, laya route 검사)가 읽는
+    모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `.auto-context/wiki`가 wiki이고,
+    검색은 wiki 전용, compile은 host builtin extractor의 auto-wiki, 학습은 켜짐이다.
+    indexing은 settings 파일이 있으면 켜짐이고 사용자 로컬 optout marker가 끈다.
+    """
+    if not is_minimal_settings(raw):
+        return raw
+    name = raw["name"]
+    raw_name, wiki_name = minimal_collection_names(name)
+    return {
+        "name": name,
+        "indexing": True,
+        "collections": [raw_name, wiki_name],
+        "collectionPaths": {raw_name: MINIMAL_RAW_COLLECTION_PATH,
+                            wiki_name: MINIMAL_WIKI_COLLECTION_PATH},
+        "collectionRoles": {raw_name: COLLECTION_ROLE_RAW, wiki_name: COLLECTION_ROLE_WIKI},
+        "skipPaths": _minimal_skip_paths(raw.get("skipPaths")),
+        "recallStrategy": "wikiOnly",
+        "compile": {
+            "mode": "auto-wiki",
+            "triggers": list(MINIMAL_COMPILE_TRIGGERS),
+            "extractor": {"builtins": list(MINIMAL_EXTRACTOR_BUILTINS)},
+        },
+        "contextLearning": {"capture": True, "autoCycle": True, "liveSelection": True},
+    }
+
+
+def is_minimal_config(config):
+    """정규화된 effective config가 minimal settings에서 유도됐는가."""
+    return isinstance(config, dict) and config.get("settingsModel") == MINIMAL_SETTINGS_MODEL
+
+
+def generation_skip_paths(config, selected_route=None):
+    """wiki 생성에서 제외할 경로 목록. 적용 대상이 아니면 None.
+
+    선택된 laya route는 route가 묶은 skipPaths를, minimal settings는 자기 skipPaths를 쓴다.
+    legacy QMD 경로의 skipPaths는 recall 결과 필터일 뿐 생성 제외가 아니다.
+    """
+    if selected_route is not None:
+        return selected_route[0]["recallSettings"]["skipPaths"]
+    if is_minimal_config(config):
+        return list(config.get("skipPaths") or [])
+    return None
+
+
 EVENT_ALIASES = {
     "SessionStart": "sessionStart",
     "session_start": "sessionStart",
@@ -1010,6 +1118,16 @@ def invalid_session_start_sync(input_config):
 
 
 def normalize_config(input_config):
+    minimal = is_minimal_settings(input_config)
+    if minimal:
+        input_config = expand_minimal_settings(input_config)
+    config = _normalize_expanded_config(input_config)
+    if minimal:
+        config["settingsModel"] = MINIMAL_SETTINGS_MODEL
+    return config
+
+
+def _normalize_expanded_config(input_config):
     config = dict(DEFAULT_CONFIG)
     # Missing remains on; explicit bool stays intact; an unreadable value is off.
     raw_sync = input_config.get("sessionStartSync", DEFAULT_CONFIG["sessionStartSync"])
@@ -1289,7 +1407,10 @@ def _find_project_config_unsafe(cwd):
     if config_file:
         try:
             with open(config_file, "r", encoding="utf-8") as f:
-                config = normalize_config(json.load(f))
+                parsed = json.load(f)
+            # minimal settings는 canonical `.auto-context/settings.json`에만 적용한다.
+            config = (normalize_config(parsed) if config_format == "auto-context-dir"
+                      else _normalize_expanded_config(parsed))
             if config.get("indexing") is False:
                 config["collections"] = []
             return {
@@ -1454,13 +1575,19 @@ def load_project_config(cwd):
 
 
 def load_project_config_raw(cwd):
-    """Return the raw JSON object for the discovered project config, or {}."""
+    """Return the raw JSON object for the discovered project config, or {}.
+
+    minimal settings(`{name, skipPaths}`)는 legacy 모양으로 펼쳐 반환한다
+    (`expand_minimal_settings`). legacy 파일은 읽은 그대로다."""
     found = find_project_config(cwd)
     config_path = found.get("configPath")
     if not config_path:
         return {}
     parsed, reason = _read_json_object(config_path)
-    return parsed if not reason else {}
+    if reason:
+        return {}
+    return (expand_minimal_settings(parsed)
+            if found.get("configFormat") == "auto-context-dir" else parsed)
 
 
 def main():
