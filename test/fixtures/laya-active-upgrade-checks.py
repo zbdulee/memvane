@@ -30,8 +30,9 @@ class ActiveUpgradeCase(unittest.TestCase):
         self.state.mkdir(mode=0o700)
         self.old_route = raw({'pluginRoot': '/old'})
         self.new_route = raw({'pluginRoot': '/new'})
-        self.old_att = raw({'provider': 'old'})
-        self.new_att = raw({'provider': 'new'})
+        socket = {'serviceSocketPath': str(self.state / 'runtime' / 'laya-embed.sock')}
+        self.old_att = raw({'provider': 'old', 'providerManifest': socket})
+        self.new_att = raw({'provider': 'new', 'providerManifest': socket})
         self.old = {'epoch': 3, 'phase': 'active',
                     'routeSha256': hashlib.sha256(self.old_route).hexdigest(),
                     'attestationSha256': hashlib.sha256(self.old_att).hexdigest(),
