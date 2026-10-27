@@ -121,6 +121,22 @@ def compile_candidates(project_root, config, compile_cfg, changed_files, *, trig
         if revision is not None:
             record[intent.REVISION_FIELD] = revision
         candidates.append((name, rel, record))
+    # The selected wiki-only index owns retirement too. A deleted source has
+    # no bytes to read, but the last scanned hash is an exact replay key.
+    import wiki_selected_laya
+    if wiki_selected_laya.selected(Path(project_root)) is not None:
+        for name in sorted(changed_files):
+            entry = changed_files[name]
+            for rel in sorted(set(entry.get('deleted', ()))):
+                record = _source_record(str(Path(entry['root']) / rel),
+                                        project_root, project_root, config, engine,
+                                        trigger=trigger)
+                revision = intent.source_revision(changed_files, name, rel)
+                if record is None or revision is None:
+                    continue
+                record[intent.REVISION_FIELD] = revision
+                record['sourceDelete'] = True
+                candidates.append((name, rel, record))
     return candidates
 
 

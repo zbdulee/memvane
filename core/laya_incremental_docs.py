@@ -98,7 +98,7 @@ def _setup(db, identity):
 
 
 def publish_document(runtime, identity, snapshot, path, source_hash,
-                     title, body, profile_id):
+                     title, body, profile_id, *, require_verified):
     """Atomically expose one wiki document after the candidate sealed its vectors.
 
     A failed or interrupted sidecar write never exposes an FTS-only document.
@@ -140,6 +140,20 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
         _fail('incremental_vector_incomplete')
     if isinstance(snapshot, PendingMemberProof):
         catalog.require_pending_member(snapshot, path, source_hash)
+    if require_verified:
+        # A rewritten auto card is generated until the verifier stamps it.
+        # Keep the last completed sidecar row searchable across that interval;
+        # replacing it here would shadow the old head with an unusable draft.
+        from laya_host_response import _verified_wiki_row
+        decision = {
+            'projectRoot': identity['projectRoot'],
+            'collections': identity['collections'],
+            'collectionRoots': {item['name']: item['sourceRoot']
+                                for item in identity['collections']},
+        }
+        if not _verified_wiki_row({'path': path, 'body': body}, decision,
+                                  current_source=False):
+            return {'status': 'unverified'}
     db = _open(identity['stateRoot'])
     try:
         _setup(db, identity)
@@ -171,8 +185,140 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
     return {'status': 'published'}
 
 
+def preserve_previous_head(index, identity, base_gen, next_gen):
+    """Pin old verified rows before a full generation replaces them with drafts.
+
+    The sidecar read path shadows a newly published head with these immutable
+    old bytes until a verified replacement publishes through publish_document.
+    This runs under the selected sync owner's queue lock, after next_gen has
+    staged and sealed but before its head CAS. A failed pin stops that CAS.
+    """
+    from laya_host_response import _verified_wiki_row
+    from laya_index_vector import LayaVectorIndex, qmd_markdown_title, verify_generation_seal
+    if base_gen is None:
+        return 0
+    if (str(index.path) != identity['candidateDb'] or
+            index.incarnation() != identity['dbIncarnation'] or
+            index.db.execute('SELECT gen FROM head WHERE scope=?',
+                             (identity['scopeId'],)).fetchone() != (base_gen,)):
+        _fail('incremental_head_changed')
+    seal = verify_generation_seal(index, base_gen)
+    if seal['profile_id'] != identity['vectorProfileId']:
+        _fail('incremental_head_profile_changed')
+    decision = {'projectRoot': identity['projectRoot'],
+                'collections': identity['collections'],
+                'collectionRoots': {item['name']: item['sourceRoot']
+                                    for item in identity['collections']}}
+    rows = index.db.execute(
+        'SELECT old.path,old.hash,old_body.body,new.hash,new_body.body '
+        'FROM membership old JOIN membership new '
+        'ON new.gen=? AND new.scope=old.scope AND new.path=old.path '
+        'JOIN content old_body ON old_body.hash=old.hash '
+        'JOIN content new_body ON new_body.hash=new.hash '
+        'WHERE old.gen=? AND old.scope=? AND old.eligible=1 AND new.eligible=1 '
+        'AND old.hash<>new.hash ORDER BY old.path',
+        (next_gen, base_gen, identity['scopeId']))
+    vectors = LayaVectorIndex(index)
+    db = None
+    pinned = 0
+    try:
+        for path, old_hash, old_body, new_hash, new_body in rows:
+            old_row = {'path': path, 'body': old_body}
+            new_row = {'path': path, 'body': new_body}
+            if (_verified_wiki_row(new_row, decision, current_source=False) or
+                    not _verified_wiki_row(old_row, decision, current_source=False)):
+                continue
+            if hashlib.sha256(old_body.encode('utf-8')).hexdigest() != old_hash:
+                _fail('incremental_head_content_changed')
+            title = qmd_markdown_title(old_body, path)
+            chunks = vectors.cached_chunk_set(old_hash, title,
+                                              identity['vectorProfileId'])
+            if not chunks:
+                _fail('incremental_old_vector_incomplete')
+            if db is None:
+                db = _open(identity['stateRoot'])
+                _setup(db, identity)
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                existing = db.execute('SELECT rowid,hash,body FROM docs WHERE path=?',
+                                      (path,)).fetchone()
+                # A newer already verified sidecar row takes precedence over
+                # the old head. Never downgrade it during claim replay.
+                if (existing is not None and existing[1] != old_hash and
+                        _verified_wiki_row({'path': path, 'body': existing[2]},
+                                           decision, current_source=False)):
+                    db.commit()
+                    continue
+                if existing is None:
+                    rowid = db.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
+                                       (path, old_hash, title, old_body,
+                                        identity['vectorProfileId'], len(chunks),
+                                        'head-' + base_gen)).lastrowid
+                elif existing[1] == old_hash and existing[2] == old_body:
+                    db.commit()
+                    continue
+                else:
+                    rowid = existing[0]
+                    db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
+                    db.execute('UPDATE docs SET hash=?,title=?,body=?,profile_id=?, '
+                               'chunk_count=?,scan_id=? WHERE rowid=?',
+                               (old_hash, title, old_body, identity['vectorProfileId'],
+                                len(chunks), 'head-' + base_gen, rowid))
+                db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
+                           (rowid, path, title, old_body))
+                db.commit()
+                pinned += 1
+            except BaseException:
+                db.rollback()
+                raise
+    finally:
+        if db is not None:
+            db.close()
+    if index.db.execute('SELECT gen FROM head WHERE scope=?',
+                        (identity['scopeId'],)).fetchone() != (base_gen,):
+        _fail('incremental_head_changed')
+    return pinned
+
+
+def retire_missing_documents(runtime, identity, *, before_write):
+    """Remove obsolete sidecar rows only after a complete wiki catalog scan.
+
+    This is owned by the index worker. A pending scan or a staged replacement
+    cannot retire the previous completed row. The full-generation head has its
+    own CAS; the sidecar cleanup prevents that old row from shadowing it later.
+    """
+    if (runtime.scope != identity['scopeId'] or
+            runtime.index.incarnation() != identity['dbIncarnation'] or
+            str(runtime.index.path) != identity['candidateDb']):
+        _fail('incremental_document_identity_changed')
+    snapshot = runtime.catalog.require_complete()
+    db = _open(identity['stateRoot'])
+    removed = 0
+    try:
+        _setup(db, identity)
+        rows = db.execute('SELECT path,rowid,hash FROM docs ORDER BY path').fetchall()
+        for path, rowid, old_hash in rows:
+            if runtime.catalog.lookup(snapshot, path) is not None:
+                continue
+            before_write()
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                if db.execute('SELECT rowid,hash FROM docs WHERE path=?',
+                              (path,)).fetchone() == (rowid, old_hash):
+                    db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
+                    db.execute('DELETE FROM docs WHERE rowid=?', (rowid,))
+                    removed += 1
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+    finally:
+        db.close()
+    return removed
+
+
 def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
-                    before_publish, should_yield):
+                    before_publish, should_yield, require_verified):
     """Publish older complete cached wiki members without re-embedding them.
 
     The separate cursor and each document's publication are durable. A crash
@@ -196,10 +342,13 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
     try:
         _setup(db, identity)
         prior = db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
-        # A newer complete scan starts its own vector-fill cursor from the
-        # beginning. Already published older paths remain usable until that
-        # normal fill replaces them, so keep this one-time backfill cursor.
-        cursor = prior[1] if prior is not None else ''
+        # A product draft skipped before verification needs another attempt
+        # after verification changes the wiki bytes and requests a new scan.
+        # Revisit complete cached members on that new scan without embedding;
+        # same-scan retries still resume the finite cursor. Synthetic callers
+        # without the verification gate retain the original one-time backfill.
+        cursor = (prior[1] if prior is not None and
+                  (prior[0] == snapshot.scan_id or not require_verified) else '')
         if prior is None or prior[0] != snapshot.scan_id:
             db.execute('BEGIN IMMEDIATE')
             db.execute('INSERT OR REPLACE INTO cached_backfill VALUES(1,?,?)',
@@ -234,11 +383,14 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
                     if vectors.cached_chunk_set(sha, title, profile_id) is not None:
                         before_publish()
                         publish_document(runtime, identity, snapshot, path, sha,
-                                         title, body, profile_id)
+                                         title, body, profile_id,
+                                         require_verified=require_verified)
                     elif fill_cursor and path <= fill_cursor:
                         _fail('incremental_cached_member_missing')
-                # Never advance past a failed publication. A repeated member
-                # with a complete vector set is safe and requires no model.
+                # Never advance past a failed publication. An unverified draft
+                # is intentionally skipped; verification rewrites its wiki
+                # bytes and requests another scan, which restarts this cursor.
+                # A repeated member with cached vectors needs no new model.
                 before_publish()
                 db.execute('BEGIN IMMEDIATE')
                 db.execute('UPDATE cached_backfill SET cursor=? WHERE id=1', (path,))

@@ -327,9 +327,16 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertEqual(worker.selected_compiled_revision_card(self.root, self.bound, revision),
                          'concepts/card-1.md')
         budget = worker.SELECTED_PROOF_MAX_BYTES
-        remaining = budget - self.cards[0].stat().st_size
+        per_card = worker.SELECTED_PROOF_MAX_CARD_BYTES
+        used = self.cards[0].stat().st_size
+        fillers = []
+        while budget - used > per_card:
+            filler = self.sparse_card(f'notes/filler-{len(fillers)}.md', per_card)
+            fillers.append(filler)
+            used += per_card
+        remaining = budget - used
         # Exactly the remaining aggregate budget still proves the revision.
-        filler = self.sparse_card('notes/filler.md', remaining)
+        filler = self.sparse_card('notes/last-filler.md', remaining)
         self.assertEqual(worker.selected_compiled_revision_card(self.root, self.bound, revision),
                          'concepts/card-1.md')
         # One byte past the remaining aggregate (each card under the per-file cap).
@@ -337,17 +344,30 @@ class RevisionSkipChecks(unittest.TestCase):
             out.truncate(remaining + 1)
         card, peak = self.proof_peak(revision)
         self.assertIsNone(card)
-        self.assertLess(peak, budget // 5)  # rejected before allocating its bytes
+        self.assertLess(peak, per_card * 3)
         # One card alone past the per-file cap.
         filler.unlink()
-        self.sparse_card('notes/huge.md', budget + 1)
+        for item in fillers:
+            item.unlink()
+        self.sparse_card('notes/huge.md', per_card + 1)
         card, peak = self.proof_peak(revision)
         self.assertIsNone(card)
-        self.assertLess(peak, budget // 5)
+        self.assertLess(peak, per_card * 3)
         # The real worker keeps the paid path instead of skipping.
         self.process('session_start')
         self.assertEqual(len(self.extractor_calls), 2)
         self.assertEqual(self.skip_reasons(), [])
+
+    def test_bounded_proof_can_cover_more_than_200_wiki_cards(self):
+        self.compile_verified_once()
+        revision = self.revisions[0][0]
+        for n in range(210):
+            self.sparse_card(f'notes/other-{n:03}.md', 0)
+        self.assertEqual(worker.selected_compiled_revision_card(
+            self.root, self.bound, revision), 'concepts/card-1.md')
+        with patch.object(worker, 'SELECTED_PROOF_MAX_CARDS', 200):
+            self.assertIsNone(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision))
 
     def test_card_growing_during_read_fails_closed(self):
         card = self.wiki / 'grow.md'
@@ -467,6 +487,59 @@ class RevisionSkipChecks(unittest.TestCase):
         del job['selectedRoute']
         worker.process_job(self.root, self.config, self.config['compile'], job)
         self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_shared_delete_schedules_survivor_once_and_retains_wait_marker(self):
+        import wiki_source_retire
+        gone = self.docs / 'gone.md'
+        gone.write_text('old deleted bytes', encoding='utf-8')
+        old_hash = wiki_freshness.snapshot_bytes(gone)[0]['sha256']
+        gone.unlink()
+        job = self.job('file_change')
+        job['source']['path'] = 'docs/gone.md'
+        job['contentRevision'] = old_hash
+        job['sourceDelete'] = True
+        queue = self.root / '.auto-context/compile/source-queue.jsonl'
+        result = {'state': 'shared_pending',
+                  'survivors': [('proj-docs', 'docs/source.md')]}
+        with patch.object(wiki_source_retire, 'retire_deleted_source', return_value=result), \
+             patch.object(wiki_selected_laya, 'request_compile') as wake:
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], job),
+                (True, False, []))
+            rows = [json.loads(line) for line in queue.read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(rows[0]['forceRecompile'])
+            self.assertEqual(rows[0]['source']['path'], 'docs/source.md')
+            self.assertTrue(rows[1]['sourceDelete'])
+            self.assertTrue(rows[1]['sharedEnqueued'])
+            self.assertEqual(wake.call_count, 1)
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], rows[1]),
+                (False, True, []))
+            self.assertEqual(wake.call_count, 1,
+                             'a held deletion must not repeat a paid refresh')
+        self.assertEqual(self.extractor_calls, [])
+
+    def test_forced_survivor_refresh_drops_model_suggested_deleted_source(self):
+        captured = []
+        def extractor(*_args):
+            return {'candidates': [{
+                'title': 'Survivor', 'summary': 'Current source only',
+                'sources': [{'kind': 'file', 'path': 'docs/gone.md',
+                             'collection': 'proj-docs'}],
+            }]}, None, 0
+        def compile_card(root, candidate):
+            captured.append(candidate)
+            return self.fake_compile(root, candidate)
+        job = self.job('file_change')
+        job['forceRecompile'] = True
+        with patch.object(worker, 'run_extractor', side_effect=extractor), \
+             patch.object(worker, 'compile_candidate', side_effect=compile_card):
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], job),
+                (True, False, []))
+        self.assertEqual(captured[0]['sources'], [
+            {'kind': 'file', 'path': 'docs/source.md', 'collection': 'proj-docs'}])
 
 
 if __name__ == '__main__':

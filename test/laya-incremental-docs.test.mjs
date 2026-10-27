@@ -9,6 +9,6 @@ test('completed wiki documents publish atomically and replay without a model', (
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 10 tests/);
+  assert.match(result.stderr, /Ran 16 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

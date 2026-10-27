@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -17,9 +19,11 @@ from laya_index_capacity import GenerationBindingStore
 from laya_index_claim_queue import ClaimQueue
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import sync_step
+from laya_index_vector import LayaVectorIndex
 from laya_source_catalog import LayaSourceCatalog
 import laya_incremental_docs as incremental
 import laya_vector_capacity as capacity
+import yaml_scalars
 
 
 SCOPE = 'c' * 32
@@ -98,7 +102,8 @@ class IncrementalDocsTests(unittest.TestCase):
 
     def publish(self, snapshot, path, sha, title, body, profile_id):
         incremental.publish_document(self.runtime, self.identity, snapshot, path,
-                                     sha, title, body, profile_id)
+                                     sha, title, body, profile_id,
+                                     require_verified=False)
 
     def rows(self):
         path = self.state / incremental.FILE
@@ -106,6 +111,129 @@ class IncrementalDocsTests(unittest.TestCase):
             return []
         with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
             return db.execute('SELECT path,hash,chunk_count FROM docs ORDER BY path').fetchall()
+
+    def verified_card(self, fact):
+        source = self.project / 'docs' / 'source.md'
+        source.parent.mkdir(exist_ok=True)
+        source.write_text(fact, encoding='utf-8')
+        revision = {'kind': 'file', 'path': 'docs/source.md', 'collection': 'raw',
+                    'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                    'size': source.stat().st_size, 'mtimeNs': source.stat().st_mtime_ns}
+        page = ('---\ntitle: Synthetic card\nstatus: verified\n'
+                'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                + json.dumps(revision) + '\nverifiedBodyHash: {digest}\n'
+                '---\n## Summary\n' + fact + '\n')
+        return page.replace('{digest}', yaml_scalars.card_body_hash(
+            page.replace('{digest}', '0' * 64)))
+
+    def test_generated_rewrite_preserves_last_verified_publication(self):
+        old = self.verified_card('old complete fact')
+        self.write('card.md', old)
+        self.snapshot()
+        callback = lambda snapshot, path, sha, title, body, profile: (
+            incremental.publish_document(self.runtime, self.identity, snapshot,
+                                         path, sha, title, body, profile,
+                                         require_verified=True))
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=callback)
+        published_old = self.rows()
+        self.assertEqual(len(published_old), 1)
+
+        new = self.verified_card('new complete fact')
+        generated = new.replace('status: verified', 'status: generated')
+        self.write('card.md', generated)
+        self.runtime.catalog.request_scan()
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=callback)
+        self.assertEqual(self.rows(), published_old,
+                         'an unverified replacement must not evict the old read row')
+
+        self.write('card.md', new)
+        self.runtime.catalog.request_scan()
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=callback)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertNotEqual(self.rows(), published_old)
+
+    def test_first_generated_card_waits_for_verification(self):
+        verified = self.verified_card('new fact')
+        self.write('card.md', verified.replace('status: verified', 'status: generated'))
+        self.snapshot()
+        callback = lambda snapshot, path, sha, title, body, profile: (
+            incremental.publish_document(self.runtime, self.identity, snapshot,
+                                         path, sha, title, body, profile,
+                                         require_verified=True))
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=callback)
+        self.assertEqual(self.rows(), [], 'an initial draft is not a searchable document')
+
+        self.write('card.md', verified)
+        self.runtime.catalog.request_scan()
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=callback)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_cached_backfill_requires_verified_wiki_body(self):
+        verified = self.verified_card('cached fact')
+        self.write('card.md', verified.replace('status: verified', 'status: generated'))
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider)
+        options = {'deadline': 100, 'clock': lambda: 0,
+                   'before_publish': lambda: None, 'should_yield': lambda: False,
+                   'require_verified': True}
+        self.assertEqual(incremental.backfill_cached(
+            self.runtime, self.identity, self.profile, **options)['state'], 'complete')
+        self.assertEqual(self.rows(), [])
+
+        self.write('card.md', verified)
+        self.runtime.catalog.request_scan()
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider)
+        self.assertEqual(incremental.backfill_cached(
+            self.runtime, self.identity, self.profile, **options)['state'], 'complete')
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_full_generation_rewrite_pins_old_verified_without_sidecar(self):
+        old = self.verified_card('old complete fact')
+        self.write('card.md', old)
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider)
+        index = self.runtime.index
+        vectors = LayaVectorIndex(index)
+        self.assertEqual(index.stage('old', SCOPE, [('wiki/card.md', old, True)]),
+                         'prepared')
+        vectors.seal_generation('old', self.profile)
+        self.assertEqual(index.publish(None, 'old', 'claim-old', require_vector=True),
+                         'published')
+        self.assertEqual(self.rows(), [], 'the prior installation has no sidecar row')
+
+        new = self.verified_card('new unverified fact').replace(
+            'status: verified', 'status: generated')
+        self.write('card.md', new)
+        self.runtime.catalog.request_scan()
+        # The direct A-int fixture head has no capacity source-manifest seal;
+        # drive only the catalog scan here, not the product sync dispatcher.
+        for _ in range(100):
+            if self.runtime.catalog.step()['status'] == 'complete':
+                break
+        else:
+            self.fail('catalog did not complete')
+        capacity.vector_fill_step(self.runtime, self.provider)
+        self.assertEqual(index.stage('new', SCOPE, [('wiki/card.md', new, True)]),
+                         'prepared')
+        vectors.seal_generation('new', self.profile)
+        self.assertEqual(incremental.preserve_previous_head(
+            index, self.identity, 'old', 'new'), 1)
+        self.assertEqual(self.rows()[0][1], hashlib.sha256(old.encode()).hexdigest())
+        self.assertEqual(incremental.preserve_previous_head(
+            index, self.identity, 'old', 'new'), 0, 'claim replay is idempotent')
+        self.assertEqual(index.publish('old', 'new', 'claim-new', require_vector=True),
+                         'published')
+        self.assertEqual(self.rows()[0][1], hashlib.sha256(old.encode()).hexdigest(),
+                         'the old completed body remains pinned after head replacement')
 
     def test_first_completed_document_visible_before_full_generation(self):
         self.write('a.md', '# A\nalpha\n')
@@ -212,20 +340,22 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(self.rows(), [])
         original = incremental.publish_document
 
-        def interrupted(*args):
+        def interrupted(*args, **kwargs):
             if args[3] == 'wiki/b.md':
                 raise RuntimeError('synthetic interruption')
-            return original(*args)
+            return original(*args, **kwargs)
 
         options = {'deadline': 100, 'clock': lambda: 0,
                    'before_publish': lambda: None, 'should_yield': lambda: False}
         with mock.patch.object(incremental, 'publish_document', side_effect=interrupted):
             with self.assertRaisesRegex(RuntimeError, 'synthetic interruption'):
                 incremental.backfill_cached(self.runtime, self.identity,
-                                            self.profile, **options)
+                                            self.profile, require_verified=False,
+                                            **options)
         self.assertEqual([row[0] for row in self.rows()], ['wiki/a.md'])
         done = incremental.backfill_cached(self.runtime, self.identity,
-                                           self.profile, **options)
+                                           self.profile, require_verified=False,
+                                           **options)
         self.assertEqual(done['state'], 'complete')
         self.assertEqual([row[0] for row in self.rows()], ['wiki/a.md', 'wiki/b.md'])
         self.assertEqual(self.provider.calls, ['wiki/a.md', 'wiki/b.md'])
@@ -239,7 +369,7 @@ class IncrementalDocsTests(unittest.TestCase):
         result = incremental.backfill_cached(
             self.runtime, self.identity, self.profile, deadline=100,
             clock=lambda: 0, before_publish=lambda: None,
-            should_yield=lambda: False)
+            should_yield=lambda: False, require_verified=False)
         self.assertEqual(result, {'state': 'pending', 'reason': 'source_changed'})
         self.assertEqual(self.rows(), [])
 
@@ -254,7 +384,7 @@ class IncrementalDocsTests(unittest.TestCase):
                 incremental.backfill_cached(
                     self.runtime, self.identity, self.profile, deadline=100,
                     clock=lambda: 0, before_publish=lambda: None,
-                    should_yield=lambda: False)
+                    should_yield=lambda: False, require_verified=False)
         self.assertEqual(self.rows(), [])
 
     def test_wrong_scope_cannot_publish(self):
@@ -263,7 +393,8 @@ class IncrementalDocsTests(unittest.TestCase):
         wrong = {**self.identity, 'scopeId': 'd' * 32}
         callback = lambda snapshot, path, sha, title, body, profile: (
             incremental.publish_document(self.runtime, wrong, snapshot, path,
-                                         sha, title, body, profile))
+                                         sha, title, body, profile,
+                                         require_verified=False))
         with self.assertRaisesRegex(Exception, 'incremental_document_identity_changed'):
             capacity.vector_fill_step(self.runtime, self.provider,
                                       on_document_complete=callback)
@@ -285,6 +416,45 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(again['cached'], 1)
         self.assertEqual(self.provider.calls, ['wiki/a.md'])
         self.assertEqual(self.rows(), original)
+
+    def test_retirement_waits_for_complete_scan_then_removes_sidecar(self):
+        self.write('gone.md', '# Gone\ncompleted fact\n')
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=self.publish)
+        self.assertEqual([row[0] for row in self.rows()], ['wiki/gone.md'])
+        (self.wiki / 'gone.md').unlink()
+        self.runtime.catalog.request_scan()
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=lambda: None), 0)
+        self.assertEqual(len(self.rows()), 1,
+                         'an incomplete scan cannot retire the published card')
+        self.snapshot()
+        writes = []
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=lambda: writes.append(1)), 1)
+        self.assertEqual(writes, [1])
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=lambda: writes.append(1)), 0,
+            'a replay is idempotent')
+
+    def test_retirement_does_not_delete_a_newer_same_path_sidecar_row(self):
+        self.write('gone.md', '# Gone\nold completed fact\n')
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider,
+                                  on_document_complete=self.publish)
+        (self.wiki / 'gone.md').unlink()
+        self.runtime.catalog.request_scan()
+        self.snapshot()
+        newer = 'e' * 64
+        def concurrent_publication():
+            with sqlite3.connect(self.state / incremental.FILE) as db:
+                db.execute('UPDATE docs SET hash=? WHERE path=?',
+                           (newer, 'wiki/gone.md'))
+        self.assertEqual(incremental.retire_missing_documents(
+            self.runtime, self.identity, before_write=concurrent_publication), 0)
+        self.assertEqual(self.rows()[0][1], newer)
 
 
 if __name__ == '__main__':

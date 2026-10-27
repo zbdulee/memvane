@@ -230,6 +230,7 @@ class DiscoveryChecks(unittest.TestCase):
             one, new = self.alpha / 'one.md', self.alpha / 'new.md'
             one.write_text('# One\nThe otter guards the south dam.\n', encoding='utf-8')
             new.write_text('# New\nThe otter swims the estuary.\n', encoding='utf-8')
+            gone_hash = self.sha(gone)
             gone.unlink()
             (self.beta / 'two.md').write_text('green heron', encoding='utf-8')
             before = self.model_work()
@@ -241,7 +242,8 @@ class DiscoveryChecks(unittest.TestCase):
             self.assertEqual(second['state'], 'indexed')
             self.assertEqual(self.members(second['generation']), ['beta/two.md'])
             # A stale-recall wake is no grant: revisions wait, nothing is queued.
-            expected = {'alpha/new.md': self.sha(new), 'alpha/one.md': self.sha(one)}
+            expected = {'alpha/gone.md': gone_hash,
+                        'alpha/new.md': self.sha(new), 'alpha/one.md': self.sha(one)}
             self.assertEqual((self.state()['baseGen'], self.state()['pending']),
                              (second['generation'], expected))
             self.assertFalse(self.paths()[1].exists())
@@ -270,7 +272,8 @@ class DiscoveryChecks(unittest.TestCase):
             self.assertEqual(status, {'status': 'drained', 'runs': 2})
             self.assertEqual(results[0]['state'], 'unchanged')
         self.assertEqual(self.source_rows(),
-                         [('alpha/new.md', 'post_sync_source', expected['alpha/new.md']),
+                         [('alpha/gone.md', 'post_sync_source', expected['alpha/gone.md']),
+                          ('alpha/new.md', 'post_sync_source', expected['alpha/new.md']),
                           ('alpha/one.md', 'post_sync_source', expected['alpha/one.md'])])
         self.assertEqual(self.state()['pending'], {})
         self.assertEqual(self.grants(), {'sync': 0, 'session_start': 0})
