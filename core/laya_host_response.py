@@ -768,9 +768,11 @@ def _verified_wiki_locations(row: dict, decision: dict,
         if snapshot is None:
             return None
         current, data = snapshot
+        # A branch switch can change mtime without changing source bytes.
+        # The stable snapshot hash and size prove the revision;
+        # a metadata-only timestamp change must not hide a verified wiki card.
         if (current['sha256'] != normalized['sha256']
-                or current['size'] != normalized['size']
-                or current['mtimeNs'] != normalized['mtimeNs']):
+                or current['size'] != normalized['size']):
             return None
         if any(span['path'] == normalized['path'] and not source_spans.verify_span(span, data)
                for span in spans):
