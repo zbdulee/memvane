@@ -260,7 +260,9 @@ class MigrationChecks(Project):
         self.write_route(self.derived_collections())
         result = self.plan()
         self.assertEqual(result["reason"], "selected_route_not_verified", result)
-        self.assertEqual(result["routeState"], "blocked", result)
+        # The record and settings agree; no installer journal backs them.
+        self.assertEqual(result["routeState"], "candidate", result)
+        self.assertIn("routeReason", result)
         self.assertEqual(settings_migration.apply(str(self.root), None)["reason"],
                          "selected_route_not_verified")
         self.assertEqual(self.settings.read_bytes(), before)

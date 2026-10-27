@@ -296,25 +296,33 @@ def inspect(project, new_settings):
     if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
         _fail('selected_route_not_verified', routeState=decision.get('state'),
               routeReason=decision.get('reason'))
-    old_route = _private(auto / ROUTE, 8192)
-    if old_route is None:
-        _fail('selected_route_missing')
-    route = json.loads(old_route.decode('utf-8'))
-    if not isinstance(route, dict) or route.get('schema') != SCHEMA_V2:
-        _fail('selected_route_schema_unsupported')
-    journal = Path(route['journalPath'])
-    state = journal.parent
-    ledger = _origin(state)
-    row = ledger.load(state / ledger.name)
-    old_marker = _private(auto / MARKER, 8192)
-    current = inspect_journal(journal)
-    if (row['phase'] != 'active' or row['routeSha256'] != _sha(old_route) or
-            row['journalPath'] != str(journal) or row['projectRoot'] != str(project) or
-            old_marker != ledger.marker(row) or
-            _private(state / REVIEWED, 8192) != old_route or
-            current['state'] not in ('active', 'restored_old') or
-            current['selectedRouteSha256'] != _sha(old_route)):
-        _fail('selected_route_bindings_inconsistent')
+    # A candidate classification checks only the route record and settings;
+    # the installer evidence below proves an active selection.
+    try:
+        old_route = _private(auto / ROUTE, 8192)
+        if old_route is None:
+            _fail('selected_route_missing')
+        route = json.loads(old_route.decode('utf-8'))
+        if not isinstance(route, dict) or route.get('schema') != SCHEMA_V2:
+            _fail('selected_route_schema_unsupported')
+        journal = Path(route['journalPath'])
+        state = journal.parent
+        ledger = _origin(state)
+        row = ledger.load(state / ledger.name)
+        old_marker = _private(auto / MARKER, 8192)
+        current = inspect_journal(journal)
+        if (row['phase'] != 'active' or row['routeSha256'] != _sha(old_route) or
+                row['journalPath'] != str(journal) or row['projectRoot'] != str(project) or
+                old_marker != ledger.marker(row) or
+                _private(state / REVIEWED, 8192) != old_route or
+                current['state'] not in ('active', 'restored_old') or
+                current['selectedRouteSha256'] != _sha(old_route)):
+            _fail('selected_route_bindings_inconsistent')
+    except RebindRefused as exc:
+        _fail('selected_route_not_verified', routeState='candidate', routeReason=exc.reason)
+    except Exception as exc:
+        _fail('selected_route_not_verified', routeState='candidate',
+              routeReason=str(exc) or type(exc).__name__)
     old_settings = _read_regular(auto / SETTINGS, MAX_SETTINGS_BYTES)
     if _sha(old_settings) != route['settingsSha256']:
         _fail('selected_route_settings_changed')
