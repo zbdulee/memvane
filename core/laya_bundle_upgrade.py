@@ -1,0 +1,539 @@
+"""Automatic Laya bundle upgrade after a host plugin update.
+
+Every laya-db install is bound to one exact installed plugin bundle. When a
+host executes a different installed bundle, a SessionStart hook calls
+``request``; it reads a small status file and may spawn one detached worker
+(``run``) off the hook foreground. The worker moves every install of that
+project under its own state root to the executing bundle:
+
+* inactive build (registered/building/blocked/sealed): a sealed build is
+  first marked for a fresh scan, then ``laya_inactive_upgrade``;
+* bound build (prepared selection ledger): ``laya_bound_upgrade``;
+* selected route (fresh-wiki or QMD-origin ledger): ``laya_active_upgrade``,
+  then one selected sync wake.
+
+Source rule: the host marketplace clone is the only unattended source, and
+only when its HEAD is the installed commit (from the host's own record) and
+its tracked files are clean. Provider review runs again and is accepted only
+when the proposal equals the previously sealed attestation except for the
+bundle file paths. A changed model, runtime, closure or provider byte is
+never accepted here; the install keeps its bundle and the notice says why.
+A host whose bundle is older than the bound one never downgrades it.
+
+Until an upgrade completes, a selected project serves its last published
+generation read-only (``laya_install_journal.verify_selected_route_read_only``).
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+SCHEMA = 'laya-bundle-auto-upgrade-v1'
+STATUS = 'bundle-auto-upgrade.json'
+LOCK = 'bundle-auto-upgrade.lock'
+LOG = 'bundle-auto-upgrade.log'
+LOG_LIMIT = 256 * 1024
+RUNNING_SECONDS = 1800
+RETRY_SECONDS = 600
+REFUSED_RETRY_SECONDS = 6 * 3600
+MAX_FAST_ATTEMPTS = 3
+DEADLINE_SECONDS = 1800
+# Provider manifest keys that may name the new bundle's own files.
+BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
+# Refusals a later retry cannot clear without a source, host or review change.
+REFUSALS = frozenset((
+    'provider_changed_rebuild_required', 'older_host_bundle',
+    'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
+    'marketplace_source_dirty', 'host_layout_unknown',
+    'active_upgrade_schema_unsupported'))
+
+
+class UpgradeRefused(RuntimeError):
+    pass
+
+
+def _refuse(reason):
+    raise UpgradeRefused(reason)
+
+
+def executing_root():
+    return Path(__file__).resolve().parent.parent
+
+
+def _now():
+    return time.time_ns()
+
+
+# ---------------------------------------------------------------- status file
+
+def _private_dir(state):
+    state = Path(state)
+    info = state.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) & 0o077):
+        raise ValueError('bundle_upgrade_state_unsafe')
+    return state
+
+
+def read_status(state):
+    """The worker's last status for this install, or None."""
+    path = _private_dir(state) / STATUS
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except FileNotFoundError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536):
+            return None
+        raw = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+    try:
+        value = json.loads(raw.decode('utf-8'))
+    except (UnicodeError, ValueError):
+        return None
+    if (not isinstance(value, dict) or value.get('schema') != SCHEMA or
+            value.get('status') not in ('running', 'complete', 'failed', 'refused',
+                                        'current') or
+            not isinstance(value.get('executingRoot'), str) or
+            type(value.get('updatedNs')) is not int or
+            type(value.get('attempts')) is not int):
+        return None
+    return value
+
+
+def _write_status(state, **fields):
+    state = _private_dir(state)
+    value = {'schema': SCHEMA, 'updatedNs': _now(), **fields}
+    fd, name = tempfile.mkstemp(prefix='.bundle-auto-upgrade-', dir=state)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump(value, out, sort_keys=True, ensure_ascii=True)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, state / STATUS)
+    finally:
+        Path(name).unlink(missing_ok=True)
+    return value
+
+
+def _log(state, message):
+    try:
+        path = _private_dir(state) / LOG
+        if path.is_symlink():
+            return
+        if path.exists() and path.stat().st_size > LOG_LIMIT:
+            os.replace(path, path.with_name(LOG + '.1'))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'a', encoding='utf-8') as out:
+            out.write(f'{time.time():.3f} {message}\n')
+    except (OSError, ValueError):
+        pass
+
+
+# ------------------------------------------------------------ hook side API
+
+def _fixture():
+    return (os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or
+            bool(os.environ.get('QMD_SANDBOX')))
+
+
+def _spawn(project_root):
+    subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), 'run',
+                      str(project_root)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, close_fds=True,
+                     start_new_session=True,
+                     env={**{key: os.environ[key] for key in
+                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+                             if key in os.environ},
+                          'PYTHONDONTWRITEBYTECODE': '1'})
+
+
+def _due(status, root, now):
+    """Whether a new worker may start for this executing bundle."""
+    if status is None or status['executingRoot'] != root:
+        return True
+    age = (now - status['updatedNs']) / 1e9
+    if status['status'] == 'running':
+        return age >= RUNNING_SECONDS
+    if status['status'] == 'refused':
+        return age >= REFUSED_RETRY_SECONDS
+    if status['status'] == 'failed':
+        wait = (RETRY_SECONDS * max(1, status['attempts'])
+                if status['attempts'] < MAX_FAST_ATTEMPTS else REFUSED_RETRY_SECONDS)
+        return age >= wait
+    return age >= RETRY_SECONDS
+
+
+def request(project_root, journal_path, code='', *, spawn=None, now=None):
+    """Hook side: never waits; starts at most one detached worker."""
+    state = Path(journal_path).parent
+    root = str(executing_root())
+    status = read_status(state)
+    if not _due(status, root, _now() if now is None else now):
+        return {'status': status['status'], 'reason': status.get('reason', '')}
+    if spawn is None:
+        if _fixture():
+            return {'status': 'queued', 'reason': 'fixture_no_spawn'}
+        spawn = _spawn
+    spawn(project_root)
+    return {'status': 'queued', 'reason': code}
+
+
+def notice_line(state, code):
+    """One SessionStart line naming the real reason; ASCII, no paths."""
+    status = state.get('status') if isinstance(state, dict) else None
+    reason = state.get('reason') if isinstance(state, dict) else ''
+    reason = reason if isinstance(reason, str) and reason else code
+    head = '[laya-index] plugin bundle changed (' + code + '); '
+    if status in ('queued', 'running', None):
+        return (head + 'search serves the last published index read-only and '
+                'sync waits while the index moves to this bundle.')
+    if status == 'refused':
+        return (head + 'automatic index upgrade needs review (' + reason + '); '
+                'search stays read-only on the last published index. Ask the '
+                'setup skill to upgrade or rebuild the Laya index.')
+    if status == 'complete':
+        return (head + 'index upgrade finished; the next session uses it.')
+    return (head + 'automatic index upgrade failed (' + reason + '); search '
+            'stays read-only on the last published index and a later session '
+            'retries.')
+
+
+def request_for_project(project_root):
+    """Legacy-selected project (inactive or bound build): request if drifted."""
+    import laya_initial_build as build
+    from laya_install_journal import inspect_journal
+    record = build.lookup(str(project_root))
+    if record is None or record['phase'] == 'retired':
+        return None
+    journal = inspect_journal(record['identity']['journalPath'])
+    identity = journal.get('selected') or journal.get('pending')
+    if not isinstance(identity, dict) or identity.get('pluginRoot') == str(executing_root()):
+        return None
+    return request(str(project_root), record['identity']['journalPath'])
+
+
+# --------------------------------------------------------------- source rule
+
+def host_layout(root, home=None):
+    """(host, marketplace clone) for an installed host plugin cache root."""
+    home = Path(home or Path.home())
+    root = Path(root)
+    for host, cache, markets in (
+            ('claude', home / '.claude' / 'plugins' / 'cache',
+             home / '.claude' / 'plugins' / 'marketplaces'),
+            ('codex', home / '.codex' / 'plugins' / 'cache',
+             home / '.codex' / '.tmp' / 'marketplaces')):
+        try:
+            parts = root.relative_to(cache).parts
+        except ValueError:
+            continue
+        if len(parts) == 3:
+            return host, markets / parts[0]
+    _refuse('host_layout_unknown')
+
+
+def _git(root, *args):
+    done = subprocess.run(('git', '-C', str(root), *args), stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, timeout=15, check=False)
+    return done.returncode, done.stdout.decode('utf-8', 'replace').strip()
+
+
+def installed_commit(root, home=None):
+    """The host's own record of the commit it installed, when it keeps one."""
+    root = Path(root)
+    if (root / '.git').exists():
+        code, out = _git(root, 'rev-parse', 'HEAD')
+        return out if code == 0 and out else None
+    record = Path(home or Path.home()) / '.claude' / 'plugins' / 'installed_plugins.json'
+    try:
+        plugins = json.loads(record.read_text(encoding='utf-8')).get('plugins', {})
+    except (OSError, ValueError, AttributeError):
+        return None
+    for rows in plugins.values() if isinstance(plugins, dict) else ():
+        for row in rows if isinstance(rows, list) else ():
+            if (isinstance(row, dict) and row.get('installPath') == str(root) and
+                    isinstance(row.get('gitCommitSha'), str)):
+                return row['gitCommitSha']
+    return None
+
+
+def select_source(root, home=None):
+    """The marketplace clone, only at the installed commit with clean tracked files."""
+    _host, source = host_layout(root, home)
+    if not (source / '.git').exists() or source.is_symlink():
+        _refuse('marketplace_source_unavailable')
+    code, head = _git(source, 'rev-parse', 'HEAD')
+    top_code, top = _git(source, 'rev-parse', '--show-toplevel')
+    if code != 0 or top_code != 0 or Path(top).resolve() != source.resolve():
+        _refuse('marketplace_source_unavailable')
+    wanted = installed_commit(root, home)
+    if wanted is not None and wanted != head:
+        _refuse('marketplace_source_commit_mismatch')
+    # Untracked files are outside the exact committed file set.
+    diff, _ = _git(source, 'diff', '--quiet', 'HEAD', '--')
+    if diff != 0:
+        _refuse('marketplace_source_dirty')
+    return source.resolve(), head
+
+
+def _not_older(source, bound_commit, commit):
+    """Never move an install back to an older bundle (no host ping-pong)."""
+    if bound_commit == commit:
+        return
+    code, _ = _git(source, 'merge-base', '--is-ancestor', commit, bound_commit)
+    if code == 0:
+        _refuse('older_host_bundle')
+
+
+# ------------------------------------------------------- provider equivalence
+
+def provider_equivalent(old_attestation, review, new_root):
+    """Same reviewed provider except for the new bundle's own file paths."""
+    old_manifest = old_attestation.get('providerManifest')
+    approved = review.get('reviewedProvider') if isinstance(review, dict) else None
+    if not isinstance(old_manifest, dict) or not isinstance(approved, dict):
+        return False
+    new_manifest = approved.get('providerManifest')
+    if (not isinstance(new_manifest, dict) or set(new_manifest) != set(old_manifest) or
+            approved.get('vectorProfile') != old_attestation.get('vectorProfile') or
+            approved.get('dependencyClosure') != old_attestation.get('dependencyClosure')):
+        return False
+    if any(new_manifest[key] != old_manifest[key]
+           for key in set(old_manifest) - BUNDLE_PATH_KEYS):
+        return False
+    root = Path(new_root)
+    return (new_manifest['providerPath'] ==
+            str(root / new_manifest['providerRelativePath']) and
+            new_manifest['workerPath'] == str(root / 'core' / 'laya_local_embed_worker.mjs'))
+
+
+# ---------------------------------------------------------- install discovery
+
+def installs(project_root):
+    """State roots bound to this project by its own route or build pointer."""
+    import laya_initial_build as build
+    from laya_index_host_route import select_route
+    found = []
+    decision = select_route(str(project_root), action='update')
+    if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project_root):
+        found.append(Path(decision['journalPath']).parent)
+    try:
+        record = build.lookup(str(project_root))
+    except Exception:
+        record = None
+    if record is not None:
+        state = Path(record['identity']['stateRoot'])
+        if state not in found:
+            found.append(state)
+    return found
+
+
+def classify(state):
+    """('active'|'bound'|'inactive'|'retired', bound identity) for one install."""
+    import laya_initial_build as build
+    from laya_install_journal import inspect_journal
+    journal = inspect_journal(Path(state) / 'install-journal.sqlite')
+    if journal['state'] in ('active', 'restored_old', 'pending'):
+        identity = journal['selected'] or journal['previous']
+        return 'active', identity
+    record = build.read(state)
+    if journal['state'] != 'candidate_ready' or record is None:
+        return 'retired', None
+    if record['phase'] == 'retired':
+        return 'retired', None
+    if record['phase'] == 'bound':
+        return 'bound', journal['pending']
+    return 'inactive', journal['pending']
+
+
+# ------------------------------------------------------------------- worker
+
+def _read_attestation(state):
+    from laya_install_journal import PRODUCTION_ATTESTATION
+    from laya_product_install import _read_private
+    return json.loads(_read_private(Path(state) / PRODUCTION_ATTESTATION, 1024 * 1024))
+
+
+def _seal_companion(identity, root):
+    """Same exact bundle in another host cache: seal it, change no route."""
+    from laya_product_bundle import inspect_full_plugin_candidate, seal_companion_host_copy
+    owner = inspect_full_plugin_candidate(identity['pluginRoot'])
+    if any(owner[key] != identity[key] for key in
+           ('sourceCommit', 'bundleManifestSha256', 'vectorProfile')):
+        _refuse('companion_owner_changed')
+    seal_companion_host_copy(owner['pluginRoot'], root)
+    return {'status': 'companion_sealed'}
+
+
+def _mark_sealed_for_rescan(state):
+    """A sealed build becomes ``building`` without waking the old worker."""
+    import laya_initial_build as build
+    from contextlib import closing
+    from laya_index_host_route import wiki_index_roots
+    from laya_product_install import _install_lock
+    from laya_source_catalog import LayaSourceCatalog
+    with _install_lock(state), build.owner(state) as owned:
+        if not owned:
+            raise RuntimeError('initial_build_busy')
+        record = build.read(state)
+        if record is None or record['phase'] != 'sealed':
+            return
+        identity = record['identity']
+        with closing(LayaSourceCatalog(identity['catalogDb'],
+                                       wiki_index_roots(identity['collections']),
+                                       identity['scopeId'], wiki_only=True)) as catalog:
+            build.request_freshness(record, catalog)
+
+
+def upgrade_install(project_root, state, root, home=None):
+    """Move one install to the executing bundle; returns a result row."""
+    kind, identity = classify(state)
+    if kind == 'retired' or identity is None:
+        return {'status': 'current', 'kind': kind}
+    if identity['pluginRoot'] == str(root):
+        return {'status': 'current', 'kind': kind}
+    commit = installed_commit(root, home)
+    if commit is not None and commit == identity['sourceCommit'] and kind != 'inactive':
+        try:
+            return {**_seal_companion(identity, root), 'kind': kind}
+        except UpgradeRefused:
+            raise
+        except Exception:
+            pass  # The owner copy is gone: move the install to this root.
+    source, commit = select_source(root, home)
+    _not_older(source, identity['sourceCommit'], commit)
+    old = _read_attestation(state)
+    manifest = old.get('providerManifest') or {}
+    from laya_product_install import review_local_provider
+    review = review_local_provider(source_root=str(source), plugin_root=str(root),
+                                   state_root=str(state), commit_id=commit,
+                                   model_path=manifest.get('modelPath'),
+                                   dimension=manifest.get('dimension'))
+    if not provider_equivalent(old, review, root):
+        _refuse('provider_changed_rebuild_required')
+    options = dict(project_root=str(project_root), state_root=str(state),
+                   source_root=str(source), plugin_root=str(root), commit_id=commit,
+                   accepted_provider_sha256=review['proposalSha256'],
+                   model_path=manifest.get('modelPath'),
+                   dimension=manifest.get('dimension'))
+    if kind == 'active':
+        import laya_active_upgrade
+        if (Path(state) / 'qmd-cutover.json').exists():
+            from laya_qmd_cutover import SCHEMA_V3, _ledger
+            if _ledger(Path(state) / 'qmd-cutover.json')['schema'] != SCHEMA_V3:
+                _refuse('active_upgrade_schema_unsupported')
+        result = laya_active_upgrade.upgrade(**options)
+        from laya_product_install import _request_build_wake
+        result['syncWake'] = _request_build_wake(str(project_root))
+    elif kind == 'bound':
+        import laya_bound_upgrade
+        result = laya_bound_upgrade.upgrade(**options)
+    else:
+        _mark_sealed_for_rescan(state)
+        import laya_inactive_upgrade
+        result = laya_inactive_upgrade.upgrade(**{**options,
+                                                  'state_root': Path(state)})
+    return {**result, 'kind': kind}
+
+
+@contextmanager
+def _state_lock(state):
+    fd = os.open(Path(state) / LOCK, os.O_RDWR | os.O_CREAT |
+                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o077):
+            raise ValueError('bundle_upgrade_lock_unsafe')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def _reason(exc):
+    text = str(exc)
+    return text if text and len(text) <= 80 and text.replace('_', '').isalnum() \
+        else type(exc).__name__
+
+
+def run(project_root, *, root=None, home=None):
+    """Worker: upgrade every install of one project, one state root at a time."""
+    project = Path(project_root).resolve(strict=True)
+    root = Path(root or executing_root())
+    results = []
+    for state in installs(project):
+        with _state_lock(state) as owned:
+            if not owned:
+                results.append({'stateRoot': str(state), 'status': 'busy'})
+                continue
+            prior = read_status(state)
+            attempts = (prior['attempts'] if prior is not None and
+                        prior['executingRoot'] == str(root) else 0) + 1
+            _write_status(state, status='running', executingRoot=str(root),
+                          attempts=attempts, reason='')
+            _log(state, f'upgrade started root={root.name}')
+            try:
+                result = upgrade_install(project, state, root, home)
+                status = ('current' if result.get('status') == 'current'
+                          else 'complete')
+                _write_status(state, status=status, executingRoot=str(root),
+                              attempts=0, reason=str(result.get('status', '')))
+            except UpgradeRefused as exc:
+                result = {'status': 'refused', 'reason': str(exc)}
+                _write_status(state, status='refused', executingRoot=str(root),
+                              attempts=attempts, reason=str(exc))
+            except Exception as exc:
+                reason = _reason(exc)
+                result = {'status': 'failed', 'reason': reason}
+                _write_status(state, status='refused' if reason in REFUSALS else 'failed',
+                              executingRoot=str(root), attempts=attempts, reason=reason)
+            _log(state, f"upgrade {result.get('status')} {result.get('reason', '')}")
+            results.append({'stateRoot': str(state), **{
+                key: value for key, value in result.items()
+                if key in ('status', 'reason', 'kind')}})
+    return results
+
+
+def main(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 2 or args[0] != 'run':
+        return 2
+    if _fixture():
+        return 0
+
+    def expired(_signum, _frame):
+        raise TimeoutError('bundle_upgrade_deadline')
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(DEADLINE_SECONDS)
+    try:
+        run(args[1])
+    except Exception:
+        return 1
+    finally:
+        signal.alarm(0)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -282,7 +282,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   assert qa_plan['teacherConsent'] is None
   assert qa_plan['policy']['maxRssMib']==3584 and qa_plan['policy']['batchMax']==100
   assert qa_plan['settings']['contextLearning']['capture'] is True
-  assert qa_plan['settings']['contextLearning']['liveSelection'] is False
+  assert 'liveSelection' not in qa_plan['settings']['contextLearning']
   assert qa_plan['settings']['sharedLearning']['autoApply'] is False
   expect('acceptance',lambda:setup.activate(qa_plan,accepted_sha256='0'*64))
   assert (qa_project/'.auto-context/settings.json').read_bytes()==before

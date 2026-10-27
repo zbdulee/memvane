@@ -777,11 +777,34 @@ def cas_restore_fresh(journal_path, expected_epoch, expected_new_route_sha):
     return _cas(journal_path, expected_epoch, restore)
 
 
-def _verify_selected_route(decision, *, dispatch_target=False):
+# Full-proof failures that only say the executing or bound plugin bundle moved
+# (a host plugin update, or the bound cache was replaced or removed). The
+# index stores, route and journal may still be intact; see
+# ``verify_selected_route_read_only``.
+BUNDLE_DRIFT_CODES = frozenset((
+    'executing_code_outside_bundle', 'executing_bundle_not_selected',
+    'installed_bundle_changed', 'production_provider_file_unavailable',
+    'production_provider_file_changed', 'production_provider_identity_changed'))
+
+
+def is_bundle_drift(exc):
+    """True when a full selected proof failed only on plugin bundle identity."""
+    if isinstance(exc, BundleEvidenceError):
+        return True
+    return type(exc) is JournalEvidenceError and str(exc) in BUNDLE_DRIFT_CODES
+
+
+def _executing_root():
+    return Path(__file__).resolve().parent.parent
+
+
+def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     """Read-only product proof for a host-validated candidate decision.
 
     The caller must still construct LayaIndexRuntime, which rechecks DB and
     queue identity before serving. No legacy fallback is authorized on error.
+    ``read_only`` skips only the checks that read the bound plugin bundle or
+    prove the executing bundle; it never authorizes a write.
     """
     if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
             any(type(decision.get(key)) is not str for key in
@@ -815,9 +838,18 @@ def _verify_selected_route(decision, *, dispatch_target=False):
                          'bundleManifestSha256', 'ownershipManifestSha256',
                          'vectorProfile'))):
                 _fail('inactive_or_mismatched_journal')
-            proof = _inspect_identity(row['selected'])
+            if read_only:
+                # The bound cache may be replaced or removed by a host plugin
+                # update. Its sealed identity is the journal's own record.
+                proof = {key: row['selected'][key] for key in
+                         ('sourceCommit', 'bundleManifestSha256',
+                          'ownershipManifestSha256', 'vectorProfile')}
+                inventory_root = _executing_root()
+            else:
+                proof = _inspect_identity(row['selected'])
+                inventory_root = Path(row['selected']['pluginRoot'])
             inventory = row['user_qmd_inventory']
-            observed = _user_qmd_inventory(Path(row['selected']['pluginRoot']),
+            observed = _user_qmd_inventory(inventory_root,
                                            [r['root'] for r in inventory])
             if observed != inventory:
                 _fail('user_qmd_inventory_changed')
@@ -834,9 +866,10 @@ def _verify_selected_route(decision, *, dispatch_target=False):
                     user_root = Path(foreign['root'])
                     if canonical_path == user_root or user_root in canonical_path.parents:
                         _fail('index_path_overlaps_user_qmd')
-                plugin_root = Path(row['selected']['pluginRoot'])
-                if canonical_path == plugin_root or plugin_root in canonical_path.parents:
-                    _fail('index_path_overlaps_plugin')
+                for plugin_root in {Path(row['selected']['pluginRoot']),
+                                    *((_executing_root(),) if read_only else ())}:
+                    if canonical_path == plugin_root or plugin_root in canonical_path.parents:
+                        _fail('index_path_overlaps_plugin')
             with closing(sqlite3.connect(db_path.resolve(strict=True).as_uri() + '?mode=ro',
                                          uri=True, timeout=2)) as index_db:
                 index_db.execute('BEGIN')
@@ -861,6 +894,8 @@ def _verify_selected_route(decision, *, dispatch_target=False):
             db.rollback()
             raise
     full = row['selected']['bundleKind'] == 'full_plugin'
+    if read_only:
+        return _read_only_proof(path, row, route, proof, full)
     # The UID queue may be held by another installed version. Its dispatcher
     # needs the sealed target identity before it can enter that version's code;
     # a host/query/worker still requires the executing-root proof below.
@@ -902,9 +937,51 @@ def _verify_selected_route(decision, *, dispatch_target=False):
             **({'providerManifest': provider_manifest} if approved else {})}
 
 
+def _read_only_proof(path, row, route, proof, full):
+    """The sealed provider record for serving the published generation only.
+
+    The attestation must still be the exact bytes the journal sealed and must
+    name the journal's selected bundle; the per-file provider identities in
+    the bound bundle are not re-stated because that bundle may be gone.
+    """
+    sealed_sha = row['provider_attestation_sha']
+    if not full or sealed_sha is None or row['provider_file_identity'] is None:
+        _fail('read_only_route_unapproved')
+    attestation, observed_sha = _attestation(path)
+    if observed_sha != sealed_sha or not isinstance(attestation, dict):
+        _fail('production_attestation_changed')
+    if (attestation.get('vectorProfile') != row['selected']['vectorProfile'] or
+            any(attestation.get(key) != row['selected'].get(key) for key in
+                ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256')) or
+            not isinstance(attestation.get('providerManifest'), dict)):
+        _fail('production_provider_identity_changed')
+    return {'status': 'installer_active_read_only',
+            'productRouteAllowed': False, 'readOnlyAllowed': True,
+            'journalPath': str(path), 'selectionEpoch': row['epoch'],
+            'pluginRoot': row['selected']['pluginRoot'],
+            'executingPluginRoot': str(_executing_root()),
+            'sourceCommit': proof['sourceCommit'],
+            'bundleManifestSha256': proof['bundleManifestSha256'],
+            'ownershipManifestSha256': proof['ownershipManifestSha256'],
+            'installId': route['installId'], 'generation': route['generation'],
+            'projectRoot': route['projectRoot'], 'scopeId': route['scopeId'],
+            'dbIncarnation': route['dbIncarnation'],
+            'vectorProfile': proof.get('vectorProfile'),
+            'providerManifest': attestation['providerManifest']}
+
+
 def verify_selected_route(decision):
     """Full selected-route proof, including the currently executing bundle."""
     return _verify_selected_route(decision)
+
+
+def verify_selected_route_read_only(decision):
+    """Route, journal, store and sealed-attestation proof without bundle proof.
+
+    For serving the last published generation after a host plugin update
+    moved the executing bundle. Never authorizes sync, compile or any write.
+    """
+    return _verify_selected_route(decision, read_only=True)
 
 
 def verify_dispatch_target(decision):

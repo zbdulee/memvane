@@ -671,9 +671,8 @@ test('compile.budget: 값 정규화 + 유료 호출 클램프가 함께 이동�
 });
 
 // --- 죽은 설정 키 3개 (계획 2026-08-19 §3.4) --------------------------------
-// `sourceScan`은 `wiki_source_scan.run`이 **읽는데도** 정규화 화이트리스트 밖이라 항상
-// 버려졌다(`enabled:false`를 적어도 스캔이 돌았고, 폭은 `QMD_SOURCE_SCAN_MAX` env만
-// 유효했다). 소비자가 살아 있으므로 살릴 대상이고, 값 규칙은 여기가 SSOT다.
+// `sourceScan`은 `wiki_lifecycle.run`이 `enabled`·`maxCardsPerScan`을 읽는다. 값 규칙은
+// 여기가 SSOT다.
 test('compile.sourceScan: enabled는 bool만, maxCardsPerScan은 클램프된다', () => {
   const SCAN_DEFAULTS = { enabled: true, maxCardsPerScan: 300 };
   const scanOf = (v) => loadConfig(JSON.stringify({ compile: { sourceScan: v } })).compile.sourceScan;

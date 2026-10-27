@@ -234,7 +234,8 @@ def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
     from laya_index_host_route import _read_regular, MAX_SETTINGS_BYTES
     raw = _read_regular(settings, MAX_SETTINGS_BYTES)
     settings_sha = hashlib.sha256(raw).hexdigest()
-    source_settings = json.loads(raw.decode('utf-8'), object_pairs_hook=lambda pairs: _unique(pairs))
+    source_settings = config.expand_minimal_settings(
+        json.loads(raw.decode('utf-8'), object_pairs_hook=lambda pairs: _unique(pairs)))
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))
     roles = config.role_map(cfg)
@@ -351,7 +352,8 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
         _fail('canonical_settings_required')
     raw = _read_regular(settings, MAX_SETTINGS_BYTES)
     settings_sha = hashlib.sha256(raw).hexdigest()
-    source_settings = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique)
+    source_settings = config.expand_minimal_settings(
+        json.loads(raw.decode('utf-8'), object_pairs_hook=_unique))
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))
     roles = config.role_map(cfg)

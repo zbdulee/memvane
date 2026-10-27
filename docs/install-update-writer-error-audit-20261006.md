@@ -11,7 +11,8 @@ The managed shadow index covers `.auto-context/wiki/**/*.md`. `activate` holds t
 | `wiki_verify_worker.process_verify_job` | verified/contested stamp or audited delete, index and log | card write → project wiki; shared atomic helpers reenter |
 | `wiki_topical_publish.publish` / `retire_stale` | v2 page publish/retire | project wiki; temporary verification stamp reenters |
 | `wiki_dedup_resolve.resolve_entry` | reviewed deletion, index and log | project wiki; index/log helpers reenter |
-| `wiki_source_repair` / `wiki_reviewed_migrate` | reviewed card rewrite | existing ledger/audit flow → shared atomic wiki helper |
+| `wiki_reviewed_migrate` | reviewed card rewrite | existing ledger/audit flow → shared atomic wiki helper |
+| `wiki_source_retire.retire_card` / `retire_deleted_source` (via `wiki_lifecycle`) | archive + unlink, index line removal | `retired-wiki/` archive, card + wiki locks |
 | `wiki_compile_worker` | wiki sidecar or compile-driven page rewrite | shared atomic wiki helper or `wiki_compile.main` |
 | `wiki_compile.update_index`, `remove_from_index`, `append_log`, `write_text_atomic`, frontmatter helpers | standalone file mutation | project wiki; nested calls reenter |
 

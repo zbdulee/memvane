@@ -127,10 +127,9 @@ DEFAULT_CONFIG = {
         "triggers": [],
         "maxAutoPageLines": 120,
         "maxSourceChars": 12000,
-        # 소스 소실 스캐너(`core/wiki_source_scan.py`). **유료 호출이 없는 값이다** —
-        # 카드 frontmatter의 stat 검사뿐이라 budget 블록에 두지 않는다. 그래도 설정
-        # 가능해야 하는 이유는 `enabled`다: 이 스캔은 update worker에서 항상 돌고
-        # 사용자가 끌 수단이 문서에만 있었다(정규화 밖이라 `false`를 적어도 돌았다).
+        # wiki 수명 주기(`core/wiki_lifecycle.py`). 카드 판정 자체는 유료 호출이 없어
+        # budget 블록에 두지 않는다(재생성 enqueue는 compile triggers 동의를 따른다).
+        # `enabled:false`는 update worker의 수명 주기 조치(삭제·enqueue)를 끈다.
         "sourceScan": {
             "enabled": True,
             # 한 회차의 창. 초과분은 순환 커서가 다음 회차에 이어 본다(유실 없음).
@@ -314,6 +313,114 @@ DEFAULT_REASONING_EFFORT = {
     "semanticDedup": "medium",
     "engines": {},
 }
+
+# ---------------------------------------------------------------------------
+# Minimal settings model
+#
+# 프로젝트 settings가 `name`(필수)과 `skipPaths`(선택)만 가지면 나머지 effective 설정은
+# 플러그인이 결정적으로 유도한다. 다른 키가 하나라도 있으면 legacy 파일이며 지금까지와
+# 똑같이 정규화한다(부분 유도 없음). 이미 선택된 laya-db route는 settings 바이트 해시에
+# 묶여 있으므로 legacy 파일의 해석은 이 모델 때문에 바뀌지 않는다.
+MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths"})
+MINIMAL_SETTINGS_MODEL = "minimal"
+MINIMAL_RAW_COLLECTION_PATH = "."
+MINIMAL_WIKI_COLLECTION_PATH = ".auto-context/wiki"
+MINIMAL_WIKI_SUFFIX = "-wiki"
+# laya_index_host_route.COLLECTION_NAME 상한(64)에서 "-wiki" 접미를 뺀 길이.
+MINIMAL_SLUG_MAX = 64 - len(MINIMAL_WIKI_SUFFIX)
+MINIMAL_COMPILE_TRIGGERS = ("post_tool_source", "post_sync_source", "manual")
+MINIMAL_EXTRACTOR_BUILTINS = ("claude", "codex", "hermes")
+
+
+def settings_slug(name):
+    """`name` → collection 이름 접두. 영숫자 시작, `[a-z0-9._-]`, 59자 이하. 실패 시 ""."""
+    if not isinstance(name, str):
+        return ""
+    cleaned = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "._-") else "-"
+                      for ch in name.strip().lower())
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned.strip("-._")[:MINIMAL_SLUG_MAX].rstrip("-._")
+    return cleaned
+
+
+def _minimal_skip_paths(value):
+    """유효한 skipPaths(비어 있지 않은 문자열 목록)면 복사본, 아니면 None."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        return None
+    return list(value)
+
+
+def is_minimal_settings(raw):
+    """`{name, skipPaths?}`만 가진 유효한 settings인가.
+
+    `name`이 없거나 slug가 비거나 `skipPaths`가 비어 있지 않은 문자열 목록이 아니면
+    minimal이 아니다 — legacy 정규화로 떨어져 collection이 비고(pending) 아무것도
+    인덱싱하지 않는다(fail-closed).
+    """
+    return (isinstance(raw, dict) and "name" in raw
+            and set(raw) <= MINIMAL_SETTINGS_KEYS
+            and bool(settings_slug(raw.get("name")))
+            and _minimal_skip_paths(raw.get("skipPaths")) is not None)
+
+
+def minimal_collection_names(name):
+    """(raw collection, wiki collection) 이름. slug가 비면 ValueError."""
+    slug = settings_slug(name)
+    if not slug:
+        raise ValueError("minimal_settings_name_invalid")
+    return slug, slug + MINIMAL_WIKI_SUFFIX
+
+
+def expand_minimal_settings(raw):
+    """minimal settings를 같은 의미의 legacy 모양 dict로 펼친다. 아니면 raw 그대로 반환.
+
+    펼친 결과는 legacy 소비자(resolve_paths, update.sh `--raw`, laya route 검사)가 읽는
+    모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `.auto-context/wiki`가 wiki이고,
+    검색은 wiki 전용, compile은 host builtin extractor의 auto-wiki, 학습은 켜짐이다.
+    indexing은 settings 파일이 있으면 켜짐이고 사용자 로컬 optout marker가 끈다.
+    """
+    if not is_minimal_settings(raw):
+        return raw
+    name = raw["name"]
+    raw_name, wiki_name = minimal_collection_names(name)
+    return {
+        "name": name,
+        "indexing": True,
+        "collections": [raw_name, wiki_name],
+        "collectionPaths": {raw_name: MINIMAL_RAW_COLLECTION_PATH,
+                            wiki_name: MINIMAL_WIKI_COLLECTION_PATH},
+        "collectionRoles": {raw_name: COLLECTION_ROLE_RAW, wiki_name: COLLECTION_ROLE_WIKI},
+        "skipPaths": _minimal_skip_paths(raw.get("skipPaths")),
+        "recallStrategy": "wikiOnly",
+        "compile": {
+            "mode": "auto-wiki",
+            "triggers": list(MINIMAL_COMPILE_TRIGGERS),
+            "extractor": {"builtins": list(MINIMAL_EXTRACTOR_BUILTINS)},
+        },
+        "contextLearning": {"capture": True, "autoCycle": True},
+    }
+
+
+def is_minimal_config(config):
+    """정규화된 effective config가 minimal settings에서 유도됐는가."""
+    return isinstance(config, dict) and config.get("settingsModel") == MINIMAL_SETTINGS_MODEL
+
+
+def generation_skip_paths(config, selected_route=None):
+    """wiki 생성에서 제외할 경로 목록. 적용 대상이 아니면 None.
+
+    선택된 laya route는 route가 묶은 skipPaths를, minimal settings는 자기 skipPaths를 쓴다.
+    legacy QMD 경로의 skipPaths는 recall 결과 필터일 뿐 생성 제외가 아니다.
+    """
+    if selected_route is not None:
+        return selected_route[0]["recallSettings"]["skipPaths"]
+    if is_minimal_config(config):
+        return list(config.get("skipPaths") or [])
+    return None
+
 
 EVENT_ALIASES = {
     "SessionStart": "sessionStart",
@@ -694,19 +801,16 @@ def compile_config(value):
     ]
     result["maxAutoPageLines"] = coerce_int(value.get("maxAutoPageLines", defaults["maxAutoPageLines"]), defaults["maxAutoPageLines"])
     result["maxSourceChars"] = coerce_int(value.get("maxSourceChars", defaults["maxSourceChars"]), defaults["maxSourceChars"])
-    # sourceScan은 정규화 화이트리스트 밖이라 **한 번도 읽힌 적이 없었다** —
-    # `wiki_source_scan.run`이 `enabled`·`maxCardsPerScan`을 읽는데도 `enabled:false`를
-    # 적은 프로젝트에서 스캔이 계속 돌았고, 폭은 `QMD_SOURCE_SCAN_MAX` env만 유효했다.
+    # sourceScan은 `wiki_lifecycle.run`이 `enabled`·`maxCardsPerScan`을 읽는다.
     #
-    # `enabled`는 bool만 받는다. **비-bool이면 기본값(True = 스캔 유지)으로 폴백하되
+    # `enabled`는 bool만 받는다. **비-bool이면 기본값(True = 수명 주기 유지)으로 폴백하되
     # 침묵하지 않는다** — 폴백만 하면 사용자가 적어 둔 opt-out이 무력화되는데(`"false"`
     # 문자열도 결과가 "껐는데 돈다"다) 그 사실이 어디에도 나타나지 않는다. 종점은
     # `invalid_compile_flags` → SessionStart `notice_once`이고, `COLLECTION_ROLE_INVALID`
     # 와 같은 규칙이다("키 없음"과 "키 있음 + 값 미지"를 구분하고 후자는 조용하면 안 된다).
-    # **끄는 쪽으로 읽지 않는 이유**: 비-bool 집합에는 켜려는 의도의 값(`1`·`"true"`·
-    # `"yes"`)도 들어 있어, 전부 off로 읽으면 그 오타가 소실 감지를 조용히 죽인다.
-    # 잘못 켜진 스캔의 대가는 stat 몇 번(유료 호출·카드 변경 없음)이고 잘못 꺼진 스캔의
-    # 대가는 감지 부재이므로 방향이 비대칭이다.
+    # **끄는 쪽으로 읽지 않는 이유**: 수명 주기는 제품 기본 동작이고, 비-bool 집합에는
+    # 켜려는 의도의 값(`1`·`"true"`·`"yes"`)도 들어 있다. 켜진 쪽의 삭제는 보관본
+    # (`retired-wiki/`)으로 복구할 수 있고 대량 삭제 가드가 한 run의 폭을 막는다.
     raw_scan = value.get("sourceScan")
     scan = raw_scan if isinstance(raw_scan, dict) else {}
     default_scan = defaults["sourceScan"]
@@ -931,9 +1035,7 @@ DEPRECATED_REMOVED_KEYS = (
     "compile.verify.logPath",
     "compile.verify.skippedPath",
     "compile.verify.deletedPath",
-    # 10번째 경로. `compile_paths`가 이름을 상수화할 때 이 키만 목록에서 빠져
-    # **알림조차 없었다**(정규화 밖이라 값도 무시). 소비자(`wiki_source_missing.ledger_path`)
-    # 는 이제 설정을 아예 읽지 않으므로 살릴 대상이 아니라 알릴 대상이다.
+    # 원문 소실 원장 경로 키. 소비자가 없으므로 알림 대상이다.
     "compile.sourceMissingPath",
     "compile.extractor.argv",
     "compile.extractor.dispatch",
@@ -979,7 +1081,7 @@ def deprecated_keys(input_config):
 def deprecated_key_notice(input_config):
     """SessionStart 알림 1줄. 제거된 키가 없으면 빈 문자열.
 
-    문구를 bash가 아니라 여기서 만드는 것은 형제 알림(role-invalid·source-missing)과
+    문구를 bash가 아니라 여기서 만드는 것은 형제 알림(role-invalid·dead-registration)과
     다르다 — 저쪽은 python이 숫자/이름만 주고 bash가 문장을 만든다. 여기서는 문장이
     **세 갈래로 갈리고** 각 갈래가 키 목록을 끼고 있어 bash에서 조립하면 세 벌의
     분기가 생기고, 그 분기가 위 세 상수와 갈리는 순간 알림이 틀린 행선지를 말한다.
@@ -1010,21 +1112,28 @@ def invalid_session_start_sync(input_config):
 
 
 def normalize_config(input_config):
+    minimal = is_minimal_settings(input_config)
+    if minimal:
+        input_config = expand_minimal_settings(input_config)
+    config = _normalize_expanded_config(input_config)
+    if minimal:
+        config["settingsModel"] = MINIMAL_SETTINGS_MODEL
+    return config
+
+
+def _normalize_expanded_config(input_config):
     config = dict(DEFAULT_CONFIG)
     # Missing remains on; explicit bool stays intact; an unreadable value is off.
     raw_sync = input_config.get("sessionStartSync", DEFAULT_CONFIG["sessionStartSync"])
     config["sessionStartSync"] = raw_sync if isinstance(raw_sync, bool) else False
     learning = input_config.get('contextLearning')
     if isinstance(learning, dict):
-        live_selection = learning.get('liveSelection') is True
         config['contextLearning'] = {
             'capture': learning.get('capture') is True,
             'autoCycle': learning.get('autoCycle') is True,
-            'liveSelection': live_selection,
-            # Expansion is independently opt-in; invalid values retain the old pool.
-            # Live selection and an optional capture of its candidates must see
-            # the same 15-result pool. The ordinary observer keeps default 8.
-            'candidateTopK': 15 if live_selection else learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
+            # The legacy liveSelection key is ignored: selected Laya recall
+            # always uses the local selector, independent of project settings.
+            'candidateTopK': learning.get('candidateTopK') if type(learning.get('candidateTopK')) is int and 1 <= learning['candidateTopK'] <= 15 else 8,
             'stateRoot': learning.get('stateRoot') if isinstance(learning.get('stateRoot'), str) else None,
         }
         # Omission selects the per-user plugin default. Keep an explicitly
@@ -1292,7 +1401,10 @@ def _find_project_config_unsafe(cwd):
     if config_file:
         try:
             with open(config_file, "r", encoding="utf-8") as f:
-                config = normalize_config(json.load(f))
+                parsed = json.load(f)
+            # minimal settings는 canonical `.auto-context/settings.json`에만 적용한다.
+            config = (normalize_config(parsed) if config_format == "auto-context-dir"
+                      else _normalize_expanded_config(parsed))
             if config.get("indexing") is False:
                 config["collections"] = []
             return {
@@ -1457,13 +1569,19 @@ def load_project_config(cwd):
 
 
 def load_project_config_raw(cwd):
-    """Return the raw JSON object for the discovered project config, or {}."""
+    """Return the raw JSON object for the discovered project config, or {}.
+
+    minimal settings(`{name, skipPaths}`)는 legacy 모양으로 펼쳐 반환한다
+    (`expand_minimal_settings`). legacy 파일은 읽은 그대로다."""
     found = find_project_config(cwd)
     config_path = found.get("configPath")
     if not config_path:
         return {}
     parsed, reason = _read_json_object(config_path)
-    return parsed if not reason else {}
+    if reason:
+        return {}
+    return (expand_minimal_settings(parsed)
+            if found.get("configFormat") == "auto-context-dir" else parsed)
 
 
 def main():

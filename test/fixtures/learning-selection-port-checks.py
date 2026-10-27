@@ -214,7 +214,8 @@ class SelectionPortTests(unittest.TestCase):
                 imported.update(a.name for a in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported.add(node.module or '')
-        self.assertEqual(imported, {'__future__'})
+        # Published-row validation adds only pure hashing and syntax checks.
+        self.assertEqual(imported, {'__future__', 'hashlib', 're'})
         # Code after the module docstring (which names the excluded writers).
         body = source.split('"""', 2)[-1]
         for token in ('open(', 'write', 'mkdir', 'unlink', 'replace(', 'rename', 'subprocess'):

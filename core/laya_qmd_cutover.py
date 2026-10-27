@@ -47,7 +47,10 @@ MARKER = 'laya-index-selection.json'
 ROUTE = 'laya-index-route.json'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 HEX32 = re.compile(r'[0-9a-f]{32}\Z')
-PHASES = ('prepared', 'switching', 'active', 'restoring', 'restored')
+PHASES = ('prepared', 'switching', 'active', 'restoring', 'restored',
+          # Bundle replacement only (``laya_active_upgrade`` /
+          # ``laya_bound_upgrade``): readers classify it blocked.
+          'upgrading')
 # v3 only, terminal: a ``prepared`` binding whose QMD digest moved after the
 # bind, withdrawn so a fresh install can bind a fresh generation. Nothing in
 # its state root is deleted; it never selects, activates or rebinds again.
@@ -350,6 +353,7 @@ def _preflight_multi_settings(route, project_root):
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
         _fail('cutover_settings_unsupported')
+    parsed = config.expand_minimal_settings(parsed)
     cfg = config.normalize_config(parsed)
     declared = route['collections']
     names = tuple(item['name'] for item in declared)
@@ -1180,7 +1184,10 @@ def classify_marker(project_root, marker_path, route_path):
         if present:
             if route_path.is_symlink() or _sha(_private_file(route_path, 8192)) != row['routeSha256']:
                 return 'blocked'
-            if (row['phase'] == 'active' and journal['state'] == 'active' and
+            # ``restored_old`` is a selected Laya bundle restored after an
+            # interrupted bundle upgrade; QMD is not involved.
+            if (row['phase'] == 'active' and
+                    journal['state'] in ('active', 'restored_old') and
                     journal['selected'] is not None and
                     journal['selectedRouteSha256'] == row['routeSha256'] and
                     journal['providerAttestationSha256'] == row['attestationSha256'] and

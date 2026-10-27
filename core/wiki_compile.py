@@ -538,10 +538,8 @@ def read_jsonl(path: Path) -> list[dict]:
     """append-only 로그/큐 읽기. 못 읽는 줄은 **건너뛴다**(fail-open).
 
     `errors="replace"`인 이유: 이 파일들은 여러 프로세스가 append하는 운영 파일이라 한
-    바이트만 깨져도 전체 읽기가 UnicodeDecodeError로 죽었다 — 실측 사고는 원장이 비UTF-8일
-    때 `wiki_source_repair --list`가 traceback으로 뜨지 못한 것이다(원장이 깨졌을 때 복구
-    도구가 못 뜨는 것이 최악의 조합). 대체 문자는 그 줄의 JSON 파싱만 실패시키고 아래
-    루프가 그 줄을 건너뛰므로, 손상은 손상된 줄에만 국한된다.
+    바이트만 깨져도 전체 읽기가 UnicodeDecodeError로 죽는다. 대체 문자는 그 줄의 JSON
+    파싱만 실패시키고 아래 루프가 그 줄을 건너뛰므로, 손상은 손상된 줄에만 국한된다.
     """
     if not path.exists():
         return []
@@ -589,9 +587,8 @@ def write_text_atomic(path: Path, text: str) -> bool:
     """기존 파일 덮어쓰기의 **단일 원자적 쓰기 경로**(카드·wiki 산출물 공용).
 
     `write_text`는 truncate 후 write다. 쓰기가 중간에 실패하면(ENOSPC·quota·EFBIG)
-    호출자는 예외/실패를 받는데 **파일은 이미 잘려 있다**. 실측 두 건:
-      - `wiki_source_repair`(사람 호출): 9.6MB `verified` 카드 → 2048B
-      - `patch_frontmatter_fields`(**자동** 경로): 40054B 카드 → 2048B
+    호출자는 예외/실패를 받는데 **파일은 이미 잘려 있다**(실측:
+    `patch_frontmatter_fields` 자동 경로에서 40054B 카드 → 2048B).
     자동 경로가 더 나쁘다 — verify worker가 `status: verified`를 스탬프하다 실패하면
     예외가 `run()` 밖으로 나가 job은 requeue되지만, 다음 회차 `card_state`가 **절단본**을
     읽어 `changed_during_verify`로 skip한다. 사람이 개입하지 않으므로 조용한 영구 손상이다.
@@ -1534,6 +1531,11 @@ def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False, ["unreadable_target"]
+    return auto_writable_text(text)
+
+
+def auto_writable_text(text: str) -> tuple[bool, list[str]]:
+    """Plugin ownership of one card's bytes (createdBy + managed block, not superseded)."""
     meta, ok = parse_frontmatter(text)
     if not ok:
         return False, ["frontmatter_unparseable"]

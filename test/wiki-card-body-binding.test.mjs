@@ -208,8 +208,8 @@ test('지문 필드가 없는 legacy 카드는 기존대로 주입된다', () =>
 });
 
 test('frontmatter 변경(title)은 결속 밖이라 주입을 막지 않는다', () => {
-  // dedup 의 alias·canonicalKey 이식과 wiki-source-repair 의 sources repoint(사용자 확인
-  // 경로)가 이 자리를 쓴다. 결속에 넣으면 그 워크플로가 카드를 비가시로 만든다.
+  // dedup 의 alias·canonicalKey 이식이 이 자리를 쓴다. 결속에 넣으면 그 워크플로가
+  // 카드를 비가시로 만든다.
   withProject(card({ summary: '포트는 8080이다.' }), ({ dir, cardRel, cardAbs, fixture, log }) => {
     stamp(dir, cardRel);
     writeFileSync(cardAbs, readFileSync(cardAbs, 'utf8')

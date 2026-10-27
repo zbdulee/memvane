@@ -86,13 +86,13 @@ class Checks(unittest.TestCase):
     with patch.dict(os.environ,dict(QMD_ENGINE='codex',QMD_QUERY_FIXTURE='',QMD_QUERY_FIXTURE_RAW='',QMD_RECALL_LOG='',QMD_SANDBOX='',QMD_SETUP_GUARD_FIXTURE='1',INDEX_PATH=str(root/'unused-index.sqlite')),clear=False),patch.object(recall,'daemon_alive',return_value=True),patch.object(recall,'narrow_general_lex',return_value=dict(mode='not_needed',absent=0,absent_in_cut=0,identifier_present=False)),patch.object(recall.urllib.request,'urlopen',side_effect=urlopen),patch.object(sys,'stdin',io.StringIO(json.dumps(dict(prompt='Review synthetic HTTP OAuth evidence',cwd=str(project))))),contextlib.redirect_stdout(output):
      recall.main()
     return output.getvalue()
-   baseline=run(8);self.assertEqual(calls,[8]);calls.clear();reads.clear();timeouts.clear()
-   self.assertEqual(run(15),baseline);self.assertEqual(calls,[8,30]);self.assertEqual(reads,[-1,262145]);self.assertLessEqual(timeouts[-1],1)
-   for mode in ('failure','oversize'):
-    calls.clear();self.assertEqual(run(15,mode),baseline);self.assertEqual(calls,[8,30])
+   baseline=run(8);self.assertEqual(calls,[15]);calls.clear();reads.clear();timeouts.clear()
+   self.assertEqual(run(15),baseline);self.assertEqual(calls,[15]);self.assertEqual(reads,[-1])
+   # Selection already requests fifteen, so capture needs no second query.
+   self.assertLessEqual(timeouts[-1],5)
    ns=state/digest(str(project))
    with contextlib.closing(sqlite3.connect(ns/'learning.sqlite3')) as db:sample=json.loads(db.execute('select body from samples order by rowid desc limit 1').fetchone()[0])
-   self.assertEqual(sample['schema_version'],2)
+   self.assertEqual(sample['schema_version'],3)
  def test_hook_equivalence_schema_export_and_bounded_snapshots(self):
   with tempfile.TemporaryDirectory(prefix='qmd-top15-') as tmp:
    base=Path(tmp).resolve();state=base/'private';state.mkdir(mode=0o700)
@@ -113,7 +113,7 @@ class Checks(unittest.TestCase):
     ns=state/digest(str(project))
     def latest():
      with contextlib.closing(sqlite3.connect(ns/'learning.sqlite3')) as db:return json.loads(db.execute('select body from samples order by rowid desc limit 1').fetchone()[0])
-    self.assertEqual(run(15,failed=True),baseline);self.assertEqual(latest()['schema_version'],2)
+    self.assertEqual(run(15,failed=True),baseline);self.assertEqual(latest()['schema_version'],3)
     self.assertEqual(run(15),baseline)
     sample=latest();validate_request(sample)
     self.assertEqual(sample['schema_version'],3);self.assertEqual(len(sample['candidates']),15)
@@ -145,12 +145,12 @@ class Checks(unittest.TestCase):
      if i<8:source.write_text('Changed after provenance')
      cards.append(dict(file='wiki/'+str(i)+'.md',score=1/(i+1)))
     fixture.write_text(json.dumps({'results':cards}));raw_fixture=base/(host+'-raw.json');raw_fixture.write_text(json.dumps({'results':hits[:18]}))
-    baseline_raw=run(enabled=False);self.assertIn(b'docs/0.md',baseline_raw);self.assertEqual(run(15),baseline_raw)
+    baseline_raw=run(enabled=False);self.assertIn(b'.auto-context/wiki/8.md',baseline_raw);self.assertEqual(run(15),baseline_raw)
     sample=latest();self.assertEqual(sample['schema_version'],3)
-    self.assertEqual(set(sample['sampling']['phase_counts']),{'primary','raw'})
-    self.assertEqual(sample['sampling']['captured_ids'],['wiki/'+str(i)+'.md' for i in range(8,18)])
-    self.assertEqual(sample['sampling']['baseline_selected_ids'],['docs/0.md','docs/1.md','docs/2.md'])
-    reasons={x['reason'] for x in sample['sampling']['excluded']};self.assertIn('freshness_stale',reasons);self.assertIn('wiki_priority',reasons)
+    self.assertEqual(set(sample['sampling']['phase_counts']),{'primary'})
+    self.assertEqual(sample['sampling']['captured_ids'],['wiki/'+str(i)+'.md' for i in range(8,15)])
+    self.assertEqual(sample['sampling']['baseline_selected_ids'],['wiki/8.md','wiki/9.md','wiki/10.md'])
+    reasons={x['reason'] for x in sample['sampling']['excluded']};self.assertIn('freshness_stale',reasons)
     # No fresh wiki anywhere: bounded raw observation may reach15, unchanged output.
     fixture.write_text(json.dumps({'results':cards[:8]}));self.assertEqual(run(15),run(enabled=False))
     sample=latest();self.assertEqual(len(sample['candidates']),15);self.assertTrue(all(c['candidate_id'].startswith('docs/') for c in sample['candidates']))

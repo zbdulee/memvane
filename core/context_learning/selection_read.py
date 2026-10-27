@@ -16,6 +16,67 @@ working. `HookDeadlineExceeded` is a BaseException and is not caught.
 """
 from __future__ import annotations
 
+def select_published(pool, *, prompt, config, project_root,
+                     wiki_names, scope_id, deadline=None):
+    """Select verified Laya-index cards with the existing local Laya model.
+
+    The index query supplies immutable, provenance-checked wiki rows. This
+    coordinator never opens source files, queries QMD, or creates learning state.
+    A missing/unavailable selector returns no cards instead of RRF topN.
+    """
+    from . import selection_port
+    from .contracts import digest
+    from .store import canonical
+    from pathlib import Path
+    import time
+    out = {'final_results': [], 'reason': 'candidate_unavailable', 'resources': {},
+           'candidate_count': 0}
+    try:
+        rows = selection_port.published_candidate_rows(pool, wiki_names, scope_id)
+        out['candidate_count'] = len(rows)
+        if not rows:
+            out['reason'] = 'no_candidates'
+            return out
+        from .seam import _private_state
+        from .live_select import choose
+        state = _private_state(config, Path(project_root), create=False)
+        pointer = 'active-checkpoint.json'
+        shared = config.get('sharedLearning', {})
+        if isinstance(shared, dict) and shared.get('enabled') is True:
+            if shared.get('profile') == 'qmd-local-learning-profile-v1':
+                from .learning_profile import selection_root
+                from .candidate_apply import readable
+                state = selection_root(config, project_root)
+                if state is not None:
+                    readable(state)
+            elif shared.get('trialSelection') is True:
+                from .shared import _safe_root, _policy, _current_config, trial_eligible
+                state = _safe_root(config, project_root)
+                if state is not None:
+                    _policy(state)
+                    if _current_config(state, project_root) is None:
+                        state = None
+                    elif not trial_eligible(state, deadline=deadline):
+                        out['reason'] = 'shared_trial_not_eligible'
+                        return out
+                pointer = 'experimental-checkpoint.json'
+        if state is None:
+            out['reason'] = 'private_state_unavailable'
+            return out
+        fingerprint = digest(canonical([str(project_root), scope_id,
+            [(row['id'], row['revision_sha256'], source['generation'])
+             for row, source in zip(rows, pool)]]))
+        if deadline is None:
+            deadline = time.monotonic() + min(30., max(.2, float(config.get('queryTimeout', 5))))
+        ids, reason, resources = choose(state, prompt, rows,
+            corpus_fingerprint=fingerprint, deadline=deadline, pointer_name=pointer)
+        out['reason'], out['resources'] = reason, resources
+        if ids is not None:
+            out['final_results'] = selection_port.apply_published_selection(pool, ids)
+    except CAUGHT:
+        out['reason'] = 'candidate_unavailable'
+    return out
+
 # The exact errors recall always mapped to a fallback reason.
 CAUGHT = (OSError, ValueError, UnicodeError, KeyError, TypeError)
 # ValueError messages that surface as their own reason.
