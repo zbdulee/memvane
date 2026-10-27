@@ -41,11 +41,22 @@ from laya_product_bundle import (adopt_host_loaded_plugin,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA,
                                  validate_production_provider_attestation)
-from laya_qmd_cutover import activate_qmd_origin, recover_qmd_origin
 
 
 class InstallBlocked(RuntimeError):
     pass
+
+
+# Module attributes resolved at call time: fresh-wiki onboarding imports this
+# module and never loads the QMD-origin cutover or migration code.
+def activate_qmd_origin(*args, **kwargs):
+    from laya_qmd_cutover import activate_qmd_origin as activate
+    return activate(*args, **kwargs)
+
+
+def recover_qmd_origin(*args, **kwargs):
+    from laya_qmd_cutover import recover_qmd_origin as recover
+    return recover(*args, **kwargs)
 
 
 _REVIEWED_MODEL_BASENAMES = frozenset((
@@ -1413,8 +1424,6 @@ def finalize_initial_build(*, project_root, state_root):
     from contextlib import closing
     from laya_index_runtime import LayaIndexRuntime
     from laya_install_journal import inspect_journal
-    from laya_qmd_cutover import (SCHEMA_V3, SOURCE_DRIFT, bind_qmd_origin_bound,
-                                  inspect_bound_cutover)
     from laya_source_catalog import LayaSourceCatalog
     from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
@@ -1429,6 +1438,8 @@ def finalize_initial_build(*, project_root, state_root):
         identity = record['identity']
         if identity.get('originMode') == 'fresh_wiki_only':
             return _finalize_fresh_wiki_locked(record, project_root, state)
+        from laya_qmd_cutover import (SCHEMA_V3, SOURCE_DRIFT, bind_qmd_origin_bound,
+                                      inspect_bound_cutover)
         if identity['projectRoot'] != str(project_root):
             _fail('initial_build_project_mismatch')
         if record['phase'] == 'retired':
@@ -2059,9 +2070,9 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
             _fail('unused_build_journal_changed')
         if allow_started:
-            from laya_qmd_cutover import inspect_bound_cutover
+            from laya_ledger_common import inspect_qmd_ledger
             from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-            if (inspect_bound_cutover(journal) is not None or
+            if (inspect_qmd_ledger(journal) is not None or
                     (state / FRESH_LEDGER).exists()):
                 _fail('inactive_build_cutover_started')
         route_bytes = _read_private(identity['routeFile'], 8192)
@@ -2143,7 +2154,7 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 inspect_journal(journal) != pending or
                 current_ownership['sha256'] != ownership['sha256']):
             _fail('unused_build_changed')
-        if allow_started and (inspect_bound_cutover(journal) is not None or
+        if allow_started and (inspect_qmd_ledger(journal) is not None or
                 (state / FRESH_LEDGER).exists()):
             _fail('inactive_build_cutover_started')
         clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
@@ -2169,7 +2180,7 @@ def retired_build_pointer(project_root):
     install is never named. Returns the next action, or None.
     """
     import laya_initial_build as initial_build
-    from laya_qmd_cutover import RETIRED, inspect_bound_cutover
+    from laya_ledger_common import inspect_qmd_ledger
     try:
         record = initial_build.lookup(str(_checked_project(project_root)))
         if record is None:
@@ -2185,10 +2196,13 @@ def retired_build_pointer(project_root):
                       'abandon-index-build')
             return {'nextAction': action, 'stateRoot': str(state),
                     'reason': 'retired_build_pointer_registered'}
-        row = inspect_bound_cutover(state / 'install-journal.sqlite')
+        row = inspect_qmd_ledger(state / 'install-journal.sqlite')
     except Exception:  # a hint only; the real refusal stays the caller's
         return None
-    if (row is None or row['phase'] != RETIRED or
+    if row is None:
+        return None
+    from laya_qmd_cutover import RETIRED
+    if (row['phase'] != RETIRED or
             row['projectRoot'] != identity['projectRoot'] or
             row['journalPath'] != identity['journalPath'] or
             row['candidateIncarnation'] != identity['dbIncarnation']):
@@ -2212,7 +2226,7 @@ def _require_fresh_bound_generation(row, state):
     sealed evidence, from a scan started at or after the recorded request.
     """
     import laya_initial_build as initial_build
-    from laya_qmd_cutover import BOUND_EVIDENCE
+    from laya_ledger_common import BOUND_EVIDENCE
     record = initial_build.read(state)
     if record is None:
         _fail('initial_build_missing')
@@ -2239,8 +2253,6 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     is queued so the selected worker catches up any source edit made after
     the sealed snapshot; its outcome is reported, never retried here.
     """
-    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, _qmd_digest, _source_binding,
-                                  inspect_bound_cutover)
     project = _checked_project(project_root)
     journal = Path(journal_path)
     from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
@@ -2250,6 +2262,8 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
         _require_fresh_bound_generation(row, journal.parent)
         row = fresh.activate(project, journal, route_bytes)
         return {**row, 'syncWake': _request_build_wake(str(project))}
+    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, _qmd_digest, _source_binding,
+                                  inspect_bound_cutover)
     row = inspect_bound_cutover(journal)
     if row is None:
         _fail('cutover_ledger_missing')
@@ -2304,14 +2318,14 @@ def restore_origin_selection(*, project_root, state_root):
     candidate stores, the ledger and the marker are kept; only the exact
     route file this cutover published is withdrawn.
     """
-    from laya_qmd_cutover import (MARKER, ROUTE, classify_marker,
-                                  inspect_bound_cutover, restore_qmd_origin)
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     journal = state / 'install-journal.sqlite'
     from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
     if (state / FRESH_LEDGER).exists():
         return _restore_fresh_wiki_selection(project, state, journal)
+    from laya_qmd_cutover import (MARKER, ROUTE, classify_marker,
+                                  inspect_bound_cutover, restore_qmd_origin)
     auto = project / '.auto-context'
 
     def observed():

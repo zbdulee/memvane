@@ -239,9 +239,13 @@ class AbandonCase(unittest.TestCase):
             with self.assertRaises(product.InstallBlocked):
                 self.abandon_inactive()
             self.journal[key] = old
+        # The QMD-origin ledger is probed only when its file exists beside the journal.
+        ledger = self.state / 'qmd-cutover.json'
+        ledger.write_text('{}')
         with mock.patch.object(laya_qmd_cutover, 'inspect_bound_cutover', return_value={'phase':'prepared'}):
             with self.assertRaisesRegex(product.InstallBlocked, 'inactive_build_cutover_started'):
                 self.abandon_inactive()
+        ledger.unlink()
         self.assertEqual(initial_build.read(self.state)['phase'], 'building')
         self.assertFalse((self.state / product.INACTIVE_RETIREMENT).exists())
 
