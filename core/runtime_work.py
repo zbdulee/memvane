@@ -105,8 +105,12 @@ class WakeQueue:
             with db:yield db
         finally:db.close()
 
-    def offer(self,kind,target,*,now=None):
-        """'queued', 'retained' (capacity-deferred, promoted later) or 'dropped'."""
+    def offer(self,kind,target,*,now=None,pull_due=False):
+        """'queued', 'retained' (capacity-deferred, promoted later) or 'dropped'.
+
+        pull_due moves an existing row's backed-off due to now. Its attempt
+        count and last reason stay as recorded.
+        """
         wake_policy.validate_wake(kind,target)
         key=wake_policy.wake_key(kind,target)
         now=time.time() if now is None else now
@@ -115,7 +119,7 @@ class WakeQueue:
             exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(key,)).fetchone()
             limit=wake_policy.capacity_limit(kind,MAX_WAKES)
             if exists or db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]<limit:
-                _upsert(db,key,kind,target,now);return 'queued'
+                _upsert(db,key,kind,target,now,pull_due=pull_due);return 'queued'
             retained=(db.execute('SELECT 1 FROM wake_overflow WHERE id=?',(key,)).fetchone() is not None
                       or db.execute('SELECT COUNT(*) FROM wake_overflow').fetchone()[0]<wake_policy.MAX_OVERFLOW)
             if retained:db.execute('INSERT INTO wake_overflow VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',(key,kind,target,now))
@@ -145,8 +149,9 @@ def _next_revision(db):
     return value
 
 
-def _upsert(db,key,kind,target,now):
-    db.execute("INSERT INTO wakes VALUES (?,?,?,?,'pending',?,0,NULL) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision",
+def _upsert(db,key,kind,target,now,*,pull_due=False):
+    db.execute("INSERT INTO wakes VALUES (?,?,?,?,'pending',?,0,NULL) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision"
+               +(",due=MIN(due,excluded.due)" if pull_due else ""),
                (key,kind,target,_next_revision(db),now))
 
 
@@ -200,11 +205,50 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
-                    db.execute("UPDATE wakes SET status='pending',due=? WHERE id=?",(step['due'],row['id']))
+                    # The surviving newer revision starts a fresh retry history.
+                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=0,reason=NULL WHERE id=?",(step['due'],row['id']))
                 else:
-                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=attempts+1,reason=? WHERE id=?",(step['due'],step['reason'],row['id']))
+                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=attempts+?,reason=? WHERE id=?",(step['due'],step['count'],step['reason'],row['id']))
+                    _record_failure_detail(queue.root,row,error,wall())
         return {'status':'pending' if queue.pending() else 'drained','runs':runs}
     finally:os.close(fd)
+
+
+FAILURE_DETAIL_FILE='runtime-wake-failures.json'
+FAILURE_DETAIL_MAX_ROWS=32
+FAILURE_DETAIL_MAX_BYTES=4096
+
+
+def _record_failure_detail(root,row,error,now):
+    """Keep a bounded private tail of the last child diagnostics per wake.
+
+    Only the dispatch lease owner writes it, beside the queue. The ledger
+    reason column keeps its fixed shape; this file is diagnostics only.
+    """
+    detail=getattr(error,'detail',None)
+    if not isinstance(detail,str) or not detail:return
+    path=root/FAILURE_DETAIL_FILE
+    try:
+        rows={}
+        try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+        except FileNotFoundError:fd=None
+        if fd is not None:
+            try:
+                info=os.fstat(fd)
+                if (stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid()
+                        and not info.st_mode&0o077 and info.st_size<=1<<20):
+                    with os.fdopen(os.dup(fd),'rb') as source:
+                        try:rows=json.loads(source.read())
+                        except ValueError:rows={}
+            finally:os.close(fd)
+        if not isinstance(rows,dict):rows={}
+        rows[row['id']]={'kind':row['kind'],'target':row['target'],'at':now,
+            'reason':wake_policy.failure_reason(error),
+            'detail':detail.encode('utf-8','replace')[-FAILURE_DETAIL_MAX_BYTES:].decode('utf-8','replace')}
+        keep=sorted(rows.items(),key=lambda item:item[1].get('at',0) if isinstance(item[1],dict) else 0)
+        _atomic_json(path,dict(keep[-FAILURE_DETAIL_MAX_ROWS:]))
+    except (OSError,ValueError,TypeError):
+        pass
 
 
 def wake():
@@ -265,10 +309,10 @@ def _handoff_worker(queue,handoff_fd):
         os.close(handoff_fd)
 
 
-def request(kind,target='',*,start=True):
+def request(kind,target='',*,start=True,pull_due=False):
     # Fixture runs must never create runtime files/children in the real UID home.
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1' or os.environ.get('QMD_SANDBOX'):return
-    offered=WakeQueue().offer(kind,target)
+    offered=WakeQueue().offer(kind,target,pull_due=pull_due) if pull_due else WakeQueue().offer(kind,target)
     if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':
         started=wake()
         if not started and kind in ('laya-sync','laya-compile') and offered=='queued':
