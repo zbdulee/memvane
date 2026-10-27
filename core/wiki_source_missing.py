@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import recall as qmd_recall
 import resolve_paths as qmd_resolve_paths
 import wiki_compile as wc
+import yaml_scalars
 
 # 카드가 있는데 소스 항목을 하나도 파일로 읽을 수 없는 상태를 "소실"로 볼 수 없는 사유.
 # 파싱 실패·루트 밖·길이 초과는 "없다"가 아니라 "판정 불가"이므로 소실로 세지 않는다 —
@@ -35,6 +36,50 @@ def wiki_root_of(root: Path, config: dict) -> Path | None:
     if not isinstance(rel, str) or not rel:
         rel = ".auto-context/wiki"
     return qmd_resolve_paths.contained_path(root, rel, [])
+
+
+SOURCES_OK = "ok"
+SOURCES_ABSENT = "absent"
+SOURCES_INVALID = "invalid"
+
+
+def declared_source_records(block: str) -> tuple[list[dict], str]:
+    """카드 frontmatter 의 `sources` → (레코드 목록, 판정).
+
+    판정은 셋이다 — `ok`(전 항목을 읽었다, 빈 목록 포함), `absent`(`sources` 키 없음),
+    `invalid`(키는 있는데 무엇을 놓쳤는지 알 수 없다). "빈 목록"과 "읽을 수 없다"를 뭉치면
+    미지원 표기(block mapping·여러 줄 flow)를 쓴 카드가 "소스 없음"으로 보여 그 카드를
+    근거로 한 판정(백필·퇴역)이 통째로 우회된다. 같은 이유로 파서가 본 항목 수와 실제
+    줄 수가 어긋나도 `invalid` 다. 비파일 항목(session/url)은 레코드로 그대로 낸다.
+    """
+    sections = wc._frontmatter_sections(block)
+    if sections is None:
+        return [], SOURCES_INVALID
+    lines = None
+    for key, section_lines in sections:
+        if key == "sources":
+            lines = section_lines
+            break
+    if lines is None:
+        return [], SOURCES_ABSENT
+    inline = qmd_recall.sources_inline_entry(lines[0].split(":", 1)[1])
+    children = [line for line in lines[1:] if line.strip()]
+    if any(not line.strip().startswith("- ") for line in children):
+        return [], SOURCES_INVALID
+    entries = qmd_recall.frontmatter_source_entries(block)
+    if len(entries) != len(children) + (1 if inline else 0):
+        return [], SOURCES_INVALID
+    records = []
+    for raw in entries:
+        record, problem = yaml_scalars.load_flow_mapping(raw)
+        if problem or not isinstance(record, dict):
+            return [], SOURCES_INVALID
+        if record.get("kind") == qmd_recall.SOURCE_KIND_FILE:
+            path = record.get("path")
+            if not isinstance(path, str) or not path:
+                return [], SOURCES_INVALID
+        records.append(record)
+    return records, SOURCES_OK
 
 
 def frontmatter_block(text: str) -> str | None:

@@ -67,8 +67,16 @@ class WikiLifecycle(unittest.TestCase):
                 'mtimeNs': info.st_mtime_ns if info else 1}
 
     def card(self, name, revisions=(), created_by='qmd-auto-context', provenance=True,
-             raw_revisions=None, folder='concepts'):
+             raw_revisions=None, folder='concepts', sources=None):
         lines = ['---', 'title: Card ' + name, 'status: generated', 'createdBy: ' + created_by]
+        if sources is not None:
+            # Legacy compiler shape: a `sources:` file list written before `sourceRevisions`.
+            lines.append('sources:' if sources else 'sources: []')
+            for item in sources:
+                lines.append('  - ' + (item if isinstance(item, str) else
+                                       '{kind: "file", path: "%s", collection: "%s"}' % item))
+            lines.append('triggers:')
+            lines.append('  - post_tool_source')
         if raw_revisions is not None:
             lines += ['sourceRevisions:', raw_revisions]
         elif provenance:
@@ -177,7 +185,8 @@ class WikiLifecycle(unittest.TestCase):
         result, syncs, _ = self.run_lifecycle()
         self.assertTrue(all(card.exists() for card in cards))
         self.assertTrue(unproven.exists())
-        self.assertEqual(result['guard'], {'missingCards': 5, 'provedCards': 6})
+        self.assertEqual(result['guard'], {'wouldDelete': 6, 'decidedCards': 7, 'missingCards': 5,
+                                           'legacyMissingCards': 0, 'noSourceCards': 1})
         self.assertEqual((result['retired'], syncs), (0, 0))
         self.assertEqual(self.queue_rows(), [])
         self.assertIn('mass-deletion guard', self.log.read_text())
@@ -189,13 +198,209 @@ class WikiLifecycle(unittest.TestCase):
         self.assertFalse(any(card.exists() for card in cards))
 
     def test_retire_cap_resumes_next_session(self):
-        cards = [self.card(f'u{i:02d}.md', provenance=False)
-                 for i in range(lifecycle.MAX_RETIRE_PER_RUN + 5)]
-        first, _, _ = self.run_lifecycle()
-        self.assertEqual(first['retired'], lifecycle.MAX_RETIRE_PER_RUN)
-        second, _, _ = self.run_lifecycle()
-        self.assertEqual(second['retired'], 5)
+        # No-source cards count toward the guard, so the corpus stays at its floor.
+        cards = [self.card(f'u{i:02d}.md', provenance=False) for i in range(3)]
+        with patch.object(lifecycle, 'MAX_RETIRE_PER_RUN', 2):
+            first, _, _ = self.run_lifecycle()
+            self.assertEqual(first['retired'], 2)
+            second, _, _ = self.run_lifecycle()
+        self.assertEqual(second['retired'], 1)
         self.assertFalse(any(card.exists() for card in cards))
+
+    # --- legacy cards: no `sourceRevisions`, provenance only in `sources:` ---
+
+    def frontmatter_revisions(self, card):
+        import recall
+        text = card.read_text(encoding='utf-8')
+        return recall.frontmatter_source_revisions(text.split('\n---', 1)[0])
+
+    def test_legacy_card_with_existing_sources_is_backfilled_not_deleted(self):
+        self.source('a.md', b'alpha')
+        self.source('b.md', b'beta')
+        card = self.card('legacy.md', provenance=False,
+                         sources=[('docs/a.md', 'proj-docs'), ('docs/b.md', 'proj-docs')])
+        before = card.read_text(encoding='utf-8')
+        result, syncs, compile_wakes = self.run_lifecycle()
+        self.assertTrue(card.exists())
+        self.assertEqual((result['retired'], result['backfilled'], result['enqueued']), (0, 1, 0))
+        self.assertEqual((syncs, compile_wakes), (0, 0))
+        self.assertEqual(self.archived(), [])
+        revisions = self.frontmatter_revisions(card)
+        self.assertEqual([(item['path'], item['collection'], item['sha256']) for item in revisions],
+                         [('docs/a.md', 'proj-docs', hashlib.sha256(b'alpha').hexdigest()),
+                          ('docs/b.md', 'proj-docs', hashlib.sha256(b'beta').hexdigest())])
+        # Only the `sourceRevisions` block is added; every other line is unchanged.
+        after = card.read_text(encoding='utf-8')
+        added = [line for line in after.split('\n') if line not in before.split('\n')]
+        self.assertEqual(added[0], 'sourceRevisions:')
+        self.assertTrue(all(line.startswith('  - {kind: "file"') for line in added[1:]))
+        self.assertEqual(len(added), 3)
+        self.assertIn('BACKFILL source_revisions', self.log.read_text())
+        # Next session: a normal recorded card, kept; an edit then regenerates it.
+        second, _, _ = self.run_lifecycle()
+        self.assertEqual((second['kept'], second['backfilled'], second['retired']), (1, 0, 0))
+        self.source('a.md', b'alpha edited')
+        third, _, _ = self.run_lifecycle()
+        self.assertEqual(third['enqueued'], 1)
+        self.assertTrue(card.exists())
+
+    def test_legacy_card_with_missing_source_is_retired(self):
+        card = self.card('legacy-gone.md', provenance=False,
+                         sources=[('docs/gone.md', 'proj-docs')])
+        old = card.read_bytes()
+        result, syncs, _ = self.run_lifecycle()
+        self.assertFalse(card.exists())
+        self.assertEqual((result['retired'], result['backfilled']), (1, 0))
+        self.assertEqual(syncs, 1)
+        self.assertEqual([path.read_bytes() for path in self.archived()], [old])
+        self.assertIn('RETIRE legacy_source_missing', self.log.read_text())
+
+    def test_legacy_card_with_partly_missing_sources_is_kept(self):
+        self.source('live.md', b'live')
+        card = self.card('legacy-shared.md', provenance=False,
+                         sources=[('docs/live.md', 'proj-docs'), ('docs/gone.md', 'proj-docs')])
+        before = card.read_bytes()
+        result, _, _ = self.run_lifecycle()
+        self.assertEqual(card.read_bytes(), before)
+        self.assertEqual((result['retired'], result['backfilled'], result['undecidable']), (0, 0, 1))
+        self.assertIn('legacy_partial_missing', self.log.read_text())
+
+    def test_legacy_card_without_file_sources_is_retired(self):
+        empty = self.card('empty.md', provenance=False, sources=[])
+        session = self.card('session.md', provenance=False,
+                            sources=['{kind: "session", path: "", collection: ""}'])
+        result, _, _ = self.run_lifecycle()
+        self.assertFalse(empty.exists() or session.exists())
+        self.assertEqual(result['retired'], 2)
+
+    def test_legacy_card_with_unreadable_sources_is_kept(self):
+        card = self.card('block.md', provenance=False,
+                         sources=['{kind: "file", path: "docs/a.md", collection: "proj-docs"}',
+                                  '{kind: "file", path: "docs/b.md", collection: "proj-docs"'])
+        before = card.read_bytes()
+        result, _, _ = self.run_lifecycle()
+        self.assertEqual(card.read_bytes(), before)
+        self.assertEqual((result['retired'], result['undecidable']), (0, 1))
+
+    def test_cross_collection_source_resolves(self):
+        other = Path(self.tmp.name).resolve() / 'other-checkout'
+        (other / 'tasks').mkdir(parents=True)
+        (other / 'tasks/x.md').write_bytes(b'cross')
+        self.write_settings(allowRoots=[str(other)])
+        # Allowed root, collection name this project does not define.
+        absolute = self.card('cross-abs.md', provenance=False,
+                             sources=[(str(other / 'tasks/x.md'), 'service-engineering')])
+        # Root-relative path under a stale collection name (renamed collection).
+        self.source('plot.md', b'plot')
+        renamed = self.card('renamed.md', provenance=False, sources=[('docs/plot.md', 'old-plot')])
+        # A foreign collection whose path is absent here may live in another
+        # checkout: never provably gone.
+        foreign = self.card('foreign.md', provenance=False,
+                            sources=[('tasks/elsewhere.md', 'service-engineering')])
+        result, _, _ = self.run_lifecycle()
+        self.assertEqual((result['backfilled'], result['retired'], result['undecidable']), (2, 0, 1))
+        self.assertEqual([(item['path'], item['collection'])
+                          for item in self.frontmatter_revisions(absolute)],
+                         [(str(other / 'tasks/x.md'), 'service-engineering')])
+        self.assertEqual([(item['path'], item['collection'])
+                          for item in self.frontmatter_revisions(renamed)],
+                         [('docs/plot.md', 'old-plot')])
+        self.assertTrue(foreign.exists())
+        self.assertEqual(self.frontmatter_revisions(foreign), [])
+        self.assertIn('source_foreign_collection', self.log.read_text())
+        # The backfilled cross-root card is then judged like any recorded card.
+        second, _, _ = self.run_lifecycle()
+        self.assertEqual((second['kept'], second['retired']), (2, 0))
+
+    def test_guard_counts_no_source_retirements(self):
+        self.source('keep.md', b'k')
+        self.card('keep.md', [self.revision('keep.md')])
+        cards = [self.card(f'n{i}.md', provenance=False) for i in range(4)]
+        result, syncs, _ = self.run_lifecycle()
+        self.assertTrue(all(card.exists() for card in cards))
+        self.assertEqual(result['guard'], {'wouldDelete': 4, 'decidedCards': 5, 'missingCards': 0,
+                                           'legacyMissingCards': 0, 'noSourceCards': 4})
+        self.assertEqual((result['retired'], syncs), (0, 0))
+
+    def test_guard_does_not_count_backfillable_legacy_cards(self):
+        for i in range(6):
+            self.source(f's{i}.md', f'body {i}'.encode())
+        cards = [self.card(f'l{i}.md', provenance=False, sources=[(f'docs/s{i}.md', 'proj-docs')])
+                 for i in range(6)]
+        result, _, _ = self.run_lifecycle()
+        self.assertIsNone(result['guard'])
+        self.assertTrue(all(card.exists() for card in cards))
+        self.assertEqual((result['backfilled'], result['retired']), (6, 0))
+
+    def test_guard_defers_backfill_too(self):
+        self.source('a.md', b'a')
+        legacy = self.card('legacy.md', provenance=False, sources=[('docs/a.md', 'proj-docs')])
+        before = legacy.read_bytes()
+        for i in range(4):
+            self.card(f'g{i}.md', provenance=False, sources=[(f'docs/gone-{i}.md', 'proj-docs')])
+        result, _, _ = self.run_lifecycle()
+        self.assertEqual(result['guard']['legacyMissingCards'], 4)
+        self.assertEqual((result['backfilled'], result['retired']), (0, 0))
+        self.assertEqual(legacy.read_bytes(), before)
+
+    def test_backfill_cap_converges_across_sessions(self):
+        cards = []
+        for i in range(3):
+            self.source(f'c{i}.md', f'c{i}'.encode())
+            cards.append(self.card(f'c{i}.md', provenance=False,
+                                   sources=[(f'docs/c{i}.md', 'proj-docs')]))
+        with patch.object(lifecycle, 'MAX_BACKFILL_PER_RUN', 2):
+            first, _, _ = self.run_lifecycle()
+            second, _, _ = self.run_lifecycle()
+            third, _, _ = self.run_lifecycle()
+        self.assertEqual((first['backfilled'], second['backfilled'], third['backfilled']), (2, 1, 0))
+        self.assertEqual(third['kept'], 3)
+        self.assertTrue(all(self.frontmatter_revisions(card) for card in cards))
+
+    def test_backfill_refuses_bytes_changed_after_judgement(self):
+        import wiki_source_retire
+        self.source('a.md', b'a')
+        card = self.card('raced.md', provenance=False, sources=[('docs/a.md', 'proj-docs')])
+        judged = card.read_text(encoding='utf-8')
+        edited = judged.replace('fact from', 'human edit from')
+        card.write_text(edited, encoding='utf-8')
+        revisions = [{'kind': 'file', 'path': 'docs/a.md', 'collection': 'proj-docs',
+                      'sha256': hashlib.sha256(b'a').hexdigest(), 'size': 1, 'mtimeNs': 1}]
+        outcome = wiki_source_retire.record_source_revisions(
+            self.root, self.wiki, None, card, judged, revisions)
+        self.assertEqual(outcome, 'changed')
+        self.assertEqual(card.read_text(encoding='utf-8'), edited)
+
+    def test_dry_run_reports_states_and_writes_nothing(self):
+        self.source('same.md', b'same')
+        self.card('keep.md', [self.revision('same.md')])
+        self.source('edit.md', b'v1')
+        self.card('changed.md', [self.revision('edit.md')])
+        self.source('edit.md', b'v2')
+        self.card('missing.md', [self.revision('gone.md', b'g')])
+        self.source('legacy.md', b'l')
+        self.card('backfill.md', provenance=False, sources=[('docs/legacy.md', 'proj-docs')])
+        self.card('legacy-gone.md', provenance=False, sources=[('docs/lg.md', 'proj-docs')])
+        self.card('nosource.md', provenance=False)
+        self.card('foreign.md', provenance=False, sources=[('x/y.md', 'elsewhere')])
+        self.card('human.md', provenance=False, created_by='human')
+
+        def tree():
+            base = Path(self.tmp.name)
+            return {str(path): (path.stat().st_mtime_ns, path.stat().st_size)
+                    for path in base.rglob('*') if path.is_file()}
+        before = tree()
+        with patch.object(wiki_selected_laya, 'selected', side_effect=AssertionError('route')):
+            report = lifecycle.dry_run(str(self.root))
+        self.assertEqual(tree(), before)
+        self.assertFalse(self.log.exists())
+        self.assertEqual(report['counts'], {'keep': 1, 'changed': 1, 'backfill': 1, 'missing': 1,
+                                            'legacyMissing': 1, 'retire': 1, 'undecidable': 1,
+                                            'manual': 1})
+        self.assertEqual(report['undecidableReasons'], {'source_foreign_collection': 1})
+        self.assertEqual(report['guard'], {'wouldDelete': 3, 'decidedCards': 6, 'missingCards': 1,
+                                           'legacyMissingCards': 1, 'noSourceCards': 1,
+                                           'tripped': False})
 
     def test_window_rotates_across_sessions(self):
         cards = [self.card(f'w{i}.md', provenance=False) for i in range(3)]
