@@ -21,9 +21,12 @@ class DeletedSourceRetirement(unittest.TestCase):
         (self.root / 'docs').mkdir()
         self.hash = hashlib.sha256(b'old source').hexdigest()
         self.selected = ({'projectRoot': str(self.root),
-                          'collectionRoots': {'wiki': str(self.wiki.parent)},
+                          'collectionRoots': {'wiki': str(self.wiki.parent),
+                                              'raw': str(self.root / 'docs')},
                           'collections': [{'name': 'wiki', 'role': 'wiki',
-                                           'sourceRoot': str(self.wiki.parent)}]}, {})
+                                           'sourceRoot': str(self.wiki.parent)},
+                                          {'name': 'raw', 'role': 'raw',
+                                           'sourceRoot': str(self.root / 'docs')}]}, {})
 
     def card(self, name='card.md', shared=False, authored=False, survivor_only=False):
         revisions = [{'kind': 'file', 'path': 'docs/gone.md', 'collection': 'raw',
@@ -35,12 +38,16 @@ class DeletedSourceRetirement(unittest.TestCase):
             revisions = [{'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
                           'sha256': 'b' * 64, 'size': 10, 'mtimeNs': 1}]
         card = self.wiki / name
-        card.write_text('---\ntitle: Card\nstatus: verified\ncreatedBy: ' +
+        text = ('---\ntitle: Card\nstatus: verified\ncreatedBy: ' +
                         ('human' if authored else 'qmd-auto-context') + '\n' +
                         'sourceRevisions:\n' + '\n'.join(
                             '  - ' + item for item in yaml_scalars.dump_source_revisions(revisions)) +
-                        '\n---\n<!-- qmd:auto:start id="main" sourceHash="a" -->\n' +
-                        'old completed fact\n<!-- qmd:auto:end -->\n', encoding='utf-8')
+                        '\nverifiedBodyHash: {digest}\n---\n'
+                        '<!-- qmd:auto:start id="main" sourceHash="a" -->\n' +
+                        'old completed fact\n<!-- qmd:auto:end -->\n')
+        text = text.replace('{digest}', yaml_scalars.card_body_hash(
+            text.replace('{digest}', '0' * 64)))
+        card.write_text(text, encoding='utf-8')
         return card
 
     def run_retire(self):
@@ -78,11 +85,9 @@ class DeletedSourceRetirement(unittest.TestCase):
         self.assertFalse(card.exists())
 
     def test_shared_card_retires_only_after_a_verified_survivor_replacement(self):
-        import laya_host_response
         shared = self.card('shared.md', shared=True)
         replacement = self.card('replacement.md', survivor_only=True)
-        with patch.object(laya_host_response, '_verified_wiki_row', return_value=True):
-            self.assertEqual(self.run_retire(), ('retired', 1))
+        self.assertEqual(self.run_retire(), ('retired', 1))
         self.assertFalse(shared.exists())
         self.assertTrue(replacement.exists())
 
