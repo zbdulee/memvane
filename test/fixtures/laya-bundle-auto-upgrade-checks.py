@@ -166,7 +166,7 @@ class ProviderRuleChecks(Base):
                 self.assertNotIn('source_text', (core / name).read_text(encoding='utf-8'))
 
 
-class WorkerChecks(Base):
+class WorkerBase(Base):
     def setUp(self):
         super().setUp()
         self.root = self.claude_root()
@@ -178,7 +178,7 @@ class WorkerChecks(Base):
             'vectorProfile': PROFILE, 'dependencyClosure': [],
             'providerManifest': manifest(str(self.root))}}
 
-    def run_worker(self, kind='active', reviewed=None, installed=None):
+    def run_worker(self, kind='active', reviewed=None, installed=None, active=None):
         import laya_active_upgrade
         import laya_bound_upgrade
         import laya_inactive_upgrade
@@ -203,7 +203,8 @@ class WorkerChecks(Base):
              mock.patch.object(product, '_request_build_wake',
                                return_value={'status': 'queued'}) as wake, \
              mock.patch.object(laya_active_upgrade, 'upgrade',
-                               side_effect=record('active', {'status': 'active_upgrade_complete'})), \
+                               side_effect=active or record(
+                                   'active', {'status': 'active_upgrade_complete'})), \
              mock.patch.object(laya_bound_upgrade, 'upgrade',
                                side_effect=record('bound', {'status': 'bound_upgrade_complete'})), \
              mock.patch.object(laya_inactive_upgrade, 'upgrade',
@@ -211,6 +212,8 @@ class WorkerChecks(Base):
             results = auto.run(self.project, root=self.root, home=self.home)
         return results, calls, rescan, wake
 
+
+class WorkerChecks(WorkerBase):
     def test_equivalent_provider_upgrades_selected_route_and_wakes_sync(self):
         results, calls, _rescan, wake = self.run_worker('active')
         self.assertEqual(results[0]['status'], 'active_upgrade_complete')
@@ -260,6 +263,136 @@ class WorkerChecks(Base):
         self.assertEqual(results[0]['status'], 'companion_sealed')
         seal.assert_called_once_with('/old', self.root)
         self.assertEqual(calls, {})
+
+
+class BusyLaneChecks(WorkerBase):
+    """A busy provider/compute lane defers the upgrade; it is never a failure."""
+
+    def run_busy(self, outcomes):
+        def upgrade(**_kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return dict(outcome)
+        slept = []
+        with mock.patch.object(auto, '_sleep', slept.append):
+            results, _calls, _rescan, _wake = self.run_worker('active', active=upgrade)
+        return results, slept
+
+    def test_busy_lane_is_retried_with_backoff_in_the_worker(self):
+        from resource_deferred import ResourceDeferred
+        results, slept = self.run_busy([ResourceDeferred('learning_compute_busy'),
+                                        RuntimeError('initial_build_busy'),
+                                        {'status': 'active_upgrade_complete'}])
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete')
+        self.assertEqual(slept, list(auto.BUSY_BACKOFF_SECONDS[:2]))
+        self.assertEqual(auto.read_status(self.state)['status'], 'complete')
+
+    def test_still_busy_lane_defers_without_spending_an_attempt(self):
+        from resource_deferred import ResourceDeferred
+        auto._write_status(self.state, status='failed', executingRoot=str(self.root),
+                           attempts=2, reason='active_upgrade_new_provider_changed')
+        busy = [ResourceDeferred('learning_compute_busy')
+                for _ in range(len(auto.BUSY_BACKOFF_SECONDS) + 1)]
+        results, slept = self.run_busy(busy)
+        self.assertEqual(results[0], {'stateRoot': str(self.state), 'status': 'deferred',
+                                      'reason': 'learning_compute_busy'})
+        self.assertEqual(slept, list(auto.BUSY_BACKOFF_SECONDS))
+        status = auto.read_status(self.state)
+        self.assertEqual((status['status'], status['attempts'], status['reason']),
+                         ('deferred', 2, 'learning_compute_busy'))
+        jpath = self.state / 'install-journal.sqlite'
+        spawned = []
+        with mock.patch.object(auto, 'executing_root', return_value=self.root):
+            state = auto.request(str(self.project), jpath, 'x', spawn=spawned.append,
+                                 now=status['updatedNs'])
+            self.assertEqual(spawned, [])
+            later = status['updatedNs'] + (auto.DEFER_RETRY_SECONDS + 1) * 10**9
+            auto.request(str(self.project), jpath, 'x', spawn=spawned.append, now=later)
+        self.assertEqual(spawned, [str(self.project)])
+        line = auto.notice_line(state, 'x')
+        self.assertIn('learning_compute_busy', line)
+        self.assertIn('retries', line)
+        self.assertNotIn('failed', line)
+
+
+class CrossHostWorkerChecks(Base):
+    """Real source and anti-flapping rules across Claude and Codex caches."""
+
+    def setUp(self):
+        super().setUp()
+        upstream = self.base / 'upstream'
+        self.older = repo(upstream, {'a.txt': '1\n'})
+        self.newer = commit(upstream, {'a.txt': '2\n'})
+        self.upstream = upstream
+
+    def clone(self, path, sha):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        git(path.parent, 'clone', '-q', str(self.upstream), str(path))
+        git(path, 'checkout', '-q', sha)
+        return path
+
+    def claude(self, version, sha):
+        self.clone(self.home / '.claude' / 'plugins' / 'marketplaces' / 'mkt', sha)
+        root = self.claude_root(version)
+        self.installed(root, sha)
+        return root
+
+    def codex(self, version, sha):
+        source = self.clone(self.home / '.codex' / '.tmp' / 'marketplaces' / 'mkt', sha)
+        root = (self.home / '.codex' / 'plugins' / 'cache' / 'mkt' /
+                'qmd-auto-context' / version)
+        root.parent.mkdir(parents=True, exist_ok=True)
+        git(root.parent, 'clone', '-q', str(source), str(root))
+        return root
+
+    def run_from(self, root, bound_root, bound_sha):
+        import laya_active_upgrade
+        import laya_product_install as product
+        identity = {'pluginRoot': str(bound_root), 'sourceCommit': bound_sha,
+                    'bundleManifestSha256': 'a' * 64, 'vectorProfile': PROFILE}
+        attestation = {'providerManifest': manifest(str(bound_root)),
+                       'vectorProfile': PROFILE, 'dependencyClosure': []}
+        reviewed = {'proposalSha256': '9' * 64, 'reviewedProvider': {
+            'vectorProfile': PROFILE, 'dependencyClosure': [],
+            'providerManifest': manifest(str(root))}}
+        calls = []
+        with mock.patch.object(auto, 'installs', return_value=[self.state]), \
+             mock.patch.object(auto, 'classify', return_value=('active', identity)), \
+             mock.patch.object(auto, '_read_attestation', return_value=attestation), \
+             mock.patch.object(product, 'review_local_provider', return_value=reviewed), \
+             mock.patch.object(product, '_request_build_wake',
+                               return_value={'status': 'queued'}), \
+             mock.patch.object(laya_active_upgrade, 'upgrade',
+                               side_effect=lambda **kw: calls.append(kw) or
+                               {'status': 'active_upgrade_complete'}):
+            results = auto.run(self.project, root=root, home=self.home)
+        return results[0], calls
+
+    def test_newer_claude_bundle_upgrades_a_route_bound_to_codex(self):
+        bound = self.codex('0.37.1', self.older)
+        root = self.claude('0.37.2', self.newer)
+        result, calls = self.run_from(root, bound, self.older)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertEqual((calls[0]['plugin_root'], calls[0]['commit_id']),
+                         (str(root), self.newer))
+
+    def test_newer_codex_bundle_upgrades_a_route_bound_to_claude(self):
+        bound = self.claude_root('0.37.1')
+        root = self.codex('0.37.1', self.newer)  # same label, newer commit
+        result, calls = self.run_from(root, bound, self.older)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertEqual(calls[0]['source_root'],
+                         str((self.home / '.codex' / '.tmp' / 'marketplaces' / 'mkt').resolve()))
+
+    def test_older_host_never_takes_the_route_back(self):
+        bound = self.codex('0.37.1', self.newer)
+        root = self.claude('0.37.1', self.older)
+        result, calls = self.run_from(root, bound, self.newer)
+        self.assertEqual((result['status'], result['reason']),
+                         ('refused', 'older_host_bundle'))
+        self.assertEqual(calls, [])
+        self.assertIn('host=claude', (self.state / auto.LOG).read_text())
 
 
 class RequestChecks(Base):

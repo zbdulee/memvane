@@ -23,7 +23,6 @@ from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   cas_recover, cas_restore, cas_stage_update,
                                   inspect_journal)
 from laya_product_bundle import (PRODUCTION_ATTESTATION_SCHEMA,
-                                 BundleEvidenceError,
                                  adopt_host_loaded_plugin,
                                  inspect_full_plugin_candidate,
                                  validate_production_provider_attestation)
@@ -171,18 +170,11 @@ def _old_state(project, state, journal, ledger=None):
             selected['providerFileIdentitySha256'] != row['providerFileIdentitySha256'] or
             selected['selected']['vectorProfile']['profileId'] != row['vectorProfileId']):
         _fail('active_upgrade_journal_changed')
-    try:
-        old_proof = inspect_full_plugin_candidate(selected['selected']['pluginRoot'])
-    except BundleEvidenceError:
-        # A host may remove the superseded cache before the upgrade runs. The
-        # journal keeps the sealed identity; only a later restore needs the
-        # old files, and that restore then refuses on its own proof.
-        old_proof = None
-    if old_proof is not None and any(
-            old_proof[key] != selected['selected'][key] for key in
-            ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256',
-             'vectorProfile')):
-        _fail('active_upgrade_old_bundle_changed')
+    # The old bundle's files are not proved here: a host may remove or
+    # re-extract the superseded cache in place (Codex reuses one version
+    # directory across commits) before the upgrade runs. The journal keeps the
+    # sealed identity; only a later restore needs the old files, and that
+    # restore then refuses on its own proof.
     return row, selected, route, attestation, marker
 
 
@@ -564,7 +556,12 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id):
-            _backup_proof(intent, verify_new=not settled_restored)
+            # Only a settled intent is archived, and ``_archive_finished_intent``
+            # (also the settings rebind's settle step) is that proof. A settled
+            # intent is a receipt: its new bundle is now the bound one, which
+            # its host may already have replaced or removed, so its files are
+            # not re-proved here; ``_old_state`` proves the selection next.
+            _backup_proof(intent, verify_new=False)
             _archive_finished_intent(state, project, intent)
             intent = None
         if intent is None:
