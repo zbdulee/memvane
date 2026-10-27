@@ -60,6 +60,10 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
+class _VectorUnavailable(Exception):
+    """Read-only serving after a bundle drift has no warm query vector."""
+
+
 class _SealedManifestMismatch(Exception):
     """Cause marker: a completed live scan differs from the pinned seal.
 
@@ -423,7 +427,12 @@ def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, lim
             or pinned["dimension"] != route_profile["dimension"]
             or pinned["metric"] != route_profile["metric"]):
         _fail("vector_profile_mismatch")
-    supplied = approved_provider(prompt, route_profile)
+    try:
+        supplied = approved_provider(prompt, route_profile)
+    except _VectorUnavailable:
+        # Only the bundle-drift read-only provider raises this: the published
+        # generation is still served from its verified lexical rows.
+        return []
     if (not isinstance(supplied, dict) or set(supplied) != _PROVIDER_RESULT_KEYS
             or supplied["profileId"] != route_profile["profileId"]
             or supplied["approvedProviderId"] != route_profile["approvedProviderId"]
@@ -1246,7 +1255,12 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     # The journal binds one owner cache; another host may execute only an
     # independently sealed copy with the same exact bundle identity.
     from laya_install_journal import verify_selected_route
-    proof = verify_selected_route(decision)
+    try:
+        proof = verify_selected_route(decision)
+    except Exception as exc:
+        drifted = _bundle_drift_proof(decision, exc)
+        return _serve_bundle_drift(action, host, decision, payload, drifted,
+                                   _drift_code(exc))
     loaded_root = str(Path(__file__).resolve().parent.parent)
     if proof.get('executingPluginRoot', decision.get('pluginRoot')) != loaded_root:
         _fail("selected_plugin_root_mismatch")
@@ -1352,6 +1366,84 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             return {"status": "queued"}
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
+    return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _drift_code(exc: BaseException) -> str:
+    code = str(exc)
+    return code if re.fullmatch(r'[a-z0-9_]{1,80}', code) else 'bundle_identity_changed'
+
+
+def _bundle_drift_proof(decision: dict, exc: BaseException) -> dict:
+    """Read-only proof after a full proof failed only on bundle identity.
+
+    Any other failure, or a read-only proof failure, keeps the original error.
+    """
+    from laya_install_journal import is_bundle_drift, verify_selected_route_read_only
+    if not is_bundle_drift(exc):
+        raise exc
+    try:
+        proof = verify_selected_route_read_only(decision)
+    except Exception:
+        raise exc
+    if proof.get('readOnlyAllowed') is not True:
+        raise exc
+    return proof
+
+
+def _bundle_upgrade_notice(decision: dict, code: str) -> str:
+    try:
+        import laya_bundle_upgrade
+        state = laya_bundle_upgrade.request(decision['projectRoot'],
+                                            decision['journalPath'], code)
+    except Exception as exc:
+        state = {'status': 'failed', 'reason': _drift_code(exc)}
+    try:
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.notice_line(state, code)
+    except Exception:
+        return ('[laya-index] plugin bundle changed (' + code + '); search serves '
+                'the last published index read-only; sync waits for the upgrade.')
+
+
+def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
+                        proof: dict, code: str) -> dict:
+    """Host plugin update: read the published generation, fence every write.
+
+    Sync, compile and index wakes are not recorded; the finished upgrade
+    wakes one full-scan sync that catches up every source change.
+    """
+    from laya_install_journal import verify_selected_route_read_only
+    if action == 'recall':
+        return _serve_recall(host, decision, payload, proof,
+                             verify_selected_route_read_only, degraded=True)
+    if action in ('update', 'update-queued'):
+        if payload.get('hook_event_name') != 'SessionStart':
+            _fail('invalid_session_event')
+        notice = _bundle_upgrade_notice(decision, code)
+        if verify_selected_route_read_only(decision) != proof:
+            _fail('selected_proof_changed')
+        if host == 'hermes':
+            return {'status': 'bundle_upgrade_pending', 'notice': notice}
+        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                       'additionalContext': notice}}
+    if action == 'gate':
+        _verified_edit(decision, payload, action)
+        if verify_selected_route_read_only(decision) != proof:
+            _fail('selected_proof_changed')
+        if host == 'hermes':
+            return {'action': 'continue'}
+        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                                       'permissionDecision': 'allow'}}
+    # posttool/compile/index/file-change-event and topical no-ops: nothing is
+    # queued while the bundle is pending. The post-upgrade full scan covers it.
+    if verify_selected_route_read_only(decision) != proof:
+        _fail('selected_proof_changed')
+    return {}
+
+
+def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
+                  recheck, *, degraded: bool = False) -> dict:
     # The approved provider only connects to an already warm owner process.
     # The hook never starts a model or derives paths from the event or env.
     from laya_index_runtime import LayaIndexRuntime
@@ -1371,7 +1463,20 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         # one query vector. Never charge the hook twice for the same prompt.
         key = (text, profile['profileId'])
         if key not in embedded:
-            embedded[key] = provider(text, profile)
+            if not degraded:
+                embedded[key] = provider(text, profile)
+            else:
+                # A warm owner of the same sealed recipe may still answer; a
+                # cold or changed one is never started from a drifted bundle.
+                from laya_index_a import IndexContractError
+                try:
+                    embedded[key] = provider(text, profile)
+                except IndexContractError as exc:
+                    if str(exc) not in ('provider_unavailable', 'provider_identity_mismatch',
+                                        'provider_result_invalid', 'provider_socket_invalid',
+                                        'provider_socket_changed'):
+                        raise
+                    raise _VectorUnavailable(str(exc)) from exc
         return embedded[key]
     from laya_embed_resident import admit_query
     try:
@@ -1412,9 +1517,14 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     try:
         if v2:
             from laya_incremental_docs_query import query_incremental
-            incremental_rows, incremental_title_only, incremental_locations, \
-                shadow_paths, base_generation = query_incremental(
-                    prompt, decision, proof, query_provider)
+            try:
+                incremental_rows, incremental_title_only, incremental_locations, \
+                    shadow_paths, base_generation = query_incremental(
+                        prompt, decision, proof, query_provider)
+            except _VectorUnavailable:
+                # Degraded only: serve the sealed base generation alone.
+                incremental_rows, incremental_title_only = [], frozenset()
+                incremental_locations, shadow_paths, base_generation = {}, (), None
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
@@ -1430,7 +1540,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                     pinned_generation=pinned_generation)
             else:
                 rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
-                                             proof["vectorProfile"], provider,
+                                             proof["vectorProfile"],
+                                             query_provider if degraded else provider,
                                              lexical_patterns=tuple(patterns))
                 title_only = frozenset()
     except Exception as exc:
@@ -1438,8 +1549,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         # only for a verified content mismatch; every other failure is unchanged.
         from laya_source_catalog import CatalogPending, ReturnedCandidateDiverged
         from laya_index_a import IndexContractError
-        if type(exc) is IndexContractError and str(exc) in (
-                'provider_unavailable', 'provider_identity_mismatch'):
+        if (not degraded and type(exc) is IndexContractError and str(exc) in (
+                'provider_unavailable', 'provider_identity_mismatch')):
             _request_provider_start(decision, proof,
                                     transition=str(exc) == 'provider_identity_mismatch')
         if (type(exc) is CatalogPending and exc.reason == 'returned_unverified'):
@@ -1449,8 +1560,11 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                           type(exc.__cause__) is ReturnedCandidateDiverged)
         if not v2 or not (_is_sealed_manifest_stale(exc) or returned_stale):
             raise
+        if degraded:
+            # No sync may be recorded until the bundle upgrade completes.
+            _fail('selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
-    if verify_selected_route(decision) != proof:
+    if recheck(decision) != proof:
         _fail("selected_proof_changed")
     if base_generation is not None and pinned_generation != [base_generation]:
         _fail('incremental_base_changed')
@@ -1520,10 +1634,15 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         # Hook stderr is intentionally terse. No source body, path, or secrets.
         from laya_index_a import IndexContractError
+        from laya_install_journal import JournalEvidenceError
         bounded_vector = (type(exc) is IndexContractError and str(exc) in
                           ('vector_deadline_exceeded', 'vector_budget_exceeded'))
+        # A journal proof code names the refused evidence (never a path or
+        # body); hiding it made a bundle update look like a query failure.
+        journal = (isinstance(exc, JournalEvidenceError) and
+                   re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
         code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
-                else "selected_proof_or_query_failed")
+                or journal else "selected_proof_or_query_failed")
         print(f"[laya-index] {code}; QMD fallback refused", file=sys.stderr)
         if action == "recall":
             # A refused recall still leaves its reason (release QA §6: a missing
