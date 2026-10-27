@@ -1,39 +1,4 @@
 {
-  "indexing": true,
   "name": "qmd-auto-context",
-  "collections": [
-    "qmd-auto-context-plans",
-    "qmd-auto-context-wiki"
-  ],
-  "collectionPaths": {
-    "qmd-auto-context-plans": "docs/plans",
-    "qmd-auto-context-wiki": ".auto-context/wiki"
-  },
-  "collectionRoles": {
-    "qmd-auto-context-plans": "raw",
-    "qmd-auto-context-wiki": "wiki"
-  },
-  "queryTimeout": 3,
-  "prefixStyle": "tag",
-  "compile": {
-    "mode": "auto-wiki",
-    "triggers": [
-      "post_tool_source",
-      "post_sync_source",
-      "manual"
-    ],
-    "reasoningEffort": {
-      "generation": "low",
-      "verify": "medium",
-      "semanticDedup": "medium",
-      "engines": {}
-    },
-    "extractor": {
-      "builtins": [
-        "claude",
-        "codex",
-        "hermes"
-      ]
-    }
-  }
+  "skipPaths": []
 }

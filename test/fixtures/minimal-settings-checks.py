@@ -14,13 +14,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 CORE = Path(__file__).resolve().parents[2] / "core"
 sys.path.insert(0, str(CORE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
 import laya_index_host_route as route  # noqa: E402
-import settings_migration  # noqa: E402
+import resolve_paths  # noqa: E402
 import wiki_compile_enqueue  # noqa: E402
 import wiki_init  # noqa: E402
 
@@ -217,95 +218,6 @@ class MinimalModelChecks(Project):
         self.assertTrue((self.auto / "wiki" / "SCHEMA.md").is_file())
 
 
-class MigrationChecks(Project):
-    def plan(self):
-        return settings_migration.plan(str(self.root))
-
-    def test_equivalent_unbound_settings_migrate_after_acceptance(self):
-        before = self.write(LEGACY_EQUIVALENT)
-        proposal = self.plan()
-        self.assertEqual(proposal["status"], "review_required", proposal)
-        self.assertEqual(proposal["minimalSettings"],
-                         {"name": "project", "skipPaths": LEGACY_EQUIVALENT["skipPaths"]})
-        self.assertIn("compile", proposal["changedFields"])
-        self.assertIn("contextLearning", proposal["changedFields"])
-        refused = settings_migration.apply(str(self.root), "0" * 64)
-        self.assertEqual(refused["reason"], "proposal_acceptance_required")
-        self.assertEqual(self.settings.read_bytes(), before)
-        done = settings_migration.apply(str(self.root), proposal["proposalSha256"])
-        self.assertEqual(done["status"], "migrated", done)
-        self.assertEqual(json.loads(self.settings.read_text()), proposal["minimalSettings"])
-        self.assertEqual(Path(done["backupPath"]).read_bytes(), before)
-        after = config.find_project_config(str(self.root))["config"]
-        self.assertEqual(after["collections"], ["project", "project-wiki"])
-        self.assertEqual(self.plan()["status"], "already_minimal")
-
-    def test_changed_collection_identity_is_refused(self):
-        before = self.write(LEGACY_NARROW)
-        result = self.plan()
-        self.assertEqual(result["status"], "refused")
-        self.assertEqual(result["reason"], "collection_identity_changed")
-        self.assertNotEqual(result["currentIdentity"], result["derivedIdentity"])
-        self.assertEqual(settings_migration.apply(str(self.root), None)["reason"],
-                         "collection_identity_changed")
-        self.assertEqual(self.settings.read_bytes(), before)
-
-    def test_bound_route_with_other_identity_is_refused(self):
-        before = self.write(LEGACY_EQUIVALENT)
-        self.write_route([
-            {"name": "project-plans", "role": "raw",
-             "sourceRoot": str(self.root / "docs" / "plans")},
-            {"name": "project-plans-wiki", "role": "wiki",
-             "sourceRoot": str(self.auto / "wiki")}])
-        result = self.plan()
-        self.assertEqual(result["reason"], "bound_collection_identity_changed", result)
-        self.assertEqual(result["boundCollections"][0]["name"], "project-plans")
-        self.assertEqual(self.settings.read_bytes(), before)
-        # Only the raw collection differs: the route itself must then prove
-        # an active selection (minimal-settings-rebind-checks covers one).
-        self.write_route([
-            {"name": "project-plans", "role": "raw",
-             "sourceRoot": str(self.root / "docs" / "plans")},
-            {"name": "project-wiki", "role": "wiki", "sourceRoot": str(self.auto / "wiki")}])
-        self.assertEqual(self.plan()["reason"], "selected_route_not_verified")
-        self.assertEqual(self.settings.read_bytes(), before)
-
-    def test_unverified_route_with_same_identity_is_refused(self):
-        # A route record that is not a verified active selection cannot be
-        # rebound (minimal-settings-rebind-checks covers a selected route).
-        before = self.write(LEGACY_EQUIVALENT)
-        self.write_route(self.derived_collections())
-        result = self.plan()
-        self.assertEqual(result["reason"], "selected_route_not_verified", result)
-        # The record and settings agree; no installer journal backs them.
-        self.assertEqual(result["routeState"], "candidate", result)
-        self.assertIn("routeReason", result)
-        self.assertEqual(settings_migration.apply(str(self.root), None)["reason"],
-                         "selected_route_not_verified")
-        self.assertEqual(self.settings.read_bytes(), before)
-
-    def test_selection_marker_and_setup_journal_are_bindings(self):
-        self.write(LEGACY_EQUIVALENT)
-        marker = self.auto / route.QMD_SELECTION_MARKER
-        marker.write_text("{}")
-        self.assertEqual(self.plan()["reason"], "settings_bound_by_laya_route")
-        marker.unlink()
-        # An unreadable (symlinked) route record is a binding, not a crash.
-        target = self.home / "elsewhere.json"
-        target.write_text("{}")
-        (self.auto / route.RECORD).symlink_to(target)
-        unreadable = self.plan()
-        self.assertEqual((unreadable["status"], unreadable["reason"]),
-                         ("refused", "settings_bound_by_laya_route"), unreadable)
-        (self.auto / route.RECORD).unlink()
-        (self.auto / "install-update-journal.json").write_text("{}")
-        self.assertEqual(self.plan()["reason"], "settings_bound_by_setup_journal")
-
-    def test_disabled_indexing_is_refused(self):
-        self.write({**LEGACY_EQUIVALENT, "indexing": False})
-        self.assertEqual(self.plan()["reason"], "legacy_indexing_not_enabled")
-
-
 class GenerationSkipChecks(Project):
     def record_for(self, rel, cfg):
         path = self.root / rel
@@ -329,6 +241,74 @@ class GenerationSkipChecks(Project):
         cfg = config.find_project_config(str(self.root))["config"]
         self.assertIsNone(config.generation_skip_paths(cfg))
         self.assertEqual(self.record_for("drafts/a.md", cfg)["source"]["path"], "drafts/a.md")
+
+
+def legacy_settings(raw_name, wiki_name, raw_path='.', name='project'):
+    """The live legacy shape whose effective identity minimal settings derive."""
+    return {
+        'indexing': True, 'name': name,
+        'collections': [raw_name, wiki_name],
+        'collectionPaths': {raw_name: raw_path, wiki_name: '.auto-context/wiki'},
+        'collectionRoles': {raw_name: 'raw', wiki_name: 'wiki'},
+        'skipPaths': ['build'], 'recallStrategy': 'hierarchical',
+        'compile': {'mode': 'auto-wiki', 'triggers': ['post_tool_source', 'manual'],
+                    'extractor': {'builtins': ['claude']}},
+    }
+
+
+class MinimalQmdIndexChecks(unittest.TestCase):
+    def setUp(self):
+        # Temp roots live under /private, which resolve_paths treats as risky.
+        patcher = mock.patch.object(resolve_paths, 'is_risky_path', lambda _path: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_minimal_raw_root_is_never_a_qmd_index_entry(self):
+        with tempfile.TemporaryDirectory(prefix='minimal-qmd-') as temp:
+            root = Path(temp).resolve()
+            (root / '.auto-context' / 'wiki').mkdir(parents=True)
+            minimal = config.normalize_config({'name': 'project', 'skipPaths': []})
+            resolved = resolve_paths.resolve_paths(str(root), json.dumps(minimal))
+            self.assertEqual([row['name'] for row in resolved['indexEntries']],
+                             ['project-wiki'])
+            self.assertEqual([row['name'] for row in resolved['sourceEntries']], ['project'])
+            self.assertEqual(len(resolved['entries']), 2)
+            legacy = config.normalize_config(legacy_settings('project', 'project-wiki'))
+            resolved = resolve_paths.resolve_paths(str(root), json.dumps(legacy))
+            self.assertEqual([row['name'] for row in resolved['indexEntries']],
+                             ['project', 'project-wiki'])
+            (root / '.auto-context' / 'settings.json').write_text(
+                json.dumps({'name': 'project', 'skipPaths': []}))
+            with mock.patch.dict(os.environ, {'HOME': str(root.parent)}):
+                raw = config.load_project_config_raw(str(root))
+            self.assertEqual(raw['settingsModel'], 'minimal')
+            self.assertEqual(raw['collectionRoles'], {'project': 'raw', 'project-wiki': 'wiki'})
+            resolved = resolve_paths.resolve_paths(str(root), json.dumps(raw))
+            self.assertEqual([row['name'] for row in resolved['indexEntries']],
+                             ['project-wiki'])
+
+    def test_shared_registry_drops_index_flag_only_for_minimal_raw(self):
+        import qmd_shared_store as store
+        with tempfile.TemporaryDirectory(prefix='minimal-registry-') as temp:
+            base = Path(temp).resolve() / 'store'
+            base.mkdir(mode=0o700)
+            row = {'scope': '/p', 'path': '/p', 'indexed': True}
+            registry = base / 'collections.json'
+            registry.write_text(json.dumps({'project': row}))
+            registry.chmod(0o600)
+            demoted = {'project': {**row, 'indexed': False}}
+            # An explicit role edit (no minimal settings) still needs reconciliation.
+            with self.assertRaisesRegex(ValueError, 'path_change_requires_migration'):
+                store._reserve_owners(base, demoted)
+            minimal = config.normalize_config({'name': 'project', 'skipPaths': []})
+            self.assertEqual(store.minimal_raw_names(minimal), {'project'})
+            self.assertEqual(store.minimal_raw_names(
+                config.normalize_config(legacy_settings('project', 'project-wiki'))), set())
+            store._reserve_owners(base, demoted, demoted=store.minimal_raw_names(minimal))
+            self.assertIs(json.loads(registry.read_text())['project']['indexed'], False)
+            moved = {'project': {**row, 'path': '/q', 'indexed': False}}
+            with self.assertRaisesRegex(ValueError, 'path_change_requires_migration'):
+                store._reserve_owners(base, moved, demoted={'project'})
 
 
 if __name__ == "__main__":

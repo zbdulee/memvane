@@ -9,14 +9,14 @@ import {removeTemp} from './helpers/temp.mjs';
 const env = (home) => ({...process.env, HOME: home, QMD_RECALL_LOG: '',
   QMD_SKIP_BACKGROUND_WORKER: '1', PYTHONDONTWRITEBYTECODE: '1'});
 
-test('minimal settings model, legacy invariance, migration refusals and generation skips', () => {
+test('minimal settings model, legacy invariance, routes and generation skips', () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'minimal-settings-home-')));
   try {
     const result = spawnSync('python3', ['-B', 'test/fixtures/minimal-settings-checks.py'], {
       encoding: 'utf8', timeout: 120000, env: env(home),
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 16 tests/);
+    assert.match(result.stderr, /Ran 12 tests/);
   } finally { removeTemp(home); }
 });
 
@@ -35,35 +35,5 @@ test('--enable-compile leaves a minimal settings file byte-for-byte unchanged', 
     assert.match(result.stdout, /minimal settings/);
     assert.equal(readFileSync(settings, 'utf8'), bytes);
     assert.ok(readFileSync(join(project, '.auto-context', 'wiki', 'SCHEMA.md'), 'utf8'));
-  } finally { removeTemp(home); }
-});
-
-test('setup entry plans and applies the minimal rewrite only with approval', () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'minimal-settings-entry-')));
-  try {
-    const project = join(home, 'project');
-    mkdirSync(join(project, '.auto-context', 'wiki'), {recursive: true});
-    const settings = join(project, '.auto-context', 'settings.json');
-    writeFileSync(settings, JSON.stringify({
-      indexing: true, name: 'project', collections: ['project', 'project-wiki'],
-      collectionPaths: {project: '.', 'project-wiki': '.auto-context/wiki'},
-      collectionRoles: {project: 'raw', 'project-wiki': 'wiki'},
-      recallStrategy: 'wikiOnly', topN: 4,
-    }));
-    const run = (...args) => spawnSync('python3', ['-B', 'core/setup_entry.py', ...args,
-      '--project', project], {encoding: 'utf8', timeout: 60000, env: env(home)});
-    const planned = run('plan-minimal-settings');
-    assert.equal(planned.status, 0, planned.stdout + planned.stderr);
-    const proposal = JSON.parse(planned.stdout);
-    assert.equal(proposal.status, 'review_required');
-    assert.deepEqual(proposal.changedFields, ['compile', 'contextLearning', 'topN']);
-    const unapproved = run('migrate-minimal-settings', '--accepted-settings-proposal-sha256',
-      proposal.proposalSha256);
-    assert.equal(JSON.parse(unapproved.stdout).reason, 'settings_rewrite_approval_required');
-    const applied = run('migrate-minimal-settings', '--approve-settings-rewrite',
-      '--accepted-settings-proposal-sha256', proposal.proposalSha256);
-    assert.equal(applied.status, 0, applied.stdout + applied.stderr);
-    assert.equal(JSON.parse(applied.stdout).status, 'migrated');
-    assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')), {name: 'project', skipPaths: []});
   } finally { removeTemp(home); }
 });

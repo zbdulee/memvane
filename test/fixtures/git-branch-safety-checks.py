@@ -266,12 +266,12 @@ class WorktreeRecallReadOnly(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         spec = importlib.util.spec_from_file_location(
-            'minimal_settings_rebind_checks', HERE / 'minimal-settings-rebind-checks.py')
-        cls.rebind = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.rebind)
+            'laya_selected_project', HERE / 'laya_selected_project.py')
+        cls.selected_fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.selected_fixture)
 
     def setUp(self):
-        selected = self.rebind.SelectedProject('run')
+        selected = self.selected_fixture.SelectedProject('run')
         selected.setUp()
         self.addCleanup(selected.doCleanups)
         self.selected = selected
@@ -285,8 +285,8 @@ class WorktreeRecallReadOnly(unittest.TestCase):
         git(self.project, 'init', '-q')
         git(self.project, 'add', '.auto-context/settings.json', '.auto-context/wiki')
         git(self.project, 'commit', '-q', '-m', 'settings and wiki')
-        self.host_route = self.rebind.host_route
-        self.response = self.rebind.response
+        self.host_route = self.selected_fixture.host_route
+        self.response = self.selected_fixture.response
 
     def add_worktree(self, path):
         git(self.project, 'worktree', 'add', '-q', '-b', 'wt-' + path.name, str(path))
@@ -331,7 +331,7 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                 mock.patch.object(response, '_request_provider_start', forbidden), \
                 mock.patch.object(response, '_request_stale_sync', forbidden), \
                 mock.patch.object(response, '_start_owner', forbidden), \
-                mock.patch.object(self.rebind.discovery, 'record_grant', forbidden):
+                mock.patch.object(self.selected_fixture.discovery, 'record_grant', forbidden):
             out = response.serve_selected('recall', 'claude', decision,
                                           {'prompt': 'q', 'cwd': str(worktree)})
             self.assertEqual(response._LEARNING_CAPTURE, [])
@@ -367,7 +367,7 @@ class WorktreeRecallReadOnly(unittest.TestCase):
         changed = self.add_worktree(self.selected.home / 'changed')
         settings = changed / '.auto-context/settings.json'
         raw = json.loads(settings.read_text())
-        raw['collectionPaths'][self.selected.RAW] = 'docs'
+        raw['name'] = 'other-project'  # derives other collection names
         settings.write_text(json.dumps(raw))
         self.assertNotEqual(self.host_route.select_route(str(changed))['state'], 'worktree')
         own = self.add_worktree(self.selected.home / 'own-route')

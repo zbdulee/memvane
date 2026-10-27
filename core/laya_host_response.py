@@ -1445,10 +1445,6 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("invalid_hook_payload")
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
-    if decision.get('state') == 'rebinding':
-        import laya_settings_rebind
-        proof = laya_settings_rebind.verify_read_only(decision)
-        return _serve_settings_rebind(action, host, decision, payload, proof)
     # The journal binds one owner cache; another host may execute only an
     # independently sealed copy with the same exact bundle identity.
     from laya_install_journal import verify_selected_route
@@ -1701,47 +1697,6 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     return {}
 
 
-SETTINGS_REBIND_NOTICE = ('[laya-index] settings rebind in progress or interrupted; '
-                          'search serves the last published index read-only and sync '
-                          'waits. Run the setup migrate-minimal-settings step again to '
-                          'resume or roll back.')
-
-
-def _serve_settings_rebind(action: str, host: str, decision: dict, payload: dict,
-                           proof: dict) -> dict:
-    """Settings rebind between steps: read the published generation only.
-
-    Like the bundle-drift path, no sync, compile or index wake is recorded;
-    the finished rebind leaves the route selected and the next session's
-    full-scan wake catches up every source change.
-    """
-    from laya_settings_rebind import verify_read_only
-    if action == 'recall':
-        return _serve_recall(host, decision, payload, proof, verify_read_only,
-                             degraded=True)
-    if action in ('update', 'update-queued'):
-        if payload.get('hook_event_name') != 'SessionStart':
-            _fail('invalid_session_event')
-        notice = SETTINGS_REBIND_NOTICE
-        if verify_read_only(decision) != proof:
-            _fail('selected_proof_changed')
-        if host == 'hermes':
-            return {'status': 'settings_rebind_pending', 'notice': notice}
-        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': notice}}
-    if action == 'gate':
-        _verified_edit(decision, payload, action)
-        if verify_read_only(decision) != proof:
-            _fail('selected_proof_changed')
-        if host == 'hermes':
-            return {'action': 'continue'}
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                       'permissionDecision': 'allow'}}
-    if verify_read_only(decision) != proof:
-        _fail('selected_proof_changed')
-    return {}
-
-
 def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   recheck, *, degraded: bool = False,
                   read_only_label: str = 'bundle_drift') -> dict:
@@ -1958,7 +1913,7 @@ def main(argv: list[str] | None = None) -> int:
             selection = select_hook_route(action, payload_file, fallback_cwd)
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
-        if selection["state"] not in ("candidate", "preview", "rebinding", "worktree"):
+        if selection["state"] not in ("candidate", "preview", "worktree"):
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = select_route(cwd, action=action)

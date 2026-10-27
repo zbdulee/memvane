@@ -75,25 +75,13 @@ identity를 묶습니다(아래 "route의 settings binding"). minimal settings�
 공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
 reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
 
-### legacy settings를 minimal로 바꾸기
+### Laya 온보딩과 settings binding
 
-명시적으로 실행할 때만 바뀝니다. `core/setup_entry.py`의 두 action이 담당합니다
-(구현: `core/settings_migration.py`, 선택된 route는 `core/laya_settings_rebind.py`).
-
-1. `plan-minimal-settings --project <루트>`: 읽기 전용입니다. 바꿀 수 있으면
-   `review_required`와 `proposalSha256`, 새 settings, collection identity,
-   달라지는 effective 필드(`changedFields`)를 출력합니다. 선택된 route가 있으면
-   `rebind`(ledger 종류, state root, 이전·새 route digest, route 판정에서 달라지는
-   필드, 다시 쓰지 않는 QMD 쪽 기록 `staleQmdBindings`)가 제안에 포함됩니다.
-2. `migrate-minimal-settings --project <루트> --approve-settings-rewrite
-   --accepted-settings-proposal-sha256 <proposalSha256>`: 같은 제안을 다시 계산해
-   digest가 같을 때만 settings를 `{name, skipPaths}`로 다시 씁니다. 원래 바이트는
-   `.auto-context/settings.json.pre-minimal-<UTC 시각>`에 남습니다.
-
-현재 `name`이 bound collection 이름을 유도하지 못하면(예: 한글 제목) 두 action 모두에
-`--name <slug>`를 붙입니다. ASCII slug여야 하고, 유도되는 collection 이름이 현재
-collection 이름과 정확히 같아야 합니다(`name_override_invalid` · `name_override_mismatch`).
-제안 digest가 새 `name`을 포함하므로 migrate에도 같은 `--name`을 줍니다.
+Laya 온보딩(`plan-fresh-wiki-origin`)은 minimal settings만 받습니다. canonical
+`.auto-context/settings.json`이 `{name, skipPaths}`가 아니면 `minimal_settings_required`로
+거부하고 파일을 다시 쓰지 않습니다. legacy 형식을 minimal로 바꾸는 일은 사용자가 직접
+파일을 고쳐서 합니다(`name` slug가 raw collection `<slug>`와 wiki collection `<slug>-wiki`를
+정합니다).
 
 **route의 settings binding.** route record의 `settingsSha256`은 settings 파일 바이트가 아니라
 해석된 settings identity(프로젝트 루트와 collection별 이름·role·루트, wiki 루트 포함)의
@@ -102,72 +90,10 @@ digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `sk
 `route_settings_changed`로 막힙니다. 다른 digest(예: settings 파일 바이트)를 묶은 route도
 같은 사유로 막힙니다.
 
-**선택된 route의 rebind.** 유도된 collection identity가 route가 묶은 것과 같으면, 번들
-업그레이드와 같은 잠금(install lock → cutover operation lock → provider lane) 아래에서
-route가 묶은 값을 새 settings identity로 옮깁니다(이미 같은 identity를 묶으면 settings
-파일만 다시 씁니다). install journal의 selected route
-digest, state root의 `reviewed-route.json`, route record의 `settingsSha256`, selection
-ledger(fresh-wiki)의 `routeSha256`, selection marker, settings 파일
-순서입니다. index store·scope·generation·vector profile·plugin bundle은 바뀌지 않습니다.
-시작 전에 state root에 `settings-rebind-intent.json`을 쓰고, 끝나면
-`settings-rebind-<digest>-settled.json`으로 옮깁니다. 이미 끝난 번들 업그레이드
-receipt(`active-upgrade-intent.json`)는 먼저 settled로 정리합니다.
-
-**raw collection 이동.** wiki collection(이름·role·루트)은 같고 raw collection만
-다르면(이름 변경, 또는 루트를 상위 디렉터리로 넓힘, 예: `docs` → 프로젝트 루트) 같은
-intent로 옮깁니다. Laya index는 wiki 카드만 담으므로 generation·catalog·binding
-store·vector는 그대로 유효합니다. route record와 ledger의 `collections`가 settings
-digest와 함께 바뀌고, claim queue 옆 raw discovery cursor
-(`*.wiki-discovery-v2-<scope>-<incarnation>.json`)가 첫 단계로 새 collection에 맞춰
-다시 쓰입니다. 이전 snapshot·pending 경로는 새 이름 아래로 옮겨져 마지막 drain 이후의
-수정·삭제를 그대로 찾고, 이전 루트 밖 파일은 현재 스캔(raw 스캔과 같은 규칙)으로 baseline에
-들어갑니다. 제안의 `rebind.rawCollection`이 이전·새 raw collection을 보여 줍니다.
 이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
 revision 판정, 원문 삭제 시 카드 정리, SessionStart lifecycle)이 같은 규칙으로 다룹니다.
 settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
-wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다. plan은 그런 카드와 live
-compile queue 행 수를 `legacyRawLabel`로 따로 보여 줍니다(compile이 계속 쓰므로 제안
-digest에는 넣지 않습니다). compiler가 카드를 다시 쓰면 그 원문 항목은 현재 이름으로 기록됩니다.
-
-intent가 남아 있는 동안(중단된 경우 포함):
-
-- 각 binding이 intent의 이전 값 또는 새 값이면 route는 `rebinding`으로 분류되고, 훅은
-  마지막 published generation을 읽기 전용으로 검색합니다. sync·compile·index wake는
-  기록하지 않고, SessionStart는 rebind 중이라는 안내를 냅니다. 그 밖의 값이면 `blocked`입니다.
-- `plan-minimal-settings`는 `rebind_pending`과 원래 `proposalSha256`을 출력합니다. 같은
-  digest로 `migrate-minimal-settings`를 다시 실행하면 이어서 끝내고,
-  `--rollback-settings-rebind`를 더하면 모든 binding을 이전 settings로 되돌립니다.
-
-다음 경우에는 거부합니다(`status: "refused"`, settings 바이트는 그대로).
-
-| reason | 조건 |
-|---|---|
-| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다르고, 그 차이가 raw collection 이동(위)으로 설명되지 않습니다(wiki collection 변경, raw 루트 축소 등). `identityDiff`가 차이를 collection별로 보여 줍니다 |
-| `raw_discovery_rebase_refused` | raw discovery cursor가 없거나 새 루트를 스캔할 수 없습니다(`discoveryReason`) |
-| `selected_route_not_verified` | route record가 있지만 installer journal·ledger·marker가 뒷받침하는 active 선택이 아닙니다 |
-| `selected_route_busy` | install·cutover 작업 또는 provider lane이 사용 중입니다. 나중에 다시 실행합니다 |
-| `active_upgrade_unsettled` | 끝나지 않은 번들 업그레이드 intent가 있습니다 |
-| `rebound_route_unsupported` · `rebound_route_identity_changed` | 새 settings로는 route 검사가 통과하지 않거나 route 판정의 store·collection 필드가 달라집니다 |
-| `settings_bound_by_laya_route` | route record 없이 selection marker만 있거나 route record를 읽을 수 없습니다 |
-| `settings_bound_by_initial_build` | 선택되지 않은 초기 빌드(또는 선택된 route와 다른 state root의 빌드)가 현재 settings를 묶습니다. 리뷰된 빌드 제안이 settings digest를 포함하므로 빌드를 활성화하거나 버린 뒤 migration합니다 |
-| `settings_bound_by_setup_journal` | 선택된 route가 없는데 `install-update-journal.json` 또는 `shared-install-journal.json`이 있습니다 |
-| `settings_bound_by_unfinished_setup_journal` | 선택된 route가 있지만 setup journal이 끝나지 않은 단계입니다 |
-| `settings_bound_by_shared_store` | 선택된 route가 없는데 공용 QMD store registry·승인·legacy enrollment에 이 프로젝트가 있습니다 |
-| `binding_probe_failed:*` | 위 binding 여부를 읽지 못했습니다 |
-| `collection_identity_changed` | 유도된 collection 이름·role·루트 또는 wiki 루트가 현재와 다릅니다(`identityDiff`) |
-| `legacy_indexing_not_enabled` | 현재 effective `indexing`이 `true`가 아닙니다. 끈 상태는 optout marker로 표현합니다 |
-| `name_required` · `invalid_skip_paths` | minimal settings로 옮길 수 없는 값입니다. `name_required`는 `--name <slug>`로 풀 수 있습니다 |
-| `name_override_invalid` · `name_override_mismatch` | `--name`이 ASCII slug가 아니거나, 유도되는 collection 이름이 현재 이름과 다릅니다 |
-
-선택된 route의 프로젝트에서 끝난 setup journal과 공용 QMD store 승인은 다시 쓰지 않고
-`staleQmdBindings`로만 보고됩니다. 선택된 route는 QMD setup·shared store 경로를 타지 않으므로
-검색에는 영향이 없습니다. 다만 공용 store 승인 digest를 근거로 하는 다른 프로젝트발 편집
-라우팅(owner projection)은 이 프로젝트를 `stale_approval`로 건너뛰고, 그 변경은 이 프로젝트의
-다음 SessionStart 전체 스캔이 반영합니다.
-
-collection identity 밖의 차이(recall 조정값, compile budget, 사용자 extractor backend,
-학습 플래그 등)는 거부 사유가 아니라 `changedFields`로 보고됩니다. 제안 digest를
-승인하면 그 차이도 승인한 것입니다.
+wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다.
 
 ## 기본 예시
 

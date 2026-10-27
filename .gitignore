@@ -19,3 +19,12 @@ __pycache__/
 # Orca 오케스트레이션이 저장소 루트에 만드는 워크트리 런타임 상태(.orca/worktrees/...).
 # 머신 로컬이고, 무시하지 않으면 스크래치가 커밋에 쓸려 들어간다.
 .orca/
+
+# Laya selection runtime state per machine: the selected route record, the
+# selection marker, project locks (laya-qmd-cutover-operation.lock,
+# .install-update.lock) and local settings backups.
+.auto-context/laya-index-route.json
+.auto-context/laya-index-selection.json
+.auto-context/*.lock
+.auto-context/.*.lock
+.auto-context/settings.json.pre-minimal-*

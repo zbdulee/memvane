@@ -75,12 +75,9 @@ class FreshWikiChecks(unittest.TestCase):
         self.route = self.wiki.parent / fresh.ROUTE
         self.collections = [
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project)},
-            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}]
-        settings = {'indexing': True, 'collections': ['docs', 'wiki'],
-                    'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
-                    'collectionPaths': {'docs': '.', 'wiki': '.auto-context/wiki'},
-                    'recallStrategy': 'wikiOnly', 'compile': {'mode': 'off'}}
-        (self.wiki.parent / 'settings.json').write_text(json.dumps(settings))
+            {'name': 'docs-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}]
+        (self.wiki.parent / 'settings.json').write_text(
+            json.dumps({'name': 'docs', 'skipPaths': []}))
         self.route_bytes = json.dumps({'projectRoot': str(self.project),
                                        'collections': self.collections,
                                        'dbPath': str(self.state / 'candidate.sqlite'),
@@ -137,6 +134,16 @@ class FreshWikiChecks(unittest.TestCase):
         self.assertEqual(plan['mode'], 'fresh_wiki_only')
         self.assertNotIn('sourceDb', plan)
         self.assertEqual(plan['collections'], self.collections)
+
+    def test_plan_requires_minimal_settings(self):
+        settings = self.wiki.parent / 'settings.json'
+        settings.write_text(json.dumps({
+            'indexing': True, 'collections': ['docs', 'docs-wiki'],
+            'collectionRoles': {'docs': 'raw', 'docs-wiki': 'wiki'},
+            'collectionPaths': {'docs': '.', 'docs-wiki': '.auto-context/wiki'},
+            'recallStrategy': 'wikiOnly', 'compile': {'mode': 'off'}}))
+        with self.assertRaisesRegex(product.InstallBlocked, 'minimal_settings_required'):
+            product.plan_fresh_wiki_origin(self.project)
 
     def test_prewrite_restore_keeps_old_source_bytes(self):
         old = self.project / 'original.md'

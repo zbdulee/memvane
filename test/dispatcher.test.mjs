@@ -213,8 +213,9 @@ test('run-hook compile --sandbox → 무출력', () => {
 test('run-hook gate claude → preflight_gate.py 위임 (tool 비-gated 시 무출력)', () => {
   // tool_name이 GATED_TOOLS에 없으면 preflight_gate.py가 무출력으로 allow
   const payload = { hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: {} };
-  const out = execFileSync('bash', ['hooks/run-hook', 'gate', 'claude'], {
-    input: JSON.stringify(payload), encoding: 'utf8',
+  // A neutral cwd: a checkout of this repository can itself be a selected Laya project.
+  const out = execFileSync('bash', [join(process.cwd(), 'hooks/run-hook'), 'gate', 'claude'], {
+    input: JSON.stringify(payload), encoding: 'utf8', cwd: tmpdir(),
   }).trim();
   // bash는 gated tool이 아니므로 무출력
   assert.equal(out, '');
