@@ -399,9 +399,10 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         return None
     import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(Path(project_root))
-    if selected_route is not None:
+    skip_paths = qmd_config.generation_skip_paths(config, selected_route)
+    if skip_paths is not None:
         from laya_source_exclusion import excluded_source
-        if excluded_source(rel_path, selected_route[0]['recallSettings']['skipPaths']):
+        if excluded_source(rel_path, skip_paths):
             return None
     record = {
         "ts": _utc_now(),

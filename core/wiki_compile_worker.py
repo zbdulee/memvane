@@ -937,9 +937,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     if is_hidden_source_path(rel):
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
-    if selected_route is not None:
+    skip_paths = qmd_config.generation_skip_paths(config, selected_route)
+    if skip_paths is not None:
         from laya_source_exclusion import excluded_source
-        if excluded_source(rel, selected_route[0]['recallSettings']['skipPaths']):
+        if excluded_source(rel, skip_paths):
             append_jsonl(cpath, bounded_failure('skipped', job, 'source_folder_excluded'))
             return True, False, []
     selected = select_collections([str(src)], str(root), config) or {}
