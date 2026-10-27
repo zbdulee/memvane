@@ -69,6 +69,10 @@ def exercise():
                 raise RuntimeError('synthetic wake failure')
             return True
 
+        def recheck(selected):
+            assert selected is bound
+            assert held == {'card': 1, 'wiki': 1}, 'recheck must precede card mutation under locks'
+
         def run(action, *extra):
             argv = ['wiki_dedup_resolve.py', '--cwd', str(root), '--index', '0',
                     '--action', action, *extra]
@@ -82,6 +86,7 @@ def exercise():
                 assert dedup.main() == 0
 
         with (patch.object(dedup.wiki_selected_laya, 'selected', return_value=bound),
+              patch.object(dedup.wiki_selected_laya, 'recheck', side_effect=recheck),
               patch.object(dedup.wiki_selected_laya, 'request_sync', side_effect=request_sync),
               patch.object(dedup.cp, 'card_write_lock', side_effect=tracked_card),
               patch.object(dedup.wiki_mutation_lock, 'lock', side_effect=tracked_wiki),

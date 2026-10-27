@@ -155,6 +155,8 @@ def resolve_entry(root: Path, wiki_root: Path, compile_dir: Path, entry: dict, a
     # Match compiler/verifier/retirement lock order. Queueing a wake performs
     # journal proof checks, so do it only after both card locks are released.
     with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        if laya_bound is not None:
+            wiki_selected_laya.recheck(laya_bound)
         result = _resolve_entry_locked(root, wiki_root, compile_dir, entry, action,
                                        delete_rel, laya_bound=laya_bound)
     sync_needed = result.pop('_syncAfterMutation', False)
