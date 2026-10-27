@@ -62,7 +62,9 @@ case "$ACTION" in
         rm -f "$_laya_route_payload"
         trap - EXIT
         ;;
-      candidate|preview)
+      candidate|preview|rebinding)
+        # rebinding: a settings rebind is between steps; the response serves
+        # the published generation read-only and records no work.
         # Replace this shell with the synchronous writer/query process. A host
         # timeout then kills the work itself, not a waiting shell with an
         # orphaned Python child. The open stdin fd survives unlinking.

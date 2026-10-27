@@ -65,36 +65,76 @@ marker가 기록됩니다.
 
 **선택된 laya-db route.** route record는 settings 파일의 SHA-256을 묶습니다. minimal
 settings로 선택된 route는 유도된 legacy 모양으로 검사합니다. legacy 파일로 선택된
-route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파일을 다시 쓰면 다음 훅에서
-`route_settings_changed`로 막힙니다.
+route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파일을 손으로 다시 쓰면 다음
+훅에서 `route_settings_changed`로 막힙니다. 선택된 route의 settings는 아래 migration으로
+바꿉니다.
+
+**QMD 인덱스.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
+선택된 route의 원천 신선도 기준일 뿐, QMD collection이 아닙니다. `resolve_paths`는 이를
+`sourceEntries`로 내보내므로 `update.sh`는 QMD에 추가·`update`·`embed`하지 않고, 이전에
+등록된 같은 이름의 collection은 해제합니다. 공용 QMD store registry에서는 같은 owner·같은
+경로의 이 collection만 `indexed: false`로 내려갈 수 있고, 그 사이에도 다른 프로젝트의
+공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
+reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
 
 ### legacy settings를 minimal로 바꾸기
 
 명시적으로 실행할 때만 바뀝니다. `core/setup_entry.py`의 두 action이 담당합니다
-(구현: `core/settings_migration.py`).
+(구현: `core/settings_migration.py`, 선택된 route는 `core/laya_settings_rebind.py`).
 
 1. `plan-minimal-settings --project <루트>`: 읽기 전용입니다. 바꿀 수 있으면
    `review_required`와 `proposalSha256`, 새 settings, collection identity,
-   달라지는 effective 필드(`changedFields`)를 출력합니다.
+   달라지는 effective 필드(`changedFields`)를 출력합니다. 선택된 route가 있으면
+   `rebind`(ledger 종류, state root, 이전·새 route digest, route 판정에서 달라지는
+   필드, 다시 쓰지 않는 QMD 쪽 기록 `staleQmdBindings`)가 제안에 포함됩니다.
 2. `migrate-minimal-settings --project <루트> --approve-settings-rewrite
    --accepted-settings-proposal-sha256 <proposalSha256>`: 같은 제안을 다시 계산해
    digest가 같을 때만 settings를 `{name, skipPaths}`로 다시 씁니다. 원래 바이트는
    `.auto-context/settings.json.pre-minimal-<UTC 시각>`에 남습니다.
 
+**선택된 route의 rebind.** 유도된 collection identity가 route가 묶은 것과 같으면, 번들
+업그레이드와 같은 잠금(install lock → cutover operation lock → provider lane) 아래에서
+settings 바이트를 묶는 모든 곳을 새 바이트로 옮깁니다. install journal의 selected route
+digest, state root의 `reviewed-route.json`, route record의 `settingsSha256`, selection
+ledger(fresh-wiki 또는 QMD-origin)의 `routeSha256`, selection marker, settings 파일
+순서입니다. index store·scope·generation·vector profile·plugin bundle은 바뀌지 않습니다.
+시작 전에 state root에 `settings-rebind-intent.json`을 쓰고, 끝나면
+`settings-rebind-<digest>-settled.json`으로 옮깁니다. 이미 끝난 번들 업그레이드
+receipt(`active-upgrade-intent.json`)는 먼저 settled로 정리합니다.
+
+intent가 남아 있는 동안(중단된 경우 포함):
+
+- 각 binding이 intent의 이전 값 또는 새 값이면 route는 `rebinding`으로 분류되고, 훅은
+  마지막 published generation을 읽기 전용으로 검색합니다. sync·compile·index wake는
+  기록하지 않고, SessionStart는 rebind 중이라는 안내를 냅니다. 그 밖의 값이면 `blocked`입니다.
+- `plan-minimal-settings`는 `rebind_pending`과 원래 `proposalSha256`을 출력합니다. 같은
+  digest로 `migrate-minimal-settings`를 다시 실행하면 이어서 끝내고,
+  `--rollback-settings-rebind`를 더하면 모든 binding을 이전 settings로 되돌립니다.
+
 다음 경우에는 거부합니다(`status: "refused"`, settings 바이트는 그대로).
 
 | reason | 조건 |
 |---|---|
-| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다릅니다 |
-| `settings_bytes_bound_by_laya_route` | route record가 같은 collection을 묶지만 settings SHA-256도 묶습니다. 다시 쓰면 route가 막힙니다 |
-| `settings_bound_by_laya_route` | selection marker가 있거나 route record를 읽을 수 없습니다 |
-| `settings_bound_by_initial_build` | 등록된 초기 빌드가 현재 settings를 묶습니다 |
-| `settings_bound_by_setup_journal` | `install-update-journal.json` 또는 `shared-install-journal.json`이 있습니다 |
-| `settings_bound_by_shared_store` | 공용 QMD store registry·승인·legacy enrollment에 이 프로젝트가 있습니다 |
+| `bound_collection_identity_changed` | laya-db route record 또는 등록된 초기 빌드가 묶은 collection(이름·role·루트)이 유도 결과와 다릅니다. `identityDiff`가 차이를 collection별로 보여 줍니다. collection 이름은 바꾸지 않습니다 |
+| `selected_route_not_verified` | route record가 있지만 installer journal·ledger·marker가 뒷받침하는 active 선택이 아닙니다 |
+| `selected_route_busy` | install·cutover 작업 또는 provider lane이 사용 중입니다. 나중에 다시 실행합니다 |
+| `active_upgrade_unsettled` | 끝나지 않은 번들 업그레이드 intent가 있습니다 |
+| `rebound_route_unsupported` · `rebound_route_identity_changed` | 새 settings로는 route 검사가 통과하지 않거나 route 판정의 store·collection 필드가 달라집니다 |
+| `settings_bound_by_laya_route` | route record 없이 selection marker만 있거나 route record를 읽을 수 없습니다 |
+| `settings_bound_by_initial_build` | 선택되지 않은 초기 빌드(또는 선택된 route와 다른 state root의 빌드)가 현재 settings를 묶습니다. 리뷰된 빌드 제안이 settings digest를 포함하므로 빌드를 활성화하거나 버린 뒤 migration합니다 |
+| `settings_bound_by_setup_journal` | 선택된 route가 없는데 `install-update-journal.json` 또는 `shared-install-journal.json`이 있습니다 |
+| `settings_bound_by_unfinished_setup_journal` | 선택된 route가 있지만 setup journal이 끝나지 않은 단계입니다 |
+| `settings_bound_by_shared_store` | 선택된 route가 없는데 공용 QMD store registry·승인·legacy enrollment에 이 프로젝트가 있습니다 |
 | `binding_probe_failed:*` | 위 binding 여부를 읽지 못했습니다 |
-| `collection_identity_changed` | 유도된 collection 이름·role·루트 또는 wiki 루트가 현재와 다릅니다 |
+| `collection_identity_changed` | 유도된 collection 이름·role·루트 또는 wiki 루트가 현재와 다릅니다(`identityDiff`) |
 | `legacy_indexing_not_enabled` | 현재 effective `indexing`이 `true`가 아닙니다. 끈 상태는 optout marker로 표현합니다 |
 | `name_required` · `invalid_skip_paths` | minimal settings로 옮길 수 없는 값입니다 |
+
+선택된 route의 프로젝트에서 끝난 setup journal과 공용 QMD store 승인은 다시 쓰지 않고
+`staleQmdBindings`로만 보고됩니다. 선택된 route는 QMD setup·shared store 경로를 타지 않으므로
+검색에는 영향이 없습니다. 다만 공용 store 승인 digest를 근거로 하는 다른 프로젝트발 편집
+라우팅(owner projection)은 이 프로젝트를 `stale_approval`로 건너뛰고, 그 변경은 이 프로젝트의
+다음 SessionStart 전체 스캔이 반영합니다.
 
 collection identity 밖의 차이(recall 조정값, compile budget, 사용자 extractor backend,
 학습 플래그 등)는 거부 사유가 아니라 `changedFields`로 보고됩니다. 제안 digest를

@@ -253,13 +253,18 @@ class MigrationChecks(Project):
         self.assertEqual(result["boundCollections"][0]["name"], "project-plans")
         self.assertEqual(self.settings.read_bytes(), before)
 
-    def test_bound_route_with_same_identity_is_refused_for_its_digest(self):
+    def test_unverified_route_with_same_identity_is_refused(self):
+        # A route record that is not a verified active selection cannot be
+        # rebound (minimal-settings-rebind-checks covers a selected route).
         before = self.write(LEGACY_EQUIVALENT)
         self.write_route(self.derived_collections())
         result = self.plan()
-        self.assertEqual(result["reason"], "settings_bytes_bound_by_laya_route", result)
+        self.assertEqual(result["reason"], "selected_route_not_verified", result)
+        # The record and settings agree; no installer journal backs them.
+        self.assertEqual(result["routeState"], "candidate", result)
+        self.assertIn("routeReason", result)
         self.assertEqual(settings_migration.apply(str(self.root), None)["reason"],
-                         "settings_bytes_bound_by_laya_route")
+                         "selected_route_not_verified")
         self.assertEqual(self.settings.read_bytes(), before)
 
     def test_selection_marker_and_setup_journal_are_bindings(self):
@@ -268,6 +273,14 @@ class MigrationChecks(Project):
         marker.write_text("{}")
         self.assertEqual(self.plan()["reason"], "settings_bound_by_laya_route")
         marker.unlink()
+        # An unreadable (symlinked) route record is a binding, not a crash.
+        target = self.home / "elsewhere.json"
+        target.write_text("{}")
+        (self.auto / route.RECORD).symlink_to(target)
+        unreadable = self.plan()
+        self.assertEqual((unreadable["status"], unreadable["reason"]),
+                         ("refused", "settings_bound_by_laya_route"), unreadable)
+        (self.auto / route.RECORD).unlink()
         (self.auto / "install-update-journal.json").write_text("{}")
         self.assertEqual(self.plan()["reason"], "settings_bound_by_setup_journal")
 

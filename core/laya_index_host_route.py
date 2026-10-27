@@ -277,8 +277,14 @@ def _candidate_paths(cwd: Path):
         yield directory, auto, path
 
 
-def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
-    """Apply the same settings and route checks to visible or reviewed records."""
+def _classify_record(root: Path, auto: Path, path: Path, current: Path, *,
+                     route_raw: bytes | None = None,
+                     settings_raw: bytes | None = None) -> dict:
+    """Apply the same settings and route checks to visible or reviewed records.
+
+    ``route_raw``/``settings_raw`` replace the two file reads only for an
+    in-flight settings rebind, whose intent holds both exact byte pairs.
+    """
     try:
         if auto.is_symlink() or path.is_symlink() or not auto.is_dir():
             raise ValueError("unsafe_route_path")
@@ -290,7 +296,7 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
         settings = auto / "settings.json"
         if settings.is_symlink():
             raise ValueError("unsafe_route_settings")
-        raw = _read_regular(path, MAX_RECORD_BYTES)
+        raw = _read_regular(path, MAX_RECORD_BYTES) if route_raw is None else route_raw
         record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
         if (not isinstance(record, dict) or
                 (record.get('schema'), set(record)) not in
@@ -335,7 +341,8 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
             raise ValueError("invalid_db_path")
         if not _canonical_absolute(queue_path) or queue_path == db_path:
             raise ValueError("invalid_queue_path")
-        settings_bytes = _read_regular(settings, MAX_SETTINGS_BYTES)
+        settings_bytes = (_read_regular(settings, MAX_SETTINGS_BYTES)
+                          if settings_raw is None else settings_raw)
         settings_digest = hashlib.sha256(settings_bytes).hexdigest()
         if settings_digest != record["settingsSha256"]:
             raise ValueError("route_settings_changed")
@@ -530,7 +537,24 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
     Candidate means only that the route record and source settings agree. It
     does not mean that an active product service is ready. The caller must use
     the runtime's own proof check; its failure may never select legacy QMD.
+
+    A route blocked only by an in-flight settings rebind classifies as
+    ``rebinding``: the host may serve the published generation read-only and
+    every other caller treats it like ``blocked``.
     """
+    decision = _select_route(cwd, action=action)
+    if decision.get("state") == "blocked" and action in ROUTED_ACTIONS:
+        try:
+            import laya_settings_rebind
+            rebinding = laya_settings_rebind.in_flight_decision(cwd)
+        except Exception:
+            rebinding = None
+        if rebinding is not None:
+            return rebinding
+    return decision
+
+
+def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if action not in ROUTED_ACTIONS:
         return _decision("blocked", "unsupported_route_action")
     try:
