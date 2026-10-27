@@ -1020,7 +1020,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             return True, False, []
         append_jsonl(cpath, bounded_failure(
             'retired' if state == 'retired' else 'deferred', job, state))
-        return (True, False, []) if state in ('retired', 'source_reappeared') \
+        # held_branch: the source is only invisible on this branch/worktree.
+        # The row is settled; the SessionStart lifecycle retires the card once
+        # a deletion in HEAD's lineage is proven.
+        return (True, False, []) if state in ('retired', 'source_reappeared',
+                                              'held_branch') \
             else (False, True, [])
     # Bind the ledger's latest unresolved event immediately before the stable
     # source capture.  A queue token is only transport metadata and may be stale

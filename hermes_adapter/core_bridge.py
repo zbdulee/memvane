@@ -115,7 +115,7 @@ def _laya_route_state(action: str, cwd: str) -> str:
             timeout=2.0, env=_env(), check=False,
         )
         state = result.stdout.strip()
-        return state if result.returncode == 0 and state in {"legacy", "candidate", "blocked"} else "blocked"
+        return state if result.returncode == 0 and state in {"legacy", "candidate", "blocked", "worktree"} else "blocked"
     except (OSError, subprocess.TimeoutExpired):
         return "blocked"
 
@@ -273,7 +273,7 @@ def recall_context(
             return None
         prompt = user_message or kwargs.get("message") or ""
         route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
-        if route_state == "candidate":
+        if route_state in ("candidate", "worktree"):
             selected_route = True
             # The installed core rechecks the route and the installer-owned
             # journal before opening the selected DB. Never start QMD here.
@@ -284,7 +284,7 @@ def recall_context(
             from laya_host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
-            if decision.get("state") != "candidate":
+            if decision.get("state") not in ("candidate", "worktree"):
                 return {"context": "[laya-index] selected route changed; QMD fallback refused"}
             return serve_selected("recall", "hermes", decision,
                                   {"prompt": prompt, "cwd": selected_cwd})
@@ -333,7 +333,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
         if _is_noop_env():
             return None
         route_state = _laya_route_state("update", _cwd(cwd, **kwargs))
-        if route_state == "candidate":
+        if route_state in ("candidate", "worktree"):
             selected_route = True
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
@@ -384,7 +384,7 @@ def pre_edit_gate(
         if mapped is None:
             return None
         route_state = _laya_route_state("gate", _cwd(cwd, **kwargs))
-        if route_state == "candidate":
+        if route_state in ("candidate", "worktree"):
             selected_route = True
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
@@ -451,7 +451,7 @@ def post_edit_sync(
         if mapped is None or _result_has_error(result, status):
             return
         route_state = _laya_route_state("posttool", _cwd(cwd, **kwargs))
-        if route_state == "candidate":
+        if route_state in ("candidate", "worktree"):
             selected_route = True
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:

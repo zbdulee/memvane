@@ -32,3 +32,4 @@ Run a manual qmd auto-context recall query for the current project.
 - Preserve empty output as a valid no-result state.
 - The wrapper ensures the plugin-managed backend before recall.
 - The wrapper runs the QMD recall path via `core/recall.py`. It does not perform the hook's Laya route classification.
+- In a linked git worktree of a project whose main checkout has a selected Laya route, the wrapper serves that checkout's published index read-only through the recall hook instead.
