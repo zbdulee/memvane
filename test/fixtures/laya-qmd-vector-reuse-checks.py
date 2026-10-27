@@ -56,6 +56,10 @@ class Reuse(unittest.TestCase):
     def test_sampling_and_parity_failure_turn_reuse_off(self):
         source = self.source(sample_every=3)
         self.assertEqual([source.take_sample() for _ in range(6)], [True, False, False, True, False, False])
+        source.defer_sample()  # the 6th call's slot is retried by the next one
+        self.assertEqual(source.take_sample(), False)
+        fresh = self.source(sample_every=3)
+        self.assertTrue(fresh.take_sample()); fresh.defer_sample(); self.assertTrue(fresh.take_sample())
         rows = source.lookup(self.body)
         close = [{'seq': r['seq'], 'pos': r['pos'], 'vector': [x * 2 for x in r['vector']]} for r in rows]
         self.assertTrue(source.verify(rows, close)); self.assertTrue(source.enabled)
