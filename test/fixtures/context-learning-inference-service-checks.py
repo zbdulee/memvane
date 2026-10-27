@@ -438,10 +438,14 @@ class StaleServiceReplacementTests(unittest.TestCase):
             stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         self.children.append(child);return child
 
+    def version(self):
+        try:return exchange(self.root,{'command':'version'},timeout=1)
+        except (FileNotFoundError,ConnectionRefusedError):return None
+
     def old_service(self,**env):
         child=self.launch(QMD_TEST_SERVICE_SIGNATURE=self.OLD,**env)
         deadline=time.monotonic()+5
-        while service._version(self.root,deadline) is None:
+        while self.version() is None:
             self.assertIsNone(child.poll(),'old fixture service exited')
             self.assertLess(time.monotonic(),deadline,'old fixture service never listened')
             time.sleep(.01)
@@ -469,7 +473,7 @@ class StaleServiceReplacementTests(unittest.TestCase):
             {**envelope(seconds=8),'synthetic_block':True},timeout=10)))
         thread.start()
         deadline=time.monotonic()+5
-        while not (service._version(self.root,deadline) or {}).get('busy'):
+        while not (self.version() or {}).get('busy'):
             self.assertLess(time.monotonic(),deadline,'fixture request never started')
             time.sleep(.01)
         with self.assertRaisesRegex(service.ServiceFailure,'starting'):
