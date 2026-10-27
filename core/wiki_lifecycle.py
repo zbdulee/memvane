@@ -36,8 +36,8 @@ Mass-deletion guard: when more than `MASS_DELETE_FRACTION` of proved cards
 (and more than `MASS_DELETE_MIN`) report a missing source in one run, nothing
 is retired or enqueued and the run is logged as deferred (unmounted disk,
 branch switch, moved checkout). A missing `sourceRevisions` block is a
-property of the card itself, not of the filesystem, so it is outside this
-guard and bounded by the per-run cap.
+property of the card itself, not of the filesystem, so it is left out of the
+ratio and bounded by the per-run cap; a run that trips the guard defers it too.
 
 The run is idempotent: a retired card is gone on the next run, the archive
 reuses same-content bytes, live-queue keys collapse a repeated enqueue, and a
@@ -63,15 +63,17 @@ import config as qmd_config
 import sync as qmd_sync
 import wiki_compile as wc
 import wiki_source_missing as wsm
+import wiki_source_retire
 
 META_PAGES = ("index.md", "log.md")
 DEFAULT_MAX_CARDS = 300
 # frontmatter만 보는 ineligible 집계의 읽기 창(실코퍼스 frontmatter는 수백 바이트).
 FRONTMATTER_READ_LIMIT = 16384
 # 한 run이 보는 카드 상한. 넘으면 측정만 하고 조치하지 않는다(로그로 남긴다).
-MAX_CARDS = 10_000
-MAX_CARD_BYTES = 5_000_000
-MAX_TOTAL_BYTES = 128_000_000
+# 퇴역 helper와 같은 값이어야 한다 — 다르면 그 사이 구간에서 모든 퇴역이 `blocked`가 된다.
+MAX_CARDS = wiki_source_retire.MAX_CARDS
+MAX_CARD_BYTES = wiki_source_retire.MAX_CARD_BYTES
+MAX_TOTAL_BYTES = wiki_source_retire.MAX_TOTAL_BYTES
 MAX_RETIRE_PER_RUN = 25
 MASS_DELETE_FRACTION = 0.25
 MASS_DELETE_MIN = 3
@@ -352,7 +354,6 @@ def run(cwd: str) -> dict:
     refreshed = state.get("refreshed") if isinstance(state.get("refreshed"), dict) else {}
     window = rotate(rels, cursor, max_cards(scan_cfg))
 
-    import wiki_source_retire
     now = time.time()
     retire_budget = MAX_RETIRE_PER_RUN
     changed_files: dict = {}
@@ -401,9 +402,9 @@ def run(cwd: str) -> dict:
                 result["undecidable"] += 1
                 log(f"KEEP undecidable {target}: source_unreadable")
             elif not changed:
+                # The refresh state stays: another card citing the same source may
+                # still be stale, and dropping the entry would re-enqueue it every run.
                 result["kept"] += 1
-                for revision, _ in info["present"]:
-                    refreshed.pop(revision["path"], None)
             else:
                 for revision, sha in changed:
                     if not _recently_refreshed(refreshed, revision["path"], sha, now):
@@ -423,7 +424,7 @@ def run(cwd: str) -> dict:
         result["deferred"] += len(deferred)
         if reason in ("queued", "capped"):
             for key, sha in pending_refresh.items():
-                if key.split(":", 1)[-1] not in deferred:
+                if key.removeprefix("delete:") not in deferred:
                     refreshed[key] = {"sha256": sha, "ts": now}
 
     result["retired"] = sum(1 for page in pages if not os.path.lexists(page))

@@ -232,6 +232,24 @@ class WikiLifecycle(unittest.TestCase):
         fourth, _, _ = self.run_lifecycle()
         self.assertEqual(fourth['enqueued'], 1)
 
+    def test_fresh_sibling_does_not_reset_a_stale_card_refresh(self):
+        self.source('a.md', b'first')
+        stale = self.card('a-stale.md', [self.revision('a.md')])
+        self.source('a.md', b'second edit')
+        fresh = self.card('a-fresh.md', [self.revision('a.md')])
+        first, _, _ = self.run_lifecycle()
+        self.assertEqual(first['enqueued'], 1)
+        (self.root / '.auto-context/compile/source-queue.jsonl').unlink()
+        second, _, _ = self.run_lifecycle()
+        self.assertEqual((second['enqueued'], self.queue_rows()), (0, []))
+        self.assertTrue(stale.exists() and fresh.exists())
+
+    def test_card_caps_match_the_retire_helper(self):
+        import wiki_source_retire
+        self.assertEqual((lifecycle.MAX_CARDS, lifecycle.MAX_CARD_BYTES, lifecycle.MAX_TOTAL_BYTES),
+                         (wiki_source_retire.MAX_CARDS, wiki_source_retire.MAX_CARD_BYTES,
+                          wiki_source_retire.MAX_TOTAL_BYTES))
+
     def test_shared_card_with_live_source_hands_off_to_compile_worker(self):
         self.source('live.md', b'live')
         card = self.card('shared.md', [self.revision('gone.md', b'old'), self.revision('live.md')])

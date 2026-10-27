@@ -14,7 +14,7 @@ test('wiki lifecycle: generated 카드의 원문 소실·변경·지문 없음·
   const result = spawnSync('python3', ['-B', 'test/fixtures/wiki-lifecycle-checks.py'],
     { encoding: 'utf8', env: { ...process.env, QMD_RECALL_LOG: '' } });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 14 tests/);
+  assert.match(result.stderr, /Ran 16 tests/);
 });
 
 function setupProject({ compile = {}, indexing = true, base } = {}) {
