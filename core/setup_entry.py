@@ -56,6 +56,8 @@ def _exception_detail(exc):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
+                                          'plan-legacy-cleanup', 'apply-legacy-cleanup',
+                                          'gc-index-runtime',
                                           'plan-fresh-wiki-origin',
                                           'index-runtime-status', 'provision-index-runtime',
                                           'review-index-provider',
@@ -71,7 +73,7 @@ def main(argv=None):
                                           'restore-index-origin','retire-index-origin',
                                           'abandon-index-build','abandon-inactive-index-build',
                                           'seal-host-copy'))
-    parser.add_argument('--project', required=True)
+    parser.add_argument('--project')
     parser.add_argument('--learning-choice',choices=('preserve','local-auto-apply','local-staged','off'),default='preserve')
     parser.add_argument('--learning-namespace')
     parser.add_argument('--learning-migration',choices=('new','preserve'),default='preserve')
@@ -92,18 +94,37 @@ def main(argv=None):
     parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
     parser.add_argument('--approve-inactive-index-upgrade', action='store_true')
     parser.add_argument('--approve-active-index-upgrade', action='store_true')
-    parser.add_argument('--approve-index-runtime-copy', action='store_true')
+    parser.add_argument('--approve-index-runtime-download', action='store_true')
+    parser.add_argument('--approve-index-runtime-gc', action='store_true')
+    parser.add_argument('--approve-legacy-cleanup', action='store_true')
+    parser.add_argument('--include-user-qmd-data', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
+    if args.project is None and args.action not in (
+            'plan-legacy-cleanup', 'apply-legacy-cleanup', 'index-runtime-status',
+            'provision-index-runtime', 'gc-index-runtime'):
+        parser.error('--project is required for ' + args.action)
     try:
-        if args.action in ('index-runtime-status', 'provision-index-runtime'):
+        if args.action in ('plan-legacy-cleanup', 'apply-legacy-cleanup'):
+            # The owner's one-time removal of the retired QMD backend.
+            import legacy_cleanup
+            if args.action == 'plan-legacy-cleanup':
+                result = {'status': 'planned', **legacy_cleanup.plan(
+                    include_user_data=args.include_user_qmd_data)}
+            else:
+                result = legacy_cleanup.apply(approved=args.approve_legacy_cleanup,
+                                              include_user_data=args.include_user_qmd_data)
+        elif args.action in ('index-runtime-status', 'provision-index-runtime',
+                             'gc-index-runtime'):
             # The Laya embedding runtime the provider review reads.
             import laya_embed_runtime
             if args.action == 'provision-index-runtime':
-                # Copies QMD's node-llama-cpp tree and cached GGUF once (sha256 checked).
-                if not args.approve_index_runtime_copy:
-                    raise ValueError('index_runtime_copy_approval_required')
-                result = {'status': 'provisioned', **laya_embed_runtime.provision_from_qmd()}
+                # npm registry and model download: owner approval only.
+                result = {'status': 'provisioned', **laya_embed_runtime.provision_new(
+                    approve_download=args.approve_index_runtime_download,
+                    model_file=args.provider_model_file)}
+            elif args.action == 'gc-index-runtime':
+                result = laya_embed_runtime.collect(approve=args.approve_index_runtime_gc)
             else:
                 result = {'status': 'ready', **laya_embed_runtime.select()}
             result.pop('dependencyClosure', None)

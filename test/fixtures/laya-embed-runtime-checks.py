@@ -300,43 +300,6 @@ class Provisioning(Base):
             if rel in sources:
                 self.assertNotEqual(info.st_ino, Path(sources[rel]).stat().st_ino, rel)
 
-    def test_qmd_copy_holds_only_the_node_llama_cpp_closure(self):
-        runtime = R.provision_from_qmd(model_sha256=sha_file(self.model))
-        files = self.files(runtime)
-        # Packages keep their place under the outermost node_modules.
-        home = ('node_modules/@tobilu/qmd/node_modules/' if self.LAYOUT == 'nested'
-                else 'node_modules/')
-        expected = {'bin/node', 'runtime.json', 'models/embeddinggemma-300M-Q8_0.gguf',
-                    'node_modules/lifecycle-utils/package.json',
-                    'node_modules/lifecycle-utils/dist/index.js',
-                    'node_modules/isexe/package.json', 'node_modules/isexe/index.js'}
-        expected.update(home + 'node-llama-cpp/' + rel for rel in (
-            'package.json', 'dist/index.js', 'llama/binariesGithubRelease.json',
-            'node_modules/which/package.json', 'node_modules/which/lib/index.js'))
-        expected.update(home + '@node-llama-cpp/mac-arm64-metal/' + rel for rel in (
-            'package.json', 'bins/mac-arm64-metal/llama-addon.node',
-            'bins/mac-arm64-metal/libggml-base.dylib',
-            'bins/mac-arm64-metal/libggml-cpu.so'))
-        self.assertEqual(set(files), expected)
-        # QMD itself, its own native deps and npm's .bin symlinks are not copied.
-        self.assertFalse(any('better-sqlite3' in rel or '.bin' in rel for rel in files))
-        self.assertTrue(files['bin/node'].stat().st_mode & 0o100)
-        self.assert_private_copies(runtime, {
-            'bin/node': self.node, 'models/embeddinggemma-300M-Q8_0.gguf': self.model})
-        self.assertEqual(R.select(), runtime)
-        self.assertTrue(R.matches(runtime, self.old_att['providerManifest'],
-                                  self.old_closure))
-        self.assertEqual(runtime['moduleEntrySha256'], sha_file(self.module_entry))
-
-    def test_model_must_match_the_pinned_sha256(self):
-        # The synthetic model is not the pinned embeddinggemma Q8_0 GGUF.
-        with self.assertRaisesRegex(R.RuntimeUnavailable,
-                                    '^laya_embed_runtime_source_changed$'):
-            R.provision_from_qmd()
-        runtime_root = R.root()
-        self.assertFalse((runtime_root / 'active.json').exists())
-        self.assertEqual(list((runtime_root / 'generations').iterdir()), [])
-
     def test_attested_bytes_are_copied_once_and_sha_checked(self):
         # A copy killed mid-way left a staging tree behind.
         stale = R.root() / 'generations' / '.staging-killed'
