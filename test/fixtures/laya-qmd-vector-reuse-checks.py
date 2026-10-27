@@ -77,5 +77,14 @@ class Reuse(unittest.TestCase):
         self.assertIsNone(bad_ext.lookup(self.body)); self.assertEqual(bad_ext.disabled_reason, 'qmd_vector_reuse_unavailable')
 
 
+    def test_initial_build_without_provider_paths_does_not_reuse(self):
+        identity = {'sourceDb': str(self.db)}
+        self.assertIsNone(reuse.for_initial_build(identity, {'recipeId': 'x'}, DIM))
+        self.assertIsNone(reuse.for_initial_build({'originMode': 'fresh_wiki_only'}, {}, DIM))
+        found = reuse.for_initial_build(identity, {'moduleEntryPath': '/r/package/node_modules/node-llama-cpp/dist/index.js',
+                                                   'modelPath': MODEL}, DIM)
+        self.addCleanup(found.close)
+        self.assertEqual(found.extension, Path('/r/package/node_modules/sqlite-vec-darwin-arm64/vec0'))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
