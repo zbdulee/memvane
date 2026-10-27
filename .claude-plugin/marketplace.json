@@ -6,7 +6,7 @@
     {
       "name": "qmd-auto-context",
       "description": "Laya 색인 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/query/update/wiki-compile/wiki-dedup manual skills",
-  "version": "0.40.0",
+  "version": "0.40.1",
       "source": "./",
       "author": { "name": "zbdulee" }
     }
