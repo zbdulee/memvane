@@ -29,6 +29,13 @@ _REASONS = frozenset(('starting', 'ready', 'resource_deferred',
                       'startup_failed', 'worker_exited', 'identity_invalid',
                       'attestation_invalid', 'unexpected'))
 _MAX_FAILURES = 3
+# Lane contention while another owner cold-loads, a sync holds the provider
+# lane or a query advertises demand. The owner keeps its lease and retries
+# instead of exiting into the wake backoff. 45 x 2s bounds it near 90s.
+LANE_CONTENTION = frozenset(('learning_compute_busy', 'learning_deferred_inference',
+                             'learning_deferred_resource'))
+LANE_RETRY_SECONDS = 2
+LANE_RETRY_LIMIT = 45
 
 
 def _state_path(socket_path):
@@ -364,6 +371,33 @@ def _owner_identity(decision, proof):
     return tuple(decision[key] for key in keys) + (proof['providerManifest'],)
 
 
+def _provider_lane(controller, policy, resource_report, still_owned):
+    """Enter the provider activity, retrying only lane contention.
+
+    Returns the entered context manager, or None once this installation no
+    longer owns the route. Admission refusal inside the lane (model load) is
+    never retried here.
+    """
+    tries = 0
+    while True:
+        lane = controller.activity('provider', policy,
+                                   resource_report(policy, detailed=True))
+        try:
+            lane.__enter__()
+            return lane
+        except ResourceDeferred as exc:
+            tries += 1
+            if str(exc) not in LANE_CONTENTION or tries >= LANE_RETRY_LIMIT:
+                raise
+        time.sleep(LANE_RETRY_SECONDS)
+        try:
+            owned = still_owned()
+        except Exception:
+            owned = False
+        if not owned:
+            return None
+
+
 def _serve(project, socket_path, fingerprint, owner_fd):
     """Run only in the detached child with its inherited installation lease."""
     from context_learning.resource_coordination import Coordinator
@@ -399,17 +433,24 @@ def _serve(project, socket_path, fingerprint, owner_fd):
             raise IndexContractError('provider_attestation_invalid')
     identity = _owner_identity(decision, proof)
     controller = Coordinator()
-    with controller.activity('provider', EMBED_POLICY,
-                             resource_report(EMBED_POLICY, detailed=True)):
+
+    def still_owned():
+        current, current_proof, _mode = _owned_route(project)
+        return _owner_identity(current, current_proof) == identity
+
+    lane = _provider_lane(controller, EMBED_POLICY, resource_report, still_owned)
+    if lane is None:
+        # The route moved on while this owner waited for the lane.
+        _write_state(manifest, 'starting', attempts=0)
+        return 0
+    try:
         def admit():
             return controller.check(EMBED_POLICY,
                                     resource_report(EMBED_POLICY, detailed=True))['ready']
         service = start_owned_embed_service(manifest, admit=admit)
+    finally:
+        lane.__exit__(None, None, None)
     try:
-        def still_owned():
-            current, current_proof, _mode = _owned_route(project)
-            return _owner_identity(current, current_proof) == identity
-
         # A restore can commit during the cold load. Recheck immediately
         # after READY, then keep observing the same installation while idle.
         try:

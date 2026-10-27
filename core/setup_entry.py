@@ -418,7 +418,8 @@ def main(argv=None):
                                           'restore-index-origin','retire-index-origin',
                                           'abandon-index-build','abandon-inactive-index-build',
                                           'seal-host-copy',
-                                          'plan-minimal-settings','migrate-minimal-settings'))
+                                          'plan-minimal-settings','migrate-minimal-settings',
+                                          'plan-detach-qmd-origin','detach-qmd-origin'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -476,8 +477,26 @@ def main(argv=None):
     parser.add_argument('--approve-settings-rewrite', action='store_true')
     parser.add_argument('--rollback-settings-rebind', action='store_true')
     parser.add_argument('--name')
+    parser.add_argument('--accepted-detach-proposal-sha256')
+    parser.add_argument('--approve-origin-detach', action='store_true')
+    parser.add_argument('--rollback-origin-detach', action='store_true')
     args = parser.parse_args(argv)
     try:
+        if args.action in ('plan-detach-qmd-origin', 'detach-qmd-origin'):
+            # Converts a selected QMD-origin or byte-bound install to the
+            # fresh-wiki origin with an identity-bound route; forfeits QMD restore.
+            import laya_origin_detach
+            project = str(Path(args.project).resolve())
+            if args.action == 'plan-detach-qmd-origin':
+                result = laya_origin_detach.plan(project)
+            elif not args.approve_origin_detach:
+                raise ValueError('origin_detach_approval_required')
+            else:
+                result = laya_origin_detach.apply(
+                    project, args.accepted_detach_proposal_sha256,
+                    rollback=args.rollback_origin_detach)
+            print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+            return 1 if result.get('status') == 'refused' else 0
         if args.action in ('plan-minimal-settings', 'migrate-minimal-settings'):
             import settings_migration
             project = str(Path(args.project).resolve())

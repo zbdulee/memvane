@@ -294,7 +294,7 @@ class Checks(unittest.TestCase):
             self.assertIn('wiki/card00.md', context)
             self.assertEqual(calls, [])  # admission refused: socket never touched
             self.assertEqual(seen, ['resource_deferred', 'resource_deferred'])
-            wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+            wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
             lines = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual([line['reason'] for line in lines],
                              ['laya_vector_selected_provider_resource_deferred', 'selected'])
@@ -318,7 +318,7 @@ class Checks(unittest.TestCase):
                               result['hookSpecificOutput']['additionalContext'])
                 self.assertEqual(calls, [1])  # one socket attempt per prompt
                 self.assertEqual(seen, ['provider_unavailable'] * 2)
-                wake.assert_called_once_with('laya-sync', decision['projectRoot'])
+                wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
                 reasons = [json.loads(line)['reason']
                            for line in log.read_text().splitlines()]
                 self.assertEqual(reasons, ['laya_vector_' + code, 'selected'])

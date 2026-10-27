@@ -396,10 +396,6 @@ class ServerTests(unittest.TestCase):
             try:
                 with ThreadPoolExecutor(max_workers=6) as pool:list(pool.map(start,range(6)))
                 self.assertEqual(len(children),1)
-                with patch.object(service,'_signature',return_value='0'*64):
-                    with self.assertRaisesRegex(service.ServiceFailure,'version_mismatch'):
-                        start(0)
-                self.assertEqual(len(children),1)
                 self.assertEqual(exchange(root,envelope(namespace='claude'))['prediction']['head'],'a')
                 self.assertEqual(exchange(root,envelope(namespace='codex'))['prediction']['head'],'a')
                 self.assertEqual((root/'synthetic-load-count').read_text(),'1')
@@ -419,13 +415,112 @@ class ServerTests(unittest.TestCase):
                     child.stderr.close()
 
 
+class StaleServiceReplacementTests(unittest.TestCase):
+    """A service from another bundle is replaced only while idle."""
+    OLD='1'*64
+
+    def setUp(self):
+        temp=tempfile.TemporaryDirectory(prefix='qmd-r-',dir='/tmp');self.addCleanup(temp.cleanup)
+        self.root=Path(temp.name).resolve();self.root.chmod(0o700)
+        self.children=[];self.addCleanup(self.reap)
+
+    def reap(self):
+        (self.root/'release').write_text('')
+        for child in self.children:
+            if child.poll() is None:
+                try:shutdown_idle(self.root)
+                except Exception:child.terminate()
+            child.wait(timeout=5);child.stderr.close()
+
+    def launch(self,**env):
+        child=subprocess.Popen([sys.executable,__file__,'--worker',str(self.root)],
+            env={**os.environ,'QMD_RECALL_LOG':'','PYTHONDONTWRITEBYTECODE':'1',**env},
+            stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        self.children.append(child);return child
+
+    def version(self):
+        try:return exchange(self.root,{'command':'version'},timeout=1)
+        except (FileNotFoundError,ConnectionRefusedError):return None
+
+    def old_service(self,**env):
+        child=self.launch(QMD_TEST_SERVICE_SIGNATURE=self.OLD,**env)
+        deadline=time.monotonic()+5
+        while self.version() is None:
+            self.assertIsNone(child.poll(),'old fixture service exited')
+            self.assertLess(time.monotonic(),deadline,'old fixture service never listened')
+            time.sleep(.01)
+        return child
+
+    def spawn(self,_argv,**_kwargs):
+        return self.launch()
+
+    def ensure(self,seconds,*,spawn=None):
+        return service._ensure(self.root,sys.executable,time.monotonic()+seconds,
+                               spawn=spawn or self.spawn)
+
+    def test_idle_old_signature_service_is_replaced_by_current(self):
+        old=self.old_service()
+        self.ensure(5)
+        self.assertEqual(old.wait(timeout=3),0)  # graceful shutdown, not a signal
+        self.assertEqual(len(self.children),2)
+        self.assertTrue(service._ready(self.root,time.monotonic()+1))
+        self.assertEqual(exchange(self.root,envelope())['status'],'ok')
+
+    def test_busy_old_service_is_never_interrupted(self):
+        old=self.old_service()
+        answers=[]
+        thread=threading.Thread(target=lambda:answers.append(exchange(self.root,
+            {**envelope(seconds=8),'synthetic_block':True},timeout=10)))
+        thread.start()
+        deadline=time.monotonic()+5
+        while not (self.version() or {}).get('busy'):
+            self.assertLess(time.monotonic(),deadline,'fixture request never started')
+            time.sleep(.01)
+        with self.assertRaisesRegex(service.ServiceFailure,'starting'):
+            self.ensure(1,spawn=lambda *_a,**_k:self.fail('spawned beside a busy service'))
+        self.assertIsNone(old.poll())
+        (self.root/'release').write_text('')
+        thread.join(10)
+        self.assertEqual(answers[0]['status'],'ok')
+        self.ensure(5)
+        self.assertEqual(old.wait(timeout=3),0)
+        self.assertTrue(service._ready(self.root,time.monotonic()+1))
+
+    def test_service_without_shutdown_is_terminated_only_when_verified(self):
+        old=self.old_service(QMD_TEST_SERVICE_NO_SHUTDOWN='1')
+        # Its command line is not this root's inference worker: left alone.
+        with self.assertRaisesRegex(service.ServiceFailure,'starting'):
+            self.ensure(2,spawn=lambda *_a,**_k:self.fail('spawned beside a live service'))
+        self.assertIsNone(old.poll())
+        worker=('python -I -B -c import runpy;runpy.run_module("context_learning.inference_service")'
+                ' worker '+str(self.root))
+        def command(pid):
+            return (os.getuid(),worker) if pid==old.pid else None
+        with patch.object(service,'_process_command',side_effect=command):
+            self.ensure(5)
+        self.assertEqual(old.wait(timeout=3),-15)
+        self.assertEqual(len(self.children),2)
+        self.assertTrue(service._ready(self.root,time.monotonic()+1))
+
+
 def fake_worker(root):
+    signature=os.environ.get('QMD_TEST_SERVICE_SIGNATURE')
+    if signature:service._signature=lambda:signature
+    if os.environ.get('QMD_TEST_SERVICE_NO_SHUTDOWN')=='1':
+        read=service.resident._read
+        def legacy(conn,**kw):
+            row=read(conn,**kw)
+            return {'command':'legacy-unknown'} if row=={'command':'shutdown'} else row
+        service.resident._read=legacy
     def load(request):
         path=root/'synthetic-load-count'
         path.write_text(str(int(path.read_text())+1) if path.exists() else '1')
         return request['generation'][-1]
     def validate(env):
         if env.get('synthetic_crash') is True:os._exit(75)
+        if env.pop('synthetic_block',None) is True:
+            stop=time.monotonic()+9
+            while not (root/'release').exists() and time.monotonic()<stop:time.sleep(.01)
         return fake_validate(env)
     engine=service.GenerationEngine(load=load,
         forward=lambda loaded,request,**kw:{'head':loaded,'namespace':request['namespace']},

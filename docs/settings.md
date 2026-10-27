@@ -77,6 +77,28 @@ route는 그 파일이 바뀌지 않는 한 지금과 같게 검사되고, 파�
 공용 update를 막지 않습니다(role을 직접 `source`로 바꾼 collection은 지금처럼
 reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`입니다.
 
+### QMD-origin detach와 settings binding 변환
+
+선택된 설치 하나를 fresh-wiki origin과 identity binding으로 한 번 옮깁니다
+(`core/laya_origin_detach.py`). `setup_entry.py plan-detach-qmd-origin --project <루트>`는
+읽기만 하고 남은 단계(`steps`), 포기하는 복원(`forfeits`), `proposalSha256`을 출력합니다.
+`detach-qmd-origin --project <루트> --approve-origin-detach
+--accepted-detach-proposal-sha256 <digest>`가 같은 잠금 아래에서 제안을 다시 계산해 실행합니다.
+
+- QMD-origin(`qmd-cutover.json` v3 active): 끝난 번들 업그레이드 receipt 정리 →
+  `initial-build.json` identity를 fresh 형태로 정렬(원본은 `initial-build.pre-detach.json`) →
+  `fresh-wiki-cutover.json` 작성 → selection marker 원자 교체(commit point) → fresh 분류 확인 →
+  `qmd-cutover.json`을 `qmd-cutover.detached-<epoch>.json`으로 이름 변경. 모든 시점에서 route는
+  `candidate`입니다. commit point 전 실패는 되돌리고(`--rollback-origin-detach`로도 가능),
+  이후는 다시 실행해 앞으로만 진행합니다. `forfeits`에 `qmd_origin_restore`가 들어갑니다.
+  QMD backup과 사용자 QMD store는 지우지 않습니다.
+- 그다음(fresh-origin 설치는 이것만) 바이트를 묶는 route를 settings identity로 rebind합니다.
+  settings 파일은 바뀌지 않고, 중단되면 `rebinding` 판정으로 읽기 전용 검색을 유지합니다.
+
+SessionStart는 아직 옮기지 않은 설치에 대해 번들 업그레이드 worker를 한 번 띄우고, worker가
+업그레이드 전에 이 변환을 실행합니다. 결과는 state root의 `origin-detach-status.json`과
+`bundle-auto-upgrade.log`에 남고, 실패하면 설치는 그대로 검색됩니다.
+
 ### legacy settings를 minimal로 바꾸기
 
 명시적으로 실행할 때만 바뀝니다. `core/setup_entry.py`의 두 action이 담당합니다
@@ -95,12 +117,20 @@ reconciliation이 필요합니다). laya route에서의 role은 그대로 `raw`�
 현재 `name`이 bound collection 이름을 유도하지 못하면(예: 한글 제목) 두 action 모두에
 `--name <slug>`를 붙입니다. ASCII slug여야 하고, 유도되는 collection 이름이 현재
 collection 이름과 정확히 같아야 합니다(`name_override_invalid` · `name_override_mismatch`).
-제안 digest가 새 `name`을 포함하므로 migrate에도 같은 `--name`을 줍니다. route가 settings
-바이트를 묶으므로 settings 파일을 손으로 고치지 않습니다.
+제안 digest가 새 `name`을 포함하므로 migrate에도 같은 `--name`을 줍니다.
+
+**route의 settings binding.** route record의 `settingsSha256`은 settings 파일 바이트가 아니라
+해석된 settings identity(프로젝트 루트와 collection별 이름·role·루트, wiki 루트 포함)의
+digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `skipPaths`를 손으로
+고쳐도 route는 그대로 선택되고, `name`을 바꿔 collection 이름이 달라지면
+`route_settings_changed`로 막힙니다. identity binding 이전에 만든 route는 파일 바이트
+digest를 묶고, 변환될 때까지 정확히 같은 바이트에서만 선택됩니다. 변환은 아래 detach가
+맡습니다.
 
 **선택된 route의 rebind.** 유도된 collection identity가 route가 묶은 것과 같으면, 번들
 업그레이드와 같은 잠금(install lock → cutover operation lock → provider lane) 아래에서
-settings 바이트를 묶는 모든 곳을 새 바이트로 옮깁니다. install journal의 selected route
+route가 묶은 값을 새 settings identity로 옮깁니다(바이트를 묶는 route라면 identity로
+바뀌고, 이미 같은 identity를 묶으면 settings 파일만 다시 씁니다). install journal의 selected route
 digest, state root의 `reviewed-route.json`, route record의 `settingsSha256`, selection
 ledger(fresh-wiki 또는 QMD-origin)의 `routeSha256`, selection marker, settings 파일
 순서입니다. index store·scope·generation·vector profile·plugin bundle은 바뀌지 않습니다.

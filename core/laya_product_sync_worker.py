@@ -66,6 +66,18 @@ def _large_initial_document(body):
     return isinstance(body, str) and len(body.encode('utf-8', 'surrogatepass')) > 200_000
 
 
+def _embed_with_budget(provider, body, path):
+    """One document embedding with the large-document call-site budget.
+
+    Initial build and selected sync share it. The 270s budget is below the
+    worker's 300s idle limit; the reviewed provider and embedding recipe
+    remain byte-identical to existing vectors.
+    """
+    if _large_initial_document(body):
+        return provider.embed_document_chunks(body, path, timeout=270)
+    return provider.embed_document_chunks(body, path)
+
+
 def _qa_invalid():
     raise IndexContractError('qa_sync_barrier_invalid')
 
@@ -426,7 +438,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                     def embed_document_chunks(self, body, path):
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
-                        return provider.embed_document_chunks(body, path)
+                        return _embed_with_budget(provider, body, path)
 
                 with LayaIndexRuntime(source_root=source_root,
                                       scope=decision['scopeId'], db_path=decision['dbPath'],
@@ -572,7 +584,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                     if _higher_priority_wake(controller):
                         raise ResourceDeferred('laya_sync_yield_priority')
                     ensure_service()
-                    return provider.embed_document_chunks(body, path)
+                    return _embed_with_budget(provider, body, path)
 
             with LayaIndexRuntime(source_root=source_root, scope=decision['scopeId'],
                                   db_path=decision['dbPath'], queue_path=decision['queuePath'],
@@ -875,13 +887,7 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
                         if not admitted():
                             raise ResourceDeferred('laya_build_resource_pressure')
                         ensure_service()
-                        # This call-site budget is below the worker's 300s
-                        # idle limit. The reviewed provider and embedding
-                        # recipe remain byte-identical to existing vectors.
-                        if _large_initial_document(body):
-                            return provider.embed_document_chunks(body, path,
-                                                                  timeout=270)
-                        return provider.embed_document_chunks(body, path)
+                        return _embed_with_budget(provider, body, path)
 
                 with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
                                       db_path=identity['candidateDb'],

@@ -334,10 +334,15 @@ def _selected_binding(project: Path, derived: dict, payload: bytes, route: Path)
                 "identityDiff": identity_diff({"collections": bound}, derived)}, None
         new_collections = derived["collections"]
     import laya_settings_rebind
+    unbound = False
     try:
         summary, _exact = laya_settings_rebind.inspect(project, payload, new_collections)
     except laya_settings_rebind.RebindRefused as exc:
-        return exc.reason, {"bindingPath": str(route), **exc.detail}, None
+        if exc.reason != "settings_rebind_not_required":
+            return exc.reason, {"bindingPath": str(route), **exc.detail}, None
+        # The route binds the settings identity, which this rewrite keeps.
+        unbound = True
+        summary = {"stateRoot": str(Path(json.loads(route.read_bytes())["journalPath"]).parent)}
     except Exception as exc:
         return _probe_failed("laya_route", exc), {"bindingPath": str(route)}, None
     try:
@@ -353,6 +358,8 @@ def _selected_binding(project: Path, derived: dict, payload: bytes, route: Path)
     stale, reason = _qmd_bindings(project)
     if reason:
         return reason, {}, None
+    if unbound:
+        return None, {}, None
     return None, {}, {**summary, "staleQmdBindings": stale}
 
 

@@ -314,6 +314,15 @@ PROFILE={'profileId':'c'*64,'modelId':'synthetic-worker','embeddingFingerprint':
          'dimension':2}
 
 
+def _budgeted(test,base,budgets):
+    """Same synthetic provider, recording the per-call embedding budget."""
+    class Budgeted(base):
+        def embed_document_chunks(self,body,path,**kw):
+            budgets[path]=kw.get('timeout')
+            return super().embed_document_chunks(body,path)
+    return Budgeted
+
+
 class V2WorkerChecks(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='laya-worker-v2-');self.addCleanup(self.temp.cleanup)
@@ -339,6 +348,17 @@ class V2WorkerChecks(unittest.TestCase):
     def proof(self):
         return {'productRouteAllowed':True,'selectionEpoch':self.epoch,
                 'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
+
+    def test_selected_sync_gives_a_large_document_the_large_budget(self):
+        # A >200KB card exceeded the provider's default 120s budget on every
+        # selected wake while only the initial build had the 270s budget.
+        (self.beta/'big.md').write_text('x'*200_001,encoding='utf-8')
+        budgets={}
+        with patch.object(self,'provider_class',
+                          return_value=_budgeted(self,V2WorkerChecks.provider_class(self),budgets)):
+            result=self.run_worker()
+        self.assertEqual(result['state'],'indexed')
+        self.assertEqual(budgets,{'beta/big.md':270,'beta/two.md':None})
 
     def test_nested_project_wiki_indexes_only_wiki(self):
         wiki=self.home/'.auto-context'/'wiki'
@@ -990,6 +1010,16 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual(result['state'],'indexed')
         self.assertEqual(calls,[{'grants':{}}])
         self.assertEqual(result['wikiDiscovery'],{'state':'blocked','reason':'synthetic'})
+
+    def test_capacity_sync_gives_a_large_document_the_large_budget(self):
+        self.stores()
+        (self.beta/'big.md').write_text('x'*200_001,encoding='utf-8')
+        budgets={}
+        with patch.object(self,'provider_class',
+                          return_value=_budgeted(self,V2WorkerChecks.provider_class(self),budgets)):
+            result,_started=self.run_capacity()
+        self.assertEqual(result['state'],'indexed')
+        self.assertEqual(budgets,{'beta/big.md':270,'beta/two.md':None})
 
     def test_capacity_origin_unchanged_then_one_edit(self):
         self.stores()

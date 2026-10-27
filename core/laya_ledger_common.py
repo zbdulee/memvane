@@ -131,12 +131,15 @@ def _preflight_multi_settings(route, project_root):
     import config
     from laya_index_host_route import (_multi_compile_supported,
                                        _multi_settings_supported, _pairs,
-                                       _read_regular, _source_for_collection)
+                                       _read_regular, _source_for_collection,
+                                       settings_identity_digest)
     settings = Path(project_root) / '.auto-context' / 'settings.json'
     if settings.is_symlink():
         _fail('cutover_settings_unsafe')
     raw = _read_regular(settings, 2 * 1024 * 1024)
-    if _sha(raw) != route['settingsSha256']:
+    # Identity-bound routes are proved below against the resolved settings.
+    if (_sha(raw) != route['settingsSha256'] and route['settingsSha256'] !=
+            settings_identity_digest(project_root, route['collections'])):
         _fail('cutover_settings_changed')
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
