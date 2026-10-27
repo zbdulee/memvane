@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""Installer-only Laya candidate staging and QMD cutover entrypoint.
+"""Installer-only Laya onboarding: plan, provider review, build, bind, activate.
 
 The host must install and load the exact Git candidate first. Staging seals
 that *installed* root; it never installs a plugin or changes a project route.
-An already prepared QMD cutover ledger is mandatory before activation.
-
-By default every origin is registered as a durable inactive initial build
-(``laya_initial_build``) that the runtime ``laya-sync`` wake advances in
-bounded steps, then bound by an explicit ``finalize-build`` and activated by a
-separate ``activate``, which then queues one selected ``laya-sync`` wake. A
-QMD change after the bind refuses activation (the bound generation is stale)
-and is never rebound; an explicit ``retire-origin`` withdraws that stale
-binding (deleting nothing) so a fresh install with its own state root,
-reviewed provider, attestation and candidate can be prepared, built and bound.
-An explicit ``restore`` withdraws the selection back to
-the preserved QMD origin without deleting any database. The in-process synchronous origin (one bounded scan,
-embedded in the installer call) remains only as the explicit legacy
-``background=False`` / ``--synchronous-origin`` path; a source larger than
-that one scan is still planned as a background build, never refused.
+A new project is planned from its minimal settings (``plan-fresh-wiki``),
+registered as a durable inactive initial build (``laya_initial_build``) that
+the runtime ``laya-sync`` wake advances in bounded steps, bound by an explicit
+``finalize-build`` (``laya_fresh_wiki_origin`` ledger and project marker) and
+activated by a separate ``activate``, which then queues one selected
+``laya-sync`` wake. An explicit ``retire-origin`` withdraws a bound build that
+was never selected (deleting nothing) so a fresh install with its own state
+root can be prepared. An explicit ``restore`` withdraws the route before its
+first selected write. A project still bound to a QMD-origin ledger
+(``qmd-cutover.json``) is refused as ``qmd_origin_detach_required``.
 """
 from __future__ import annotations
 
@@ -45,18 +40,6 @@ from laya_product_bundle import (adopt_host_loaded_plugin,
 
 class InstallBlocked(RuntimeError):
     pass
-
-
-# Module attributes resolved at call time: fresh-wiki onboarding imports this
-# module and never loads the QMD-origin cutover or migration code.
-def activate_qmd_origin(*args, **kwargs):
-    from laya_qmd_cutover import activate_qmd_origin as activate
-    return activate(*args, **kwargs)
-
-
-def recover_qmd_origin(*args, **kwargs):
-    from laya_qmd_cutover import recover_qmd_origin as recover
-    return recover(*args, **kwargs)
 
 
 _REVIEWED_MODEL_BASENAMES = frozenset((
@@ -183,156 +166,6 @@ def _write_or_verify_private(path, raw):
 # One synchronous port scan (laya_index_source_port defaults). This is the
 # work bound of the in-process origin path only, never a corpus admission: a
 # source above it is planned as a background initial build instead.
-SYNC_ORIGIN_MAX_FILES = 200
-SYNC_ORIGIN_MAX_BYTES = 5_000_000
-BACKGROUND_PLAN_SCHEMA = 'laya-initial-build-plan-v1'
-
-
-def _exceeds_one_scan(exc):
-    """The port refused only because the source is larger than one call."""
-    from laya_index_source_port import SourceStale
-    cause = exc.__cause__
-    detail = str(cause) if isinstance(cause, SourceStale) else ''
-    return detail in ('too many files', 'too many entries') or detail.startswith('oversize: ')
-
-
-def plan_qmd_origin(project_root, *, background=True, _bound_marker=False):
-    """Read the owned QMD source and both current collection trees for review.
-
-    This plan contains no manuscript bodies. It refuses an unindexed source,
-    changed QMD title recipe, an unowned QMD database or active route. No
-    model, backup, candidate or plugin cache is touched.
-
-    The default (``background=True``) is a ``mode: background`` plan: it
-    binds the project, settings, collection roots and QMD identity, and
-    leaves the complete source inventory to the durable catalog of the
-    initial build. The QMD digest it observed is reported but not reviewed,
-    because QMD stays selected and keeps indexing while the build runs;
-    finalize takes the backup the cutover binds. ``background=False`` is the
-    legacy synchronous plan; a source that one synchronous scan cannot cover
-    still gets the background plan instead of a refusal.
-
-    ``_bound_marker`` is finalize's replay only: the project marker of a
-    ``prepared`` bound cutover it wrote itself is allowed (the cutover owner
-    re-checks it); a route record never is.
-    """
-    import config
-    import qmd_route
-    from laya_index_host_route import (_multi_settings_supported,
-                                       _multi_compile_supported,
-                                       selected_collection_roots,
-                                       _source_for_collection,
-                                       RECORD, QMD_SELECTION_MARKER)
-    from laya_index_source_port import scan_collections
-    from laya_index_host_route import wiki_index_roots
-    from laya_index_vector import qmd_markdown_title
-    from laya_qmd_migration import QMD_253, inspect_qmd_collections
-
-    project = Path(project_root)
-    if (not project.is_absolute() or project.is_symlink() or
-            project.resolve(strict=True) != project):
-        _fail('invalid_project_root')
-    auto = project / '.auto-context'
-    if ((auto / RECORD).exists() or (auto / RECORD).is_symlink() or
-            (not _bound_marker and ((auto / QMD_SELECTION_MARKER).exists() or
-                                    (auto / QMD_SELECTION_MARKER).is_symlink()))):
-        _fail('project_selection_already_exists')
-    found = config.find_project_config(str(project))
-    settings = auto / 'settings.json'
-    if (found.get('configPath') != str(settings) or
-            found.get('projectRoot') != str(project) or settings.is_symlink()):
-        _fail('canonical_settings_required')
-    from laya_index_host_route import _read_regular, MAX_SETTINGS_BYTES
-    raw = _read_regular(settings, MAX_SETTINGS_BYTES)
-    settings_sha = hashlib.sha256(raw).hexdigest()
-    source_settings = config.expand_minimal_settings(
-        json.loads(raw.decode('utf-8'), object_pairs_hook=lambda pairs: _unique(pairs)))
-    cfg = config.load_project_config(str(project))
-    names = tuple(sorted(cfg.get('collections', ())))
-    roles = config.role_map(cfg)
-    if (cfg.get('indexing') is not True or len(names) != 2 or
-            sorted(roles.get(name) for name in names) != ['raw', 'wiki'] or
-            set(cfg.get('collectionPaths', {})) != set(names) or
-            not _multi_settings_supported(source_settings, cfg, names)):
-        _fail('unsupported_selected_settings')
-    roots = {name: _source_for_collection(project, cfg['collectionPaths'][name])
-             for name in names}
-    collections = [{'name': name, 'role': roles[name], 'sourceRoot': roots[name]}
-                   for name in names]
-    try:
-        selected_collection_roots(project, collections)
-    except ValueError as exc:
-        raise InstallBlocked(str(exc)) from exc
-    # The synchronous adapter scans both roots; the selected background
-    # catalog indexes only wiki and safely skips the hidden wiki under raw.
-    raw_root = Path(next(roots[name] for name in names if roles[name] == 'raw'))
-    wiki_root_path = Path(next(roots[name] for name in names if roles[name] == 'wiki'))
-    if raw_root in wiki_root_path.parents:
-        background = True
-    wiki_root = next(roots[name] for name in names if roles[name] == 'wiki')
-    if not _multi_compile_supported(source_settings, cfg, project, wiki_root):
-        _fail('unsupported_selected_compile_settings')
-    runtime = qmd_route.binary_info()
-    selected = qmd_route.project_paths(str(project), reject_conflicts=True)
-    if runtime.get('managed') is not True or selected.get('selected') is not True:
-        _fail('plugin_owned_qmd_required')
-    source_db = selected['INDEX_PATH']
-    inventory = inspect_qmd_collections(source_db, QMD_253, names)
-    if any(inventory['collection_config'][name][0] != roots[name]
-           for name in names):
-        _fail('qmd_collection_root_changed')
-    stat_project = project.stat()
-    scope_seed = json.dumps([str(project), stat_project.st_dev,
-                             stat_project.st_ino, settings_sha],
-                            separators=(',', ':')).encode('utf-8')
-    scope = hashlib.sha256(scope_seed).hexdigest()[:32]
-    class InitialIndex:
-        def list_exclusions(self, _scope):
-            return []
-    if background:
-        return _background_plan(project, settings_sha, source_db, scope, collections,
-                                selected, runtime, inventory['digest'])
-    from laya_index_a import IndexContractError
-    try:
-        scan = scan_collections(roots, scope, InitialIndex(),
-                                max_files=SYNC_ORIGIN_MAX_FILES,
-                                max_bytes=SYNC_ORIGIN_MAX_BYTES)
-    except IndexContractError as exc:
-        if not _exceeds_one_scan(exc):
-            raise
-        return _background_plan(project, settings_sha, source_db, scope, collections,
-                                selected, runtime, inventory['digest'])
-    if any(not file.eligible for file in scan.files):
-        _fail('initial_source_ineligible')
-    current = {file.path: file for file in scan.files}
-    active = {path: (title, sha, body) for path, title, sha, flag, body
-              in inventory['documents'] if flag}
-    if set(current) - set(active):
-        _fail('qmd_current_source_unindexed')
-    for path, file in current.items():
-        title, sha, body = active[path]
-        if (file.sha256 != sha or file.text != body or
-                title != qmd_markdown_title(file.text, path)):
-            _fail('qmd_current_source_changed')
-    wiki_scan = scan_collections(wiki_index_roots(collections), scope, InitialIndex(),
-                                 max_files=SYNC_ORIGIN_MAX_FILES,
-                                 max_bytes=SYNC_ORIGIN_MAX_BYTES)
-    plan = {'schema': 'laya-qmd-origin-plan-v1', 'projectRoot': str(project),
-            'settingsSha256': settings_sha, 'sourceDb': source_db,
-            'sourceFormat': QMD_253, 'sourceDigest': inventory['digest'],
-            'scopeId': scope, 'sourceManifest': wiki_scan.manifest,
-            'collections': collections,
-            'sourceFiles': [[file.path, file.sha256] for file in wiki_scan.files],
-            'sourceEvidenceManifest': scan.manifest,
-            'sourceEvidenceFiles': [[file.path, file.sha256] for file in scan.files],
-            'deletedSinceQmd': len(active) - len(current),
-            'qmdStoreGeneration': selected.get('generation'),
-            'qmdManagedRuntime': runtime['QMD_PACKAGE_BIN']}
-    digest = hashlib.sha256(json.dumps(plan, sort_keys=True,
-        ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-    return {'status': 'review_required', 'proposalSha256': digest, **plan}
-
-
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     """Review a new wiki-only Laya generation without claiming QMD vector provenance.
 
@@ -406,22 +239,6 @@ def _settings_identity(plan):
     the reviewed plan proposal keeps binding the exact bytes."""
     from laya_index_host_route import settings_identity_digest
     return settings_identity_digest(plan['projectRoot'], plan['collections'])
-
-
-def _background_plan(project, settings_sha, source_db, scope, collections, selected,
-                     runtime, observed_digest):
-    from laya_qmd_migration import QMD_253
-    plan = {'schema': BACKGROUND_PLAN_SCHEMA, 'mode': 'background',
-            'projectRoot': str(project), 'settingsSha256': settings_sha,
-            'sourceDb': source_db, 'sourceFormat': QMD_253, 'scopeId': scope,
-            'collections': collections,
-            'qmdStoreGeneration': selected.get('generation'),
-            'qmdManagedRuntime': runtime['QMD_PACKAGE_BIN']}
-    digest = hashlib.sha256(json.dumps(plan, sort_keys=True, ensure_ascii=False,
-                                       separators=(',', ':')).encode('utf-8')).hexdigest()
-    return {'status': 'review_required', 'proposalSha256': digest, **plan,
-            'observedQmdDigest': observed_digest,
-            'sourceInventory': 'durable_catalog_scan'}
 
 
 def _unique(pairs):
@@ -504,36 +321,8 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
         _fail('provider_review_native_closure_incomplete')
     closure = [{'path': str(path), 'sha256': _hash_file(str(path)),
                 'bytes': path.stat().st_size} for path in sorted(native_files)]
-    replacement_evidence = None
     if model_path is None:
-        import qmd_shared_store
-        import shared_qmd_setup
-        selected = qmd_shared_store.select()
-        metadata = Path(selected['generation']) / 'bootstrap-proof.json'
-        if metadata.exists() or metadata.is_symlink():
-            model_proof = json.loads(_read_private_or_package(metadata))
-            if (not isinstance(model_proof, dict) or
-                    model_proof.get('schema') != shared_qmd_setup.SCHEMA or
-                    model_proof.get('searchProved') is not True):
-                _fail('provider_review_model_proof_invalid')
-            model_path = model_proof.get('modelPath')
-            dimension = model_proof.get('dimension')
-            expected_model_hash = model_proof.get('modelSha256')
-        else:
-            # A selected legacy generation cannot be retroactively certified.
-            # The separately proved, inactive model may instead build a fresh
-            # Laya candidate while the legacy QMD remains its document source.
-            try:
-                replacement_evidence = shared_qmd_setup.replacement_model_evidence()
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                raise InstallBlocked('provider_review_replacement_proof_required') from exc
-            if replacement_evidence['legacyGeneration'] != selected['generation']:
-                _fail('provider_review_replacement_source_changed')
-            model_path = replacement_evidence['modelPath']
-            dimension = replacement_evidence['dimension']
-            expected_model_hash = replacement_evidence['modelSha256']
-    else:
-        expected_model_hash = None
+        _fail('provider_review_model_path_required')
     if type(dimension) is not int or not 1 <= dimension <= 2048:
         _fail('provider_review_dimension_invalid')
     # QMD's local resolver prefixes the same GGUF basename in its cache.
@@ -542,8 +331,6 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
             Path(model_path).name not in _REVIEWED_MODEL_BASENAMES):
         _fail('provider_review_model_identity_invalid')
     model_sha = _hash_file(str(model_path))
-    if expected_model_hash is not None and model_sha != expected_model_hash:
-        _fail('provider_review_model_changed')
     node_sha, module_sha = _hash_file(str(node)), _hash_file(str(module))
     closure_sha = hashlib.sha256(_canonical(closure)).hexdigest()
     provider_sha = artifacts['core/laya_local_embed_provider.py']
@@ -586,65 +373,9 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
                 'reviewedProvider': {'vectorProfile': profile,
                                      'providerManifest': manifest,
                                      'dependencyClosure': closure}}
-    if replacement_evidence is not None:
-        proposal['replacementEvidenceSha256'] = replacement_evidence['evidenceSha256']
     return {'status': 'review_required',
             'proposalSha256': hashlib.sha256(_canonical(proposal)).hexdigest(),
             **proposal}
-
-
-def _replacement_origin_binding(review, plan):
-    """Recheck an inactive proof against this QMD-origin project's source.
-
-    The replacement QMD generation is never selected. Its proved model is
-    allowed only to produce fresh Laya vectors for a scoped, reviewed origin.
-    """
-    digest = review.get('replacementEvidenceSha256')
-    if digest is None:
-        return None
-    import shared_qmd_setup
-    try:
-        evidence = shared_qmd_setup.replacement_model_evidence()
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise InstallBlocked('replacement_model_evidence_changed') from exc
-    if (not isinstance(evidence, dict) or
-            not isinstance(evidence.get('approvedProjectSettings'), dict) or
-            plan['projectRoot'] not in evidence['approvedProjectSettings'] or
-            evidence.get('evidenceSha256') != digest or
-            evidence.get('legacyIndexPath') != plan['sourceDb'] or
-            evidence.get('legacyGeneration') != plan['qmdStoreGeneration'] or
-            evidence['approvedProjectSettings'].get(plan['projectRoot']) !=
-            plan['settingsSha256'] or
-            review['reviewedProvider']['providerManifest']['modelSha256'] !=
-            evidence.get('modelSha256') or
-            review['reviewedProvider']['providerManifest']['dimension'] !=
-            evidence.get('dimension')):
-        _fail('replacement_model_origin_mismatch')
-    return digest
-
-
-def _check_record_replacement_binding(identity, plan, provider_manifest):
-    digest = identity.get('replacementEvidenceSha256')
-    if digest is None:
-        return
-    if not isinstance(provider_manifest, dict):
-        _fail('replacement_provider_attestation_missing')
-    import shared_qmd_setup
-    try:
-        evidence = shared_qmd_setup.replacement_model_evidence()
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise InstallBlocked('replacement_model_evidence_changed') from exc
-    if (not isinstance(evidence, dict) or
-            not isinstance(evidence.get('approvedProjectSettings'), dict) or
-            identity['projectRoot'] not in evidence['approvedProjectSettings'] or
-            digest != evidence.get('evidenceSha256') or
-            evidence.get('legacyGeneration') != plan['qmdStoreGeneration'] or
-            evidence.get('legacyIndexPath') != identity['sourceDb'] or
-            evidence['approvedProjectSettings'].get(identity['projectRoot']) !=
-            plan['settingsSha256'] or
-            provider_manifest.get('modelSha256') != evidence.get('modelSha256') or
-            provider_manifest.get('dimension') != evidence.get('dimension')):
-        _fail('replacement_model_origin_mismatch')
 
 
 _LLAMA_MODULE = ('node-llama-cpp',)
@@ -691,75 +422,6 @@ def _read_private_or_package(path):
     if not path.is_absolute() or path.is_symlink() or path.stat().st_size > 65536:
         _fail('provider_review_metadata_invalid')
     return path.read_bytes()
-
-
-def _plan_scan(plan):
-    """Reproduce the reviewed source snapshot without opening the model."""
-    from laya_index_source_port import scan_collections
-    from laya_index_host_route import wiki_index_roots
-    if ('sourceEvidenceManifest' not in plan or
-            'sourceEvidenceFiles' not in plan):
-        _fail('reviewed_origin_plan_legacy')
-    roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
-    class FreshIndex:
-        def list_exclusions(self, _scope):
-            return []
-    scan = scan_collections(roots, plan['scopeId'], FreshIndex(),
-                            max_files=SYNC_ORIGIN_MAX_FILES,
-                            max_bytes=SYNC_ORIGIN_MAX_BYTES)
-    if (scan.manifest != plan['sourceEvidenceManifest'] or
-            [[item.path, item.sha256] for item in scan.files] != plan['sourceEvidenceFiles'] or
-            any(not item.eligible for item in scan.files)):
-        _fail('reviewed_source_changed')
-    wiki_scan = scan_collections(wiki_index_roots(plan['collections']), plan['scopeId'],
-                                 FreshIndex(), max_files=SYNC_ORIGIN_MAX_FILES,
-                                 max_bytes=SYNC_ORIGIN_MAX_BYTES)
-    if (wiki_scan.manifest != plan['sourceManifest'] or
-            [[item.path, item.sha256] for item in wiki_scan.files] != plan['sourceFiles'] or
-            any(not item.eligible for item in wiki_scan.files)):
-        _fail('reviewed_wiki_source_changed')
-    return wiki_scan
-
-
-def _candidate_prepared(path, generation, scope, manifest, source_digest,
-                        profile_id, files, claim):
-    """Read an interrupted, already sealed candidate without replacing it."""
-    from contextlib import closing
-    from laya_index_a import LayaIndexA
-    from laya_index_vector import verify_generation_seal
-    with closing(LayaIndexA(path)) as index:
-        index.db.execute('BEGIN')
-        try:
-            seal = index.db.execute(
-                'SELECT source_manifest,claim_digest,claim_epoch FROM candidate_seals WHERE gen=?',
-                (generation,)).fetchone()
-            state = index.db.execute('SELECT state,scope FROM generations WHERE gen=?',
-                                     (generation,)).fetchone()
-            members = index.db.execute(
-                'SELECT path,hash,eligible FROM membership WHERE gen=? ORDER BY path',
-                (generation,)).fetchall()
-            head = index.db.execute('SELECT gen FROM head WHERE scope=?',
-                                    (scope,)).fetchone()
-            receipt = index.db.execute(
-                'SELECT scope,gen,source_manifest,claim_digest,claim_epoch FROM receipts WHERE claim=?',
-                (claim,)).fetchone()
-            vector = verify_generation_seal(index, generation)
-            index.db.rollback()
-        except BaseException:
-            index.db.rollback()
-            raise
-        if (seal != (manifest, source_digest, 0) or
-                state not in (('prepared', scope), ('published', scope)) or
-                members != [(f.path, f.sha256, 1) for f in files]
-                or vector['profile_id'] != profile_id):
-            _fail('partial_candidate_requires_recovery')
-        if state[0] == 'published' and (
-                head != (generation,) or receipt !=
-                (scope, generation, manifest, source_digest, 0)):
-            _fail('partial_candidate_requires_recovery')
-        if state[0] == 'prepared' and (head is not None or receipt is not None):
-            _fail('partial_candidate_requires_recovery')
-        return index.incarnation()
 
 
 def _unfinished_catalog(path):
@@ -917,241 +579,6 @@ def _finish_interrupted_claim_queue_link(queue, incarnation):
     _fail('partial_queue_requires_recovery')
 
 
-def prepare_owned_qmd_origin(*, project_root, source_root, plugin_root, state_root, commit_id,
-                             expected_proposal_sha256, install_id,
-                             accepted_provider_sha256, user_qmd_roots,
-                             model_path=None, dimension=None,
-                             coordinator=None, start_service=None,
-                             provider_factory=None, capacity_stores=False,
-                             background=True):
-    """Prepare a reviewed two-collection QMD origin; never activates it.
-
-    Default (``background=True``, the reviewed ``mode: background`` plan): no
-    embedding happens here. A durable inactive initial build is registered
-    instead (``_register_initial_build``) and ``initial_build_registered`` is
-    returned. No model is loaded and no QMD byte is copied;
-    ``finalize_initial_build`` binds the sealed candidate later.
-
-    ``background=False`` is the legacy synchronous path: a bounded,
-    privately backed up candidate embedded in this call. Its plan must have
-    been made with ``background=False`` too (a source over one synchronous
-    scan still reviews as a background plan and registers a build).
-    ``capacity_stores=True`` also creates the capacity catalog and binding
-    store beside that candidate DB. Off by default: once they exist, recall
-    serves nothing until the worker publishes the first bound generation
-    (the origin head is not bound), whereas the full-scan path serves the
-    origin head at once.
-
-    This is an off-hook installer operation. It leaves QMD selected and never
-    activates the product route. Existing candidate bytes are verified and
-    reused; inconsistent partial state is retained for explicit recovery.
-    """
-    from contextlib import closing
-    from resource_deferred import ResourceDeferred
-    from context_learning.resource_coordination import Coordinator
-    from context_learning.shared import resource_report
-    from laya_index_a import LayaIndexA
-    from laya_index_claim_queue import ClaimQueue
-    from laya_index_host_route import SCHEMA_V2
-    from laya_index_vector import MAX_CANDIDATES, qmd_markdown_title
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
-    from laya_local_embed_service import start_owned_embed_service
-    from laya_product_sync_worker import EMBED_POLICY
-    from laya_qmd_cutover import bind_qmd_origin
-    from laya_qmd_migration import (backup_qmd_collections,
-                                    inspect_qmd_collections,
-                                    prepare_qmd_candidate,
-                                    verify_restore_collections)
-
-    if (not isinstance(expected_proposal_sha256, str) or
-            not re.fullmatch(r'[0-9a-f]{64}', expected_proposal_sha256) or
-            not isinstance(install_id, str) or
-            not re.fullmatch(r'[0-9a-f]{32}', install_id) or
-            not isinstance(accepted_provider_sha256, str) or
-            not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256) or
-            not isinstance(user_qmd_roots, list) or not user_qmd_roots):
-        _fail('invalid_origin_preparation_request')
-    if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
-        _fail('source_checkout_cannot_be_installed_root')
-    state = _prepare_state_root(state_root, install_id)
-    journal = state / 'install-journal.sqlite'
-    socket = state / 'runtime' / 'laya-embed.sock'
-    if len(str(socket).encode('utf-8')) > 100:
-        _fail('install_socket_path_too_long')
-    with _install_lock(state):
-        plan = plan_qmd_origin(project_root, background=background)
-        if plan['proposalSha256'] != expected_proposal_sha256:
-            _fail('reviewed_origin_plan_changed')
-        review = review_local_provider(
-            source_root=source_root, plugin_root=plugin_root,
-            state_root=state, commit_id=commit_id,
-            model_path=model_path, dimension=dimension)
-        if review['proposalSha256'] != accepted_provider_sha256:
-            _fail('reviewed_provider_proposal_changed')
-        replacement_evidence_sha = _replacement_origin_binding(review, plan)
-        reviewed_provider = review['reviewedProvider']
-        names = tuple(item['name'] for item in plan['collections'])
-        roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
-        if plan.get('mode') == 'background':
-            return _register_initial_build(
-                plan=plan, reviewed_provider=reviewed_provider,
-                provider_proposal_sha256=accepted_provider_sha256,
-                replacement_evidence_sha256=replacement_evidence_sha,
-                source_root=source_root, plugin_root=plugin_root, state=state,
-                journal=journal, socket=socket, commit_id=commit_id,
-                install_id=install_id, user_qmd_roots=user_qmd_roots)
-        if replacement_evidence_sha is not None:
-            _fail('replacement_background_build_required')
-        scan = _plan_scan(plan)
-        proof, profile, manifest = _adopt_and_attest(
-            source_root=source_root, plugin_root=plugin_root, commit_id=commit_id,
-            reviewed_provider=reviewed_provider, user_qmd_roots=user_qmd_roots,
-            state=state, journal=journal, socket=socket)
-
-        # A no-clobber whole-DB backup precedes any model load. Interrupted
-        # backup/candidate bytes are retained and checked on retry.
-        backup = state / 'qmd-origin-backup.sqlite'
-        if backup.exists() or backup.is_symlink():
-            verify_restore_collections(backup, plan['sourceFormat'], names,
-                                       plan['sourceDigest'])
-        else:
-            backup_qmd_collections(plan['sourceDb'], plan['sourceFormat'],
-                                   names, backup)
-            verify_restore_collections(backup, plan['sourceFormat'], names,
-                                       plan['sourceDigest'])
-        candidate = state / 'laya-candidate.sqlite'
-        queue = state / 'laya-claims.sqlite'
-        generation = 'g-' + hashlib.sha256(
-            ('laya-origin-generation:' + install_id + ':' +
-             expected_proposal_sha256).encode()).hexdigest()[:32]
-        claim = 'origin-' + hashlib.sha256(
-            ('laya-origin-claim:' + generation).encode()).hexdigest()
-        if not candidate.exists() and not candidate.is_symlink():
-            provider = (provider_factory or ReviewedLocalQmdProvider)(manifest)
-            if (provider.profile['profile_id'] != profile['profileId'] or
-                    provider.profile['model_id'] != profile['modelId'] or
-                    provider.profile['embedding_fingerprint'] !=
-                    profile['embeddingFingerprint'] or
-                    provider.profile['dimension'] != profile['dimension']):
-                _fail('reviewed_provider_profile_mismatch')
-            controller = coordinator or Coordinator()
-            observed = resource_report(EMBED_POLICY, detailed=True)
-            with controller.activity('provider', EMBED_POLICY, observed):
-                def admit():
-                    fresh = resource_report(EMBED_POLICY, detailed=True)
-                    return controller.check(EMBED_POLICY, fresh)['ready']
-                service = (start_service or start_owned_embed_service)(manifest, admit=admit)
-                try:
-                    chunks = []
-                    seen = set()
-                    for file in scan.files:
-                        fresh = resource_report(EMBED_POLICY, detailed=True)
-                        if not controller.check(EMBED_POLICY, fresh)['ready']:
-                            raise ResourceDeferred('laya_origin_resource_pressure')
-                        title = qmd_markdown_title(file.text, file.path)
-                        key = (file.sha256, title)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        rows = provider.embed_document_chunks(file.text, file.path)
-                        if not rows or len(rows) + len(chunks) > MAX_CANDIDATES:
-                            _fail('origin_vector_budget_exceeded')
-                        chunks.extend({'hash': key[0], 'title': key[1],
-                                       'seq': row['seq'], 'pos': row['pos'],
-                                       'vector': row['vector']} for row in rows)
-                finally:
-                    service.stop()
-            fresh_plan = plan_qmd_origin(project_root, background=False)
-            if fresh_plan['proposalSha256'] != expected_proposal_sha256:
-                _fail('origin_changed_during_embedding')
-            prepare_qmd_candidate(
-                backup, plan['sourceFormat'], names,
-                {file.path: file.text for file in scan.files}, candidate,
-                plan['scopeId'], generation, migration_allowed=True,
-                expected_collection_root=roots,
-                expected_source_digest=plan['sourceDigest'],
-                vector_batch={'scope': plan['scopeId'],
-                              'source_manifest': scan.manifest,
-                              'qmd_source_digest': plan['sourceDigest'],
-                              'model_id': profile['modelId'],
-                              'embedding_fingerprint': profile['embeddingFingerprint'],
-                              'dimension': profile['dimension'], 'chunks': chunks},
-                provider_approved=True, current_source_db=plan['sourceDb'],
-                scope_collections=names)
-        incarnation = _candidate_prepared(
-            candidate, generation, plan['scopeId'], scan.manifest,
-            plan['sourceDigest'], profile['profileId'], scan.files, claim)
-        if queue.exists() or queue.is_symlink():
-            _finish_interrupted_claim_queue_link(queue, incarnation)
-            with closing(ClaimQueue.open(queue)) as opened:
-                if opened.binding() != incarnation:
-                    _fail('partial_queue_requires_recovery')
-        else:
-            _publish_claim_queue(queue, incarnation)
-        if not capacity_stores:
-            # A store left by an earlier capacity_stores=True run would switch
-            # this route to the capacity path anyway (or fail it closed if only
-            # one exists); refuse rather than install something unrequested.
-            from laya_index_a import IndexContractError
-            from laya_index_runtime import capacity_store_paths
-            try:
-                leftover = capacity_store_paths(candidate) is not None
-            except IndexContractError:
-                leftover = True
-            if leftover:
-                _fail('capacity_store_unexpected')
-        else:
-            # Before the route is written and bound: bind_qmd_origin refuses
-            # a second run, so stores created after it could never be
-            # completed by a re-run. A failed run leaves them, and a re-run
-            # without the flag then fails as capacity_store_unexpected.
-            from laya_index_host_route import wiki_index_roots
-            prepare_capacity_stores(candidate, wiki_index_roots(plan['collections']),
-                                    plan['scopeId'], incarnation)
-        if (plan_qmd_origin(project_root, background=False)['proposalSha256']
-                != expected_proposal_sha256):
-            _fail('origin_changed_before_bind')
-        route = {'schema': SCHEMA_V2, 'status': 'active',
-                 'projectRoot': plan['projectRoot'],
-                 'settingsSha256': _settings_identity(plan),
-                 'dbPath': str(candidate), 'queuePath': str(queue),
-                 'dbIncarnation': incarnation, 'scopeId': plan['scopeId'],
-                 'collections': plan['collections'],
-                 'pluginRoot': str(plugin_root), 'journalPath': str(journal),
-                 'installId': install_id, 'generation': generation,
-                 'bundleManifestSha256': proof['bundleManifestSha256'],
-                 'ownershipManifestSha256': proof['ownershipManifestSha256'],
-                 'vectorProfile': profile}
-        route_bytes = json.dumps(route, sort_keys=True, ensure_ascii=False,
-                                 separators=(',', ':')).encode('utf-8')
-        if len(route_bytes) > 8192:
-            _fail('origin_route_exceeds_limit')
-        route_file = state / 'reviewed-route.json'
-        _write_or_verify_private(route_file, route_bytes)
-        staged = stage_host_loaded_candidate(
-            source_root=source_root, plugin_root=plugin_root,
-            state_root=state, commit_id=commit_id, route_bytes=route_bytes,
-            reviewed_provider=reviewed_provider,
-            user_qmd_roots=user_qmd_roots, _already_locked=True)
-        row = bind_qmd_origin(
-            project_root=project_root, journal_path=journal,
-            route_bytes=route_bytes, source_db=plan['sourceDb'],
-            backup_db=backup, source_format=plan['sourceFormat'],
-            collection=names, source_digest=plan['sourceDigest'],
-            source_root=roots, candidate_db=candidate, queue_db=queue,
-            scope=plan['scopeId'], index_generation=generation,
-            source_manifest=scan.manifest,
-            vector_profile_id=profile['profileId'], claim=claim)
-        return {'status': 'cutover_prepared',
-                'proposalSha256': expected_proposal_sha256,
-                'journalPath': str(journal),
-                'pendingRouteSha256': staged['pendingRouteSha256'],
-                'cutoverPhase': row['phase'],
-                'sourceBackup': str(backup),
-                'candidateDb': str(candidate),
-                'routeFile': str(route_file)}
-
-
 def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_root,
                               commit_id, expected_proposal_sha256, install_id,
                               accepted_provider_sha256, user_qmd_roots,
@@ -1184,10 +611,6 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
-        # A replacement-model claim refers to an old QMD vector generation.
-        # This mode deliberately makes no such claim.
-        if review.get('replacementEvidenceSha256') is not None:
-            _fail('fresh_wiki_replacement_evidence_unsupported')
         return _register_initial_build(
             plan=plan, reviewed_provider=review['reviewedProvider'],
             provider_proposal_sha256=accepted_provider_sha256,
@@ -1259,7 +682,6 @@ def _request_build_wake(project_root):
 
 
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
-                            replacement_evidence_sha256=None,
                             source_root, plugin_root, state, journal, socket,
                             commit_id, install_id, user_qmd_roots):
     """Create every store of an inactive initial build and register it once.
@@ -1336,14 +758,8 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
                 'attestationSha256': staged['attestationSha256'],
                 'vectorProfileId': profile['profileId'],
                 'proposalSha256': plan['proposalSha256'],
-                'providerProposalSha256': provider_proposal_sha256}
-    if plan.get('mode') == 'fresh_wiki_only':
-        identity['originMode'] = 'fresh_wiki_only'
-    else:
-        identity['sourceDb'] = plan['sourceDb']
-        identity['sourceFormat'] = plan['sourceFormat']
-    if replacement_evidence_sha256 is not None:
-        identity['replacementEvidenceSha256'] = replacement_evidence_sha256
+                'providerProposalSha256': provider_proposal_sha256,
+                'originMode': 'fresh_wiki_only'}
     if identity['routeSha256'] != staged['pendingRouteSha256']:
         _fail('staged_route_changed')
     record = initial_build.create_or_verify(identity)
@@ -1406,33 +822,22 @@ def request_initial_build_rescan(state_root):
 
 
 def finalize_initial_build(*, project_root, state_root):
-    """Bind a sealed, fresh initial build to the QMD origin; never activates.
+    """Bind a sealed, fresh initial build to its selection ledger; never activates.
 
     Two calls. The first finds no satisfied freshness, requests a scan that
     starts now and wakes the build (``freshness_pending``). Once the build
     has re-sealed from a scan started after that request, the next call
     re-checks the reviewed plan, the inactive journal and attestation and
-    the live sealed evidence, takes the no-clobber QMD backup at this
-    cutover point, and binds through the cutover owner
-    (``bind_qmd_origin_bound``: v3 ledger, then the project marker). Unknown
-    freshness, a pending or blocked scan, or any changed evidence refuses.
+    the live sealed evidence, then binds through ``laya_fresh_wiki_origin``
+    (ledger ``prepared``, then the project marker). Unknown freshness, a
+    pending or blocked scan, or any changed evidence refuses.
 
     Repeating it is safe. After an interruption between the ledger, the
     marker and the build record, it re-proves the same binding, completes
-    what is missing and records ``bound``. While the cutover is still
-    ``prepared`` a repeat re-proves it. If QMD indexed meanwhile, the bound
-    generation predates that change: the repeat refuses as
-    ``cutover_source_drift_requires_fresh_generation`` before taking any
-    backup, and never rebinds the stale generation to the new digest. QMD
-    stays selected; the ledger, marker, backups and candidate are kept.
-    Once the cutover moved on it only reports the phase.
+    what is missing and records ``bound``. Once the ledger moved on it only
+    reports the phase.
     """
     import laya_initial_build as initial_build
-    from contextlib import closing
-    from laya_index_runtime import LayaIndexRuntime
-    from laya_install_journal import inspect_journal
-    from laya_source_catalog import LayaSourceCatalog
-    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
@@ -1442,112 +847,7 @@ def finalize_initial_build(*, project_root, state_root):
             _fail('initial_build_missing')
         if record['phase'] == 'upgrading':
             _fail('inactive_bundle_upgrade_pending')
-        identity = record['identity']
-        if identity.get('originMode') == 'fresh_wiki_only':
-            return _finalize_fresh_wiki_locked(record, project_root, state)
-        from laya_qmd_cutover import (SCHEMA_V3, SOURCE_DRIFT, bind_qmd_origin_bound,
-                                      inspect_bound_cutover)
-        if identity['projectRoot'] != str(project_root):
-            _fail('initial_build_project_mismatch')
-        if record['phase'] == 'retired':
-            _fail('initial_build_retired')
-        if record['phase'] == 'blocked':
-            return {'status': 'initial_build_blocked', 'blocked': record['blocked']}
-        cutover = inspect_bound_cutover(identity['journalPath'])
-        if cutover is not None and (
-                cutover['schema'] != SCHEMA_V3 or record['sealed'] is None or
-                cutover['indexGeneration'] != record['sealed']['generation'] or
-                cutover['candidateDb'] != identity['candidateDb']):
-            _fail('cutover_selection_already_exists')
-        if cutover is not None and cutover['phase'] != 'prepared':
-            if record['phase'] != 'bound':
-                record = initial_build.advance(record, phase='bound')
-            return {'status': 'cutover_' + cutover['phase'],
-                    'cutoverPhase': cutover['phase'],
-                    'journalPath': identity['journalPath'],
-                    'sourceBackup': cutover['backupDb'],
-                    'generation': cutover['indexGeneration'],
-                    'buildPhase': record['phase']}
-        if record['phase'] == 'bound' and cutover is None:
-            _fail('initial_build_bound_without_cutover')
-        roots = {item['name']: item['sourceRoot'] for item in identity['collections']}
-        index_roots = wiki_index_roots(identity['collections'])
-        # A prepared bound cutover was written only after this sealed evidence
-        # was proved fresh, and a bound or binding build never moves: replay.
-        if cutover is None and not initial_build.freshness_satisfied(record):
-            if record['phase'] == 'building' and record['freshness'] is not None:
-                return {'status': 'freshness_pending', 'phase': record['phase'],
-                        'progress': record['progress'],
-                        'wake': _request_build_wake(identity['projectRoot'])}
-            with closing(LayaSourceCatalog(identity['catalogDb'], index_roots,
-                                           identity['scopeId'], wiki_only=True)) as catalog:
-                record = initial_build.request_freshness(record, catalog)
-            return {'status': 'freshness_pending', 'phase': record['phase'],
-                    'freshness': record['freshness'],
-                    'wake': _request_build_wake(identity['projectRoot'])}
-        plan = plan_qmd_origin(project_root, background=True,
-                               _bound_marker=cutover is not None)
-        if plan['proposalSha256'] != identity['proposalSha256']:
-            _fail('reviewed_origin_plan_changed')
-        journal = inspect_journal(identity['journalPath'])
-        if (journal['state'] != 'candidate_ready' or
-                journal['pendingRouteSha256'] != identity['routeSha256'] or
-                journal['newWriteSeen']):
-            _fail('initial_build_journal_changed')
-        approval = preflight_product_candidate(identity['journalPath'])
-        if approval['attestationSha256'] != identity['attestationSha256']:
-            _fail('initial_build_attestation_changed')
-        _check_record_replacement_binding(identity, plan,
-                                          approval.get('providerManifest'))
-        sealed = record['sealed']
-        with LayaIndexRuntime(source_root=index_roots, scope=identity['scopeId'],
-                              db_path=identity['candidateDb'],
-                              queue_path=identity['queueDb'],
-                              db_incarnation=identity['dbIncarnation'],
-                              catalog_path=identity['catalogDb'],
-                              binding_store_path=identity['bindingStore']) as runtime:
-            live = initial_build.evidence(runtime, sealed['generation'],
-                                          identity['vectorProfileId'])
-        if live != sealed:
-            _fail('initial_build_candidate_changed')
-        from laya_qmd_migration import (backup_qmd_collections, inspect_qmd_collections,
-                                        verify_restore_collections)
-        names = tuple(item['name'] for item in identity['collections'])
-        digest = inspect_qmd_collections(identity['sourceDb'], identity['sourceFormat'],
-                                         names)['digest']
-        if cutover is not None and digest != cutover['sourceDigest']:
-            # QMD indexed after the bind: the bound generation is stale. Refuse
-            # before any backup; the prepared ledger and QMD stay selected.
-            _fail(SOURCE_DRIFT)
-        backup = state / ('qmd-origin-backup-' + digest[:16] + '.sqlite')
-        if not backup.exists() and not backup.is_symlink():
-            backup_qmd_collections(identity['sourceDb'], identity['sourceFormat'],
-                                   names, backup)
-        verify_restore_collections(backup, identity['sourceFormat'], names, digest)
-        route_bytes = _read_private(identity['routeFile'], 8192)
-        if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
-            _fail('initial_build_route_changed')
-        row = bind_qmd_origin_bound(
-            project_root=Path(project_root), journal_path=identity['journalPath'],
-            route_bytes=route_bytes, source_db=identity['sourceDb'], backup_db=str(backup),
-            source_format=identity['sourceFormat'], collection=names,
-            source_digest=digest, source_root=roots,
-            candidate_db=identity['candidateDb'], queue_db=identity['queueDb'],
-            catalog_db=identity['catalogDb'], binding_store=identity['bindingStore'],
-            scope=identity['scopeId'], index_generation=sealed['generation'],
-            source_manifest=sealed['sourceManifest'],
-            binding_digest=sealed['bindingDigest'],
-            catalog_scan_id=sealed['catalogScanId'],
-            catalog_raw_digest=sealed['catalogRawDigest'],
-            vector_profile_id=identity['vectorProfileId'],
-            vector_rows=sealed['vectorRows'],
-            replacement_evidence_sha256=identity.get('replacementEvidenceSha256'))
-        if record['phase'] != 'bound':
-            record = initial_build.advance(record, phase='bound')
-    return {'status': 'cutover_' + row['phase'], 'cutoverPhase': row['phase'],
-            'journalPath': identity['journalPath'], 'sourceBackup': str(backup),
-            'candidateDb': identity['candidateDb'], 'routeFile': identity['routeFile'],
-            'generation': sealed['generation'], 'buildPhase': record['phase']}
+        return _finalize_fresh_wiki_locked(record, project_root, state)
 
 
 def _finalize_fresh_wiki_locked(record, project_root, state):
@@ -1632,41 +932,20 @@ def _finalize_fresh_wiki_locked(record, project_root, state):
 
 
 def retire_drifted_origin(*, project_root, state_root):
-    """Retire a bound initial build whose QMD or replacement proof went stale.
+    """Retire a bound, never selected initial build; select nothing.
 
-    ``finalize``/``activate`` refuse a QMD digest that moved after the bind
-    (``cutover_source_drift_requires_fresh_generation``) and never rebind
-    the stale generation. This explicit, idempotent step makes room for a
-    fresh install; it deletes nothing and activates nothing. Under the
-    install lock and the build owner, in order (each resumed by a repeat):
-
-    1. Prove the build is this project's exact reviewed install from what
-       the bind pinned: the private journal beside this state root, still
-       ``candidate_ready`` for this project, scope and reviewed route with
-       no selected write and the candidate never its provider; the reviewed
-       route bytes; the ledger's attestation; and a ``bound`` (or an
-       interrupted-bind ``sealed``) record naming the ledger's generation
-       and candidate incarnation. The current plan and installed bundle are
-       deliberately not consulted: withdrawal selects nothing, and a later
-       settings or runtime change must not strand it. An interrupted bind is
-       first recorded ``bound`` so no later wake can step the old candidate.
-    2. The cutover owner retires the binding (``retire_drifted_binding``:
-       ledger ``prepared`` -> ``retired``, retirement record, and only its
-       own project marker withdrawn).
-    3. The project's wake pointer of this build is archived in its state
-       root and released (``retire_project_pointer``).
-
-    The old state root keeps the QMD backup, candidate, queue, catalog,
-    binding store, journal, ledger, route and build record. QMD stays
-    selected. The next install is a new ``review-provider`` and
-    ``prepare-origin`` with a new install id and state root, then the
-    ordinary build, ``finalize`` and ``activate`` of that install.
+    This explicit step makes room for a fresh install when a bound build
+    can no longer be activated. Under the install lock and the build owner
+    the selection ledger moves ``prepared`` -> ``retired`` and its own project
+    marker is withdrawn (``laya_fresh_wiki_origin.retire``); the project's
+    wake pointer of this build is then archived and released
+    (``retire_project_pointer``). The old state root keeps the candidate,
+    queue, catalog, binding store, journal, ledger, route and build record.
+    The next install is a new ``review-provider`` and ``prepare-origin`` with
+    a new install id and state root.
     """
     import laya_initial_build as initial_build
-    from laya_qmd_cutover import (CutoverBlocked, RETIRED, SCHEMA_V3,
-                                  REPLACEMENT_RETIREMENT, inspect_bound_cutover,
-                                  retire_drifted_binding,
-                                  retire_unusable_replacement_binding)
+    import laya_fresh_wiki_origin as fresh
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -1681,84 +960,14 @@ def retire_drifted_origin(*, project_root, state_root):
                 identity['stateRoot'] != str(state) or
                 identity['journalPath'] != str(journal)):
             _fail('initial_build_project_mismatch')
-        if identity.get('originMode') == 'fresh_wiki_only':
-            import laya_fresh_wiki_origin as fresh
-            if record['phase'] != 'bound':
-                _fail('fresh_wiki_build_not_bound')
-            row = fresh.retire(project, journal)
-            pointer = initial_build.retire_project_pointer(identity)
-            return {'status': 'fresh_wiki_binding_retired', 'changesApplied': 1,
-                    'stateRoot': str(state), 'buildPointer': pointer,
-                    'cutoverPhase': row['phase'],
-                    'nextRequires': 'new_install_id_and_state_root'}
-        row = inspect_bound_cutover(journal)
-        if row is None:
-            _fail('cutover_ledger_missing')
-        sealed = record['sealed']
-        if (row['schema'] != SCHEMA_V3 or row['projectRoot'] != str(project) or
-                row['journalPath'] != str(journal) or
-                row['routeSha256'] != identity['routeSha256'] or
-                row['candidateDb'] != identity['candidateDb'] or
-                row['queueDb'] != identity['queueDb'] or
-                row['catalogDb'] != identity['catalogDb'] or
-                row['bindingStore'] != identity['bindingStore'] or
-                row['candidateIncarnation'] != identity['dbIncarnation'] or
-                row['attestationSha256'] != identity['attestationSha256'] or
-                sealed is None or row['indexGeneration'] != sealed['generation']):
-            _fail('retire_cutover_mismatch')
-        route_bytes = _read_private(identity['routeFile'], 8192)
-        if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
-            _fail('initial_build_route_changed')
-        if row['phase'] == 'prepared':
-            # Withdrawal selects nothing, so it is proven against what was
-            # pinned at the bind, not the current plan or installed bundle:
-            # a settings or runtime change since then must not strand it.
-            pending = inspect_journal(journal)
-            if (pending['state'] != 'candidate_ready' or pending['pending'] is None or
-                    pending['newWriteSeen'] or
-                    pending['projectRoot'] != str(project) or
-                    pending['scopeId'] != identity['scopeId'] or
-                    pending['pendingRouteSha256'] != identity['routeSha256'] or
-                    pending['providerAttestationSha256'] is not None or
-                    pending['providerFileIdentitySha256'] is not None):
-                # A ready journal has not selected the pinned provider yet.
-                _fail('initial_build_journal_changed')
-            if record['phase'] == 'sealed':
-                record = initial_build.advance(record, phase='bound')
-        elif row['phase'] != RETIRED:
-            _fail('cutover_not_prepared')
-        elif record['phase'] == 'sealed':
-            # A direct cutover API can commit retirement before the product
-            # wrapper resumes. Keep the sealed candidate terminal so a later
-            # worker wake cannot step the old generation.
-            record = initial_build.advance(record, phase='bound')
         if record['phase'] != 'bound':
-            _fail('initial_build_bind_unsettled')
-        if row['phase'] == RETIRED and row.get('retirementReason') == REPLACEMENT_RETIREMENT:
-            retired = retire_unusable_replacement_binding(project, journal, route_bytes)
-        else:
-            try:
-                retired = retire_drifted_binding(project, journal, route_bytes)
-            except CutoverBlocked as exc:
-                if (str(exc) != 'cutover_source_not_drifted' or
-                        row.get('replacementEvidenceSha256') is None):
-                    raise
-                retired = retire_unusable_replacement_binding(project, journal,
-                                                                route_bytes)
+            _fail('fresh_wiki_build_not_bound')
+        row = fresh.retire(project, journal)
         pointer = initial_build.retire_project_pointer(identity)
-    retirement = retired['retirement']
-    return {'status': 'origin_binding_retired', 'cutoverPhase': retired['phase'],
-            'retirementReason': retirement.get('reason', 'source_drift'),
-            'stateRoot': str(state), 'journalPath': str(journal),
-            'retiredGeneration': retirement['indexGeneration'],
-            'boundSourceDigest': retirement['boundSourceDigest'],
-            'observedSourceDigest': retirement['observedSourceDigest'],
-            'preservedBackup': retirement['backupDb'],
-            'buildPointer': pointer, 'buildPhase': record['phase'],
-            'changesApplied': 1,
-            'next': ['plan-index-origin', 'review-index-provider',
-                     'prepare-index-origin'],
-            'nextRequires': 'new_install_id_and_state_root'}
+        return {'status': 'fresh_wiki_binding_retired', 'changesApplied': 1,
+                'stateRoot': str(state), 'buildPointer': pointer,
+                'cutoverPhase': row['phase'],
+                'nextRequires': 'new_install_id_and_state_root'}
 
 
 UNUSED_RETIREMENT = 'unused-build-retirement'
@@ -2077,10 +1286,10 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
             _fail('unused_build_journal_changed')
         if allow_started:
-            from laya_ledger_common import inspect_qmd_ledger
+            from laya_ledger_common import refuse_qmd_origin
             from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-            if (inspect_qmd_ledger(journal) is not None or
-                    (state / FRESH_LEDGER).exists()):
+            refuse_qmd_origin(state)
+            if (state / FRESH_LEDGER).exists():
                 _fail('inactive_build_cutover_started')
         route_bytes = _read_private(identity['routeFile'], 8192)
         if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
@@ -2161,9 +1370,10 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 inspect_journal(journal) != pending or
                 current_ownership['sha256'] != ownership['sha256']):
             _fail('unused_build_changed')
-        if allow_started and (inspect_qmd_ledger(journal) is not None or
-                (state / FRESH_LEDGER).exists()):
-            _fail('inactive_build_cutover_started')
+        if allow_started:
+            refuse_qmd_origin(state)
+            if (state / FRESH_LEDGER).exists():
+                _fail('inactive_build_cutover_started')
         clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
         record = initial_build.advance(record, phase='retired', **clear) if allow_started else initial_build.advance(record, phase='retired')
         pointer = initial_build.retire_project_pointer(identity)
@@ -2174,47 +1384,35 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
             {key: cancelled[key] for key in ('status', 'revision') if key in cancelled},
             'buildPointer': pointer, 'buildPhase': record['phase'],
             'changesApplied': 1, 'nextRequires': 'new_install_id_and_state_root',
-            'next': ['plan-index-origin', 'review-index-provider', 'prepare-index-origin']}
+            'next': ['plan-fresh-wiki-origin', 'review-index-provider',
+                     'prepare-fresh-wiki-origin']}
 
 
 def retired_build_pointer(project_root):
     """Read-only: the retired build still holding this project's wake pointer.
 
-    An interrupted ``retire_drifted_origin`` can withdraw the marker yet
-    leave the pointer, which then refuses a fresh install as
-    ``initial_build_already_registered``. Only a pointer naming a build
-    whose own ledger is ``retired`` qualifies; an active or prepared
-    install is never named. Returns the next action, or None.
+    An interrupted abandon can retire the build record yet leave the
+    pointer, which then refuses a fresh install as
+    ``initial_build_already_registered``. Only a pointer naming a ``retired``
+    build qualifies; an active or prepared install is never named. Returns
+    the next action, or None.
     """
     import laya_initial_build as initial_build
-    from laya_ledger_common import inspect_qmd_ledger
     try:
         record = initial_build.lookup(str(_checked_project(project_root)))
-        if record is None:
+        if record is None or record['phase'] != 'retired':
             return None
         identity = record['identity']
         state = Path(identity['stateRoot'])
         if identity['journalPath'] != str(state / 'install-journal.sqlite'):
             return None
-        if record['phase'] == 'retired':
-            # An interrupted abandon may have archived a partial candidate.
-            action = ('abandon-inactive-index-build' if
-                      (state / INACTIVE_RETIREMENT / 'receipt.json').is_file() else
-                      'abandon-index-build')
-            return {'nextAction': action, 'stateRoot': str(state),
-                    'reason': 'retired_build_pointer_registered'}
-        row = inspect_qmd_ledger(state / 'install-journal.sqlite')
     except Exception:  # a hint only; the real refusal stays the caller's
         return None
-    if row is None:
-        return None
-    from laya_qmd_cutover import RETIRED
-    if (row['phase'] != RETIRED or
-            row['projectRoot'] != identity['projectRoot'] or
-            row['journalPath'] != identity['journalPath'] or
-            row['candidateIncarnation'] != identity['dbIncarnation']):
-        return None
-    return {'nextAction': 'retire-index-origin', 'stateRoot': str(state),
+    # An interrupted abandon may have archived a partial candidate.
+    action = ('abandon-inactive-index-build' if
+              (state / INACTIVE_RETIREMENT / 'receipt.json').is_file() else
+              'abandon-index-build')
+    return {'nextAction': action, 'stateRoot': str(state),
             'reason': 'retired_build_pointer_registered'}
 
 
@@ -2227,7 +1425,7 @@ def _checked_project(project_root):
 
 
 def _require_fresh_bound_generation(row, state):
-    """A v3 cutover activates only the generation sealed after a freshness request.
+    """A selection activates only the generation sealed after a freshness request.
 
     The build record must be ``bound`` to exactly the ledger's generation and
     sealed evidence, from a scan started at or after the recorded request.
@@ -2251,145 +1449,64 @@ def _require_fresh_bound_generation(row, state):
 
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
-    """Explicitly activate a prepared cutover, then wake the selected sync.
+    """Explicitly activate a prepared selection, then wake the selected sync.
 
-    The caller holds the install lock. A v3 cutover first proves its bound
-    generation is the fresh one (``_require_fresh_bound_generation``); the
-    cutover owner then re-proves QMD, backup and candidate evidence, and
-    refuses a QMD change since the bind. Once active, one ``laya-sync`` wake
-    is queued so the selected worker catches up any source edit made after
-    the sealed snapshot; its outcome is reported, never retried here.
+    The caller holds the install lock. The bound generation must be the one
+    sealed after the freshness request (``_require_fresh_bound_generation``);
+    ``laya_fresh_wiki_origin.activate`` then publishes the route. Once active,
+    one ``laya-sync`` wake is queued so the selected worker catches up any
+    source edit made after the sealed snapshot; its outcome is reported,
+    never retried here.
     """
+    import laya_fresh_wiki_origin as fresh
+    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     journal = Path(journal_path)
-    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-    if (journal.parent / FRESH_LEDGER).exists():
-        import laya_fresh_wiki_origin as fresh
-        row = fresh._load(journal.parent / FRESH_LEDGER)
-        _require_fresh_bound_generation(row, journal.parent)
-        row = fresh.activate(project, journal, route_bytes)
-        return {**row, 'syncWake': _request_build_wake(str(project))}
-    from laya_qmd_cutover import (RETIRED, SCHEMA_V3, _qmd_digest, _source_binding,
-                                  inspect_bound_cutover)
-    row = inspect_bound_cutover(journal)
-    if row is None:
+    refuse_qmd_origin(journal.parent)
+    if not (journal.parent / fresh.LEDGER).exists():
         _fail('cutover_ledger_missing')
-    if row['phase'] == RETIRED:
-        _fail('cutover_binding_retired')
-    if row['schema'] == SCHEMA_V3:
-        _require_fresh_bound_generation(row, journal.parent)
-    row = activate_qmd_origin(project, journal, route_bytes)
-    result = {**row, 'syncWake': _request_build_wake(str(project))}
-    if row['schema'] == SCHEMA_V3:
-        # Committed and forward-only. A QMD write after the last pre-commit
-        # recheck is an ordinary source edit for the selected sync just
-        # queued; report it rather than hide it. Never fails the activation.
-        try:
-            names, _roots = _source_binding(row)
-            late = _qmd_digest(row['sourceDb'], row['sourceFormat'], names,
-                               True) != row['sourceDigest']
-        except Exception:
-            late = None
-        result['qmdChangedAfterActivation'] = late
-    return result
+    row = fresh._load(journal.parent / fresh.LEDGER)
+    _require_fresh_bound_generation(row, journal.parent)
+    row = fresh.activate(project, journal, route_bytes)
+    return {**row, 'syncWake': _request_build_wake(str(project))}
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
-    """Settle an interrupted cutover; an ``active`` result wakes the selected sync."""
+    """Settle an interrupted selection; an ``active`` result wakes the selected sync."""
+    import laya_fresh_wiki_origin as fresh
+    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     journal = Path(journal_path)
-    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-    if (journal.parent / FRESH_LEDGER).exists():
-        from laya_fresh_wiki_origin import recover
-        row = recover(project, journal, route_bytes)
-    else:
-        row = recover_qmd_origin(project, journal, route_bytes)
+    refuse_qmd_origin(journal.parent)
+    if not (journal.parent / fresh.LEDGER).exists():
+        _fail('cutover_ledger_missing')
+    row = fresh.recover(project, journal, route_bytes)
     if row['phase'] == 'active':
         return {**row, 'syncWake': _request_build_wake(str(project))}
     return row
 
 
 def restore_origin_selection(*, project_root, state_root):
-    """Withdraw a Laya selection back to the preserved QMD origin.
+    """Withdraw a selected route before its first selected write.
 
     The user-visible restore. Under the install lock it reads the ledger
     beside the private journal and requires the same project, journal and
-    reviewed route bytes. ``active`` restores through the cutover owner only
-    while the journal has seen no selected write (CAS to ``restored_qmd``);
-    ``switching``/``restoring`` settle through recovery; ``prepared`` never
-    left QMD and changes nothing. The result is accepted only when the ledger
-    phase, the journal state and the marker selection agree.
-
-    One attempt, no retry: a failure that moved any of them reports
-    ``recovery_required`` with what was observed. QMD, every backup, the
-    candidate stores, the ledger and the marker are kept; only the exact
-    route file this cutover published is withdrawn.
+    reviewed route bytes. ``active`` restores only while the journal has seen
+    no selected write; ``switching``/``restoring`` settle through recovery;
+    ``prepared`` never left the previous path and changes nothing. After a
+    selected write the route is forward-only. The candidate stores, the
+    ledger and the marker are kept; only the exact route file this selection
+    published is withdrawn.
     """
+    import laya_fresh_wiki_origin as fresh
+    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     journal = state / 'install-journal.sqlite'
-    from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-    if (state / FRESH_LEDGER).exists():
-        return _restore_fresh_wiki_selection(project, state, journal)
-    from laya_qmd_cutover import (MARKER, ROUTE, classify_marker,
-                                  inspect_bound_cutover, restore_qmd_origin)
-    auto = project / '.auto-context'
-
-    def observed():
-        return {'cutoverPhase': inspect_bound_cutover(journal)['phase'],
-                'journalState': inspect_journal(journal)['state'],
-                'selection': classify_marker(project, auto / MARKER, auto / ROUTE)}
-
-    with _install_lock(state):
-        row = inspect_bound_cutover(journal)
-        if row is None:
-            _fail('cutover_ledger_missing')
-        route_bytes = _read_private(state / 'reviewed-route.json', 8192)
-        if (row['projectRoot'] != str(project) or row['journalPath'] != str(journal) or
-                hashlib.sha256(route_bytes).hexdigest() != row['routeSha256']):
-            _fail('restore_cutover_mismatch')
-        from laya_qmd_cutover import RETIRED
-        if row['phase'] == RETIRED:
-            # Never selected; the project marker may now be a later install's.
-            return {'status': 'binding_retired', 'cutoverPhase': RETIRED,
-                    'journalState': inspect_journal(journal)['state'],
-                    'changesApplied': 0}
-        before = observed()
-        settled = (('prepared', 'candidate_ready', 'legacy'),
-                   ('restored', 'restored_qmd', 'legacy'))
-        if tuple(before.values()) in settled:
-            return {'status': 'qmd_selected', **before, 'changesApplied': 0}
-        try:
-            if row['phase'] == 'active':
-                restore_qmd_origin(project, journal)
-            else:
-                recover_qmd_origin(project, journal, route_bytes)
-        except Exception as exc:
-            try:
-                after = observed()
-            except Exception:
-                return {'status': 'recovery_required', 'reason': str(exc),
-                        'stateUnverified': True}
-            if after == before:
-                raise
-            return {'status': 'recovery_required', 'reason': str(exc), **after,
-                    'changesApplied': 1}
-        after = observed()
-    if tuple(after.values()) in settled and not os.path.lexists(auto / ROUTE):
-        from laya_embed_resident import wait_for_release
-        stopped = wait_for_release(state / 'runtime' / 'laya-embed.sock')
-        return {'status': 'qmd_restored', **after, 'changesApplied': 1,
-                **({} if stopped else {'embedServiceCleanup': 'pending'})}
-    if after['cutoverPhase'] == 'active' and before['cutoverPhase'] == 'switching':
-        # Recovery found the activation committed; a repeated restore decides.
-        return {'status': 'recovery_required', 'reason': 'activation_settled_forward',
-                **after, 'changesApplied': 1}
-    if after['cutoverPhase'] == 'active':
-        # A selected write was seen: the Laya route is forward-only now.
-        return {'status': 'blocked', 'reason': 'rollback_forward_only', **after,
-                'changesApplied': int(after != before)}
-    return {'status': 'recovery_required', 'reason': 'restore_unsettled', **after,
-            'changesApplied': int(after != before)}
+    refuse_qmd_origin(state)
+    if not (state / fresh.LEDGER).exists():
+        _fail('cutover_ledger_missing')
+    return _restore_fresh_wiki_selection(project, state, journal)
 
 
 def _restore_fresh_wiki_selection(project, state, journal):
@@ -2445,7 +1562,7 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
                                 _already_locked=False):
     """Seal an installed commit and stage its attested, inactive journal.
 
-    The final route is constructed by the QMD migration owner. The caller
+    The final route is constructed by the onboarding owner. The caller
     must not call this with the source checkout as ``plugin_root``. No QMD
     file, model or project route is written by staging.
     """
@@ -2515,15 +1632,6 @@ def _installed_root():
     return Path(__file__).resolve(strict=True).parent.parent
 
 
-def _origin_mode_arguments(parser):
-    """Background build is the default; the synchronous origin is explicit."""
-    mode = parser.add_mutually_exclusive_group()
-    # Accepted for compatibility with earlier callers; it is the default.
-    mode.add_argument('--background-build', action='store_true')
-    mode.add_argument('--synchronous-origin', action='store_true',
-                      help='legacy: embed one bounded scan in the installer call')
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
@@ -2534,11 +1642,8 @@ def main(argv=None):
     stage.add_argument('--route-file', required=True)
     stage.add_argument('--provider-review-file', required=True)
     stage.add_argument('--user-qmd-roots-file', required=True)
-    plan = sub.add_parser('plan-origin', help='inspect an owned two-collection QMD origin')
-    plan.add_argument('--project-root', required=True)
-    _origin_mode_arguments(plan)
     fresh_plan = sub.add_parser('plan-fresh-wiki',
-                                help='review a new wiki-only generation without QMD vector reuse')
+                                help='review a new wiki-only generation')
     fresh_plan.add_argument('--project-root', required=True)
     review = sub.add_parser('review-provider',
                             help='inventory exact local Node/model/native artifacts')
@@ -2547,19 +1652,6 @@ def main(argv=None):
     review.add_argument('--commit', required=True)
     review.add_argument('--model-file')
     review.add_argument('--dimension', type=int)
-    prepare = sub.add_parser('prepare-origin',
-                             help='prepare a reviewed bounded QMD-origin cutover')
-    prepare.add_argument('--project-root', required=True)
-    prepare.add_argument('--source-root', required=True)
-    prepare.add_argument('--state-root', required=True)
-    prepare.add_argument('--commit', required=True)
-    prepare.add_argument('--proposal-sha256', required=True)
-    prepare.add_argument('--install-id', required=True)
-    prepare.add_argument('--accepted-provider-sha256', required=True)
-    prepare.add_argument('--model-file')
-    prepare.add_argument('--dimension', type=int)
-    prepare.add_argument('--user-qmd-root', action='append', required=True)
-    _origin_mode_arguments(prepare)
     fresh_prepare = sub.add_parser('prepare-fresh-wiki',
                                    help='register an inactive new wiki-only build')
     for key in ('project-root', 'source-root', 'state-root', 'commit',
@@ -2587,12 +1679,12 @@ def main(argv=None):
         if name == 'activate':
             command.add_argument('--approve-activation', action='store_true')
     restore = sub.add_parser('restore',
-                             help='withdraw the Laya selection back to the preserved QMD')
+                             help='withdraw the Laya selection before its first selected write')
     restore.add_argument('--project-root', required=True)
     restore.add_argument('--state-root', required=True)
     restore.add_argument('--approve-restore', action='store_true')
     retire = sub.add_parser('retire-origin',
-                            help='retire a bound build with stale QMD or replacement proof')
+                            help='retire a bound, never selected build')
     retire.add_argument('--project-root', required=True)
     retire.add_argument('--state-root', required=True)
     retire.add_argument('--approve-retire', action='store_true')
@@ -2601,9 +1693,7 @@ def main(argv=None):
     state_root = (_private_parent(args.state_root)
                   if args.action in ('status', 'activate', 'recover') else None)
     journal = state_root / 'install-journal.sqlite' if state_root else None
-    if args.action == 'plan-origin':
-        result = plan_qmd_origin(args.project_root, background=not args.synchronous_origin)
-    elif args.action == 'plan-fresh-wiki':
+    if args.action == 'plan-fresh-wiki':
         result = plan_fresh_wiki_origin(args.project_root)
     elif args.action == 'build-status':
         result = initial_build_status(args.state_root)
@@ -2617,15 +1707,6 @@ def main(argv=None):
             source_root=args.source_root, plugin_root=root,
             state_root=args.state_root, commit_id=args.commit,
             model_path=args.model_file, dimension=args.dimension)
-    elif args.action == 'prepare-origin':
-        result = prepare_owned_qmd_origin(
-            project_root=args.project_root, source_root=args.source_root,
-            plugin_root=root, state_root=args.state_root, commit_id=args.commit,
-            expected_proposal_sha256=args.proposal_sha256,
-            install_id=args.install_id,
-            accepted_provider_sha256=args.accepted_provider_sha256,
-            model_path=args.model_file, dimension=args.dimension,
-            user_qmd_roots=args.user_qmd_root, background=not args.synchronous_origin)
     elif args.action == 'prepare-fresh-wiki':
         result = prepare_fresh_wiki_origin(
             project_root=args.project_root, source_root=args.source_root,

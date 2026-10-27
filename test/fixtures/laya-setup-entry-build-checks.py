@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic setup front door checks; no QMD, provider or install execution."""
+"""Synthetic setup front door checks; no provider or install execution."""
 import contextlib
 import io
 import json
@@ -30,17 +30,24 @@ class SetupInitialBuild(unittest.TestCase):
             code = setup_entry.main([action, '--project', str(self.project), *options])
         return code, json.loads(output.getvalue())
 
-    def test_plan_and_prepare_default_to_background_without_model_work(self):
-        with mock.patch.object(product, 'plan_qmd_origin',
-                               return_value={'status': 'review_required'}) as plan:
-            code, row = self.call('plan-index-origin')
+    def test_plan_and_prepare_register_a_background_build_without_model_work(self):
+        with mock.patch.object(product, 'plan_fresh_wiki_origin',
+                               return_value={'status': 'review_required'}) as plan, \
+             mock.patch.object(product, 'retired_build_pointer', return_value=None):
+            code, row = self.call('plan-fresh-wiki-origin')
         self.assertEqual((code, row['status']), (0, 'review_required'))
-        plan.assert_called_once_with(str(self.project), background=True)
-        with mock.patch.object(product, 'prepare_owned_qmd_origin',
+        plan.assert_called_once_with(str(self.project))
+        code, row = self.call('prepare-fresh-wiki-origin')
+        self.assertEqual((code, row['reason']), (1, 'state_root_required'))
+        with mock.patch.object(product, 'prepare_fresh_wiki_origin',
                                return_value={'status': 'initial_build_registered'}) as prepare:
-            code, row = self.call('prepare-index-origin')
+            code, row = self.call('prepare-fresh-wiki-origin', '--state-root', str(self.state))
         self.assertEqual((code, row['status']), (0, 'initial_build_registered'))
-        self.assertIs(prepare.call_args.kwargs['background'], True)
+        self.assertEqual(prepare.call_args.kwargs['state_root'], str(self.state))
+        for action in ('plan-index-origin', 'prepare-index-origin', 'detach-qmd-origin'):
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.call(action)
 
     def test_status_and_rescan_require_same_project_build(self):
         record = {'identity': {'projectRoot': str(self.project.resolve())}}
@@ -68,7 +75,7 @@ class SetupInitialBuild(unittest.TestCase):
         with mock.patch.object(product, '_private_parent', return_value=self.state), \
              mock.patch.object(product, 'finalize_initial_build',
                                return_value={'status': 'freshness_pending'}) as finalize, \
-             mock.patch.object(product, 'activate_qmd_origin') as activate:
+             mock.patch.object(product, 'activate_origin_selection') as activate:
             code, row = self.call('finalize-index-origin', '--state-root', str(self.state))
         self.assertEqual((code, row['status']), (0, 'freshness_pending'))
         finalize.assert_called_once_with(project_root=str(self.project), state_root=self.state)
@@ -81,7 +88,7 @@ class SetupInitialBuild(unittest.TestCase):
             self.assertEqual((code, row['status'], row['reason'], row['changesApplied']),
                              (1, 'rejected', 'index_origin_restore_approval_required', 0))
             restore.assert_not_called()
-            for outcome, expected in (('qmd_restored', 0), ('qmd_selected', 0),
+            for outcome, expected in (('legacy_restored', 0), ('legacy_selected', 0),
                                       ('recovery_required', 1), ('blocked', 1)):
                 restore.reset_mock()
                 restore.return_value = {'status': outcome}
@@ -91,32 +98,25 @@ class SetupInitialBuild(unittest.TestCase):
                 restore.assert_called_once_with(project_root=str(self.project),
                                                 state_root=self.state)
 
-    def test_retire_entry_requires_approval_and_drift_names_it(self):
+    def test_retire_entry_requires_approval(self):
         with mock.patch.object(product, '_private_parent', return_value=self.state), \
              mock.patch.object(product, 'retire_drifted_origin',
-                               return_value={'status': 'origin_binding_retired'}) as retire:
+                               return_value={'status': 'fresh_wiki_binding_retired'}) as retire:
             code, row = self.call('retire-index-origin', '--state-root', str(self.state))
             self.assertEqual((code, row['reason'], row['changesApplied']),
                              (1, 'index_origin_retire_approval_required', 0))
             retire.assert_not_called()
             code, row = self.call('retire-index-origin', '--state-root', str(self.state),
                                   '--approve-index-origin-retire')
-            self.assertEqual((code, row['status']), (0, 'origin_binding_retired'))
+            self.assertEqual((code, row['status']), (0, 'fresh_wiki_binding_retired'))
             retire.assert_called_once_with(project_root=str(self.project),
                                            state_root=self.state)
-        drift = product.InstallBlocked('cutover_source_drift_requires_fresh_generation')
-        with mock.patch.object(product, '_private_parent', return_value=self.state), \
-             mock.patch.object(product, 'finalize_initial_build', side_effect=drift):
-            code, row = self.call('finalize-index-origin', '--state-root', str(self.state))
-        self.assertEqual((code, row['status'], row['nextAction']),
-                         (1, 'rejected', 'retire-index-origin'))
 
     def test_activate_and_recover_entries_use_the_syncing_product_paths(self):
         with mock.patch.object(product, '_private_parent', return_value=self.state), \
              mock.patch.object(product, '_read_private', return_value=b'{}'), \
              mock.patch.object(product, '_install_lock',
                                side_effect=lambda _state: contextlib.nullcontext()), \
-             mock.patch.object(product, 'activate_qmd_origin') as raw_activate, \
              mock.patch.object(product, 'activate_origin_selection',
                                return_value={'phase': 'active',
                                              'syncWake': {'status': 'queued'}}) as activate, \
@@ -134,7 +134,6 @@ class SetupInitialBuild(unittest.TestCase):
         journal = self.state / 'install-journal.sqlite'
         activate.assert_called_once_with(self.project, journal, b'{}')
         recover.assert_called_once_with(self.project, journal, b'{}')
-        raw_activate.assert_not_called()
 
 
 if __name__ == '__main__':

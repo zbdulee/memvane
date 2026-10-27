@@ -776,36 +776,6 @@ def cas_rebind_route(journal_path, expected_epoch, from_route_raw, to_route_raw)
     return _cas(journal_path, expected_epoch, rebind)
 
 
-def cas_restore_qmd(journal_path, expected_epoch, expected_new_route_sha):
-    """Record an initial QMD selection after the reviewed route was removed.
-
-    Only the QMD-origin cutover ledger may call this transition. Its durable
-    restoring phase must be checked by the caller before route removal. A
-    missing route on its own never authorizes legacy fallback.
-    """
-    def restore(_path, row):
-        if (row['state'] != 'active' or row['previous'] is not None or
-                row['new_write_seen'] or row['selected'] is None or
-                row['selected_route_sha'] != expected_new_route_sha):
-            _fail('qmd_rollback_not_authorized')
-        from laya_qmd_cutover import LEDGER, MARKER, _check_marker, _ledger
-        cutover = _ledger(Path(_path).parent / LEDGER)
-        if (cutover['phase'] != 'restoring' or
-                cutover['journalPath'] != str(_path) or
-                cutover['projectRoot'] != row['project_root'] or
-                cutover['routeSha256'] != expected_new_route_sha):
-            _fail('qmd_restore_ledger_mismatch')
-        _check_marker(cutover, Path(row['project_root']) / '.auto-context' / MARKER)
-        route_path = Path(row['project_root']) / '.auto-context' / ROUTE_FILE
-        if route_path.exists() or route_path.is_symlink():
-            _fail('qmd_route_still_selected')
-        return {'state': 'restored_qmd', 'selected': None,
-                'selected_route_sha': None, 'pending': None,
-                'pending_route_sha': None, 'new_write_seen': 0,
-                'provider_attestation_sha': None, 'provider_file_identity': None}
-    return _cas(journal_path, expected_epoch, restore)
-
-
 def cas_restore_fresh(journal_path, expected_epoch, expected_new_route_sha):
     """Withdraw only a fresh-wiki route under its independent restoring ledger."""
     def restore(path, row):

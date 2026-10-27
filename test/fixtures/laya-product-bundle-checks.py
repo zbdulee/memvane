@@ -27,52 +27,12 @@ import laya_active_upgrade as active_upgrade
 import laya_fresh_wiki_origin as fresh_wiki
 import laya_inactive_upgrade as inactive_upgrade
 from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
-from laya_index_vector import qmd_markdown_title
-from laya_qmd_migration import QMD_253
 
 
 def _git(root, *args):
     return subprocess.run(('git', '-C', str(root), *args), check=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           encoding='utf-8').stdout.strip()
-
-
-def _qmd_two_collection_source(path, roots, files):
-    """Synthetic QMD 2.5.3 logical schema; no user or operating DB."""
-    with sqlite3.connect(path) as db:
-        db.executescript('''
-            CREATE TABLE content(hash TEXT PRIMARY KEY,doc TEXT NOT NULL,created_at TEXT NOT NULL);
-            CREATE TABLE documents(id INTEGER PRIMARY KEY AUTOINCREMENT,
-                collection TEXT NOT NULL,path TEXT NOT NULL,title TEXT NOT NULL,
-                hash TEXT NOT NULL,created_at TEXT NOT NULL,modified_at TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1,
-                FOREIGN KEY(hash) REFERENCES content(hash) ON DELETE CASCADE,
-                UNIQUE(collection,path));
-            CREATE TABLE content_vectors(hash TEXT NOT NULL,seq INTEGER NOT NULL DEFAULT 0,
-                pos INTEGER NOT NULL DEFAULT 0,model TEXT NOT NULL,
-                embed_fingerprint TEXT NOT NULL DEFAULT '',
-                total_chunks INTEGER NOT NULL DEFAULT 1,embedded_at TEXT NOT NULL,
-                PRIMARY KEY(hash,seq));
-            CREATE TABLE store_collections(name TEXT PRIMARY KEY,path TEXT NOT NULL,
-                pattern TEXT NOT NULL DEFAULT '**/*.md',ignore_patterns TEXT,
-                include_by_default INTEGER DEFAULT 1,update_command TEXT,context TEXT);
-            CREATE TABLE store_config(key TEXT PRIMARY KEY,value TEXT);
-            CREATE VIRTUAL TABLE documents_fts USING fts5(filepath,title,body,
-                tokenize='porter unicode61');
-            CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN SELECT 1; END;
-            CREATE TRIGGER documents_ad AFTER DELETE ON documents BEGIN SELECT 1; END;
-            CREATE TRIGGER documents_au AFTER UPDATE ON documents BEGIN SELECT 1; END;
-        ''')
-        db.executemany('INSERT INTO store_collections(name,path) VALUES(?,?)',
-                       sorted(roots.items()))
-        for collection, rel, body in files:
-            digest = hashlib.sha256(body.encode()).hexdigest()
-            db.execute('INSERT OR IGNORE INTO content VALUES(?,?,?)',
-                       (digest, body, '2026-01-01'))
-            db.execute('''INSERT INTO documents(collection,path,title,hash,
-                created_at,modified_at,active) VALUES(?,?,?,?,?,?,1)''',
-                (collection, rel, qmd_markdown_title(body, rel), digest,
-                 '2026-01-01', '2026-01-01'))
 
 
 class ProductBundleChecks(unittest.TestCase):
@@ -92,7 +52,6 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_index_source_port.py', 'source_text.py',
                  'laya_index_claim_queue.py', 'laya_index_flow.py',
                  'laya_index_runtime.py', 'laya_index_host_route.py',
-                 'laya_qmd_cutover.py', 'laya_qmd_migration.py',
                  'laya_product_sync_worker.py',
                  'laya_index_sync.py',
                  'laya_source_catalog.py', 'laya_index_capacity.py',
@@ -211,7 +170,9 @@ class ProductBundleChecks(unittest.TestCase):
     def route(self, proof, generation):
         return {'schema': host.SCHEMA, 'status': 'active',
                 'projectRoot': str(self.project),
-                'settingsSha256': hashlib.sha256(self.settings.read_bytes()).hexdigest(),
+                'settingsSha256': host.settings_identity_digest(
+                    self.project, [{'name': 'docs', 'role': 'raw',
+                                    'sourceRoot': str(self.project / 'docs')}]),
                 'dbPath': str(self.db_path), 'queuePath': str(self.queue_path),
                 'dbIncarnation': self.incarnation, 'scopeId': '6' * 32,
                 'collectionName': 'docs', 'sourceRoot': str(self.project / 'docs'),
@@ -297,7 +258,8 @@ print(json.dumps(result))'''
         self.assertIn('core/laya_local_embed_service.py', proof['includedFiles'])
         self.assertIn('core/laya_product_sync_worker.py', proof['includedFiles'])
         self.assertIn('core/laya_product_install.py', proof['includedFiles'])
-        self.assertIn('core/laya_qmd_cutover.py', proof['includedFiles'])
+        self.assertIn('core/laya_fresh_wiki_origin.py', proof['includedFiles'])
+        self.assertNotIn('core/laya_qmd_cutover.py', proof['includedFiles'])
         self.assertIn('LICENSE', proof['includedFiles'])
         self.assertIn('README.md', proof['includedFiles'])
         self.assertIn('locks/qmd-2.5.3/package-lock.json', proof['includedFiles'])
@@ -481,206 +443,6 @@ print(json.dumps(result))'''
                                     'unsafe_host_orphan_metadata'):
             bundle.inspect_full_plugin_candidate(installed)
 
-    def test_old_origin_plan_needs_new_review_before_source_scan(self):
-        with self.assertRaisesRegex(product_install.InstallBlocked,
-                                    'reviewed_origin_plan_legacy'):
-            product_install._plan_scan({'collections': []})
-
-    def test_owned_origin_plan_binds_both_qmd_collections_without_model(self):
-        wiki = self.auto / 'wiki'
-        wiki.mkdir()
-        raw = self.project / 'docs' / 'chapter.md'
-        raw.write_text('# First chapter\nOne line.\n', encoding='utf-8')
-        note = wiki / 'summary.md'
-        note.write_text('# Summary\nOne fact.\n', encoding='utf-8')
-        settings = {
-            'collections': ['docs', 'wiki'], 'indexing': True,
-            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
-            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
-            'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}
-        self.settings.write_text(json.dumps(settings))
-        documents = []
-        for path, file in (('docs/chapter.md', raw), ('wiki/summary.md', note)):
-            body = file.read_text(encoding='utf-8')
-            documents.append((path, qmd_markdown_title(body, path),
-                              hashlib.sha256(body.encode()).hexdigest(), 1, body))
-        inventory = {'collection_config': {'docs': (str(raw.parent),),
-                                            'wiki': (str(wiki),)},
-                     'documents': documents, 'digest': 'a' * 64}
-        runtime = {'managed': True, 'QMD_PACKAGE_BIN': '/synthetic/qmd'}
-        selection = {'selected': True, 'INDEX_PATH': str(self.root / 'owned-qmd.sqlite'),
-                     'generation': 'synthetic'}
-        with (mock.patch('qmd_route.binary_info', return_value=runtime),
-              mock.patch('qmd_route.project_paths', return_value=selection),
-              mock.patch('laya_qmd_migration.inspect_qmd_collections',
-                         return_value=inventory)):
-            plan = product_install.plan_qmd_origin(self.project, background=False)
-            self.assertEqual(plan['status'], 'review_required')
-            self.assertEqual(plan['sourceFiles'],
-                             [['wiki/summary.md', documents[1][2]]])
-            self.assertEqual(plan['sourceEvidenceFiles'],
-                             [['docs/chapter.md', documents[0][2]],
-                              ['wiki/summary.md', documents[1][2]]])
-            self.assertFalse(self.route_path.exists())
-            self.assertFalse(self.journal_path.exists())
-            self.settings.write_text(json.dumps({**settings,
-                'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}}))
-            with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'unsupported_selected_compile_settings'):
-                product_install.plan_qmd_origin(self.project, background=False)
-            self.settings.write_text(json.dumps(settings))
-            raw.write_text('# First chapter\nChanged.\n', encoding='utf-8')
-            with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'qmd_current_source_changed'):
-                product_install.plan_qmd_origin(self.project, background=False)
-
-    def test_owned_origin_prepares_backup_vector_candidate_and_retries_without_model(self):
-        wiki = self.auto / 'wiki'
-        wiki.mkdir()
-        raw = self.project / 'docs' / 'chapter.md'
-        body_raw, body_wiki = '# Chapter\nOriginal.\n', '# Summary\nVerified.\n'
-        raw.write_text(body_raw, encoding='utf-8')
-        (wiki / 'summary.md').write_text(body_wiki, encoding='utf-8')
-        self.settings.write_text(json.dumps({
-            'collections': ['docs', 'wiki'], 'indexing': True,
-            'collectionPaths': {'docs': 'docs', 'wiki': '.auto-context/wiki'},
-            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
-            'recallStrategy': 'hierarchical', 'compile': {'mode': 'off'}}))
-        source_db = self.root / 'owned-qmd.sqlite'
-        _qmd_two_collection_source(source_db,
-            {'docs': str(raw.parent), 'wiki': str(wiki)},
-            [('docs', 'chapter.md', body_raw),
-             ('wiki', 'summary.md', body_wiki)])
-        proof = self.candidate('plugin-v1', self.commit1)
-        review = {'vectorProfile': self.vector_profile,
-                  'providerManifest': self.provider_manifest(proof),
-                  'dependencyClosure': self.closure}
-        selection = {'selected': True, 'INDEX_PATH': str(source_db),
-                     'generation': 'synthetic'}
-        runtime = {'managed': True, 'QMD_PACKAGE_BIN': '/synthetic/qmd'}
-        calls = []
-
-        class Controller:
-            @contextmanager
-            def activity(self, *_args):
-                yield None
-            def check(self, *_args):
-                return {'ready': True}
-
-        class Provider:
-            def __init__(self, manifest):
-                calls.append('provider')
-                self.profile = {'profile_id': self_ref.vector_profile['profileId'],
-                                'model_id': self_ref.vector_profile['modelId'],
-                                'embedding_fingerprint':
-                                self_ref.vector_profile['embeddingFingerprint'],
-                                'dimension': 3}
-            def embed_document_chunks(self, body, path):
-                calls.append(('embed', path))
-                self_ref.assertTrue(backup.is_file(), 'backup before embedding')
-                return [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0, 0.0]}]
-
-        class Service:
-            def stop(self):
-                calls.append('stop')
-
-        self_ref = self
-        backup = self.install / 'qmd-origin-backup.sqlite'
-        kwargs = {'project_root': self.project, 'source_root': self.source,
-                  'plugin_root': proof['pluginRoot'], 'state_root': self.install,
-                  'commit_id': self.commit1, 'install_id': '3' * 32,
-                  'accepted_provider_sha256': 'b' * 64,
-                  'user_qmd_roots': [self.user_qmd],
-                  'coordinator': Controller(),
-                  'start_service': lambda *_args, **_kw: Service(),
-                  'provider_factory': Provider,
-                  'background': False}
-        with (mock.patch('qmd_route.binary_info', return_value=runtime),
-              mock.patch('qmd_route.project_paths', return_value=selection),
-              mock.patch('laya_product_install.review_local_provider',
-                         return_value={'proposalSha256': 'b' * 64,
-                                       'reviewedProvider': review}),
-              mock.patch('context_learning.shared.resource_report',
-                         return_value={'synthetic': True})):
-            plan = product_install.plan_qmd_origin(self.project, background=False)
-            kwargs['expected_proposal_sha256'] = plan['proposalSha256']
-            raw.write_text('# Chapter\nChanged.\n', encoding='utf-8')
-            with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'qmd_current_source_changed'):
-                product_install.prepare_owned_qmd_origin(**kwargs)
-            self.assertFalse(backup.exists())
-            raw.write_text(body_raw, encoding='utf-8')
-            queue = self.install / 'laya-claims.sqlite'
-            staged = []
-
-            class SyntheticKill(BaseException):
-                pass
-
-            def killed_create(path, *, index_incarnation=None):
-                # Model SIGKILL after the exclusive open, before SQLite init.
-                os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600))
-                staged.append(Path(path))
-                raise SyntheticKill()
-
-            with mock.patch.object(ClaimQueue, 'create', side_effect=killed_create):
-                with self.assertRaises(SyntheticKill):
-                    product_install.prepare_owned_qmd_origin(**kwargs)
-            self.assertEqual(len(staged), 1)
-            self.assertEqual(staged[0].parent.parent, self.install.resolve())
-            self.assertTrue(staged[0].parent.name.startswith('.laya-claims-'))
-            self.assertFalse(queue.exists(), 'interrupted stage must not reach final path')
-            self.assertTrue((self.install / 'laya-candidate.sqlite').is_file())
-            self.assertIn('provider', calls)
-            prior = list(calls)
-            # A pre-fix in-place create left an empty final queue: retained and
-            # rejected, never clobbered.
-            queue.write_bytes(b'')
-            with self.assertRaises(UnknownDatabase):
-                product_install.prepare_owned_qmd_origin(**kwargs)
-            self.assertEqual(queue.read_bytes(), b'')
-            queue.unlink()  # synthetic explicit recovery
-            stale_wal = Path(str(queue) + '-wal')
-            stale_wal.write_bytes(b'stale queue pages')
-            with self.assertRaisesRegex(product_install.InstallBlocked,
-                                        'partial_queue_requires_recovery'):
-                product_install.prepare_owned_qmd_origin(**kwargs)
-            self.assertFalse(queue.exists())
-            self.assertEqual(stale_wal.read_bytes(), b'stale queue pages')
-            stale_wal.unlink()  # synthetic explicit recovery
-            # A killed private stage survives under its own name; retry
-            # neither reuses nor removes it.
-            residue = self.install / '.laya-claims-killed'
-            residue.mkdir(mode=0o700)
-            (residue / 'claims.sqlite').write_bytes(b'partial')
-            with mock.patch('laya_qmd_cutover.bind_qmd_origin',
-                            side_effect=RuntimeError('synthetic pre-bind interruption')):
-                with self.assertRaisesRegex(RuntimeError,
-                                            'synthetic pre-bind interruption'):
-                    product_install.prepare_owned_qmd_origin(**kwargs)
-            self.assertTrue(backup.is_file())
-            self.assertFalse(self.route_path.exists())
-            self.assertEqual(queue.lstat().st_nlink, 1)
-            linked = self.install / '.laya-claims-linked'
-            linked.mkdir(mode=0o700)
-            os.link(queue, linked / 'claims.sqlite')
-            self.assertEqual(queue.lstat().st_nlink, 2)
-            prepared = product_install.prepare_owned_qmd_origin(**kwargs)
-        self.assertEqual(prepared['status'], 'cutover_prepared')
-        self.assertEqual(prepared['cutoverPhase'], 'prepared')
-        self.assertEqual(calls, prior, 'sealed retry must not rerun model')
-        self.assertTrue((self.install / 'laya-candidate.sqlite').is_file())
-        self.assertTrue(queue.is_file())
-        self.assertEqual(queue.lstat().st_nlink, 1)
-        self.assertFalse((linked / 'claims.sqlite').exists())
-        self.assertEqual((residue / 'claims.sqlite').read_bytes(), b'partial')
-        route = json.loads((self.install / 'reviewed-route.json').read_text())
-        with closing(ClaimQueue.open(queue)) as opened:
-            self.assertEqual(opened.binding(), route['dbIncarnation'])
-        self.assertTrue((self.install / 'reviewed-route.json').is_file())
-        self.assertTrue((self.install / 'qmd-cutover.json').is_file())
-        self.assertFalse(self.route_path.exists())
-        self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
-
     def test_local_provider_review_is_deterministic_and_requires_new_digest_on_change(self):
         proof = self.candidate('plugin-v1', self.commit1)
         package = self.root / 'qmd-package'
@@ -726,6 +488,11 @@ print(json.dumps(result))'''
                 state_root=self.install, commit_id=self.commit1,
                 model_path=str(model), dimension=3)
             self.assertEqual(first, second)
+            with self.assertRaisesRegex(product_install.InstallBlocked,
+                                        'provider_review_model_path_required'):
+                product_install.review_local_provider(
+                    source_root=self.source, plugin_root=proof['pluginRoot'],
+                    state_root=self.install, commit_id=self.commit1)
             with self.assertRaisesRegex(product_install.InstallBlocked,
                                         'unsupported_state_root_creation'):
                 product_install.review_local_provider(
@@ -991,6 +758,8 @@ print(json.dumps(result))'''
         old_route['collections'] = [
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project)},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)}]
+        old_route['settingsSha256'] = host.settings_identity_digest(
+            self.project, old_route['collections'])
         old_raw = bundle._canonical(old_route)
         created = journal.create_journal(self.journal_path, first, old_raw,
                                          user_qmd_roots=[self.user_qmd])

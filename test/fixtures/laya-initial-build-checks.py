@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inactive initial-build checks: synthetic temp corpora, no model, QMD or host.
+"""Inactive initial-build checks: synthetic temp corpora, no model or host.
 
 HOME is a temp directory, so the build pointer, state root and every store
 (A-int DB, claim queue, catalog, binding store, build record) are disposable.
@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_initial_build as initial_build
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_capacity import generation_digest
-from laya_index_source_port import scan_collections
 from laya_index_vector import profile_identity
 import laya_product_install as product
 import laya_product_sync_worker as worker
@@ -135,13 +134,12 @@ class BuildCase(unittest.TestCase):
                     'journalPath': str(self.state / 'install-journal.sqlite'),
                     'routeFile': str(self.state / 'reviewed-route.json'),
                     'routeSha256': 'a' * 64, 'attestationSha256': self.attestation,
-                    'vectorProfileId': PROFILE_ID,
-                    'sourceDb': str(self.project / 'qmd.sqlite'), 'sourceFormat': 'qmd-2.5.3',
+                    'vectorProfileId': PROFILE_ID, 'originMode': 'fresh_wiki_only',
                     'proposalSha256': 'd' * 64, 'providerProposalSha256': 'e' * 64}
         identity.update(changes)
         return identity
 
-    def register(self, *, fresh=False):
+    def register(self):
         """The stores ``_register_initial_build`` creates, without bundle/journal."""
         candidate = self.state / product.BUILD_CANDIDATE
         LayaIndexA(candidate, create=True).close()
@@ -150,10 +148,6 @@ class BuildCase(unittest.TestCase):
         product.prepare_capacity_stores(candidate, {'wiki': self.roots['wiki']},
                                         SCOPE, incarnation)
         identity = self.identity(dbIncarnation=incarnation)
-        if fresh:
-            identity.pop('sourceDb')
-            identity.pop('sourceFormat')
-            identity['originMode'] = 'fresh_wiki_only'
         initial_build.create_or_verify(identity)
         initial_build.register_project(identity)
         return identity
@@ -211,7 +205,7 @@ class BuildProgressTests(BuildCase):
     def test_default_build_warms_pending_owner_and_borrows_it(self):
         from laya_embed_resident import AttachedService
         self.corpus(1)
-        self.register(fresh=True)
+        self.register()
         with mock.patch('laya_embed_resident.ensure_running',
                         side_effect=ResourceDeferred('laya_service_preparing')) as owner:
             first = worker.run_initial_build(
@@ -234,7 +228,7 @@ class BuildProgressTests(BuildCase):
     def test_fresh_build_attaches_the_resident_model_in_the_lane(self):
         from laya_embed_resident import AttachedService
         self.corpus(1)
-        self.register(fresh=True)
+        self.register()
         with mock.patch('laya_embed_resident.ensure_running',
                         return_value=AttachedService()) as owner, \
              mock.patch.object(worker, 'start_owned_embed_service',
@@ -250,19 +244,6 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(FakeProvider.calls, ['wiki/f000.md'])
         self.assertEqual(self.coordinator.lanes, ['provider'])
         self.assertEqual(self.service_log, [])
-
-    def test_qmd_origin_keeps_its_finite_build_service(self):
-        self.corpus(1)
-        self.register()
-        with mock.patch('laya_embed_resident.ensure_running',
-                        side_effect=AssertionError('preview owner used')), \
-             mock.patch.object(worker, 'start_owned_embed_service',
-                               side_effect=self.start):
-            result = worker.run_initial_build(
-                self.project, self.record(), coordinator=self.coordinator, report={},
-                start_service=worker.start_owned_embed_service)
-        self.assertIn(result['state'], ('pending', 'indexed', 'unchanged'))
-        self.assertEqual(self.service_log, ['start', 'stop'])
 
     def test_cached_backfill_gets_bounded_turn_while_model_work_yields(self):
         self.corpus(1)
@@ -325,22 +306,6 @@ class BuildProgressTests(BuildCase):
         self.assertGreater(sealed['bytes'], 5_000_000)
         self.assertEqual(len(FakeProvider.calls), 211)
         self.assertIn(270, FakeProvider.budgets)
-
-    def test_one_synchronous_scan_bound_routes_to_background_not_refusal(self):
-        self.corpus(201, collection='docs')
-        class Empty:
-            def list_exclusions(self, _scope):
-                return []
-        with self.assertRaises(IndexContractError) as caught:
-            scan_collections(self.roots, SCOPE, Empty(), max_files=product.SYNC_ORIGIN_MAX_FILES,
-                             max_bytes=product.SYNC_ORIGIN_MAX_BYTES)
-        self.assertTrue(product._exceeds_one_scan(caught.exception))
-        (self.docs / 'f000.md').unlink()
-        (self.docs / 'f000.md').symlink_to(self.docs / 'f001.md')
-        with self.assertRaises(IndexContractError) as unsafe:
-            scan_collections(self.roots, SCOPE, Empty(), max_files=10_000)
-        self.assertFalse(product._exceeds_one_scan(unsafe.exception))
-        self.assertFalse(hasattr(product, 'MAX_INITIAL_FILES'))
 
     def test_large_single_file_is_hashed_by_one_admitted_step(self):
         self.corpus(4)
@@ -577,9 +542,8 @@ class RecordAndInstallerTests(BuildCase):
 
     def test_registration_creates_private_inactive_stores_idempotently(self):
         plan = {'projectRoot': str(self.project), 'settingsSha256': '1' * 64,
-                'scopeId': SCOPE, 'collections': self.collections,
-                'sourceDb': str(self.project / 'qmd.sqlite'), 'sourceFormat': 'qmd-2.5.3',
-                'proposalSha256': 'd' * 64}
+                'mode': 'fresh_wiki_only', 'scopeId': SCOPE,
+                'collections': self.collections, 'proposalSha256': 'd' * 64}
         proof = {'bundleManifestSha256': '2' * 64, 'ownershipManifestSha256': '3' * 64}
         staged = []
 
@@ -633,20 +597,20 @@ class RecordAndInstallerTests(BuildCase):
             worker.run(self.project, coordinator=self.coordinator, report={},
                        start_service=self.start)
 
-    def test_finalize_reads_qmd_only_after_a_fresh_seal(self):
+    def test_finalize_binds_only_after_a_fresh_seal(self):
         # The full bind -> activate -> restore flow is in
-        # laya-qmd-cutover-bound-checks.py; here only the freshness gate.
+        # laya-fresh-onboarding-e2e-checks.py; here only the freshness gate.
         self.corpus(3)
         identity = self.register()
         patches = [
-            mock.patch.object(product, 'plan_qmd_origin',
+            mock.patch.object(product, 'plan_fresh_wiki_origin',
                               return_value={'proposalSha256': identity['proposalSha256']}),
             mock.patch('laya_install_journal.inspect_journal',
                        side_effect=lambda _p: dict(self.journal)),
             mock.patch.object(product, 'preflight_product_candidate',
                               return_value={'attestationSha256': self.attestation}),
-            mock.patch('laya_qmd_migration.inspect_qmd_collections',
-                       side_effect=AssertionError('qmd read')),
+            mock.patch('laya_fresh_wiki_origin.bind',
+                       side_effect=AssertionError('bind reached')),
         ]
         for patcher in patches:
             patcher.start()
@@ -663,11 +627,13 @@ class RecordAndInstallerTests(BuildCase):
         self.assertEqual(self.catalog().status()['active']['scan_id'], scan)
         self.assertEqual(self.until_settled()[-1]['initialBuild'], 'sealed')
         self.assertTrue(initial_build.freshness_satisfied(self.record()))
-        # Fresh and sealed: the next call reaches the QMD inventory read that
-        # precedes the backup and the bound cutover.
-        with self.assertRaisesRegex(AssertionError, 'qmd read'):
+        # Fresh and sealed: the next call reaches the reviewed route proof
+        # that immediately precedes the selection bind.
+        route = self.state / 'reviewed-route.json'
+        route.write_bytes(b'{"synthetic":"route"}')
+        route.chmod(0o600)
+        with self.assertRaisesRegex(product.InstallBlocked, 'initial_build_route_changed'):
             product.finalize_initial_build(project_root=self.project, state_root=self.state)
-        self.assertEqual(sorted(p.name for p in self.state.glob('qmd-origin-backup*')), [])
         self.assertEqual(self.record()['phase'], 'sealed')
         self.assertFalse((self.project / '.auto-context').exists())
 
@@ -681,7 +647,7 @@ class RecordAndInstallerTests(BuildCase):
         forged = {**record['sealed'], 'vectorRows': record['sealed']['vectorRows'] + 1}
         with initial_build.owner(self.state):
             initial_build.advance(record, sealed=forged)
-        with mock.patch.object(product, 'plan_qmd_origin',
+        with mock.patch.object(product, 'plan_fresh_wiki_origin',
                                return_value={'proposalSha256': identity['proposalSha256']}), \
                 mock.patch('laya_install_journal.inspect_journal',
                            side_effect=lambda _p: dict(self.journal)), \

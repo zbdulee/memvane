@@ -9,12 +9,11 @@ project under its own state root to the executing bundle:
 * inactive build (registered/building/blocked/sealed): a sealed build is
   first marked for a fresh scan, then ``laya_inactive_upgrade``;
 * bound build (prepared selection ledger): ``laya_bound_upgrade``;
-* selected route (fresh-wiki or QMD-origin ledger): ``laya_active_upgrade``,
-  then one selected sync wake.
+* selected route (fresh-wiki ledger): ``laya_active_upgrade``, then one
+  selected sync wake.
 
-Before any of these, a selected QMD-origin or byte-bound install runs
-``laya_origin_detach.auto_converge`` once; SessionStart also requests this
-worker for such an install when no bundle changed.
+A state root that still holds a QMD-origin ledger (``qmd-cutover.json``) is
+refused as ``qmd_origin_detach_required``; no retry clears it.
 
 Source rule: the host marketplace clone is the only unattended source, and
 only when its HEAD is the installed commit (from the host's own record) and
@@ -70,7 +69,7 @@ REFUSALS = frozenset((
     'provider_changed_rebuild_required', 'older_host_bundle',
     'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
     'marketplace_source_dirty', 'host_layout_unknown',
-    'active_upgrade_schema_unsupported'))
+    'qmd_origin_detach_required'))
 
 
 class UpgradeRefused(RuntimeError):
@@ -430,6 +429,9 @@ def upgrade_install(project_root, state, root, home=None):
         return {'status': 'current', 'kind': kind}
     if identity['pluginRoot'] == str(root):
         return {'status': 'current', 'kind': kind}
+    from laya_ledger_common import QMD_ORIGIN_DETACH_REQUIRED, qmd_ledger_present
+    if qmd_ledger_present(state):
+        _refuse(QMD_ORIGIN_DETACH_REQUIRED)
     commit = installed_commit(root, home)
     if commit is not None and commit == identity['sourceCommit'] and kind != 'inactive':
         try:
@@ -456,10 +458,6 @@ def upgrade_install(project_root, state, root, home=None):
                    dimension=manifest.get('dimension'))
     if kind == 'active':
         import laya_active_upgrade
-        if (Path(state) / 'qmd-cutover.json').exists():
-            from laya_qmd_cutover import SCHEMA_V3, _ledger
-            if _ledger(Path(state) / 'qmd-cutover.json')['schema'] != SCHEMA_V3:
-                _refuse('active_upgrade_schema_unsupported')
         result = laya_active_upgrade.upgrade(**options)
         from laya_product_install import _request_build_wake
         result['syncWake'] = _request_build_wake(str(project_root))
@@ -522,19 +520,9 @@ def _host(root, home):
 
 
 def run(project_root, *, root=None, home=None):
-    """Worker: upgrade every install of one project, one state root at a time.
-
-    A selected install first converges to the fresh-wiki origin and an
-    identity-bound settings binding (``laya_origin_detach``), so the upgrade
-    below takes the fresh-wiki path. That step logs and never raises.
-    """
+    """Worker: upgrade every install of one project, one state root at a time."""
     project = Path(project_root).resolve(strict=True)
     root = Path(root or executing_root())
-    try:
-        import laya_origin_detach
-        laya_origin_detach.auto_converge(project)
-    except Exception:
-        pass  # Convergence failures are logged by the step; the upgrade runs.
     results = []
     for state in installs(project):
         with _state_lock(state) as owned:

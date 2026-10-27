@@ -179,7 +179,7 @@ class Readiness(unittest.TestCase):
    try:raise bundle.BundleEvidenceError('installed_file_set_not_exact_commit',{'unexpected':['core/__pycache__/x.pyc'],'missing':[],'truncated':False})
    except bundle.BundleEvidenceError as exc:raise product.InstallBlocked(str(exc)) from exc
   out=io.StringIO()
-  with patch.object(product,'plan_qmd_origin',side_effect=blocked),contextlib.redirect_stdout(out):setup_entry.main(['plan-index-origin','--project',str(self.project)])
+  with patch.object(product,'plan_fresh_wiki_origin',side_effect=blocked),contextlib.redirect_stdout(out):setup_entry.main(['plan-fresh-wiki-origin','--project',str(self.project)])
   row=json.loads(out.getvalue());self.assertEqual(row['reason'],'installed_file_set_not_exact_commit');self.assertEqual(row['detail']['unexpected'],['core/__pycache__/x.pyc'])
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -1,12 +1,12 @@
 """Recoverable bundle replacement for a bound, not yet selected Laya build.
 
 A bound build is a sealed candidate tied to a ``prepared`` selection ledger
-(QMD-origin ``qmd-cutover.json`` or fresh-wiki ``fresh-wiki-cutover.json``)
-and the project marker. QMD (or the old wiki path) stays selected. This
-replaces only the reviewed route, the provider attestation and the
-journal's pending bundle, and restates the three ledger/marker/record digests
-that name them. The generation, vector profile, scope, stores, QMD source
-and its backup never move; the build stays ``bound``.
+(``fresh-wiki-cutover.json``) and the project marker; no Laya route is
+selected yet. This replaces only the reviewed route, the provider attestation
+and the journal's pending bundle, and restates the three
+ledger/marker/record digests that name them. The generation, vector profile,
+scope and stores never move; the build stays ``bound``. A state root that
+still holds a QMD-origin ledger refuses as ``qmd_origin_detach_required``.
 
 While the files switch, the marker no longer matches the ledger or journal
 and the selector classifies the project ``blocked``; a crash leaves the intent
@@ -119,8 +119,7 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
     row = ledger.load(state / ledger.name)
     if (row['phase'] != 'prepared' or row['journalPath'] != str(journal_path) or
             row['routeSha256'] != identity['routeSha256'] or
-            row['attestationSha256'] != identity['attestationSha256'] or
-            (ledger.origin == 'qmd' and row['schema'] != ledger.module.SCHEMA_V3)):
+            row['attestationSha256'] != identity['attestationSha256']):
         _fail('bound_upgrade_ledger_changed')
     marker = _read(auto / ledger.marker_name)
     route_file = Path(identity['routeFile'])

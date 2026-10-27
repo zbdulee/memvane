@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""QMD-origin bundle upgrades on real bound/selected stores; no model or host.
+"""Fresh-wiki bundle upgrades on real bound/selected stores; no model or host.
 
-A real inactive initial build is sealed and bound to a real v3
-``qmd-cutover.json`` (see ``laya-qmd-cutover-bound-checks.py``). Only the
-installer journal, the provider review and the bundle inspection are
-synthetic; ledger, marker, route, record, stores and backups are the real
-modules writing temp files under a temporary HOME.
+A real inactive initial build is sealed with the fake provider of
+``laya-initial-build-checks.py`` and bound to a real ``fresh-wiki-cutover.json``
+ledger and project marker. Only the installer journal, the provider review and
+the bundle inspection are synthetic; ledger, marker, route, record and stores
+are the real modules writing temp files under a temporary HOME.
 """
 from __future__ import annotations
 
@@ -21,26 +21,34 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / 'core'))
-BOUND = runpy.run_path(str(HERE / 'laya-qmd-cutover-bound-checks.py'))
+BUILD = runpy.run_path(str(HERE / 'laya-initial-build-checks.py'))
 
+import config  # noqa: E402
 import laya_active_upgrade as active  # noqa: E402
 import laya_bound_upgrade as bound_upgrade  # noqa: E402
+import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_initial_build as initial_build  # noqa: E402
-import laya_qmd_cutover as cutover  # noqa: E402
 import laya_product_install as product  # noqa: E402
+import laya_product_sync_worker as worker  # noqa: E402
+import laya_wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
-from laya_index_host_route import SCHEMA_V2 as ROUTE_V2  # noqa: E402
+from laya_index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
+                                   settings_identity_digest)
 from laya_install_journal import PRODUCTION_ATTESTATION, _canon  # noqa: E402
 from laya_product_bundle import BundleEvidenceError  # noqa: E402
 
-PROFILE_ID = BOUND['PROFILE_ID']
-SCOPE = BOUND['SCOPE']
+PROFILE_ID = BUILD['PROFILE_ID']
+SCOPE = BUILD['SCOPE']
 OLD_COMMIT, NEW_COMMIT = '1' * 40, '2' * 40
 PROFILE = {'profileId': PROFILE_ID, 'modelId': 'synthetic-model',
            'embeddingFingerprint': 'a' * 64, 'dimension': 3, 'metric': 'cosine',
            'approvedProviderId': 'synthetic-provider',
            'providerArtifactSha256': 'b' * 64,
            'providerRelativePath': 'core/laya_local_embed_provider.py'}
+
+
+class Kill(BaseException):
+    """A synthetic process death between two durable writes."""
 
 
 def _sha(raw):
@@ -66,7 +74,7 @@ def proof(root, commit, *, profile=PROFILE):
 
 
 def identity(item):
-    return {'pluginRoot': item['pluginRoot'], 'installId': BOUND['BUILD']['INSTALL'],
+    return {'pluginRoot': item['pluginRoot'], 'installId': BUILD['INSTALL'],
             'generation': 'g-' + '9' * 32, 'sourceCommit': item['sourceCommit'],
             'bundleManifestSha256': item['bundleManifestSha256'],
             'ownershipManifestSha256': item['ownershipManifestSha256'],
@@ -132,7 +140,7 @@ class Journal:
         return self.inspect()
 
     def restore(self, _path, epoch, route_sha):
-        raise RuntimeError('qmd_restore_not_in_this_check')
+        raise RuntimeError('restore_not_in_this_check')
 
     def replace(self, _path, epoch, current_raw, next_proof, next_raw):
         if (self.state != 'candidate_ready' or epoch != self.epoch or
@@ -153,33 +161,49 @@ class Journal:
         return self.inspect()
 
 
-# runpy returns a copy of the module globals; patch the ones setUp reads.
-BOUND['BoundCase'].setUp.__globals__['FakeJournal'] = Journal
+class FreshBoundCase(BUILD['BuildCase']):
+    """A minimal-settings project whose sealed build binds a fresh-wiki ledger."""
 
-
-class UpgradeCase(BOUND['BoundCase']):
     def setUp(self):
         super().setUp()
+        self.auto = self.project / '.auto-context'
+        self.wiki = self.auto / 'wiki'
+        self.wiki.mkdir(parents=True)
+        self.settings = self.auto / 'settings.json'
+        self.settings.write_text(json.dumps({'name': 'onboard', 'skipPaths': []}))
+        raw, wiki = config.minimal_collection_names('onboard')
+        self.collections = [{'name': raw, 'role': 'raw', 'sourceRoot': str(self.project)},
+                            {'name': wiki, 'role': 'wiki', 'sourceRoot': str(self.wiki)}]
+        self.roots = {item['name']: item['sourceRoot'] for item in self.collections}
+        self.marker = self.auto / fresh.MARKER
+        self.route = self.auto / fresh.ROUTE
+        self.ledger = self.state / fresh.LEDGER
+        self.journal_path = self.state / 'install-journal.sqlite'
+        self.fj = Journal()
         self.fj.state_root = self.state
-        self.old_root = str(self.home / 'claude-cache' / 'old')
-        self.new_root = str(self.home / 'claude-cache' / 'new')
-        self.old = proof(self.old_root, OLD_COMMIT)
-        self.new = proof(self.new_root, NEW_COMMIT)
-        self.fj.pending = identity(self.old)
-        self.removed = set()
-        self.bundles = {self.old_root: self.old, self.new_root: self.new}
-        REEXTRACTED.clear()
-        self.addCleanup(REEXTRACTED.clear)
-        # The upgrade backup snapshots the journal file; its CAS is synthetic.
-        import sqlite3
-        with sqlite3.connect(self.journal_path) as db:
-            db.execute('CREATE TABLE selection(id INTEGER PRIMARY KEY)')
-        self.journal_path.chmod(0o600)
-        self.write_attestation(self.old, manifest(self.old_root))
-        self.review = {'proposalSha256': 'e' * 64,
-                       'reviewedProvider': {'vectorProfile': PROFILE,
-                                            'providerManifest': manifest(self.new_root),
-                                            'dependencyClosure': []}}
+        for target, name, value in (
+                (worker, 'inspect_journal', self.fj.inspect),
+                (worker, 'preflight_product_candidate', self.fj.approval),
+                (fresh, 'inspect_journal', self.fj.inspect),
+                (fresh, 'preflight_product_candidate', self.fj.approval),
+                (fresh, 'cas_activate', self.fj.activate),
+                (fresh, 'cas_restore_fresh', self.fj.restore),
+                (discovery, '_raw_snapshot', lambda *_a: {}),
+                (discovery, 'seed_source_snapshot', lambda *_a: {}),
+                (product, 'preflight_product_candidate', self.fj.approval),
+                (product, 'inspect_journal', self.fj.inspect),
+                (product, 'plan_fresh_wiki_origin',
+                 lambda _project, **_kw: {'proposalSha256': 'd' * 64})):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (
+                ('laya_install_journal.inspect_journal', self.fj.inspect),
+                ('laya_install_journal._route',
+                 lambda raw, _journal: (json.loads(raw.decode('utf-8')), _sha(raw)))):
+            patcher = mock.patch(name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def write_attestation(self, item, provider):
         value = {'schema': 'laya-production-provider-attestation-v2',
@@ -199,11 +223,12 @@ class UpgradeCase(BOUND['BoundCase']):
         LayaIndexA(candidate, create=True).close()
         incarnation = product._empty_or_bound_candidate(candidate, SCOPE)
         product._publish_claim_queue(queue, incarnation)
-        product.prepare_capacity_stores(candidate, {'wiki': self.roots['wiki']},
+        wiki = next(item['name'] for item in self.collections if item['role'] == 'wiki')
+        product.prepare_capacity_stores(candidate, {wiki: str(self.wiki)},
                                         SCOPE, incarnation)
         pending = self.fj.pending
         route = {'schema': ROUTE_V2, 'status': 'active', 'projectRoot': str(self.project),
-                 'settingsSha256': _sha(self.settings.read_bytes()),
+                 'settingsSha256': settings_identity_digest(self.project, self.collections),
                  'dbPath': str(candidate), 'queuePath': str(queue),
                  'dbIncarnation': incarnation, 'scopeId': SCOPE,
                  'collections': self.collections, 'journalPath': str(self.journal_path),
@@ -218,11 +243,66 @@ class UpgradeCase(BOUND['BoundCase']):
             stream.write(self.route_bytes)
         self.fj.route_sha = _sha(self.route_bytes)
         ident = self.identity(dbIncarnation=incarnation, routeSha256=self.fj.route_sha,
-                              attestationSha256=self.fj.attestation,
-                              sourceDb=str(self.qmd), sourceFormat='qmd-2.5.3')
+                              attestationSha256=self.fj.attestation)
         initial_build.create_or_verify(ident)
         initial_build.register_project(ident)
         return ident
+
+    def bound(self, cards=3):
+        """Register, build, request freshness, re-seal and bind."""
+        for i in range(cards):
+            (self.wiki / f'w{i}.md').write_text(f'# Wiki {i}\nwiki body {i}\n',
+                                                encoding='utf-8')
+        self.register()
+        self.assertEqual(self.until_settled()[-1]['initialBuild'], 'sealed')
+        finalize = lambda: product.finalize_initial_build(project_root=self.project,
+                                                          state_root=self.state)
+        self.assertEqual(finalize()['status'], 'freshness_pending')
+        self.assertEqual(self.until_settled()[-1]['initialBuild'], 'sealed')
+        result = finalize()
+        self.assertEqual(result['status'], 'cutover_prepared', result)
+        return result
+
+    def row(self):
+        return fresh._load(self.ledger)
+
+    def selection(self):
+        return fresh.classify_marker(self.project, self.marker, self.route)
+
+    def activate(self):
+        return fresh.activate(self.project, self.journal_path, self.route_bytes)
+
+    def kept(self):
+        """Nothing a bundle upgrade may delete: candidate stores and sources."""
+        for name in (product.BUILD_CANDIDATE, product.BUILD_QUEUE,
+                     product.BUILD_CANDIDATE + '.catalog.sqlite',
+                     product.BUILD_CANDIDATE + '.bindings.sqlite'):
+            self.assertTrue((self.state / name).is_file(), name)
+        self.assertTrue(any(self.wiki.glob('*.md')))
+
+
+class UpgradeCase(FreshBoundCase):
+    def setUp(self):
+        super().setUp()
+        self.old_root = str(self.home / 'claude-cache' / 'old')
+        self.new_root = str(self.home / 'claude-cache' / 'new')
+        self.old = proof(self.old_root, OLD_COMMIT)
+        self.new = proof(self.new_root, NEW_COMMIT)
+        self.fj.pending = identity(self.old)
+        self.removed = set()
+        self.bundles = {self.old_root: self.old, self.new_root: self.new}
+        REEXTRACTED.clear()
+        self.addCleanup(REEXTRACTED.clear)
+        # The upgrade backup snapshots the journal file; its CAS is synthetic.
+        import sqlite3
+        with sqlite3.connect(self.journal_path) as db:
+            db.execute('CREATE TABLE selection(id INTEGER PRIMARY KEY)')
+        self.journal_path.chmod(0o600)
+        self.write_attestation(self.old, manifest(self.old_root))
+        self.review = {'proposalSha256': 'e' * 64,
+                       'reviewedProvider': {'vectorProfile': PROFILE,
+                                            'providerManifest': manifest(self.new_root),
+                                            'dependencyClosure': []}}
 
     def inspect_bundle(self, root):
         if root in self.removed:
@@ -272,7 +352,7 @@ class UpgradeCase(BOUND['BoundCase']):
 
 
 class BoundUpgradeTests(UpgradeCase):
-    def test_bound_qmd_build_moves_to_new_bundle_and_still_activates(self):
+    def test_bound_build_moves_to_new_bundle_and_still_activates(self):
         self.bound()
         before, record = self.row(), self.record()
         self.removed.add(self.old_root)  # host GC'd the superseded cache
@@ -287,7 +367,7 @@ class BoundUpgradeTests(UpgradeCase):
         self.assertEqual(route['pluginRoot'], self.new_root)
         self.assertEqual(_sha((self.state / 'reviewed-route.json').read_bytes()),
                          after['routeSha256'])
-        self.assertEqual(cutover._read_json(self.marker), cutover._marker(after))
+        self.assertEqual(fresh._read_json(self.marker), fresh._marker(after))
         rebound = self.record()
         self.assertEqual((rebound['phase'], rebound['sealed']), ('bound', record['sealed']))
         self.assertEqual(rebound['identity']['routeSha256'], after['routeSha256'])
@@ -306,11 +386,11 @@ class BoundUpgradeTests(UpgradeCase):
         real = bound_upgrade.inactive._atomic_expected
 
         def interrupted(path, old, new):
-            if Path(path).name == cutover.MARKER:
-                raise BOUND['Kill']()
+            if Path(path).name == fresh.MARKER:
+                raise Kill()
             return real(path, old, new)
         with mock.patch.object(bound_upgrade.inactive, '_atomic_expected', interrupted):
-            with self.assertRaises(BOUND['Kill']):
+            with self.assertRaises(Kill):
                 self.run_upgrade(bound_upgrade)
         self.assertEqual(self.selection(), 'blocked')  # never silently legacy
         self.assertTrue((self.state / bound_upgrade.INTENT).exists())
@@ -330,9 +410,17 @@ class BoundUpgradeTests(UpgradeCase):
         self.assertEqual((self.state / 'reviewed-route.json').read_bytes(), route)
         self.assertEqual(self.selection(), 'legacy')
 
+    def test_qmd_origin_ledger_refuses_before_any_write(self):
+        self.bound()
+        before = self.row()
+        (self.state / 'qmd-cutover.json').write_text('{}')
+        with self.assertRaisesRegex(Exception, '^qmd_origin_detach_required$'):
+            self.run_upgrade(bound_upgrade)
+        self.assertEqual(self.row(), before)
 
-class ActiveQmdUpgradeTests(UpgradeCase):
-    def test_selected_qmd_origin_moves_to_new_bundle_without_index_change(self):
+
+class ActiveUpgradeTests(UpgradeCase):
+    def test_selected_build_moves_to_new_bundle_without_index_change(self):
         self.bound()
         self.activate()
         self.assertEqual(self.selection(), 'candidate')
@@ -345,7 +433,7 @@ class ActiveQmdUpgradeTests(UpgradeCase):
         self.assertTrue(self.unchanged_fields(before, after, active.LEDGER_CHANGES))
         self.assertEqual(json.loads(self.route.read_bytes())['pluginRoot'], self.new_root)
         self.assertEqual(_sha(self.route.read_bytes()), after['routeSha256'])
-        self.assertEqual(cutover._read_json(self.marker), cutover._marker(after))
+        self.assertEqual(fresh._read_json(self.marker), fresh._marker(after))
         self.assertEqual(self.fj.calls[-2:], ['stage', 'activate'])
         self.assertEqual(self.fj.selected['pluginRoot'], self.new_root)
         self.assertEqual(self.selection(), 'candidate')
@@ -360,19 +448,31 @@ class ActiveQmdUpgradeTests(UpgradeCase):
         real = active.inactive._atomic_expected
 
         def interrupted(path, old, new):
-            if Path(path).name == cutover.ROUTE:
-                raise BOUND['Kill']()
+            if Path(path).name == fresh.ROUTE:
+                raise Kill()
             return real(path, old, new)
         with mock.patch.object(active.inactive, '_atomic_expected', interrupted):
-            with self.assertRaises(BOUND['Kill']):
+            with self.assertRaises(Kill):
                 self.run_upgrade(active)
         self.assertEqual(self.row()['phase'], 'upgrading')
         self.assertEqual(self.selection(), 'blocked')
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
         self.assertEqual(self.selection(), 'candidate')
 
+    def test_qmd_origin_intent_refuses(self):
+        self.bound()
+        self.activate()
+        (self.state / active.INTENT).write_bytes(initial_build._canon({
+            'schema': 'laya-active-upgrade-intent-v1', 'origin': 'qmd',
+            'projectRoot': str(self.project), 'stateRoot': str(self.state),
+            'backup': '', 'oldRecord': {}, 'oldLedger': {}, 'newLedger': {}}))
+        (self.state / active.INTENT).chmod(0o600)
+        with self.assertRaisesRegex(Exception, '^qmd_origin_detach_required$'):
+            self.run_upgrade(active)
+        self.assertEqual(self.row()['phase'], 'active')
 
-class CrossHostQmdUpgradeTests(UpgradeCase):
+
+class CrossHostUpgradeTests(UpgradeCase):
     """Claude 0.37.1 -> Codex 0.37.1 (newer commit, same label) -> Claude 0.37.2.
 
     The Codex upgrade leaves its settled intent behind; Codex then re-extracts
@@ -435,8 +535,8 @@ class CrossHostQmdUpgradeTests(UpgradeCase):
         # An interrupted upgrade is not a receipt: another bundle must not
         # archive it, and its own resume still verifies the new provider.
         fenced = self.row()
-        with mock.patch.object(active, '_switch', side_effect=BOUND['Kill']()):
-            with self.assertRaises(BOUND['Kill']):
+        with mock.patch.object(active, '_switch', side_effect=Kill()):
+            with self.assertRaises(Kill):
                 self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
         self.assertEqual(self.row(), fenced)
         intent = json.loads((self.state / active.INTENT).read_bytes())

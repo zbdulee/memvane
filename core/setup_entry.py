@@ -404,9 +404,9 @@ def main(argv=None):
                                           'plan-legacy-enroll', 'prepare-legacy-enroll', 'activate-legacy-enroll',
                                           'plan-install','install',
                                           'plan-learning-profile','activate-learning-profile',
-                                          'plan-index-origin','plan-fresh-wiki-origin',
+                                          'plan-fresh-wiki-origin',
                                           'review-index-provider',
-                                          'prepare-index-origin','prepare-fresh-wiki-origin',
+                                          'prepare-fresh-wiki-origin',
                                           'index-origin-status',
                                           'index-build-status','index-build-rescan',
                                           'upgrade-inactive-index-build',
@@ -418,8 +418,7 @@ def main(argv=None):
                                           'restore-index-origin','retire-index-origin',
                                           'abandon-index-build','abandon-inactive-index-build',
                                           'seal-host-copy',
-                                          'plan-minimal-settings','migrate-minimal-settings',
-                                          'plan-detach-qmd-origin','detach-qmd-origin'))
+                                          'plan-minimal-settings','migrate-minimal-settings'))
     parser.add_argument('--project', required=True)
     parser.add_argument('--qmd-mode', choices=('auto', 'active', 'reuse', 'install'), default='auto')
     parser.add_argument('--qmd-entry'); parser.add_argument('--node'); parser.add_argument('--npm')
@@ -477,26 +476,8 @@ def main(argv=None):
     parser.add_argument('--approve-settings-rewrite', action='store_true')
     parser.add_argument('--rollback-settings-rebind', action='store_true')
     parser.add_argument('--name')
-    parser.add_argument('--accepted-detach-proposal-sha256')
-    parser.add_argument('--approve-origin-detach', action='store_true')
-    parser.add_argument('--rollback-origin-detach', action='store_true')
     args = parser.parse_args(argv)
     try:
-        if args.action in ('plan-detach-qmd-origin', 'detach-qmd-origin'):
-            # Converts a selected QMD-origin or byte-bound install to the
-            # fresh-wiki origin with an identity-bound route; forfeits QMD restore.
-            import laya_origin_detach
-            project = str(Path(args.project).resolve())
-            if args.action == 'plan-detach-qmd-origin':
-                result = laya_origin_detach.plan(project)
-            elif not args.approve_origin_detach:
-                raise ValueError('origin_detach_approval_required')
-            else:
-                result = laya_origin_detach.apply(
-                    project, args.accepted_detach_proposal_sha256,
-                    rollback=args.rollback_origin_detach)
-            print(json.dumps(result, sort_keys=True, ensure_ascii=False))
-            return 1 if result.get('status') == 'refused' else 0
         if args.action in ('plan-minimal-settings', 'migrate-minimal-settings'):
             import settings_migration
             project = str(Path(args.project).resolve())
@@ -510,9 +491,9 @@ def main(argv=None):
                     rollback=args.rollback_settings_rebind, name=args.name)
             print(json.dumps(result, sort_keys=True, ensure_ascii=False))
             return 1 if result.get('status') == 'refused' else 0
-        if args.action in ('plan-index-origin','plan-fresh-wiki-origin',
+        if args.action in ('plan-fresh-wiki-origin',
                            'review-index-provider',
-                           'prepare-index-origin','prepare-fresh-wiki-origin',
+                           'prepare-fresh-wiki-origin',
                            'index-origin-status',
                            'index-build-status','index-build-rescan',
                            'upgrade-inactive-index-build',
@@ -526,35 +507,20 @@ def main(argv=None):
                            'seal-host-copy'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
-            if (args.action not in ('plan-index-origin', 'plan-fresh-wiki-origin')
-                    and not args.state_root):
+            if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')
-            if args.action == 'plan-index-origin':
-                result = product.plan_qmd_origin(args.project, background=True)
+            if args.action == 'plan-fresh-wiki-origin':
+                result = product.plan_fresh_wiki_origin(args.project)
                 pending = product.retired_build_pointer(Path(args.project).resolve())
                 if pending is not None:
                     # Finish the interrupted retirement before preparing.
                     result['pendingRetirement'] = pending
-            elif args.action == 'plan-fresh-wiki-origin':
-                result = product.plan_fresh_wiki_origin(args.project)
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     source_root=args.source_root, plugin_root=installed,
                     state_root=args.state_root, commit_id=args.commit,
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
-            elif args.action == 'prepare-index-origin':
-                result = product.prepare_owned_qmd_origin(
-                    project_root=args.project, source_root=args.source_root,
-                    plugin_root=installed, state_root=args.state_root,
-                    commit_id=args.commit,
-                    expected_proposal_sha256=args.accepted_origin_sha256,
-                    accepted_provider_sha256=args.accepted_provider_sha256,
-                    install_id=args.install_id,
-                    user_qmd_roots=args.user_qmd_root,
-                    model_path=args.provider_model_file,
-                    dimension=args.provider_dimension,
-                    background=True)
             elif args.action == 'prepare-fresh-wiki-origin':
                 result = product.prepare_fresh_wiki_origin(
                     project_root=args.project, source_root=args.source_root,
@@ -614,13 +580,13 @@ def main(argv=None):
                     result = product.finalize_initial_build(
                         project_root=args.project, state_root=state)
                 elif args.action == 'restore-index-origin':
-                    # User-visible withdrawal to the preserved QMD; deletes no DB.
+                    # Withdraws the route before its first selected write; deletes no DB.
                     if not args.approve_index_origin_restore:
                         raise ValueError('index_origin_restore_approval_required')
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
                 elif args.action == 'retire-index-origin':
-                    # A QMD change stranded the bound build; deletes no DB or store.
+                    # A bound, never selected build; deletes no DB or store.
                     if not args.approve_index_origin_retire:
                         raise ValueError('index_origin_retire_approval_required')
                     result = product.retire_drifted_origin(
@@ -714,12 +680,8 @@ def main(argv=None):
             detail = _exception_detail(exc)
             if detail is not None:
                 result['detail'] = detail
-            if (str(exc) == 'cutover_source_drift_requires_fresh_generation' and
-                    args.action in ('finalize-index-origin', 'activate-index-origin')):
-                # The bound generation is stale and never rebound: the way on.
-                result['nextAction'] = 'retire-index-origin'
             if (str(exc) == 'initial_build_already_registered' and
-                    args.action == 'prepare-index-origin'):
+                    args.action == 'prepare-fresh-wiki-origin'):
                 import laya_product_install as product
                 pending = product.retired_build_pointer(Path(args.project).resolve())
                 if pending is not None:

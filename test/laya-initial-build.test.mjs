@@ -9,6 +9,6 @@ test('inactive initial build registers, steps bounded, seals and gates finalize 
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 25 tests/);
+  assert.match(result.stderr, /Ran 23 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

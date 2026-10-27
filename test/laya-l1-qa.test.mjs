@@ -11,7 +11,7 @@ test('Laya vector development rehearsal remains separate from formal L1', (t) =>
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /FORMAL_RELEASE_L1=NOT_RUN/);
   assert.match(result.stdout, /DEVELOPMENT_VECTOR_ONLY=RUN/);
-  assert.match(result.stderr, /Ran 2 tests/);
+  assert.match(result.stderr, /Ran 1 test/);
   assert.doesNotMatch(result.stderr, /skipped=/);
   for (const label of ['BLOCKED_CLAUDE_RECALL', 'BLOCKED_CLAUDE_INDEX',
     'BLOCKED_CODEX_RECALL', 'BLOCKED_CODEX_INDEX',

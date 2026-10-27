@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Import-graph guard: fresh-wiki selection never loads the QMD-origin code.
+"""Import-graph guard: the QMD-origin modules are gone and stay unloaded.
 
 Every check runs in a new interpreter so ``sys.modules`` starts empty. The
-shared ledger primitives live in ``laya_ledger_common``; only a QMD-origin
-marker or ledger may load ``laya_qmd_cutover`` / ``laya_qmd_migration``.
+shared ledger primitives live in ``laya_ledger_common``. A QMD-origin marker
+or ledger is refused as ``qmd_origin_detach_required``; no module loads code
+for it.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / 'core'
-QMD_MODULES = ('laya_qmd_cutover', 'laya_qmd_migration')
+QMD_MODULES = ('laya_qmd_cutover', 'laya_qmd_migration', 'laya_origin_detach')
 
 PRELUDE = f'''
 import json, os, sys
@@ -72,11 +73,13 @@ class ImportGuard(unittest.TestCase):
             import laya_index_host_route, laya_host_response
             import laya_fresh_wiki_origin, laya_ledger_common
             import laya_active_upgrade, laya_bound_upgrade, laya_inactive_upgrade
-            import laya_bundle_upgrade, laya_settings_rebind, laya_origin_detach
+            import laya_bundle_upgrade, laya_settings_rebind
             import laya_product_install, laya_product_sync_worker, setup_entry
             report(loaded=loaded())
         ''')
         self.assertEqual(out['loaded'], [])
+        for name in QMD_MODULES:
+            self.assertFalse((CORE / (name + '.py')).exists(), name)
 
     def test_fresh_marker_selection_uses_only_the_fresh_classifier(self):
         self.write_marker('laya-fresh-wiki-selection-marker-v1')
@@ -99,15 +102,15 @@ class ImportGuard(unittest.TestCase):
         self.assertEqual(out['decisions'], [['blocked', 'qmd_selection_uncertain']] * 3)
         self.assertEqual(out['loaded'], [])
 
-    def test_qmd_marker_still_loads_the_qmd_origin_classifier(self):
+    def test_qmd_marker_is_refused_as_detach_required(self):
         self.write_marker('laya-qmd-selection-marker-v1')
         out = run('''
             import laya_index_host_route as route
             decision = route.select_route(sys.argv[1], action='recall')
             report(loaded=loaded(), decision=[decision['state'], decision['reason']])
         ''', str(self.project))
-        self.assertEqual(out['decision'], ['blocked', 'qmd_selection_uncertain'])
-        self.assertIn('laya_qmd_cutover', out['loaded'])
+        self.assertEqual(out['decision'], ['blocked', 'qmd_origin_detach_required'])
+        self.assertEqual(out['loaded'], [])
 
     def test_fresh_selection_and_upgrade_flows_never_load_qmd_origin(self):
         out = run('''
@@ -132,17 +135,35 @@ class ImportGuard(unittest.TestCase):
         self.assertEqual(out['ran'], 18)
         self.assertEqual(out['loaded'], [])
 
-    def test_absent_qmd_ledger_probe_never_loads_qmd_origin(self):
+    def test_qmd_ledger_probe_and_refusal(self):
         out = run('''
             import laya_active_upgrade as active
             import laya_settings_rebind as rebind
-            from laya_ledger_common import inspect_qmd_ledger
+            from laya_ledger_common import (CutoverBlocked, qmd_ledger_present,
+                                            refuse_qmd_origin)
             state = Path(sys.argv[1])
-            probe = inspect_qmd_ledger(state / 'install-journal.sqlite')
+            absent = qmd_ledger_present(state)
+            refuse_qmd_origin(state)
+            (state / 'qmd-cutover.json').write_text('{}')
+            try:
+                refuse_qmd_origin(state)
+                refused = None
+            except CutoverBlocked as exc:
+                refused = str(exc)
+            reasons = []
+            for make in (lambda: active._origin(state), lambda: active._Ledger('qmd'),
+                         lambda: rebind._Ledger('qmd')):
+                try:
+                    make()
+                except Exception as exc:
+                    reasons.append(str(exc))
             ledgers = [active._Ledger('fresh').name, rebind._Ledger('fresh').name]
-            report(loaded=loaded(), probe=probe, ledgers=ledgers)
+            report(loaded=loaded(), absent=absent, refused=refused, reasons=reasons,
+                   ledgers=ledgers)
         ''', str(self.state))
-        self.assertIsNone(out['probe'])
+        self.assertFalse(out['absent'])
+        self.assertEqual(out['refused'], 'qmd_origin_detach_required')
+        self.assertEqual(out['reasons'], ['qmd_origin_detach_required'] * 3)
         self.assertEqual(out['ledgers'], ['fresh-wiki-cutover.json'] * 2)
         self.assertEqual(out['loaded'], [])
 
@@ -150,24 +171,18 @@ class ImportGuard(unittest.TestCase):
         out = run('''
             import laya_ledger_common as common
             import laya_fresh_wiki_origin as fresh
-            import laya_qmd_cutover as qmd
             marker = Path(sys.argv[1])
             with common._operation_lock(marker):
                 created = sorted(path.name for path in marker.parent.iterdir())
-            same = all(getattr(qmd, name) is getattr(common, name) for name in (
-                'CutoverBlocked', '_fail', '_canon', '_sha', '_private_file',
-                '_read_json', '_fsync_dir', '_write', '_identity', '_ledger_lock',
-                '_operation_lock', '_preflight_multi_settings', 'BOUND_EVIDENCE'))
             same_fresh = all(getattr(fresh, name) is getattr(common, name) for name in (
                 '_fsync_dir', '_identity', '_ledger_lock', '_operation_lock',
                 '_preflight_multi_settings', '_private_file', '_read_json', '_write'))
-            report(created=created, same=same, same_fresh=same_fresh,
-                   ledger=qmd.LEDGER, marker_schema=qmd.MARKER_SCHEMA,
+            report(created=created, same_fresh=same_fresh,
+                   ledger=common.QMD_LEDGER, marker_schema=common.QMD_MARKER_SCHEMA,
                    blocked=common.CutoverBlocked.__name__)
         ''', str(self.marker))
         # Older installed bundles lock the same file; the name must not move.
         self.assertEqual(out['created'], ['laya-qmd-cutover-operation.lock'])
-        self.assertTrue(out['same'])
         self.assertTrue(out['same_fresh'])
         self.assertEqual(out['ledger'], 'qmd-cutover.json')
         self.assertEqual(out['marker_schema'], 'laya-qmd-selection-marker-v1')

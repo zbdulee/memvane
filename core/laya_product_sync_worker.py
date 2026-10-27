@@ -745,9 +745,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
     if record['phase'] == 'bound':
         return {'state': 'unchanged', 'reason': 'initial_build_bound', 'initialBuild': 'bound'}
     if record['phase'] == 'sealed':
-        from laya_ledger_common import inspect_qmd_ledger
+        from laya_ledger_common import qmd_ledger_present
         from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-        if (inspect_qmd_ledger(identity['journalPath']) is not None or
+        if (qmd_ledger_present(identity['stateRoot']) or
                 (Path(identity['stateRoot']) / FRESH_LEDGER).exists()):
             return _checked({'state': 'deferred', 'reason': 'initial_build_bind_unsettled',
                              'initialBuild': 'sealed'})
@@ -781,9 +781,9 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
             return {'state': 'unchanged', 'reason': 'initial_build_bound',
                     'initialBuild': 'bound'}
         if record['phase'] == 'sealed':
-            from laya_ledger_common import inspect_qmd_ledger
+            from laya_ledger_common import qmd_ledger_present
             from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-            if (inspect_qmd_ledger(identity['journalPath']) is not None or
+            if (qmd_ledger_present(identity['stateRoot']) or
                     (Path(identity['stateRoot']) / FRESH_LEDGER).exists()):
                 # Finalize may have written the durable ledger and died before
                 # its project marker. The selector still says plain QMD then,
@@ -822,8 +822,7 @@ def run_initial_build(project, record, *, coordinator=None, report=None,
         roots = wiki_index_roots(identity['collections'])
         try:
             with ExitStack() as stack:
-                resident = (start_service is start_owned_embed_service
-                            and identity.get('originMode') == 'fresh_wiki_only')
+                resident = start_service is start_owned_embed_service
 
                 def start_resident():
                     # The detached, installation-owned model starts outside
