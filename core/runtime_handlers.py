@@ -33,6 +33,14 @@ def update(row):
 def laya_sync(row):
     from laya_runtime_dispatch import run
     result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
+    if result['state']=='indexed':
+        # The Laya publish receipt replaces the QMD claim ACK as the
+        # learning wake; it never changes this handler's own outcome.
+        try:
+            from context_learning.shared import wake_after_index
+            wake_after_index(Path(row['target']))
+        except Exception:
+            pass
     return result['state'] in ('indexed','unchanged')
 
 
@@ -44,16 +52,16 @@ def laya_compile(row):
 
 def learning(row):
     import config
-    import setup_guard
     from context_learning import shared
+    from context_learning.laya_learning import ready
     project=Path(row['target'])
     if not project.is_dir():return True
-    if setup_guard.status(project)['status']!='ready':return False
+    if not ready(project):return False
     cfg=config.find_project_config(str(project))['config'];root=shared._safe_root(cfg,project)
     if root is None:return True
     from context_learning.history_lifecycle import worker_lease
     with worker_lease():
-        if setup_guard.status(project)['status']!='ready':return False
+        if not ready(project):return False
         # A hook-persisted full (teacher+trainer) request, else a training-only
         # retry (no teacher, no fresh captures), runs only in its owned child;
         # this dispatcher returns at once so index/update wakes keep priority.
