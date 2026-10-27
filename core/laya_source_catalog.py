@@ -24,9 +24,11 @@ same source contract but spreads the work over durable steps:
 Source validation follows the port's source contract: canonical no-follow
 root binding, hidden-entry and ``source_text.DENIED_SOURCE_SEGMENTS`` skip,
 symlink/device/non-regular rejection for source-text names, safe UTF-8 names,
-depth/entry bounds and strict UTF-8 content. Non-text entries (symlinks,
-symlinked or cross-device directories, sockets) are ignored; every violation
-on a source-text file blocks the scan.
+depth/entry bounds and UTF-8 content. Non-text entries (symlinks,
+symlinked or cross-device directories, sockets) are ignored, and a raw
+source-text file that is not UTF-8 is dropped from the snapshot (counted in the
+step's ``work.undecodable_skipped``); a wiki-only catalog blocks on it. Every
+other violation on a source-text file blocks the scan.
 
 Two correctness claims are kept apart
 (see docs/plans/2026-10-19-laya-source-batched-scan.md):
@@ -225,6 +227,7 @@ class _Work:
         self.stats = 0
         self.dirs = 0
         self.files = 0
+        self.undecodable = 0
 
     def unit(self) -> bool:
         if self.units >= self.max_files:
@@ -244,7 +247,7 @@ class _Work:
     def report(self) -> Dict[str, int]:
         return {'units': self.units, 'dirs_listed': self.dirs,
                 'files_hashed': self.files, 'bytes_read': self.bytes,
-                'stats': self.stats}
+                'stats': self.stats, 'undecodable_skipped': self.undecodable}
 
 
 def _sig_text(st: os.stat_result) -> str:
@@ -294,8 +297,13 @@ def _raw_line(path: str, sha256: str, size: int) -> bytes:
     return json.dumps([path, sha256, size], ensure_ascii=False).encode('utf-8') + b'\n'
 
 
-def _hash_entry(dfd: int, name: str, rel: str, size: int, sig: str) -> str:
-    """Stream one enumerated file: SHA-256 plus strict UTF-8, no whole-file buffer."""
+def _hash_entry(dfd: int, name: str, rel: str, size: int, sig: str,
+                strict_utf8: bool = True) -> Optional[str]:
+    """Stream one enumerated file: SHA-256 plus UTF-8 check, no whole-file buffer.
+
+    A non-UTF-8 file blocks a strict (wiki-only) scan; otherwise it returns
+    ``None`` after the full read and signature check: it is not a source.
+    """
     fd = os.open(name, _FILE_FLAGS, dir_fd=dfd)
     try:
         before = os.fstat(fd)
@@ -304,24 +312,34 @@ def _hash_entry(dfd: int, name: str, rel: str, size: int, sig: str) -> str:
         digest = hashlib.sha256()
         decoder = codecs.getincrementaldecoder('utf-8')()
         total = 0
-        try:
-            while True:
-                chunk = os.read(fd, min(_READ_CHUNK, size + 1 - total))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > size:
-                    raise _Blocked('source_changed', f'changed during read: {rel}')
-                digest.update(chunk)
-                decoder.decode(chunk)
-            decoder.decode(b'', True)
-        except UnicodeDecodeError:
-            raise _Blocked('source_invalid', f'invalid UTF-8: {rel}') from None
+        decoded = True
+        while True:
+            chunk = os.read(fd, min(_READ_CHUNK, size + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > size:
+                raise _Blocked('source_changed', f'changed during read: {rel}')
+            digest.update(chunk)
+            if decoded:
+                try:
+                    decoder.decode(chunk)
+                except UnicodeDecodeError:
+                    decoded = False
+        if decoded:
+            try:
+                decoder.decode(b'', True)
+            except UnicodeDecodeError:
+                decoded = False
         after = os.fstat(fd)
     finally:
         os.close(fd)
     if _sig_text(after) != sig or total != size:
         raise _Blocked('source_changed', f'changed during read: {rel}')
+    if not decoded:
+        if strict_utf8:
+            raise _Blocked('source_invalid', f'invalid UTF-8: {rel}')
+        return None
     return digest.hexdigest()
 
 
@@ -803,7 +821,16 @@ class LayaSourceCatalog:
             return 'deferred'
         if not work.fits(size):
             return 'pending'
-        digest = _hash_entry(opener.open_dir(dir_rel), name, path, size, sig)
+        digest = _hash_entry(opener.open_dir(dir_rel), name, path, size, sig,
+                             self.wiki_only)
+        if digest is None:
+            # Not a text source: drop the row so the snapshot never lists it.
+            self.db.execute('DELETE FROM scan_files WHERE seq=? AND path=?', (seq, path))
+            work.units += 1
+            work.bytes += size
+            work.undecodable += 1
+            state['cursor'] = path
+            return None
         self.db.execute('UPDATE scan_files SET sha256=? WHERE seq=? AND path=?',
                         (digest, seq, path))
         self.db.execute('INSERT INTO hash_ready(seq,path,sha256) VALUES(?,?,?)',

@@ -865,10 +865,14 @@ class LayaIndexASlice(unittest.TestCase):
                           ('docs/deep.mdx', 'deep'),
                           ('node_modules/pkg/README.md', 'dep'),
                           ('build/out.md', 'built'), ('vendor/v.md', 'vendored'),
-                          ('__pycache__/x.md', 'cache')):
+                          ('__pycache__/x.md', 'cache'),
+                          ('Library/PackageCache/y.md', 'unity cache')):
             path = root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding='utf-8')
+        (root / 'latin1.txt').write_bytes(b'caf\xe9')
+        (root / 'Temp').mkdir()
+        (root / 'Temp' / 'broken.md').write_bytes(b'\xff')
         (root / 'assets').mkdir()
         for i in range(40):
             (root / 'assets' / f'blob{i:02d}.bin').write_bytes(b'\xff')
@@ -883,11 +887,13 @@ class LayaIndexASlice(unittest.TestCase):
         root = self._text_only_tree()
         root_path = str(root.resolve())
         # 40 non-text names exceed the lowered bound; only visited directories
-        # (root, docs, assets) and text files (4) count toward it.
+        # (root, docs, assets) and text files (5) count toward it.
         with mock.patch.object(source_port, 'MAX_ENTRIES', 10):
             scanned = source_port.scan(root_path, 'alpha', self.index)
         self.assertEqual([f.path for f in scanned.files],
                          ['docs/deep.mdx', 'guide.RST', 'notes.txt', 'one.md'])
+        # A non-UTF-8 text file is not a source in a raw scan.
+        self.assertEqual(scanned.undecodable, ('latin1.txt',))
         with mock.patch.object(source_port, 'MAX_ENTRIES', 6):
             with self.assertRaisesRegex(IndexContractError, 'index_stale'):
                 source_port.scan(root_path, 'alpha', self.index)
@@ -921,6 +927,11 @@ class LayaIndexASlice(unittest.TestCase):
                                                self.index, wiki_only=True)
         self.assertEqual([f.path for f in scanned.files],
                          ['wiki/card.md', 'wiki/nested/log.md'])
+        (wiki / 'bad.md').write_bytes(b'\xff')
+        with self.assertRaises(IndexContractError) as caught:
+            source_port.scan_collections({'wiki': str(wiki.resolve())}, 'alpha',
+                                         self.index, wiki_only=True)
+        self.assertEqual(str(caught.exception.__cause__), 'invalid UTF-8: wiki/bad.md')
 
     def test_bound_candidate_freezes_base_source_and_claim_receipt(self):
         docs = [('one', 'target one', True)]

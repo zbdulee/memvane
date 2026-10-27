@@ -16,7 +16,6 @@ import stat
 
 from laya_index_a import IndexContractError
 from laya_index_vector import profile_identity
-from source_text import is_source_text
 
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -188,7 +187,7 @@ class ReviewedLocalQmdProvider:
         if title is not None and (kind != 'document' or not isinstance(title, str)):
             _fail('provider_text_invalid')
         if kind == 'document_chunks' and (not isinstance(path, str)
-                or not is_source_text(path) or path.startswith('/')
+                or not path.endswith('.md') or path.startswith('/')
                 or any(part in ('', '.', '..') for part in path.split('/'))):
             _fail('provider_text_invalid')
         try:

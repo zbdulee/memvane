@@ -17,7 +17,11 @@ Source contract
     file on another device, an unsafe or non-UTF-8 name of a walked directory
     or source-text file, an unreadable entry, exceeding the file/byte/depth/entry
     bounds, a file or directory that changes between stats, and invalid UTF-8
-    content. The entry bound counts visited directories plus source-text files.
+    content in a wiki-only scan. The entry bound counts visited directories
+    plus source-text files.
+  * In a raw (non-wiki-only) scan a source-text file whose bytes are not UTF-8
+    is not a source: it stays out of the manifest, still counts toward
+    ``max_files``, and is listed in ``undecodable``.
   * The manifest digests sorted ``(path, sha256, eligible)`` for every
     enumerated file. Excluded files (path or hash exclusions) stay in the
     manifest with ``eligible=False``. Bytes remain stored until a physical-deletion policy exists, but cannot be served.
@@ -124,6 +128,8 @@ class SourceScan:
     files: tuple[SourceFile, ...]
     manifest: str
     by_path: Mapping[str, SourceFile]
+    # Source-text files skipped because their bytes are not UTF-8.
+    undecodable: tuple[str, ...] = ()
 
     def documents(self) -> list[tuple[str, str, bool]]:
         # Excluded bytes remain retained under the current no-physical-GC policy.
@@ -137,6 +143,7 @@ class CollectionSourceScan:
     files: tuple[SourceFile, ...]
     manifest: str
     by_path: Mapping[str, SourceFile]
+    undecodable: tuple[str, ...] = ()
 
     def documents(self) -> list[tuple[str, str, bool]]:
         return [(f.path, f.text, f.eligible) for f in self.files]
@@ -149,6 +156,11 @@ class _Budget:
     files: int = 0
     bytes: int = 0
     entries: int = 0
+    undecodable: list = None
+
+    def __post_init__(self) -> None:
+        if self.undecodable is None:
+            self.undecodable = []
 
 
 def _positive_int(name: str, value: Any) -> int:
@@ -235,7 +247,8 @@ def _sig(st: os.stat_result) -> tuple[int, ...]:
     return (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
-def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budget):
+def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budget,
+               strict_utf8: bool = True):
     budget.files += 1
     if budget.files > budget.max_files:
         _raise_stale("too many files")
@@ -266,7 +279,11 @@ def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budge
     try:
         data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        _raise_stale(f"invalid UTF-8: {rel}", exc)
+        if strict_utf8:
+            _raise_stale(f"invalid UTF-8: {rel}", exc)
+        # Not a text source: it stays out of the snapshot and is reported.
+        budget.undecodable.append(rel)
+        return None
     budget.bytes += len(data)
     return rel, hashlib.sha256(data).hexdigest(), data
 
@@ -274,7 +291,8 @@ def _read_file(dfd: int, name: str, rel: str, st: os.stat_result, budget: _Budge
 def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
           root_dev: int, budget: _Budget, out: list,
           wiki_only_root: bool = False,
-          extensions: tuple[str, ...] = SOURCE_TEXT_EXTENSIONS) -> None:
+          extensions: tuple[str, ...] = SOURCE_TEXT_EXTENSIONS,
+          strict_utf8: bool = False) -> None:
     if depth > MAX_DEPTH:
         _raise_stale("too deep")
     budget.entries += 1
@@ -306,7 +324,7 @@ def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
                 if _node(cst) != _node(st):
                     _raise_stale(f"directory replaced: {rel}")
                 _walk(cfd, cst, rel + "/", depth + 1, root_dev, budget, out,
-                      extensions=extensions)
+                      extensions=extensions, strict_utf8=strict_utf8)
             finally:
                 os.close(cfd)
         elif text:
@@ -320,7 +338,9 @@ def _walk(dfd: int, dst: os.stat_result, prefix: str, depth: int,
             if wiki_only_root and name == 'log.md':
                 if generated_wiki_log_file(dfd, name, st):
                     continue
-            out.append(_read_file(dfd, name, rel, st, budget))
+            item = _read_file(dfd, name, rel, st, budget, strict_utf8)
+            if item is not None:
+                out.append(item)
     after = os.fstat(dfd)
     if _sig(after) != _sig(dst):
         _raise_stale(f"directory changed during scan: {prefix or '.'}")
@@ -357,6 +377,7 @@ def scan(root: str, scope: str, index: Any,
         files=files,
         manifest=_digest(scope, [(f.path, f.sha256, int(f.eligible)) for f in files]),
         by_path=MappingProxyType({f.path: f for f in files}),
+        undecodable=tuple(sorted(budget.undecodable)),
     )
 
 
@@ -401,7 +422,8 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
             root_st = os.fstat(root_fd)
             _walk(root_fd, root_st, name + "/", 0, root_st.st_dev,
                   budget, raw, wiki_only_root=wiki_only,
-                  extensions=WIKI_TEXT_EXTENSIONS if wiki_only else SOURCE_TEXT_EXTENSIONS)
+                  extensions=WIKI_TEXT_EXTENSIONS if wiki_only else SOURCE_TEXT_EXTENSIONS,
+                  strict_utf8=wiki_only)
         except OSError as exc:
             _raise_stale("collection source unreadable", exc)
         finally:
@@ -414,6 +436,7 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
         roots=MappingProxyType(ordered), scope=scope, files=files,
         manifest=_digest(scope, [(f.path, f.sha256, int(f.eligible)) for f in files]),
         by_path=MappingProxyType({f.path: f for f in files}),
+        undecodable=tuple(sorted(budget.undecodable)),
     )
 
 

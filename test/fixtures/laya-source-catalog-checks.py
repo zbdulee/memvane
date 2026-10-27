@@ -469,13 +469,6 @@ class ValidationTests(CatalogCase):
         self.assert_blocked_keeps(catalog, snap1, 'source_invalid', 'symlink: plans/link.md')
         link.unlink()
 
-        bad = self.plans / 'bad.md'
-        bad.write_bytes(b'ok \xff\xfe')
-        catalog.request_scan()
-        self.assert_blocked_keeps(catalog, snap1, 'source_invalid',
-                                  'invalid UTF-8: plans/bad.md')
-        bad.unlink()
-
         # Hidden entries, denied directories and non-text files stay outside
         # the contract; non-text symlinks (file or directory) are ignored.
         (self.plans / '.hidden.md').write_bytes(b'\xff')
@@ -488,11 +481,34 @@ class ValidationTests(CatalogCase):
             self.write(self.plans, f'{denied}/pkg/README.md', '# dep\n')
         os.symlink(self.plans / 'blob.bin', self.plans / 'link.bin')
         os.symlink(self.base, self.plans / 'linkdir', target_is_directory=True)
+        for cache in ('Library', 'Temp', 'obj'):
+            self.write(self.plans, f'{cache}/PackageCache/README.md', '# cache\n')
+        # A raw source-text file that is not UTF-8 is not a source: skipped, counted.
+        (self.plans / 'bad.md').write_bytes(b'ok \xff\xfe')
         catalog.request_scan()
-        done = drive(catalog)[-1]
+        steps = drive(catalog)
+        done = steps[-1]
         self.assertEqual(done['status'], 'complete')
         self.assertEqual(done['published']['files'], 12)
+        self.assertEqual(sum(step['work']['undecodable_skipped'] for step in steps), 1)
         self.assertEqual(self.catalog_manifest(catalog), self.port_manifest())
+        source = scan_collections(self.roots, SCOPE, self.index, max_files=1000,
+                                  max_bytes=20_000_000)
+        self.assertEqual(source.undecodable, ('plans/bad.md',))
+        self.assertNotIn('plans/bad.md', source.by_path)
+
+    def test_wiki_only_catalog_blocks_on_invalid_utf8(self):
+        roots = {'wiki': str(self.wiki)}
+        self.write(self.wiki, 'card.md', '# Card\nwiki card\n')
+        (self.wiki / 'bad.md').write_bytes(b'ok \xff\xfe')
+        catalog = self.open_catalog(create=True, roots=roots, wiki_only=True)
+        self.assertEqual(catalog.request_scan()['status'], 'started')
+        result = drive(catalog)[-1]
+        self.assertEqual(result['status'], 'blocked', result)
+        self.assertEqual(result['blocked']['reason'], 'source_invalid')
+        self.assertIn('invalid UTF-8: wiki/bad.md', result['blocked']['detail'])
+        with self.assertRaisesRegex(IndexContractError, 'index_stale'):
+            scan_collections(roots, SCOPE, self.index, wiki_only=True)
 
     def test_binding_and_root_validation(self):
         catalog, _snap = self.complete_catalog()

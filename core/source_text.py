@@ -3,8 +3,9 @@
 This module is the single place that decides which raw source files count as
 text documents and which directory names are never walked. The raw scan
 (`laya_index_source_port`, `laya_source_catalog`), the compile enqueue gate and
-the compile worker all read these values. ``core/laya_local_embed_worker.mjs``
-keeps a mirrored copy of the extension list (a test asserts parity).
+the compile worker all read these values. The embed provider and worker are
+not gated here: they are provider-reviewed artifacts, and the Laya index embeds
+only ``.md`` wiki cards.
 
 Wiki cards under ``.auto-context/wiki`` stay ``.md``-only; ``WIKI_TEXT_EXTENSIONS``
 names that narrower set for wiki-only scans.
@@ -26,6 +27,7 @@ DENIED_SOURCE_SEGMENTS = frozenset({
     'node_modules', 'bower_components', 'vendor', 'Pods',
     'venv', 'site-packages', '__pycache__',
     'dist', 'build', 'out', 'target', 'coverage', 'DerivedData',
+    'Library', 'Temp', 'obj',  # Unity project caches
 })
 
 
