@@ -678,12 +678,92 @@ class ResponseChecks(unittest.TestCase):
                                         'identifiers': []}), \
              patch.object(response, '_pinned_vector', return_value=[
                  row(path=f'wiki/excluded-{n}.md') for n in range(100)]):
-            with self.assertRaisesRegex(response.HostResponseError,
-                                        'selected_source_exclusion_candidate_limit'):
-                response._v2_phase(
-                    runtime, 'token', 'find card', VECTOR_PROFILE,
-                    lambda *_: None, {'wiki': '/synthetic/wiki'},
-                    ('wiki',), (), 0, (), source_filter=lambda _item: False)
+            # A full top-100 with no proved card is capped, never refused:
+            # search answers with what it proved (here nothing).
+            capped = []
+            found, _ = response._v2_phase(
+                runtime, 'token', 'find card', VECTOR_PROFILE,
+                lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (), source_filter=lambda _item: False,
+                on_capped=capped.append)
+            self.assertEqual(found, [])
+            self.assertEqual(capped, ['vector'])
+        # Full top-100 with two proved cards and topN 5: both are served.
+        sparse = ([row(path=f'wiki/excluded-{n}.md') for n in range(98)]
+                  + [row(path='wiki/keep-a.md'), row(path='wiki/keep-b.md')])
+        with patch.object(source_port, '_seal', return_value=seal), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': [], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=sparse):
+            found, _ = response._v2_phase(
+                runtime, 'token', 'find card', VECTOR_PROFILE,
+                lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (),
+                source_filter=lambda item: item['path'].startswith('wiki/keep-'))
+            self.assertEqual(sorted(item['path'] for item in found),
+                             ['wiki/keep-a.md', 'wiki/keep-b.md'])
+
+    def test_v2_lexical_full_page_with_few_proved_rows_is_capped(self):
+        import keywords
+        import laya_index_source_port as source_port
+        seal = (SCOPE, 'generation-7', 'manifest')
+        page = ([row(path=f'wiki/excluded-{n}.md') for n in range(99)]
+                + [row(path='wiki/keep.md')])
+
+        class FullPageIndex(FakeIndex):
+            def search_many(self, token, queries, limit, **_kw):
+                return [page[:limit] for _query in queries]
+        runtime = SimpleNamespace(index=FullPageIndex())
+        capped = []
+        with patch.object(source_port, '_seal', return_value=seal), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(source_port, '_verify_row', side_effect=lambda r, *_a: r), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': ['card'], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=[]):
+            found, _ = response._v2_phase(
+                runtime, 'token', 'find card', VECTOR_PROFILE,
+                lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (),
+                source_filter=lambda item: item['path'] == 'wiki/keep.md',
+                on_capped=capped.append)
+        self.assertEqual([item['path'] for item in found], ['wiki/keep.md'])
+        self.assertIn('lexical', capped)
+
+    def test_v2_card_without_body_digest_is_served_like_qmd_reader(self):
+        import yaml_scalars
+        with tempfile.TemporaryDirectory(prefix='laya-body-digest-') as temp:
+            project, revision, decision = self.span_project(temp)
+            base = ('---\ntitle: Synthetic card\nstatus: verified\n'
+                    'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                    + json.dumps(revision) + '\n{digest_line}---\n## Summary\nSource fact.\n')
+            absent = base.replace('{digest_line}', '')
+            self.assertTrue(response._verified_wiki_row(
+                row(path='wiki/card.md', body=absent), decision, current_source=False))
+            empty = base.replace('{digest_line}', 'verifiedBodyHash: ""\n')
+            self.assertTrue(response._verified_wiki_row(
+                row(path='wiki/card.md', body=empty), decision, current_source=False))
+            bound = base.replace('{digest_line}', 'verifiedBodyHash: {digest}\n')
+            digest = yaml_scalars.card_body_hash(bound.replace('{digest}', '0' * 64))
+            good = bound.replace('{digest}', digest)
+            self.assertTrue(response._verified_wiki_row(
+                row(path='wiki/card.md', body=good), decision, current_source=False))
+            # A present digest still binds the bytes.
+            for forged in (good.replace('Source fact.', 'Forged fact.'),
+                           bound.replace('{digest}', '0' * 64),
+                           bound.replace('{digest}', 'not-a-digest')):
+                self.assertFalse(response._verified_wiki_row(
+                    row(path='wiki/card.md', body=forged), decision, current_source=False))
+            # Provenance is still required: no sourceRevisions, no card.
+            legacy = ('---\ntitle: Legacy\nstatus: verified\n'
+                      'createdBy: qmd-auto-context\n---\n## Summary\nOld fact.\n')
+            self.assertFalse(response._verified_wiki_row(
+                row(path='wiki/card.md', body=legacy), decision, current_source=False))
 
     # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
     # Expected slices are literal bytes of SPAN_SOURCE, not recomputed by the

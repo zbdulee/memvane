@@ -296,10 +296,10 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
         lists = []
         lex_hits = ep_hits = False
         for position, paths in lexical_paths:
+            # A full MAX_FTS page with few proved cards is the exact head of
+            # the proved ranking, only shorter: serve it, never refuse.
             rows = [row for index, path in enumerate(paths)
                     if (row := verified(path, 1 / (index + 1))) is not None]
-            if len(paths) == MAX_FTS and len(rows) < min(20, MAX_FTS):
-                _fail('preview_exclusion_candidate_limit')
             lists.append(rows[:20])
             lex_hits |= bool(rows)
             ep_hits |= position > 0 and bool(rows)

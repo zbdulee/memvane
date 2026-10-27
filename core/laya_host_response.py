@@ -24,9 +24,10 @@ MAX_PATH_CHARS = 512
 MAX_CONTEXT_BYTES = 32768
 HYBRID_LIST_LIMIT = 20
 # A-int supports at most 100 rows per query. When a selected source exclusion
-# is active, fetch up to that bound before RRF. Require enough eligible rows
-# for the configured answer, not all 20 internal RRF candidates: a corpus may
-# contain many historical cards that are ineligible but still rank in A-int.
+# is active, fetch up to that bound before RRF. A full fetch with fewer
+# eligible rows than the answer needs is capped, not refused: the eligible
+# rows of a ranked top-100 are the exact head of the eligible ranking, only
+# shorter. A corpus may hold many historical cards that rank but are ineligible.
 EXCLUSION_FETCH_LIMIT = 100
 RRF_K = 60
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
@@ -698,12 +699,14 @@ def _v2_body_evidence(built, present, mode, selected, lex_hits, ep_hits):
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
               patterns, min_score, skip_paths, candidates=None,
               source_filter=None, excluded_paths=None,
-              needed_eligible=MAX_ROWS):
+              needed_eligible=MAX_ROWS, on_capped=None):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
     Without ``candidates`` the legacy path checks one live scan of all roots.
     With a ``CandidateQuery`` the selected route checks published row bytes
     against their indexed hashes without reopening source files.
+    ``on_capped`` (optional) is called once per list whose full fetch held
+    fewer eligible rows than ``needed_eligible``; that list is served short.
     """
     from keywords import build_lexical_terms, select_general_terms_explained
     from laya_index_a import IndexContractError
@@ -748,8 +751,8 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
                 _raise_stale('search escaped collection scope')
             if source_filter is not None:
                 checked = [row for row in checked if source_filter(row)]
-                if len(rows) == limit and len(checked) < needed:
-                    _fail('selected_source_exclusion_candidate_limit')
+                if len(rows) == limit and len(checked) < needed and on_capped:
+                    on_capped('lexical')
                 checked = checked[:HYBRID_LIST_LIMIT]
             verified.append(checked)
         if _seal(runtime.index, token) != sealed:
@@ -814,8 +817,9 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
                                  excluded_paths=excluded_paths)
     if source_filter is not None:
         eligible = [row for row in vector_rows if source_filter(row)]
-        if len(vector_rows) == EXCLUSION_FETCH_LIMIT and len(eligible) < needed_eligible:
-            _fail('selected_source_exclusion_candidate_limit')
+        if (len(vector_rows) == EXCLUSION_FETCH_LIMIT
+                and len(eligible) < needed_eligible and on_capped):
+            on_capped('vector')
         vector_rows = eligible[:HYBRID_LIST_LIMIT]
     lists.append(vector_rows)
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
@@ -869,10 +873,12 @@ def _verified_wiki_locations(row: dict, decision: dict,
             'sourceRevisions': revisions}
     if not recall.is_auto_trusted_card(meta):
         return None
-    # Selected v2 requires a body digest even though the legacy reader accepts
-    # old verified cards without it. Migration must restamp such cards first.
+    # Same body-binding rule as the QMD reader (recall.read_card_meta): an
+    # absent digest is "not bound", not "mismatch". Cards verified before the
+    # digest existed stay servable; a present digest must match the bytes.
     expected_body = fields.get('verifiedBodyHash')
-    if (not isinstance(expected_body, str) or not _HEX64.fullmatch(expected_body)
+    if expected_body not in (None, '') and (
+            not isinstance(expected_body, str) or not _HEX64.fullmatch(expected_body)
             or yaml_scalars.card_body_hash(body) != expected_body):
         return None
     span_state, spans = source_spans.read_card_spans(block)
@@ -965,11 +971,18 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             _verified_wiki_row(row, decision,
                                source_skip_paths=tuple(settings['skipPaths']),
                                current_source=False))
+        capped = []
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
             (), candidates, source_filter, excluded_paths,
-            needed_eligible=settings.get('topN', MAX_ROWS))
+            needed_eligible=settings.get('topN', MAX_ROWS),
+            on_capped=capped.append)
+        if capped:
+            # Observable only: the short eligible lists are still served.
+            _write_selection_log(decision['projectRoot'],
+                                 'laya_exclusion_candidate_capped', [],
+                                 capped_lists=sorted(set(capped)))
         located: dict[str, tuple[str, ...]] = {}
         rows = [row for row in rows
                 if not auxiliary_wiki_row(row['path'], row.get('body'), roots)
@@ -1559,6 +1572,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                                         'provider_result_invalid', 'provider_socket_invalid',
                                         'provider_socket_changed'):
                         raise
+                    vector_off.append(str(exc))
                     raise _VectorUnavailable(str(exc)) from exc
         return embedded[key]
     from laya_embed_resident import admit_query
@@ -1651,12 +1665,17 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
             _fail('selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
     vector_fallback = None
-    if vector_off and not degraded:
+    if vector_off and degraded:
+        # A drifted bundle never wakes or starts a provider. Still name why
+        # this answer has no vector list.
+        vector_fallback = 'selected_bundle_drift_' + vector_off[0]
+    elif vector_off:
         # Still request the owner wake; its vector-side state never empties
         # this answer. Proof/integrity/terminal/transition outcomes raise.
         code = _wake_provider(decision, proof)
         vector_fallback = ('selected_provider_resource_deferred'
                            if vector_off[0] == 'resource_deferred' else code)
+    if vector_fallback is not None:
         _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
         print(f'[laya-index] {vector_fallback}; serving lexical results', file=sys.stderr)
     if recheck(decision) != proof:
