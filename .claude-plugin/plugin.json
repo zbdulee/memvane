@@ -1,7 +1,7 @@
 {
   "name": "qmd-auto-context",
   "description": "qmd 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/sync/query/update/wiki-compile/wiki-dedup/wiki-source-repair/enable-compile manual skills",
-  "version": "0.36.22",
+  "version": "0.36.23",
   "author": { "name": "zbdulee", "url": "https://github.com/zbdulee" },
   "homepage": "https://github.com/zbdulee/qmd-auto-context",
   "repository": "https://github.com/zbdulee/qmd-auto-context",
