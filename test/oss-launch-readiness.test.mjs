@@ -46,22 +46,3 @@ test('CI installs the declared Node versions and runs the deterministic suite', 
   assert.match(workflow, /npm test/);
   assert.match(workflow, /python3/);
 });
-
-test('history landing page makes current sources of truth explicit', () => {
-  const history = read('docs/history/README.md');
-  assert.match(history, /historical/i);
-  assert.match(history, /README\.md/);
-  assert.match(history, /docs\/settings\.md/);
-  assert.match(history, /docs\/architecture\.md/);
-});
-
-test('superseded plans and specifications live only under the history archive', () => {
-  assert.ok(existsSync('docs/history/plans/2026-06-18-sync-skill.md'));
-  assert.ok(existsSync('docs/history/superpowers/specs/2026-06-18-guided-optin-gate-design.md'));
-  assert.ok(!existsSync('docs/plans/2026-06-18-sync-skill.md'));
-  assert.ok(!existsSync('docs/superpowers/specs/2026-06-18-guided-optin-gate-design.md'));
-
-  const architecture = read('docs/architecture.md');
-  assert.match(architecture, /docs\/history\//);
-  assert.doesNotMatch(architecture, /`docs\/plans\/` and\s+`docs\/superpowers\/`/);
-});

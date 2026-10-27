@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """raw 인덱스가 wiki 후보를 전역 창에서 밀어내는지(crowding) 반복 측정하는 진단 CLI.
 
-로드맵 5단계. 근거는 `docs/plans/2026-07-30-raw-index-crowding-measurement.md`이고,
-8단계(raw 제거)가 **제거 전/후를 같은 방법으로** 비교할 수 있게 그 수동 측정을
+로드맵 5단계. 8단계(raw 제거)가 **제거 전/후를 같은 방법으로** 비교할 수 있게 그 수동 측정을
 프로젝트 단위로 재현 가능하게 굳힌 것이다.
 
 ## 왜 hook(`QMD_SHADOW_QUERY`) 확장이 아니라 별도 CLI인가

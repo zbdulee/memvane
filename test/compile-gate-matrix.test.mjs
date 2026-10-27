@@ -1,6 +1,6 @@
 // compile 활성 게이트 6곳의 동작을 입력 조합별로 못박는다.
 //
-// 스키마 정리 리팩터(`docs/plans/2026-08-03-settings-schema-consolidation.md` §2)가
+// 스키마 정리 리팩터가
 // `compile.enabled` + `compile.autoWrite`를 `compile.mode` 한 값으로 접었다. 리팩터 **전**
 // 에는 게이트 6곳의 판정이 균일하지 않았다:
 //

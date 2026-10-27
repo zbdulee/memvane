@@ -4,14 +4,14 @@
 
 The machine-local, ignored `.development-hold.json` can refuse every child job,
 including ordinary tests, backups and hashes. Release a hold only within explicit
-user authorization. There is no command-line bypass. Keep session-specific
+user authorization. There is no command-line bypass. A held request exits 75
+with `work_remains_on_hold` before any child launches. Keep session-specific
 approvals and current OS observations in local evidence rather than this document.
 Authorization never overrides resource, process ownership or cleanup checks.
 Sampler-only mode launches no child; its completion cannot complete a prior job.
 
 Interrupted test logs and partial backups remain incomplete until their own
-completion evidence exists. A historical WindowServer watchdog panic did not
-establish CPU or memory load as its cause.
+completion evidence exists.
 
 ## Commands covered
 
@@ -32,6 +32,12 @@ Actual model-loading/training tests must use `--kind model-test`; an explicit
 calibration envelope also always retains resource limits. This development-test
 distinction does not change any installed runtime learning admission.
 
+`--calibration-envelope` is accepted only with `--kind test` or `--kind model-test`
+and `--max-seconds` of at most 30 (otherwise `calibration_requires_short_test`).
+The envelope is a one-shot synthetic trial that expires 30 seconds after issue
+and cannot be reused (`calibration_already_consumed`); its schema, fixed policy
+values and window rules are defined in `core/context_learning/bounded_calibration.py`.
+
 All kinds and all worktrees share `~/Library/Logs/qmd-development-guard/heavy.lock`
 on macOS (`~/.local/state/qmd-development-guard/heavy.lock` on Linux). The home
 comes from the OS UID database, so an isolated `HOME` variable cannot create a
@@ -50,7 +56,7 @@ different notion of headroom than free pages alone. Admission and continuation
 also require normal OS memory pressure, swap growth no greater than 1% of
 physical RAM since admission, and load per CPU no greater than 0.75.
 
-The aggregate observed child tree is initially limited to 15% of physical RAM
+The aggregate observed child tree is limited to 15% of physical RAM
 RSS, 25% of total CPU capacity and 32 processes. CPU is the OS `ps %cpu`
 lifetime-average estimate, not an instantaneous hard CPU quota. Thread pool
 environment defaults are set to one thread. Shared pages can be counted more
@@ -103,19 +109,3 @@ resource-limited job. An authorization hold additionally requires explicit permi
 Use a finite sampler when necessary; do not create background polling by default.
 Keep existing user sessions and automation running unless their interruption is
 separately authorized. Record the current checks and blockers in local evidence.
-
-## Historical validation recorded 2026-10-16
-
-The 16 small sequential guard unit tests passed in 0.016 seconds. These use
-mocks and tiny temporary files, not real host termination or resource stress.
-The final independent read-only review found no remaining P1/P2 in the reviewed
-changes, conditional on keeping the heavy-work hold. A direct guarded test
-request exited 75 with `work_remains_on_hold` before launching a child.
-
-The authorized normal-host sampler completed with two observations (0.13s and
-3.31s) within its six-second budget: available-memory indicator 53%, OS pressure
-normal, swap zero, load per CPU 0.239, sampler RSS approximately 19.4–20.2 MiB.
-Record: `~/Library/Logs/qmd-development-guard/runs/sampler-eda89a5dc76645c68d4884e5ac756d61/`.
-These observations do not establish safe heavy-work thresholds or explain the
-earlier reboot. No full regression, bulk backup/hash, model operation, real
-process termination or operating configuration change was performed here.

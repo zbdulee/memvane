@@ -50,8 +50,7 @@ import wiki_freshness as wf  # noqa: E402
 import wiki_source_missing as wsm  # noqa: E402
 import yaml_scalars  # noqa: E402
 
-# `scripts/wiki-card-census.py` 와 같은 목록. 그 모듈은 import 시점에 전 프로젝트를
-# 훑으므로 재사용하지 않고 복사한다.
+# 백필 대상 프로젝트 기본 목록.
 DEFAULT_PROJECTS = [
     "service-engineering", "ktlo-check", "rccar", "ai-proxy",
     "qmd-auto-context", "novela", "axiom",

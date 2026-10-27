@@ -4,7 +4,7 @@ Thanks for helping improve qmd auto-context.
 
 ## Before opening a change
 
-1. Search existing issues and plans for the same problem.
+1. Search existing issues for the same problem.
 2. Keep the change host-neutral in `core/` where possible, then verify Claude
    Code, Codex, and Hermes adapter implications.
 3. Do not add project-specific paths, credentials, logs, or user content.

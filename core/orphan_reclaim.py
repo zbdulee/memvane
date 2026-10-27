@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Orphan vector reclaim for the qmd index.
 
-WHY (measured, roadmap step 8 -- docs/plans/2026-07-30-raw-index-crowding-measurement.md):
+WHY (measured, roadmap step 8):
 qmd 2.5.3's `removeCollection` (`dist/store.js:2265`) DELETEs `documents` and
 `content` but never the vectors, so every collection removal leaves dead
 embedding rows behind. On the live index that residue was 26,438 of 41,455 rows

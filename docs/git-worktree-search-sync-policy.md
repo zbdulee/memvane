@@ -1,6 +1,17 @@
 # Git checkout·worktree 검색 동기화 정책
 
-기능 소유권과 점진적 분리 계획은 [아키텍처 경계 설계](plans/2026-10-17-architecture-boundaries.md)에 기록한다.
+SessionStart 스캔, 위키 source queue 등록과 단계 A의 반환 결과 최신성 검사는
+legacy QMD route의 정책이다. 단계 B1·B2a의 등록 소유자 라우팅은 공유 store의
+등록 정보를 판정 근거로 쓰며, 선택된 Laya route도 `laya_owner_projection`을 거쳐
+같은 판정(`change_owner.resolve_change`)을 사용한다.
+
+선택된 Laya route(binding store가 있는 v2)의 recall은 hook 안에서 모델 작업 없이
+완료된 index generation 하나를 pin하고 위키 카드만 검색한다. 색인 DB에 게시된
+위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending
+refresh 원장을 다시 읽지 않는다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기
+전에는 마지막 완료본이 검색된다. binding store가 없는 구형 선택 경로는 질의 시
+live scan을 사용한다. 흐름은 [위키 색인과 검색 주입](architecture/flows/03-wiki-index-search.md)에
+정리돼 있다.
 
 ## 현재 반영 범위
 
@@ -43,13 +54,19 @@ SessionStart 훅은 이 결과를 훅 로그에 기록하고 계속 진행하므
 원문을 위키 source queue에 넣는다. 이 옵션을 생략하거나 `compile.mode: off`인
 기존 프로젝트는 파일 감지만 적용된다. `capture`, `autoCycle`, 모델 학습 설정은
 이 옵션과 무관하며 변경하지 않는다.
-첫 실행부터 `session_start_source`를 명시한 프로젝트는 기존 동작대로 최대
-50개 원문을 source queue에 등록할 수 있다. enqueue 뒤 snapshot 저장에 실패하면
-재시도에서 같은 원문이 다시 등록될 수 있으며, 유료 추출의 완전한 멱등성은
-아직 증명되지 않았다.
-위키 source queue를 채우는 경로는 각자 상태를 사용한다. 현재 경로 간 원문
-revision 멱등성이 없으므로 둘 이상의 경로에 동의하면 같은 원문이 여러 번
-등록돼 유료 추출이 중복될 수 있다.
+첫 실행부터 `session_start_source`를 명시한 프로젝트는 최대 50개 원문을 source
+queue에 등록할 수 있다. enqueue 뒤 snapshot 저장에 실패하면 재시도에서 같은
+원문이 다시 등록될 수 있다.
+위키 source queue를 채우는 경로는 각자 상태를 사용한다. 해시를 계산하는
+경로(SessionStart sync, file-change worker, 수동 sync)의 행은 원문
+revision(`contentRevision`)을 가진다. enqueue는 `(collection, path, revision,
+trigger)`가 같은 행이 아직 live queue에 있으면 새 행을 넣지 않는다
+(`wiki_source_intent.revision_key`). 이 키는 trigger를 포함하고 이미 claim·소진된
+행은 보지 못하므로 경로 간·회차 간 중복 등록은 막지 않는다. PostToolUse 행에는
+revision이 없다. 선택된 Laya route의 compile worker는 신뢰 카드가 같은 revision을
+이미 증명하면 trigger와 무관하게 extractor를 실행하지 않는다
+(`already_compiled_revision`). legacy QMD route에는 이 검사가 없으므로 둘 이상의
+경로에 동의하면 같은 원문의 유료 추출이 중복될 수 있다.
 
 - 수동 sync: 자체 snapshot과 `post_sync_source` 또는 `post_tool_source` 동의
 - SessionStart sync: 별도 snapshot과 `session_start_source` 동의
@@ -59,12 +76,10 @@ revision 멱등성이 없으므로 둘 이상의 경로에 동의하면 같은 �
   `session_start_source` 동의를 따른다.
 
 `post_tool_source` 하나로도 PostToolUse와 수동 sync가 함께 허용될 수 있다.
-수동 sync와 SessionStart의 이중 등록은 격리 합성 회귀에서 확인했다. 다른
-경로의 조합은 코드상 가능성이며, 이를 막는 원문 revision 멱등성은 후속 작업이다.
 
 ## 검색 일관성 목표와 후속 설계
 
-다음 항목은 **정책 목표**이며, 이 변경에서 구현한 기능이라고 해석하면 안 된다.
+다음 항목은 QMD route의 **정책 목표**이며, 구현된 기능이라고 해석하면 안 된다.
 
 - 검색 가시성은 실제 요청을 수행하는 checkout/worktree별 현재 파일 집합을
   따른다. dirty 작업 파일도 허용된 collection 범위라면 그 worktree의 내용으로
@@ -135,8 +150,17 @@ dirty queue에 넣는다. 현재 세션 검색 scope는 여전히 실제 질의 
 재검증한다. 미등록·OFF·모호한 중첩/중복 소유자·symlink는 보류한다. 새
 worktree 승인이나 외부 경로 자동 등록은 하지 않는다.
 
-이 단계는 색인 **요청 라우팅**이며 QMD 갱신 완료나 새 내용의 검색 가능성은
-증명하지 않는다. 삭제와 이동의 이전 경로는 과거 소유 snapshot 없이 등록
-정보만으로 확정하지 않으므로 B2 대상이다. Claude Bash와 Codex shell 도구의
-외부 파일 변경 관찰, worktree별 단일 게시 generation과 늦은 worker 차단은
-별도 후속 단계다. 최종 결과는 설치 후보 실제 호스트의 검색 E2E로 판정한다.
+이 단계는 색인 **요청 라우팅**이며 색인 갱신 완료나 새 내용의 검색 가능성은
+증명하지 않는다.
+
+## 단계 B2a: 사라진 경로의 등록 소유자 라우팅 (구현됨)
+
+삭제된 파일이나 이동한 파일의 이전 경로는 현재 메타데이터가 없으므로 현재 등록
+정보만으로 라우팅하지 않는다. 앞서 수락된 이벤트가 그 symlink 없는 경로를 같은
+승인·색인·등록 collection의 정규 파일로 기록했고, 그 관찰이 같은 등록
+revision(store generation, 승인 맵, registry 파일 객체)과 같은 승인 설정 digest에
+묶여 있을 때만 라우팅한다. 관찰 원장은 증거일 뿐이며, 현재 등록과 소유 프로젝트
+설정은 존재하는 파일과 같은 방식으로 다시 증명한다. 이동의 양쪽 경로는 각각
+판정한다(`core/change_owner.py`).
+
+worktree별 단일 게시 generation과 늦은 worker 차단은 QMD route에 구현돼 있지 않다.

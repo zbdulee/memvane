@@ -1,33 +1,15 @@
 # Laya vector capacity path: design (2026-10-19)
 
-Status: fill step and seal implemented locally (sections 1 and 2); worker,
-host response and bundle (sections 3 and 4) are not. Tests:
-`test/fixtures/laya-vector-capacity-checks.py` (13 cases). This is item 7 of the
-follow-up list and the prerequisite for wiring the product sync worker
-(item 4), host response (item 5) and bundle `ARTIFACTS` (item 6) to the
-capacity path from `docs/plans/2026-10-19-laya-source-batched-scan.md`.
+`core/laya_vector_capacity.py` implements the fill steps, and
+`sync_step(require_vector=True)` seals the generation before publish. The
+product sync worker and the selected host response use this capacity path
+when both capacity stores exist next to the A-int DB
+(`laya_index_runtime.capacity_store_paths`). Without them the worker keeps the
+full-batch path below (`sync_full` with `prepare_candidate_batch_off_hook`).
 
-## Why the other items wait for this
+## Full-batch vector path (no capacity stores)
 
-`core/laya_product_sync_worker.py:311` calls
-`sync_full(..., vector_batch=batch, require_vector=True)`. The selected
-product route always requires a vector seal. `sync_step(require_vector=True)`
-returns `deferred`/`vector_capacity_path_unavailable`
-(`core/laya_index_sync.py:388`). If the worker switched to `sync_step` now,
-every product sync would defer and the selected route would stop updating.
-So item 4 has to wait for a vector path, and items 5 and 6 only make sense
-in the same change as item 4.
-
-The capacity modules are imported lazily, only on the new paths
-(`laya_index_runtime.py:122` when `catalog_path` is given,
-`laya_index_flow.py:109` inside `_run_bound_leased`,
-`laya_index_sync.py:391` inside `sync_step`). The current installed path
-never imports them, so PR #18 does not break an installed bundle that lacks
-the two new files.
-
-## Current vector path and its capacity limits
-
-`prepare_candidate_batch_off_hook` (`laya_index_sync.py:44`):
+`prepare_candidate_batch_off_hook` (`laya_index_sync.py`):
 
 1. full port scan (`_scan`) that reads every source body;
 2. embeds every eligible `(sha256, title)` that has no cached chunk set;
@@ -39,17 +21,17 @@ the two new files.
 chunk sets and calls `seal_generation`.
 
 The cost is O(N + B) reads twice, all vectors in memory, and a model run
-whose length is set by the corpus in one admission. That is what this
-design removes.
+whose length is set by the corpus in one admission. The capacity path below
+avoids this.
 
 ## Facts the design rests on
 
-* `LayaVectorIndex.insert_chunk_set` (`laya_index_vector.py:333`) commits
+* `LayaVectorIndex.insert_chunk_set` (`laya_index_vector.py`) commits
   one `(hash, title, profile)` chunk set and its completeness seal in one
   transaction. It is idempotent: an identical replay returns the cached
   count, a different one raises `vector_chunk_conflict`.
-* `cached_chunk_set` (`:313`) returns the sealed rows or `None`.
-* `seal_generation` (`:379`) reads the **prepared** generation's eligible
+* `cached_chunk_set` returns the sealed rows or `None`.
+* `seal_generation` reads the **prepared** generation's eligible
   membership from the DB, requires a complete cached chunk set for every
   member (`vector_coverage_incomplete` otherwise), writes
   `gen_vector_rows` and the seal, and is idempotent per generation. It
@@ -81,10 +63,10 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
 * Reads the catalog's current COMPLETE snapshot (`require_complete`).
   No snapshot means `pending`/`no_snapshot`.
 * Lists members as `(path, sha256, eligible)` without reading bodies, in
-  path order. `LayaSourceCatalog.manifest` only returns the digest, so this
-  needs a new read-only method (`members(snapshot, exclusions, after=,
-  limit=)`) built on the same `scan_files` query and eligibility rule as
-  `manifest` (`laya_source_catalog.py:899`), so the two cannot disagree. It
+  path order. `LayaSourceCatalog.manifest` only returns the digest, so the
+  fill uses the read-only `members(snapshot, exclusions, after=, limit=)`,
+  built on the same `scan_files` query and eligibility rule as `manifest`,
+  so the two cannot disagree. It
   resumes from a durable cursor in the catalog DB keyed by
   `(snapshot seq, profile_id)` (`vector_fill`/`set_vector_fill`). The
   table is created on first write with `CREATE TABLE IF NOT EXISTS`; the
@@ -99,9 +81,9 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
 * Stops at `max_files` embedded files, `max_bytes` read bytes, or when
   `should_yield()` is true (`_higher_priority_wake`). The cursor advances
   only past files whose chunk set is committed.
-* A member whose bytes no longer match (`read_verified` fails) is skipped
-  and counted as `changed`, and a rescan is requested. The next snapshot
-  will carry the new hash.
+* A member whose bytes no longer match (`read_verified` fails) stops the
+  step with `pending`/`source_changed`, and a rescan is requested. The next
+  snapshot carries the new hash and restarts the fill.
 * Answers: `pending`/`vector_backlog` with `remaining`, or
   `complete` when every eligible member of the snapshot is cached.
 * Holds at most one body plus one file's chunk vectors in memory.
@@ -109,8 +91,7 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
 The title has to be computed from the body, so a cache check costs one
 verified read per eligible file. Within one snapshot the cursor keeps that
 to once per file. A new snapshot re-reads every eligible file once (bounded
-per step by `max_bytes`) but embeds only changed content. A title memo was
-considered and not built.
+per step by `max_bytes`) but embeds only changed content.
 
 ### 2. Seal inside `sync_step(require_vector=True)`
 
@@ -122,8 +103,7 @@ considered and not built.
   generation is staged that cannot be sealed. Exception: while a newer
   scan is pending, `sync_step` steps that scan instead. Without this, a
   member that changed after the snapshot stops the fill
-  (`source_changed`) and the gate stops the scan, and neither moves
-  (found by the changed-member test).
+  (`source_changed`) and the gate stops the scan, and neither moves.
 * After the bound streaming stage, call `seal_generation(gen, profile_id)`
   before `before_publish` and publish. This is DB-only.
 * If the seal raises `vector_coverage_incomplete` (fill state says done but
@@ -138,80 +118,53 @@ considered and not built.
 * The profile comes from the runtime (the worker's reviewed provider
   profile), never from the queue.
 
-### 3. Worker loop (`laya_product_sync_worker.run`)
+### 3. Worker loop
 
-```
-with runtime(catalog_path, binding_store_path):
-    loop until a terminal answer or should_yield():
-        r = sync_step(runtime, require_vector=True, ...)
-        if r is pending/vector_backlog:
-            start the embed service once (same admission and attestation
-            checks as today), then vector_fill_step(...)
-        elif r is pending (scan/claims): continue
-        else: return r
-```
+With capacity stores, the product sync worker repeats `sync_step(...,
+require_vector=True)` and runs `vector_fill_step` (and
+`pending_vector_fill_step` while a scan is still enumerating) when the step
+reports a vector backlog. `sync_step` never loads a model; the embed
+service starts on the first embed call of a fill step, so a sync with no
+new content loads no model.
 
-* The embed service starts only when there is a backlog. A sync with no new
-  content does no model load.
-* Accept `pending` and `blocked` as results (today only
-  `indexed`/`unchanged`/`deferred` pass `run()`'s result check).
-* Keep every existing proof check (`verify_selected_route` before and after,
-  `cas_mark_new_write` inside `before_publish`).
+### 4. Host response and bundle
 
-### 4. Host response and bundle (implemented)
-
-* `serve_selected` opens the capacity runtime (all collection roots, both
-  stores) only when `capacity_store_paths(dbPath)` finds both stores; the
-  same helper gates the worker. Otherwise the runtime is unchanged.
-* `query_selected_v2` opens one `open_pinned_candidate_query` per user query
-  (fails closed when the pinned generation has no stored binding), passes it
-  to both the wiki and the raw phase, and delivers rows only after
-  `finish()`. It is closed on every path.
-* `_v2_phase` with a candidate query skips the per-query
-  `scan_collections` of every root. It does **not** use `CandidateQuery.phase`
-  per query: the host batches the DF probes and the lexical queries into one
-  `search_many`, so the generation's full FTS check runs once; one `phase`
-  per query would repeat it for every probe. Instead the new
-  `CandidateQuery.verify_rows` checks the rows of that one batch (same
-  per-row and poisoning rules as `phase`, no refill round, no
-  `CatalogPending`). Vector rows from `search_exact` go through the same
-  verifier. Rows are reshaped to the host's `_ROW_KEYS`.
-* Difference from the full-scan path: a candidate whose file changed after
-  sync is dropped and the query continues. The full-scan path fails the
-  whole query on the same change.
+* `serve_selected` opens the capacity runtime only when
+  `capacity_store_paths(dbPath)` finds both stores; the same helper gates the
+  worker.
+* Selected recall is wiki-only. It pins one generation and opens one
+  `open_pinned_candidate_query` per user query (fails closed when the pinned
+  generation has no stored binding). The host batches the DF probes and the
+  lexical queries into one `search_many`, so the generation's full FTS check
+  runs once, and checks that batch and the `search_exact` vector rows with
+  `CandidateQuery.verify_indexed_rows`: published content joined to eligible
+  membership is hash-checked against the row hash without reading current
+  source files. Rows are delivered only after `require_returned_verified()`
+  and `finish()`, which recheck the seal, incarnation, exclusions and live
+  root identities.
+* A source file that changed after the last publish does not drop its row;
+  the last completed wiki snapshot stays visible until the sync worker
+  publishes a replacement (index lag). The selected path without a binding
+  store still runs a per-query `scan_collections` of every root.
 * Bundle: the three capacity modules are in `laya_product_bundle.ARTIFACTS`
   and the full-plugin required files; the A-int package carries the two the
   flow needs.
 
 ## Limits that remain
 
-* `seal_generation` still walks the whole generation in one transaction and
-  is capped at `MAX_CANDIDATES` (20,000) rows. That is item 9 (A-int
-  capacity), not this item.
-* `search_exact` still scores every scoped chunk per query.
-* `laya_qmd_cutover` still uses a full port scan. Moving it is a separate
-  change.
+* `seal_generation` walks the whole generation in one transaction. It
+  streams rows (`MAX_GENERATION_SEAL_ROWS = None`), so it has no
+  whole-generation row bound; `MAX_CANDIDATES` (20,000) bounds one
+  document's chunk set and explicit query budgets.
+* `search_exact` still scores every scoped chunk per query, bounded by the
+  hook deadline and any explicit caller budget.
+* `laya_qmd_cutover` v1/v2 ledgers bind a candidate published by a full port
+  scan. A v3 binding (an initial build sealed on the capacity path) is proved
+  from the stored binding, catalog snapshot and vector seal without scanning
+  the source tree.
 * The first fill pass reads every eligible file once to get titles.
 
-## Tests to write (synthetic, fake provider, no model)
-
-1. Fill resumes across steps: N files, `max_files=2`, call until
-   `complete`; each file embedded exactly once (fake provider counts calls).
-2. Unchanged files are not re-embedded after a rescan that changes one file;
-   exactly one embed call.
-3. A file changed after fill and before stage: seal fails, nothing is
-   published, a rescan is requested, and the next fill embeds only that file.
-4. `should_yield` true mid-step: cursor stops after the last committed file.
-5. Crash between `insert_chunk_set` and cursor advance: replay is
-   idempotent (no `vector_chunk_conflict`, no double count).
-6. `sync_step(require_vector=True)` with a complete fill publishes a sealed
-   generation; `verify_generation_seal` passes.
-7. Worker: no backlog means no embed service start.
-8. Worker accepts `pending`/`blocked`; existing proof-change checks still
-   raise.
-9. Memory: peak held bodies is one (instrument the fake catalog reads).
-
-## Decisions taken while implementing
+## Implementation defaults
 
 * Fill cursor: catalog DB (same scope as the snapshot).
 * A changed member stops the step and requests a rescan at once
@@ -219,15 +172,5 @@ with runtime(catalog_path, binding_store_path):
 * One fill step defaults to 8 embedded files and 2 MB read
   (`DEFAULT_FILL_FILES`/`DEFAULT_FILL_BYTES`). These are technical defaults,
   not a product cap.
-* Contract change: `sync_step(require_vector=True)` now needs
-  `vector_profile_id` (`TypeError('vector_profile_required')` without it)
-  instead of returning `deferred`/`vector_capacity_path_unavailable`.
-
-## Open for review
-
-* `ensure_content` writes content outside a stage. `LayaIndexA.inspect`
-  only requires `content` and `content_fts` to match, and `ensure_content`
-  writes both; the fill test runs `inspect()` before any stage. Other
-  readers of `content` should still be reviewed.
-* Worker loop (section 3) is not written; the test helper `sync()` is the
-  intended shape.
+* `sync_step(require_vector=True)` requires `vector_profile_id`
+  (`TypeError('vector_profile_required')` without it).
