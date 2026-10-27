@@ -438,7 +438,7 @@ class CandidateSafetyTests(CandidateCase):
         cases = (
             ([row('plans/.hidden.md', a01_hash)], None, 'unsafe_path'),
             ([row('plans/../wiki/card.md', card_hash)], None, 'unsafe_path'),
-            ([row('plans/a01.txt', a01_hash)], None, 'unsafe_path'),
+            ([row('plans/a01.py', a01_hash)], None, 'unsafe_path'),
             ([row('plans/secret.md', sha(secret.read_bytes()))], None, 'excluded'),
             ([row('plans/hashed.md', sha(hashed.read_bytes()))], None, 'excluded'),
         )

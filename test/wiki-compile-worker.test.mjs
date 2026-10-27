@@ -598,6 +598,36 @@ print('{"candidates": []}')
   }
 });
 
+test('worker accepts a queued .txt source and rejects a queued .py source before extractor', () => {
+  for (const [rel, runs] of [['docs/notes.txt', true], ['docs/tool.py', false]]) {
+    const extractor = join(mkdtempSync(join(tmpdir(), 'extractor-text-source-')), 'extract.py');
+    const marker = join(mkdtempSync(join(tmpdir(), 'extractor-text-source-marker-')), 'ran');
+    writeFileSync(extractor, `#!/usr/bin/env python3
+open(${JSON.stringify(marker)}, 'w').write('ran')
+print('{"candidates": []}')
+`);
+    const project = setupProject({ extractor: { backends: { claude: ['python3', extractor] }, timeout: 30 } });
+    try {
+      writeFileSync(join(project, rel), 'Durable decision recorded in plain text.\n');
+      writeFileSync(join(project, '.auto-context', 'compile', 'source-queue.jsonl'), JSON.stringify({
+        ts: '2026-06-26T00:00:00Z',
+        trigger: 'post_tool_source',
+        engine: 'claude',
+        cwd: project,
+        source: { kind: 'file', path: rel, collection: 'proj-docs' },
+      }) + '\n');
+      runWorker(project, {}, ['--flush-all']);
+      assert.equal(existsSync(marker), runs, rel);
+      if (!runs) {
+        const failures = jsonl(join(project, '.auto-context', 'compile', 'candidates.jsonl'));
+        assert.equal(failures.at(-1).reason, 'invalid_source_scope');
+      }
+    } finally {
+      removeTemp(project);
+    }
+  }
+});
+
 test('worker restores claimed queue if processing raises unexpectedly', () => {
   const project = setupProject({ extractor: { backends: { claude: ['python3', '-c', 'print(1)'] }, timeout: 30 } });
   try {

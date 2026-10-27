@@ -21,6 +21,7 @@ OWNERSHIP_SCHEMA = 'laya-ownership-manifest-v1'
 ARTIFACTS = (
     'core/laya_index_a.py',
     'core/laya_index_source_port.py',
+    'core/source_text.py',
     'core/laya_index_claim_queue.py',
     'core/laya_index_flow.py',
     # The bound flow path imports these lazily.

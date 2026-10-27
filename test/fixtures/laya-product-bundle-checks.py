@@ -89,7 +89,7 @@ class ProductBundleChecks(unittest.TestCase):
         names = ('config.py', 'laya_index_a.py', 'laya_index_vector.py',
                  'laya_local_embed_provider.py',
                  'laya_local_embed_service.py',
-                 'laya_index_source_port.py',
+                 'laya_index_source_port.py', 'source_text.py',
                  'laya_index_claim_queue.py', 'laya_index_flow.py',
                  'laya_index_runtime.py', 'laya_index_host_route.py',
                  'laya_qmd_cutover.py', 'laya_qmd_migration.py',
