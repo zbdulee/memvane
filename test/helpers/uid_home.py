@@ -51,7 +51,7 @@ def _fixture_audit(event,args):
         argv=[str(item) for item in args[1]]
         if (any(item in ('-I','-s') for item in argv)
             or any(item.endswith(('laya_adapter.py','laya_inference_worker.py')) for item in argv)
-            or any('context_learning.inference_service' in item or 'context_learning.resident' in item for item in argv)):
+            or any('context_learning.inference_service' in item or 'context_learning.resident' in item or item.endswith('laya_resident_service.py') for item in argv)):
             raise AssertionError('model or isolated service child forbidden in fixture')
 sys.addaudithook(_fixture_audit)
 _fixture_receipt='''+repr(str(receipts))+'''+os.sep+str(os.getpid())+'.json'

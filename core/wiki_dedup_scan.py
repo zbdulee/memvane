@@ -304,6 +304,15 @@ def record_judged_non_duplicate(
 def run(cwd: str) -> None:
     found = qmd_config.find_project_config(cwd)
     root = Path(found["projectRoot"]).resolve()
+    import wiki_selected_laya
+    try:
+        if wiki_selected_laya.selected(root) is not None:
+            # A selected Laya route has no QMD vectors to scan.
+            log("SKIP: selected Laya route; QMD similarity scan not used")
+            return
+    except ValueError:
+        log("ABORT: selected Laya route unavailable")
+        return
     config = found["config"]
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     # 활성 판정은 `config.compile_active`(= `mode != "off"`) 하나다. 예전에는 여기가

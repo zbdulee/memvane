@@ -1228,15 +1228,20 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if (stable(refreshed) != stable(proof) or
             refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
         _fail('selected_proof_changed')
+    restart = None
     if not transition:
         # Independent of the wake queue: it also helps when that queue fails.
-        _restart_withdrawn_owner(decision, proof, state)
+        restart = _restart_withdrawn_owner(decision, proof, state)
     if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
         if transition:
             _fail('selected_provider_wake_failed')
         return 'selected_provider_wake_failed'
     if transition:
         _fail('selected_provider_identity_transition')
+    if restart == 'laya_service_protocol_mismatch':
+        # A newer per-user service speaks another protocol: lexical until
+        # this installation's bundle upgrade catches up.
+        return 'selected_provider_protocol_mismatch'
     if state is not None and state['reason'] == 'resource_deferred':
         return 'selected_provider_resource_deferred'
     if state is not None and state['reason'] in (
@@ -1245,31 +1250,35 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     return 'selected_provider_preparing'
 
 
-def _restart_withdrawn_owner(decision: dict, proof: dict, state) -> None:
-    """Start a withdrawn or lane-deferred owner without the sync wake.
+def _restart_withdrawn_owner(decision: dict, proof: dict, state):
+    """Ask the per-user service to adopt a withdrawn owner without the sync wake.
 
-    After a bundle upgrade or lane contention the owner state is
-    starting/resource_deferred and its socket is gone. The detached spawn
-    returns at once; the owner's own 5s backoff and lease bound repeats. Only
-    the exact selected plugin root may start it, as the owner rechecks that
-    root and treats any other one as a terminal identity failure.
+    After a bundle upgrade, a service replacement or a resource deferral the
+    owner state is starting/resource_deferred and its socket is gone. The
+    request returns at once; the owner state's 5s backoff bounds repeats.
+    Only the executing bundle that proved this route may ask; the service
+    proves the route again before it binds the socket. Returns the deferral
+    code, or None.
     """
     if state is None or state['reason'] not in ('starting', 'resource_deferred'):
-        return
+        return None
     manifest = proof['providerManifest']
     path = manifest.get('serviceSocketPath')
     if not isinstance(path, str) or os.path.lexists(path):
-        return
-    if decision.get('pluginRoot') != str(Path(__file__).resolve().parent.parent):
-        return
+        return None
+    if (proof.get('executingPluginRoot', decision.get('pluginRoot'))
+            != str(Path(__file__).resolve().parent.parent)):
+        return None
     from laya_embed_resident import ensure_running
     from laya_index_a import IndexContractError
     from resource_deferred import ResourceDeferred
     try:
         ensure_running(decision['projectRoot'], manifest)
-    except (ResourceDeferred, OSError):
+    except ResourceDeferred as exc:
         # Best effort: the durable sync wake still retries the start.
-        return
+        return str(exc)
+    except OSError:
+        return None
     except IndexContractError as exc:
         if str(exc) == 'provider_start_failed':
             _fail('selected_provider_start_failed')

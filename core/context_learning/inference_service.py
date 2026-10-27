@@ -218,9 +218,12 @@ class GenerationEngine:
             self.footprint_mib = footprint
         return result, timing
 
-# Protocol is independent of host cache paths. A service from another bundle
-# is replaced only while idle: a graceful shutdown request, or for a service
-# without that command, SIGTERM to its exact verified PID. Never mid-request.
+# Protocol is independent of host cache paths. The per-user Laya resident
+# service (laya_resident_service) hosts this service in its own process and
+# owns its lifecycle; a hosted service refuses the shutdown command. A
+# learning-only service of an earlier bundle is replaced only while idle: a
+# graceful shutdown request, or for a service without that command, SIGTERM
+# to its exact verified PID. Never mid-request.
 import fcntl
 from functools import lru_cache
 import json
@@ -401,8 +404,41 @@ def _retire_stale(root, deadline):
     _terminate_idle(root, deadline)
 
 
-def _ensure(root, python, deadline, *, spawn=subprocess.Popen):
-    """Start the current bundle's service, replacing an idle stale one.
+def _hosted_ready(root, python, deadline):
+    try:
+        answer = _version(root, deadline)
+    except (ServiceFailure, ConnectionResetError, BrokenPipeError, ValueError):
+        return False
+    return (_current(answer) and answer.get('status') == 'ready'
+            and answer.get('python', python) == python)
+
+
+def _ensure(root, python, deadline, *, spawn=None):
+    """Reach the current bundle's service under ``python``; never steal a lease.
+
+    The product path asks the per-user Laya resident service, which hosts
+    this service, to start or to drain and replace an older bundle. An
+    injected ``spawn`` keeps the direct learning-only start for fixtures.
+    """
+    if spawn is not None:
+        return _ensure_direct(root, python, deadline, spawn=spawn)
+    root = resident._private_state(root)
+    if _hosted_ready(root, python, deadline):
+        return
+    import laya_resident_service as host
+    try:
+        host.ensure_service(python=python, learning_root=root)
+    except Exception as exc:
+        raise ServiceFailure('starting') from exc
+    while time.monotonic() < deadline:
+        if _hosted_ready(root, python, deadline):
+            return
+        time.sleep(.02)
+    raise ServiceFailure('starting')
+
+
+def _ensure_direct(root, python, deadline, *, spawn=subprocess.Popen):
+    """Start a learning-only service, replacing an idle stale one.
 
     A held kernel lease is never stolen: the stale owner exits first.
     """
@@ -670,7 +706,9 @@ def _validate_apply(envelope):
         'request':{'schema_version':1,'artifact_path':stage['artifactPath'],'model_input_view':profile['view'],'cases':[case]}}
 
 
-def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,apply_validate=None,monitor_factory=None):
+def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,apply_validate=None,monitor_factory=None,
+           stop=None, hosted=False):
+    """Serve until shutdown; ``stop`` (hosted) ends it after queued work drains."""
     root = resident._private_state(root)
     production_engine=engine is None
     engine = engine or GenerationEngine()
@@ -682,9 +720,28 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
     busy = threading.Event()
     stopped = threading.Event()
     lease = _lock(root / LEASE_NAME)
-    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(lease)
+        raise
     path = _address(root)
     pid_path = root / PID_NAME
+    if hosted:
+        # Under the lease only: a crashed earlier owner's socket and PID file.
+        try:
+            if path.exists() or path.is_symlink():
+                info = path.lstat()
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077):
+                    raise ServiceFailure('unsafe_socket')
+                path.unlink()
+            if pid_path.exists() or pid_path.is_symlink():
+                resident._safe_file(pid_path, max_size=512)
+                pid_path.unlink()
+        except BaseException:
+            os.close(lease)
+            raise
     identity = None
     monitor=None
 
@@ -766,7 +823,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
             worker.start()
             if ready is not None:
                 ready.set()
-            while not stopped.is_set():
+            while not stopped.is_set() and not (stop is not None and stop.is_set()):
                 if monitor is not None:monitor.tick()
                 try:
                     conn, _ = server.accept()
@@ -779,10 +836,12 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                     if envelope == {'command': 'version'}:
                         respond(conn, {'status': 'ready', 'protocol': PROTOCOL,
                             'signature': _signature(), 'queued': pending.qsize(), 'busy': busy.is_set(),
+                            'python': sys.executable, 'hosted': hosted,
                             'resource_monitor':monitor.status if monitor is not None else 'not_attached'})
                         continue
                     if envelope == {'command': 'shutdown'}:
-                        if pending.unfinished_tasks:
+                        if hosted or pending.unfinished_tasks:
+                            # The resident service owns a hosted lifecycle.
                             respond(conn, {'status': 'busy'})
                         else:
                             stopped.set();respond(conn, {'status': 'stopped'})
