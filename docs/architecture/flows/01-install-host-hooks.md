@@ -76,7 +76,7 @@ flowchart TD
 - [`core/setup_entry.py:456-492`](../../../core/setup_entry.py#L456-L492): index-origin 계열 action을 `laya_product_install`에 위임합니다.
 - [`core/laya_product_install.py:219-227`](../../../core/laya_product_install.py#L219-L227): `.auto-context` 아래에 route record나 QMD selection marker가 이미 있으면 계획을 거부합니다.
 - [`core/laya_product_install.py:876-880`](../../../core/laya_product_install.py#L876-L880): 설치 state root 아래의 `install-journal.sqlite`와 `runtime/laya-embed.sock`입니다.
-- [`core/laya_qmd_cutover.py:41-47`](../../../core/laya_qmd_cutover.py#L41-L47): ledger·marker·route 파일 이름입니다. 이 파일들이 놓이는 디렉터리는 발췌만으로 확정되지 않아, 도표에는 일반 이름으로 표기했습니다.
+- [`core/laya_qmd_cutover.py:47-53`](../../../core/laya_qmd_cutover.py#L47-L53): ledger·marker·route 파일 이름입니다. 이 파일들이 놓이는 디렉터리는 발췌만으로 확정되지 않아, 도표에는 일반 이름으로 표기했습니다.
 
 ### QA 증거와 미검증
 

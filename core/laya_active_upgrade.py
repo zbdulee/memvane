@@ -16,7 +16,7 @@ from pathlib import Path
 import laya_fresh_wiki_origin as fresh
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
-import laya_qmd_cutover as qmd
+from laya_ledger_common import QMD_LEDGER, _operation_lock
 from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   _canon as journal_canon,
                                   _provider_file_identity, cas_activate,
@@ -49,14 +49,19 @@ class _Ledger:
         if origin not in ('fresh', 'qmd'):
             _fail('active_upgrade_origin_invalid')
         self.origin = origin
-        self.module = fresh if origin == 'fresh' else qmd
-        self.name = fresh.LEDGER if origin == 'fresh' else qmd.LEDGER
+        if origin == 'fresh':
+            self.module = fresh
+        else:
+            # Only a QMD-origin ledger loads the QMD cutover module.
+            import laya_qmd_cutover as qmd
+            self.module = qmd
+        self.name = self.module.LEDGER
         self.marker_name = self.module.MARKER
         self.route_name = self.module.ROUTE
 
     def load(self, path):
         return (fresh._load(path) if self.origin == 'fresh' else
-                qmd._ledger(path))
+                self.module._ledger(path))
 
     def change(self, path, epoch, phase, next_phase):
         return self.module._change(path, epoch, phase, next_phase)
@@ -66,7 +71,7 @@ class _Ledger:
 
     def write(self, path, row):
         if self.origin == 'qmd':
-            qmd._validated(dict(row), path)
+            self.module._validated(dict(row), path)
         self.module._write(path, row, replace=True)
 
     def marker(self, row):
@@ -84,7 +89,7 @@ class _Ledger:
 
 def _origin(state):
     """The one selection ledger in this state root."""
-    names = [origin for origin, name in (('fresh', fresh.LEDGER), ('qmd', qmd.LEDGER))
+    names = [origin for origin, name in (('fresh', fresh.LEDGER), ('qmd', QMD_LEDGER))
              if (state / name).exists() or (state / name).is_symlink()]
     if len(names) != 1:
         _fail('active_upgrade_not_selected')
@@ -532,7 +537,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
     selected_ledger = _origin(state)
     _ledger_path, marker, _route = selected_ledger.paths(
         project, state / 'install-journal.sqlite')
-    with _install_lock(state), qmd._operation_lock(marker), _locked_provider():
+    with _install_lock(state), _operation_lock(marker), _locked_provider():
         intent = _load_intent(state, project)
         if intent is not None and _intent_ledger(intent).origin != selected_ledger.origin:
             _fail('active_upgrade_intent_invalid')
