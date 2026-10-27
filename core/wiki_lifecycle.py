@@ -18,6 +18,19 @@ that format existed is judged by its `sources:` file list instead:
 | no `sourceRevisions`, every `sources:` file is missing  | retire (`wiki_source_retire.retire_card`) |
 | no `sourceRevisions` and no `sources:` file entry       | retire (`wiki_source_retire.retire_card`) |
 
+Git branch safety (`git_branch_safety`): a missing source is acted on only
+when git proves the deletion in HEAD's lineage. The whole run is skipped inside
+a linked git worktree and while a rebase, merge, cherry-pick, revert or bisect
+is in progress. A missing or legacy-missing card is held (kept and logged as
+`HOLD`) when its source is tracked in HEAD or the index, sits on a local branch
+tip not merged into HEAD, or is in the card's last commit outside HEAD's
+lineage; when the card is untracked and the source was never committed; and
+when git cannot answer. It retires when the source is in the card's last HEAD
+commit but not in HEAD, when a source deletion is reachable from HEAD (at or
+after that commit for a committed card), or when a committed card's source was
+never tracked anywhere. A project outside any git checkout keeps the table
+above unchanged. Held cards are not counted as deletions by the guard.
+
 A backfilled card is kept on that run (no regeneration); the next run judges
 it like any recorded card. A legacy source is "missing" only when its
 collection is one this project defines: a name the project does not know may
@@ -105,8 +118,10 @@ UNPROVEN = "unproven"
 UNDECIDABLE = "undecidable"
 BACKFILL = "backfill"
 LEGACY_MISSING = "legacy_missing"
+# 원문이 다른 브랜치·워크트리에만 보이거나 git이 삭제를 증명하지 못한 카드. 지우지 않는다.
+HELD = "held"
 # 가드 분모(판정이 끝난 카드)와 분자(이번 run이 지울 카드).
-DECIDED = (KEEP, MISSING, BACKFILL, LEGACY_MISSING, UNPROVEN)
+DECIDED = (KEEP, MISSING, BACKFILL, LEGACY_MISSING, UNPROVEN, HELD)
 DELETING = (MISSING, LEGACY_MISSING, UNPROVEN)
 
 
@@ -397,6 +412,50 @@ def guard_verdict(infos: dict) -> dict:
     return verdict
 
 
+def git_facts(root: Path) -> tuple[dict | None, str | None]:
+    """``(facts|None, hold_reason|None)`` of the git checkout holding ``root``."""
+    import git_branch_safety
+    try:
+        return git_branch_safety.repo_facts(root), None
+    except git_branch_safety.GitUnavailable as exc:
+        return None, str(exc)
+
+
+def hold_invisible_sources(infos: dict, wiki_root: Path, root: Path,
+                           facts: dict | None, git_hold: str | None):
+    """Turn MISSING/LEGACY_MISSING cards whose deletion git does not prove into HELD.
+
+    Returns the run's ``LineageJudge`` (None outside git or when git failed).
+    Every source of a card must judge ``retire`` for the card to stay deletable.
+    """
+    import git_branch_safety
+    pending = {rel: info for rel, info in infos.items()
+               if info is not None and info["state"] in (MISSING, LEGACY_MISSING)}
+    if facts is None and git_hold is None:
+        return None
+    judge = None
+    if git_hold is None and pending:
+        try:
+            judge = git_branch_safety.LineageJudge(root, facts)
+            judge.prefetch({judge.git_path(source["path"])
+                            for info in pending.values() for source in info["missing"]})
+        except git_branch_safety.GitUnavailable as exc:
+            judge, git_hold = None, str(exc)
+    for rel, info in pending.items():
+        reason = git_hold
+        if judge is not None:
+            for source in info["missing"]:
+                verdict, why = judge.judge(source["path"], wiki_root / rel)
+                if verdict != git_branch_safety.RETIRE:
+                    reason = source["path"] + ": " + why
+                    break
+        if reason is not None:
+            info["heldFrom"] = info["state"]
+            info["state"] = HELD
+            info["reason"] = reason
+    return judge
+
+
 def _add_change(changed_files: dict, root: Path, revision: dict, sha: str, kind: str) -> None:
     entry = changed_files.setdefault(revision["collection"], {
         "root": str(root), "created": [], "updated": [], "deleted": [], "revisions": {}})
@@ -434,7 +493,7 @@ def run(cwd: str) -> dict:
     # `ineligibleMeasured` separates a measured 0 from "not counted": update.sh
     # clears the wiki-ineligible notice state only on a measured run.
     result = {"cards": 0, "examined": 0, "retired": 0, "enqueued": 0, "deferred": 0,
-              "kept": 0, "backfilled": 0, "undecidable": 0, "ineligible": 0,
+              "kept": 0, "backfilled": 0, "undecidable": 0, "held": 0, "ineligible": 0,
               "ineligibleMeasured": False,
               "route": None, "guard": None}
     found = qmd_config.find_project_config(cwd)
@@ -466,6 +525,19 @@ def run(cwd: str) -> dict:
         result["deferred"] = len(pages)
         return result
 
+    facts, git_hold = git_facts(root)
+    if facts is not None:
+        import git_branch_safety
+        if facts["linked"]:
+            log("SKIP: linked git worktree; the wiki lifecycle runs only from the main checkout")
+            result["route"] = "worktree"
+            return result
+        operation = git_branch_safety.operation_in_progress(facts)
+        if operation is not None:
+            log(f"SKIP: git {operation} in progress; nothing retired, backfilled or enqueued")
+            result["gitOperation"] = operation
+            return result
+
     import wiki_selected_laya
     try:
         selected = wiki_selected_laya.selected(root)
@@ -495,6 +567,7 @@ def run(cwd: str) -> dict:
     label = source_label.resolver(root, config)
     infos = {rel: inspect_card(wiki_root / rel, root, allow_roots, known, label)
              for rel in rels}
+    lineage = hold_invisible_sources(infos, wiki_root, root, facts, git_hold)
     verdict = guard_verdict(infos)
     if verdict["tripped"]:
         result["guard"] = {key: value for key, value in verdict.items() if key != "tripped"}
@@ -531,11 +604,18 @@ def run(cwd: str) -> dict:
         if kind in DELETING and retire_budget <= 0:
             log(f"DEFER: retire cap {MAX_RETIRE_PER_RUN} reached at {target}; next run resumes here")
             break
+        if kind in (MISSING, LEGACY_MISSING) and lineage is not None and not lineage.still_valid():
+            log(f"DEFER: git HEAD moved or a history operation started at {target}; "
+                f"next run resumes here")
+            break
         if kind == BACKFILL and backfill_budget <= 0:
             log(f"DEFER: backfill cap {MAX_BACKFILL_PER_RUN} reached at {target}; "
                 f"next run resumes here")
             break
-        if kind == BACKFILL:
+        if kind == HELD:
+            result["held"] += 1
+            log(f"HOLD source_not_deleted_in_lineage {target} ({info.get('reason')})")
+        elif kind == BACKFILL:
             backfill_budget -= 1
             revisions = backfill_revisions(info)
             if revisions is None:
@@ -570,7 +650,7 @@ def run(cwd: str) -> dict:
             for revision in info["missing"]:
                 outcome = wiki_source_retire.retire_deleted_source(
                     root, config, selected, revision["collection"], revision["path"],
-                    revision["sha256"])["state"]
+                    revision["sha256"], lineage=lineage)["state"]
                 log(f"RETIRE source_missing {target} ({revision['path']}): {outcome}")
                 if outcome == "shared_pending":
                     # Live sources remain on this card. The compile worker refreshes
@@ -579,6 +659,8 @@ def run(cwd: str) -> dict:
                     if not _recently_refreshed(refreshed, key, revision["sha256"], now):
                         _add_change(changed_files, root, revision, revision["sha256"], "deleted")
                         pending_refresh[key] = revision["sha256"]
+                elif outcome == "held_branch":
+                    result["held"] += 1
                 elif outcome != "retired":
                     result["undecidable"] += 1
         elif kind == UNDECIDABLE:
@@ -633,7 +715,8 @@ def run(cwd: str) -> dict:
     })
     log(f"cards={result['cards']} examined={result['examined']} retired={result['retired']} "
         f"enqueued={result['enqueued']} deferred={result['deferred']} kept={result['kept']} "
-        f"backfilled={result['backfilled']} undecidable={result['undecidable']} ineligible={result['ineligible']} cursor={last}")
+        f"backfilled={result['backfilled']} undecidable={result['undecidable']} held={result['held']} "
+        f"ineligible={result['ineligible']} cursor={last}")
     return result
 
 
@@ -654,7 +737,8 @@ def dry_run(cwd: str) -> dict:
               "sourceScanEnabled": bool(scan_cfg.get("enabled", True)), "cards": 0,
               "counts": {"keep": 0, "changed": 0, "backfill": 0, "missing": 0,
                          "legacyMissing": 0, "retire": 0, "undecidable": 0, "manual": 0},
-              "undecidableReasons": {}, "skip": None, "guard": None}
+              "undecidableReasons": {}, "held": 0, "heldReasons": {}, "gitSkip": None,
+              "skip": None, "guard": None}
     wiki_root = wsm.wiki_root_of(root, config)
     if wiki_root is None or wiki_root.is_symlink():
         report["skip"] = "unsafe_wiki_path"
@@ -674,6 +758,16 @@ def dry_run(cwd: str) -> dict:
     import source_label
     label = source_label.resolver(root, config)
     infos = {page: inspect_card(page, root, allow_roots, known, label) for page in pages}
+    facts, git_hold = git_facts(root)
+    if facts is not None:
+        import git_branch_safety
+        if facts["linked"]:
+            report["gitSkip"] = "linked_worktree"
+        elif git_branch_safety.operation_in_progress(facts) is not None:
+            report["gitSkip"] = git_branch_safety.operation_in_progress(facts)
+    hold_invisible_sources({page.relative_to(wiki_root).as_posix(): info
+                            for page, info in infos.items()},
+                           wiki_root, root, facts, git_hold)
     counts = report["counts"]
     reasons = report["undecidableReasons"]
     names = {KEEP: "keep", BACKFILL: "backfill", MISSING: "missing",
@@ -684,6 +778,12 @@ def dry_run(cwd: str) -> dict:
             continue
         state = info["state"]
         reason = info.get("reason")
+        if state == HELD:
+            # Counted under its judged category; `held` says how many survive.
+            report["held"] += 1
+            why = reason.split(": ", 1)[-1] if reason else "unknown"
+            report["heldReasons"][why] = report["heldReasons"].get(why, 0) + 1
+            state, reason = info["heldFrom"], None
         if state == KEEP:
             changed = changed_sources(info)
             if changed is None:

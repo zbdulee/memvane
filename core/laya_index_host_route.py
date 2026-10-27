@@ -541,8 +541,17 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
     A route blocked only by an in-flight settings rebind classifies as
     ``rebinding``: the host may serve the published generation read-only and
     every other caller treats it like ``blocked``.
+
+    A cwd inside a linked git worktree of a project whose main checkout has a
+    verified selected route classifies as ``worktree`` (see
+    ``_worktree_route``). The host serves the main checkout's published
+    generation read-only; every other caller treats it like ``blocked``.
     """
     decision = _select_route(cwd, action=action)
+    if decision.get("state") in ("blocked", "legacy") and action in ROUTED_ACTIONS:
+        worktree = _worktree_route(cwd, action)
+        if worktree is not None:
+            return worktree
     if decision.get("state") == "blocked" and action in ROUTED_ACTIONS:
         try:
             import laya_settings_rebind
@@ -552,6 +561,74 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
         if rebinding is not None:
             return rebinding
     return decision
+
+
+def _settings_identity(project: Path) -> tuple:
+    """The derived project identity a worktree must share with its main checkout."""
+    raw = json.loads(_read_regular(project / ".auto-context" / "settings.json",
+                                   MAX_SETTINGS_BYTES).decode("utf-8"),
+                     object_pairs_hook=_pairs)
+    if not isinstance(raw, dict):
+        raise ValueError("invalid_route_settings")
+    cfg = config.normalize_config(config.expand_minimal_settings(raw))
+    paths = cfg.get("collectionPaths")
+    return (cfg.get("name"), cfg.get("indexing"), tuple(cfg.get("collections") or ()),
+            tuple(sorted(paths.items())) if isinstance(paths, dict) else None,
+            tuple(sorted(config.role_map(cfg).items())), cfg.get("wikiPath"))
+
+
+def _worktree_route(cwd: str, action: str) -> dict | None:
+    """Read-only route of a linked git worktree onto its main checkout.
+
+    Route records and selection markers are untracked runtime files, so a
+    worktree has the tracked settings and wiki but no route of its own. The
+    worktree is served from the main checkout only when all of these hold:
+    git reports a linked worktree whose common git dir is the main checkout's
+    git dir; no route record or selection marker exists between the cwd and the
+    worktree root; the worktree project sits at the same relative path as the
+    main project; the main project classifies exactly ``candidate``; and both
+    settings derive the same name, collections, paths, roles and wiki path.
+    Otherwise None, and the caller keeps today's classification.
+    """
+    try:
+        requested = Path(cwd)
+        if not requested.is_absolute():
+            return None
+        current = requested.resolve(strict=False)
+        if not current.is_dir():
+            return None
+        import git_branch_safety
+        linked = git_branch_safety.linked_worktree(current)
+        if linked is None:
+            return None
+        worktree, main = Path(linked["worktreeRoot"]), Path(linked["mainRoot"])
+        if current != worktree and worktree not in current.parents:
+            return None
+        for directory in (current, *current.parents):
+            for name in (RECORD, QMD_SELECTION_MARKER):
+                if os.path.lexists(directory / ".auto-context" / name):
+                    return None
+            if directory == worktree:
+                break
+        found = config.find_project_config(str(current))
+        if found.get("configFormat") != "auto-context-dir":
+            return None
+        project = Path(found["projectRoot"])
+        relative = project.relative_to(worktree)
+        main_project = main / relative
+        if main_project.resolve(strict=True) != main_project:
+            return None
+        main_decision = _select_route(str(main_project), action=action)
+        if (main_decision.get("state") != "candidate"
+                or main_decision.get("projectRoot") != str(main_project)):
+            return None
+        if _settings_identity(project) != _settings_identity(main_project):
+            return None
+    except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
+        return None
+    return {"state": "worktree", "reason": "linked_worktree_read_only",
+            "worktreeRoot": str(worktree), "worktreeProjectRoot": str(project),
+            "gitCommonDir": linked["commonDir"], "mainRoute": main_decision}
 
 
 def _select_route(cwd: str, *, action: str = "recall") -> dict:

@@ -17,7 +17,30 @@ import config as qmd_config
 MAX_HOOK_BYTES = 2 * 1024 * 1024
 
 
+def worktree_status(cwd):
+    """A linked git worktree of a selected main checkout is read-only, not unset.
+
+    Its route files are untracked, so ordinary checks would report setup
+    required. The host serves it from the main checkout's published index;
+    writers still refuse because the status is not ``ready``.
+    """
+    try:
+        import laya_index_host_route
+        decision = laya_index_host_route.select_route(str(Path(cwd).absolute()),
+                                                      action='recall')
+    except Exception:
+        return None
+    if decision.get('state') != 'worktree':
+        return None
+    return {'status': 'worktree_read_only', 'reason': 'linked_worktree_read_only',
+            'project': decision['worktreeProjectRoot'],
+            'mainProject': decision['mainRoute']['projectRoot']}
+
+
 def status(cwd):
+    worktree = worktree_status(cwd)
+    if worktree is not None:
+        return worktree
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
         return {'status': 'ready', 'reason': 'synthetic_fixture'}
     found = qmd_config.find_project_config(str(cwd))
@@ -134,6 +157,8 @@ def main(argv=None):
         return 0
     else:
         return 2
+    if state['status'] == 'worktree_read_only':
+        return 4
     return 0 if state['status'] == 'ready' else 3
 
 

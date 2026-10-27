@@ -100,7 +100,7 @@ def _setup_notice(cwd, queue, guard=None):
     if guard is None:
         import setup_guard
         guard = setup_guard.status(cwd)
-    if guard['status'] == 'optout': return
+    if guard['status'] in ('optout', 'worktree_read_only'): return
     found = qmd_config.find_project_config(cwd)
     if found['configFormat'] == 'local-optout': return
     project = Path(found['projectRoot'] if found['configFormat'] != 'none'
