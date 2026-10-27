@@ -2140,17 +2140,13 @@ def _main():
                      and payload.get('context_origin') == 'tool_edit')
     deferred_replay = (internal_edit and
                        os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') == '1')
-    # Selected Laya recall requires its own selector. On legacy QMD, retain
-    # the baseline pool until a prepared local checkpoint (or an approved
-    # shared trial) exists. The removed project flag cannot opt out of either.
+    # Both routes retain the baseline ranked pool until a prepared local
+    # checkpoint (or an approved shared trial) exists; selected Laya recall
+    # applies the same predicate. The removed project flag cannot opt out.
     try:
-        from context_learning.seam import _private_state
-        local_state = _private_state(
-            config, Path(found_config['projectRoot']), create=False)
-        local_checkpoint = (local_state is not None
-                            and not (local_state / 'active-checkpoint.json').is_symlink()
-                            and (local_state / 'active-checkpoint.json').is_file())
-    except (OSError, ValueError, KeyError, TypeError):
+        from context_learning.seam import local_checkpoint_prepared
+        local_checkpoint = local_checkpoint_prepared(config, found_config['projectRoot'])
+    except (KeyError, TypeError):
         local_checkpoint = False
     live_selection = shared_trial or local_checkpoint
     # Only the new shared trial uses resource-dependent pool sizing. Existing

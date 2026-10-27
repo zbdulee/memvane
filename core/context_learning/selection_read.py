@@ -16,13 +16,30 @@ working. `HookDeadlineExceeded` is a BaseException and is not caught.
 """
 from __future__ import annotations
 
+
+def selector_prepared(config, project_root):
+    """Whether a Laya-route selector exists to consult; never creates state.
+
+    Same predicate as legacy QMD recall: an approved shared trial/profile, or
+    a prepared local checkpoint. Without one the caller serves its ranked rows.
+    """
+    shared = config.get('sharedLearning', {}) if isinstance(config, dict) else {}
+    if (isinstance(shared, dict) and shared.get('enabled') is True
+            and (shared.get('trialSelection') is True
+                 or shared.get('profile') == 'qmd-local-learning-profile-v1')):
+        return True
+    from .seam import local_checkpoint_prepared
+    return local_checkpoint_prepared(config, project_root)
+
+
 def select_published(pool, *, prompt, config, project_root,
                      wiki_names, scope_id, deadline=None):
     """Select verified Laya-index cards with the existing local Laya model.
 
     The index query supplies immutable, provenance-checked wiki rows. This
     coordinator never opens source files, queries QMD, or creates learning state.
-    A missing/unavailable selector returns no cards instead of RRF topN.
+    A missing/unavailable selector returns no cards and its reason; the Laya
+    host then serves its ranked rows. An invalid pool is `candidate_invalid`.
     """
     from . import selection_port
     from .contracts import digest
@@ -32,7 +49,11 @@ def select_published(pool, *, prompt, config, project_root,
     out = {'final_results': [], 'reason': 'candidate_unavailable', 'resources': {},
            'candidate_count': 0}
     try:
-        rows = selection_port.published_candidate_rows(pool, wiki_names, scope_id)
+        try:
+            rows = selection_port.published_candidate_rows(pool, wiki_names, scope_id)
+        except ValueError:
+            out['reason'] = 'candidate_invalid'
+            return out
         out['candidate_count'] = len(rows)
         if not rows:
             out['reason'] = 'no_candidates'

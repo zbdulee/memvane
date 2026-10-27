@@ -238,8 +238,11 @@ class Checks(unittest.TestCase):
 
     def test_selected_recall_captures_private_and_shared_case_after_output(self):
         pool = self.laya.rows()
-        # The query-time selector reads an existing private state only.
+        # The query-time selector reads an existing private state only; a
+        # prepared checkpoint pointer makes its choice final.
         (self.laya.private / digest(str(self.laya.project))).mkdir(mode=0o700)
+        (self.laya.private / digest(str(self.laya.project)) /
+         'active-checkpoint.json').write_text('{}')
         with self.laya.route(), patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
             result = self.serve(chosen=[pool[2]['path']])
             status = laya_learning.capture_recall(*response._LEARNING_CAPTURE[0])
@@ -260,6 +263,23 @@ class Checks(unittest.TestCase):
         with closing(sqlite3.connect(self.laya.shared / 'shared-learning.sqlite3')) as db:
             cases = db.execute('SELECT status,corpus_fingerprint,project_root FROM cases').fetchall()
         self.assertEqual(cases, [('queued', fingerprint, str(self.laya.project))])
+
+    def test_unprepared_selector_captures_served_ranked_rows(self):
+        pool = self.laya.rows()
+        (self.laya.private / digest(str(self.laya.project))).mkdir(mode=0o700)
+        with self.laya.route(), patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
+            result = self.serve(chosen=[pool[2]['path']])
+            status = laya_learning.capture_recall(*response._LEARNING_CAPTURE[0])
+        context = result['hookSpecificOutput']['additionalContext']
+        for path in [row['path'] for row in pool[:3]]:
+            self.assertIn(path, context)
+        self.assertEqual(status, 'stored')
+        state = self.laya.private / digest(str(self.laya.project))
+        with closing(sqlite3.connect(state / 'learning.sqlite3')) as db:
+            (raw,), = db.execute('SELECT body FROM samples').fetchall()
+        sample = json.loads(raw)
+        self.assertEqual(sample['sampling']['baseline_selected_ids'],
+                         [row['path'] for row in pool[:3]])
 
     def test_capture_runs_after_flush_and_never_changes_hook_output(self):
         decision = dict(self.laya.decision)

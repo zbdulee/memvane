@@ -77,7 +77,7 @@ def _fail(code: str):
 
 
 class _VectorUnavailable(Exception):
-    """Read-only serving after a bundle drift has no warm query vector."""
+    """No query vector for this prompt; serve the published lexical lists."""
 
 
 class _SealedManifestMismatch(Exception):
@@ -323,12 +323,15 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
     return context
 
 
-def _log_selection(decision: dict, chosen: list) -> None:
+def _log_selection(decision: dict, chosen: list, fallback: str | None = None,
+                   vector: str | None = None) -> None:
     """File-only `qmd_recall_selection` line for a served Laya recall.
 
     Mirrors the QMD route line (release QA §6): `selected[]` lists exactly the
-    injected documents with their project-relative path. A no-op unless
-    QMD_RECALL_LOG is set; never writes stdout and never changes the result.
+    injected documents with their project-relative path. ``fallback`` names
+    why ranked rows were served without the selector; ``vector`` why the
+    query vector was skipped. A no-op unless QMD_RECALL_LOG is set; never
+    writes stdout and never changes the result.
     """
     if not os.environ.get("QMD_RECALL_LOG"):
         return
@@ -341,10 +344,13 @@ def _log_selection(decision: dict, chosen: list) -> None:
         except Exception:
             path = str(row.get("path")) if isinstance(row, dict) else ""
         entries.append({"file": path, "path": path})
-    _write_selection_log(project, "selected" if entries else "no_results_after_filter", entries)
+    extra = {key: value for key, value in (('selection_fallback', fallback),
+                                           ('vector_fallback', vector)) if value}
+    _write_selection_log(project, "selected" if entries else "no_results_after_filter",
+                         entries, **extra)
 
 
-def _write_selection_log(project_root, reason: str, entries: list) -> None:
+def _write_selection_log(project_root, reason: str, entries: list, **fields) -> None:
     """Append one file-only `qmd_recall_selection` line; never raises or prints."""
     log_path = os.environ.get("QMD_RECALL_LOG")
     if not log_path:
@@ -353,7 +359,8 @@ def _write_selection_log(project_root, reason: str, entries: list) -> None:
         import recall
         recall.set_log_project_root(project_root)
         recall.log_recall_event(log_path, reason, route="laya",
-                                selected=entries, selected_count=len(entries))
+                                selected=entries, selected_count=len(entries),
+                                **fields)
     except Exception:
         pass
 
@@ -368,22 +375,52 @@ def host_payload(host: str, context: str) -> dict:
 
 
 def _select_verified_cards(decision, settings, prompt, rows):
-    """Required local card selection after the index proved published wiki rows."""
-    from context_learning.selection_read import select_published
+    """Card selection after the index proved published wiki rows.
+
+    Returns ``(rows, reason, fallback)``. With a prepared selector its answer
+    is final (``selected``, including a real zero-card choice). Without one,
+    or when the prepared selector cannot answer, the verified rows keep their
+    hybrid rank (``ranked``) so search never empties on selector
+    infrastructure; ``fallback`` names why. An invalid pool serves nothing.
+    """
+    from context_learning.selection_read import select_published, selector_prepared
     from laya_index_host_route import wiki_index_roots
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))
     if not names:
         _fail('selected_wiki_required')
-    result = select_published(
-        rows[:15], prompt=prompt, config=settings,
-        project_root=decision['projectRoot'],
-        wiki_names=names, scope_id=decision['scopeId'])
-    if result['reason'] not in ('selected', 'no_candidates'):
-        _write_selection_log(decision['projectRoot'], 'laya_selector_' + result['reason'], [])
-        print('[laya-index] local selection unavailable; no context injected',
+    project = decision['projectRoot']
+    pool = rows[:15]
+    if not pool:
+        return [], 'no_candidates', None
+    if selector_prepared(settings, project):
+        result = select_published(
+            pool, prompt=prompt, config=settings, project_root=project,
+            wiki_names=names, scope_id=decision['scopeId'])
+        reason = result['reason']
+        if reason in ('selected', 'no_candidates'):
+            return result['final_results'], reason, None
+        if reason == 'candidate_invalid':
+            _write_selection_log(project, 'laya_selector_candidate_invalid', [])
+            print('[laya-index] published candidates invalid; no context injected',
+                  file=sys.stderr)
+            return [], reason, None
+        fallback = 'laya_selector_' + reason
+        _write_selection_log(project, fallback, [])
+        print('[laya-index] local selection unavailable; serving hybrid rank',
               file=sys.stderr)
-    return result['final_results'], result['reason']
+    else:
+        fallback = 'laya_selector_not_prepared'
+    from context_learning.selection_port import published_candidate_rows
+    try:
+        # The same published-row contract the selector input must satisfy.
+        published_candidate_rows(pool, names, decision['scopeId'])
+    except ValueError:
+        _write_selection_log(project, 'laya_selector_candidate_invalid', [])
+        print('[laya-index] published candidates invalid; no context injected',
+              file=sys.stderr)
+        return [], 'candidate_invalid', None
+    return pool, 'ranked', fallback
 
 
 def _selection_view_unchanged(decision, chosen, expected_head=None):
@@ -448,7 +485,7 @@ def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, lim
     try:
         supplied = approved_provider(prompt, route_profile)
     except _VectorUnavailable:
-        # Only the bundle-drift read-only provider raises this: the published
+        # Bundle drift, a cold owner or refused query admission: the published
         # generation is still served from its verified lexical rows.
         return []
     if (not isinstance(supplied, dict) or set(supplied) != _PROVIDER_RESULT_KEYS
@@ -1066,6 +1103,16 @@ def _request_stale_sync(decision: dict, proof: dict):
 
 def _request_provider_start(decision: dict, proof: dict, *, transition=False):
     """A cold/mismatched socket wakes the off-hook owner, never a hook model."""
+    _fail(_wake_provider(decision, proof, transition=transition))
+
+
+def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
+    """Wake the off-hook provider owner and return its vector-side state code.
+
+    Proof, owner-state integrity, terminal start failure and an identity
+    transition raise. The returned codes (resource_deferred, retry_wait,
+    preparing, wake_failed) leave recall serving its lexical lists.
+    """
     from laya_install_journal import verify_selected_route
     from laya_embed_resident import _failure_decision, read_owner_state
     if verify_selected_route(decision) != proof:
@@ -1097,15 +1144,17 @@ def _request_provider_start(decision: dict, proof: dict, *, transition=False):
             refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
         _fail('selected_proof_changed')
     if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
-        _fail('selected_provider_wake_failed')
+        if transition:
+            _fail('selected_provider_wake_failed')
+        return 'selected_provider_wake_failed'
     if transition:
         _fail('selected_provider_identity_transition')
     if state is not None and state['reason'] == 'resource_deferred':
-        _fail('selected_provider_resource_deferred')
+        return 'selected_provider_resource_deferred'
     if state is not None and state['reason'] in (
             'startup_failed', 'worker_exited', 'unexpected'):
-        _fail('selected_provider_retry_wait')
-    _fail('selected_provider_preparing')
+        return 'selected_provider_retry_wait'
+    return 'selected_provider_preparing'
 
 
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,
@@ -1244,10 +1293,10 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
         _fail('initial_preview_proof_changed')
     import config
     settings = config.load_project_config(decision['projectRoot'])
-    chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
     answer_limit = min(decision['recallSettings']['topN'], 3)
     chosen = chosen[:answer_limit]
-    if reason != 'selected' or not chosen:
+    if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
@@ -1255,11 +1304,12 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
         _fail('initial_preview_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     context = render_context({**decision, 'buildPhase': refreshed['buildPhase']},
-                             chosen, limit=answer_limit, ranking='laya_selection',
+                             chosen, limit=answer_limit,
+                             ranking='laya_selection' if reason == 'selected' else 'hybrid_rrf',
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in
                                                locations.items() if path in chosen_paths})
-    _log_selection(decision, chosen)
+    _log_selection(decision, chosen, fallback)
     return host_payload(host, context)
 
 
@@ -1477,14 +1527,27 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         _fail("vector_provider_missing")
     provider = ReviewedLocalQmdProvider(manifest)
     embedded = {}
+    # Why this prompt has no query vector. Set once; later calls never touch
+    # the socket again and the searches serve their lexical lists (#57 path).
+    vector_off: list[str] = []
 
     def query_provider(text, profile):
         # The incremental and pinned searches ask the same warm service for
         # one query vector. Never charge the hook twice for the same prompt.
+        if vector_off:
+            raise _VectorUnavailable(vector_off[0])
         key = (text, profile['profileId'])
         if key not in embedded:
             if not degraded:
-                embedded[key] = provider(text, profile)
+                from laya_index_a import IndexContractError
+                try:
+                    embedded[key] = provider(text, profile)
+                except IndexContractError as exc:
+                    if str(exc) != 'provider_unavailable':
+                        raise
+                    # Cold/preparing owner: wake it after the lexical search.
+                    vector_off.append('provider_unavailable')
+                    raise _VectorUnavailable(str(exc)) from exc
             else:
                 # A warm owner of the same sealed recipe may still answer; a
                 # cold or changed one is never started from a drifted bundle.
@@ -1503,9 +1566,11 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         admit_query()
     except Exception as exc:
         from resource_deferred import ResourceDeferred
-        if isinstance(exc, ResourceDeferred):
-            _fail('selected_provider_resource_deferred')
-        raise
+        if not isinstance(exc, ResourceDeferred):
+            raise
+        # Query admission refused under pressure: no vector for this prompt,
+        # the verified published generation is still searched lexically.
+        vector_off.append('resource_deferred')
     settings = config.load_project_config(decision["projectRoot"])
     v2 = "collections" in decision
     selected_settings = decision.get('recallSettings', settings)
@@ -1542,7 +1607,8 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                     shadow_paths, base_generation = query_incremental(
                         prompt, decision, proof, query_provider)
             except _VectorUnavailable:
-                # Degraded only: serve the sealed base generation alone.
+                # No query vector (bundle drift, cold or deferred provider):
+                # serve the sealed base generation alone, lexical lists only.
                 incremental_rows, incremental_title_only = [], frozenset()
                 incremental_locations, shadow_paths, base_generation = {}, (), None
         with LayaIndexRuntime(source_root=source_root,
@@ -1584,6 +1650,15 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
             # No sync may be recorded until the bundle upgrade completes.
             _fail('selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
+    vector_fallback = None
+    if vector_off and not degraded:
+        # Still request the owner wake; its vector-side state never empties
+        # this answer. Proof/integrity/terminal/transition outcomes raise.
+        code = _wake_provider(decision, proof)
+        vector_fallback = ('selected_provider_resource_deferred'
+                           if vector_off[0] == 'resource_deferred' else code)
+        _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
+        print(f'[laya-index] {vector_fallback}; serving lexical results', file=sys.stderr)
     if recheck(decision) != proof:
         _fail("selected_proof_changed")
     if base_generation is not None and pinned_generation != [base_generation]:
@@ -1599,11 +1674,13 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   [(row, 1) for row in rows])
         rows = [row for row, _origin in sorted(
             ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
-    chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
+    chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
     answer_limit = min(top_n, 3)
     chosen = chosen[:answer_limit]
+    # Capture sees the verified pool and what was served: the selector's
+    # choice, or the ranked rows when no prepared selector answered.
     _LEARNING_CAPTURE[:] = [(host, decision, payload, settings, rows[:15], chosen)]
-    if reason != 'selected' or not chosen:
+    if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
@@ -1612,12 +1689,12 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     context = render_context(decision, chosen, limit=answer_limit,
-                             ranking="laya_selection",
+                             ranking='laya_selection' if reason == 'selected' else 'hybrid_rrf',
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in locations.items()
                                                if path in chosen_paths},
                              allow_mixed_generation=bool(incremental_rows))
-    _log_selection(decision, chosen)
+    _log_selection(decision, chosen, fallback, vector_fallback)
     return host_payload(host, context)
 
 
