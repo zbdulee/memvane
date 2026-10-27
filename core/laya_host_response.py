@@ -52,6 +52,22 @@ _DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
                                   'deferred_queue_capacity_retained'))
 
 
+# Inputs of one served recall for post-output learning capture (see main).
+_LEARNING_CAPTURE: list = []
+
+
+def _capture_learning(started: float) -> None:
+    """Run learning capture after the response is flushed; never raises."""
+    pending, _LEARNING_CAPTURE[:] = list(_LEARNING_CAPTURE), []
+    if not pending:
+        return
+    try:
+        from context_learning.laya_learning import capture_recall
+        capture_recall(*pending[0], started=started)
+    except Exception:
+        pass
+
+
 class HostResponseError(ValueError):
     """Fixed diagnostic code; never includes document body or source path."""
 
@@ -1586,6 +1602,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     chosen, reason = _select_verified_cards(decision, settings, prompt, rows)
     answer_limit = min(top_n, 3)
     chosen = chosen[:answer_limit]
+    _LEARNING_CAPTURE[:] = [(host, decision, payload, settings, rows[:15], chosen)]
     if reason != 'selected' or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
@@ -1614,6 +1631,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         return 2
     project_root = None
+    started = time.monotonic()
+    _LEARNING_CAPTURE[:] = []
     try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
@@ -1635,7 +1654,11 @@ def main(argv: list[str] | None = None) -> int:
                     if decision['state'] == 'preview' else
                     serve_selected(action, host, decision, payload))
         print(json.dumps(response, ensure_ascii=True, allow_nan=False,
-                         separators=(",", ":")))
+                         separators=(",", ":")), flush=True)
+        if action == "recall":
+            # Learning work starts only after the context is in the pipe; a
+            # host that kills this process on timeout still has the answer.
+            _capture_learning(started)
         return 0
     except Exception as exc:
         # Hook stderr is intentionally terse. No source body, path, or secrets.

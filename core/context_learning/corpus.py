@@ -20,7 +20,21 @@ MAX_DOCUMENTS = 50000
 
 
 def snapshot(project_root, config, *, qmd_paths=None):
-    """Return a complete active-index snapshot or None, never a guessed hash."""
+    """Return a complete active-index snapshot or None, never a guessed hash.
+
+    A project on a selected Laya route is fingerprinted from laya-db only
+    (``laya_learning.corpus_snapshot``); an unverifiable selected route
+    returns None and never reads QMD. An explicit ``qmd_paths`` is the
+    legacy QMD recall caller.
+    """
+    if qmd_paths is None:
+        try:
+            from . import laya_learning
+            bound = laya_learning.selected(project_root)
+        except Exception:
+            return None
+        if bound is not None:
+            return laya_learning.corpus_snapshot(project_root, config, decision=bound[0])
     try:
         root = Path(project_root).resolve(strict=True)
         if not root.is_dir() or not isinstance(config, dict):
