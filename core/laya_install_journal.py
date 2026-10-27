@@ -548,6 +548,7 @@ def inspect_journal(journal_path):
             'pending': row['pending'], 'scopeId': row['scope_id'],
             'projectRoot': row['project_root'], 'newWriteSeen': bool(row['new_write_seen']),
             'selectedRouteSha256': row['selected_route_sha'],
+            'previousRouteSha256': row['previous_route_sha'],
             'pendingRouteSha256': row['pending_route_sha'],
             'providerAttestationSha256': row['provider_attestation_sha'],
             'previousProviderAttestationSha256': row['previous_provider_attestation_sha'],

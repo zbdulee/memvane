@@ -27,7 +27,7 @@ MARKER_SCHEMA = 'laya-fresh-wiki-selection-marker-v1'
 LEDGER = 'fresh-wiki-cutover.json'
 MARKER = 'laya-index-selection.json'
 ROUTE = 'laya-index-route.json'
-PHASES = ('prepared', 'switching', 'active', 'restoring', 'restored', 'retired')
+PHASES = ('prepared', 'switching', 'active', 'upgrading', 'restoring', 'restored', 'retired')
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 HEX32 = re.compile(r'[0-9a-f]{32}\Z')
 FILES = (('candidateDb', 'candidateIdentity'), ('queueDb', 'queueIdentity'),
@@ -256,7 +256,7 @@ def classify_marker(project_root, marker_path, route_path):
         if present:
             if route_path.is_symlink() or _sha(_private_file(route_path, 8192)) != row['routeSha256']:
                 return 'blocked'
-            if (row['phase'] == 'active' and journal['state'] == 'active' and
+            if (row['phase'] == 'active' and journal['state'] in ('active', 'restored_old') and
                     journal['selectedRouteSha256'] == row['routeSha256'] and
                     journal['providerAttestationSha256'] == row['attestationSha256'] and
                     journal['providerFileIdentitySha256'] == row['providerFileIdentitySha256']):
@@ -351,7 +351,7 @@ def recover(project_root, journal_path, route_bytes):
             if journal['state'] == 'restored_qmd' and not (route.exists() or route.is_symlink()):
                 return _change(ledger, row['epoch'], 'restoring', 'restored')
             _fail('fresh_wiki_restore_uncertain')
-        if row['phase'] == 'active' and journal['state'] == 'active':
+        if row['phase'] == 'active' and journal['state'] in ('active', 'restored_old'):
             if (journal['selectedRouteSha256'] != row['routeSha256'] or
                     journal['providerAttestationSha256'] != row['attestationSha256'] or
                     journal['providerFileIdentitySha256'] != row['providerFileIdentitySha256']):
@@ -373,7 +373,7 @@ def restore(project_root, journal_path):
         if _sha(route_bytes) != row['routeSha256']:
             _fail('fresh_wiki_route_changed')
         journal = inspect_journal(journal_path)
-        if journal['state'] != 'active' or journal['newWriteSeen']:
+        if journal['state'] != 'active' or journal['previous'] is not None or journal['newWriteSeen']:
             _fail('fresh_wiki_rollback_forward_only')
         _proof(row, route_bytes, restore=True)
         row = _change(ledger, row['epoch'], 'active', 'restoring')

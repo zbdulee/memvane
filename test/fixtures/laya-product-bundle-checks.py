@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 import shutil
 import sqlite3
@@ -23,6 +23,9 @@ import laya_index_host_route as host
 import laya_install_journal as journal
 import laya_product_install as product_install
 import laya_product_bundle as bundle
+import laya_active_upgrade as active_upgrade
+import laya_fresh_wiki_origin as fresh_wiki
+import laya_inactive_upgrade as inactive_upgrade
 from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
 from laya_index_vector import qmd_markdown_title
 from laya_qmd_migration import QMD_253
@@ -98,7 +101,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_backup_preflight.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
                  'laya_host_response.py', 'laya_owner_projection.py',
-                 'laya_initial_build.py')
+                 'laya_initial_build.py', 'laya_fresh_wiki_origin.py')
         (self.source / 'core').mkdir()
         for name in names:
             shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)
@@ -964,6 +967,172 @@ print(json.dumps(result))'''
         with self.assertRaisesRegex(journal.JournalEvidenceError, 'rollback_not_authorized'):
             journal.cas_restore(self.journal_path, 10, old_raw)
         self.assertEqual(journal.inspect_journal(self.journal_path)['state'], 'active')
+
+    def test_fresh_wiki_active_upgrade_uses_real_journal_and_ledger(self):
+        """Sealed old/new synthetic bundles, real CAS, no model or user store."""
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        self.settings.write_text(json.dumps({
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': '.', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'wikiOnly', 'compile': {'mode': 'off'}}))
+        first = self.candidate('plugin-v1', self.commit1)
+        old_route = self.route(first, 'g-' + '4' * 32)
+        old_route.pop('collectionName')
+        old_route.pop('sourceRoot')
+        old_route['schema'] = host.SCHEMA_V2
+        old_route['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)}]
+        old_raw = bundle._canonical(old_route)
+        created = journal.create_journal(self.journal_path, first, old_raw,
+                                         user_qmd_roots=[self.user_qmd])
+        receipt = journal.stage_production_attestation(
+            self.journal_path, first, self.provider_manifest(first), self.closure)
+        self.route_path.write_bytes(old_raw)
+        self.route_path.chmod(0o600)
+        selected = journal.cas_activate(self.journal_path, created['epoch'], old_raw)
+        self.assertEqual(selected['state'], 'active')
+        (self.install / 'reviewed-route.json').write_bytes(old_raw)
+        (self.install / 'reviewed-route.json').chmod(0o600)
+        generation = 'g-' + '4' * 32 + '-b' + 'f' * 64
+        fake_files = {'candidateDb': str(self.db_path), 'queueDb': str(self.queue_path),
+                      'catalogDb': str(self.install / 'catalog.sqlite'),
+                      'bindingStore': str(self.install / 'bindings.sqlite')}
+        for name in ('catalogDb', 'bindingStore'):
+            path = Path(fake_files[name])
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE synthetic_backup_check (id INTEGER PRIMARY KEY)')
+            path.chmod(0o600)
+        row = {'schema': fresh_wiki.SCHEMA, 'epoch': 3, 'phase': 'active',
+               'projectRoot': str(self.project), 'journalPath': str(self.journal_path),
+               'routeSha256': hashlib.sha256(old_raw).hexdigest(),
+               'collections': old_route['collections'],
+               **fake_files,
+               'scope': old_route['scopeId'], 'indexGeneration': generation,
+               'sourceManifest': '2' * 64, 'bindingDigest': 'f' * 64,
+               'catalogScanId': '3' * 32, 'catalogRawDigest': '4' * 64,
+               'vectorProfileId': self.vector_profile['profileId'],
+               'vectorRows': 1, 'candidateIncarnation': self.incarnation,
+               'attestationSha256': receipt['attestationSha256'],
+               'providerFileIdentitySha256': selected['providerFileIdentitySha256'],
+               **{field: [1, 1] for _, field in fresh_wiki.FILES}}
+        fresh_wiki._write(self.install / fresh_wiki.LEDGER, row, replace=False)
+        marker = self.auto / fresh_wiki.MARKER
+        fresh_wiki._write(marker, fresh_wiki._marker(row), replace=False)
+        changed = self.source / 'core' / 'laya_index_flow.py'
+        changed.write_text(changed.read_text() + '\n# next sealed code\n')
+        _git(self.source, 'add', '.')
+        _git(self.source, '-c', 'user.name=Synthetic Fixture',
+             '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'v2')
+        second = self.candidate('plugin-v2', _git(self.source, 'rev-parse', 'HEAD'))
+        new_route = {**old_route, 'pluginRoot': second['pluginRoot'],
+                     'bundleManifestSha256': second['bundleManifestSha256'],
+                     'ownershipManifestSha256': second['ownershipManifestSha256']}
+        new_raw = bundle._canonical(new_route)
+        new_att = {'schema': bundle.PRODUCTION_ATTESTATION_SCHEMA,
+                   'sourceCommit': second['sourceCommit'],
+                   'bundleManifestSha256': second['bundleManifestSha256'],
+                   'ownershipManifestSha256': second['ownershipManifestSha256'],
+                   'journalPath': str(self.journal_path),
+                   'vectorProfile': second['vectorProfile'],
+                   'providerManifest': self.provider_manifest(second),
+                   'dependencyClosure': self.closure}
+        new_att_raw = journal._canon(new_att).encode()
+        next_row = {**row, 'epoch': 5, 'phase': 'upgrading',
+                    'routeSha256': hashlib.sha256(new_raw).hexdigest(),
+                    'attestationSha256': hashlib.sha256(new_att_raw).hexdigest(),
+                    'providerFileIdentitySha256': hashlib.sha256(journal._canon(
+                        journal._provider_file_identity(new_att)).encode()).hexdigest()}
+        intent = {'stateRoot': str(self.install), 'projectRoot': str(self.project),
+                  'oldLedger': row, 'newLedger': next_row,
+                  'oldRoute': old_raw.decode(), 'newRoute': new_raw.decode(),
+                  'oldAttestation': (self.install / journal.PRODUCTION_ATTESTATION).read_text(),
+                  'newAttestation': new_att_raw.decode(),
+                  'oldMarker': (marker).read_text(),
+                  'newMarker': bundle._canonical(fresh_wiki._marker(next_row)).decode(),
+                  'newProof': {key: second[key] for key in
+                               ('pluginRoot', 'sourceCommit', 'bundleManifestSha256',
+                                'ownershipManifestSha256', 'vectorProfile')},
+                  'oldRecord': {'identity': {'stateRoot': str(self.install)}},
+                  'counts': {'vectorChunkSets': 0, 'vectorChunks': 0,
+                             'publishedDocuments': 0}, 'backup': '/synthetic/backup'}
+        with mock.patch.object(fresh_wiki, '_identity', return_value=[1, 1]), \
+             mock.patch.object(inactive_upgrade, '_store_counts',
+                               return_value=intent['counts']):
+            self.assertEqual(fresh_wiki.classify_marker(
+                self.project, marker, self.route_path), 'candidate')
+            synthetic_build = {'identity': {
+                'projectRoot': str(self.project), 'stateRoot': str(self.install),
+                'vectorProfileId': self.vector_profile['profileId'],
+                'journalPath': str(self.journal_path), **fake_files}}
+            reviewed = {'proposalSha256': 'b' * 64,
+                        'reviewedProvider': {
+                            'vectorProfile': self.vector_profile,
+                            'providerManifest': self.provider_manifest(second),
+                            'dependencyClosure': self.closure}}
+            with mock.patch.object(active_upgrade.build, 'read',
+                                   return_value=synthetic_build), \
+                 mock.patch.object(active_upgrade, 'review_local_provider',
+                                   return_value=reviewed), \
+                 mock.patch.object(active_upgrade, 'adopt_host_loaded_plugin',
+                                   return_value=second):
+                prepared = active_upgrade._prepare(
+                    self.project, self.install, self.journal_path,
+                    self.source, second['pluginRoot'], second['sourceCommit'],
+                    'b' * 64, self.model, 3)
+                self.assertEqual(prepared['newLedger'], next_row)
+                active_upgrade._backup_proof(prepared)
+                self.assertTrue(Path(prepared['backup']).is_dir())
+            intent = prepared
+            with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
+                atomic = inactive_upgrade._atomic_expected
+                def interrupted(path, before, after):
+                    atomic(path, before, after)
+                    if Path(path) == self.route_path:
+                        raise RuntimeError('synthetic_upgrade_exit')
+                with mock.patch.object(inactive_upgrade, '_atomic_expected', interrupted):
+                    with self.assertRaisesRegex(RuntimeError, 'synthetic_upgrade_exit'):
+                        active_upgrade.upgrade(
+                            project_root=str(self.project), state_root=str(self.install),
+                            source_root=str(self.source), plugin_root=second['pluginRoot'],
+                            commit_id=second['sourceCommit'],
+                            accepted_provider_sha256='b' * 64,
+                            model_path=str(self.model), dimension=3)
+                self.assertEqual(journal.inspect_journal(self.journal_path)['state'],
+                                 'pending')
+                self.assertEqual(fresh_wiki.classify_marker(
+                    self.project, marker, self.route_path), 'blocked')
+                done = active_upgrade.upgrade(
+                    project_root=str(self.project), state_root=str(self.install),
+                    source_root=str(self.source), plugin_root=second['pluginRoot'],
+                    commit_id=second['sourceCommit'],
+                    accepted_provider_sha256='b' * 64,
+                    model_path=str(self.model), dimension=3)
+            self.assertEqual(done['status'], 'active_upgrade_complete')
+            self.assertEqual(journal.inspect_journal(self.journal_path)['selectedRouteSha256'],
+                             next_row['routeSha256'])
+            self.assertEqual(fresh_wiki.classify_marker(
+                self.project, marker, self.route_path), 'candidate')
+            selected_in_bundle = self.prove_in_candidate_process(second)
+            self.assertEqual(selected_in_bundle.returncode, 0,
+                             selected_in_bundle.stderr)
+            self.assertTrue(json.loads(selected_in_bundle.stdout)['productRouteAllowed'])
+            with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
+                self.assertEqual(active_upgrade.upgrade(
+                    project_root=str(self.project), state_root=str(self.install),
+                    source_root=None, plugin_root=second['pluginRoot'],
+                    commit_id=second['sourceCommit'],
+                    accepted_provider_sha256=None,
+                    model_path=None, dimension=None, restore=True)['status'],
+                    'active_upgrade_restored_laya')
+            self.assertEqual(journal.inspect_journal(self.journal_path)['state'],
+                             'restored_old')
+            self.assertEqual(fresh_wiki.classify_marker(
+                self.project, marker, self.route_path), 'candidate')
+            with self.assertRaisesRegex(Exception, 'forward_only'):
+                fresh_wiki.restore(self.project, self.journal_path)
 
     def test_two_processes_contest_one_journal_epoch(self):
         self.initial()
