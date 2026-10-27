@@ -123,6 +123,11 @@ def resolve_paths(cwd_str, config_json):
         }
 
     roles = qmd_config.role_map(config)
+    # Minimal settings search wiki only. Their raw root is the wiki's compile
+    # source (and a selected Laya route's source-freshness root), never a QMD
+    # collection: listing it as source keeps it out of `collection add`,
+    # `update` and `embed`, and lets update.sh unregister an earlier one.
+    minimal = qmd_config.is_minimal_config(config)
 
     entries = []
     index_entries = []
@@ -138,7 +143,9 @@ def resolve_paths(cwd_str, config_json):
             continue
         entry = {"name": col, "path": matched_path}
         entries.append(entry)
-        if qmd_config.is_indexed_collection(roles, col):
+        if minimal and qmd_config.collection_role(roles, col) == qmd_config.COLLECTION_ROLE_RAW:
+            source_entries.append(entry)
+        elif qmd_config.is_indexed_collection(roles, col):
             index_entries.append(entry)
         elif qmd_config.collection_role(roles, col) == qmd_config.COLLECTION_ROLE_SOURCE:
             source_entries.append(entry)

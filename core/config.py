@@ -1571,8 +1571,9 @@ def load_project_config(cwd):
 def load_project_config_raw(cwd):
     """Return the raw JSON object for the discovered project config, or {}.
 
-    minimal settings(`{name, skipPaths}`)는 legacy 모양으로 펼쳐 반환한다
-    (`expand_minimal_settings`). legacy 파일은 읽은 그대로다."""
+    minimal settings(`{name, skipPaths}`)는 legacy 모양으로 펼쳐 반환하고
+    `settingsModel: "minimal"`을 붙인다(`resolve_paths`가 raw collection을 QMD 인덱스에서
+    뺀다). legacy 파일은 읽은 그대로다."""
     found = find_project_config(cwd)
     config_path = found.get("configPath")
     if not config_path:
@@ -1580,8 +1581,9 @@ def load_project_config_raw(cwd):
     parsed, reason = _read_json_object(config_path)
     if reason:
         return {}
-    return (expand_minimal_settings(parsed)
-            if found.get("configFormat") == "auto-context-dir" else parsed)
+    if found.get("configFormat") == "auto-context-dir" and is_minimal_settings(parsed):
+        return {**expand_minimal_settings(parsed), "settingsModel": MINIMAL_SETTINGS_MODEL}
+    return parsed
 
 
 def main():
