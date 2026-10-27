@@ -33,6 +33,7 @@ import laya_inactive_upgrade as inactive  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402
 import laya_settings_rebind as rebind  # noqa: E402
+import laya_wiki_discovery as discovery  # noqa: E402
 import resolve_paths  # noqa: E402
 import settings_migration  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
@@ -61,12 +62,12 @@ def vector_profile():
             'providerRelativePath': 'core/synthetic_provider.py'}
 
 
-def legacy_settings(raw_name, wiki_name):
+def legacy_settings(raw_name, wiki_name, raw_path='.', name='project'):
     """The live legacy shape whose effective identity minimal settings derive."""
     return {
-        'indexing': True, 'name': 'project',
+        'indexing': True, 'name': name,
         'collections': [raw_name, wiki_name],
-        'collectionPaths': {raw_name: '.', wiki_name: '.auto-context/wiki'},
+        'collectionPaths': {raw_name: raw_path, wiki_name: '.auto-context/wiki'},
         'collectionRoles': {raw_name: 'raw', wiki_name: 'wiki'},
         'skipPaths': ['build'], 'recallStrategy': 'hierarchical',
         'compile': {'mode': 'auto-wiki', 'triggers': ['post_tool_source', 'manual'],
@@ -76,6 +77,7 @@ def legacy_settings(raw_name, wiki_name):
 
 class SelectedProject(unittest.TestCase):
     RAW, WIKI = 'project', 'project-wiki'
+    RAW_PATH, NAME = '.', 'project'
     ORIGIN = 'fresh'
 
     def setUp(self):
@@ -88,9 +90,11 @@ class SelectedProject(unittest.TestCase):
         self.project = self.home / 'project'
         self.auto = self.project / '.auto-context'
         (self.auto / 'wiki').mkdir(parents=True)
+        (self.project / self.RAW_PATH).mkdir(parents=True, exist_ok=True)
         self.settings = self.auto / 'settings.json'
-        self.legacy = (json.dumps(legacy_settings(self.RAW, self.WIKI), indent=2)
-                       + '\n').encode()
+        self.legacy = (json.dumps(legacy_settings(self.RAW, self.WIKI, self.RAW_PATH,
+                                                  self.NAME), indent=2,
+                                  ensure_ascii=False) + '\n').encode()
         self.settings.write_bytes(self.legacy)
         self.state = self.home / 'state'
         self.state.mkdir(mode=0o700)
@@ -187,7 +191,8 @@ class SelectedProject(unittest.TestCase):
         return rebind._Ledger(self.ORIGIN).load(self.state / self.ledger_name)
 
     def collections(self):
-        return [{'name': self.RAW, 'role': 'raw', 'sourceRoot': str(self.project)},
+        raw_root = (self.project / self.RAW_PATH).resolve()
+        return [{'name': self.RAW, 'role': 'raw', 'sourceRoot': str(raw_root)},
                 {'name': self.WIKI, 'role': 'wiki',
                  'sourceRoot': str(self.auto / 'wiki')}]
 
@@ -415,6 +420,308 @@ class IdentityChangeChecks(SelectedProject):
         self.assertEqual(applied['reason'], 'bound_collection_identity_changed')
         self.assertEqual(self.settings.read_bytes(), before)
         self.assert_selected_and_readable()
+
+
+class KoreanNameChecks(SelectedProject):
+    """A novel whose legacy ``name`` is a Korean title; ``--name`` keeps the slug."""
+    RAW, WIKI, NAME = 'after-last-train', 'after-last-train-wiki', '막차 뒤의 피난소'
+
+    def test_name_override_migrates_with_unchanged_identity(self):
+        self.assertEqual(settings_migration.plan(str(self.project))['reason'],
+                         'name_required')
+        self.assertEqual(settings_migration.plan(str(self.project), '막차')['reason'],
+                         'name_override_invalid')
+        wrong = settings_migration.plan(str(self.project), 'last-train')
+        self.assertEqual(wrong['reason'], 'name_override_mismatch', wrong)
+        self.assertEqual(wrong['derivedCollections'], ['last-train', 'last-train-wiki'])
+        proposal = settings_migration.plan(str(self.project), 'after-last-train')
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        self.assertEqual(proposal['minimalSettings'],
+                         {'name': 'after-last-train', 'skipPaths': ['build']})
+        self.assertIn('name', proposal['changedFields'])
+        self.assertNotIn('rawCollection', proposal['rebind'])
+        # The proposal binds the override: apply without it refuses unchanged.
+        refused = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(refused['reason'], 'name_required', refused)
+        self.assertEqual(self.settings.read_bytes(), self.legacy)
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'],
+                                        name='after-last-train')
+        self.assertEqual(done['status'], 'migrated', done)
+        self.assertEqual(json.loads(self.settings.read_text()),
+                         {'name': 'after-last-train', 'skipPaths': ['build']})
+        decision, _proof = self.assert_selected_and_readable()
+        self.assertEqual(decision['collections'], self.collections())
+
+    def test_setup_entry_plan_accepts_name(self):
+        printed = subprocess.run(
+            [sys.executable, '-B', str(CORE / 'setup_entry.py'), 'plan-minimal-settings',
+             '--project', str(self.project), '--name', 'after-last-train'],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+        result = json.loads(printed.stdout)
+        self.assertEqual(result['status'], 'review_required', printed.stderr)
+        self.assertEqual(result['minimalSettings']['name'], 'after-last-train')
+        self.assertEqual(self.settings.read_bytes(), self.legacy)
+
+
+def card(project, collection, rel):
+    """A verified auto card citing one raw file revision."""
+    path = project / rel
+    data = path.read_bytes()
+    return ('---\ntitle: "card"\ntype: concept\nstatus: verified\n'
+            'createdBy: qmd-auto-context\nsources:\n'
+            '  - {kind: "file", path: "%s", collection: "%s"}\n'
+            'sourceRevisions:\n'
+            '  - {kind: "file", path: "%s", collection: "%s", sha256: "%s", '
+            'size: %d, mtimeNs: %d}\n---\n\nA fact.\n'
+            % (rel, collection, rel, collection, sha(data), len(data),
+               path.stat().st_mtime_ns))
+
+
+class RawMove(SelectedProject):
+    """A selected QMD-origin route whose raw collection is a subfolder (rccar-like)."""
+    RAW, RAW_PATH = 'project-docs', 'docs'
+    ORIGIN = 'qmd'
+    BASE = 'g-' + '4' * 32
+
+    def setUp(self):
+        super().setUp()
+        (self.project / 'docs' / 'a.md').write_text('# a\n')
+        (self.project / 'docs' / 'b.md').write_text('# b\n')
+        (self.project / 'notes').mkdir(exist_ok=True)
+        (self.project / 'notes' / 'c.md').write_text('# c\n')
+        (self.project / 'README.md').write_text('# readme\n')
+        decision = self.decision()
+        self.assertEqual(decision['state'], 'candidate', decision)
+        self.cursor = discovery._paths(decision)[0]
+        old = self.RAW + '/'
+        discovery._write(self.cursor, discovery._state_doc(
+            decision, self.BASE,
+            {old + 'a.md': sha((self.project / 'docs' / 'a.md').read_bytes()),
+             old + 'b.md': 'f' * 64},
+            {old + 'gone.md': 'e' * 64}, ['1' * 32]))
+        self.old_cursor = self.cursor.read_bytes()
+
+    def new_raw(self):
+        return 'project'
+
+    def drain(self, decision):
+        """Discovery on the rebound route; the published wiki generation is unchanged."""
+        with mock.patch.object(discovery, '_read_view',
+                               return_value=(self.BASE, self.BASE, [], [])):
+            return discovery.drain_after_sync(decision, {'grants': {}, 'provisional': {}},
+                                              recheck=lambda: None)
+
+
+class RawMoveChecks(RawMove):
+    def test_raw_rename_and_root_expansion_migrates(self):
+        before = self.decision()
+        proposal = settings_migration.plan(str(self.project))
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        moved = proposal['rebind']['rawCollection']
+        self.assertEqual((moved['from']['name'], moved['to']['name']),
+                         (self.RAW, self.new_raw()))
+        self.assertEqual(moved['to']['sourceRoot'], str(self.project))
+        self.assertEqual(proposal['rebind']['forfeits'],
+                         ['qmd_origin_restore']
+                         if self.ORIGIN == 'qmd' and self.RAW != self.new_raw() else [])
+        self.assertTrue({'collections', 'collectionRoots'} <=
+                        set(proposal['rebind']['routeDecisionChanges']))
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        decision, _proof = self.assert_selected_and_readable()
+        wiki = [row for row in decision['collections'] if row['role'] == 'wiki']
+        self.assertEqual(wiki, [row for row in before['collections'] if row['role'] == 'wiki'])
+        self.assertEqual(decision['collectionRoots'][self.new_raw()], str(self.project))
+        route = json.loads((self.auto / host_route.RECORD).read_bytes())
+        self.assertEqual(route['collections'], decision['collections'])
+        self.assertEqual(self.load_ledger()['collections'], decision['collections'])
+        self.assertEqual((self.state / 'reviewed-route.json').read_bytes(),
+                         (self.auto / host_route.RECORD).read_bytes())
+        # The cursor moved with the raw collection: old snapshot and pending
+        # keys re-keyed under docs/, the rest of the project as baseline.
+        state = json.loads(self.cursor.read_text())
+        new = self.new_raw() + '/'
+        self.assertEqual(state['rawCollections'], [self.new_raw()])
+        self.assertEqual(state['pending'], {new + 'docs/gone.md': 'e' * 64})
+        self.assertEqual(state['rawSnapshot'][new + 'docs/b.md'], 'f' * 64)
+        self.assertEqual(state['rawSnapshot'][new + 'README.md'],
+                         sha((self.project / 'README.md').read_bytes()))
+        self.assertIn(new + 'notes/c.md', state['rawSnapshot'])
+        self.assertEqual((state['baseGen'], state['spentGrants']), (self.BASE, ['1' * 32]))
+        # Raw discovery works on the new root: the stale b.md, the deleted
+        # gone.md, and edits inside and outside the old root after migration.
+        (self.project / 'docs' / 'new.md').write_text('# new\n')
+        (self.project / 'notes' / 'c.md').write_text('# c changed\n')
+        out = self.drain(decision)
+        self.assertEqual((out['state'], out['reason']), ('pending', 'no_accepted_grant'), out)
+        self.assertEqual(sorted(json.loads(self.cursor.read_text())['pending']),
+                         [new + 'docs/b.md', new + 'docs/gone.md', new + 'docs/new.md',
+                          new + 'notes/c.md'])
+        # Recall verifies a card citing the new raw collection anywhere in the project.
+        row = {'path': self.WIKI + '/c.md', 'body': card(self.project, self.new_raw(),
+                                                         'README.md')}
+        self.assertTrue(response._verified_wiki_row(row, decision))
+        out, calls = self.serve('recall', decision, {'prompt': 'alpha',
+                                                     'cwd': str(self.project)})
+        self.assertEqual(calls, [{'state': 'candidate', 'degraded': True, 'readOnly': True}])
+        self.assertEqual(settings_migration.plan(str(self.project))['status'],
+                         'already_minimal')
+
+    def test_card_citing_old_raw_name_keeps_serving(self):
+        row = {'path': self.WIKI + '/a.md', 'body': card(self.project, self.RAW, 'docs/a.md')}
+        (self.auto / 'wiki' / 'a.md').write_text(row['body'])
+        compile_dir = self.auto / 'compile'
+        compile_dir.mkdir()
+        (compile_dir / 'source-queue.jsonl').write_text(
+            json.dumps({'source': {'collection': self.RAW, 'path': 'docs/b.md'}}) + '\n')
+        self.assertTrue(response._verified_wiki_row(row, self.decision()))
+        proposal = settings_migration.plan(str(self.project))
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        self.assertEqual(proposal['legacyRawLabel'],
+                         {'name': self.RAW, 'citingCards': 1, 'citingCardSample': ['a.md'],
+                          'queuedRecords': 1})
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        decision, _proof = self.assert_selected_and_readable()
+        self.assertNotIn(self.RAW, decision['collectionRoots'])
+        # Selected recall resolves the old label by its path under the new raw root.
+        self.assertTrue(response._verified_wiki_row(row, decision))
+
+    def crash_and_check(self, step):
+        proposal = self.crash_after(step)
+        decision = self.decision()
+        self.assertIn(decision['state'], ('rebinding', 'candidate'), decision)
+        _out, calls = self.serve('recall', decision, {'prompt': 'alpha',
+                                                      'cwd': str(self.project)})
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]['readOnly'])
+        pending = settings_migration.plan(str(self.project))
+        self.assertEqual(pending['status'], 'rebind_pending', pending)
+        return proposal
+
+    def test_each_interrupted_step_resumes(self):
+        for step in rebind.FORWARD:
+            with self.subTest(step=step):
+                self.setUp()
+                proposal = self.crash_and_check(step)
+                done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+                self.assertEqual(done['status'], 'migrated', done)
+                decision, _proof = self.assert_selected_and_readable()
+                self.assertEqual(json.loads(self.cursor.read_text())['rawCollections'],
+                                 [self.new_raw()])
+                self.assertEqual(self.drain(decision)['state'], 'pending')
+
+    def test_each_interrupted_step_rolls_back(self):
+        for step in rebind.FORWARD:
+            with self.subTest(step=step):
+                self.setUp()
+                proposal = self.crash_and_check(step)
+                done = settings_migration.apply(str(self.project), proposal['proposalSha256'],
+                                                rollback=True)
+                self.assertEqual(done['status'], 'rolled_back', done)
+                self.assertEqual(self.settings.read_bytes(), self.legacy)
+                self.assertEqual((self.auto / host_route.RECORD).read_bytes(), self.route_raw)
+                self.assertEqual(self.cursor.read_bytes(), self.old_cursor)
+                self.assertEqual(self.load_ledger()['collections'], self.collections())
+                decision, _proof = self.assert_selected_and_readable()
+                self.assertEqual(self.drain(decision)['state'], 'pending')
+                self.assertEqual(settings_migration.plan(str(self.project))['status'],
+                                 'review_required')
+
+    def test_changed_cursor_during_rebind_stops_the_step(self):
+        proposal = self.crash_after('journal')
+        state = json.loads(self.cursor.read_text())
+        discovery._write(self.cursor, {**state, 'spentGrants': []})
+        failed = settings_migration.apply(str(self.project), proposal['proposalSha256'],
+                                          rollback=True)
+        self.assertEqual(failed['reason'], 'settings_rebind_discovery_changed', failed)
+        self.assertEqual(settings_migration.plan(str(self.project))['status'],
+                         'rebind_pending')
+
+
+    def test_cursor_changed_before_its_step_rolls_back(self):
+        proposal = settings_migration.plan(str(self.project))
+        steps = rebind._file_steps
+
+        def drained_first(intent, target):
+            built = steps(intent, target)
+            original = built['discovery']
+
+            def then():
+                if target == 'new':
+                    state = json.loads(self.cursor.read_text())
+                    discovery._write(self.cursor, {**state, 'spentGrants': []})
+                original()
+            return {**built, 'discovery': then}
+        with mock.patch.object(rebind, '_file_steps', drained_first):
+            failed = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(failed['reason'], 'settings_rebind_discovery_changed', failed)
+        changed = self.cursor.read_bytes()
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'],
+                                        rollback=True)
+        self.assertEqual(done['status'], 'rolled_back', done)
+        self.assertEqual(self.cursor.read_bytes(), changed)
+        self.assertEqual(self.settings.read_bytes(), self.legacy)
+        self.assert_selected_and_readable()
+
+
+class RawRootOnlyChecks(RawMove):
+    """Same raw name, root expanded from docs/ to the project: cards keep resolving."""
+    RAW = 'project'
+
+    def test_root_expansion_keeps_existing_cards(self):
+        row = {'path': self.WIKI + '/a.md', 'body': card(self.project, self.RAW, 'docs/a.md')}
+        (self.auto / 'wiki' / 'a.md').write_text(row['body'])
+        self.assertTrue(response._verified_wiki_row(row, self.decision()))
+        proposal = settings_migration.plan(str(self.project))
+        self.assertEqual(proposal['status'], 'review_required', proposal)
+        self.assertEqual(proposal['rebind']['forfeits'], [])
+        done = settings_migration.apply(str(self.project), proposal['proposalSha256'])
+        self.assertEqual(done['status'], 'migrated', done)
+        decision, _proof = self.assert_selected_and_readable()
+        self.assertTrue(response._verified_wiki_row(row, decision))
+        self.assertEqual(self.drain(decision)['state'], 'pending')
+
+
+class FreshRawRenameChecks(RawMoveChecks):
+    """A fresh-wiki selection (raw is the project root) whose raw name changes."""
+    RAW, RAW_PATH = 'notes-raw', '.'
+    ORIGIN = 'fresh'
+
+    def setUp(self):
+        SelectedProject.setUp(self)
+        (self.project / 'docs').mkdir()
+        for rel in ('docs/a.md', 'docs/b.md', 'README.md'):
+            (self.project / rel).write_text('# %s\n' % rel)
+        (self.project / 'notes').mkdir()
+        (self.project / 'notes' / 'c.md').write_text('# c\n')
+        decision = self.decision()
+        self.cursor = discovery._paths(decision)[0]
+        old = self.RAW + '/'
+        discovery._write(self.cursor, discovery._state_doc(
+            decision, self.BASE,
+            {old + 'docs/a.md': sha((self.project / 'docs' / 'a.md').read_bytes()),
+             old + 'docs/b.md': 'f' * 64,
+             old + 'README.md': sha((self.project / 'README.md').read_bytes()),
+             old + 'notes/c.md': sha((self.project / 'notes' / 'c.md').read_bytes())},
+            {old + 'docs/gone.md': 'e' * 64}, ['1' * 32]))
+        self.old_cursor = self.cursor.read_bytes()
+
+
+class WikiIdentityMoveChecks(RawMove):
+    """Raw and wiki both differ from the derived identity: still refused."""
+    WIKI = 'project-docs-wiki'
+
+    def test_wiki_change_is_refused(self):
+        result = settings_migration.plan(str(self.project))
+        self.assertEqual(result['reason'], 'bound_collection_identity_changed', result)
+        self.assertIn('project-docs-wiki', {row.get('collection')
+                                            for row in result['identityDiff']})
+        self.assertEqual(settings_migration.apply(str(self.project), None)['reason'],
+                         'bound_collection_identity_changed')
+        self.assertEqual(self.settings.read_bytes(), self.legacy)
+        self.assertEqual(self.cursor.read_bytes(), self.old_cursor)
 
 
 class MinimalQmdIndexChecks(unittest.TestCase):

@@ -721,12 +721,31 @@ def cas_restore(journal_path, expected_epoch, observed_old_route_raw):
     return _cas(journal_path, expected_epoch, restore)
 
 
+def raw_collection_rebind(before, after):
+    """True when two v2 collection lists differ only in the raw entry.
+
+    The wiki entry (name, role, root) is equal, so the wiki-only index,
+    catalog, binding store and vectors still describe the same source.
+    """
+    try:
+        old = {item['role']: item for item in before}
+        new = {item['role']: item for item in after}
+    except (TypeError, KeyError):
+        return False
+    return (isinstance(before, list) and isinstance(after, list) and
+            len(before) == len(after) == 2 and
+            set(old) == set(new) == {'raw', 'wiki'} and
+            old['wiki'] == new['wiki'] and old['raw'] != new['raw'] and
+            set(new['raw']) == {'name', 'role', 'sourceRoot'})
+
+
 def cas_rebind_route(journal_path, expected_epoch, from_route_raw, to_route_raw):
     """Move the selected route digest between two routes that differ only in
-    ``settingsSha256``. The selected bundle, previous/pending rows, provider
-    binding and write flag stay as they are, so the call is its own inverse.
-    Route bytes are passed explicitly: the project route file does not equal
-    the journal while a settings rebind is between steps.
+    ``settingsSha256`` and, optionally, the raw collection entry. The selected
+    bundle, previous/pending rows, provider binding and write flag stay as
+    they are, so the call is its own inverse. Route bytes are passed
+    explicitly: the project route file does not equal the journal while a
+    settings rebind is between steps.
     """
     def rebind(path, row):
         if row['state'] not in ('active', 'restored_old') or row['selected'] is None:
@@ -738,7 +757,11 @@ def cas_rebind_route(journal_path, expected_epoch, from_route_raw, to_route_raw)
         if row['selected_route_sha'] != before_sha:
             _fail('rebind_route_not_selected')
         if (before['schema'] != after['schema'] or set(before) != set(after) or
-                any(before[key] != after[key] for key in set(before) - {'settingsSha256'}) or
+                any(before[key] != after[key]
+                    for key in set(before) - {'settingsSha256', 'collections'}) or
+                (before.get('collections') != after.get('collections') and
+                 not raw_collection_rebind(before.get('collections'),
+                                           after.get('collections'))) or
                 before['settingsSha256'] == after['settingsSha256'] or
                 not isinstance(after['settingsSha256'], str) or
                 not SHA.fullmatch(after['settingsSha256'])):
