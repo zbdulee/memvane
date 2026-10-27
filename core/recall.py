@@ -2133,16 +2133,16 @@ def _main():
         return 0
     shared_options = config.get('sharedLearning', {})
     shared_profile = (shared_options.get('enabled') is True
-                      and shared_options.get('profile') == 'qmd-local-learning-profile-v1'
-                      and config.get('contextLearning',{}).get('liveSelection') is True)
+                      and shared_options.get('profile') == 'qmd-local-learning-profile-v1')
     shared_trial = (shared_options.get('enabled') is True
                     and (shared_options.get('trialSelection') is True or shared_profile))
     internal_edit = (os.environ.get('QMD_EDIT_INTERNAL') == '1'
                      and payload.get('context_origin') == 'tool_edit')
     deferred_replay = (internal_edit and
                        os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') == '1')
-    live_selection = (config.get('contextLearning', {}).get('liveSelection') is True
-                      or shared_trial)
+    # The old opt-in/out key is intentionally not consulted. The selected Laya
+    # route has its own required selector; legacy QMD retains this model stage.
+    live_selection = True
     # Only the new shared trial uses resource-dependent pool sizing. Existing
     # local live selection and the 24-hour autoCycle retain their old bounds.
     live_plan = None

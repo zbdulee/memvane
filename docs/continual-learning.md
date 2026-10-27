@@ -1,17 +1,19 @@
 # Local continual context learning
 
-This code is opt-in: `contextLearning.capture`, `autoCycle` and `liveSelection`
-are false unless a project sets them to `true`. An enabled `autoCycle` project
-can launch a detached, one-shot local cycle at SessionStart; `liveSelection` can
-choose wiki cards at recall. The synthetic tests leave the operating QMD
+Capture and training remain opt-in through `contextLearning.capture` and
+`autoCycle`. An enabled `autoCycle` project can launch a detached, one-shot
+local cycle at SessionStart. Card selection is a required stage of selected
+Laya recall and is not a project setting. The synthetic tests leave the operating QMD
 database, plugin configuration, and global hooks unchanged. Use an owner-only
 absolute `state-dir` dedicated to one project. Do not put that directory in the
 repository.
 
-Scope: capture, `liveSelection` and corpus snapshots apply to the legacy QMD
-recall route (`core/recall.py`). The Laya response path
-(`core/laya_host_response.py`, served for the candidate/preview routes) does not
-call `live_select` or capture.
+Capture and corpus snapshots apply to the legacy QMD recall route
+(`core/recall.py`). The selected Laya response path (`core/laya_host_response.py`)
+reads at most 15 proved, published wiki candidates and calls the existing local
+selector. It never captures training evidence during a query. If the model or
+checkpoint is unavailable, recall returns no injected cards and a fixed
+diagnostic; it does not inject the RRF ranking as a substitute.
 
 ## Evidence and labels
 
@@ -100,8 +102,7 @@ Re-search, whole-body review, and approval of replacement labels remain human
 steps. Capture or an attempted current auto cycle performs reconciliation;
 there is no continuous corpus watcher.
 
-On the legacy QMD route, `contextLearning.liveSelection: true` changes the primary QMD request cap to
-15. After source freshness and eligibility checks, the local Laya adapter sees
+On the legacy QMD route, the primary QMD request cap is 15. After source freshness and eligibility checks, the local Laya adapter sees
 each candidate's complete compact wiki body and returns 0–3 card IDs. The
 hook logs hashed candidate and selected IDs, snapshot fingerprint, fallback
 reason and observed time/RSS. Missing state, invalid model output, changed
@@ -295,7 +296,7 @@ Synthetic tests cover semantic duplication, holdout fences, inherited-child clai
 
 ## Scoped profiles and candidate application
 
-Ordinary setup offers `local-auto-apply`, `local-staged` and `off` without accepting any profile. Exact acceptance binds one prepared project/namespace, existing train/evaluate grant, local runtime/base/view and code identities, shared/live policy bytes, settings preferences and expiry (at most fourteen days). New-profile defaults keep capture false. Preserving migration retains explicit false capture, autoCycle, live selection, shared learning and application choices. `off` explicitly disables local learning and selection. No profile adds data sources, external teacher access, billing, package execution or permission to change model/device. An interrupted profile installation resumes the same accepted settings CAS/journal; changed settings require a new review even when QMD installation already succeeded.
+Ordinary setup offers `local-auto-apply`, `local-staged` and `off` without accepting any profile. Exact acceptance binds one prepared project/namespace, existing train/evaluate grant, local runtime/base/view and code identities, shared/live policy bytes, settings preferences and expiry (at most fourteen days). New-profile defaults keep capture false. Preserving migration retains explicit false capture, autoCycle, shared learning and application choices. `off` disables local learning and checkpoint application; selected Laya recall still requires a usable selector and returns no cards without one. No profile adds data sources, external teacher access, billing, package execution or permission to change model/device. An interrupted profile installation resumes the same accepted settings CAS/journal; changed settings require a new review even when QMD installation already succeeded.
 
 The selected worker processes admitted local training and quality evaluation only. It does not run the legacy timed cycle, historical sync or teacher pipeline. Automatic application waits for at least the quality minimum of fresh train cases (currently 100), within the already approved batch cap. An insufficient cap blocks profile planning for budget review; it is never silently raised and quality thresholds are never lowered. Actual trained cases must cover five train families; disjoint validation still needs fifty cases, five families and ten empty-choice cases. No fresh admitted data means waiting.
 

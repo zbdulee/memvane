@@ -246,10 +246,8 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(built.call_count, 2)
         self.assertTrue(all(call.args == (proof['providerManifest'],)
                             for call in built.call_args_list))
-        self.assertIs(queried.call_args.args[4], provider)
-        context = payload["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("docs/a.md", context)
-        self.assertNotIn("  | alpha", context)
+        queried.assert_not_called()
+        self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "")
 
     def test_selected_update_only_enqueues_and_accepts_worker_epoch_advance(self):
         import laya_install_journal
@@ -1058,7 +1056,7 @@ class ResponseChecks(unittest.TestCase):
                 requested.assert_not_called()
                 self.assertEqual(journal.call_count, 1)
                 self.assertTrue(used.released)
-        # Legacy v1 keeps its behavior even for a marked cause.
+        # A legacy v1 candidate cannot bypass the required published-wiki selector.
         import laya_install_journal
         import laya_index_runtime
         import laya_local_embed_provider
@@ -1081,8 +1079,9 @@ class ResponseChecks(unittest.TestCase):
                           return_value={'topN': 3, 'lexicalPatterns': []}), \
              patch.object(response, 'query_selected_hybrid', side_effect=legacy_stale), \
              patch.object(runtime_work, 'request') as requested:
-            with self.assertRaises(IndexContractError):
-                response.serve_selected('recall', 'claude', legacy, {'prompt': 'find alpha'})
+            self.assertEqual(response.serve_selected(
+                'recall', 'claude', legacy, {'prompt': 'find alpha'}
+            )['hookSpecificOutput']['additionalContext'], '')
         requested.assert_not_called()
 
     def test_repeated_stale_recall_coalesces_in_existing_wake_queue(self):
@@ -1216,7 +1215,7 @@ class BundleDriftChecks(unittest.TestCase):
         wake = stack.enter_context(patch.object(runtime_work, 'request'))
         return full, ro, wake
 
-    def test_bundle_mismatch_recall_serves_published_rows_lexically_without_sync(self):
+    def test_bundle_mismatch_legacy_route_never_bypasses_required_selection(self):
         from contextlib import ExitStack, nullcontext
         import config
         import laya_index_runtime
@@ -1247,14 +1246,15 @@ class BundleDriftChecks(unittest.TestCase):
                                              return_value=cold_provider))
             stack.enter_context(patch.object(config, 'load_project_config',
                                              return_value={'topN': 3, 'lexicalPatterns': []}))
-            stack.enter_context(patch.object(response, 'query_selected_hybrid',
-                                             side_effect=hybrid))
+            queried = stack.enter_context(patch.object(response, 'query_selected_hybrid',
+                                                       side_effect=hybrid))
             payload = response.serve_selected('recall', 'claude', self.decision,
                                               {'prompt': 'find alpha'})
         context = payload['hookSpecificOutput']['additionalContext']
-        self.assertIn('docs/a.md', context)
+        self.assertEqual(context, '')
+        queried.assert_not_called()
         wake.assert_not_called()
-        self.assertEqual(ro.call_count, 2)  # proof, then the post-query recheck
+        self.assertEqual(ro.call_count, 1)  # read-only proof; no content injected
 
     def test_degraded_vector_unavailable_yields_empty_vector_list_only(self):
         import laya_index_vector

@@ -30,7 +30,19 @@ def _settings(project):
     return value
 
 def binding(settings):
-    return {key:deepcopy(settings.get(key)) for key in ('contextLearning','sharedLearning','indexing','collectionPaths')}
+    result={key:deepcopy(settings.get(key)) for key in ('contextLearning','sharedLearning','indexing','collectionPaths')}
+    if isinstance(result['contextLearning'],dict):result['contextLearning'].pop('liveSelection',None)
+    return result
+
+def _binding_matches(row,current):
+    expected=row['settingsBindingSha256']
+    if expected==digest(binding(current)):return True
+    # Old accepted profiles included the removed key in their signed settings.
+    # Only that one key may differ, and the original signed scope must match.
+    old=row.get('settings')
+    if not isinstance(old,dict):return False
+    legacy={key:deepcopy(old.get(key)) for key in ('contextLearning','sharedLearning','indexing','collectionPaths')}
+    return expected==digest(legacy) and binding(old)==binding(current)
 
 def recommendation(settings):
     return {'recommended':'local-auto-apply','choices':list(CHOICES),'accepted':False,
@@ -44,12 +56,12 @@ def _preferences(raw,root,choice):
     if shared.get('root') not in (None,str(root)):raise ValueError('profile_namespace_changed')
     learning.setdefault('capture',False)
     learning.setdefault('autoCycle',choice!='off')
-    learning.setdefault('liveSelection',choice=='local-auto-apply')
+    learning.pop('liveSelection',None)
     shared.setdefault('enabled',choice!='off');shared['root']=str(root);shared['profile']=SCHEMA
     if choice=='off':
-        learning['autoCycle']=False;learning['liveSelection']=False;shared['enabled']=False
+        learning['autoCycle']=False;shared['enabled']=False
     enabled=cfg.get('indexing') is not False and shared['enabled'] is True and learning['autoCycle'] is True and choice!='off'
-    apply=(enabled and learning['liveSelection'] is True and choice=='local-auto-apply' and shared.get('autoApply') is not False)
+    apply=(enabled and choice=='local-auto-apply' and shared.get('autoApply') is not False)
     shared['autoApply']=apply
     return cfg,enabled,apply
 
@@ -74,8 +86,6 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
     if enable_learning:
         preferences.setdefault('contextLearning',{}).update(capture=True,autoCycle=True)
         preferences.setdefault('sharedLearning',{})['enabled']=True
-    if staged_no_selection:
-        preferences.setdefault('contextLearning',{})['liveSelection']=False
     cfg,train,apply=_preferences(preferences,root,choice)
     from .shared import _policy,_safe_root
     import config
@@ -116,7 +126,7 @@ def _check_scope(row,root,policy,operation,*,settings=True):
             or row['livePolicySha256']!=_hash(Path(root)/'live-selector.json')
             or time.time()*1000>=row['expiresAtUnixMs'] or operation not in row['operations']):
         raise ValueError('profile_scope_changed_or_revoked')
-    if settings and row['settingsBindingSha256']!=digest(binding(_settings(row['projectRoot']))):
+    if settings and not _binding_matches(row,_settings(row['projectRoot'])):
         raise ValueError('profile_settings_changed')
     return row
 
@@ -132,8 +142,10 @@ def selection_enabled(root,project):
             or row['namespaceRoot']!=str(root) or row['projectRoot']!=str(project)
             or time.time()*1000>=row['expiresAtUnixMs'] or row['choice']=='off'
             or row['settings'].get('indexing') is False
-            or row['settingsBindingSha256']!=digest(binding(_settings(project)))):raise ValueError('profile_settings_changed')
-    return row['settings']['contextLearning']['liveSelection'] is True and row['settings']['sharedLearning']['enabled'] is True
+            or not _binding_matches(row,_settings(project))):raise ValueError('profile_settings_changed')
+    return (row['choice']=='local-auto-apply'
+            and row['settings']['sharedLearning'].get('autoApply') is True
+            and row['settings']['sharedLearning']['enabled'] is True)
 
 def selection_root(cfg,project):
     from .shared import _safe_root
@@ -157,7 +169,7 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
                 row=old['proposal']
                 if (digest(row)!=accepted_sha256 or (row['choice'],row['mode'],row['expiresAtUnixMs'])!=(choice,mode,expires_at_unix_ms)
                         or (enable_learning and row['settings']['contextLearning'].get('capture') is not True)
-                        or (staged_no_selection and row['settings']['contextLearning'].get('liveSelection') is not False)):
+                    or (staged_no_selection and row['autoApply'] is not False)):
                     raise ValueError('profile_acceptance_changed')
             else:
                 row=proposal(project,root,choice=choice,mode=mode,expires_at_unix_ms=expires_at_unix_ms,
