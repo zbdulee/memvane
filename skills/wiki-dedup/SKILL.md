@@ -24,7 +24,10 @@ each queued pair autonomously.
    cat "$PWD/.auto-context/compile/dedup-needed.jsonl" 2>/dev/null
    ```
 
-   Missing or empty → tell the user there's nothing to dedupe and stop.
+   If the queue is missing or empty, also check for a
+   `dedup-needed.jsonl.claimed.*` file. A claimed file can be a recoverable
+   interrupted run; spawn the resolver so its first queue-recovery step can
+   check ownership. Stop only when both the queue and claimed files are absent.
 
 2. Spawn the resolver — **do not run its per-pair judgment inline in the main thread**, and do not
    re-type its workflow here (it lives in `agents/wiki-dedup-resolver.md`, the single source of
@@ -47,8 +50,12 @@ each queued pair autonomously.
 
 ## Safety
 
-- Read-only for the queue in step 1 (`cat`); every mutation goes through the resolver's
+- Read-only for the queue in step 1 (`cat` and claimed-file existence check); every mutation goes through the resolver's
   `core/wiki_dedup_resolve.py` calls — never edit the queue file or the resolver scripts directly.
 - The resolver acquires a per-project run-lock (`~/.config/qmd/dedup-resolve-lock/<project_key>`);
   if one is already active it will stop on its own. Don't bypass it by editing pages by hand.
 - Cards with `status: generated` (unreviewed) are valid targets — the resolver handles them.
+- For a selected Laya project, the resolver CLI keeps a private copy of each
+  deleted card and durably requests `laya-sync` after deletion. A failed wake
+  leaves the pair queued for a stale-pair retry; successful completion means
+  the request was queued, not that the new index generation has published.
