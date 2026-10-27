@@ -62,7 +62,8 @@ def manifest(root):
             'providerPath': root + '/core/laya_local_embed_provider.py',
             'workerPath': root + '/core/laya_local_embed_worker.mjs',
             'workerSha256': 'c' * 64, 'modelPath': '/models/m.gguf',
-            'modelSha256': 'd' * 64, 'dimension': 3}
+            'modelSha256': 'd' * 64, 'dimension': 3,
+            'serviceSocketPath': '/tmp/synthetic-install/runtime/laya-embed.sock'}
 
 
 def proof(root, commit, *, profile=PROFILE):

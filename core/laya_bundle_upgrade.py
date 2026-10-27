@@ -15,6 +15,10 @@ project under its own state root to the executing bundle:
 A state root that still holds a QMD-origin ledger (``qmd-cutover.json``) is
 refused as ``qmd_origin_detach_required``; no retry clears it.
 
+Before review the worker makes sure the Laya embedding runtime
+(``laya_embed_runtime``) holds the install's attested provider bytes,
+copying them from the attested paths (QMD runtime, QMD model cache) once.
+
 Source rule: the host marketplace clone is the only unattended source, and
 only when its HEAD is the installed commit (from the host's own record) and
 its tracked files are clean. Provider review runs again and is accepted when
@@ -69,7 +73,7 @@ BUSY_BACKOFF_SECONDS = (5, 15, 45)
 DEFERRALS = frozenset((
     'learning_compute_busy', 'learning_inference_deadline',
     'initial_build_busy', 'active_upgrade_resident_busy',
-    'journal_v4_install_busy'))
+    'journal_v4_install_busy', 'embed_runtime_busy'))
 # Provider manifest keys that must name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
@@ -77,7 +81,9 @@ REFUSALS = frozenset((
     'provider_changed_rebuild_required', 'older_host_bundle',
     'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
     'marketplace_source_dirty', 'host_layout_unknown',
-    'qmd_origin_detach_required'))
+    'qmd_origin_detach_required', 'laya_embed_runtime_source_unavailable',
+    'laya_embed_runtime_source_changed', 'laya_embed_runtime_mismatch',
+    'laya_embed_runtime_source_version_changed'))
 
 
 class UpgradeRefused(RuntimeError):
@@ -424,6 +430,23 @@ def _mark_sealed_for_rescan(state):
             build.request_freshness(record, catalog)
 
 
+def _ensure_embed_runtime(attestation):
+    """The Laya embedding runtime holding this install's attested bytes.
+
+    A first upgrade after the runtime moved out of the QMD package copies the
+    attested node, node-llama-cpp tree, native closure and model (each sha256
+    checked) into the Laya runtime; review then names the copies and the
+    content-equal re-attestation keeps the vector profile.
+    """
+    import laya_embed_runtime
+    try:
+        return laya_embed_runtime.ensure_for_attestation(attestation)
+    except laya_embed_runtime.RuntimeUnavailable as exc:
+        if str(exc) == 'laya_embed_runtime_busy':
+            raise RuntimeError('embed_runtime_busy') from exc
+        _refuse(str(exc))
+
+
 def upgrade_install(project_root, state, root, home=None):
     """Move one install to the executing bundle; returns a result row."""
     kind, identity = classify(state)
@@ -446,18 +469,17 @@ def upgrade_install(project_root, state, root, home=None):
     _not_older(source, identity['sourceCommit'], commit)
     old = _read_attestation(state)
     manifest = old.get('providerManifest') or {}
+    _ensure_embed_runtime(old)
     from laya_product_install import review_local_provider
     review = review_local_provider(source_root=str(source), plugin_root=str(root),
                                    state_root=str(state), commit_id=commit,
-                                   model_path=manifest.get('modelPath'),
                                    dimension=manifest.get('dimension'))
     if not provider_equivalent(old, review, root):
         _refuse('provider_changed_rebuild_required')
     options = dict(project_root=str(project_root), state_root=str(state),
                    source_root=str(source), plugin_root=str(root), commit_id=commit,
                    accepted_provider_sha256=review['proposalSha256'],
-                   model_path=manifest.get('modelPath'),
-                   dimension=manifest.get('dimension'))
+                   model_path=None, dimension=manifest.get('dimension'))
     if kind == 'active':
         import laya_active_upgrade
         result = laya_active_upgrade.upgrade(**options)

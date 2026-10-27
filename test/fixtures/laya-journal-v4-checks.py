@@ -515,6 +515,7 @@ class WorkerReproof(ReproofBase):
                                return_value=(self.base / 'source', '2' * 40)), \
              mock.patch.object(auto, '_not_older'), \
              mock.patch.object(auto, '_read_attestation', return_value=self.old_att), \
+             mock.patch.object(auto, '_ensure_embed_runtime'), \
              mock.patch.object(product, 'review_local_provider', return_value=review), \
              mock.patch.object(product, '_request_build_wake',
                                return_value={'status': 'queued'}), \

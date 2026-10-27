@@ -314,9 +314,30 @@ def _fence(intent):
     if row not in ({**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'},
                    intent['newLedger']):
         _fail('active_upgrade_fence_changed')
+    _wait_for_sockets(intent)
+
+
+def _intent_sockets(intent):
+    """Every provider socket the old or new attestation seals, in order."""
+    sockets = []
+    for key in ('oldAttestation', 'newAttestation'):
+        try:
+            path = json.loads(intent[key])['providerManifest']['serviceSocketPath']
+        except (KeyError, TypeError, ValueError):
+            _fail('active_upgrade_intent_changed')
+        if not isinstance(path, str) or not path.startswith('/'):
+            _fail('active_upgrade_intent_changed')
+        if path not in sockets:
+            sockets.append(path)
+    return sockets
+
+
+def _wait_for_sockets(intent):
+    """The resident owner of each sealed socket must have let go of it."""
     from laya_embed_resident import wait_for_release
-    if not wait_for_release(state / 'runtime' / 'laya-embed.sock', timeout=15):
-        _fail('active_upgrade_resident_busy')
+    for path in _intent_sockets(intent):
+        if not wait_for_release(path, timeout=15):
+            _fail('active_upgrade_resident_busy')
 
 
 def _replace_ledger(path, before, after, ledger=None):
@@ -456,9 +477,7 @@ def _restore(intent):
                             'upgrading')
     if row['phase'] != 'upgrading' or row['routeSha256'] not in (old_sha, new_sha):
         _fail('active_upgrade_restore_phase_changed')
-    from laya_embed_resident import wait_for_release
-    if not wait_for_release(state / 'runtime' / 'laya-embed.sock', timeout=15):
-        _fail('active_upgrade_resident_busy')
+    _wait_for_sockets(intent)
     inactive._atomic_expected(auto / ledger.route_name, new_route, old_route)
     inactive._atomic_expected(state / PRODUCTION_ATTESTATION, new_att, old_att)
     inactive._atomic_expected(state / 'reviewed-route.json', new_route, old_route)

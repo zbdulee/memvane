@@ -405,6 +405,7 @@ def main(argv=None):
                                           'plan-install','install',
                                           'plan-learning-profile','activate-learning-profile',
                                           'plan-fresh-wiki-origin',
+                                          'index-runtime-status', 'provision-index-runtime',
                                           'review-index-provider',
                                           'prepare-fresh-wiki-origin',
                                           'index-origin-status',
@@ -470,10 +471,22 @@ def main(argv=None):
     parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
     parser.add_argument('--approve-inactive-index-upgrade', action='store_true')
     parser.add_argument('--approve-active-index-upgrade', action='store_true')
+    parser.add_argument('--approve-index-runtime-copy', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     args = parser.parse_args(argv)
     try:
-        if args.action in ('plan-fresh-wiki-origin',
+        if args.action in ('index-runtime-status', 'provision-index-runtime'):
+            # The Laya embedding runtime the provider review reads.
+            import laya_embed_runtime
+            if args.action == 'provision-index-runtime':
+                # Copies QMD's node-llama-cpp tree and cached GGUF once (sha256 checked).
+                if not args.approve_index_runtime_copy:
+                    raise ValueError('index_runtime_copy_approval_required')
+                result = {'status': 'provisioned', **laya_embed_runtime.provision_from_qmd()}
+            else:
+                result = {'status': 'ready', **laya_embed_runtime.select()}
+            result.pop('dependencyClosure', None)
+        elif args.action in ('plan-fresh-wiki-origin',
                            'review-index-provider',
                            'prepare-fresh-wiki-origin',
                            'index-origin-status',
