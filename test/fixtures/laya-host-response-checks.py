@@ -42,6 +42,12 @@ class FakeIndex:
         self.released = True
 
 
+class FakeBoundCandidates:
+    def require_returned_verified(self): pass
+    def finish(self): pass
+    def close(self): pass
+
+
 def sealed_profile(**changes):
     profile = {"profile_id": VECTOR_PROFILE["profileId"],
                "model_id": VECTOR_PROFILE["modelId"],
@@ -99,6 +105,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
         raise AssertionError("provider must not run on a stale view")
 
     runtime = SimpleNamespace(index=index or FakeIndex(), scope=SCOPE, source_root=ROOT)
+
     with ExitStack() as stack:
         enter = stack.enter_context
         journal = enter(patch.object(laya_install_journal, "verify_selected_route",
@@ -530,17 +537,23 @@ class ResponseChecks(unittest.TestCase):
             before = source.stat()
             os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
             self.assertTrue(response._verified_wiki_row(card, decision))
+            source.write_text('new source not compiled yet', encoding='utf-8')
+            self.assertFalse(response._verified_wiki_row(card, decision))
+            self.assertTrue(response._verified_wiki_row(
+                card, decision, current_source=False))
             self.assertFalse(response._verified_wiki_row(
                 row(path='wiki/card.md', body=body.replace('Source fact.', 'Forged fact.')),
-                decision))
+                decision, current_source=False))
             retained = source.stat()
             source.write_text('modified source', encoding='utf-8')
             os.utime(source, ns=(retained.st_atime_ns, retained.st_mtime_ns))
             self.assertFalse(response._verified_wiki_row(card, decision))
 
     def test_v2_hierarchy_never_backfills_raw_when_wiki_unverified(self):
+        import laya_index_capacity
         index = FakeIndex()
-        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
         decision = {'projectRoot': '/synthetic/project',
                     'collectionRoots': {'raw': ROOT, 'wiki': '/synthetic/wiki'},
                     'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': ROOT},
@@ -555,6 +568,8 @@ class ResponseChecks(unittest.TestCase):
                 ([row(path='wiki/card.md')], True),
                 ([row(path='raw/chapter.md')], True)]) as phase, \
              patch.object(response, '_verified_wiki_row', return_value=False), \
+             patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                          return_value=FakeBoundCandidates()), \
              patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                           return_value=[]):
             found, title_only = response.query_selected_v2(
@@ -567,14 +582,18 @@ class ResponseChecks(unittest.TestCase):
         self.assertTrue(index.released)
 
     def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
+        import laya_index_capacity
         import wiki_freshness
         index = FakeIndex()
-        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
         decision = v2_decision()
         decision['recallSettings'] = {**decision['recallSettings'],
                                       'recallStrategy': 'wikiOnly',
                                       'skipPaths': ['build']}
         with patch.object(response, '_v2_phase', return_value=([], False)) as phase, \
+             patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                          return_value=FakeBoundCandidates()), \
              patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                           return_value=[]):
             found, title_only = response.query_selected_v2(
@@ -734,6 +753,7 @@ class ResponseChecks(unittest.TestCase):
                         self.span_card(revision, text), decision))
 
     def test_v2_source_locations_follow_returned_wiki_rows_only(self):
+        import laya_index_capacity
         import wiki_freshness
         with tempfile.TemporaryDirectory(prefix='laya-span-query-') as temp:
             _project, revision, decision = self.span_project(temp)
@@ -744,10 +764,13 @@ class ResponseChecks(unittest.TestCase):
                     (good, 'wiki/card.md', {'wiki/card.md': ('docs/a.md#L2-L2',)}),
                     (tampered, None, {})):
                 with self.subTest(expect=expect_path):
-                    runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+                    runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE,
+                                              source_root=ROOT, binding_store=object())
                     located = {}
                     with patch.object(response, '_v2_phase', side_effect=[
                             ([card], True), ([row(path='docs/a.md')], True)]), \
+                         patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                                      return_value=FakeBoundCandidates()), \
                          patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                                       return_value=[]):
                         found, _title_only = response.query_selected_v2(

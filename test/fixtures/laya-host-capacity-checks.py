@@ -115,21 +115,18 @@ class HostCapacityTests(HostCapacityCase):
         self.assertIn('alpha otter', rows[0]['body'])
         stats = query.finish()
         self.assertEqual(stats['dropped'], {})
-        # Only returned candidates were read, never a directory listing.
-        self.assertLessEqual(stats['files_opened'], 2)
+        # Published index bodies are checked without reopening wiki files.
+        self.assertEqual(stats['files_opened'], 0)
 
-    def test_changed_returned_file_blocks_the_complete_answer(self):
+    def test_changed_returned_file_keeps_last_published_answer(self):
         query = self.pinned()
         (self.raw / 'a.md').write_text('# A\nalpha otter, edited after sync\n',
                                        encoding='utf-8')
         rows, _evidence = self.phase('alpha otter', query)
-        self.assertNotIn('raw/a.md', [row['path'] for row in rows])
+        self.assertIn('raw/a.md', [row['path'] for row in rows])
         self.assertTrue(all('edited' not in row['body'] for row in rows))
-        with self.assertRaises(IndexContractError) as caught:
-            query.require_returned_verified()
-        self.assertIs(type(caught.exception.__cause__), ReturnedCandidateDiverged)
-        with self.assertRaises(IndexContractError):
-            query.finish()
+        query.require_returned_verified()
+        self.assertEqual(query.finish()['files_opened'], 0)
 
     def test_unreturned_new_file_is_index_lag_not_a_full_scan_refusal(self):
         query = self.pinned()
@@ -141,16 +138,25 @@ class HostCapacityTests(HostCapacityCase):
         self.assertIn('raw/a.md', [row['path'] for row in rows])
         self.assertEqual(query.finish()['dropped'], {})
 
-    def test_unverifiable_returned_file_is_explicitly_unavailable(self):
+    def test_query_does_not_read_a_returned_file(self):
         query = self.pinned()
-        with mock.patch.object(query, '_read_candidate', return_value=('drop', 'file_budget')):
+        with mock.patch.object(query, '_read_candidate',
+                               side_effect=AssertionError('live source read on query')):
             rows, _ = self.phase('alpha otter', query)
-        self.assertEqual(rows, [])
-        with self.assertRaises(CatalogPending) as caught:
-            query.require_returned_verified()
-        self.assertEqual(caught.exception.reason, 'returned_unverified')
+        self.assertTrue(rows)
+        query.require_returned_verified()
+        self.assertEqual(query.finish()['files_opened'], 0)
+
+    def test_corrupt_indexed_row_and_foreign_scope_fail_closed(self):
+        query = self.pinned()
+        row = self.runtime.index.search(self.token, '"otter"', 1)[0]
         with self.assertRaises(IndexContractError):
-            query.finish()
+            query.verify_indexed_rows([{**row, 'body': 'different'}],
+                                      collection_names=('raw',))
+        with self.assertRaises(IndexContractError):
+            query.verify_indexed_rows([{**row, 'scope': 'e' * 32}],
+                                      collection_names=('raw',))
+        query.close()
 
     def test_foreign_generation_row_poisons_the_whole_query(self):
         query = self.pinned()

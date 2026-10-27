@@ -56,33 +56,6 @@ def _exclusions(db, scope):
             frozenset(value for kind, value in rows if kind == 'hash'))
 
 
-def _live_wiki(row, decision):
-    """Reject any changed wiki file before the selected source checks run."""
-    import wiki_freshness
-    from laya_index_host_route import wiki_index_roots
-    roots = wiki_index_roots(decision['collections'])
-    name, root = next(iter(roots.items()))
-    path = row['path']
-    if not isinstance(path, str) or not path.startswith(name + '/'):
-        _fail('preview_wiki_path_invalid')
-    relative = path[len(name) + 1:]
-    if (not relative or any(part in ('', '.', '..') for part in relative.split('/'))
-            or '\\' in relative or len(relative.encode('utf-8')) > 4096):
-        _fail('preview_wiki_path_invalid')
-    source = Path(root) / relative
-    try:
-        if source.is_symlink() or source.resolve(strict=True) != source:
-            return False
-        snapshot = wiki_freshness.snapshot_bytes(source)
-        if snapshot is None:
-            return False
-        revision, data = snapshot
-        return (revision['sha256'] == row['hash']
-                and data.decode('utf-8') == row['body'])
-    except (OSError, RuntimeError, UnicodeError):
-        return False
-
-
 def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     """Return verified wiki rows, or [] when no document has been published.
 
@@ -98,7 +71,6 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     from laya_incremental_docs import FILE, SCHEMA
     from laya_index_host_route import wiki_index_roots
     from laya_index_source_port import auxiliary_wiki_row
-    import wiki_freshness
 
     wiki_roots = wiki_index_roots(decision['collections'])
 
@@ -288,11 +260,6 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                 best.append((distance, path))
             best.sort(key=lambda item: (item[0], item[1]))
         generation = 'preview-' + decision['installId']
-        pending = wiki_freshness.unresolved_pending_refreshes_strict(
-            Path(decision['projectRoot']))
-        if pending is None:
-            _fail('wiki_pending_refresh_unknown')
-        pending_sources = frozenset(item['sourcePath'] for item in pending)
         skip = tuple(decision['recallSettings']['skipPaths'])
 
         fetched = {}
@@ -301,6 +268,11 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
             doc = sealed.get(path)
             if doc is None:
                 _fail('preview_fts_row_unpublished')
+            if (not isinstance(path, str) or not _valid_relative_path(path)
+                    or not any(path.startswith(name + '/') and
+                               _valid_relative_path(path[len(name) + 1:])
+                               for name in wiki_roots)):
+                _fail('preview_wiki_path_invalid')
             rowid, _path, digest, _title, _profile, _count = doc
             if path not in fetched:
                 body_row = side.execute('SELECT body FROM docs WHERE rowid=? AND path=?',
@@ -314,10 +286,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                    'path': path, 'hash': digest, 'body': body, 'score': score}
             if auxiliary_wiki_row(path, body, wiki_roots):
                 return None
-            if not _live_wiki(row, decision):
-                return None
-            if not _verified_wiki_row(row, decision, pending_sources,
-                                      source_skip_paths=skip):
+            if not _verified_wiki_row(row, decision, source_skip_paths=skip,
+                                      current_source=False):
                 return None
             return row
 
@@ -349,7 +319,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                     row['path'], row['body'], wiki_roots)]
         # Derive optional locators only for rows actually injected.
         for row in rows[:decision['recallSettings']['topN']]:
-            _verified_wiki_row(row, decision, pending_sources, locations, skip)
+            _verified_wiki_row(row, decision, source_locations=locations,
+                               source_skip_paths=skip, current_source=False)
         _check_deadline(deadline)
         with closing(_readonly(Path(decision['dbPath']))) as refreshed:
             if _exclusions(refreshed, decision['scopeId']) != exclusions:
