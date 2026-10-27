@@ -69,7 +69,11 @@ def _paths(project_root, journal_path):
 
 
 def _load(path):
-    row = _read_json(path)
+    return validate_row(_read_json(path), path)
+
+
+def validate_row(row, path):
+    """The ledger shape ``_load`` accepts for a row stored at ``path``."""
     from laya_index_capacity import generation_digest
     from laya_index_host_route import wiki_index_roots, _canonical_absolute
     if (not isinstance(row, dict) or set(row) != FIELDS or

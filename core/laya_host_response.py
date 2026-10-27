@@ -1517,12 +1517,33 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             _accept_wiki_grant(decision, grant_kind, grant)
         if action in ("index", "file-change-event"):
             return {}
+        _request_origin_convergence(decision)
         notice = "[laya-index] selected source update queued; recall requires a fresh published view."
         if host == "hermes":
             return {"status": "queued"}
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _request_origin_convergence(decision: dict) -> dict | None:
+    """SessionStart: ask the bundle-upgrade worker to converge a QMD-origin
+    or byte-bound install once (``laya_origin_detach``). Never fails the hook."""
+    try:
+        import laya_origin_detach
+        return laya_origin_detach.request(decision['projectRoot'],
+                                          decision['journalPath'])
+    except Exception:
+        return None
+
+
+def _conversion_in_flight(decision: dict) -> bool:
+    try:
+        import laya_settings_rebind
+        intent = laya_settings_rebind.load_intent(Path(decision['journalPath']).parent)
+        return intent is not None and laya_settings_rebind.is_conversion(intent)
+    except Exception:
+        return False
 
 
 def _drift_code(exc: BaseException) -> str:
@@ -1577,6 +1598,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
+        _request_origin_convergence(decision)
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
         if host == 'hermes':
@@ -1604,6 +1626,11 @@ SETTINGS_REBIND_NOTICE = ('[laya-index] settings rebind in progress or interrupt
                           'resume or roll back.')
 
 
+SETTINGS_CONVERSION_NOTICE = ('[laya-index] settings binding conversion in progress or '
+                              'interrupted; search serves the last published index '
+                              'read-only and a background run resumes it.')
+
+
 def _serve_settings_rebind(action: str, host: str, decision: dict, payload: dict,
                            proof: dict) -> dict:
     """Settings rebind between steps: read the published generation only.
@@ -1619,13 +1646,17 @@ def _serve_settings_rebind(action: str, host: str, decision: dict, payload: dict
     if action in ('update', 'update-queued'):
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
+        notice = SETTINGS_REBIND_NOTICE
+        if _conversion_in_flight(decision):
+            # An interrupted settings-binding conversion resumes in the background.
+            _request_origin_convergence(decision)
+            notice = SETTINGS_CONVERSION_NOTICE
         if verify_read_only(decision) != proof:
             _fail('selected_proof_changed')
         if host == 'hermes':
-            return {'status': 'settings_rebind_pending',
-                    'notice': SETTINGS_REBIND_NOTICE}
+            return {'status': 'settings_rebind_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': SETTINGS_REBIND_NOTICE}}
+                                       'additionalContext': notice}}
     if action == 'gate':
         _verified_edit(decision, payload, action)
         if verify_read_only(decision) != proof:
