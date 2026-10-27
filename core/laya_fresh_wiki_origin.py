@@ -18,9 +18,9 @@ from laya_index_a import LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 from laya_install_journal import (cas_activate, cas_restore_fresh,
                                   inspect_journal, preflight_product_candidate)
-from laya_qmd_cutover import (_fsync_dir, _identity, _ledger_lock,
-                              _operation_lock, _preflight_multi_settings,
-                              _private_file, _read_json, _write)
+from laya_ledger_common import (_fsync_dir, _identity, _ledger_lock,
+                                _operation_lock, _preflight_multi_settings,
+                                _private_file, _read_json, _write)
 
 SCHEMA = 'laya-fresh-wiki-cutover-v1'
 MARKER_SCHEMA = 'laya-fresh-wiki-selection-marker-v1'

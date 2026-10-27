@@ -652,8 +652,9 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if markers:
         # Both installer origins keep a marker through restoration. Only the
         # matching durable ledger can classify an absent route as legacy.
-        from laya_qmd_cutover import (_read_json, classify_marker,
-                                      MARKER_SCHEMA as QMD_MARKER_SCHEMA)
+        # Only the classifier the marker names is imported, so a fresh-wiki
+        # selection never loads the QMD-origin cutover or migration modules.
+        from laya_ledger_common import QMD_MARKER_SCHEMA, _read_json
         from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
                                             classify_marker as classify_fresh)
         marker_root, marker_path = markers[0]
@@ -662,8 +663,12 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
             schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
         except (OSError, RuntimeError, ValueError, TypeError):
             schema = None
-        classifier = (classify_fresh if schema == FRESH_MARKER_SCHEMA else
-                      classify_marker if schema == QMD_MARKER_SCHEMA else None)
+        if schema == FRESH_MARKER_SCHEMA:
+            classifier = classify_fresh
+        elif schema == QMD_MARKER_SCHEMA:
+            from laya_qmd_cutover import classify_marker as classifier
+        else:
+            classifier = None
         selection = (classifier(marker_root, marker_path, marker_path.parent / RECORD)
                      if classifier else 'blocked')
         if selection == 'blocked':
