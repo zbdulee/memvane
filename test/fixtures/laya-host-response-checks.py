@@ -200,14 +200,14 @@ class ResponseChecks(unittest.TestCase):
         accepted = {'productRouteAllowed': True, 'executingPluginRoot': local}
         with patch.object(laya_install_journal, 'verify_selected_route',
                           return_value=accepted) as verify:
-            self.assertEqual(response.serve_selected('topical-stop', 'claude',
+            self.assertEqual(response.serve_selected('file-change-event', 'claude',
                                                      decision, {}), {})
         self.assertEqual(verify.call_count, 2)
         with patch.object(laya_install_journal, 'verify_selected_route',
                           return_value={'productRouteAllowed': True}):
             with self.assertRaisesRegex(response.HostResponseError,
                                         'selected_plugin_root_mismatch'):
-                response.serve_selected('topical-stop', 'claude', decision, {})
+                response.serve_selected('file-change-event', 'claude', decision, {})
 
     def test_selected_recall_uses_journal_provider_and_warm_query(self):
         from contextlib import nullcontext
@@ -1520,7 +1520,7 @@ class BundleDriftChecks(unittest.TestCase):
         from contextlib import ExitStack
         for action, payload in (('index', {'tool_name': 'Write'}),
                                 ('file-change-event', {'tool_name': 'Bash'}),
-                                ('posttool', {}), ('topical-stop', {})):
+                                ('posttool', {})):
             with self.subTest(action=action), ExitStack() as stack:
                 _full, _ro, wake = self.drifted(stack)
                 self.assertEqual(response.serve_selected(action, 'claude', self.decision,

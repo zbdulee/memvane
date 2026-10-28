@@ -51,8 +51,7 @@ PACKAGE_GENERATION = re.compile(r"g-[0-9a-f]{32}\Z")
 COLLECTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 PROVIDER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
 ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "posttool",
-                            "index", "compile", "file-change-event",
-                            "topical-event", "topical-stop", "topical-reconcile"})
+                            "index", "compile", "file-change-event"})
 MAX_HOOK_BYTES = 2 * 1024 * 1024
 SETTINGS_IDENTITY_SCHEMA = "laya-settings-identity-v1"
 
@@ -459,15 +458,6 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
                              if item['role'] == 'wiki')
             if not _multi_compile_supported(raw_settings, cfg, root, wiki_root):
                 raise ValueError('selected_compile_unsupported')
-        # The first selected route has no topical compiler/derived-card lane.
-        # Host topical hooks still fire, but become proved no-ops only when no
-        # project or source topical pilot is present.
-        for base in (root, *(Path(item['sourceRoot']) for item in selected_collections)):
-            for marker in (".qmd-topical-sandbox", ".qmd-topical-v2-project",
-                           ".topical-reconcile-hook.json"):
-                candidate = base / marker
-                if candidate.exists() or candidate.is_symlink():
-                    raise ValueError("selected_topical_unsupported")
         if not isinstance(record["scopeId"], str) or not INCARNATION.fullmatch(record["scopeId"]):
             raise ValueError("invalid_scope_id")
         vector_profile = _vector_profile(record["vectorProfile"])

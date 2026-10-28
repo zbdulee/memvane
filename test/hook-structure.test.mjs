@@ -40,7 +40,6 @@ test('prompt hooks stay synchronous with bounded host timeouts', () => {
     assert.equal(hooks.PostToolUse[0].hooks[0].timeout, 22);
     assert.equal(hooks.SessionStart[0].hooks[0].timeout, 5);
     assert.ok(hooks.SessionStart[0].hooks[0].command.includes('update-queued'));
-    assert.equal(hooks.Stop[0].hooks[0].timeout, 3);
   }
 });
 
@@ -49,13 +48,13 @@ function events(file) {
   return Object.keys(JSON.parse(readFileSync(file, 'utf8')).hooks || {});
 }
 
-test('claude 이벤트명: SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop', () => {
-  assert.deepEqual(events('hooks/hooks.json').sort(), ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+test('claude 이벤트명: SessionStart/UserPromptSubmit/PreToolUse/PostToolUse', () => {
+  assert.deepEqual(events('hooks/hooks.json').sort(), ['PostToolUse', 'PreToolUse', 'SessionStart', 'UserPromptSubmit']);
 });
 
 test('codex 이벤트명: PascalCase (공식 — snake_case 아님)', () => {
   const e = events('hooks/hooks-codex.json');
-  assert.deepEqual(e.sort(), ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+  assert.deepEqual(e.sort(), ['PostToolUse', 'PreToolUse', 'SessionStart', 'UserPromptSubmit']);
   assert.ok(!e.includes('session_start'), 'snake_case는 Codex가 인식 못함');
 });
 

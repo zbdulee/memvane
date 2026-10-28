@@ -261,11 +261,6 @@ class HostRouteChecks(unittest.TestCase):
                 self.record()
                 self.assertEqual(self.state(), 'candidate')
 
-    def test_topical_pilot_marker_blocks_selection(self):
-        self.record()
-        (self.root / ".qmd-topical-v2-project").write_text("pilot")
-        self.assertEqual(self.state(), "blocked")
-
     def test_invalid_record_never_returns_legacy(self):
         self.record(status="preparing")
         self.assertEqual(self.state(), "blocked")

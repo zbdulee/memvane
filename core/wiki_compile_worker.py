@@ -743,9 +743,6 @@ def resolve_extractor_argv(
 
 def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> tuple[dict | None, str | None, int | None]:
     try:
-        import topical_story_scope
-        child_env = (topical_story_scope.provider_env(root)
-                     if topical_story_scope.exact_story(root) else None)
         from runtime_admission import provider_run
         proc = provider_run(
             argv,
@@ -755,7 +752,6 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
             timeout=timeout,
             shell=False,
             cwd=str(root),
-            env=child_env,
         )
     except ResourceDeferred:
         return None, "resource_deferred", 75
