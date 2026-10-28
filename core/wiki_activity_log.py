@@ -10,7 +10,8 @@ Location:
   * selected project: ``<install state root>/wiki-activity.log``. The state
     root is the directory of the verified route's install journal, the same
     root that holds ``bundle-auto-upgrade.log``.
-  * unselected project (synthetic fixtures): the per-user auto-context state,
+  * unselected project (synthetic fixtures, manual wiki-compile): the per-user
+    auto-context state,
     ``wiki-activity/<project key>.log``.
 
 The file is capped at ``LOG_LIMIT`` bytes; past the cap it rotates to ``.1``
