@@ -406,7 +406,9 @@ accepted only with sha256
 `--provider-model-file` uses a local copy of that exact file instead. GC lists
 generations and, with approval, removes those that are neither active, previous,
 nor named by any `~/.local/state/laya/*/production-provider-attestation.json`
-(historical `profileDependencyClosure` rows are ignored).
+(historical `profileDependencyClosure` rows are ignored). `generations` must be a
+real private directory of the user inside the runtime, and GC enumerates and
+deletes through its directory descriptor without following links.
 
 ### Retired QMD backend cleanup
 
@@ -419,14 +421,15 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
 ```
 
 The plan is read only. It lists the QMD daemon pid files under
-`~/Library/Application Support/qmd-auto-context/backend/daemon-*.pid` with
-whether each names a verified live daemon, the LaunchAgents carrying
+`~/Library/Application Support/qmd-auto-context/backend/daemon-*.pid` (and the
+port-less legacy `daemon.pid`) with whether each names a verified live daemon, the LaunchAgents carrying
 `managed-by: qmd-auto-context` (`com.qmd-mcp-daemon`, `com.qmd-keepalive`,
 `com.qmd-logrotate`, `com.qmd-index-worker`; `.bak` copies stay), every target
 tree with its size, and blockers. Apply sends `SIGTERM` only to a daemon whose
 exact command line is
-`<node> <plugin QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http --port <port of its pid file>`,
-re-read right before the signal (no `SIGKILL`, no pattern search), boots out and
+`<node> <plugin QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http --port <port of its pid file>`
+(for `daemon.pid`, the port its process carries),
+re-read right before the signal (no `SIGKILL`, no pattern kill), boots out and
 deletes only marker-bearing plists, and removes
 `~/Library/Application Support/qmd-auto-context/{runtimes/qmd,shared-qmd,backend}`.
 `~/.cache/qmd` and `~/.config/qmd` also hold the user's own QMD index,
@@ -439,7 +442,12 @@ Both actions refuse while an install attestation still names a file inside a
 target, and with `older_host_bundle_bound` while any
 `~/.local/state/laya/*/reviewed-route.json` `pluginRoot` points at a bundle that
 still contains `core/backend_manager.sh` (that bundle would recreate
-`~/.cache/qmd` and `~/.config/qmd`). Run the cleanup only after both host
+`~/.cache/qmd` and `~/.config/qmd`). They also refuse with
+`qmd_daemon_unverified` while a live process named by a pid file or the
+read-only process table references a plugin target without passing that exact
+identity, and with `legacy_cleanup_target_unsafe` when a directory between HOME
+and a target is a link or not the user's; removal walks directory descriptors
+from HOME without following links. Run the cleanup only after both host
 caches (Claude and Codex) load this release, every install has moved to it
 through the SessionStart bundle upgrade, and every install is re-attested onto
 the Laya embedding runtime.

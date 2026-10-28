@@ -9,5 +9,5 @@ test('new-machine runtime provisioning, generation GC and the owner QMD cleanup 
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 22 tests/);
+  assert.match(result.stderr, /Ran 29 tests/);
 });
