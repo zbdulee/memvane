@@ -467,6 +467,52 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
         self.assertEqual(self.selection(), 'candidate')
 
+    def test_same_root_reextracted_in_place_readopts_and_proves_again(self):
+        import laya_install_journal as install_journal
+        self.bound()
+        self.activate()
+        self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertTrue((self.state / active.INTENT).exists())  # settled receipt
+        bound = dict(self.fj.selected)
+        # The host re-extracts the same bundle at the same root: same bytes,
+        # new inodes, so a new ownership digest and provider file identity.
+        live = {**self.new, 'ownershipManifestSha256': _sha(b'reextracted')}
+        self.bundles[self.new_root] = live
+        REEXTRACTED.add(self.new_root)
+        verify = mock.patch.object(install_journal, 'inspect_full_plugin_candidate',
+                                   side_effect=self.inspect_bundle)
+        with verify:
+            with self.assertRaisesRegex(install_journal.JournalEvidenceError,
+                                        '^installed_bundle_changed$'):
+                install_journal._inspect_identity(bound)
+        before = self.row()
+        result = self.run_upgrade(active)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        after = self.row()
+        self.assertTrue(self.unchanged_fields(before, after, active.LEDGER_CHANGES))
+        self.assertNotEqual(after['routeSha256'], before['routeSha256'])
+        route = json.loads(self.route.read_bytes())
+        self.assertEqual((route['pluginRoot'], route['ownershipManifestSha256']),
+                         (self.new_root, live['ownershipManifestSha256']))
+        self.assertEqual(self.fj.selected['ownershipManifestSha256'],
+                         live['ownershipManifestSha256'])
+        self.assertEqual(self.fj.selected['bundleManifestSha256'],
+                         bound['bundleManifestSha256'])
+        with verify:
+            self.assertEqual(install_journal._inspect_identity(self.fj.selected), live)
+        self.assertEqual(self.selection(), 'candidate')
+        self.assertEqual(len(list(self.state.glob('active-upgrade-*-settled.json'))), 1)
+        self.kept()
+
+    def test_same_root_unchanged_settled_intent_is_not_rerun(self):
+        self.bound()
+        self.activate()
+        self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        before = self.row()
+        self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertEqual(self.row(), before)
+        self.assertEqual(list(self.state.glob('active-upgrade-*-settled.json')), [])
+
     def test_qmd_origin_intent_refuses(self):
         self.bound()
         self.activate()

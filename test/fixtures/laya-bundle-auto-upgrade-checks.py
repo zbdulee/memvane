@@ -286,6 +286,77 @@ class WorkerChecks(WorkerBase):
         self.assertEqual(calls, {})
 
 
+class SameRootReadoptChecks(WorkerBase):
+    """A host re-extracted the bound bundle in place: same bytes, new inodes."""
+
+    def setUp(self):
+        super().setUp()
+        self.old_identity = {'pluginRoot': str(self.root), 'sourceCommit': '1' * 40,
+                             'bundleManifestSha256': 'a' * 64,
+                             'ownershipManifestSha256': '7' * 64,
+                             'bundleKind': 'full_plugin', 'vectorProfile': PROFILE}
+        self.attestation = {'providerManifest': manifest(str(self.root)),
+                            'vectorProfile': PROFILE, 'dependencyClosure': []}
+
+    def live(self, **changes):
+        return {'pluginRoot': str(self.root), 'sourceCommit': '1' * 40,
+                'bundleManifestSha256': 'a' * 64, 'ownershipManifestSha256': '8' * 64,
+                'vectorProfile': PROFILE, **changes}
+
+    def run_same_root(self, inspect):
+        import laya_product_bundle as bundle
+        with mock.patch.object(bundle, 'inspect_full_plugin_candidate',
+                               side_effect=inspect), \
+             mock.patch.object(bundle, 'seal_companion_host_copy') as seal:
+            results, calls, _rescan, wake = self.run_worker('active', installed='1' * 40)
+        seal.assert_not_called()  # the bound root is the owner, never a companion
+        return results, calls, wake
+
+    def test_same_content_new_inodes_readopts_the_same_root(self):
+        results, calls, wake = self.run_same_root(lambda _root: self.live())
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete', results)
+        self.assertEqual(calls['active']['plugin_root'], str(self.root))
+        wake.assert_called_once_with(str(self.project))
+        self.assertEqual(auto.read_status(self.state)['status'], 'complete')
+
+    def test_unsealed_reextracted_root_is_adopted_again(self):
+        from laya_product_bundle import BundleEvidenceError
+
+        def unsealed(_root):
+            raise BundleEvidenceError('unsafe_bundle_metadata')
+        results, calls, _wake = self.run_same_root(unsealed)
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete', results)
+        self.assertIn('active', calls)
+
+    def test_unchanged_same_root_stays_current(self):
+        results, calls, wake = self.run_same_root(
+            lambda _root: self.live(ownershipManifestSha256='7' * 64))
+        self.assertEqual(results[0]['status'], 'current')
+        self.assertEqual(calls, {})
+        wake.assert_not_called()
+
+    def test_same_commit_with_other_content_is_refused(self):
+        for changed in ({'bundleManifestSha256': '0' * 64},
+                        {'vectorProfile': {**PROFILE, 'profileId': '0' * 64}}):
+            with self.subTest(changed=changed):
+                results, calls, wake = self.run_same_root(
+                    lambda _root, changed=changed: self.live(**changed))
+                self.assertEqual(results[0], {
+                    'stateRoot': str(self.state), 'status': 'refused',
+                    'reason': 'installed_bundle_content_changed'})
+                self.assertEqual(calls, {})
+                wake.assert_not_called()
+                self.assertEqual(auto.read_status(self.state)['status'], 'refused')
+
+    def test_bound_build_at_the_same_root_keeps_its_bundle(self):
+        import laya_product_bundle as bundle
+        with mock.patch.object(bundle, 'inspect_full_plugin_candidate',
+                               return_value=self.live()):
+            results, calls, _rescan, _wake = self.run_worker('bound', installed='1' * 40)
+        self.assertEqual(results[0]['status'], 'current')
+        self.assertEqual(calls, {})
+
+
 class BusyLaneChecks(WorkerBase):
     """A busy provider/compute lane defers the upgrade; it is never a failure."""
 
