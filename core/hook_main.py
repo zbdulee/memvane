@@ -9,9 +9,10 @@ noisy "hook (failed): exited with code 1".
 This is the single fail-open boundary for every Python hook entrypoint:
 run `main()`, and on ANY exception return 0 so the hook degrades to a
 silent no-op instead of a visible failure. The exception is best-effort
-recorded to QMD_RECALL_LOG (file only, never stdout, so it can't pollute
-the model context) when that env var is set — preserving the documented
-diagnosis path (see CLAUDE.md "빈 출력은 정상 동작일 수 있다").
+recorded as a ``hook.error`` event in the install event log bound by the
+entry point (``event_log.bind``): exception class and the failing frame
+(file:line), never the message, stdout or a prompt. Without a bound install
+nothing is written.
 
 Rationale for centralizing here rather than per-site try/except: several
 entrypoints (recall/posttool/gate/index/compile) call the same config and
@@ -25,6 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+import event_log
 import hook_budget
 
 
@@ -38,16 +40,13 @@ def run(main) -> int:
     raised deep in a call tree or a KeyboardInterrupt -- so the hook can never
     surface as "hook (failed): exited with code N" to the host. A deny/block
     decision must be expressed as JSON on stdout, never via exit code. The
-    exception (if any) is best-effort logged to QMD_RECALL_LOG.
+    exception (if any) is best-effort recorded as a ``hook.error`` event.
     """
     try:
         main()
     except hook_budget.HookDeadlineExceeded:
         try:
-            path = os.environ.get('QMD_RECALL_LOG')
-            if path:
-                with open(path, 'a', encoding='utf-8') as handle:
-                    handle.write('qmd_hook_deadline_exceeded\n')
+            event_log.emit('hook.error', outcome='error', reason='hook_deadline_exceeded')
         except BaseException:
             pass
     except BaseException:  # noqa: BLE001 — hooks must never crash the host
@@ -66,12 +65,9 @@ def run(main) -> int:
 
 
 def _log_exception() -> None:
-    path = os.environ.get("QMD_RECALL_LOG")
-    if not path:
-        return
-    try:
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write("qmd_hook_uncaught_exception\n")
-            traceback.print_exc(file=handle)
-    except Exception:  # noqa: BLE001 — logging must not itself raise
-        pass
+    kind, _value, tb = sys.exc_info()
+    frames = traceback.extract_tb(tb)[-1:] if tb is not None else []
+    where = (f"{os.path.basename(frames[0].filename)}:{frames[0].lineno}"
+             if frames else None)
+    event_log.emit('hook.error', outcome='error',
+                   reason=kind.__name__ if kind is not None else 'unknown', where=where)

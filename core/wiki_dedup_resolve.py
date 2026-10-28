@@ -210,7 +210,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         meta, _ = wc.parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
         wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
-                                 title, bound=laya_bound)
+                                 title, bound=laya_bound, reason='dedup')
         # The caller requests sync after releasing the card locks but before
         # ACKing the dedup queue. A failure requeues this row for stale retry.
         return {"action": "deleted", "deletedPath": delete_rel,

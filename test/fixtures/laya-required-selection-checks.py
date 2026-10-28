@@ -12,8 +12,23 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+
+def event_state(stack):
+    """A real 0700 state root that receives the recall's install events."""
+    state = Path(stack.enter_context(tempfile.TemporaryDirectory())).resolve()
+    os.chmod(state, 0o700)
+    stack.enter_context(patch('event_log.state_root_for_decision', return_value=state))
+    return state
+
+
+def recall_reasons(state):
+    """Notes then final reason of each recall event, oldest first."""
+    rows = [row for row in event_log.read(state) if row['event'] == 'recall']
+    return rows, [list(row.get('notes') or []) + [row['reason']] for row in rows]
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import config
+import event_log
 import laya_host_response as response
 from context_learning import selection_port, selection_read
 
@@ -166,8 +181,7 @@ class Checks(unittest.TestCase):
         for state in (None, Path('/synthetic/state-without-checkpoint')):
             with self.subTest(state=state), ExitStack() as stack:
                 decision, _proof, _rows, _settings = self.host(stack)
-                log = Path(stack.enter_context(tempfile.TemporaryDirectory())) / 'recall.log'
-                stack.enter_context(patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}))
+                log = event_state(stack)
                 stack.enter_context(patch('context_learning.seam._private_state',
                                           return_value=state))
                 choose = stack.enter_context(patch('context_learning.live_select.choose'))
@@ -180,20 +194,26 @@ class Checks(unittest.TestCase):
                 self.assertNotIn('wiki/card03.md', context)
                 self.assertIn('hybrid rank score', context)
                 self.assertNotIn('local Laya model selected', context)
-                lines = [json.loads(line) for line in log.read_text().splitlines()]
-                self.assertEqual([line['reason'] for line in lines], ['selected'])
+                lines, reasons = recall_reasons(log)
+                self.assertEqual(reasons, [['selected']])
+                self.assertEqual(lines[0]['outcome'], 'served')
                 self.assertEqual(lines[0]['selection_fallback'], 'laya_selector_not_prepared')
-                self.assertEqual(lines[0]['selected_count'], 3)
+                self.assertEqual(lines[0]['count'], 3)
+                self.assertEqual([card['path'] for card in lines[0]['cards']],
+                                 ['wiki/card%02d.md' % index for index in range(3)])
+                self.assertTrue(all(len(card['sha']) == 64 for card in lines[0]['cards']))
+                self.assertEqual(lines[0]['prompt'],
+                                 {'sha256': hashlib.sha256(b'find card').hexdigest(),
+                                  'chars': 9})
 
     def test_prepared_selector_failure_serves_ranked_rows(self):
         with ExitStack() as stack:
             decision, _proof, _rows, _settings = self.host(stack)
             self.prepared(stack)
-            log = Path(stack.enter_context(tempfile.TemporaryDirectory())) / 'recall.log'
-            stack.enter_context(patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}))
+            log = event_state(stack)
             for reason in ('timeout', 'runtime_unavailable', 'no_active_checkpoint'):
                 with self.subTest(reason=reason):
-                    log.write_text('')
+                    (log / event_log.NAME).unlink(missing_ok=True)
                     with patch('context_learning.live_select.choose',
                                return_value=(None, reason, {})):
                         result = response.serve_selected('recall', 'codex', decision,
@@ -201,9 +221,8 @@ class Checks(unittest.TestCase):
                     context = result['hookSpecificOutput']['additionalContext']
                     self.assertIn('wiki/card00.md', context)
                     self.assertIn('hybrid rank score', context)
-                    lines = [json.loads(line) for line in log.read_text().splitlines()]
-                    self.assertEqual([line['reason'] for line in lines],
-                                     ['laya_selector_' + reason, 'selected'])
+                    _lines, reasons = recall_reasons(log)
+                    self.assertEqual(reasons, [['laya_selector_' + reason, 'selected']])
             with patch('context_learning.live_select.choose',
                        side_effect=OSError('selector crashed')):
                 crashed = response.serve_selected('recall', 'codex', decision,
@@ -279,8 +298,7 @@ class Checks(unittest.TestCase):
             return rows, frozenset()
         stack.enter_context(patch.object(response, 'query_selected_v2',
                                          side_effect=lexical_only))
-        log = Path(stack.enter_context(tempfile.TemporaryDirectory())) / 'recall.log'
-        stack.enter_context(patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}))
+        log = event_state(stack)
         return decision, wake, calls, seen, log
 
     def test_deferred_query_admission_serves_lexical_and_wakes_owner(self):
@@ -295,10 +313,10 @@ class Checks(unittest.TestCase):
             self.assertEqual(calls, [])  # admission refused: socket never touched
             self.assertEqual(seen, ['resource_deferred', 'resource_deferred'])
             wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
-            lines = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual([line['reason'] for line in lines],
-                             ['laya_vector_selected_provider_resource_deferred', 'selected'])
-            self.assertEqual(lines[1]['vector_fallback'],
+            lines, reasons = recall_reasons(log)
+            self.assertEqual(reasons,
+                             [['laya_vector_selected_provider_resource_deferred', 'selected']])
+            self.assertEqual(lines[0]['vector_fallback'],
                              'selected_provider_resource_deferred')
 
     def test_cold_provider_serves_lexical_and_wakes_owner(self):
@@ -319,9 +337,8 @@ class Checks(unittest.TestCase):
                 self.assertEqual(calls, [1])  # one socket attempt per prompt
                 self.assertEqual(seen, ['provider_unavailable'] * 2)
                 wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
-                reasons = [json.loads(line)['reason']
-                           for line in log.read_text().splitlines()]
-                self.assertEqual(reasons, ['laya_vector_' + code, 'selected'])
+                _lines, reasons = recall_reasons(log)
+                self.assertEqual(reasons, [['laya_vector_' + code, 'selected']])
         # A terminal provider failure still refuses (it needs repair).
         with ExitStack() as stack:
             decision, wake, _calls, _seen, _log = self.vector_host(
@@ -351,11 +368,12 @@ class Checks(unittest.TestCase):
             self.assertEqual(calls, [1])  # one socket attempt per prompt
             self.assertEqual(seen, ['provider_identity_mismatch'] * 2)
             wake.assert_not_called()  # a drifted bundle never starts a provider
-            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            lines, reasons = recall_reasons(log)
             self.assertEqual(
-                [line['reason'] for line in lines],
-                ['laya_vector_selected_bundle_drift_provider_identity_mismatch',
-                 'selected'])
+                reasons,
+                [['laya_vector_selected_bundle_drift_provider_identity_mismatch',
+                  'selected']])
+            self.assertEqual(lines[0]['degraded'], 'bundle_drift')
             self.assertIn('selected_bundle_drift_provider_identity_mismatch; '
                           'serving lexical results', stderr.getvalue())
 

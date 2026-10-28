@@ -504,7 +504,8 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
         return 'retry'
     wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
     wiki_activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
-                             str(pending_meta.get('title') or live_target.stem))
+                             str(pending_meta.get('title') or live_target.stem),
+                             reason='pending_publish')
     reindex_wiki(root, config)
     return 'published'
 
@@ -1172,7 +1173,7 @@ def apply_negative_verdict(
             return True
         wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
         wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
-                                 dead_title)
+                                 dead_title, reason='verify_retire')
         record_machine_delete(root, compile_cfg, record, verdict)
         reindex_wiki(root, config)
         log_verdict(log_path, {

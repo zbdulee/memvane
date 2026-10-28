@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Opt-in SessionStart launcher for one isolated, local due cycle.
+"""One isolated, local due cycle of opt-in automatic learning.
 
-The hook only launches a one-shot child. The child checks the durable schedule,
-then uses the existing train/validation/evaluation and promotion gates. No
-teacher transport, daemon, or global service is started here.
+The runtime ``auto`` wake handler calls ``run``. It checks the durable
+schedule, then uses the existing train/validation/evaluation and promotion
+gates. No teacher transport, daemon, or global service is started here.
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-import stat
-import subprocess
 import sys
 
 import config as qmd_config
@@ -116,49 +113,12 @@ def run(project: Path) -> dict:
     return summary
 
 
-def launch(project: Path, *, data_mode: str | None = None) -> dict:
-    from context_learning.laya_learning import ready
-    if not ready(project):
-        return {'status': 'setup_required'}
-    item = _policy(project)
-    if item is None:
-        return {"status": "disabled"}
-    state, policy = item
-    if data_mode is not None and policy.get("dataMode", "current") != data_mode:
-        return {"status": "deferred"}
-    log_path = state / "auto-cycle.log"
-    fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("unsafe_auto_cycle_log")
-        env = {key: os.environ[key] for key in ("PATH", "LANG", "TMPDIR") if key in os.environ}
-        # The synthetic legacy fixture has no v2 pointer; carry its explicit
-        # test-only guard override into this deliberately scrubbed child env.
-        if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
-            env['QMD_SETUP_GUARD_FIXTURE'] = '1'
-        # The current-corpus gate reads the selected memvane-db index.
-        env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
-                   TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
-        import runtime_work
-        receipt=runtime_work.request('auto',str(project),start=False)
-        if isinstance(receipt,dict) and receipt['status']=='deferred_queue_capacity':
-            runtime_work.hook_wake();return receipt
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run", str(project)],
-                         stdin=subprocess.DEVNULL, stdout=fd, stderr=fd, env=env,
-                         start_new_session=True, close_fds=True)
-    finally:
-        os.close(fd)
-    return {"status": "launched"}
-
-
 def main(argv):
-    if len(argv) != 2 or argv[0] not in ("launch", "launch-historical", "launch-current", "run"):
+    if len(argv) != 2 or argv[0] != "run":
         return 2
     try:
         project = Path(argv[1]).resolve(strict=True)
-        mode = {"launch-historical": "historical_snapshot", "launch-current": "current"}.get(argv[0])
-        result = run(project) if argv[0] == "run" else launch(project, data_mode=mode)
+        result = run(project)
     except Exception:
         result = {"status": "failed", "reason": "auto_cycle_unavailable"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)

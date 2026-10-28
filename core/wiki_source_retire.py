@@ -12,6 +12,7 @@ import compile_paths as cp
 import wiki_card
 import wiki_compile as wc
 import wiki_mutation_lock
+import wiki_activity_log
 import wiki_selected_laya
 import yaml_scalars
 from source_text import is_wiki_meta_page
@@ -238,6 +239,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                 os.fsync(directory)
             finally:
                 os.close(directory)
+            _record_retired(root, config, selected, card, text, 'source_deleted')
     # Also reconciles an old sidecar row whose canonical card disappeared.
     wiki_selected_laya.request_sync(root, selected)
     return {'state': 'retired', 'survivors': []}
@@ -293,7 +295,21 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
             os.fsync(directory)
         finally:
             os.close(directory)
+    _record_retired(root, None, selected, card, text, proof_hash, wiki_root=wiki_root)
     return 'retired'
+
+
+def _record_retired(root, config, selected, card, text, reason, *, wiki_root=None) -> None:
+    """One ``wiki`` retired event; never fails the retirement."""
+    try:
+        if wiki_root is None:
+            wiki_root = (root / (config or {}).get('wikiPath', '.auto-context/wiki')).resolve()
+        rel = Path(card).relative_to(wiki_root).as_posix()
+        meta, _ = wc.parse_frontmatter(text)
+        title = str(meta.get('title') or Path(card).stem)
+        wiki_activity_log.append(root, 'retired', rel, title, bound=selected, reason=reason)
+    except Exception:
+        pass
 
 
 def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,

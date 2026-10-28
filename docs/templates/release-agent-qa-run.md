@@ -157,12 +157,13 @@ Exact trust scope (one row per host; no wildcard or "trust all"):
 
 ## 7. Search-result proof (one row per probe)
 
-| Time | Scenario | Host session | cwd | Branch / `git status` summary | Question key | Expected Present | Expected Absent | Recall log `reason` | `selected[]` paths | `project_root` | Token in injected context? | Answer | Tool call in turn? | Verdict |
+| Time | Scenario | Host session | cwd | Branch / `git status` summary | Question key | Expected Present | Expected Absent | Recall event `reason` / `notes` | `cards[].path` | `install` | Token in injected context? | Answer | Tool call in turn? | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | | | | | | | | | | | | | | | |
 
-Attach for each row the exact `qmd_recall_selection` line and the transcript
-excerpt of injected context (private store).
+Attach for each row the exact `recall` event line from the install's
+`events.jsonl` (matched by the run's `session` id) and the transcript excerpt of
+injected context (private store).
 
 ## 8. Reruns and invalidations
 

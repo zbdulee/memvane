@@ -766,6 +766,19 @@ class Binding:
         self.listener = listener
         self.socket_inode = os.lstat(manifest['serviceSocketPath']).st_ino
         self.closed = False
+        # Where this installation's events go (its install state root).
+        self.events = None
+
+
+def _event(targets, event, outcome, reason=None, **fields):
+    """One service event per adopted installation's event log; never raises."""
+    try:
+        import event_log
+        for state_root, install in targets:
+            event_log.emit(event, outcome=outcome, reason=reason, state_root=state_root,
+                           install=install, host='worker', pid=os.getpid(), **fields)
+    except Exception:
+        pass
 
 
 def _worker_key(manifest):
@@ -1130,10 +1143,18 @@ class Service:
             return {'status': 'draining'}
         return {'status': 'refused', 'reason': 'unknown_command'}
 
+    def _event_targets(self):
+        with self.lock:
+            return list({binding.events for binding in self.bindings.values()
+                         if binding.events is not None})
+
     def begin_drain(self):
         if self.draining.is_set():
             return
         self.draining.set()
+        self.drain_targets = self._event_targets()
+        _event(self.drain_targets, 'resident.drain', 'started',
+               bundle=(self.bundle or {}).get('version'))
         with self.lock:
             for binding in list(self.bindings.values()):
                 self._close_listener(binding)
@@ -1169,6 +1190,8 @@ class Service:
                        if worker.handle is not None]
             self.workers.clear()
         _stop_handles(handles, cleanup_end)
+        _event(getattr(self, 'drain_targets', ()), 'resident.drain', 'stopped',
+               ms=(time.monotonic() - started) * 1000)
         self.stopped.set()
 
     def _force_exit(self, waited):
@@ -1180,6 +1203,11 @@ class Service:
         released in-process while that thread is alive.
         """
         killed, alive = _kill_children(time.monotonic() + _exit_cleanup_seconds())
+        # Targets were captured when the drain began: the service lock may be
+        # held by the hung thread, so it is never taken here.
+        _event(getattr(self, 'drain_targets', ()), 'resident.forced_exit', 'exited',
+               'cold_load_hung', waitedSeconds=waited, killedChildren=killed,
+               unconfirmedChildren=alive)
         with suppress(Exception):
             _atomic_json(self.root / FORCED_EXIT, {
                 'pid': os.getpid(), 'bundle': self.bundle, 'reason': 'cold_load_hung',
@@ -1373,6 +1401,10 @@ class Service:
             listener.listen(LISTEN_BACKLOG)
             listener.settimeout(.2)
             binding = Binding(project, manifest, identity, mode, owner_fd, service_fd, listener)
+            with suppress(Exception):
+                import event_log
+                binding.events = (event_log.state_root_for_decision(decision),
+                                  event_log.install_of(decision))
         except Exception:
             if listener is not None:
                 listener.close()
@@ -1389,6 +1421,9 @@ class Service:
                 return
             self.bindings[project] = binding
             self.retry.pop(project, None)
+        if binding.events is not None:
+            _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
+                   attested=attested)
         try:
             _write_state(manifest, 'ready', attempts=0)
         except Exception:

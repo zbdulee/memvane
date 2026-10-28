@@ -266,7 +266,8 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 
 `.auto-context/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
 `core/wiki_card_rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
-생성·삭제 기록은 설치 state 디렉터리의 `wiki-activity.log`입니다. 이전 버전이
+생성·수정·삭제 기록은 설치 state 디렉터리 이벤트 로그(`events.jsonl`)의 `wiki`
+이벤트입니다. 이전 버전이
 만든 `SCHEMA.md`·`index.md`·`log.md`가 wiki 루트에 남아 있어도 카드로 취급하지
 않고 읽지도 않으므로, 지우든 두든 동작은 같습니다.
 
@@ -293,6 +294,7 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 | `인덱스 새로고침해줘.` | 선택된 색인의 전체 스캔 동기화 큐잉 |
 | `MemVane 임베딩 런타임 상태 보여줘.` | 임베딩 런타임 확인·준비·정리 |
 | `예전 QMD backend 정리 계획 보여줘.` | 예전 QMD backend 정리 점검 |
+| `MemVane 로그 보여줘.` / `왜 recall이 비었는지 로그 확인해줘.` | 설치 이벤트 로그 요약(recall·오류·업그레이드) |
 
 ## 문제 해결
 
@@ -311,8 +313,11 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 왜 컨텍스트가 안 들어오는지 recall 진단해줘.
 ```
 
-에이전트는 필요하면 recall 로그(`QMD_RECALL_LOG`)를 켜고 선택 결과를
-확인합니다.
+에이전트는 `logs` 스킬로 설치 이벤트 로그의 `recall` 이벤트를 읽어 원인을
+확인합니다. `reason`은 최종 결과(`selected`, `no_results_after_filter`, 거부 코드
+등)이고, `notes`는 그 과정의 진단 코드, `cards`는 주입한 카드 경로입니다. 이벤트
+로그는 항상 기록되므로 따로 켤 설정이 없습니다. 기록 범위는
+[docs/privacy.md](docs/privacy.md)를 보세요.
 
 ### 파일을 지우거나 옮겼을 때
 

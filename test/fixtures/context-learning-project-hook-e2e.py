@@ -275,12 +275,11 @@ hook_main.run(recall.main)
 assert not attempts,attempts
 '''
     def recall(project,fixture,host,prompt):
-        env = {**os.environ,'QMD_QUERY_FIXTURE':str(fixture),'QMD_ENGINE':host,
-            'QMD_RECALL_LOG':str(base/'recall.jsonl')}
+        env = {**os.environ,'QMD_QUERY_FIXTURE':str(fixture),'QMD_ENGINE':host}
         result = subprocess.run([sys.executable,'-B','-c',child,str(installs[host]/'core')],
             input=canonical({'cwd':str(project),'prompt':prompt,'hook_event_name':'UserPromptSubmit'}),
             text=True,capture_output=True,env=env,cwd=project,timeout=20,check=True)
-        assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr,(base/'recall.jsonl').read_text())
+        assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr)
     request_nonces = set()
     def wait_requested(project,namespace):
         """The hook persists a new full-worker request and its durable wake."""
@@ -363,7 +362,7 @@ assert not attempts,attempts
         with sqlite3.connect(namespace/'learning.sqlite3') as db:
             samples = [json.loads(row[0]) for row in db.execute('SELECT body FROM samples')]
         assert {row['host'] for row in samples} == {'claude','codex'}, samples
-        assert len(rows(namespace,'cases')) == 2, (namespace, (base/'recall.jsonl').read_text())
+        assert len(rows(namespace,'cases')) == 2, namespace
         progress('both_hosts_captured_workers_finished',project)
     if deferred_case:
         # Keep the real provider/admission path; change only the OS observation.

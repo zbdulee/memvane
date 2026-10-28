@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
+import event_log
 import laya_host_response as response
 import laya_index_vector as vector
 
@@ -631,17 +632,20 @@ class ResponseChecks(unittest.TestCase):
             kept = [item for item in (draft, legacy, draft) if source_filter(item)]
             return kept, False
         with tempfile.TemporaryDirectory() as temp:
-            log = Path(temp) / 'recall.log'
+            log = Path(temp).resolve()
+            os.chmod(log, 0o700)
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('event_log.state_root_for_decision', return_value=log), \
+                 response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
                     runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
                     lambda *_: None, decision)
             self.assertEqual(found, [])
-            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            lines = [row for row in event_log.read(log) if row['event'] == 'recall']
+            self.assertEqual([line['notes'] for line in lines], [['laya_wiki_rows_filtered']])
             self.assertEqual([line['reason'] for line in lines], ['laya_wiki_rows_filtered'])
             self.assertEqual(lines[0]['filtered_count'], 2)
             self.assertEqual(lines[0]['filtered_reasons'],
@@ -667,17 +671,19 @@ class ResponseChecks(unittest.TestCase):
             kwargs['diagnostics']['probeOnlyPaths'] = frozenset({draft['path']})
             return [item for item in (legacy,) if source_filter(item)], False
         with tempfile.TemporaryDirectory() as temp:
-            log = Path(temp) / 'recall.log'
+            log = Path(temp).resolve()
+            os.chmod(log, 0o700)
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('event_log.state_root_for_decision', return_value=log), \
+                 response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
                     runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
                     lambda *_: None, decision)
             self.assertEqual(found, [])
-            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            lines = [row for row in event_log.read(log) if row['event'] == 'recall']
             self.assertEqual(lines[0]['filtered_count'], 1)
             self.assertEqual(lines[0]['filtered_reasons'], {'source_revisions_missing': 1})
             self.assertIn('1 matched wiki cards, none servable', stderr.getvalue())
@@ -704,18 +710,22 @@ class ResponseChecks(unittest.TestCase):
             source_filter = args[11]
             return [item for item in scaffold if source_filter(item)], False
         with tempfile.TemporaryDirectory() as temp:
-            log = Path(temp) / 'recall.log'
+            log = Path(temp).resolve()
+            os.chmod(log, 0o700)
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('event_log.state_root_for_decision', return_value=log), \
+                 response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
                     runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
                     lambda *_: None, decision)
             self.assertEqual(found, [])
             self.assertNotIn('none servable', stderr.getvalue())
-            self.assertFalse(log.exists() and 'laya_wiki_rows_filtered' in log.read_text())
+            self.assertNotIn('laya_wiki_rows_filtered',
+                             [note for row in event_log.read(log)
+                              for note in row.get('notes') or []])
         self.assertIn('search completed; 0 matching documents.',
                       response.render_context(decision, found))
 
@@ -756,11 +766,13 @@ class ResponseChecks(unittest.TestCase):
             source_filter = args[11]
             return [item for item in leftovers + cards if source_filter(item)], True
         with tempfile.TemporaryDirectory() as temp:
-            log = Path(temp) / 'recall.log'
+            log = Path(temp).resolve()
+            os.chmod(log, 0o700)
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('event_log.state_root_for_decision', return_value=log), \
+                 response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
                     runtime, 'starship archive', VECTOR_PROFILE, VECTOR_PROFILE,

@@ -814,12 +814,13 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     except subprocess.TimeoutExpired:
         return None, "extractor_timeout", None
     if proc.stderr:
-        log = root / cp.COMPILE_DIR / cp.EXTRACTOR_LOG
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open("a", encoding="utf-8") as handle:
-            handle.write(proc.stderr[-4000:] + "\n")
-        # extractor.log 트림: (1) 감사 원장이 아닌 순수 에러 디버그 로그(한 레코드는 ≤4,000자 유계이나 실패 시 append로 행 수가 무계 누적되어 verify-log.jsonl처럼 비대화), (2) non-JSONL이라 레코드 중간 절단 가능하나 저장소 내 파싱 소비자 0건(인간 독자 전용), (3) stat 1회 선조회로 매 쓰기 호출 비용 경량.
-        wc.trim_jsonl(log)
+        # Extractor stderr can quote source or model text: by default only its
+        # hash and size reach the install event log (the prompt debug flag adds
+        # the tail).
+        import event_log
+        tail = proc.stderr[-event_log.PROMPT_CHARS:]
+        event_log.emit('compile.extractor', outcome='stderr', reason=None,
+                       rc=proc.returncode, stderr=event_log.prompt_fields(tail))
     if proc.returncode == 75:
         return None, "resource_deferred", 75
     if proc.returncode != 0:
@@ -1315,8 +1316,8 @@ def _run_verify_pass(
     """Piggyback the auto-verify queue drain after compile work (fail-open).
 
     verify must never break the compile worker — errors are swallowed after
-    leaving a trace in extractor.log (a systemic verify failure must not die
-    silently); the verify queue keeps its own claim/requeue semantics inside
+    leaving a ``compile.verify_pass`` event in the install event log (a systemic
+    verify failure must not die silently); the verify queue keeps its own claim/requeue semantics inside
     run().
 
     `produced_targets` lists the cards THIS run enqueued. The list (not a count)
@@ -1327,16 +1328,13 @@ def _run_verify_pass(
     try:
         import wiki_verify_worker
         wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
-    except Exception:
-        try:
-            log = root / cp.COMPILE_DIR / cp.EXTRACTOR_LOG
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as handle:
-                handle.write("verify-pass-error: " + traceback.format_exc(limit=5)[-4000:] + "\n")
-            # extractor.log 트림: (1) verify 예외 traceback 누적 순수 에러 로그, (2) non-JSONL이나 파싱 소비자 0건, (3) stat 1회 선조회로 매 쓰기 호출 비용 경량.
-            wc.trim_jsonl(log)
-        except OSError:
-            pass
+    except Exception as exc:
+        # Exception class and failing frame only; the message may name paths.
+        import event_log
+        frames = traceback.extract_tb(exc.__traceback__)[-1:]
+        event_log.emit('compile.verify_pass', outcome='error', reason=type(exc).__name__,
+                       where=(f"{os.path.basename(frames[0].filename)}:{frames[0].lineno}"
+                              if frames else None))
 
 
 COMPILE_RUN_LOCK = ".compile-run.lock"
@@ -1410,6 +1408,9 @@ def main():
     # Only a selected Laya route compiles; synthetic fixtures stand in for one.
     if selected_route is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
         return 0
+    if selected_route is not None:
+        import event_log
+        event_log.bind(decision=selected_route[0], host='worker')
     config = found["config"]
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):

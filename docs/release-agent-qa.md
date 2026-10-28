@@ -452,10 +452,12 @@ Operator rules:
   scenarios are `BLOCKED`.
 - **Evidence directory.** Use
   `EVID=/tmp/qmd-release-qa-evidence-<runId>`, mode 0700, outside every
-  fixture, so fixture cleanup cannot delete evidence. Launch each fresh host
-  session with its own `QMD_RECALL_LOG="$EVID/recall-<host>-<run-session-id>.log"`.
-  This setting writes diagnostics
-  to a file only; it never writes to model context. Do not set test-only
+  fixture, so fixture cleanup cannot delete evidence. Recall diagnostics are
+  always on: every hook call of a selected route appends one line to the
+  install event log `<install state root>/events.jsonl` (never to model
+  context). After each fresh host session, copy `events.jsonl` (and any
+  `.1`/`.2` generation) into `$EVID/events-<host>-<run-session-id>.jsonl`.
+  Do not set test-only
   variables such as `QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE` or
   `QMD_SANDBOX`. If any is present, the run is
   invalid. `LAYA_QA_SYNC_BARRIER` is allowed only in the RQA-RACE-01 Part B
@@ -483,7 +485,7 @@ every item is `ready`.
 | PF-ID | Exact candidate | RQA-ID-00 evidence for this host: the commit (40 hex), version string, and an empty or allowlisted `identity-diff-<host>.txt`. A matching version string alone is not enough. |
 | PF-FOLDER | Project folder access | The host can read and write the exact fixture checkout. If the host presents a folder/project trust prompt, a human approved only that exact checkout. Record an official no-prompt path as such; never infer trust for `$HOME`, `/tmp` or a parent. Resolve OS privacy prompts before the run. |
 | PF-TRUST | Plugin hook trust | Compare the installed `hooks/hooks.json` or `hooks/hooks-codex.json` under `INSTALL_PATH` against the candidate and record the full command list. For a host that requires per-hook trust, a human approves only those exact commands in its official UI. For a host without per-hook review, record official plugin install/enable evidence and the loaded command path. No wildcard, global "trust all", config edit or bypass flag. |
-| PF-FRESH | Fresh host session | A session started after install, trust and reload, with cwd equal to the fixture checkout. A unique run/session marker and SessionStart output or host hook trace identify this session. Give it a new `QMD_RECALL_LOG` file for later prompt-turn evidence; the file alone does not prove SessionStart ran. |
+| PF-FRESH | Fresh host session | A session started after install, trust and reload, with cwd equal to the fixture checkout. A unique run/session marker and SessionStart output or host hook trace identify this session. Its `session` id selects its lines in the install event log for later prompt-turn evidence; those lines alone do not prove SessionStart ran. |
 | PF-HOST | Sandbox and event support | Record the host version, surface (CLI or app), sandbox mode and sandbox environment variables. Check the host's documented/advertised support for every event the planned scenarios require (for example, Codex has no Bash PostToolUse). Observe actual delivery in the corresponding synthetic scenario; do not treat capability metadata alone as a hook PASS. |
 | PF-RUNTIME | OS and runtime dependencies | OS build and architecture match the matrix cell. The hook `python3`, Node, Git (2.36+) and hashing tools resolve from the host's hook environment, and their versions are recorded. No forbidden test variable is set (section 3). |
 | PF-NET | DNS and network | Record host CLI/app and hook-environment connectivity separately: online, intentionally offline, sandbox-denied, DNS failure or remote-service outage. Probe only endpoints a scenario actually needs. Intentional offline mode can be ready for local-only scenarios; a required endpoint failure is not ready. |
@@ -641,20 +643,21 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 - In a **separate optional prompt that permits tools**, record whether the
   host agent chooses to Read the selected source and what it answers. That is
   host-agent behavior, not a plugin release condition.
-- A missing log line means the hook did not run. Treat it as `FAIL` unless a
+- A missing `recall` event line means the hook did not run. Treat it as `FAIL` unless a
   sandbox or headless host is documented.
-- For each fresh host session, use a unique QA run/session marker and a fresh
-  `QMD_RECALL_LOG` file under `$EVID`. Capture the host's loaded plugin path,
-  hook command path and session/turn identifier alongside the log file's
-  before/after size and timestamps. Correlate the selected line to that host
-  turn. A direct CLI query or a line from an earlier session never proves the
+- For each fresh host session, use a unique QA run/session marker and record
+  the install event log's size before and after the session. Capture the
+  host's loaded plugin path, hook command path and session/turn identifier.
+  Correlate the `recall` event to that host turn by its `session` field and
+  timestamp (`python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd <fixture>
+  recalls --json`). A direct CLI query or a line from an earlier session never proves the
   installed host hook ran. If the host does not expose a hook command trace,
   record that limitation and use its official plugin registry, isolated log
   path and exact turn timing together; an ambiguous match is `BLOCKED`.
 - The optional query skill check ("`<question>` 질문에 어떤 문서가 recall되는지
   확인해줘") is secondary evidence. It does not replace the hook path.
 - Per probe, record: wall-clock time, host session id, cwd, branch,
-  `git status --porcelain` summary, the recall log line, a transcript excerpt
+  `git status --porcelain` summary, the `recall` event line, a transcript excerpt
   and the verdict.
 - Each convergence probe must show at least one positive current token and
   the relevant negative old token together. An empty result can be a safe
@@ -832,7 +835,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - The probe stays absent at T_FRESH.
   - Any hook fails.
 - **Evidence:** setup outputs, settings file with its hash, `git status`
-  snapshots, SessionStart notice, recall log lines, probe transcript excerpt.
+  snapshots, SessionStart notice, `recall` event lines, probe transcript excerpt.
 - **Timeout:** T_INSTALL for steps 5–7; T_SCENARIO overall.
 - **Cleanup/recovery:**
   - A deferred result allows one identical retry.
@@ -991,7 +994,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).
   7. End the session normally.
-- **Evidence:** transcript excerpts, recall log lines, and the host's hook
+- **Evidence:** transcript excerpts, `recall` event lines, and the host's hook
   failure/timeout output (none). Host debug output is optional.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** the fixture stays for later scenarios, or is cleaned up.
@@ -1069,7 +1072,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - S-feature holds within T_FRESH (Codex: after the sync request).
   - After switching back, S-main holds within T_FRESH.
 - **Evidence:** transcript timestamps of the switch result and of each probe
-  hook, recall log lines, helper `show` with the branch.
+  hook, `recall` event lines, helper `show` with the branch.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture.
 
@@ -1099,7 +1102,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   compile, wiki lifecycle and learning run only from the main checkout. This
   fixture's worktree has no settings and does not cover that path.
 - **Evidence:** cwd and `git rev-parse --show-toplevel` per session, recall
-  `project_root` per line, probes.
+  `install` and `session` per `recall` event, probes.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; this removes the worktree too.
 
@@ -1238,7 +1241,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
    state.
 
 - **Evidence:** precise timestamps (tool result, hook start, log line),
-  recall log lines, hook/worker log excerpts for the I/O condition, and the
+  `recall` event lines, hook/worker log excerpts for the I/O condition, and the
   `setup` skill's status report of pending or deferred work, if reported.
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** run `stage restore-read` before `cleanup` (cleanup also
@@ -1308,7 +1311,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
   - After source deletion, neither R1 nor R2 is injected as a current verified
     fact. The source removal and derivative index/card state converge within
     T_WIKI; retained audit data is labelled non-current.
-- **Evidence:** card bytes and hash, source hashes, probes, recall log
+- **Evidence:** card bytes and hash, source hashes, probes, `recall` event
   `card_read_*` and `sources_*` fields.
 - **Timeout:** T_WIKI + T_SCENARIO.
 - **Cleanup:** clean up the fixture.
