@@ -747,7 +747,10 @@ def ensure_for_attestation(attestation, home=None):
     manifest = attestation.get('providerManifest') if isinstance(attestation, dict) else None
     closure = attestation.get('dependencyClosure') if isinstance(attestation, dict) else None
     owned = _owned_generation(manifest, home)
-    files = attested_files(attestation) if owned is not None else (
+    legacy = _legacy_generation(manifest, home) if owned is None else None
+    # A Laya generation (this root's or the pre-rename one) addresses every
+    # file it holds: compare that digest, not only the hashed entries.
+    files = attested_files(attestation) if owned is not None or legacy is not None else (
         attestation.get(FILES_SHA) if isinstance(attestation, dict) else None)
     try:
         current = select(home)
@@ -762,12 +765,11 @@ def ensure_for_attestation(attestation, home=None):
         # full check. Never copy out of it, or a changed dependency file that
         # the attestation does not hash would be sealed into a new generation.
         return _reactivate(owned, manifest, closure, home, files)
-    legacy = _legacy_generation(manifest, home)
     if legacy is not None:
         # A runtime generation under the pre-rename state base: the same rule
         # holds. Only a fully verified generation is copied, file for file,
         # and the copy must reproduce its sealed manifest exactly.
-        return _adopt_legacy(legacy, manifest, closure, home, attested_files(attestation))
+        return _adopt_legacy(legacy, manifest, closure, home, files)
     try:
         return provision_from_attestation(attestation, home)
     except RuntimeUnavailable as exc:

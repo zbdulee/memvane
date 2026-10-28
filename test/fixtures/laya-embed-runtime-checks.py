@@ -586,6 +586,39 @@ class LegacyStateBaseRuntime(Base):
         self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
 
 
+class LegacyStateBaseRuntimeOtherDeps(Base):
+    """A MemVane generation with other JS deps never stands in for a legacy one."""
+
+    def test_legacy_attestation_without_files_digest_is_adopted_not_matched(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        legacy_att.pop(R.FILES_SHA, None)  # sealed before the runtime file digest
+        # The QMD source changes a dependency no attested entry hashes, then a
+        # MemVane generation is provisioned from it and made active.
+        for path in self.qmd_runtime.rglob('isexe/index.js'):
+            path.write_text('other dependency bytes')
+        other = R.ensure_for_attestation(self.old_att)
+        self.assertNotEqual(Path(other['generation']).name,
+                            Path(old_runtime['generation']).name)
+        self.assertNotEqual(other[R.FILES_SHA], old_runtime[R.FILES_SHA])
+        adopted = R.ensure_for_attestation(legacy_att)
+        self.assertEqual(Path(adopted['generation']).name,
+                         Path(old_runtime['generation']).name)
+        self.assertEqual(Path(adopted['generation']).parent, R.root() / 'generations')
+        self.assertEqual(adopted[R.FILES_SHA], old_runtime[R.FILES_SHA])
+
+
 class LegacyStateBaseRuntimeChanged(Base):
     """A changed file the attestation does not hash must not be adopted."""
 

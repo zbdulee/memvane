@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -193,6 +194,80 @@ class CrossPluginIdAdoption(UPGRADE['UpgradeCase']):
         self.run_upgrade(active, self.new_root, NEW_COMMIT)
         route = json.loads((self.state / 'reviewed-route.json').read_bytes())
         self.assertEqual(route['schema'], host_route.SCHEMA_V3)
+
+
+class HermesCoexistence(UPGRADE['UpgradeCase']):
+    """The earlier id's Hermes copy blocks edits on a route it cannot read."""
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('HERMES_HOME', None)
+        cache = self.home / '.claude' / 'plugins' / 'cache'
+        self.old_root = str(cache / 'qmd-auto-context-marketplace' /
+                            'qmd-auto-context' / '0.40.3')
+        self.new_root = str(cache / 'memvane-marketplace' / 'memvane' / '0.41.0')
+        self.old = UPGRADE['proof'](self.old_root, OLD_COMMIT)
+        self.new = UPGRADE['proof'](self.new_root, NEW_COMMIT)
+        self.bundles = {self.old_root: self.old, self.new_root: self.new}
+        self.fj.pending = UPGRADE['identity'](self.old)
+        self.write_attestation(self.old, UPGRADE['manifest'](self.old_root))
+        self.review = {'proposalSha256': 'e' * 64,
+                       'reviewedProvider': {'vectorProfile': UPGRADE['PROFILE'],
+                                            'providerManifest':
+                                                UPGRADE['manifest'](self.new_root),
+                                            'dependencyClosure': []}}
+        self.bound()
+        self.activate()
+
+    def test_old_hermes_copy_defers_the_route_switch_until_it_is_gone(self):
+        hermes = self.home / '.hermes' / 'plugins' / 'qmd-auto-context'
+        hermes.mkdir(parents=True)
+        before = self.route.read_bytes()
+        with self.assertRaisesRegex(Exception, '^legacy_hermes_copy_present$'):
+            self.run_upgrade(active, self.new_root, NEW_COMMIT)
+        self.assertEqual(self.route.read_bytes(), before)  # still v2: Hermes reads it
+        self.assertEqual(json.loads(before)['schema'], host_route.SCHEMA_V2)
+        self.assertFalse((self.state / active.INTENT).exists())
+        self.assertEqual(self.selection(), 'candidate')
+        # A renamed copy is found by the name its plugin.yaml declares.
+        renamed = hermes.with_name('memory')
+        hermes.rename(renamed)
+        (renamed / 'plugin.yaml').write_text('name: qmd-auto-context\n')
+        with self.assertRaisesRegex(Exception, '^legacy_hermes_copy_present$'):
+            self.run_upgrade(active, self.new_root, NEW_COMMIT)
+        (renamed / 'plugin.yaml').write_text('name: memvane\n')  # the new plugin
+        result = self.run_upgrade(active, self.new_root, NEW_COMMIT)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertEqual(json.loads(self.route.read_bytes())['schema'], host_route.SCHEMA_V3)
+
+    def test_activation_refuses_while_the_old_hermes_copy_is_installed(self):
+        import laya_product_install as product
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        with mock.patch.object(product, '_require_fresh_bound_generation'), \
+                mock.patch.object(fresh, 'activate',
+                                  side_effect=AssertionError('route published')):
+            with self.assertRaisesRegex(Exception, '^legacy_hermes_copy_present$'):
+                product.activate_origin_selection(self.project, self.journal_path,
+                                                  self.route.read_bytes())
+
+    def test_worker_defers_without_waiting_and_names_the_reason(self):
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        identity = UPGRADE['identity'](self.old)
+        with mock.patch.object(auto, 'classify', return_value=('active', identity)), \
+                mock.patch.object(auto, 'installed_commit', return_value=None), \
+                mock.patch.object(auto, 'select_source',
+                                  side_effect=AssertionError('reviewed anyway')), \
+                mock.patch.object(auto, '_sleep', side_effect=AssertionError('waited')):
+            with self.assertRaisesRegex(Exception, '^legacy_hermes_copy_present$'):
+                auto._upgrade_with_backoff(self.project, self.state,
+                                           Path(self.new_root), self.home)
+        self.assertIn('legacy_hermes_copy_present', auto.DEFERRALS)
+        line = auto.notice_line({'status': 'deferred',
+                                 'reason': 'legacy_hermes_copy_present'}, 'x')
+        self.assertIn('Hermes plugin qmd-auto-context', line)
 
 
 class VersionRule(unittest.TestCase):

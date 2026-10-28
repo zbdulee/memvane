@@ -592,6 +592,11 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             _archive_finished_intent(state, project, intent)
             intent = None
         if intent is None:
+            # A new switch publishes a route the earlier plugin id's Hermes
+            # copy cannot read (its edit gate would block); an interrupted
+            # one above still resumes.
+            from laya_journal_v4 import refuse_while_legacy_hermes
+            refuse_while_legacy_hermes()
             intent = _prepare(project, state, state / 'install-journal.sqlite',
                               source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension,

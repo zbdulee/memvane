@@ -35,6 +35,7 @@ const ALLOWED = {
                                /Application Support\/qmd-auto-context`/],
   // The switch from the earlier plugin id, and the documented shims.
   'README.md': [/qmd-auto-context@qmd-auto-context-marketplace/, /remove qmd-auto-context-marketplace/,
+                /^hermes plugins remove qmd-auto-context$/,
                 /^### `qmd-auto-context` 플러그인에서 옮기기$/, /이전 플러그인 이름 `qmd-auto-context`/],
   'AGENTS.md': [/CREATED_BY_NAMES/, /"name": "qmd-auto-context"/, /managed-by: qmd-auto-context/,
                 /이전 이름과의 호환 shim/, /\.\.\.\/qmd-auto-context/, /CACHE_IDENTITIES/],

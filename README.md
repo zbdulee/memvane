@@ -143,6 +143,18 @@ codex plugin remove qmd-auto-context@qmd-auto-context-marketplace
 codex plugin marketplace remove qmd-auto-context-marketplace
 ```
 
+Hermes Agent를 쓰면 이전 플러그인부터 제거합니다. 이전 Hermes 플러그인은 새 route를
+읽지 못하고 그 프로젝트의 편집을 막습니다(Claude·Codex의 이전 훅은 오류만 표시하고 막지
+않습니다). 그래서 이전 Hermes 플러그인이 설치돼 있는 동안 새 플러그인은 설치를 넘겨받지
+않고 마지막 색인을 읽기 전용으로 씁니다. SessionStart 안내가 그 사유를 보여 줍니다.
+비활성화만으로는 부족하고 제거해야 합니다.
+
+```bash
+hermes plugins remove qmd-auto-context
+hermes plugins install zbdulee/memvane
+hermes plugins enable memvane
+```
+
 넘겨받은 설치는 기존 상태 디렉터리(`~/.local/state/laya/<install id>`)를 그대로
 쓰고, 새로 온보딩하는 프로젝트는 `~/.local/state/memvane` 아래에 만들어집니다.
 

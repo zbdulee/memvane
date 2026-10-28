@@ -341,8 +341,24 @@ def default_spawn(argv, *, pass_fds):
                      start_new_session=True, env=env, cwd='/')
 
 
-def _spawn(root, *, python=None, learning_root=None, spawn=None):
-    """Start one successor that waits for the service lease; never a second."""
+def _try_lock(path):
+    """A held exclusive lock on ``path`` (a private lock file), or None when busy."""
+    fd = _private_lock(path)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _spawn(root, *, python=None, learning_root=None, spawn=None, legacy_successor=None):
+    """Start one successor that waits for the service lease; never a second.
+
+    ``legacy_successor`` is a held pre-rename ``successor.lock``: the
+    successor inherits it, so no pre-rename successor can be elected while
+    this one waits for (and then holds) the pre-rename service lease.
+    """
     fd = _private_lock(Path(root) / SUCCESSOR)
     try:
         try:
@@ -354,7 +370,11 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         # -I: the hosted learning inference requires an isolated interpreter.
         argv = [_interpreter(root, python), '-I', '-B', str(Path(__file__).resolve()), 'serve',
                 str(root), str(learning_root) if learning_root else '-', str(fd)]
-        (spawn or default_spawn)(argv, pass_fds=(fd,))
+        fds = (fd,)
+        if legacy_successor is not None:
+            argv.append(str(legacy_successor))
+            fds = (fd, legacy_successor)
+        (spawn or default_spawn)(argv, pass_fds=fds)
         return True
     finally:
         os.close(fd)
@@ -393,6 +413,36 @@ def drain_legacy_service(legacy):
     return 'replacing'
 
 
+def _replace_legacy_service(root, legacy_root, *, python, learning_root, spawn):
+    """Hand a running pre-rename service over to a MemVane successor.
+
+    None when nothing runs at ``legacy_root``. Otherwise the pre-rename
+    ``successor.lock`` (the lock a pre-rename client takes to elect its
+    successor) is taken first, then a MemVane successor that inherits it is
+    started, and only then is the drain requested. A pre-rename client that
+    sees the drain cannot elect its own successor, so the MemVane successor
+    takes the pre-rename lease when the service exits: one drain, no loop.
+    A pre-rename successor already waiting keeps that lock; the MemVane
+    successor then takes it as soon as that one holds the lease (and drains
+    it in turn), so the handoff still converges.
+    """
+    try:
+        legacy = private_root(Path(legacy_root))
+    except Exception:
+        return None
+    if hello(legacy) is None and not _lease_held(legacy):
+        return None
+    held = _try_lock(legacy / SUCCESSOR)
+    try:
+        _spawn(root, python=python, learning_root=learning_root, spawn=spawn,
+               legacy_successor=held)
+    finally:
+        if held is not None:
+            os.close(held)  # the successor holds its inherited copy
+    drain_legacy_service(legacy)
+    return 'replacing'
+
+
 def ensure_service(*, root=None, python=None, learning_root=None, spawn=None,
                    legacy_root=_DEFAULT):
     """Start, attach to or replace the per-user service; never waits for it.
@@ -414,7 +464,8 @@ def ensure_service(*, root=None, python=None, learning_root=None, spawn=None,
     if (answer is None and legacy_root is not None and Path(legacy_root) != root
             and not _lease_held(root)):
         # No MemVane service (a running one holds the pre-rename lease too).
-        waiting = drain_legacy_service(legacy_root)
+        waiting = _replace_legacy_service(root, legacy_root, python=python,
+                                          learning_root=learning_root, spawn=spawn)
         if waiting is not None:
             return waiting
     mine = bundle_identity()
@@ -887,6 +938,7 @@ class Service:
                            else None)
         self.legacy_root = Path(legacy_root) if legacy_root is not None else None
         self.legacy_lease = None
+        self.legacy_successor = None
         self.learning_root = learning_root
         self.bundle = bundle or bundle_identity()
         self.prove, self.attest = prove, attest
@@ -917,7 +969,7 @@ class Service:
         self.threads = []
 
     # ------------------------------------------------------------ lifecycle
-    def acquire(self, *, successor_fd=None, wait=None):
+    def acquire(self, *, successor_fd=None, wait=None, legacy_successor_fd=None):
         wait = _scaled(SUCCESSOR_WAIT_SECONDS) if wait is None else wait
         fd = _private_lock(self.root / LEASE)
         deadline = time.monotonic() + wait
@@ -931,6 +983,8 @@ class Service:
                     return False
                 time.sleep(.1)
         self.lease = fd
+        if legacy_successor_fd is not None and self.legacy_successor is None:
+            self.legacy_successor = legacy_successor_fd
         if not self._hold_legacy(deadline):
             os.close(fd)
             self.lease = None
@@ -969,6 +1023,9 @@ class Service:
         fd = _private_lock(legacy / LEASE)
         asked = 0.0
         while True:
+            if self.legacy_successor is None:
+                # No pre-rename successor may be elected while this waits.
+                self.legacy_successor = _try_lock(legacy / SUCCESSOR)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
@@ -1019,6 +1076,9 @@ class Service:
         if self.legacy_lease is not None:
             os.close(self.legacy_lease)
             self.legacy_lease = None
+        if self.legacy_successor is not None:
+            os.close(self.legacy_successor)
+            self.legacy_successor = None
         if self.lease is not None:
             os.close(self.lease)
             self.lease = None
@@ -1610,9 +1670,11 @@ def _learning_host(learning_root):
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 4 or args[0] != 'serve' or not args[3].isdigit():
+    if (len(args) not in (4, 5) or args[0] != 'serve' or
+            not all(arg.isdigit() for arg in args[3:])):
         return 2
     successor_fd = int(args[3])
+    legacy_successor_fd = int(args[4]) if len(args) == 5 else None
     try:
         held = os.fstat(successor_fd)
         named = os.lstat(Path(args[1]) / SUCCESSOR)
@@ -1624,7 +1686,19 @@ def main(argv=None):
     learning_root = None if args[2] == '-' else args[2]
     service = Service(root, learning_root=learning_root,
                       learning=_learning_host(learning_root) if learning_root else None)
-    if not service.acquire(successor_fd=successor_fd):
+    if legacy_successor_fd is not None:
+        # Only the pre-rename successor.lock this service's own root implies.
+        try:
+            held = os.fstat(legacy_successor_fd)
+            named = (os.lstat(service.legacy_root / SUCCESSOR)
+                     if service.legacy_root is not None else None)
+        except OSError:
+            named = None
+        if named is None or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+            os.close(legacy_successor_fd)
+            legacy_successor_fd = None
+    if not service.acquire(successor_fd=successor_fd,
+                           legacy_successor_fd=legacy_successor_fd):
         return 75
     try:
         service.run()

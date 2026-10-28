@@ -1438,6 +1438,9 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
         _fail('cutover_ledger_missing')
     row = fresh._load(journal.parent / fresh.LEDGER)
     _require_fresh_bound_generation(row, journal.parent)
+    from laya_journal_v4 import LEGACY_HERMES, legacy_hermes_present
+    if legacy_hermes_present():
+        _fail(LEGACY_HERMES)
     row = fresh.activate(project, journal, route_bytes)
     return {**row, 'syncWake': _request_build_wake(str(project))}
 

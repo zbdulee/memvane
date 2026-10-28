@@ -74,7 +74,10 @@ BUSY_BACKOFF_SECONDS = (5, 15, 45)
 DEFERRALS = frozenset((
     'learning_compute_busy', 'learning_inference_deadline',
     'initial_build_busy', 'active_upgrade_resident_busy',
-    'journal_v4_install_busy', 'embed_runtime_busy'))
+    'journal_v4_install_busy', 'embed_runtime_busy',
+    'legacy_hermes_copy_present'))
+# Deferrals an in-process wait cannot clear (an uninstall the owner does).
+NO_BACKOFF = frozenset(('legacy_hermes_copy_present',))
 # Provider manifest keys that must name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
@@ -243,6 +246,13 @@ def notice_line(state, code):
                 'setup skill to upgrade or rebuild the memvane-db index.')
     if status == 'complete':
         return (head + 'index upgrade finished; the next session uses it.')
+    if status == 'deferred' and reason == 'legacy_hermes_copy_present':
+        import memvane_paths
+        return (head + 'index upgrade waits while the Hermes plugin ' +
+                memvane_paths.LEGACY_PLUGIN_ID + ' is installed (it cannot read the '
+                'new route and would block edits); remove it from Hermes and a later '
+                'session moves the index. Search serves the last published index '
+                'read-only.')
     if status == 'deferred':
         return (head + 'index upgrade waits for a busy lane (' + reason + '); '
                 'search serves the last published index read-only and a later '
@@ -538,6 +548,11 @@ def upgrade_install(project_root, state, root, home=None):
             raise
         except Exception:
             pass  # The owner copy is gone: move the install to this root.
+    if kind == 'active':
+        # Defer before any review work: the switch would publish a route the
+        # earlier plugin id's Hermes copy cannot read.
+        from laya_journal_v4 import refuse_while_legacy_hermes
+        refuse_while_legacy_hermes(home)
     source, commit = select_source(root, home)
     _not_older(source, identity['sourceCommit'], commit,
                bound_root=identity['pluginRoot'], root=root)
@@ -605,7 +620,7 @@ def _upgrade_with_backoff(project, state, root, home):
         try:
             return upgrade_install(project, state, root, home)
         except Exception as exc:
-            if wait is None or _reason(exc) not in DEFERRALS:
+            if wait is None or _reason(exc) not in DEFERRALS or _reason(exc) in NO_BACKOFF:
                 raise
             _log(state, f'upgrade busy {_reason(exc)} retry_in={wait}s')
             _sleep(wait)

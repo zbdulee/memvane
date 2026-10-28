@@ -131,6 +131,31 @@ def _hermes_copies(plugin, home):
     return copies
 
 
+LEGACY_HERMES = 'legacy_hermes_copy_present'
+
+
+def legacy_hermes_present(home=None):
+    """True while a Hermes copy of the earlier plugin id may still run.
+
+    That copy reads only v1/v2 routes, so a route this release publishes in
+    the project's ``.auto-context`` makes its edit gate block. An unreadable
+    or unprovable Hermes plugin directory counts as present (fail safe).
+    """
+    import memvane_paths
+    try:
+        return bool(_hermes_copies({memvane_paths.LEGACY_PLUGIN_ID},
+                                   Path(home or Path.home())))
+    except ValueError:
+        return True
+
+
+def refuse_while_legacy_hermes(home=None):
+    """Refuse publishing a route in a project while that Hermes copy may run."""
+    if legacy_hermes_present(home):
+        from laya_index_a import IndexContractError
+        raise IndexContractError(LEGACY_HERMES)
+
+
 def host_copies(root=None, home=None):
     """Every host copy of the executing plugin; raises when unprovable."""
     root = Path(root or _executing_root())
