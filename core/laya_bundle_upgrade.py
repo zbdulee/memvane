@@ -303,8 +303,10 @@ def host_layout(root, home=None):
 
 
 def _git(root, *args):
-    done = subprocess.run(('git', '-C', str(root), *args), stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, timeout=15, check=False)
+    from laya_product_bundle import GIT_PINNED, git_pinned_env
+    done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, timeout=15, check=False,
+                          env=git_pinned_env())
     return done.returncode, done.stdout.decode('utf-8', 'replace').strip()
 
 

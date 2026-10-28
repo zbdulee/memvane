@@ -215,6 +215,26 @@ plugin bundle, SessionStart instead asks `core/laya_bundle_upgrade.py` to move
 the install to that bundle off the hook; until it finishes, recall serves the
 last published index read-only and sync, compile and index wakes wait.
 
+### Bundle Adoption Trust Boundary
+
+Adoption (`core/laya_product_bundle.py` `adopt_host_loaded_plugin`) proves
+every installed plugin file against the selected commit in the host
+marketplace clone: the exact file set, each blob's object id, the bytes, and
+the executable bit (git executable iff the owner may execute). Seal metadata
+(`.laya-product`) is never evidence for adoption; it pins inode, ctime and
+mtime for the later per-request proofs. Metadata that no longer verifies, as
+after a host re-extracts a version directory in place, is rewritten only after
+that exact comparison passes. Git runs with replacement objects and grafts
+disabled, so `refs/replace` cannot substitute a tree under an unchanged
+commit id.
+
+The exact comparison defends against stale or forged seal metadata and
+accidental drift between the cache and the commit. A process running as the
+same UID that can write the marketplace clone or the plugin cache is outside
+the trust boundary: it can change the clone and the cache consistently. This
+is the same limit as the accepted same-UID TOCTOU window between a final
+check and use.
+
 ### Hook Budget and Detached Jobs
 
 Every command in `hooks/hooks.json` and `hooks/hooks-codex.json` carries an

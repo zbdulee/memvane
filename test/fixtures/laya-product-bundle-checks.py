@@ -987,6 +987,53 @@ print(json.dumps(result))'''
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(json.loads(done.stdout)['productRouteAllowed'])
 
+    def test_adoption_accepts_our_own_exact_packaging(self):
+        # Exact packaging writes executables 0700; host caches extract 0755.
+        packaged = self.candidate('plugin-packaged', self.commit1)
+        self.assertEqual(stat.S_IMODE((Path(packaged['pluginRoot']) / 'hooks' /
+                                       'run-hook').stat().st_mode), 0o700)
+        adopted = bundle.adopt_host_loaded_plugin(
+            self.source, packaged['pluginRoot'], commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        self.assertEqual(adopted, packaged)
+        _root, hosted = self.host_root()
+        # Modes differ, so the two seals of one commit differ.
+        self.assertNotEqual(hosted['bundleManifestSha256'], packaged['bundleManifestSha256'])
+        plain = Path(packaged['pluginRoot']) / 'README.md'
+        plain.chmod(0o700)  # an exec bit on a plain blob is not the commit
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'installed_blob_not_exact_commit'):
+            bundle._exact_commit_entries(self.source, Path(packaged['pluginRoot']),
+                                         self.commit1)
+
+    def test_replacement_refs_cannot_swap_the_committed_tree(self):
+        # Keep HEAD's commit id, swap its tree through refs/replace.
+        target = self.source / 'core' / 'laya_index_runtime.py'
+        target.write_text(target.read_text() + '\n# swapped through refs/replace\n')
+        _git(self.source, 'add', '.')
+        tree = _git(self.source, 'write-tree')
+        forged = _git(self.source, '-c', 'user.name=Synthetic Fixture',
+                      '-c', 'user.email=fixture@example.invalid',
+                      'commit-tree', tree, '-m', 'forged')
+        _git(self.source, 'replace', self.commit1, forged)
+        self.assertEqual(_git(self.source, 'rev-parse', 'HEAD'), self.commit1)
+        self.assertIn(b'swapped', subprocess.run(
+            ('git', '-C', str(self.source), 'show', self.commit1 + ':core/laya_index_runtime.py'),
+            check=True, stdout=subprocess.PIPE).stdout)
+        root = self.root / 'host-cache-replaced'
+        shutil.copytree(self.source, root, ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(root):
+            Path(directory).chmod(0o755)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'source_not_exact_commit'):
+            bundle.adopt_host_loaded_plugin(self.source, root, commit_id=self.commit1,
+                                            vector_profile=self.vector_profile)
+        self.assertFalse((root / '.laya-product').exists())
+        import laya_bundle_upgrade as auto
+        self.assertEqual(auto._git(self.source, 'cat-file', '-p', self.commit1)[1]
+                         .splitlines()[0],
+                         'tree ' + _git(self.source, '--no-replace-objects', 'rev-parse',
+                                        self.commit1 + '^{tree}'))
+
     def test_same_version_reextract_with_surviving_metadata_recovers(self):
         root, first, _raw = self.selected_on_host_root()
         self.assert_selected_proves(root, self.commit1)

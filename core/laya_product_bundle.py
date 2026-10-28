@@ -426,11 +426,20 @@ def _private(root):
         raise BundleEvidenceError('bundle_root_unavailable') from exc
 
 
+# Exact-commit proofs read the object database as committed: replacement
+# refs and grafts could substitute a tree under an unchanged commit id.
+GIT_PINNED = ('git', '--no-replace-objects')
+
+
+def git_pinned_env():
+    return {**os.environ, 'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_GRAFT_FILE': os.devnull}
+
+
 def _git(root, *args):
     try:
-        done = subprocess.run(('git', '-C', str(root), *args), check=True,
+        done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=15)
+                              timeout=15, env=git_pinned_env())
         return done.stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise BundleEvidenceError('source_commit_unavailable') from exc
@@ -623,6 +632,16 @@ def _skip_host_orphan_marker(root, current, files):
     files.remove('.orphaned_at')
 
 
+def _exec_matches(mode, committed_mode):
+    """Git executable iff the owner may execute; a plain blob has no exec bit.
+
+    Host caches extract executables as 0755, exact packaging writes 0700.
+    """
+    if committed_mode == 0o700:
+        return bool(mode & 0o100)
+    return not mode & 0o111
+
+
 def _exact_commit_entries(source, installed, commit_id):
     """Live identity of every installed file, each proven against ``commit_id``.
 
@@ -661,12 +680,11 @@ def _exact_commit_entries(source, installed, commit_id):
     for name, committed in selected.items():
         source_raw, source_info = _read(source / name, MAX_FILE)
         installed_raw, installed_info = _read(installed / name, MAX_FILE)
-        if (source_info['mode'] & 0o111 != (0o111 if committed['mode'] == 0o700 else 0) or
+        if (not _exec_matches(source_info['mode'], committed['mode']) or
                 _git_blob_oid(source_raw, object_format) != committed['oid']):
             _fail('source_not_exact_commit')
         if (installed_info['dev'] != installed.stat().st_dev or
-                (installed_info['mode'] & 0o111) !=
-                (0o111 if committed['mode'] == 0o700 else 0) or
+                not _exec_matches(installed_info['mode'], committed['mode']) or
                 installed_info['mode'] & 0o022 or
                 installed_raw != source_raw or
                 (installed / name).stat().st_uid != os.getuid()):
