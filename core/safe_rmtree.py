@@ -2,12 +2,20 @@
 
 Every hop is opened relative to its already-open parent with ``O_NOFOLLOW``, so
 a symlink swapped into an ancestor or into the tree never redirects a delete to
-another directory. Only primitives present in Python 3.9 are used.
+another directory. A mount point inside the tree (a device change, or a path
+the OS mount table lists) refuses the whole delete before anything is removed.
+Only primitives present in Python 3.9 are used.
+
+The checks guard against accidents (a dotfile link, a mounted volume, a stale
+layout). They are not a boundary against a process of the same user that races
+renames between the checks and the deletes.
 """
 from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 
 
 class UnsafeTree(OSError):
@@ -96,30 +104,95 @@ def open_path(root_fd, parts, *, uid=None):
     return fd
 
 
-def rmtree_at(parent_fd, name, *, uid=None):
+def _dev(info):
+    return info.st_dev
+
+
+def _unescape_mountinfo(field):
+    out, i = [], 0
+    while i < len(field):
+        if field[i] == '\\' and i + 3 < len(field) and field[i + 1:i + 4].isdigit():
+            out.append(chr(int(field[i + 1:i + 4], 8)))
+            i += 4
+        else:
+            out.append(field[i])
+            i += 1
+    return ''.join(out)
+
+
+def _mount_points():
+    """Absolute mount points the OS reports; empty when the table is unreadable.
+
+    Same-device mounts (Linux bind mounts) keep ``st_dev``, so the walk's
+    device check alone does not see them.
+    """
+    points = set()
+    if sys.platform.startswith('linux'):
+        try:
+            with open('/proc/self/mountinfo', encoding='utf-8', errors='replace') as handle:
+                for line in handle:
+                    fields = line.split()
+                    if len(fields) > 4:
+                        points.add(_unescape_mountinfo(fields[4]))
+        except OSError:
+            pass
+        return points
+    try:
+        result = subprocess.run(['/sbin/mount'], stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return points
+    for line in result.stdout.splitlines():
+        # "<device> on <mount point> (<type>, ...)"
+        _device, sep, rest = line.partition(' on ')
+        if sep:
+            points.add(rest.rsplit(' (', 1)[0])
+    return points
+
+
+def _check_mounts(path):
+    if path is None:
+        return
+    base = str(path).rstrip('/')
+    for point in _mount_points():
+        if point == base or point.startswith(base + '/'):
+            raise UnsafeTree('safe_rmtree_mount_point')
+
+
+def rmtree_at(parent_fd, name, *, uid=None, path=None):
     """Remove ``name`` (a real directory under ``parent_fd``) and its contents.
 
     ``uid`` constrains only the top directory; links inside are unlinked, not
-    followed.
+    followed. ``path`` (the absolute path of the target) enables the mount
+    table check. The whole tree is scanned for a device change first, so a
+    mount point refuses before any entry is removed.
     """
+    _check_mounts(path)
     fd = open_at(parent_fd, name, uid=uid)
     try:
-        _empty(fd)
+        device = _dev(os.fstat(fd))
+        if device != _dev(os.fstat(parent_fd)):
+            raise UnsafeTree('safe_rmtree_mount_point')
+        _walk(fd, device, remove=False)
+        _walk(fd, device, remove=True)
     finally:
         os.close(fd)
     os.rmdir(name, dir_fd=parent_fd)
 
 
-def _empty(fd):
+def _walk(fd, device, *, remove):
     with os.scandir(fd) as entries:
         names = [(entry.name, entry.is_dir(follow_symlinks=False)) for entry in entries]
     for child, is_dir in names:
         if is_dir:
             sub = open_at(fd, child)
             try:
-                _empty(sub)
+                if _dev(os.fstat(sub)) != device:
+                    raise UnsafeTree('safe_rmtree_mount_point')
+                _walk(sub, device, remove=remove)
             finally:
                 os.close(sub)
-            os.rmdir(child, dir_fd=fd)
-        else:
+            if remove:
+                os.rmdir(child, dir_fd=fd)
+        elif remove:
             os.unlink(child, dir_fd=fd)
