@@ -616,8 +616,19 @@ per-user directory.
 - **Cost.** One `O_APPEND` write per line, lines capped at 4096 bytes (an
   oversized line halves `cards` and `notes`, then drops `prompt.text`, then
   keeps the envelope alone, and is marked `truncated: true`), no fsync. Past
-  4 MiB the file rotates under a non-blocking directory lock to
-  `events.jsonl.1` and `.2`.
+  4 MiB the file rotates to `events.jsonl.1` and `.2`. `events.lock`
+  coordinates writers (shared, from open through write) and rotation
+  (exclusive), so rotation never moves a file mid-append. Every lock is
+  non-blocking: rotation waits for a later write when a writer holds the
+  lock, a writer retries a few times within ~2 ms and then drops the line,
+  and a busy refusal counter drops its increment. A process reuses its proven
+  state-root fd after one `fstat` check. Files open with
+  `O_NONBLOCK|O_NOFOLLOW` and are used only as regular, user-owned files.
+- **Reading.** Readers take at most the newest 8 MiB and skip lines with
+  malformed envelopes. The extractor `wiki.logTail` renders only `wiki` events
+  with a known outcome (`created`, `updated`, `deleted`, `retired`), a
+  relative path without control characters, and a cleaned title capped at
+  200 characters.
 - **Failure.** Writes are best-effort and never raise, print or block a hook.
   A write refused after the state root is proven (symlinked, foreign or
   non-regular `events.jsonl`, failed write) increments `events.refused.json`

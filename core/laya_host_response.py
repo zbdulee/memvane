@@ -1529,7 +1529,17 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Read completed wiki documents from a proved inactive initial build."""
+    """Read completed wiki documents from a proved inactive initial build.
+
+    Traced like a selected recall: one ``recall`` event with ``degraded``
+    ``preview`` in the install's event log.
+    """
+    with _event_scope(action, host, decision, payload):
+        _trace_fields(degraded='preview')
+        return _serve_preview(action, host, decision, payload)
+
+
+def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
     if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
         _fail('initial_preview_action_unsupported')
     if not isinstance(payload, dict):

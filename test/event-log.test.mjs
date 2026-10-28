@@ -15,7 +15,7 @@ test('install event log: writers, schema, privacy, rotation, refusals, latency a
             MEMVANE_EVENT_LOG_PROMPTS: ''},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 20 tests/);
+    assert.match(result.stderr, /Ran 30 tests/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);

@@ -24,10 +24,24 @@ The file is opened relative to that directory fd with ``O_NOFOLLOW`` and must
 be a regular file owned by the user.
 
 Cost. One line is one ``os.write`` on an ``O_APPEND`` descriptor, capped at
-``MAX_LINE`` bytes, with no fsync. Past ``LOG_LIMIT`` bytes the file rotates
-under a non-blocking directory lock: ``.1`` moves to ``.2`` and the live file
-to ``.1`` (two older generations). Writes are best-effort: ``emit`` never
+``MAX_LINE`` bytes, with no fsync. A process keeps its proven state-root fd
+and re-checks it with one ``fstat`` instead of re-walking the path. Past
+``LOG_LIMIT`` bytes the file rotates: ``.1`` moves to ``.2`` and the live file
+to ``.1`` (two older generations). ``events.lock`` coordinates the two: a
+writer holds it shared from opening the live file through its write, and a
+rotation needs it exclusive, so a rotation never moves a file a writer is
+about to append to. Every lock is non-blocking: rotation is skipped while any
+writer holds the lock, a writer retries the shared lock at most
+``LOCK_ATTEMPTS`` times ``LOCK_WAIT`` apart (a rotation lasts two renames) and
+otherwise drops the line, and a busy refusal counter drops its increment. A
+file is opened with ``O_NONBLOCK|O_NOFOLLOW`` and used only when ``fstat``
+shows a regular, user-owned file. Writes are best-effort: ``emit`` never
 raises ``Exception`` and never prints.
+
+Reading. ``read`` takes at most ``READ_LIMIT`` bytes, newest first, and skips
+lines whose envelope types are wrong. ``wiki_tail`` renders only ``wiki``
+events with a known outcome, a relative path without control characters and a
+cleaned, capped title.
 
 Refusals. A write that fails after the state root is proven (the file is a
 symlink, foreign or not regular, or the write itself fails) increments the
@@ -57,6 +71,9 @@ import time
 
 NAME = 'events.jsonl'
 REFUSED_NAME = 'events.refused.json'
+LOCK_NAME = 'events.lock'
+LOCK_ATTEMPTS = 5
+LOCK_WAIT = 0.0005
 GENERATIONS = (NAME + '.1', NAME + '.2')
 LOG_LIMIT = 4 * 1024 * 1024
 MAX_LINE = 4096
@@ -65,9 +82,11 @@ VERSION = 1
 PROMPT_ENV = 'MEMVANE_EVENT_LOG_PROMPTS'
 WIKI_TAIL_CHARS = 8000
 WIKI_TAIL_WINDOW = 1024 * 1024
+READ_LIMIT = 8 * 1024 * 1024
 _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 _DIRECTORY = getattr(os, 'O_DIRECTORY', 0)
 _CLOEXEC = getattr(os, 'O_CLOEXEC', 0)
+_NONBLOCK = getattr(os, 'O_NONBLOCK', 0)
 _STR_LIMIT = 256
 _LIST_LIMIT = 16
 _SECRET_KEY = re.compile(r'(?i)(token|passw|secret|credential|api[_-]?key|authori[sz]|cookie)')
@@ -250,11 +269,45 @@ def _now_iso():
 
 # ------------------------------------------------------------------- writing
 
-def _rotate(dfd, size_hint: int) -> None:
-    """Rotate under a non-blocking directory lock; contention skips it."""
+def _open_private(dfd, name: str, flags: int):
+    """Open ``name`` in the state root: no symlink, no FIFO wait, regular and owned.
+
+    ``O_NONBLOCK`` keeps a planted FIFO or device from blocking the open; the
+    flag is cleared again for a regular file.
+    """
+    fd = os.open(name, flags | _NOFOLLOW | _CLOEXEC | _NONBLOCK, 0o600, dir_fd=dfd)
     try:
-        fcntl.flock(dfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise Unsafe('events_not_regular' if not stat.S_ISREG(info.st_mode)
+                         else 'events_not_owned')
+        if _NONBLOCK:
+            os.set_blocking(fd, True)
+        return fd, info
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _try_lock(fd: int, kind: int, attempts: int = 1) -> bool:
+    """A bounded, non-blocking flock: ``attempts`` tries, ``LOCK_WAIT`` apart."""
+    for attempt in range(attempts):
+        try:
+            fcntl.flock(fd, kind | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if attempt + 1 < attempts:
+                time.sleep(LOCK_WAIT)
+    return False
+
+
+def _rotate(dfd, lock_fd: int, size_hint: int) -> None:
+    """Rotate under the exclusive lock; any holder (writer or rotator) skips it.
+
+    Writers hold the shared lock from opening the live file to their write,
+    so no rotation can move the file a writer is about to append to.
+    """
+    if not _try_lock(lock_fd, fcntl.LOCK_EX):
         return
     try:
         try:
@@ -272,28 +325,28 @@ def _rotate(dfd, size_hint: int) -> None:
         pass
     finally:
         try:
-            fcntl.flock(dfd, fcntl.LOCK_UN)
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
         except OSError:
             pass
 
 
 def _count_refusal(dfd, reason: str) -> None:
-    """Persist one refused write beside the log; best-effort, never raises."""
+    """Persist one refused write beside the log; never waits, never raises.
+
+    A busy counter (another process updating it) drops this increment.
+    """
     try:
-        fd = os.open(REFUSED_NAME, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _CLOEXEC, 0o600,
-                     dir_fd=dfd)
-    except OSError:
+        fd, info = _open_private(dfd, REFUSED_NAME, os.O_RDWR | os.O_CREAT)
+    except (OSError, ValueError):
         return
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 4096:
+        if info.st_size > 4096 or not _try_lock(fd, fcntl.LOCK_EX):
             return
-        fcntl.flock(fd, fcntl.LOCK_EX)
         raw = os.pread(fd, 4096, 0)
         try:
             prior = json.loads(raw.decode('utf-8')) if raw else {}
             count = prior.get('refused') if isinstance(prior, dict) else 0
-        except ValueError:
+        except (UnicodeError, ValueError):
             count = 0
         count = count + 1 if type(count) is int and count >= 0 else 1
         body = json.dumps({'refused': count, 'lastReason': reason,
@@ -306,12 +359,61 @@ def _count_refusal(dfd, reason: str) -> None:
         os.close(fd)
 
 
+# Proven state-root directory fds of this process: path -> fd. A later emit
+# re-checks the fd (still a linked, user-owned 0700 directory) instead of
+# re-walking every path component.
+_DIRS: dict[str, int] = {}
+_DIRS_MAX = 8
+
+
+def _state_dir_fd(state_root) -> int:
+    """A cached, re-checked fd for ``state_root``; the caller must not close it."""
+    key = str(state_root)
+    fd = _DIRS.get(key)
+    if fd is not None:
+        try:
+            info = os.fstat(fd)
+            if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                    and not stat.S_IMODE(info.st_mode) & 0o077 and info.st_nlink > 0):
+                return fd
+        except OSError:
+            pass
+        _DIRS.pop(key, None)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    fd = open_state_dir(state_root)
+    if len(_DIRS) >= _DIRS_MAX:
+        old_key = next(iter(_DIRS))
+        try:
+            os.close(_DIRS.pop(old_key))
+        except OSError:
+            pass
+    _DIRS[key] = fd
+    return fd
+
+
 def _write(state_root, data: bytes) -> str | None:
-    """Append one line; returns None when written, else the refusal code."""
+    """Append one line; returns None when written, else the refusal code.
+
+    Order: an oversize live file is rotated first (exclusive lock, skipped
+    when busy); the append then holds the shared lock from opening the live
+    file through its single write. Every lock is non-blocking with at most
+    ``LOCK_ATTEMPTS`` short retries, so a hook never waits on another process.
+    """
     try:
-        dfd = open_state_dir(state_root)
+        dfd = _state_dir_fd(state_root)
     except (OSError, ValueError):
         return 'state_root_unsafe'
+    try:
+        lock_fd, _info = _open_private(dfd, LOCK_NAME, os.O_RDWR | os.O_CREAT)
+    except Unsafe as exc:
+        _count_refusal(dfd, str(exc))
+        return str(exc)
+    except OSError:
+        _count_refusal(dfd, 'events_lock_refused')
+        return 'events_lock_refused'
     try:
         try:
             info = os.stat(NAME, dir_fd=dfd, follow_symlinks=False)
@@ -320,34 +422,40 @@ def _write(state_root, data: bytes) -> str | None:
         except OSError:
             _count_refusal(dfd, 'events_stat_failed')
             return 'events_stat_failed'
-        if info is not None:
-            if not stat.S_ISREG(info.st_mode):
-                _count_refusal(dfd, 'events_not_regular')
-                return 'events_not_regular'
-            if info.st_size + len(data) > LOG_LIMIT:
-                _rotate(dfd, len(data))
+        if info is not None and not stat.S_ISREG(info.st_mode):
+            _count_refusal(dfd, 'events_not_regular')
+            return 'events_not_regular'
+        if info is not None and info.st_size + len(data) > LOG_LIMIT:
+            _rotate(dfd, lock_fd, len(data))
+        if not _try_lock(lock_fd, fcntl.LOCK_SH, LOCK_ATTEMPTS):
+            # A rotation held the lock past the bounded wait: drop, never block.
+            return 'events_lock_busy'
         try:
-            fd = os.open(NAME, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _NOFOLLOW | _CLOEXEC,
-                         0o600, dir_fd=dfd)
-        except OSError:
-            _count_refusal(dfd, 'events_open_refused')
-            return 'events_open_refused'
-        try:
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid():
-                _count_refusal(dfd, 'events_not_owned')
-                return 'events_not_owned'
-            if os.write(fd, data) != len(data):
-                _count_refusal(dfd, 'events_short_write')
-                return 'events_short_write'
-        except OSError:
-            _count_refusal(dfd, 'events_write_failed')
-            return 'events_write_failed'
+            try:
+                fd, _opened = _open_private(dfd, NAME, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+            except Unsafe as exc:
+                _count_refusal(dfd, str(exc))
+                return str(exc)
+            except OSError:
+                _count_refusal(dfd, 'events_open_refused')
+                return 'events_open_refused'
+            try:
+                if os.write(fd, data) != len(data):
+                    _count_refusal(dfd, 'events_short_write')
+                    return 'events_short_write'
+            except OSError:
+                _count_refusal(dfd, 'events_write_failed')
+                return 'events_write_failed'
+            finally:
+                os.close(fd)
+            return None
         finally:
-            os.close(fd)
-        return None
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
     finally:
-        os.close(dfd)
+        os.close(lock_fd)
 
 
 def emit(event: str, *, outcome=None, reason=None, ms=None, state_root=_UNRESOLVED,
@@ -438,8 +546,8 @@ def inspect(state_root) -> dict:
             if name == NAME and not (row['regular'] and row['owned']):
                 out['reason'] = 'events_not_regular' if not row['regular'] else 'events_not_owned'
         try:
-            fd = os.open(REFUSED_NAME, os.O_RDONLY | _NOFOLLOW | _CLOEXEC, dir_fd=dfd)
-        except OSError:
+            fd, _info = _open_private(dfd, REFUSED_NAME, os.O_RDONLY)
+        except (OSError, ValueError):
             fd = None
         if fd is not None:
             try:
@@ -459,14 +567,12 @@ def inspect(state_root) -> dict:
 
 
 def _read_file(dfd, name: str, window: int | None = None) -> bytes:
+    """The last ``window`` bytes (whole lines) of a regular, owned file, or b''."""
     try:
-        fd = os.open(name, os.O_RDONLY | _NOFOLLOW | _CLOEXEC, dir_fd=dfd)
-    except OSError:
+        fd, info = _open_private(dfd, name, os.O_RDONLY)
+    except (OSError, ValueError):
         return b''
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            return b''
         start = 0 if window is None else max(0, info.st_size - window)
         os.lseek(fd, start, os.SEEK_SET)
         chunks, left = [], info.st_size - start
@@ -488,30 +594,53 @@ def _read_file(dfd, name: str, window: int | None = None) -> bytes:
         os.close(fd)
 
 
+_TS = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?Z\Z')
+
+
+def _valid(row) -> bool:
+    """A v1 record whose envelope has the written types; anything else is skipped."""
+    return (isinstance(row, dict) and row.get('v') == VERSION
+            and isinstance(row.get('event'), str) and 0 < len(row['event']) <= 64
+            and isinstance(row.get('ts'), str) and _TS.fullmatch(row['ts']) is not None
+            and all(row.get(key) is None or isinstance(row.get(key), str)
+                    for key in ('outcome', 'reason', 'install', 'host', 'session'))
+            and (row.get('ms') is None or type(row.get('ms')) is int))
+
+
 def _parse(data: bytes) -> list[dict]:
     rows = []
     for raw in data.splitlines():
         try:
             row = json.loads(raw.decode('utf-8'))
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, RecursionError):
             continue
-        if isinstance(row, dict) and row.get('v') == VERSION:
+        if _valid(row):
             rows.append(row)
     return rows
 
 
-def read(state_root, *, generations: bool = True, window: int | None = None) -> list[dict]:
-    """Events oldest first (rotated generations first). Read-only."""
+def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED) -> list[dict]:
+    """Events oldest first (rotated generations first). Read-only.
+
+    At most ``max_bytes`` are read, newest first: the live file's tail, then
+    older generations while budget remains. Malformed lines are skipped.
+    """
     try:
         dfd = open_state_dir(state_root)
     except (OSError, ValueError):
         return []
     try:
-        names = ([*reversed(GENERATIONS)] if generations else []) + [NAME]
-        rows = []
+        names = [NAME] + (list(GENERATIONS) if generations else [])
+        left = READ_LIMIT if max_bytes is _UNRESOLVED else max_bytes
+        chunks: list[list[dict]] = []
         for name in names:
-            rows.extend(_parse(_read_file(dfd, name, window)))
-        return rows
+            if left is not None and left <= 0:
+                break
+            data = _read_file(dfd, name, left)
+            if left is not None:
+                left -= len(data) + 1
+            chunks.append(_parse(data))
+        return [row for chunk in reversed(chunks) for row in chunk]
     finally:
         os.close(dfd)
 
@@ -551,11 +680,31 @@ def wiki_state_root(root, bound=_UNRESOLVED) -> Path | None:
         return None
 
 
+_WIKI_OUTCOMES = frozenset(('created', 'updated', 'deleted', 'retired'))
+_UNSAFE_TEXT = re.compile(r'[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]')
+_WIKI_PATH = re.compile(r'[^\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]{1,256}\Z')
+
+
+def _wiki_line(row) -> str | None:
+    """One rendered activity line, or None for a record that is not a card write.
+
+    The tail feeds an extractor prompt, so every field is type-, charset- and
+    length-checked: a forged line cannot add prompt lines or control text.
+    """
+    outcome, path, title = row.get('outcome'), row.get('path'), row.get('title', '')
+    if (outcome not in _WIKI_OUTCOMES or not isinstance(path, str)
+            or not _WIKI_PATH.fullmatch(path) or path.startswith('/') or '..' in path.split('/')
+            or not isinstance(title, str)):
+        return None
+    title = ' '.join(_UNSAFE_TEXT.sub(' ', title).split())[:200]
+    return f"- {row['ts'][:19]}Z {outcome} {path} - {title}"
+
+
 def wiki_tail(root, bound=_UNRESOLVED, limit: int = WIKI_TAIL_CHARS) -> str:
     """Recent wiki card writes as ``- <ts> <action> <path> - <title>`` lines.
 
-    Only ``wiki`` events are rendered: recall, upgrade and prompt fields never
-    reach the extractor prompt this feeds.
+    Only valid ``wiki`` events are rendered: recall, upgrade and prompt fields
+    never reach the extractor prompt this feeds.
     """
     state_root = wiki_state_root(root, bound)
     if state_root is None:
@@ -567,10 +716,10 @@ def wiki_tail(root, bound=_UNRESOLVED, limit: int = WIKI_TAIL_CHARS) -> str:
     try:
         lines: list[str] = []
         for name in (NAME, GENERATIONS[0]):
-            rows = [row for row in _parse(_read_file(dfd, name, WIKI_TAIL_WINDOW))
-                    if row.get('event') == 'wiki']
-            rendered = [f"- {str(row.get('ts', ''))[:19]}Z {row.get('outcome')} "
-                        f"{row.get('path')} - {row.get('title', '')}" for row in rows]
+            rendered = [line for line in (_wiki_line(row) for row in
+                                          _parse(_read_file(dfd, name, WIKI_TAIL_WINDOW))
+                                          if row.get('event') == 'wiki')
+                        if line is not None]
             lines = rendered + lines
             if sum(len(line) + 1 for line in lines) >= limit:
                 break

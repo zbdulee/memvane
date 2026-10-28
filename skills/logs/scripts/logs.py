@@ -44,10 +44,12 @@ def _state_root(args):
 
 
 def _ts(row):
+    """Aware UTC timestamp of a record, or None (a naive one is read as UTC)."""
     try:
-        return datetime.fromisoformat(str(row.get('ts')).replace('Z', '+00:00'))
-    except ValueError:
+        value = datetime.fromisoformat(str(row.get('ts')).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
         return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _since(rows, hours):
@@ -73,13 +75,14 @@ def _recall_line(row):
     for key in ('degraded', 'vector_fallback', 'selection_fallback', 'retry', 'drift'):
         if row.get(key):
             extra.append(f'{key}={row[key]}')
-    if row.get('notes'):
+    if isinstance(row.get('notes'), list) and row['notes']:
         extra.append('notes=' + ','.join(map(str, row['notes'])))
     extra.append(f"cards={row.get('count', 0)}")
     if row.get('session'):
         extra.append(f"session={row['session']}")
     cards = [f"  - {card.get('path')} {str(card.get('sha') or '')[:12]}"
-             for card in row.get('cards') or [] if isinstance(card, dict)]
+             for card in (row.get('cards') if isinstance(row.get('cards'), list) else [])
+             if isinstance(card, dict)]
     return '\n'.join([line + ' ' + ' '.join(extra), *cards])
 
 
@@ -107,19 +110,19 @@ def summary(rows, args):
     window = _since(rows, args.hours)
     label = f'last {args.hours}h' if args.hours is not None else 'all retained'
     print(f'events ({label}): {len(window)}')
-    counts = Counter((row.get('event'), row.get('outcome')) for row in window)
+    counts = Counter((str(row.get('event')), str(row.get('outcome'))) for row in window)
     for (event, outcome), count in sorted(counts.items(), key=lambda item: (str(item[0][0]),
                                                                            str(item[0][1]))):
         print(f'  {event} {outcome}: {count}')
     recalls = [row for row in window if row.get('event') == 'recall']
     if recalls:
         empty = [row for row in recalls if row.get('outcome') != 'served']
-        reasons = Counter(row.get('reason') for row in empty)
+        reasons = Counter(str(row.get('reason')) for row in empty)
         print(f"recalls: {len(recalls)} served={len(recalls) - len(empty)} "
               f"empty/refused={len(empty)}"
               + (' (' + ', '.join(f'{k} {v}' for k, v in reasons.most_common(5)) + ')'
                  if reasons else ''))
-        degraded = Counter(row.get('degraded') or row.get('vector_fallback')
+        degraded = Counter(str(row.get('degraded') or row.get('vector_fallback'))
                            for row in recalls
                            if row.get('degraded') or row.get('vector_fallback'))
         if degraded:
@@ -161,6 +164,7 @@ def main(argv=None):
     info = event_log.inspect(state_root)
     if not args.json:
         _header(state_root, info)
+    # Newest bytes first, capped (event_log.READ_LIMIT); malformed lines are skipped.
     rows = event_log.read(state_root)
     if args.view == 'summary':
         if args.hours is None:
