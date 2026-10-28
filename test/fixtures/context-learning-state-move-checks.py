@@ -177,6 +177,96 @@ class LearningMoveTests(unittest.TestCase):
         self.assertEqual(service_root(create=True, home=self.home),
                          self.current / 'laya-inference')
 
+    def test_service_root_resolved_before_the_seal_finds_the_moved_root(self):
+        from context_learning import inference_service, runtime_setup
+        state_move.move(self.home, wait=0.2)
+        real = runtime_setup.learning_state_base
+        calls = []
+
+        def cached_then_real(home=None):
+            calls.append(home)
+            # The first read was made before the move sealed the old base.
+            return self.legacy if len(calls) == 1 else real(home)
+        with mock.patch.object(runtime_setup, 'learning_state_base', cached_then_real):
+            root = inference_service.service_root(create=False, home=self.home)
+        self.assertEqual(root, self.current / 'laya-inference')
+
+    def test_recall_with_an_unreachable_learning_lane_serves_hybrid_rank(self):
+        # A recall whose learning state still resolves to the sealed old root:
+        # selection and query admission fail, recall serves ranked rows.
+        import importlib.util
+        from contextlib import ExitStack
+        import laya_embed_resident
+        import laya_host_response as response
+        from context_learning.inference_service import ServiceFailure
+        spec = importlib.util.spec_from_file_location(
+            'required_selection', SOURCE / 'test/fixtures/laya-required-selection-checks.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        real_admit = laya_embed_resident.admit_query
+        with ExitStack() as stack:
+            decision, _proof, _rows, _settings = fixture.Checks.host(None, stack)
+            stack.enter_context(mock.patch.object(laya_embed_resident, 'admit_query', real_admit))
+            stack.enter_context(mock.patch(
+                'context_learning.resource_coordination.default_root',
+                side_effect=ServiceFailure('unsafe_root')))
+            stack.enter_context(mock.patch(
+                'context_learning.seam._private_state',
+                side_effect=ServiceFailure('unsafe_root')))
+            stack.enter_context(mock.patch.object(response, '_request_selector_heal'))
+            # The fixture proof has no provider socket; waking it is not under test.
+            stack.enter_context(mock.patch.object(response, '_wake_provider',
+                                                  return_value='selected_provider_preparing'))
+            result = response.serve_selected('recall', 'codex', decision,
+                                             {'prompt': 'find card'})
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('wiki/card00.md', context)
+        self.assertIn('hybrid rank score', context)
+
+    def test_a_recreated_old_tree_after_a_rename_is_sealed_on_resume(self):
+        def die(name):
+            if name == 'renamed:laya-inference':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        # A process of an earlier bundle recreated the old lane and holds it.
+        self.inference.mkdir(mode=0o700)
+        (self.inference / 'compute.lock').write_bytes(b'')
+        (self.inference / 'compute.lock').chmod(0o600)
+        fd = os.open(self.inference / 'compute.lock', os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                        'learning_state_stray_busy'):
+                state_move.move(self.home, wait=0.2)
+            self.assertTrue(self.inference.is_dir())
+        finally:
+            os.close(fd)
+        result = state_move.move(self.home, wait=0.2)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+        self.assertEqual(len(result['strays']), 1)
+        self.assertTrue(Path(result['strays'][0], 'compute.lock').is_file())
+        self.assertTrue(state_move.moved_sentinel(self.inference))
+        self.assertEqual(learning_state_base(self.home), self.current)
+
+    def test_selector_heal_requests_are_floored_per_install(self):
+        import laya_bundle_upgrade as upgrade
+        state = self.home / 'install'
+        state.mkdir(mode=0o700)
+        spawned = []
+        now = time.time_ns()
+        for offset in (0, 1, 200):
+            upgrade.request('/p', state / 'install-journal.sqlite', 'learning_selector',
+                            spawn=spawned.append, now=now + offset * 10**9)
+            # A deferred shared status would be due again after 120 seconds.
+            upgrade._write_status(state, status='deferred', executingRoot='/x',
+                                  attempts=0, reason='x')
+        self.assertEqual(spawned, ['/p'])
+        upgrade.request('/p', state / 'install-journal.sqlite', 'learning_selector',
+                        spawn=spawned.append, now=now + 601 * 10**9)
+        self.assertEqual(spawned, ['/p', '/p'])
+
     def test_a_service_elected_before_the_move_serves_the_moved_root(self):
         old = str(self.inference)
         state_move.move(self.home, wait=0.2)
@@ -247,6 +337,65 @@ print(json.dumps(out))
 '''
 
 
+def install_runtime(root, home, model):
+    """``stage_generation`` + ``activate_generation`` with synthetic uv and probe."""
+    from types import SimpleNamespace
+    from context_learning.runtime_installer import activate_generation, stage_generation
+    from context_learning.runtime_setup import MANAGED_DEPENDENCIES, probe_runtime
+    from context_learning.laya_adapter import model_identity
+
+    def sha(path):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    root.parent.mkdir(parents=True, exist_ok=True)
+    for path in (root.parent, root.parent.parent):
+        path.chmod(0o700)
+    uv = home / 'uv'
+    uv.write_text('synthetic uv')
+    uv.chmod(0o700)
+    lock = home / 'requirements.lock'
+    lock.write_text(''.join(f'{name}=={version} --hash=sha256:{"a" * 64}\n'
+                            for name, version in MANAGED_DEPENDENCIES.items()))
+
+    def runner(args, **_kwargs):
+        if args[1:] == ['--version']:
+            return SimpleNamespace(returncode=0, stdout='uv 0.12.20 (synthetic)')
+        if args[1:3] == ['python', 'install']:
+            generation = Path(args[args.index('--install-dir') + 1]).parent
+            python = generation / 'python/cpython-3.12.14-macos-aarch64-none/bin/python3.12'
+            python.parent.mkdir(parents=True)
+            python.write_text('synthetic python')
+            python.chmod(0o700)
+        elif args[1] == 'venv':
+            executable = Path(args[2]) / 'bin/python'
+            executable.parent.mkdir(parents=True)
+            executable.write_text('synthetic venv')
+            executable.chmod(0o700)
+        return SimpleNamespace(returncode=0, stdout='')
+
+    def fake_runtime(_):
+        return {'python': '3.12.14', 'versions': dict(MANAGED_DEPENDENCIES),
+                'laya_import': '0.3.20', 'torch_import': '2.14.0',
+                'mps_available': True, 'laya_direct_url': None}
+
+    def probe(executable, *, managed_root):
+        return probe_runtime(executable, managed_root=managed_root, runner=fake_runtime)
+    staged = stage_generation(root, uv, sha(uv), lock, sha(lock), runner=runner, probe=probe)
+    adapter = home / 'activation-adapter.py'
+    adapter.write_text('synthetic adapter')
+
+    def proof(executable, adapter_path, model_dir):
+        identity = probe(executable, managed_root=root)['runtime_identity_sha256']
+        return {'probe': {'runtime_identity_sha256': identity}, 'attestation': {
+            'schema_version': 1, 'runtime_identity_sha256': identity,
+            'base_model_sha256': model_identity(model_dir), 'adapter_sha256': sha(adapter_path),
+            'data_kind': 'synthetic_compact_wiki', 'checks': {
+                'tokenization_no_truncation': True, 'synthetic_inference': True,
+                'synthetic_one_step_train': True, 'checkpoint_reload': True,
+                'fixed_selection_mapping': True}}}
+    activate_generation(root, staged['executable'], adapter, model, prover=proof, probe=probe)
+    return staged
+
+
 class SelectorHealTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix='lsh-')
@@ -277,19 +426,13 @@ class SelectorHealTests(unittest.TestCase):
             file = model / name
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b'synthetic bytes')
-        # The activated official learning runtime: its interpreter is never
-        # executed here (attest/prepare and prediction are stubbed).
-        runtime = home / 'Library' / 'Application Support' / 'memvane' / 'runtimes' / 'laya'
-        if sys.platform != 'darwin':
-            runtime = home / '.local' / 'share' / 'memvane' / 'runtimes' / 'laya'
-        self.interpreter = runtime / 'generations' / ('g-' + 'c' * 32) / 'venv' / 'bin' / 'python'
-        self.interpreter.parent.mkdir(parents=True)
-        self.interpreter.write_text('#!/bin/sh\nexit 9\n')
-        self.interpreter.chmod(0o755)
-        for path in (runtime, runtime.parent, runtime.parent.parent):
-            path.chmod(0o700)
-        private(runtime / 'active.json', {'executable': str(self.interpreter),
-                                          'runtime_identity_sha256': 'd' * 64})
+        # The official learning runtime, staged and activated through the
+        # installer itself (uv, the interpreter run and the attestation are
+        # synthetic); its interpreter is never executed here.
+        support = (home / 'Library' / 'Application Support' / 'memvane' if sys.platform == 'darwin'
+                   else home / '.local' / 'share' / 'memvane')
+        self.runtime = install_runtime(support / 'runtimes' / 'laya', home, model)
+        self.interpreter = Path(self.runtime['executable'])
         self.state = home / 'state'
         self.state.mkdir(mode=0o700)
         artifact = self.state / 'head.artifact'
@@ -391,6 +534,22 @@ class SelectorHealTests(unittest.TestCase):
     def test_memory_pressure_defers_and_runs_nothing(self):
         report = self.drive('pressure')
         self.assertEqual(report['heal'], {'error': 'learning_prepare_memory_pressure'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_generation_whose_recorded_identity_changed_runs_nothing(self):
+        prepared = self.interpreter.parent.parent.parent / 'prepared.json'
+        value = json.loads(prepared.read_text())
+        prepared.chmod(0o600)
+        private(prepared, {**value, 'runtime_identity_sha256': 'f' * 64})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_changed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_pointer_to_an_unprepared_interpreter_runs_nothing(self):
+        prepared = self.interpreter.parent.parent.parent / 'prepared.json'
+        prepared.unlink()
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_installed'})
         self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
 
     def test_ready_evidence_is_left_alone(self):

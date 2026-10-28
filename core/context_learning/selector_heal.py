@@ -83,18 +83,33 @@ def _policy(state):
 def official_runtime(home=None):
     """(interpreter, model dir or None) of the activated official learning runtime.
 
-    The installer writes ``runtimes/laya/active.json`` only after a verified
-    generation; ``runtime_setup._activated`` re-checks it is private, resolves
-    inside the runtime root and names an executable interpreter.
+    Re-verified the way the installer verifies a generation, before anything
+    runs: the activation pointer passes ``runtime_setup._activated``; its
+    executable is a prepared generation's own venv interpreter
+    (``runtime_installer._generation_executable``: generation layout, private
+    directories, interpreter resolving inside the generation, ``prepared.json``
+    naming exactly that executable); and the runtime identity the installer
+    recorded at staging (``prepared.json``), at activation (``active.json``) and
+    in the activation attestation are the same.
     """
     from .dataset import read_private_json
+    from .runtime_installer import _generation_executable
     from .runtime_setup import _activated, runtime_base
     root = runtime_base(home) / 'runtimes' / 'laya'
     if not _activated(root):
         raise HealRefused('learning_runtime_not_installed')
-    pointer = read_private_json(root / 'active.json')
+    try:
+        pointer = read_private_json(root / 'active.json')
+        executable = _generation_executable(root, pointer['executable'])
+        prepared = read_private_json(executable.parent.parent.parent / 'prepared.json')
+        identity = pointer['runtime_identity_sha256']
+        attested = (pointer.get('attestation') or {}).get('runtime_identity_sha256', identity)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise HealRefused('learning_runtime_not_installed') from exc
+    if prepared['runtime_identity_sha256'] != identity or attested != identity:
+        raise HealRefused('learning_runtime_changed')
     model = pointer.get('model_dir')
-    return pointer['executable'], model if isinstance(model, str) else None
+    return str(executable), model if isinstance(model, str) else None
 
 
 def _approved_interpreter_hash(state, interpreter):

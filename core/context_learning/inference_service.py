@@ -21,14 +21,7 @@ class ServiceFailure(ValueError):
         self.timing = timing or {}
 
 
-def service_root(*, create=False, home=None):
-    # Host HOME/CODEX_HOME overrides must not create a second user service.
-    if home is None:
-        import pwd
-        home = pwd.getpwuid(os.getuid()).pw_dir
-    home = Path(home).resolve()
-    from .runtime_setup import learning_state_base
-    root = learning_state_base(home) / 'laya-inference'
+def _check_root(root, home):
     for part in (root, *root.parents):
         if part == home:
             break
@@ -38,6 +31,26 @@ def service_root(*, create=False, home=None):
             info = part.stat()
             if not part.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise ServiceFailure('unsafe_root')
+
+
+def service_root(*, create=False, home=None):
+    # Host HOME/CODEX_HOME overrides must not create a second user service.
+    if home is None:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    home = Path(home).resolve()
+    from .runtime_setup import learning_state_base
+    root = learning_state_base(home) / 'laya-inference'
+    try:
+        _check_root(root, home)
+    except ServiceFailure:
+        # Resolved just before a learning-state move sealed the old tree
+        # (a regular file now stands there): resolve once more.
+        moved = learning_state_base(home) / 'laya-inference'
+        if moved == root:
+            raise
+        root = moved
+        _check_root(root, home)
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         moved = learning_state_base(home) / 'laya-inference'

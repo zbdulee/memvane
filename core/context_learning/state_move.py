@@ -137,6 +137,30 @@ def moved_sentinel(path):
     return stat.S_ISREG(info.st_mode)
 
 
+# Trees a stale process recreated and a move set aside (for the event log).
+STRAYS: list = []
+
+
+def _set_aside(legacy, name, path):
+    """Move a recreated, non-empty old tree aside, never one still in use.
+
+    Every lock file in it is tried non-blocking: a held one means a process of
+    an earlier bundle still runs a lane there, so the move stays pending and a
+    later run retries instead of sealing over it.
+    """
+    for lock in sorted(Path(path).rglob('*.lock')):
+        if lock.is_symlink() or not lock.is_file():
+            continue
+        fd = _lock(lock)
+        if fd is None:
+            raise LearningMoveDeferred('learning_state_stray_busy')
+        os.close(fd)
+    target = legacy / (name + '.stray-' + str(time.time_ns()))
+    os.rename(path, target)
+    _fsync(legacy)
+    STRAYS.append(str(target))
+
+
 def _seal_old(legacy, name, current):
     """Leave a read-only regular file where the moved tree was.
 
@@ -159,7 +183,7 @@ def _seal_old(legacy, name, current):
                 try:
                     os.rmdir(path)
                 except OSError:
-                    os.rename(path, legacy / (name + '.stray-' + str(time.time_ns())))
+                    _set_aside(legacy, name, path)
                 continue
             raise LearningMoveRefused('learning_state_sentinel_blocked')
         try:
@@ -286,11 +310,18 @@ def move(home=None, *, wait=DRAIN_WAIT_SECONDS):
         if fd is None:
             raise LearningMoveDeferred('learning_state_move_busy')
         _held(stack, fd)
+        del STRAYS[:]
+        if os.path.lexists(current / INTENT):
+            # A run stopped between a rename and its sentinel: an old tree a
+            # stale process recreated there is sealed (or set aside) first.
+            for name in NAMES:
+                if os.path.lexists(current / name) and (legacy / name).is_dir():
+                    _seal_old(legacy, name, current)
         if not any((legacy / name).is_dir() for name in NAMES):
             # Both trees already moved (a run stopped after the renames):
             # only the idempotent tail is left, no drain needed.
             return {'status': 'learning_state_moved', 'checkpointsRebased':
-                    _finish(legacy, current)}
+                    _finish(legacy, current), 'strays': list(STRAYS)}
         _hold_service(stack, home, wait=wait)
         inference = next((base / 'laya-inference' for base in (legacy, current)
                           if (base / 'laya-inference').is_dir()), None)
@@ -306,12 +337,14 @@ def move(home=None, *, wait=DRAIN_WAIT_SECONDS):
         for name in NAMES:
             if (legacy / name).is_dir() and not os.path.lexists(current / name):
                 os.rename(legacy / name, current / name)
+                mark('renamed:' + name)
                 _seal_old(legacy, name, current)
                 _fsync(current)
                 mark('moved:' + name)
         mark('renamed')
         rebased = _finish(legacy, current)
-    return {'status': 'learning_state_moved', 'checkpointsRebased': rebased}
+    return {'status': 'learning_state_moved', 'checkpointsRebased': rebased,
+            'strays': list(STRAYS)}
 
 
 def current_root(passed, home=None):

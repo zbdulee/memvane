@@ -473,10 +473,21 @@ def _select_verified_cards(decision, settings, prompt, rows):
     pool = rows[:15]
     if not pool:
         return [], 'no_candidates', None
-    if selector_prepared(settings, project):
-        result = select_published(
-            pool, prompt=prompt, config=settings, project_root=project,
-            wiki_names=names, scope_id=decision['scopeId'])
+    try:
+        prepared = selector_prepared(settings, project)
+    except Exception:
+        # Learning state unreachable (moving, sealed old root): hybrid rank.
+        prepared, result = True, {'reason': 'selector_unavailable', 'final_results': []}
+    else:
+        result = None
+    if prepared:
+        if result is None:
+            try:
+                result = select_published(
+                    pool, prompt=prompt, config=settings, project_root=project,
+                    wiki_names=names, scope_id=decision['scopeId'])
+            except Exception:
+                result = {'reason': 'selector_unavailable', 'final_results': []}
         reason = result['reason']
         if reason in ('selected', 'no_candidates'):
             return result['final_results'], reason, None
@@ -2212,12 +2223,10 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     from laya_embed_resident import admit_query
     try:
         admit_query()
-    except Exception as exc:
-        from resource_deferred import ResourceDeferred
-        if not isinstance(exc, ResourceDeferred):
-            raise
-        # Query admission refused under pressure: no vector for this prompt,
-        # the verified published generation is still searched lexically.
+    except Exception:
+        # Query admission refused under pressure, or its learning-side lane
+        # unreachable: no vector for this prompt, the verified published
+        # generation is still searched lexically.
         vector_off.append('resource_deferred')
     settings = config.load_project_config(decision["projectRoot"])
     v2 = "collections" in decision

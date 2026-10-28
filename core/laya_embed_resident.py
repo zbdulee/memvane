@@ -237,13 +237,15 @@ def admit_query(*, coordinator=None, report=None):
     from context_learning.shared import resource_report
     from laya_product_sync_worker import EMBED_POLICY
 
-    controller = coordinator or Coordinator()
     try:
+        # The learning lane root may be mid-move (a sentinel where the old
+        # tree was): any failure to reach it is a deferral, never a refusal.
+        controller = coordinator or Coordinator()
         observed = (report if report is not None else
                     resource_report(EMBED_POLICY, detailed=True,
                                     deadline=time.monotonic() + 1))
         verdict = controller.check(EMBED_POLICY, observed)
-    except (OSError, ValueError, TypeError, KeyError, ResourceDeferred) as exc:
+    except Exception as exc:
         raise ResourceDeferred('laya_query_resource_deferred') from exc
     if verdict.get('ready') is not True:
         raise ResourceDeferred('laya_query_resource_deferred')
