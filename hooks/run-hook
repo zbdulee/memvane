@@ -86,8 +86,8 @@ case "$_laya_route_state" in
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
   blocked)
-    echo '[memvane] selected route unavailable; QMD fallback refused' >&2
+    echo '[memvane] selected route unavailable; request refused' >&2
     exit 3
     ;;
-  *) echo '[memvane] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
+  *) echo '[memvane] route lookup failed; request refused' >&2; exit 3 ;;
 esac

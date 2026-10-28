@@ -23,8 +23,11 @@ def _seconds():
             else DEFAULT_SECONDS)
 
 
-def arm(*, watchdog=True):
-    """Start once at the outer hook; a child inherits the absolute deadline."""
+def arm(*, watchdog=True, export=True):
+    """Start once at the outer hook; a child inherits the absolute deadline.
+
+    ``export=False`` keeps the deadline in this process only.
+    """
     global _deadline
     if _deadline is None:
         try:
@@ -35,7 +38,8 @@ def arm(*, watchdog=True):
         # A child must never reset an already exhausted parent budget.
         _deadline = (inherited if math.isfinite(inherited) and 0 < inherited <= now + MAX_SECONDS
                      else now + _seconds())
-        os.environ['QMD_HOOK_DEADLINE_MONO'] = str(_deadline)
+        if export:
+            os.environ['QMD_HOOK_DEADLINE_MONO'] = str(_deadline)
     left = _deadline - time.monotonic()
     if left <= 0:
         raise HookDeadlineExceeded()

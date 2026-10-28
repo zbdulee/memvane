@@ -637,7 +637,7 @@ class V2WorkerChecks(unittest.TestCase):
         return json.loads(out)['hookSpecificOutput']['additionalContext']
 
     def assert_refused(self,cwd,code):
-        self.assertEqual(self.recall(cwd),(3,'','[memvane] %s; QMD fallback refused\n'%code))
+        self.assertEqual(self.recall(cwd),(3,'','[memvane] %s; request refused\n'%code))
 
     def drain(self,queue):
         """Run the real synthetic worker behind the sealed-dispatch seam."""

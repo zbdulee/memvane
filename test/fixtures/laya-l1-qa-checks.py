@@ -628,7 +628,7 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
                 self.assertLess(elapsed, 5000)
                 self.assertEqual(result.returncode, 3,
                                  action + ': ' + result.stdout + result.stderr)
-                self.assertIn('QMD fallback refused', result.stderr)
+                self.assertIn('request refused', result.stderr)
         hermes = subprocess.run([sys.executable, '-c',
             'import json,sys; sys.path.insert(0,sys.argv[1]); '
             'from hermes_adapter.core_bridge import recall_context; '
@@ -668,7 +668,7 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
             capture_output=True, text=True, timeout=5,
             cwd=self.project, env=hook_env)
         self.assertEqual(blocked_index.returncode, 3)
-        self.assertIn('QMD fallback refused', blocked_index.stderr)
+        self.assertIn('request refused', blocked_index.stderr)
         self.assertFalse(inspect_journal(journal)['newWriteSeen'])
         with closing(LayaIndexA(db)) as index:
             self.assertEqual(index.db.execute(
@@ -716,7 +716,7 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
             capture_output=True, text=True, timeout=5,
             cwd=self.project, env=hook_env)
         self.assertEqual(tampered.returncode, 3)
-        self.assertIn('QMD fallback refused', tampered.stderr)
+        self.assertIn('request refused', tampered.stderr)
         self._global_untouched()
 
 

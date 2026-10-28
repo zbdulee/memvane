@@ -77,7 +77,7 @@ test('Claude/Codex dispatch blocks present route before QMD setup or backend', (
     writeFileSync(join(auto, 'laya-index-route.json'), JSON.stringify(route));
     const selected = dispatch();
     assert.equal(selected.status, 3, selected.stderr);
-    assert.match(selected.stderr, /QMD fallback refused/);
+    assert.match(selected.stderr, /request refused/);
     assert.equal(existsSync(managerLog), false);
     assert.equal(existsSync(legacyLog), false);
     route.settingsSha256 = '0'.repeat(64);
@@ -106,7 +106,7 @@ test('selected recall refuses unproved install without entering QMD manager', ()
       });
       assert.equal(result.status, 3, result.stderr);
       assert.equal(result.stdout, '');
-      assert.match(result.stderr, /QMD fallback refused/);
+      assert.match(result.stderr, /request refused/);
       assert.equal(existsSync(managerLog), false);
       assert.deepEqual(readdirSync(home).filter((name) => name.startsWith('laya-route-payload.')), []);
     }
@@ -134,7 +134,7 @@ test('all always-fired selected hook actions refuse unproved install without QMD
           QMD_BACKEND_MANAGER: manager, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
       });
       assert.equal(result.status, 3, `${action}: ${result.stderr}`);
-      assert.match(result.stderr, /QMD fallback refused/, action);
+      assert.match(result.stderr, /request refused/, action);
       assert.equal(existsSync(managerLog), false, action);
       assert.equal(result.stdout, '', action);
     }
@@ -158,7 +158,7 @@ test('Hermes stops before QMD manager for present route and reports unavailable 
         QMD_QUERY_FIXTURE: 'fixture.json', PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(JSON.parse(result.stdout).context, /QMD fallback refused/);
+    assert.match(JSON.parse(result.stdout).context, /request refused/);
     assert.equal(existsSync(managerLog), false);
   } finally { removeTemp(home); }
 });
@@ -181,7 +181,7 @@ test('malformed legacy input stays graceful while selected or stale routes block
     for (const input of ['not json', '']) {
       const selected = run('recall', input, project);
       assert.equal(selected.status, 3, selected.stderr);
-      assert.match(selected.stderr, /QMD fallback refused/);
+      assert.match(selected.stderr, /request refused/);
     }
     const invalidCwd = run('recall', JSON.stringify({cwd: 'relative', prompt: 'find'}), home);
     assert.equal(invalidCwd.status, 3, invalidCwd.stderr);

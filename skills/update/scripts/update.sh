@@ -20,5 +20,5 @@ case "$_laya_state" in
     echo '[memvane] 이 프로젝트는 MemVane 색인에 온보딩되지 않았습니다. setup skill로 온보딩하세요.' >&2
     exit 1
     ;;
-  *) echo '[memvane] selected route unavailable; QMD fallback refused' >&2; exit 3 ;;
+  *) echo '[memvane] selected route unavailable; request refused' >&2; exit 3 ;;
 esac

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1393,7 +1394,8 @@ class ResponseChecks(unittest.TestCase):
         exc, _requested, _journal, _index = serve_v2_recall(
             decision, verify=[V2_PROOF, V2_PROOF, regressed], scan=live,
             request=lambda *_a: {'status': 'queued'})
-        self.assertEqual(str(exc), 'selected_proof_changed')
+        # A journal restore below the recall's highest epoch is never retried.
+        self.assertEqual(str(exc), 'selected_proof_rolled_back')
 
     def test_v2_budget_row_corruption_and_legacy_stale_do_not_wake(self):
         import laya_index_source_port as source_port
@@ -1611,7 +1613,7 @@ class ResponseChecks(unittest.TestCase):
                     self.assertEqual(status, 3)
                     self.assertEqual(out.getvalue(), '')
                     self.assertEqual(err.getvalue(),
-                                     f'[memvane] {code}; QMD fallback refused\n')
+                                     f'[memvane] {code}; request refused\n')
 
 
 class BundleDriftChecks(unittest.TestCase):
@@ -1786,7 +1788,426 @@ class BundleDriftChecks(unittest.TestCase):
                 status = response.main(['serve-hook', 'recall', 'claude', str(payload), temp])
         self.assertEqual(status, 3)
         self.assertEqual(err.getvalue(),
-                         '[memvane] executing_bundle_not_selected; QMD fallback refused\n')
+                         '[memvane] executing_bundle_not_selected; request refused\n')
+
+
+class ProofRetryChecks(unittest.TestCase):
+    """A proof or view change during one recall (sync publish, upgrade)."""
+
+    LOCAL = str(Path(response.__file__).resolve().parents[1])
+    BODY = '---\ntitle: Alpha card\n---\n## Summary\nalpha fact.\n'
+
+    def setUp(self):
+        import sqlite3
+        import hook_budget
+        import laya_embed_resident
+        for patcher in (patch.object(laya_embed_resident, 'admit_query'),
+                        patch.object(hook_budget, '_deadline', None)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        temp = tempfile.TemporaryDirectory(prefix='laya-proof-retry-', dir='/private/tmp')
+        self.addCleanup(temp.cleanup)
+        db_path = Path(temp.name).resolve() / 'index.sqlite'
+        # The real published-view check reads this head/membership store.
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.executescript(
+                'CREATE TABLE head(scope TEXT, gen TEXT);'
+                'CREATE TABLE exclusions(scope TEXT, kind TEXT, value TEXT);'
+                'CREATE TABLE membership(gen TEXT, scope TEXT, path TEXT, hash TEXT,'
+                ' eligible INTEGER);')
+            db.execute('INSERT INTO head VALUES (?,?)', (SCOPE, 'generation-7'))
+            digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()
+            for gen in ('generation-7', 'generation-8', 'generation-9'):
+                db.execute('INSERT INTO membership VALUES (?,?,?,?,1)',
+                           (gen, SCOPE, 'wiki/a.md', digest))
+        db_path.chmod(0o600)
+        self.db_path = db_path
+        self.decision = {**v2_decision(), 'installId': 'c' * 32,
+                         'journalPath': '/synthetic/state/install-journal.sqlite',
+                         'generation': 'g-old', 'dbPath': str(db_path)}
+
+    def head(self):
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db_path)) as db:
+            return db.execute('SELECT gen FROM head WHERE scope=?', (SCOPE,)).fetchone()[0]
+
+    def publish(self):
+        """A sync owner publishes the next generation."""
+        import sqlite3
+        nxt = {'generation-7': 'generation-8', 'generation-8': 'generation-9'}[self.head()]
+        from contextlib import closing
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            db.execute('UPDATE head SET gen=? WHERE scope=?', (nxt, SCOPE))
+
+    def proof(self, epoch, **changes):
+        return {'productRouteAllowed': True, 'selectionEpoch': epoch,
+                'executingPluginRoot': self.LOCAL, 'installId': 'c' * 32,
+                'projectRoot': '/synthetic/project', 'scopeId': SCOPE,
+                'dbIncarnation': 'a' * 32, 'bundleManifestSha256': 'd' * 64,
+                'vectorProfile': VECTOR_PROFILE,
+                'providerManifest': {'approvedProviderId': 'synthetic-provider'},
+                **changes}
+
+    def recall(self, *, verify, reselect=None, read_only=None, query=None,
+               provider=None, request=None):
+        """Run selected recall through the real proof, view and retry path.
+
+        ``query(n)`` runs after the n-th query pinned the current head; a
+        ``self.publish()`` there lands between the pin and the final check.
+        """
+        from contextlib import ExitStack, nullcontext
+        import config
+        import laya_embed_resident
+        import laya_incremental_docs_query
+        import laya_install_journal
+        import laya_index_runtime
+        import laya_local_embed_provider
+        import runtime_work
+        calls = {'query': []}
+        digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()
+
+        def query_v2(runtime, prompt, route_profile, _approved, query_provider, *args,
+                     pinned_generation=None, **kwargs):
+            head = self.head()
+            pinned_generation.append(head)
+            calls['query'].append(head)
+            try:
+                query_provider(prompt, route_profile)
+            except response._VectorUnavailable:
+                pass
+            if query is not None:
+                query(len(calls['query']))
+            return [row(path='wiki/a.md', generation=head, body=self.BODY,
+                        hash=digest)], frozenset()
+
+        def no_read_only(_decision):
+            raise AssertionError('read-only proof was not expected')
+
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch.object(laya_install_journal, 'verify_selected_route',
+                               side_effect=verify))
+            ro = enter(patch.object(laya_install_journal, 'verify_selected_route_read_only',
+                                    side_effect=read_only or no_read_only))
+            selected = enter(patch.object(response, 'select_route',
+                                          side_effect=reselect or
+                                          (lambda *_a, **_k: dict(self.decision))))
+            wake = enter(patch.object(runtime_work, 'request',
+                                      side_effect=request or
+                                      (lambda *_a, **_k: {'status': 'queued'})))
+            enter(patch.object(laya_embed_resident, '_failure_decision', return_value=None))
+            enter(patch.object(laya_embed_resident, 'read_owner_state', return_value=None))
+            enter(patch.object(laya_index_runtime, 'LayaIndexRuntime',
+                               return_value=nullcontext(runtime)))
+            enter(patch.object(laya_index_runtime, 'capacity_store_paths', return_value=None))
+            enter(patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider',
+                               return_value=provider or (lambda *_: [0.1, 0.2, 0.3])))
+            enter(patch.object(config, 'load_project_config',
+                               return_value=dict(self.decision['recallSettings'])))
+            enter(patch.object(laya_incremental_docs_query, 'query_incremental',
+                               return_value=([], frozenset(), {}, (), None)))
+            enter(patch.object(response, 'query_selected_v2', side_effect=query_v2))
+            enter(patch.object(response, '_select_verified_cards',
+                               side_effect=lambda _d, _s, _p, rows: (rows, 'ranked', None)))
+            enter(patch('sys.stderr', new_callable=__import__('io').StringIO))
+            try:
+                result = response.serve_selected('recall', 'codex', dict(self.decision),
+                                                 {'prompt': 'find alpha',
+                                                  'cwd': '/synthetic/project'})
+            except Exception as exc:
+                result = exc
+        calls['wake'] = wake
+        return result, calls, selected, ro
+
+    def served(self, result, head='generation-7'):
+        self.assertIsInstance(result, dict, repr(result))
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('wiki/a.md', context)
+        return context
+
+    def publish_on_first(self, n):
+        if n == 1:
+            self.publish()
+
+    def test_epoch_advance_by_a_sync_publish_still_serves_verified_cards(self):
+        # cas_mark_new_write moves only the journal epoch; the pinned head is
+        # still the published one, so this recall serves without a retry.
+        proofs = iter([self.proof(3)] + [self.proof(4)] * 10)
+        result, calls, selected, _ro = self.recall(verify=lambda _d: next(proofs))
+        self.served(result)
+        self.assertEqual(calls['query'], ['generation-7'])
+        selected.assert_not_called()
+
+    def test_publish_during_recall_retries_once_from_a_fresh_proof(self):
+        # The sync wake advanced the epoch and published a new head between
+        # the pin and the final view check: one retry re-queries that head.
+        proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+        result, calls, selected, _ro = self.recall(
+            verify=lambda _d: next(proofs), query=self.publish_on_first)
+        self.served(result)
+        self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+        self.assertEqual(selected.call_count, 1)
+        self.assertEqual(selected.call_args.args, ('/synthetic/project',))
+
+    def test_upgrade_activation_during_recall_serves_the_new_route(self):
+        # The upgrade rewrote the route mid-recall: re-selection yields the
+        # same install with a new bundle, proved in full before serving.
+        import laya_install_journal
+        upgraded = {**self.decision, 'generation': 'g-new', 'pluginRoot': self.LOCAL}
+        state = {'calls': 0}
+
+        def verify(decision):
+            state['calls'] += 1
+            if decision.get('generation') == 'g-new':
+                return self.proof(5, bundleManifestSha256='e' * 64)
+            if state['calls'] == 1:
+                return self.proof(3)
+            raise laya_install_journal.JournalEvidenceError('host_route_unverified')
+        result, calls, selected, _ro = self.recall(
+            verify=verify, reselect=lambda *_a, **_k: dict(upgraded))
+        self.served(result)
+        self.assertEqual(len(calls['query']), 2)
+        self.assertEqual(selected.call_count, 1)
+
+    def test_drifted_bundle_on_retry_serves_the_read_only_published_view(self):
+        import laya_install_journal
+        state = {'calls': 0}
+
+        def verify(_decision):
+            state['calls'] += 1
+            if state['calls'] == 1:
+                return self.proof(3)
+            if state['calls'] == 2:
+                return self.proof(4, bundleManifestSha256='e' * 64)
+            raise laya_install_journal.JournalEvidenceError('executing_bundle_not_selected')
+        read_only = {**self.proof(4, bundleManifestSha256='e' * 64),
+                     'productRouteAllowed': False, 'readOnlyAllowed': True}
+        result, calls, selected, ro = self.recall(
+            verify=verify, read_only=lambda _d: dict(read_only))
+        self.served(result)
+        self.assertEqual(len(calls['query']), 2)
+        self.assertGreaterEqual(ro.call_count, 2)
+        self.assertEqual(selected.call_count, 1)
+
+    def test_identity_change_or_repeated_change_still_refuses(self):
+        import laya_install_journal
+        for name, changes in (('install', {'installId': 'f' * 32}),
+                              ('project', {'projectRoot': '/synthetic/other'}),
+                              ('store', {'dbIncarnation': 'b' * 32}),
+                              ('journal', {'journalPath': '/synthetic/x/install-journal.sqlite'}),
+                              ('state', {'state': 'blocked'})):
+            with self.subTest(identity=name):
+                self.setUp()
+                proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+                moved = {**self.decision, **changes}
+                result, calls, selected, _ro = self.recall(
+                    verify=lambda _d: next(proofs), query=self.publish_on_first,
+                    reselect=lambda *_a, **_k: dict(moved))
+                self.assertIsInstance(result, response.HostResponseError)
+                self.assertEqual(str(result), 'selected_proof_changed')
+                self.assertEqual(calls['query'], ['generation-7'])
+                self.assertEqual(selected.call_count, 1)
+        with self.subTest('second change'):
+            self.setUp()
+            proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+            result, calls, selected, _ro = self.recall(
+                verify=lambda _d: next(proofs), query=lambda _n: self.publish())
+            self.assertIsInstance(result, response.HostResponseError)
+            self.assertEqual(str(result), 'selected_proof_changed')
+            self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+            self.assertEqual(selected.call_count, 1)
+        with self.subTest('bundle change at the same epoch'):
+            # Not an epoch advance: the final recheck refuses, and the
+            # retried proof (unchanged route, still the other bundle) is
+            # what serves; the first attempt's rows are never served.
+            self.setUp()
+            proofs = iter([self.proof(3)] + [self.proof(3, bundleManifestSha256='e' * 64)] * 10)
+            result, calls, selected, _ro = self.recall(verify=lambda _d: next(proofs))
+            self.served(result)
+            self.assertEqual(calls['query'], ['generation-7', 'generation-7'])
+        with self.subTest('journal refusal mid-recall'):
+            state = {'calls': 0}
+
+            def verify(_decision):
+                state['calls'] += 1
+                if state['calls'] <= 1:
+                    return self.proof(3)
+                raise laya_install_journal.JournalEvidenceError('inactive_or_mismatched_journal')
+            result, calls, selected, _ro = self.recall(verify=verify)
+            self.assertIsInstance(result, laya_install_journal.JournalEvidenceError)
+            self.assertEqual(str(result), 'inactive_or_mismatched_journal')
+            selected.assert_not_called()
+
+    def test_journal_epoch_rollback_is_refused_in_and_across_attempts(self):
+        cases = (
+            # A restore 5 -> 4 seen by the first attempt's recheck.
+            ('restore', [5, 4, 4, 4, 4, 4], None, 0),
+            # 5 -> 6 -> 5 inside one attempt: both rechecks sit above 5.
+            ('bounce', [5, 6, 5, 5, 5, 5], None, 0),
+            # The first attempt saw 6, a publish forces the retry, and the
+            # retried proof is back at 5.
+            ('across retry', [5, 6, 6, 5, 5, 5], self.publish_on_first, 1))
+        for name, epochs, query, reselected in cases:
+            with self.subTest(case=name):
+                self.setUp()
+                proofs = iter([self.proof(epoch) for epoch in epochs])
+                result, calls, selected, _ro = self.recall(
+                    verify=lambda _d: next(proofs), query=query)
+                self.assertIsInstance(result, response.HostResponseError, repr(result))
+                self.assertEqual(str(result), 'selected_proof_rolled_back')
+                # The retried proof is refused before it queries anything.
+                self.assertEqual(calls['query'], ['generation-7'])
+                self.assertEqual(selected.call_count, reselected)
+
+    def test_retried_recall_records_one_sync_wake(self):
+        # A cold provider wakes the owner once; the retried attempt reuses
+        # that wake instead of bumping the wake revision again.
+        from laya_index_a import IndexContractError
+
+        def cold(*_args):
+            raise IndexContractError('provider_unavailable')
+        result, calls, selected, _ro = self.recall(
+            verify=lambda _d: self.proof(3), query=self.publish_on_first, provider=cold)
+        self.served(result)
+        self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+        self.assertEqual(selected.call_count, 1)
+        self.assertEqual(calls['wake'].call_count, 1)
+        self.assertEqual(calls['wake'].call_args.kwargs, {'pull_due': True})
+
+    def test_retry_uses_the_armed_hook_budget(self):
+        import hook_budget
+        with self.subTest('budget nearly spent'):
+            self.setUp()
+            hook_budget._deadline = time.monotonic() + 0.5
+            proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+            result, calls, selected, _ro = self.recall(
+                verify=lambda _d: next(proofs), query=self.publish_on_first)
+            self.assertEqual(str(result), 'selected_proof_changed')
+            self.assertEqual(calls['query'], ['generation-7'])
+            selected.assert_not_called()
+        with self.subTest('re-selection spends the budget'):
+            self.setUp()
+            hook_budget._deadline = time.monotonic() + 10
+
+            def slow(*_a, **_k):
+                hook_budget._deadline = time.monotonic() + 0.5
+                return dict(self.decision)
+            proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+            result, calls, selected, _ro = self.recall(
+                verify=lambda _d: next(proofs), query=self.publish_on_first, reselect=slow)
+            self.assertEqual(str(result), 'selected_proof_changed')
+            self.assertEqual(calls['query'], ['generation-7'])
+            self.assertEqual(selected.call_count, 1)
+        with self.subTest('enough budget'):
+            self.setUp()
+            hook_budget._deadline = time.monotonic() + 10
+            proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+            result, calls, _selected, _ro = self.recall(
+                verify=lambda _d: next(proofs), query=self.publish_on_first)
+            self.served(result)
+            self.assertEqual(len(calls['query']), 2)
+
+    def test_main_arms_the_hook_budget_before_route_selection(self):
+        import contextlib
+        import io
+        import hook_budget
+        seen = {}
+
+        def select(*_args):
+            seen['select'] = hook_budget.deadline()
+            return {'state': 'candidate'}
+        with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
+            payload = Path(temp) / 'payload.json'
+            payload.write_text(json.dumps({'prompt': 'find alpha', 'cwd': temp}),
+                               encoding='utf-8')
+            before = time.monotonic()
+            with patch.object(response, 'select_hook_route', side_effect=select), \
+                 patch.object(response, 'select_route', return_value={'state': 'candidate'}), \
+                 patch.object(response, 'serve_selected', return_value={}), \
+                 patch.object(response, '_capture_learning'), \
+                 patch.dict(os.environ, {'QMD_HOOK_DEADLINE_MONO': ''}), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                status = response.main(['serve-hook', 'recall', 'claude', str(payload), temp])
+                exported = os.environ.get('QMD_HOOK_DEADLINE_MONO')
+        self.assertEqual(status, 0)
+        self.assertGreater(seen['select'], before)
+        self.assertLessEqual(seen['select'], before + hook_budget.MAX_SECONDS)
+        self.assertEqual(exported, '')
+
+    def test_overlapping_recalls_keep_their_own_floor_and_wakes(self):
+        # Hermes serves recalls in-process: a concurrent or nested recall
+        # must neither reset another one's epoch floor nor share its wakes.
+        import threading
+        import runtime_work
+        a_ready, b_done = threading.Event(), threading.Event()
+        outcome = {}
+
+        def epoch(value):
+            response._recall_epoch({'selectionEpoch': value})
+
+        def once(_action, _host, decision, _payload):
+            root = decision['projectRoot']
+            if root == '/p/a':
+                epoch(5)
+                epoch(6)
+                response._recall_sync_wake('/p/a')
+                a_ready.set()
+                b_done.wait(5)
+                # Nested recall of another project inside this one.
+                response.serve_selected('recall', 'hermes', {'projectRoot': '/p/n'},
+                                        {'prompt': 'q'})
+                response._recall_sync_wake('/p/a')
+                response._recall_sync_wake('/p/a2')
+                try:
+                    epoch(5)
+                except response.HostResponseError as exc:
+                    outcome['a'] = str(exc)
+                return {}
+            if root == '/p/b':
+                a_ready.wait(5)
+                epoch(1)
+                response._recall_sync_wake('/p/b')
+                response._recall_sync_wake('/p/b')
+                return {}
+            epoch(0)
+            response._recall_sync_wake(root)
+            return {}
+
+        def run(root):
+            try:
+                response.serve_selected('recall', 'claude', {'projectRoot': root},
+                                        {'prompt': 'q'})
+            finally:
+                if root == '/p/b':
+                    b_done.set()
+        with patch.object(response, '_serve_selected_once', side_effect=once), \
+             patch.object(runtime_work, 'request',
+                          side_effect=lambda *_a, **_k: {'status': 'queued'}) as wake:
+            threads = [threading.Thread(target=run, args=(root,))
+                       for root in ('/p/a', '/p/b')]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            # Outside any recall the wake is recorded as before, every time.
+            response._recall_sync_wake('/p/free')
+            response._recall_sync_wake('/p/free')
+        self.assertEqual(outcome.get('a'), 'selected_proof_rolled_back')
+        self.assertEqual(sorted(call.args[1] for call in wake.call_args_list),
+                         ['/p/a', '/p/a2', '/p/b', '/p/free', '/p/free', '/p/n'])
+        self.assertIsNone(response._RECALL_STATE.get())
+
+    def test_non_proof_refusals_are_not_retried(self):
+        def stale(_n):
+            raise response.HostResponseError('index_stale_sync_queued')
+        result, calls, selected, _ro = self.recall(
+            verify=lambda _d: self.proof(3), query=stale)
+        self.assertEqual(str(result), 'index_stale_sync_queued')
+        self.assertEqual(len(calls['query']), 1)
+        selected.assert_not_called()
 
 
 if __name__ == "__main__":

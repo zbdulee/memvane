@@ -5,6 +5,7 @@ prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import math
@@ -1206,14 +1207,16 @@ def _request_stale_sync(decision: dict, proof: dict):
     owner and never serves the stale generation's rows.
     """
     from laya_install_journal import verify_selected_route
-    if verify_selected_route(decision) != proof:
+    current = verify_selected_route(decision)
+    _recall_epoch(current)
+    if current != proof:
         _fail("selected_proof_changed")
     try:
-        import runtime_work
-        result = runtime_work.request("laya-sync", decision["projectRoot"])
+        result = _recall_sync_wake(decision["projectRoot"])
     except Exception:
         result = None
     refreshed = verify_selected_route(decision)
+    _recall_epoch(refreshed)
     stable = lambda row: {key: value for key, value in row.items()
                           if key != "selectionEpoch"}
     if (stable(refreshed) != stable(proof)
@@ -1238,7 +1241,9 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     """
     from laya_install_journal import verify_selected_route
     from laya_embed_resident import _failure_decision, read_owner_state
-    if verify_selected_route(decision) != proof:
+    current = verify_selected_route(decision)
+    _recall_epoch(current)
+    if current != proof:
         _fail('selected_proof_changed')
     try:
         _failure_decision(proof['providerManifest'])
@@ -1256,14 +1261,13 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if state is not None and state['terminal']:
         _fail('selected_provider_start_failed')
     try:
-        import runtime_work
         # A prompt that finds no vector owner brings a backed-off sync wake
         # forward; the recorded attempts and reason stay unchanged.
-        result = runtime_work.request('laya-sync', decision['projectRoot'],
-                                      pull_due=True)
+        result = _recall_sync_wake(decision['projectRoot'], pull_due=True)
     except Exception:
         result = None
     refreshed = verify_selected_route(decision)
+    _recall_epoch(refreshed)
     stable = lambda row: {key: value for key, value in row.items()
                           if key != 'selectionEpoch'}
     if (stable(refreshed) != stable(proof) or
@@ -1501,7 +1505,12 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Prove the installed route before opening A-int; unsupported actions fail."""
+    """Prove the installed route before opening A-int; unsupported actions fail.
+
+    A recall whose proof or published view moves while it runs (a sync
+    publish, a bundle upgrade activation) re-selects the route and runs once
+    more from a fresh proof; see ``_recall_retry_decision``.
+    """
     if action not in ("recall", "gate", "posttool", "compile", "update", "update-queued", "index",
                       "file-change-event"):
         _fail("selected_action_unsupported")
@@ -1509,6 +1518,160 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
+    if action != 'recall':
+        return _serve_selected_once(action, host, decision, payload)
+    started = time.monotonic()
+    # Fresh state per call, bound to this thread/context only: an in-process
+    # host (Hermes) may run recalls concurrently or nested.
+    token = _RECALL_STATE.set({'epoch': None, 'wakes': {}})
+    try:
+        try:
+            return _serve_selected_once(action, host, decision, payload)
+        except Exception as exc:
+            retry = _recall_retry_decision(exc, decision, payload, started)
+            if retry is None:
+                raise
+            changed = _retry_code(exc)
+        _LEARNING_CAPTURE[:] = []
+        _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
+                             changed=changed)
+        return _serve_selected_once(action, host, retry, payload)
+    finally:
+        _RECALL_STATE.reset(token)
+
+
+# Per-recall state shared by both attempts: the highest journal epoch seen
+# by any proof or recheck, and the sync wake recorded per project root.
+_RECALL_STATE: contextvars.ContextVar = contextvars.ContextVar(
+    'memvane_recall_state', default=None)
+# The retry runs only when the time left after re-selection exceeds what the
+# first attempt took plus this margin.
+_RETRY_MARGIN_SECONDS = 1.0
+
+
+def _recall_epoch(proof) -> None:
+    """Raise when a proof's journal epoch is below the recall's highest one.
+
+    A journal restore moves the epoch back; neither attempt may accept it.
+    Outside a recall, or for a proof without an epoch, nothing is recorded.
+    """
+    state = _RECALL_STATE.get()
+    if state is None or not isinstance(proof, dict):
+        return
+    epoch = proof.get('selectionEpoch')
+    if type(epoch) is not int:
+        return
+    floor = state['epoch']
+    if floor is not None and epoch < floor:
+        _fail('selected_proof_rolled_back')
+    state['epoch'] = epoch if floor is None else max(floor, epoch)
+
+
+def _recall_sync_wake(project_root: str, **kwargs):
+    """Record the selected sync wake at most once per project root and recall.
+
+    Each request bumps the wake revision; a retried recall reuses the first
+    recorded result instead of asking for another sync run.
+    """
+    import runtime_work
+    state = _RECALL_STATE.get()
+    if state is None:
+        return runtime_work.request('laya-sync', project_root, **kwargs)
+    wakes = state['wakes']
+    if project_root not in wakes:
+        wakes[project_root] = runtime_work.request('laya-sync', project_root, **kwargs)
+    return wakes[project_root]
+
+
+def _retry_time_left(started: float) -> float:
+    """Seconds left in the hook budget; armed at hook entry by ``main``.
+
+    An in-process host (Hermes) never arms it, so the budget then counts
+    from this recall's own start.
+    """
+    import hook_budget
+    try:
+        if hook_budget.deadline() == float('inf'):
+            return hook_budget.remaining() - (time.monotonic() - started)
+        return hook_budget.remaining()
+    except (Exception, hook_budget.HookDeadlineExceeded):
+        return 0.0
+
+
+# A proof or published-view change seen inside one recall. Each names a
+# concurrent writer of the same install (sync publish, upgrade activation),
+# not a refusal of the route itself.
+_RETRYABLE_RECALL_CODES = frozenset(('selected_proof_changed', 'incremental_base_changed'))
+_RETRYABLE_JOURNAL_CODES = frozenset(('host_route_unverified', 'host_decision_changed'))
+# Fields a re-selected decision must share with the first one. Bundle,
+# generation and plugin root move with an upgrade; these never do.
+_RECALL_IDENTITY = ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath',
+                    'dbPath', 'queuePath', 'dbIncarnation')
+_WORKTREE_IDENTITY = ('state', 'worktreeRoot', 'worktreeProjectRoot', 'gitCommonDir')
+
+
+def _retry_code(exc: BaseException) -> str:
+    return str(exc) if re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) else 'unknown'
+
+
+def _decision_project_root(decision: dict):
+    if isinstance(decision.get('mainRoute'), dict):
+        return decision['mainRoute'].get('projectRoot')
+    return decision.get('projectRoot')
+
+
+def _decision_identity(decision) -> tuple | None:
+    if not isinstance(decision, dict):
+        return None
+    if decision.get('state') == 'worktree':
+        main = decision.get('mainRoute')
+        if not isinstance(main, dict) or main.get('state') != 'candidate':
+            return None
+        return (tuple(decision.get(key) for key in _WORKTREE_IDENTITY) +
+                tuple(main.get(key) for key in _RECALL_IDENTITY))
+    if decision.get('state') != 'candidate':
+        return None
+    return tuple(decision.get(key) for key in _RECALL_IDENTITY)
+
+
+def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
+                           started: float):
+    """The re-selected decision for one more recall, or None to refuse.
+
+    Only a proof/view change of the same install qualifies, and only while
+    the hook budget left, before and after re-selection, exceeds the first
+    attempt's duration plus a margin. A journal epoch rollback never
+    qualifies (``selected_proof_rolled_back``). The second attempt proves the
+    route from the top (full proof, or the read-only drift path), so its
+    rows never come from the first attempt's proof or pin. A changed
+    install, project, scope, journal or store identity keeps the refusal.
+    """
+    from laya_install_journal import JournalEvidenceError
+    if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
+            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES)):
+        return None
+    needed = time.monotonic() - started + _RETRY_MARGIN_SECONDS
+    if _retry_time_left(started) <= needed:
+        return None
+    identity = _decision_identity(decision)
+    if identity is None:
+        return None
+    target = payload.get('cwd')
+    if not isinstance(target, str) or not os.path.isabs(target):
+        target = (decision.get('worktreeProjectRoot') if decision.get('state') == 'worktree'
+                  else decision.get('projectRoot'))
+    if not isinstance(target, str):
+        return None
+    try:
+        fresh = select_route(target, action='recall')
+    except Exception:
+        return None
+    if _decision_identity(fresh) != identity or _retry_time_left(started) <= needed:
+        return None
+    return fresh
+
+
+def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
     # The journal binds one owner cache; another host may execute only an
@@ -1780,6 +1943,23 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     return {}
 
 
+def _proof_still_current(refreshed: dict, proof: dict) -> bool:
+    """Same route proof, allowing only the journal epoch to move forward.
+
+    A sync owner marks its first publish of a wake with one epoch advance
+    (cas_mark_new_write). The served rows stay bound to their pinned head,
+    which ``_selection_view_unchanged`` checks separately. An epoch below the
+    highest one this recall has seen raises ``selected_proof_rolled_back``.
+    """
+    _recall_epoch(refreshed)
+    if refreshed == proof:
+        return True
+    stable = lambda row: {key: value for key, value in row.items()
+                          if key != 'selectionEpoch'}
+    return (isinstance(refreshed, dict) and stable(refreshed) == stable(proof) and
+            refreshed.get('selectionEpoch', -1) >= proof.get('selectionEpoch', 0))
+
+
 def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   recheck, *, degraded: bool = False,
                   read_only_label: str = 'bundle_drift') -> dict:
@@ -1788,6 +1968,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     from laya_index_runtime import LayaIndexRuntime
     from laya_local_embed_provider import ReviewedLocalQmdProvider
     import config
+    _recall_epoch(proof)
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         _fail("invalid_query_prompt")
@@ -1936,7 +2117,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     if vector_fallback is not None:
         _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
         print(f'[memvane] {vector_fallback}; serving lexical results', file=sys.stderr)
-    if recheck(decision) != proof:
+    if not _proof_still_current(recheck(decision), proof):
         _fail("selected_proof_changed")
     if base_generation is not None and pinned_generation != [base_generation]:
         _fail('incremental_base_changed')
@@ -1961,7 +2142,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
-    if recheck(decision) != proof or not _selection_view_unchanged(
+    if not _proof_still_current(recheck(decision), proof) or not _selection_view_unchanged(
             decision, chosen, pinned_generation[0] if pinned_generation else None):
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
@@ -1984,6 +2165,13 @@ def main(argv: list[str] | None = None) -> int:
         _, action, host, payload_file, fallback_cwd = args
     else:
         return 2
+    # The hook budget counts from this entry, before route selection; the
+    # recall retry reads what is left of it. No watchdog, no env export.
+    import hook_budget
+    try:
+        hook_budget.arm(watchdog=False, export=False)
+    except hook_budget.HookDeadlineExceeded:
+        pass
     project_root = None
     started = time.monotonic()
     _LEARNING_CAPTURE[:] = []
@@ -2028,7 +2216,7 @@ def main(argv: list[str] | None = None) -> int:
                    re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
         code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
                 or journal else "selected_proof_or_query_failed")
-        print(f"[memvane] {code}; QMD fallback refused", file=sys.stderr)
+        print(f"[memvane] {code}; request refused", file=sys.stderr)
         if action == "recall":
             # A refused recall still leaves its reason (release QA §6: a missing
             # line would read as "the hook did not run").
