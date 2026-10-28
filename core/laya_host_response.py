@@ -472,7 +472,13 @@ def _selection_view_unchanged(decision, chosen, expected_head=None):
 def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, limit,
                    *, collection_roots=None, collection_names=None,
                    verified_source=None, sealed_view=None, row_verifier=None,
-                   excluded_paths=None):
+                   excluded_paths=None, unavailable=None):
+    """Verified vector rows on one pin; ``[]`` when the provider cannot answer.
+
+    ``unavailable`` (optional, caller-owned list) receives the reason when the
+    provider is unavailable, so a caller can tell "no vector leg" from "no
+    vector hits".
+    """
     from laya_index_vector import LayaVectorIndex, search_vector_verified
     pinned = LayaVectorIndex(runtime.index).profile_for_pin(token)
     if (pinned["scope"] != runtime.scope
@@ -484,9 +490,11 @@ def _pinned_vector(runtime, token, prompt, route_profile, approved_provider, lim
         _fail("vector_profile_mismatch")
     try:
         supplied = approved_provider(prompt, route_profile)
-    except _VectorUnavailable:
+    except _VectorUnavailable as exc:
         # Bundle drift, a cold owner or refused query admission: the published
         # generation is still served from its verified lexical rows.
+        if unavailable is not None:
+            unavailable.append(str(exc))
         return []
     if (not isinstance(supplied, dict) or set(supplied) != _PROVIDER_RESULT_KEYS
             or supplied["profileId"] != route_profile["profileId"]
@@ -698,7 +706,7 @@ def _v2_body_evidence(built, present, mode, selected, lex_hits, ep_hits):
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
               patterns, min_score, skip_paths, candidates=None,
               source_filter=None, excluded_paths=None,
-              needed_eligible=MAX_ROWS, on_capped=None):
+              needed_eligible=MAX_ROWS, on_capped=None, diagnostics=None):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
     Without ``candidates`` the legacy path checks one live scan of all roots.
@@ -706,6 +714,14 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     against their indexed hashes without reopening source files.
     ``on_capped`` (optional) is called once per list whose full fetch held
     fewer eligible rows than ``needed_eligible``; that list is served short.
+
+    When the vector leg is unavailable, a lexical floor list stands in for it:
+    the verified per-term DF probe lists fused, or one OR query when the probe
+    batch missed its deadline. A natural-language prompt whose strict AND
+    query matches nothing still answers with its verified term matches; the
+    floor never counts as body evidence. ``diagnostics`` (optional,
+    caller-owned dict) receives ``probeOnlyPaths``: paths only the DF probes
+    returned and that were not fused as candidates.
     """
     from keywords import build_lexical_terms, select_general_terms_explained
     from laya_index_a import IndexContractError
@@ -732,7 +748,8 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         vector_check = check
     prefixes = tuple(name + '/' for name in names)
 
-    def verified_batch(queries, limit, *, deadline_seconds, needed=needed_eligible):
+    def verified_batch(queries, limit, *, deadline_seconds, needed=needed_eligible,
+                       seen=None):
         if not queries:
             return []
         batches = runtime.index.search_many(token, tuple(queries), limit,
@@ -748,6 +765,8 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
             checked = check(rows)
             if any(not row['path'].startswith(prefixes) for row in checked):
                 _raise_stale('search escaped collection scope')
+            if seen is not None:
+                seen.update(row['path'] for row in checked)
             if source_filter is not None:
                 checked = [row for row in checked if source_filter(row)]
                 if len(rows) == limit and len(checked) < needed and on_capped:
@@ -761,6 +780,9 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     built = build_lexical_terms(prompt, list(patterns))
     general = built['generalTerms']
     present = set()
+    probe_rows = None
+    probe_seen = set()
+    candidate_seen = set()
     # One live source scan and one FTS integrity check for all DF probes. The
     # six-query cap bounds SQL work; a 1 s overall budget bounds hook latency.
     deadline = time.monotonic() + 1.0
@@ -770,7 +792,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         try:
             probe_rows = verified_batch([atom for _term, atom in active],
                                         EXCLUSION_FETCH_LIMIT if source_filter else 1,
-                                        needed=1,
+                                        needed=1, seen=probe_seen,
                                         deadline_seconds=max(0.000001,
                                                              deadline - time.monotonic()))
         except IndexContractError as exc:
@@ -804,16 +826,19 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
     for (position, _fts), rows in zip(
             lexical, verified_batch([fts for _position, fts in lexical],
                                     EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
-                                    deadline_seconds=2.0)):
+                                    deadline_seconds=2.0, seen=candidate_seen)):
         lists.append(rows)
         lex_hits |= bool(rows)
         ep_hits |= position > 0 and bool(rows)
+    vector_off = []
     vector_rows = _pinned_vector(runtime, token, ' '.join(prompt.split()), profile,
                                  provider, EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
                                  collection_roots=roots, collection_names=names,
                                  verified_source=source, sealed_view=sealed,
                                  row_verifier=vector_check,
-                                 excluded_paths=excluded_paths)
+                                 excluded_paths=excluded_paths,
+                                 unavailable=vector_off)
+    candidate_seen.update(row['path'] for row in vector_rows)
     if source_filter is not None:
         eligible = [row for row in vector_rows if source_filter(row)]
         if (len(vector_rows) == EXCLUSION_FETCH_LIMIT
@@ -821,12 +846,39 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
             on_capped('vector')
         vector_rows = eligible[:HYBRID_LIST_LIMIT]
     lists.append(vector_rows)
+    if vector_off:
+        if probe_rows is not None:
+            floor = _fuse_verified_lists(probe_rows, max_rows=HYBRID_LIST_LIMIT)
+            candidate_seen |= probe_seen
+        else:
+            floor = _lexical_floor(verified_batch, active, source_filter,
+                                   candidate_seen)
+        lists.append(floor)
+    if diagnostics is not None:
+        diagnostics['probeOnlyPaths'] = frozenset(probe_seen - candidate_seen)
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
     filtered = [row for row in fused if row['score'] >= min_score and
                 not any(pattern in row['path'] for pattern in skip_paths)]
     body_evidence = _v2_body_evidence(built, present, mode, selected,
                                       lex_hits, ep_hits)
     return filtered, body_evidence
+
+
+def _lexical_floor(verified_batch, active, source_filter, seen):
+    """One OR query of the DF probe terms, under the lexical FTS deadline."""
+    from laya_index_a import IndexContractError
+    atoms = [atom for _term, atom in active]
+    if not atoms:
+        return []
+    try:
+        (rows,) = verified_batch([' OR '.join(atoms)],
+                                 EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
+                                 deadline_seconds=2.0, seen=seen)
+    except IndexContractError as exc:
+        if str(exc) != 'fts_deadline_exceeded':
+            raise
+        return []
+    return rows
 
 
 def _verified_wiki_row(row: dict, decision: dict,
@@ -1024,12 +1076,16 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             filtered.setdefault(row['path'], next(iter(why), 'unverified'))
             return False
         capped = []
+        diagnostics = {}
         rows, body_evidence = _v2_phase(
             runtime, token, prompt, route_profile, approved_provider, roots,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
             (), candidates, source_filter, excluded_paths,
             needed_eligible=settings.get('topN', MAX_ROWS),
-            on_capped=capped.append)
+            on_capped=capped.append, diagnostics=diagnostics)
+        # A DF probe row that no fused list returned was never a candidate.
+        for path in diagnostics.get('probeOnlyPaths', ()):
+            filtered.pop(path, None)
         if capped:
             # Observable only: the short eligible lists are still served.
             _write_selection_log(decision['projectRoot'],
@@ -1059,7 +1115,11 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
 
 
 def _report_filtered(project_root, filtered: dict[str, str]) -> None:
-    """Matched published cards exist but none passed provenance: say why."""
+    """Matched published cards exist but none passed provenance: say why.
+
+    Counts distinct wiki paths returned by the lists fused for this recall
+    (lexical, EP, vector, or the lexical floor) that failed provenance.
+    """
     counts: dict[str, int] = {}
     for reason in filtered.values():
         counts[reason] = counts.get(reason, 0) + 1

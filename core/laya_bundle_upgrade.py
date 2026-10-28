@@ -34,6 +34,11 @@ older than the bound one never downgrades it.
 The same worker converts a v3 install journal to v4
 (``laya_journal_v4``) once every host copy of this plugin reads v4.
 
+A selected install whose bound root is the executing root but whose sealed
+ownership no longer verifies (the host re-extracted the same bundle in place)
+is re-adopted at that root through the same review and switch; the same
+commit with other bytes refuses as ``installed_bundle_content_changed``.
+
 A busy provider/compute lane or install lock is contention, not a failure:
 the worker waits it out a few times, then leaves a ``deferred`` status that a
 later session retries after ``DEFER_RETRY_SECONDS`` without spending an attempt.
@@ -85,7 +90,8 @@ REFUSALS = frozenset((
     'provider_changed_rebuild_required', 'older_host_bundle',
     'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
     'marketplace_source_dirty', 'host_layout_unknown',
-    'qmd_origin_detach_required', 'laya_embed_runtime_source_unavailable',
+    'qmd_origin_detach_required', 'installed_bundle_content_changed',
+    'laya_embed_runtime_source_unavailable',
     'laya_embed_runtime_source_changed', 'laya_embed_runtime_mismatch',
     'laya_embed_runtime_source_version_changed'))
 
@@ -530,18 +536,49 @@ def _require_pinned_runtime(attestation):
         _refuse('provider_changed_rebuild_required')
 
 
+def _same_root_readopt(kind, identity, root):
+    """Whether a selected install bound to ``root`` must be re-adopted there.
+
+    A host can re-extract the same bundle into the same cache directory (new
+    inodes and ctimes, same bytes). The journal then pins an ownership digest
+    the live files no longer have and every proof fails with
+    ``installed_bundle_changed``. Same commit and same content re-adopt
+    through the normal review and switch; same commit with other content
+    refuses. A different commit at this root (a host reusing one version
+    directory) takes the normal upgrade path, whose adoption checks it.
+    Bound and inactive builds keep their bundle here.
+    """
+    if kind != 'active':
+        return False
+    from laya_product_bundle import BundleEvidenceError, inspect_full_plugin_candidate
+    try:
+        live = inspect_full_plugin_candidate(str(root))
+    except BundleEvidenceError:
+        # Unsealed or changed in place: adoption re-proves it against the
+        # marketplace commit or refuses.
+        return True
+    if live['sourceCommit'] != identity.get('sourceCommit'):
+        return True
+    if (live['bundleManifestSha256'] != identity.get('bundleManifestSha256') or
+            live['vectorProfile'] != identity.get('vectorProfile')):
+        _refuse('installed_bundle_content_changed')
+    return live['ownershipManifestSha256'] != identity.get('ownershipManifestSha256')
+
+
 def upgrade_install(project_root, state, root, home=None):
     """Move one install to the executing bundle; returns a result row."""
     kind, identity = classify(state)
     if kind == 'retired' or identity is None:
         return {'status': 'current', 'kind': kind}
-    if identity['pluginRoot'] == str(root):
+    same_root = identity['pluginRoot'] == str(root)
+    if same_root and not _same_root_readopt(kind, identity, root):
         return {'status': 'current', 'kind': kind}
     from laya_ledger_common import QMD_ORIGIN_DETACH_REQUIRED, qmd_ledger_present
     if qmd_ledger_present(state):
         _refuse(QMD_ORIGIN_DETACH_REQUIRED)
     commit = installed_commit(root, home)
-    if commit is not None and commit == identity['sourceCommit'] and kind != 'inactive':
+    if (not same_root and commit is not None and commit == identity['sourceCommit'] and
+            kind != 'inactive'):
         try:
             return {**_seal_companion(identity, root), 'kind': kind}
         except UpgradeRefused:
