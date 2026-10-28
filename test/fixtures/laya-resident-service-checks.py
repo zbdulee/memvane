@@ -29,6 +29,7 @@ from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI, ReviewedLocalQmd
 import laya_resident_service as svc
 
 DIM = 4
+TIME_SCALE = .02  # subprocess drain checks: budget 9.6 s, successor wait 12 s
 RUNTIME = 'qmd-2.5.3-node-llama-cpp-3.18.1'
 RECIPE = 'qmd-query-format-single-document-v1'
 
@@ -717,6 +718,36 @@ class ServiceBoundsChecks(Fixture):
             self.wait(lambda: len(events) == 2)
         self.assertEqual(events, ['returned', ('stopped', True)])
 
+    def test_drain_kills_a_worker_whose_stop_never_returns(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        hung = threading.Event()
+        self.addCleanup(hung.set)
+        start = self.start_worker
+
+        class Stuck(Handle):
+            def stop(self):
+                hung.wait(60)  # a stop that never finishes on its own
+        handles = []
+
+        def start_worker(manifest, admit):
+            handle = start(manifest, admit)
+            handles.append(Stuck(handle.process, handle.socket_path))
+            return handles[-1]
+        with patch.object(svc, 'MAX_EXIT_CLEANUP_SECONDS', 1, create=True):
+            service = self.service(start=False)
+            service.start_worker = start_worker
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.wait(lambda: self.ready(manifest))
+            began = time.monotonic()
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(10))
+        self.assertLess(time.monotonic() - began, 5, 'exit cleanup ignored its bound')
+        self.wait(lambda: handles[0].process.poll() is not None,
+                  message='stuck worker left running')
+        handles[0].process.stdout.close()
+
     def test_drain_during_attestation_never_starts_a_worker(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)
@@ -852,7 +883,7 @@ class HungLoadChecks(unittest.TestCase):
         root.mkdir(mode=0o700)
         child_record = base / 'child.pid'
         env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
-               'LAYA_SERVICE_TIME_SCALE': '0.01', 'PYTHONDONTWRITEBYTECODE': '1'}
+               'LAYA_SERVICE_TIME_SCALE': str(TIME_SCALE), 'PYTHONDONTWRITEBYTECODE': '1'}
         driver = subprocess.Popen([sys.executable, '-B', __file__, '--hung-load-service',
                                    str(base), str(child_record)],
                                   env=env, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -890,7 +921,7 @@ class HungLoadChecks(unittest.TestCase):
         base = Path(temp.name).resolve()
         (base / 'svc').mkdir(mode=0o700)
         child_record, draining = base / 'child.pid', base / 'draining'
-        scale = .01
+        scale = TIME_SCALE
         env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
                'LAYA_SERVICE_TIME_SCALE': str(scale),
                # Read only by a service without the scaled budget (before the fix).
@@ -925,15 +956,18 @@ class HungLoadChecks(unittest.TestCase):
         with self.assertRaises(ProcessLookupError, msg='orphan embed child left running'):
             os.kill(int(child_record.read_text()), 0)
 
-    def test_drain_budget_stays_below_the_successor_wait(self):
+    def test_drain_budget_and_exit_cleanup_stay_below_the_successor_wait(self):
+        def total():
+            # Every drain phase, then the exit cleanup bound, then the safety gap.
+            return (svc._scaled(svc.DRAIN_BUDGET_SECONDS) + svc._exit_cleanup_seconds()
+                    + svc._scaled(svc.DRAIN_SAFETY_SECONDS))
         self.assertLessEqual(svc.DRAIN_SECONDS, svc.DRAIN_BUDGET_SECONDS)
-        self.assertLess(svc.DRAIN_BUDGET_SECONDS + svc.KILL_REAP_SECONDS,
-                        svc.SUCCESSOR_WAIT_SECONDS)
-        self.assertGreaterEqual(svc.SUCCESSOR_WAIT_SECONDS - svc.DRAIN_BUDGET_SECONDS, 60)
+        self.assertLessEqual(total(), svc.SUCCESSOR_WAIT_SECONDS)
+        # The scale the subprocess checks use keeps the same inequality, with
+        # the cleanup floor that a scaled test does not shrink.
         with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1',
-                                     'LAYA_SERVICE_TIME_SCALE': '0.01'}):
-            self.assertLess(svc._scaled(svc.DRAIN_BUDGET_SECONDS),
-                            svc._scaled(svc.SUCCESSOR_WAIT_SECONDS))
+                                     'LAYA_SERVICE_TIME_SCALE': str(TIME_SCALE)}):
+            self.assertLessEqual(total(), svc._scaled(svc.SUCCESSOR_WAIT_SECONDS))
         with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '',
                                      'LAYA_SERVICE_TIME_SCALE': '0.01'}):
             self.assertEqual(svc._scaled(svc.DRAIN_BUDGET_SECONDS), svc.DRAIN_BUDGET_SECONDS)

@@ -75,7 +75,13 @@ DRAIN_MARGIN_SECONDS = 120
 DRAIN_BUDGET_SECONDS = SUCCESSOR_WAIT_SECONDS - DRAIN_MARGIN_SECONDS
 DRAIN_SECONDS = 330         # in-flight phase cap; one document_chunks request may take 300s
 LOAD_DRAIN_SECONDS = 5      # re-check interval while a drain waits for a cold load
-KILL_REAP_SECONDS = 5       # forced exit: confirm killed children are reaped
+# Exit cleanup after the drain budget, on both paths: child discovery, kill
+# and reap (forced exit) or stopping every worker (normal), under one
+# deadline; a worker still stopping at the deadline is killed. The budget plus
+# this bound stays at least DRAIN_SAFETY_SECONDS below the successor's wait.
+MAX_EXIT_CLEANUP_SECONDS = 20
+MIN_EXIT_CLEANUP_SECONDS = 1  # floor under a scaled test: a reap takes milliseconds
+DRAIN_SAFETY_SECONDS = 60
 FORCED_EXIT = 'forced-exit.json'
 FORCED_EXIT_CODE = 70
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
@@ -716,14 +722,23 @@ def _scaled(seconds):
     return seconds
 
 
-def _own_children():
+def _exit_cleanup_seconds():
+    return max(_scaled(MAX_EXIT_CLEANUP_SECONDS), MIN_EXIT_CLEANUP_SECONDS)
+
+
+def _own_children(timeout=5):
     """Direct child PIDs of this process (the listing's own ``ps`` excluded)."""
     try:
         listing = subprocess.Popen(['ps', '-A', '-o', 'pid=', '-o', 'ppid='],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, text=True)
-        out, _ = listing.communicate(timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
+        out, _ = listing.communicate(timeout=max(.01, timeout))
+    except subprocess.TimeoutExpired:
+        with suppress(OSError):
+            listing.kill()
+            listing.wait(1)
+        return []
+    except OSError:
         return []
     me, children = os.getpid(), []
     for line in out.splitlines():
@@ -734,14 +749,16 @@ def _own_children():
     return children
 
 
-def _kill_children(timeout=KILL_REAP_SECONDS):
-    """SIGKILL every direct child (embed workers, a half-started one) and reap it."""
+def _kill_children(deadline):
+    """SIGKILL every direct child (embed workers, a half-started one) and reap it.
+
+    Discovery, kill and reap all end by ``deadline`` (monotonic).
+    """
     killed = []
-    for pid in _own_children():
+    for pid in _own_children(min(5, deadline - time.monotonic())):
         with suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
             killed.append(pid)
-    deadline = time.monotonic() + timeout
     left = set(killed)
     while left and time.monotonic() < deadline:
         for pid in list(left):
@@ -754,6 +771,28 @@ def _kill_children(timeout=KILL_REAP_SECONDS):
         if left:
             time.sleep(.05)
     return killed, sorted(left)
+
+
+def _stop_handles(handles, deadline):
+    """Stop worker handles in parallel; kill any still stopping at ``deadline``."""
+    threads = []
+    for handle in handles:
+        thread = threading.Thread(target=_quiet_stop, args=(handle,),
+                                  name='laya-service-stop', daemon=True)
+        thread.start()
+        threads.append((handle, thread))
+    for _handle, thread in threads:
+        thread.join(max(0, deadline - time.monotonic()))
+    for handle, thread in threads:
+        if thread.is_alive():
+            with suppress(Exception):
+                handle.process.kill()
+            thread.join(max(0, deadline - time.monotonic()))
+
+
+def _quiet_stop(handle):
+    with suppress(Exception):
+        handle.stop()
 
 
 def default_admit():
@@ -950,14 +989,14 @@ class Service:
             if time.monotonic() >= budget_end:
                 self._force_exit(time.monotonic() - started)
                 return
+        cleanup_end = time.monotonic() + _exit_cleanup_seconds()
         with self.lock:
             for project in list(self.bindings):
                 self._release(project, reason='starting')
-            for worker in self.workers.values():
-                if worker.handle is not None:
-                    with suppress(Exception):
-                        worker.handle.stop()
+            handles = [worker.handle for worker in self.workers.values()
+                       if worker.handle is not None]
             self.workers.clear()
+        _stop_handles(handles, cleanup_end)
         self.stopped.set()
 
     def _force_exit(self, waited):
@@ -968,9 +1007,7 @@ class Service:
         lease flock and the stuck load thread dies with it. The lease is never
         released in-process while that thread is alive.
         """
-        # Not scaled: a SIGKILLed child is reaped in milliseconds; the loop
-        # ends then, and KILL_REAP_SECONDS only bounds a pathological case.
-        killed, alive = _kill_children(KILL_REAP_SECONDS)
+        killed, alive = _kill_children(time.monotonic() + _exit_cleanup_seconds())
         with suppress(Exception):
             _atomic_json(self.root / FORCED_EXIT, {
                 'pid': os.getpid(), 'bundle': self.bundle, 'reason': 'cold_load_hung',

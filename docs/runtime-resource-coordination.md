@@ -466,8 +466,10 @@ from injected analytical tests; the shared OS reporter always attaches it.
   drain. Listeners close first (clients see an absent socket and serve lexical
   results, never exit 3), in-flight requests and the learning queue finish
   (bounded at 330 seconds), a cold load in progress settles, and every phase
-  fits one 480-second budget from drain start, 120 seconds below the
-  successor's 600-second lease wait. A cold load still running at the budget
+  fits one 480-second budget from drain start; exit cleanup (stopping
+  workers in parallel, killing any still stopping, or the forced-exit kill
+  and reap) has its own 20-second bound, so both end at least 60 seconds
+  before the successor's 600-second lease wait. A cold load still running at the budget
   is hung: the service kills and reaps its own child processes, records
   `service/forced-exit.json` and exits, so the kernel releases the lease; it
   never releases the lease in-process while the load runs. Then owner leases
