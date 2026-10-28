@@ -142,6 +142,21 @@ def run(project: Path):
     verify = _safe_queue_path(project, cp.rel(cp.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
+    import wiki_lifecycle_request
+    try:
+        lifecycle = wiki_lifecycle_request.claim(project)
+    except (OSError, ValueError):
+        lifecycle = None
+    if lifecycle is not None:
+        # Before the compile worker, so the rows it enqueues compile in this pass.
+        wiki_lifecycle_request.run_lifecycle(project)
+        recheck(bound)
+        idle = _compile_idle(project, source, verify, bound)
+        if idle is None:
+            return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
+        if idle:
+            # A lifecycle pass that left nothing to compile skips the worker.
+            return {'state': 'drained', 'processed': 0}
     proc = subprocess.run(
         [sys.executable, '-B', str(Path(__file__).with_name('wiki_compile_worker.py')),
          '--cwd', str(project), '--json', '--flush-all'],
@@ -156,17 +171,25 @@ def run(project: Path):
         return {'state': 'deferred', 'reason': 'compile_worker_result_invalid'}
     if not isinstance(answer, dict) or type(answer.get('processed')) is not int:
         return {'state': 'deferred', 'reason': 'compile_worker_result_invalid'}
+    idle = _compile_idle(project, source, verify, bound)
+    if idle is None:
+        return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
+    if not idle:
+        return {'state': 'pending', 'processed': answer['processed']}
+    return {'state': 'drained', 'processed': answer['processed']}
+
+
+def _compile_idle(project: Path, source: Path, verify: Path, bound):
+    """True when no queue row or active refresh is left; None if unknown."""
     import wiki_freshness
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:
-        return {'state': 'deferred', 'reason': 'compile_refresh_ledger_unavailable'}
+        return None
     # A selected policy may exclude a source after its old refresh event was
     # recorded. Keep the ledger for reversible re-enrollment, but do not hold
     # the selected compile wake open for a source the worker must not compile.
     from laya_source_exclusion import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
-    if ((source.exists() and source.stat().st_size) or
-            (verify.exists() and verify.stat().st_size) or active_unresolved):
-        return {'state': 'pending', 'processed': answer['processed']}
-    return {'state': 'drained', 'processed': answer['processed']}
+    return not ((source.exists() and source.stat().st_size) or
+                (verify.exists() and verify.stat().st_size) or active_unresolved)

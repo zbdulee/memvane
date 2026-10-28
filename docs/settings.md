@@ -1133,7 +1133,8 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 legacy settings에서는 `compile.triggers`에 `session_start_source`가 있을 때만 큐에 들어갑니다(유료 호출입니다). minimal settings(`name`·`skipPaths`만 있는 파일)는 wiki 생성이 항상 켜져 있으므로 이 동의 없이 넣습니다.
 없으면 로그에 `ENQUEUE compile_disabled`가 남고 카드는 그대로입니다 — 그 카드는 원문
 지문이 맞지 않아 recall에 주입되지 않습니다. 원문을 편집하는 경로(PostToolUse, raw
-discovery)는 기존 compile 큐로 변경을 넣고 삭제된 원문을 `sourceDelete`로 넣습니다.
+discovery)는 편집된 원문을 compile 큐에 바로 넣고 삭제된 원문을 `sourceDelete`로 넣으며,
+편집 뒤 수명 주기 run이 그 원문을 인용한 다른 카드를 맡습니다.
 
 **대량 삭제 가드.** 증명된 카드 중 원문이 없는 카드가 3장보다 많고 25%를 넘으면 그 run은
 아무것도 지우거나 넣지 않고 로그(`DEFER: mass-deletion guard`)만 남깁니다. 디스크가 마운트되지
@@ -1154,6 +1155,13 @@ run이 이어 봅니다. `QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레�
 순환 커서 같은 scan 상태는 `~/.local/state/laya/auto-context/scan-state/`에 둡니다.
 
 **선택된 laya-db route에서만 조치합니다.** route가 없는 프로젝트는 아무 작업도 받지 않습니다.
+
+**언제 도는가.** 선택된 프로젝트에서 세션이 시작될 때, 프로젝트 안 파일을 편집했을 때,
+agent의 Bash 명령이 성공했을 때 수명 주기 요청이 하나 남고 그 프로젝트의 wiki compile
+작업이 깨어납니다. 이 작업은 hook 밖에서 수명 주기를 먼저 돌리고(한 run 최대 5분), 그 run이
+넣은 재생성을 같은 차례에 compile합니다. 요청이 처리되기 전에 들어온 trigger는 하나로
+묶이고, run 도중 들어온 trigger는 후속 run 하나로 처리됩니다. 연결 워크트리, rebase·merge
+진행 중, 번들 업그레이드 대기 중에는 아무것도 지우거나 넣지 않습니다.
 
 **`compile.sourceScan.enabled:false`가 끄는 것과 끄지 않는 것.** 끄는 것은 수명 주기 조치
 (삭제·enqueue)입니다. 끄지 않는 것은 같은 run이 함께 세는 **provenance 결측 카드 수**입니다 —

@@ -56,6 +56,12 @@ class DiscoveryChecks(unittest.TestCase):
     def setUp(self):
         V2.setUp(self)
         self.compile_wakes = []
+        # The wiki lifecycle request offers the same laya-compile wake; its
+        # triggers are pinned in wiki-lifecycle-trigger-checks.py. Here a
+        # compile wake means discovery's own grant-gated compile request.
+        lifecycle = patch.object(response, '_request_wiki_lifecycle')
+        lifecycle.start()
+        self.addCleanup(lifecycle.stop)
 
     def selected_route(self, triggers=('post_sync_source',), expect='candidate'):
         """V2 route with the selected auto-wiki compile settings the selector allows."""

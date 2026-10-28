@@ -1277,6 +1277,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     """
     import runtime_work
     from laya_install_journal import verify_selected_route
+    _request_wiki_lifecycle(action, decision)
     # Pass start only when deferring, so the default path keeps the
     # preexisting request(kind, root) call shape.
     defer = {} if start else {'start': False}
@@ -1309,6 +1310,21 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
         _fail("selected_proof_changed")
     if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
         _fail("selected_sync_enqueue_failed")
+
+
+def _request_wiki_lifecycle(action: str, decision: dict) -> None:
+    """Best-effort wiki lifecycle request served by the selected compile pass.
+
+    Recorded before the sync wake, whose start runs both. A failure here never
+    changes the hook's answer.
+    """
+    try:
+        import wiki_lifecycle_request
+        trigger = ('session_start' if action in ('update', 'update-queued')
+                   else 'source_edit')
+        wiki_lifecycle_request.request(decision, trigger)
+    except Exception:
+        pass
 
 
 def _start_owner() -> None:
