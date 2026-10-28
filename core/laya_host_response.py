@@ -1741,8 +1741,10 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     install, project, scope, journal or store identity keeps the refusal.
     """
     from laya_install_journal import JournalEvidenceError
+    moved = _install_moved(decision)
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
-            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES)):
+            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
+            moved):
         return None
     needed = time.monotonic() - started + _RETRY_MARGIN_SECONDS
     if _retry_time_left(started) <= needed:
@@ -1758,11 +1760,38 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
         return None
     try:
         fresh = select_route(target, action='recall')
+        if moved:
+            import laya_state_move
+            fresh = laya_state_move.settle_decision(target, 'recall', fresh, select_route)
     except Exception:
         return None
-    if _decision_identity(fresh) != identity or _retry_time_left(started) <= needed:
+    if moved:
+        import laya_state_move
+        if not laya_state_move.relocated_decision(decision, fresh):
+            return None
+    elif _decision_identity(fresh) != identity:
+        return None
+    if _retry_time_left(started) <= needed:
         return None
     return fresh
+
+
+def _install_moved(decision) -> bool:
+    """The decision's install directory left the pre-rename base under this recall.
+
+    Any failure of such a recall may come from the move (a store path that
+    vanished between the proof and a read); one retry re-selects the route,
+    which must name the same install at its MemVane location.
+    """
+    if not isinstance(decision, dict) or decision.get('state') != 'candidate':
+        return False
+    try:
+        import laya_state_move
+        state = Path(decision['journalPath']).parent
+        return (laya_state_move.legacy_root(state) and not os.path.lexists(state)
+                and laya_state_move.target_root(state).is_dir())
+    except Exception:
+        return False
 
 
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1840,8 +1869,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
+        move_notice = None
         if action in ("update", "update-queued"):
             _request_journal_v4(decision)
+            move_notice = _state_move_notice(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
@@ -1882,11 +1913,27 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action in ("index", "file-change-event"):
             return {}
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
+        if move_notice:
+            notice += "\n" + move_notice
         if host == "hermes":
             return {"status": "queued"}
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _state_move_notice(decision: dict, *, request_move: bool = True):
+    """SessionStart line while the install's state moves to the MemVane base.
+
+    Records at most one detached worker request; never waits.
+    """
+    try:
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.move_notice(decision['projectRoot'],
+                                               decision['journalPath'],
+                                               request_move=request_move)
+    except Exception:
+        return None
 
 
 def _request_journal_v4(decision: dict) -> None:
@@ -1970,6 +2017,9 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
+        move_notice = _state_move_notice(decision, request_move=False)
+        if move_notice:
+            notice += '\n' + move_notice
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')

@@ -214,6 +214,78 @@ then discovers changed raw sources for wiki compile
 plugin bundle, SessionStart instead asks `core/laya_bundle_upgrade.py` to move
 the install to that bundle off the hook; until it finishes, recall serves the
 last published index read-only and sync, compile and index wakes wait.
+The same worker then moves an install still under the pre-rename state base
+(see [State roots](#state-roots)); SessionStart names that move while it is
+pending.
+
+### State roots
+
+Every install lives in `~/.local/state/memvane/<install id>`. An install
+onboarded before the rename sits in `~/.local/state/laya/<install id>`; after
+its bundle step, the upgrade worker (`core/laya_state_move.py`, called from
+`laya_bundle_upgrade.run`) moves it with one same-volume `rename(2)` of the
+whole directory. Every store keeps its inode, so the selection ledger's
+`[st_dev, st_ino]` pins, SQLite `-wal`/`-shm` files, backups and receipts stay
+valid. Only the records that name the directory are rewritten, each from bytes
+computed before the rename and kept in `state-move-intent.json`: the project
+route and selection marker, the reviewed route, the production attestation
+(journal and socket paths), the selection ledger, the build record and wake
+pointer, the incremental document store's candidate path, and the install
+journal (`cas_relocate_state_root`: same bundle identity and provider files,
+new route and attestation digests, `previous*` cleared so no rollback names
+the old directory).
+
+| Phase | Where | On a crash |
+|---|---|---|
+| prepare | old root, plus `.auto-context/memvane-state-move.json` in the project | intent discarded; recall never changed |
+| move | `rename(old, new)` | resumed from the project pointer |
+| switch | compare-and-replace writes, journal CAS, ledger, route, marker | replayed; each write accepts the already-new bytes |
+| verify | marker classification, route selection, read-only journal proof, store counts | resumed |
+| settle | pointer removed, intent archived as `state-move-<tag>-settled.json` | resumed |
+
+The move holds the install lock, build owner, route operation lock and the
+provider lane for its whole run, so no selected writer runs; readers take no
+lock. After the rename a move only goes forward and needs no bundle review,
+network or model. A settled bundle-upgrade intent (it names the old root) is
+archived before the rename; an unsettled upgrade defers the move. A target on
+another volume refuses `state_move_cross_device` and the install keeps working
+where it is.
+
+Recall during the move: between the rename and the route write (a few small
+file writes) the route classifies `blocked`. For recall and SessionStart,
+`laya_index_host_route.select_route_settled` re-reads it every 25 ms for up to
+1.5 s while the project pointer is fresh. A recall that proved the old route and
+then hits a vanished path retries once (`_recall_retry_decision`), accepting
+only the same install, scope, incarnation and project at
+`~/.local/state/memvane/<install id>` with the same store basenames. If the
+worker dies inside that window, a recall gets no context, names
+`state_root_move_pending` and requests the worker, which resumes on its next
+run. The resident service re-proves each bound project, so it releases the
+old socket binding and adopts the moved one; recall serves lexical results for
+that gap, as on a bundle switch.
+
+Shared pre-rename trees are retired at the end of a worker run once no
+install is left under `~/.local/state/laya`:
+
+- `embed-runtime` is removed when no install attestation under either base
+  names a file in it and no live process executes from it (read from the
+  process table; nothing is signalled);
+- `service` is removed when no pre-rename plugin copy is installed in Claude,
+  Codex or Hermes and no pre-rename service answers;
+- `auto-context` entries are renamed into `~/.local/state/memvane/auto-context`;
+- an empty `initial-builds` and then the empty base are removed.
+
+Removal walks directory descriptors from HOME without following links and
+refuses a tree that contains a mount point (`core/safe_rmtree.py`). A kept tree
+and its blockers are listed by:
+
+```bash
+python3 -B "$ROOT/core/setup_entry.py" state-root-status
+python3 -B "$ROOT/core/setup_entry.py" move-state-roots
+```
+
+`move-state-roots` runs the worker for every project that still has an
+install under the pre-rename base, then the shared pass.
 
 ### Bundle Adoption Trust Boundary
 
@@ -658,6 +730,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
 | `resident.adopt`, `resident.drain`, `resident.forced_exit` | `core/laya_resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
+| `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

@@ -54,6 +54,11 @@ def vector_profile():
 class SelectedProject(unittest.TestCase):
     RAW, WIKI = 'project', 'project-wiki'
     RAW_PATH, NAME = '.', 'project'
+    # The install directory under HOME; a subclass may place it at a real
+    # per-user state base (``.local/state/<base>/<install id>``).
+    STATE_PARTS = ('state',)
+    # Extra sealed provider-manifest fields (a real one names its socket).
+    PROVIDER_EXTRA: dict = {}
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix='laya-selected-')
@@ -69,7 +74,8 @@ class SelectedProject(unittest.TestCase):
         self.settings = self.auto / 'settings.json'
         self.settings.write_text(json.dumps({'name': self.NAME, 'skipPaths': ['build']},
                                             indent=2) + '\n')
-        self.state = self.home / 'state'
+        self.state = self.home.joinpath(*self.STATE_PARTS)
+        self.state.parent.mkdir(parents=True, exist_ok=True)
         self.state.mkdir(mode=0o700)
         self.plugin = self.home / 'installed-laya'
         self.plugin.mkdir()
@@ -107,7 +113,9 @@ class SelectedProject(unittest.TestCase):
                        'bundleManifestSha256': 'd' * 64,
                        'ownershipManifestSha256': 'e' * 64,
                        'journalPath': str(self.journal), 'vectorProfile': vector_profile(),
-                       'providerManifest': {'providerPath': str(self.plugin / 'p.py')},
+                       'providerManifest': {'providerPath': str(self.plugin / 'p.py'),
+                                            **{key: value.format(state=self.state)
+                                               for key, value in self.PROVIDER_EXTRA.items()}},
                        'dependencyClosure': []}
         att_raw = journal_mod._canon(attestation).encode('utf-8')
         self.private_write(self.state / journal_mod.PRODUCTION_ATTESTATION, att_raw)

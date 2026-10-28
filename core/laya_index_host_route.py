@@ -724,6 +724,25 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     root, auto, path = records[0]
     return _classify_record(root, auto, path, current)
 
+
+def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
+    """``select_route``, waiting briefly while the install's state moves.
+
+    Recall and SessionStart only: a route that is blocked while its project
+    names a fresh state move is re-read for up to ``laya_state_move.
+    WAIT_SECONDS`` (the window between the rename and the route write). Other
+    actions, and a blocked route without a move, return at once.
+    """
+    decision = select_route(cwd, action=action)
+    if decision.get("state") != "blocked":
+        return decision
+    try:
+        import laya_state_move
+        return laya_state_move.settle_decision(cwd, action, decision, select_route)
+    except Exception:
+        return decision
+
+
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
     """Classify bounded event bytes, including legacy malformed-input behavior."""
     try:
@@ -743,7 +762,7 @@ def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
         cwd = payload.get("cwd", fallback_cwd)
         if not isinstance(cwd, str) or not Path(cwd).is_absolute():
             raise ValueError("invalid_hook_cwd")
-        return select_route(cwd, action=action)
+        return select_route_settled(cwd, action=action)
     except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as exc:
         return _decision("blocked", str(exc) or "invalid_hook_payload")
 
@@ -793,7 +812,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 3 and args[0] == "classify":
-        decision = select_route(args[2], action=args[1])
+        decision = select_route_settled(args[2], action=args[1])
     elif len(args) == 4 and args[0] == "classify-hook":
         decision = select_hook_route(args[1], args[2], args[3])
     elif len(args) == 3 and args[0] == "onboarding-notice":

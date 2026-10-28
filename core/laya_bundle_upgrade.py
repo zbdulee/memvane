@@ -81,6 +81,17 @@ DEFERRALS = frozenset((
     'legacy_hermes_copy_present'))
 # Deferrals an in-process wait cannot clear (an uninstall the owner does).
 NO_BACKOFF = frozenset(('legacy_hermes_copy_present',))
+# A state-root move waits for the same lanes plus the install and route locks.
+MOVE_DEFERRALS = DEFERRALS | frozenset((
+    'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending'))
+# A move a retry cannot clear: the install keeps working where it is.
+MOVE_REFUSALS = frozenset((
+    'state_move_cross_device', 'state_move_target_exists',
+    'qmd_origin_detach_required', 'state_move_base_unsafe',
+    'state_move_not_selected'))
+# Refusals that are a supported resting state: no SessionStart notice. An
+# unselected build moves once it is selected; another volume keeps its place.
+MOVE_SILENT = frozenset(('state_move_cross_device', 'state_move_not_selected'))
 # Provider manifest keys that must name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
@@ -240,6 +251,47 @@ def request(project_root, journal_path, code='', *, spawn=None, now=None):
         spawn = _spawn
     spawn(project_root)
     return {'status': 'queued', 'reason': code}
+
+
+def move_notice(project_root, journal_path, *, request_move=True, spawn=None, now=None):
+    """SessionStart line while this install's state moves to the MemVane base.
+
+    None once the install lives under ``~/.local/state/memvane`` (or stays
+    where it is for good: another volume). Requests the worker when due.
+    """
+    import laya_state_move
+    state = Path(journal_path).parent
+    try:
+        pointer = laya_state_move.read_pointer(project_root)
+    except Exception:
+        pointer = None
+    if pointer is None and not laya_state_move.legacy_root(state):
+        return None
+    status = read_status(state) if state.is_dir() else None
+    if (status is not None and status['status'] == 'refused' and
+            status.get('reason') in MOVE_SILENT):
+        return None
+    if request_move:
+        try:
+            status = request(project_root, journal_path, 'state_root_move',
+                             spawn=spawn, now=now)
+        except Exception:
+            pass
+    head = '[memvane] index state moves from ~/.local/state/laya to ~/.local/state/memvane'
+    state_name = status.get('status') if isinstance(status, dict) else None
+    reason = status.get('reason') if isinstance(status, dict) else ''
+    reason = reason if isinstance(reason, str) and reason else 'unknown'
+    if pointer is not None or state_name in (None, 'queued', 'running', 'complete',
+                                             'current'):
+        return head + ' in the background; search keeps serving during the move.'
+    if state_name == 'deferred':
+        return (head + '; the move waits (' + reason + ') and a later session '
+                'retries. Search keeps serving from the current location.')
+    if state_name == 'refused':
+        return (head + '; the move needs review (' + reason + '). Search keeps '
+                'serving from the current location.')
+    return (head + '; the move failed (' + reason + ') and a later session '
+            'retries. Search keeps serving from the current location.')
 
 
 def notice_line(state, code):
@@ -692,12 +744,68 @@ def _host(root, home):
         return 'unknown'
 
 
+def _move_state(project, state, home):
+    """Finish or start this install's move to the MemVane state base.
+
+    (state root now, move result or None). A busy lane is waited out a few
+    times in-process like the bundle step.
+    """
+    import laya_state_move
+    if not (laya_state_move.intent_present(state) or
+            laya_state_move.legacy_root(state, home)):
+        return state, None
+    for wait in (*BUSY_BACKOFF_SECONDS, None):
+        try:
+            return laya_state_move.move(project, state, home=home)
+        except Exception as exc:
+            if wait is None or _reason(exc) not in MOVE_DEFERRALS:
+                raise
+            _event(state, 'state.move', 'busy_wait', _reason(exc), retry_in=wait)
+            _sleep(wait)
+
+
+def _move_outcome(exc):
+    """(status, reason) the status file records for a move that stopped."""
+    reason = _reason(exc)
+    if reason in MOVE_DEFERRALS:
+        return 'deferred', reason
+    if reason in MOVE_REFUSALS:
+        return 'refused', reason
+    return 'failed', reason
+
+
+def _live_state(state, home):
+    """The install directory now: a move may have renamed it mid-run."""
+    import laya_state_move
+    state = Path(state)
+    if not state.exists() and laya_state_move.legacy_root(state, home):
+        target = laya_state_move.target_root(state, home)
+        if target.is_dir():
+            return target
+    return state
+
+
+def _project_states(project, home):
+    """A move already started comes first; then the route's and the pointer's roots."""
+    import laya_state_move
+    found = []
+    for state in (*laya_state_move.pending_roots(project, home), *installs(project)):
+        if state not in found:
+            found.append(state)
+    return found
+
+
 def run(project_root, *, root=None, home=None):
-    """Worker: upgrade every install of one project, one state root at a time."""
+    """Worker: upgrade every install of one project, one state root at a time.
+
+    An install still under the pre-rename state base then moves to the
+    MemVane base (``laya_state_move``); a move stopped after its rename is
+    finished before anything else runs on that install.
+    """
     project = Path(project_root).resolve(strict=True)
     root = Path(root or executing_root())
     results = []
-    for state in installs(project):
+    for state in _project_states(project, home):
         with _state_lock(state) as owned:
             if not owned:
                 results.append({'stateRoot': str(state), 'status': 'busy'})
@@ -713,17 +821,42 @@ def run(project_root, *, root=None, home=None):
             _event(state, 'bundle.upgrade', 'started', hostLayout=_host(root, home),
                    attempt=attempts, **moves)
             try:
+                import laya_state_move
+                resumed = None
+                if laya_state_move.intent_present(state):
+                    state, resumed = _move_state(project, state, home)
                 result = _upgrade_with_backoff(project, state, root, home)
                 result = {**result, **_convert_journal(project, state, root, home)}
                 status = ('current' if result.get('status') == 'current'
                           else 'complete')
+                reason = str(result.get('status', ''))
+                try:
+                    state, moved = _move_state(project, state, home)
+                    moved = moved or resumed
+                except Exception as exc:
+                    state = _live_state(state, home)
+                    status, reason = _move_outcome(exc)
+                    result = {**result, 'status': status, 'reason': reason,
+                              'stateMove': reason}
+                    _event(state, 'state.move', status, reason)
+                else:
+                    if moved is not None:
+                        result = {**result, 'stateMove': moved['status']}
+                        _event(state, 'state.move', moved['status'],
+                               stateRoot=moved.get('stateRoot'))
+                        if moved['status'] == 'state_move_complete':
+                            status, reason = 'complete', moved['status']
+                            result = {**result, 'status': moved['status']}
                 _write_status(state, status=status, executingRoot=str(root),
-                              attempts=0, reason=str(result.get('status', '')))
+                              attempts=0 if status in ('current', 'complete') else attempts,
+                              reason=reason)
             except UpgradeRefused as exc:
+                state = _live_state(state, home)
                 result = {'status': 'refused', 'reason': str(exc)}
                 _write_status(state, status='refused', executingRoot=str(root),
                               attempts=attempts, reason=str(exc))
             except Exception as exc:
+                state = _live_state(state, home)
                 reason = _reason(exc)
                 if reason in DEFERRALS:
                     # Keep the prior attempt count: contention is not a failure.
@@ -741,7 +874,56 @@ def run(project_root, *, root=None, home=None):
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
                 if key in ('status', 'reason', 'kind')}})
+    _collect_shared(home)
     return results
+
+
+def _collect_shared(home):
+    """Retire pre-rename shared trees once nothing references them; never raises."""
+    try:
+        import laya_state_move
+        if laya_state_move._legacy_installs(home):
+            return None
+        result = laya_state_move.collect_shared(home)
+    except Exception as exc:
+        result = {'status': 'failed', 'reason': _reason(exc)}
+    try:
+        import event_log
+        event_log.emit('state.shared', outcome=result.get('status'),
+                       reason=result.get('reason'), host='worker',
+                       completed=result.get('completed'))
+    except Exception:
+        pass
+    return result
+
+
+def move_all(*, root=None, home=None):
+    """Owner command: run the worker for every project with a pre-rename install."""
+    import laya_initial_build as build
+    import laya_state_move
+    projects, rows = [], []
+    for state in laya_state_move._legacy_installs(home):
+        try:
+            record = build.read(state)
+        except Exception as exc:
+            rows.append({'stateRoot': str(state), 'status': 'unreadable',
+                         'reason': _reason(exc)})
+            continue
+        project = record['identity']['projectRoot'] if record else None
+        if not project or not Path(project).is_dir():
+            rows.append({'stateRoot': str(state), 'status': 'project_missing'})
+        elif project not in projects:
+            projects.append(project)
+    for project in projects:
+        try:
+            for row in run(project, root=root, home=home):
+                rows.append({'projectRoot': project, **row})
+        except Exception as exc:
+            rows.append({'projectRoot': project, 'status': 'failed', 'reason': _reason(exc)})
+    shared = _collect_shared(home)
+    left = [str(path) for path in laya_state_move._legacy_installs(home)]
+    return {'status': 'moved' if not left else 'partial', 'installs': rows,
+            'legacyInstalls': left, 'shared': shared}
 
 
 def main(argv=None):
