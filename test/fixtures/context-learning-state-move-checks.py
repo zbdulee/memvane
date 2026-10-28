@@ -545,6 +545,15 @@ class SelectorHealTests(unittest.TestCase):
         self.assertEqual(report['heal'], {'error': 'learning_runtime_changed'})
         self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
 
+    def test_a_pointer_without_its_activation_attestation_runs_nothing(self):
+        active = self.interpreter.parents[4] / 'active.json'
+        pointer = json.loads(active.read_text())
+        private(active, {'executable': pointer['executable'],
+                         'runtime_identity_sha256': pointer['runtime_identity_sha256']})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_installed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
     def test_a_pointer_to_an_unprepared_interpreter_runs_nothing(self):
         prepared = self.interpreter.parent.parent.parent / 'prepared.json'
         prepared.unlink()

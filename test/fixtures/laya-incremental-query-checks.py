@@ -245,6 +245,50 @@ class IncrementalReadChecks(unittest.TestCase):
         self.assertEqual(base, 'head')
         self.assertEqual([row['path'] for row in rows], [path])
 
+    def test_preview_recall_without_a_query_vector_serves_its_lexical_rows(self):
+        # Query admission fails on the learning side (a lane root sealed by a
+        # learning-state move): the preview recall still serves its lexical rows.
+        import laya_host_response as response
+        from context_learning.inference_service import ServiceFailure
+        body = '---\ntitle: Sealed card\nstatus: verified\n---\nuniquesealedterm\n'
+        path = 'wiki/a.md'
+        self.assertEqual(self.index.stage('head', SCOPE, [(path, body, True)]),
+                         'prepared')
+        self.assertEqual(self.index.publish(None, 'head', 'claim'), 'published')
+        title = qmd_markdown_title(body, path)
+        self.vectors.insert_chunk_set(digest(body), title, self.profile_id,
+                                      [{'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}])
+        with incremental._open(str(self.state)) as side:
+            incremental._setup(side, self.identity)
+            side.execute('BEGIN IMMEDIATE')
+            rowid = side.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
+                                 (path, digest(body), title, body,
+                                  self.profile_id, 1, 'scan')).lastrowid
+            side.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
+                         (rowid, path, title, body))
+            side.commit()
+        (self.wiki / 'a.md').write_text(body, encoding='utf-8')
+        preview = {**self.decision, 'state': 'preview',
+                   'previewStateRoot': str(self.state), 'buildPhase': 'sealed'}
+        proof = {'vectorProfile': self.profile, 'providerManifest': {'synthetic': True},
+                 'buildPhase': 'sealed'}
+        provider_calls = []
+        with mock.patch('laya_index_host_route.verify_preview_route', return_value=proof), \
+                mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+                           return_value=lambda *a: provider_calls.append(a)), \
+                mock.patch('context_learning.resource_coordination.default_root',
+                           side_effect=ServiceFailure('unsafe_root')), \
+                mock.patch('laya_host_response._verified_wiki_row', return_value=True), \
+                mock.patch.object(response, '_selection_view_unchanged', return_value=True), \
+                mock.patch('context_learning.selection_read.selector_prepared',
+                           return_value=False), \
+                mock.patch('wiki_freshness.unresolved_pending_refreshes_strict',
+                           return_value=[]):
+            result = response._serve_preview('recall', 'claude', preview,
+                                             {'prompt': 'uniquesealedterm'})
+        self.assertEqual(provider_calls, [])
+        self.assertIn(path, result['hookSpecificOutput']['additionalContext'])
+
     def test_filepath_is_a_lexical_signal(self):
         with incremental._open(str(self.state)) as side:
             incremental._setup(side, self.identity)

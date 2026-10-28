@@ -90,7 +90,7 @@ def official_runtime(home=None):
     directories, interpreter resolving inside the generation, ``prepared.json``
     naming exactly that executable); and the runtime identity the installer
     recorded at staging (``prepared.json``), at activation (``active.json``) and
-    in the activation attestation are the same.
+    in the activation attestation (which must be present) are the same.
     """
     from .dataset import read_private_json
     from .runtime_installer import _generation_executable
@@ -103,9 +103,14 @@ def official_runtime(home=None):
         executable = _generation_executable(root, pointer['executable'])
         prepared = read_private_json(executable.parent.parent.parent / 'prepared.json')
         identity = pointer['runtime_identity_sha256']
-        attested = (pointer.get('attestation') or {}).get('runtime_identity_sha256', identity)
+        attestation = pointer['attestation']
+        attested = attestation['runtime_identity_sha256']
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        # A pointer without its activation attestation (an older layout) is
+        # not proof enough to run anything automatically.
         raise HealRefused('learning_runtime_not_installed') from exc
+    if not isinstance(attested, str) or not attested:
+        raise HealRefused('learning_runtime_not_installed')
     if prepared['runtime_identity_sha256'] != identity or attested != identity:
         raise HealRefused('learning_runtime_changed')
     model = pointer.get('model_dir')

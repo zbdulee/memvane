@@ -1582,15 +1582,16 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail('initial_preview_provider_unavailable')
     from laya_local_embed_provider import ReviewedLocalQmdProvider
     from laya_embed_resident import admit_query
-    from laya_incremental_docs_query import query_incremental
-    from resource_deferred import ResourceDeferred
+    from laya_incremental_docs_query import QueryVectorUnavailable, query_incremental
     provider = ReviewedLocalQmdProvider(manifest)
 
     def admitted_provider(text, profile):
         try:
             admit_query()
-        except ResourceDeferred:
-            _fail('initial_preview_provider_resource_deferred')
+        except Exception as exc:
+            # Pressure, or the learning-side lane unreachable (a state move):
+            # the preview serves its lexical lists.
+            raise QueryVectorUnavailable('initial_preview_provider_resource_deferred') from exc
         return provider(text, profile)
 
     rows, title_only, locations, _shadow, _base = query_incremental(
