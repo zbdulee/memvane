@@ -26,10 +26,21 @@ from .dataset import read_private_json
 from .egress_guard import inspect_payload
 from .shared import _case_active, _db, _policy, _project_key, resource_report
 from .store import canonical
-from .synthetic_teacher import _process_usage
 from .transport import _stop_owned, _unique_object
 
 CONSENT_NAME='project-teacher-consent.json'
+
+
+def _process_usage(pid):
+    """RSS (MiB) and CPU percent of the process group led by ``pid``."""
+    result = subprocess.run(["/bin/ps", "-axo", "pgid=,%cpu=,rss="],
+                            capture_output=True, text=True, timeout=2, check=False)
+    if result.returncode != 0:
+        return None
+    group = [parts for line in result.stdout.splitlines()
+             if len(parts := line.split()) == 3 and parts[0] == str(pid)]
+    return (sum(int(parts[2]) for parts in group) / 1024,
+            sum(float(parts[1]) for parts in group))
 FIELDS=['query','candidate_body','candidate_id','revision_sha256']
 
 

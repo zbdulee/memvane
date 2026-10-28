@@ -36,9 +36,6 @@ DATABASE_NAME = "shared-learning.sqlite3"
 SCHEMA = "qmd-shared-learning-v1"
 STATUSES = ("awaiting_local", "queued", "first_running", "first_done", "second_running",
             "gold", "pending_review", "failed")
-RETRYABLE_SCOPE_SETTLEMENT = ("synthetic_collection_unproven",
-                              "synthetic_index_edit_not_settled",
-                              "synthetic_index_contains_unproven_document")
 V45_ADAPTER_SHA256 = 'd36ab90d7b0b89a7725e66bab3c4761fc2c26d6cbbfc0631d71ca839af9996c4'
 REVIEWED_ADAPTER_SHA256 = '1509e6833ba8b2ca23d6e7811173d268c09b16005a2b3d9f9f2838c9ae23bf5e'
 
@@ -121,20 +118,6 @@ def inference_argv(policy, operation):
     return [argv[0], str(current), argv[2]]
 
 
-def _gold_only_request_ids():
-    try:
-        ids = json.loads(os.environ.get('QMD_SHARED_GOLD_REQUEST_IDS', ''))
-    except (ValueError, TypeError):
-        return None
-    if (not isinstance(ids, list) or not 1 <= len(ids) <= 8
-            or len(set(str(x) for x in ids)) != len(ids)
-            or any(not isinstance(x, str) or not re.fullmatch(
-                r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', x)
-                   for x in ids)):
-        return None
-    return ids
-
-
 def _safe_root(config, project):
     opts = config.get("sharedLearning", {})
     if not isinstance(opts, dict) or opts.get("enabled") is not True:
@@ -192,19 +175,15 @@ def _policy(root):
         raise ValueError('invalid_shared_headroom')
     if not isinstance(value["goldModel"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", value["goldModel"]):
         raise ValueError("invalid_gold_model")
-    uncapped_gold = value["maxGoldCalls"] is None
-    if uncapped_gold:
-        from .synthetic_experiment import load, project_for
-        experiment = load(root, project_for(root))
-        if experiment is None or experiment[0]["maxGoldCalls"] is not None:
-            raise ValueError("invalid_shared_budget")
+    if value["maxGoldCalls"] is None:
+        raise ValueError("invalid_shared_budget")
     for key, minimum, maximum in (("batchMin", 2, 100),
                                   ("batchMax", 2, 500), ("maxRssMib", 512, 65536),
                                   ("minAvailableMib", 128, 65536), ("safetySeconds", 60, 3600)):
         if type(value[key]) is not int or not minimum <= value[key] <= maximum:
             raise ValueError("invalid_shared_budget")
-    if not uncapped_gold and (type(value["maxGoldCalls"]) is not int
-                              or not 2 <= value["maxGoldCalls"] <= 1000):
+    if (type(value["maxGoldCalls"]) is not int
+            or not 2 <= value["maxGoldCalls"] <= 1000):
         if value["maxGoldCalls"] != 0:
             raise ValueError("invalid_shared_budget")
         # Zero is reserved for an exact teacher-free QA transaction. The
@@ -397,14 +376,9 @@ def _case_active(root, row, *, cfg=None, private_db=None, source_cache=None,
     try:
         project = project.resolve(strict=True)
         sample = json.loads(sample_json)
-        if sample.get('schema_version') == 4 and not ticket_validated:
-            from .edit_ticket import validate_case
-            from .history_activation import read_database
-            shared_db = root / DATABASE_NAME
-            if shared_db.is_symlink() or not shared_db.is_file():
-                return False
-            with read_database(shared_db) as provenance_db:
-                validate_case(provenance_db, root, project, sample, {})
+        if sample.get('schema_version') == 4:
+            # Edit captures came from the retired host-edit ticket flow.
+            return False
         if private_db is None:
             from .seam import _private_state
             from .history_activation import read_database
@@ -467,48 +441,6 @@ def _rows_for_model_view(rows, input_view):
     if input_view == EDIT_INPUT_VIEW:
         return [row for row in rows if json.loads(row[3]).get('schema_version') == 4]
     return rows
-
-
-def _synthetic_family_keys(project_key, episode, source_id, *, final=False):
-    keys = {"target:" + digest(canonical([project_key, source_id]))}
-    # An edit ticket uses episode=0 when its verified source path is not an
-    # epNNN.md manuscript. Zero is an absence marker, not a shared source:
-    # grouping every independent Settings edit under episode 0 fabricates a
-    # common family. The target key above already pins all revisions of the
-    # same edit path; the full candidate pool remains screened separately.
-    if not final and not (episode == 0 and source_id.startswith("edit:")):
-        keys.add("episode:" + digest(canonical([project_key, episode])))
-    return keys
-
-
-def _sync_synthetic_families(db, project_key):
-    """Add pinned episode/target groups without changing old split labels."""
-    rows = db.execute(
-        "SELECT c.request_id,c.split,c.family_keys,t.episode,t.slot,t.source_id "
-        "FROM cases c JOIN experiment_query_tickets t USING(request_id) "
-        "WHERE c.project_key=?", (project_key,)).fetchall()
-    pending = []
-    proposed = {}
-    for rid, split, encoded, episode, slot, source_id in rows:
-        keys = _synthetic_family_keys(project_key, episode, source_id,
-                                      final=split == "final")
-        for family in keys:
-            if family in proposed and proposed[family] != split:
-                return False
-            proposed[family] = split
-            old = db.execute("SELECT split FROM families WHERE family_key=?",
-                             (family,)).fetchone()
-            if old and old[0] != split:
-                return False
-        pending.append((rid, split, encoded, keys))
-    for rid, split, encoded, keys in pending:
-        for family in keys:
-            db.execute("INSERT OR IGNORE INTO families VALUES (?,?)", (family, split))
-        stored = set(json.loads(encoded))
-        if not keys <= stored:
-            db.execute("UPDATE cases SET family_keys=? WHERE project_key=? AND request_id=?",
-                       (canonical(sorted(stored | keys)), project_key, rid))
-    return True
 
 
 def _gold_fact_keys(row):
@@ -763,64 +695,6 @@ def _reconcile_cases(root):
     return len(expired)
 
 
-def recover_awaiting_edits(root, project, *, request_ids=None):
-    """Crash recovery after ticket binding but before private capture/activation."""
-    from .edit_ticket import TTL
-    with _db(root) as db:
-        rows = db.execute("SELECT project_key,request_id,project_root,sample,captured_at FROM cases WHERE project_root=? AND status='awaiting_local' AND use_state='active'",
-                          (str(project),)).fetchall()
-    if request_ids is not None:
-        selected = set(request_ids)
-        rows = [row for row in rows if row[1] in selected]
-    for key, rid, project_root, sample, captured_at in rows:
-        if _case_active(root, (project_root, rid, sample)):
-            with _db(root) as db:
-                db.execute("UPDATE cases SET status='queued' WHERE project_key=? AND request_id=? AND status='awaiting_local' AND use_state='active'",
-                           (key, rid))
-        elif time.time() - captured_at >= TTL:
-            with _db(root) as db:
-                db.execute("UPDATE cases SET use_state='historical',error='local_capture_not_completed' WHERE project_key=? AND request_id=? AND status='awaiting_local' AND use_state='active'",
-                           (key, rid))
-
-
-def recover_scope_deferred_edits(root, project, *, request_ids=None):
-    """Retry only proven pre-egress edit cases after global QMD settlement.
-
-    The caller must have passed policy_for on the current synthetic bundle.
-    A case with any reserved gold call remains pending for manual review.
-    """
-    root, project = Path(root), Path(project)
-    with _db(root) as db:
-        rows = db.execute(
-            "SELECT c.project_key,c.request_id,c.project_root,c.sample,c.error "
-            "FROM cases c JOIN edit_tickets t ON t.request_id=c.request_id "
-            "AND t.project_root=c.project_root AND t.input_sha256=c.input_sha256 "
-            "WHERE c.project_root=? AND c.use_state='active' "
-            "AND c.status='pending_review' AND c.error IN (?,?,?) "
-            "AND c.first IS NULL AND c.second IS NULL AND c.gold IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM experiment_calls e WHERE "
-            "e.call_key IN ('gold:'||c.request_id||':first_running', "
-            "'gold:'||c.request_id||':second_running'))",
-            (str(project), *RETRYABLE_SCOPE_SETTLEMENT)).fetchall()
-    if request_ids is not None:
-        selected = set(request_ids)
-        rows = [row for row in rows if row[1] in selected]
-    recovered = 0
-    for key, rid, owner, sample, reason in rows:
-        if not _case_active(root, (owner, rid, sample)):
-            continue
-        with _db(root) as db:
-            recovered += db.execute(
-                "UPDATE cases SET status='queued',error=NULL WHERE project_key=? "
-                "AND request_id=? AND use_state='active' AND status='pending_review' "
-                "AND error=? AND first IS NULL AND second IS NULL AND gold IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM experiment_calls e WHERE "
-                "e.call_key IN ('gold:'||cases.request_id||':first_running', "
-                "'gold:'||cases.request_id||':second_running'))",
-                (key, rid, reason)).rowcount
-    return recovered
-
-
 def trial_eligible(root, *, deadline=None, max_seconds=.2):
     """Verify continuing grants; prompt checks keep a short deadline."""
     path = Path(root) / "experimental-checkpoint.json"
@@ -882,15 +756,17 @@ def trial_eligible(root, *, deadline=None, max_seconds=.2):
         return False
 
 
-def enqueue(config, project, sample, compact_sources, *, recovery_call_key=None):
+def enqueue(config, project, sample, compact_sources):
     """Copy an exact eligible capture once; no current source reread is needed."""
     root = _safe_root(config, project)
     if root is None:
         return "disabled"
-    worker_policy = _policy(root)
+    _policy(root)  # A malformed shared policy refuses the write.
     if not _consent(root, project):
         return "missing_shared_consent"
     validate_request(sample)
+    if sample["schema_version"] == 4:
+        return "edit_capture_unsupported"
     if (sample["host"] not in ("codex", "claude") or sample["prompt"]["truncated"]
             or sample["schema_version"] < 2
             or not sample["sampling"]["complete_within_returned_bound"]
@@ -898,8 +774,8 @@ def enqueue(config, project, sample, compact_sources, *, recovery_call_key=None)
         return "ineligible"
     # The older returned-pool contract keeps its original shared admission.
     # Only the explicit candidate_limit contract can request the wider pool.
-    if len(sample["candidates"]) > (30 if sample['schema_version'] in (3, 4) else 15):
-        return ("ineligible_pool_over_30" if sample['schema_version'] in (3, 4)
+    if len(sample["candidates"]) > (30 if sample['schema_version'] == 3 else 15):
+        return ("ineligible_pool_over_30" if sample['schema_version'] == 3
                 else "ineligible_pool_over_15")
     bodies = {}
     for candidate in sample["candidates"]:
@@ -909,48 +785,18 @@ def enqueue(config, project, sample, compact_sources, *, recovery_call_key=None)
         bodies[cid] = derive(compact_sources[cid], candidate["revision_sha256"])["body_text"]
     key = _project_key(project)
     families = _family_keys(key, sample, bodies)
-    from .synthetic_experiment import load as experiment_control, bind_capture
-    try:
-        experiment = experiment_control(root, project)
-    except ValueError:
-        return "experiment_control_invalid"
-    if (root / "synthetic-experiment.json").exists() and experiment is None:
-        return "experiment_project_mismatch"
-    edit = sample['schema_version'] == 4
-    if edit and experiment is None:
-        return 'edit_experiment_required'
     encoded = canonical(sample)
-    parent_call_key = None
     with _db(root) as db:
         old = db.execute("SELECT input_sha256 FROM cases WHERE project_key=? AND request_id=?",
                          (key, sample["request_id"])).fetchone()
         if old:
             return "duplicate" if old[0] == digest(encoded) else "conflict"
-        ticket = None
-        if experiment is not None:
-            try:
-                if edit:
-                    from .edit_ticket import bind as bind_edit
-                    ticket = bind_edit(db, root, project, sample, bodies,
-                                       digest(encoded), commit=False)
-                else:
-                    ticket = bind_capture(db, root, project, *experiment, sample, bodies,
-                                          digest(encoded), commit=False,
-                                          recovery_call_key=recovery_call_key)
-            except ValueError as exc:
-                return str(exc)[:80]
-        final_reserved = ticket is not None and ticket[0] >= 81 and ticket[1] == 2
-        if experiment is not None:
-            if not _sync_synthetic_families(db, key):
-                return "family_split_conflict"
-            families = sorted(set(families) | _synthetic_family_keys(
-                key, ticket[0], ticket[2], final=final_reserved))
         if (db.execute("SELECT COUNT(*) FROM cases").fetchone()[0] >= 2000
                 or (root / DATABASE_NAME).stat().st_size > 512 * 1024 * 1024):
             return "queue_full"
-        # A target/episode can have several paraphrased questions. Their
-        # provisional split follows the same pinned family, even if a common
-        # background card appears in every retrieved pool.
+        # A target can have several paraphrased questions. Their provisional
+        # split follows the same pinned family, even if a common background
+        # card appears in every retrieved pool.
         split_families = [family for family in families if family.startswith(
             ('question:', 'episode:', 'target:'))]
         if sum(family.startswith('question:') for family in split_families) != 1:
@@ -981,75 +827,24 @@ def enqueue(config, project, sample, compact_sources, *, recovery_call_key=None)
             "AND status IN ('queued','first_running','first_done','second_running')")
             for key in json.loads(encoded_families) if key.startswith('question:')}
         active_holdouts = len(screened) + len(pending_questions - accepted_questions)
-        if final_reserved and assigned and assigned != {"final"}:
-            return "final_family_conflict"
-        if not final_reserved and "final" in assigned:
+        if "final" in assigned:
             return "final_family_conflict"
         # A scheduled fifth question may inherit a train family from a
         # baseline distractor. Do not relabel it or leak that family into
         # validation; assign the next genuinely unassigned question to the
         # missing holdout slot instead of waiting until question ten.
         holdout_due = active_holdouts < (ordinal + 1) // 5
-        split = ("final" if final_reserved else next(iter(assigned)) if assigned
+        split = (next(iter(assigned)) if assigned
                  else "holdout" if holdout_due else "train")
         for family in split_families:
             db.execute("INSERT OR IGNORE INTO families VALUES (?,?)", (family, split))
         db.execute("INSERT INTO cases (project_key,project_root,request_id,input_sha256,sample,bodies,corpus_fingerprint,captured_at,split,family_keys,use_state,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                    (key, str(Path(project).resolve()), sample["request_id"], digest(encoded),
                     encoded, canonical(bodies), sample["sampling"]["index_revision"],
-                    time.time(), split, canonical(families), "active",
-                    'awaiting_local' if edit else "queued"))
-        if ticket is not None:
-            if edit:
-                bind_edit(db, root, project, sample, bodies,
-                          digest(encoded), commit=True)
-                parent_call_key = sample['edit_event']['ticket_id']
-            else:
-                bind_capture(db, root, project, *experiment, sample, bodies,
-                             digest(encoded), commit=True,
-                             recovery_call_key=recovery_call_key)
-                parent_call_key = db.execute(
-                    "SELECT call_key FROM experiment_query_tickets WHERE request_id=?",
-                    (sample["request_id"],)).fetchone()[0]
+                    time.time(), split, canonical(families), "active", "queued"))
         from .history_activation import record_case_mapping
         record_case_mapping(db, project, sample)
-    if ticket is not None and not edit:
-        for phase in ("first", "second"):
-            job_telemetry.emit(root / "job-telemetry.jsonl", "queued",
-                               job_id=f"gold:{sample['request_id']}:{phase}",
-                               parent_id=parent_call_key, episode=ticket[0],
-                               op=f"gold_{phase}", runtime_kind="remote_cli",
-                               model_version=worker_policy["goldModel"])
-    return 'awaiting_local' if edit else "queued"
-
-
-def activate_edit_case(config, project, sample, *, captured):
-    """Expose a bound edit to the gold worker only after private capture."""
-    root = _safe_root(config, project)
-    if root is None or sample.get('schema_version') != 4:
-        return 'edit_activation_unavailable'
-    key, rid = _project_key(project), sample['request_id']
-    encoded = canonical(sample)
-    if not captured:
-        with _db(root) as db:
-            db.execute("UPDATE cases SET use_state='historical',error='local_capture_failed' WHERE project_key=? AND request_id=? AND input_sha256=? AND status='awaiting_local'",
-                       (key, rid, digest(encoded)))
-        return 'local_capture_failed'
-    if not _case_active(root, (str(Path(project).resolve()), rid, encoded)):
-        return 'edit_activation_unavailable'
-    try:
-        with _db(root) as db:
-            if sample['edit_event'].get('deferred_capture') is True:
-                from .deferred_edit import finalize_before_gold
-                finalize_before_gold(db, Path(project).resolve(strict=True),
-                                     sample, digest(encoded))
-            changed = db.execute("UPDATE cases SET status='queued' WHERE project_key=? AND request_id=? AND input_sha256=? AND status='awaiting_local' AND use_state='active'",
-                                 (key, rid, digest(encoded))).rowcount
-            if changed != 1:
-                raise ValueError('edit_activation_conflict')
-    except (ValueError, OSError, sqlite3.Error):
-        return 'edit_activation_conflict'
-    return 'queued'
+    return "queued"
 
 
 def resource_report(policy, *, detailed=False, admission=True,deadline=None):
@@ -1257,11 +1052,6 @@ def _publish_evaluated(root, cycle_id, evidence, rows):
         # A staged automatic cohort can never silently enter this legacy
         # publication path, including after its grant expires or is removed.
         raise ValueError('automatic_cohort_publication_not_authorized')
-    if (root / "synthetic-experiment.json").exists():
-        from .synthetic_experiment import load as experiment_control, check_disk
-        from .synthetic_experiment import project_for
-        control, _ = experiment_control(root, project_for(root))
-        check_disk(root, control)
     expected = digest(canonical([(r[0], r[1], r[2], r[5]) for r in rows]))
     if evidence["input_sha256"] != expected:
         raise ValueError("shared_queue_changed_during_cycle")
@@ -1460,13 +1250,6 @@ def train_due(root, policy, *, trainer_factory=None):
                 _put_meta(db, "holdout_diagnostic", diagnostic)
                 return {"status": "insufficient_independent_holdout_families",
                         **diagnostic}
-            if (root / "synthetic-experiment.json").exists() or _meta(db, "experiment_approved_episode", 0):
-                from .synthetic_experiment import reserve_train
-                try:
-                    from .synthetic_experiment import project_for
-                    reserve_train(db, root, project_for(root), cycle_id)
-                except ValueError as exc:
-                    return {"status": "experiment_paused", "reason": str(exc)[:80]}
             return _publish_evaluated(root, cycle_id, evaluated, rows)
         if current and current.get("cycle_id") == cycle_id:
             return {"status": "uncertain_training_provenance"}
@@ -1499,13 +1282,6 @@ def train_due(root, policy, *, trainer_factory=None):
             source_refs = [refs[key] for key in sorted(refs)]
         except (ValueError, KeyError, TypeError) as exc:
             return {"status": "uncertain_training_provenance", "reason": str(exc)[:80]}
-        if (root / "synthetic-experiment.json").exists() or _meta(db, "experiment_approved_episode", 0):
-            from .synthetic_experiment import reserve_train
-            try:
-                from .synthetic_experiment import project_for
-                reserve_train(db, root, project_for(root), cycle_id)
-            except ValueError as exc:
-                return {"status": "experiment_paused", "reason": str(exc)[:80]}
         if old is None:
             db.execute("INSERT INTO cycles VALUES (?,?,?,?,NULL)",
                        (cycle_id, "training", canonical({"input_sha256": evidence,
@@ -1915,21 +1691,12 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
     """Meter one detached worker invocation, including any pre-lock work."""
     from . import project_scope
     if project_scope.present(root):
-        if os.environ.get('QMD_SHARED_GOLD_ONLY') == '1':
-            return {'status':'project_requires_normal_worker'}
         from .project_worker import run as run_project_worker
         return run_project_worker(root,project or project_scope.owner(root),sync_config)
-    if os.environ.get('QMD_SHARED_GOLD_ONLY') == '1':
-        # The generic sync can reconcile unrelated cases before the worker
-        # applies its exact request-ID filter. Gold collection never runs it.
-        if project is None or _gold_only_request_ids() is None:
-            return {'status': 'gold_allowlist_required'}
-        sync_config = None
     root = Path(root)
     from .learning_profile import present,SCHEMA
     marker=(sync_config or {}).get('sharedLearning',{}).get('profile')==SCHEMA
     if present(root) or marker:
-        if os.environ.get('QMD_SHARED_GOLD_ONLY')=='1':return {'status':'profile_forbids_teacher_worker'}
         if project is None:
             from .learning_profile import NAME
             project=Path(read_private_json(root/NAME)['proposal']['projectRoot'])
@@ -2001,28 +1768,15 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
 def _run_impl(root, *, project=None, wait_for_lock=False):
     root = Path(root)
     policy = _policy(root)
-    from .synthetic_experiment import SHARED_NAME, project_for
-    gold_only = os.environ.get('QMD_SHARED_GOLD_ONLY') == '1'
-    if _historical_trainer_policy(policy) and not gold_only:
+    if _historical_trainer_policy(policy):
         return {'status': 'runtime_approval_required'}
     automatic_grant = None
-    if not gold_only and policy.get('_runtime_authorization_v2') is True:
+    if policy.get('_runtime_authorization_v2') is True:
         from .runtime_authorization import require_operation
         try:
             automatic_grant = require_operation(root, policy, 'gold')
         except ValueError:
             return {'status': 'runtime_approval_required'}
-    gold_request_ids = _gold_only_request_ids() if gold_only else None
-    if gold_only:
-        if project is None or gold_request_ids is None:
-            return {'status': 'gold_allowlist_required'}
-    if (root / "synthetic-experiment.json").exists() or root.name == SHARED_NAME:
-        from .synthetic_experiment import load as experiment_control, check_disk
-        try:
-            control, _ = experiment_control(root, project_for(root))
-            check_disk(root, control)
-        except ValueError as exc:
-            return {"status": "experiment_paused", "reason": str(exc)[:80]}
     lock = root / "shared-worker.lock"
     waiter_fd = None
     if wait_for_lock:
@@ -2055,48 +1809,9 @@ def _run_impl(root, *, project=None, wait_for_lock=False):
         if waiter_fd is not None:
             os.close(waiter_fd)
             waiter_fd = None
+        # The shared worker has no teacher of its own; consented project
+        # gold runs in the project worker (`general_teacher`).
         teacher = {"status": "disabled"}
-        if project is not None:
-            try:
-                from .synthetic_scope import policy_for, _synthetic_bundle
-                _synthetic_bundle(root, project)
-                if not gold_only:
-                    if automatic_grant is None:
-                        recover_awaiting_edits(root, project)
-                    else:
-                        from .automatic_cohort import admitted
-                        with _db(root) as db:
-                            ids = [row[1] for _, row in admitted(db, project,
-                                automatic_grant, statuses=('awaiting_local',))]
-                        recover_awaiting_edits(root, project, request_ids=ids)
-                policy_for(root, project)
-                if not gold_only:
-                    if automatic_grant is None:
-                        recover_scope_deferred_edits(root, project)
-                    else:
-                        from .automatic_cohort import admitted
-                        with _db(root) as db:
-                            ids = [row[1] for _, row in admitted(db, project,
-                                automatic_grant, statuses=('pending_review',))]
-                        recover_scope_deferred_edits(root, project,
-                                                     request_ids=ids)
-            except ValueError as exc:
-                teacher = {"status": "denied", "reason": str(exc)[:80]}
-            else:
-                from .synthetic_teacher import process_pending
-                if gold_only:
-                    teacher = process_pending(root, project, policy,
-                                              request_ids=gold_request_ids)
-                else:
-                    teacher = process_pending(root, project, policy,
-                                              automatic_grant=automatic_grant)
-        # An operator-scoped collection session may finish authenticated gold
-        # without crossing the automatic checkpoint/observation boundary.
-        # The scope checks and one-use gold receipts above remain mandatory.
-        if gold_only:
-            return {'status': 'gold_only', 'teacher': teacher,
-                    'observation': {'status': 'skipped_gold_only'},
-                    'cycle': {'status': 'skipped_gold_only'}}
         if automatic_grant is None:
             seen = set()
             while (root / "experimental-checkpoint.json").exists() and not trial_eligible(root, max_seconds=5):
@@ -2117,29 +1832,6 @@ def _run_impl(root, *, project=None, wait_for_lock=False):
         os.close(fd)
 
 
-def _reconcile_source_cards(root, project):
-    """Best-effort admission; failures never silently authorize a candidate."""
-    try:
-        from .source_card_provenance import reconcile_pending
-        result = reconcile_pending(root, project)
-        if not result['eligible'] and not result.get('skipped'):
-            return result
-        status = ('success' if result['registered'] and not result['deferred']
-                  and not result.get('skipped') else 'deferred')
-        error = None if status == 'success' else 'source_card_pending'
-    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
-        result = {'registered': [], 'deferred': [], 'error': str(exc)[:80]}
-        status, error = 'error', 'source_card_reconcile_failed'
-    job_telemetry.emit(Path(root) / 'job-telemetry.jsonl', 'finished',
-        job_id='source-card:' + secrets.token_hex(12),
-        op='source_card_registration', runtime_kind='local_worker',
-        status=status, error_code=error,
-        registered_count=len(result['registered']),
-        deferred_count=len(result['deferred']),
-        skipped_count=result.get('skipped', 0))
-    return result
-
-
 def launch(config, project, *, parent_id=None, episode=None,
            after_index=False):
     root = _safe_root(config, project)
@@ -2158,28 +1850,11 @@ def launch(config, project, *, parent_id=None, episode=None,
         if project_learning_setup.synthetic_local_only(root,project,_policy(root)):
             # Editing/capture must not start the expressly manual QA job.
             return {'status':'manual_synthetic_training_required'}
-    # A source/card edit has its own one-use hook tickets. SessionStart also
-    # retries admission if the prior index worker died after its QMD ACK.
     from .learning_profile import present,SCHEMA
     selected_profile=present(root) or config.get('sharedLearning',{}).get('profile')==SCHEMA
-    if not selected_profile and not general_project:_reconcile_source_cards(root, project)
     policy = _policy(root)
-    if _historical_trainer_policy(policy) and os.environ.get("QMD_SHARED_GOLD_ONLY") != "1":
+    if _historical_trainer_policy(policy):
         return {"status": "runtime_approval_required"}
-    # A bounded gold collection session verifies its exact ticket allowlist
-    # after the durable index ACK, then calls the gold-only worker explicitly.
-    # Neither the immediate edit path nor the post-index wake may launch a
-    # background worker that could consume another pending case or train.
-    if os.environ.get("QMD_SHARED_GOLD_ONLY") == "1":
-        return {"status": "deferred_gold_only_manual_review"}
-    from .synthetic_experiment import SHARED_NAME
-    if (root / "synthetic-experiment.json").exists() or root.name == SHARED_NAME:
-        from .synthetic_experiment import load as experiment_control, check_disk
-        try:
-            control, _ = experiment_control(root, project)
-            check_disk(root, control)
-        except ValueError as exc:
-            return {"status": "experiment_paused", "reason": str(exc)[:80]}
     # A selected profile's normal worker is training/evaluation only. Let the
     # durable wake own its start, admission and retries instead of spawning a
     # competing detached trainer directly from the hook. General project and
@@ -2526,13 +2201,11 @@ def _run_owned_training(project, lease_fd):
 
 
 def wake_after_index(project):
-    """Wake one exact synthetic owner after its QMD claim is ACKed.
+    """Wake an enrolled project's learning worker after its index publish.
 
     The detached worker waits on the shared OS lock, so an earlier hook
     worker cannot consume the wake before the index catches up.
     """
-    from .synthetic_scope import NOVEL_ROOT, _synthetic_bundle, policy_for
-    from .synthetic_experiment import shared_for
     import config
     requested = Path(project)
     if not requested.is_absolute() or requested.is_symlink():
@@ -2542,61 +2215,10 @@ def wake_after_index(project):
         cfg=config.find_project_config(str(owner))['config']
         enrolled=_safe_root(cfg,owner)
         from . import project_scope
-        if enrolled is not None and project_scope.present(enrolled):
-            project_scope.require(enrolled,_policy(enrolled),'local_train')
-            return launch(cfg,owner,after_index=True)
-        if owner != NOVEL_ROOT.resolve(strict=True):
+        if enrolled is None or not project_scope.present(enrolled):
             return {"status": "ignored"}
-        root = shared_for(owner)
-        _synthetic_bundle(root, owner)
-        cfg = config.find_project_config(str(owner))["config"]
-        if _safe_root(cfg, owner) != root:
-            return {"status": "ignored"}
-        _reconcile_source_cards(root, owner)
-        worker_policy = _policy(root)
-        if os.environ.get('QMD_SHARED_GOLD_ONLY') == '1':
-            return {"status": "deferred_gold_only_manual_review"}
-        if _historical_trainer_policy(worker_policy):
-            return {"status": "runtime_approval_required"}
-        grant = None
-        if worker_policy.get('_runtime_authorization_v2') is True:
-            from .runtime_authorization import require_operation
-            grant = require_operation(root, worker_policy, 'gold')
-        # An ACK may be the first event after PostToolUse crashed between
-        # private capture and activation. Recovery verifies the exact local
-        # sample and source before promoting awaiting_local to queued.
-        if grant is None:
-            recover_awaiting_edits(root, owner)
-        else:
-            from .automatic_cohort import admitted
-            with _db(root) as db:
-                ids = [row[1] for _, row in admitted(db, owner, grant,
-                    statuses=('awaiting_local',))]
-            recover_awaiting_edits(root, owner, request_ids=ids)
-        policy_for(root, owner)
-        if grant is None:
-            recover_scope_deferred_edits(root, owner)
-        else:
-            from .automatic_cohort import admitted
-            with _db(root) as db:
-                ids = [row[1] for _, row in admitted(db, owner, grant,
-                    statuses=('pending_review',))]
-            recover_scope_deferred_edits(root, owner, request_ids=ids)
-        with _db(root) as db:
-            if grant is not None:
-                from .automatic_cohort import admitted
-                pending = [(row[1], row[3]) for _, row in admitted(db, owner,
-                    grant, statuses=('queued', 'first_done'))]
-            else:
-                pending = db.execute(
-                    "SELECT c.request_id,c.sample FROM cases c JOIN edit_tickets t "
-                    "ON t.request_id=c.request_id WHERE c.project_root=? "
-                    "AND t.project_root=? AND c.use_state='active' "
-                    "AND c.status IN ('queued','first_done')",
-                    (str(owner), str(owner))).fetchall()
-        if not any(_case_active(root, (str(owner), *row)) for row in pending):
-            return {"status": "ignored"}
-        return launch(cfg, owner, after_index=True)
+        project_scope.require(enrolled,_policy(enrolled),'local_train')
+        return launch(cfg,owner,after_index=True)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
         return {"status": "ignored"}
 
@@ -2736,7 +2358,6 @@ def main(argv):
                 result = run(root, project=project, sync_config=cfg,
                              wait_for_lock=argv[0] == "run-project-after-index")
                 if (result['status'] in ('deferred_resource','staged_evaluation_deferred','apply_deferred')
-                        and os.environ.get('QMD_SHARED_GOLD_ONLY')!='1'
                         and _policy(root).get('_runtime_authorization_v2') is True):
                     import runtime_work
                     runtime_work.request('learning',str(project))

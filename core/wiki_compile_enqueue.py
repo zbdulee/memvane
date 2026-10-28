@@ -433,9 +433,6 @@ def enqueue_payload(payload):
     config = found["config"]
     project_root = found["projectRoot"]
     paths = posttool.edited_paths(payload)
-    from context_learning.synthetic_scope import invocation_in_generated_story
-    if not invocation_in_generated_story(found, payload.get("cwd"), paths):
-        return {"queued": 0, "reason": "outside_scope"}
     if not qmd_config.event_enabled(config, "postToolUse"):
         return {"queued": 0, "reason": "event_disabled"}
     compile_cfg = compile_gate(config, (POST_TOOL_TRIGGER,))

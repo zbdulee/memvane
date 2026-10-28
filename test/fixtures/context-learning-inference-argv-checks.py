@@ -50,7 +50,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
 
     with patch.object(Path, 'home', return_value=root), \
             patch.object(shared, '__file__', str(installed / 'shared.py')), \
-            patch('context_learning.synthetic_experiment.shared_for', return_value=root), \
             patch('context_learning.local_cycle.LocalTrainer', SegmentTrainer), \
             patch('hook_budget.remaining', return_value=8):
         old = shared._v45_adapter_path()

@@ -1,12 +1,10 @@
 """Historical policy reference is data, never an executable upgrade shortcut."""
 import json
 from pathlib import Path
-import sqlite3
 import tempfile
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 from context_learning import shared
-from context_learning.synthetic_experiment import evaluate_final
 from context_learning.shared import (
     REVIEWED_ADAPTER_SHA256, _historical_v45_adapter_reference,
     _v45_adapter_path, observe_trial, train_due,
@@ -33,23 +31,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-v45-compat-',
             policy = {'trainerArgv': ['/runtime/python', str(old), '/cached/model']}
             assert train_due(home, policy) == {'status': 'runtime_approval_required'}
             assert observe_trial(home, policy) == {'status': 'runtime_approval_required'}
-            final_db = home / 'final-state.sqlite3'
-            with sqlite3.connect(final_db) as db:
-                db.execute('CREATE TABLE experiment_final (id INTEGER, status TEXT)')
-            unchanged = final_db.read_bytes()
-            trainer = Mock(side_effect=AssertionError('trainer executed'))
-            with patch('context_learning.synthetic_experiment.project_for', return_value=home), \
-                    patch('context_learning.synthetic_experiment.load',
-                          return_value=({}, 'approved-control')), \
-                    patch('context_learning.synthetic_experiment.approval', return_value={}), \
-                    patch('context_learning.shared._policy', return_value=policy), \
-                    patch('context_learning.shared._db',
-                          side_effect=AssertionError('final reservation reached')):
-                assert evaluate_final(home, trainer_factory=trainer) == {
-                    'status': 'runtime_approval_required'}
-            trainer.assert_not_called()
-            assert final_db.read_bytes() == unchanged
 print(json.dumps({'missingOldCacheAcceptedForRead': True,
                   'tamperedOldCacheRejected': True,
-                  'trainingAndObservationBlocked': True,
-                  'finalReservationBlocked': True}))
+                  'trainingAndObservationBlocked': True}))

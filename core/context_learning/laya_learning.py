@@ -7,11 +7,7 @@ index publishes from laya-db only. Learning reads the same evidence:
   scope (eligible, non-excluded membership rows and their content hashes);
 * capture: the verified rows the query-time selector already scored (no
   source file re-read);
-* readiness: an installer-verified route, instead of a QMD store pointer;
-* provenance acknowledgement: head membership (and vector rows) for wiki
-  cards. Raw sources are not indexed by a selected v2 route
-  (``laya_index_host_route.wiki_index_roots``), so a raw source revision is
-  acknowledged by its current file bytes only.
+* readiness: an installer-verified route, instead of a QMD store pointer.
 
 ``selected`` distinguishes a legacy project (``None``) from a selected route
 that cannot be verified (``ValueError``); the latter never falls back to QMD.
@@ -19,7 +15,6 @@ that cannot be verified (``ValueError``); the latter never falls back to QMD.
 from __future__ import annotations
 
 from contextlib import closing
-import hashlib
 import os
 from pathlib import Path
 import sys
@@ -141,61 +136,6 @@ def corpus_snapshot(project_root, config, *, decision=None):
                 'activeDocuments': len(active), 'generation': generation}
     except Exception:
         return None
-
-
-def membership_ack(project, entries, *, require_vector=False, bound=None):
-    """Acknowledge exact wiki revisions in the selected route's sealed head.
-
-    ``entries`` are ``[collection, relative, sha256]``. Every entry must be an
-    eligible head member with that hash; ``require_vector`` also requires the
-    head's sealed vector rows for each path. Returns the entries on success.
-    """
-    bound = selected(project) if bound is None else bound
-    if bound is None:
-        raise ValueError('laya_learning_route_legacy')
-    decision = bound[0]
-    names = set(wiki_names(decision))
-    scope = decision['scopeId']
-    with closing(_open(decision)) as db:
-        generation = _sealed_head(db, scope)
-        excluded = set(db.execute('SELECT kind,value FROM exclusions WHERE scope=?',
-                                  (scope,)).fetchall())
-        for collection, relative, revision in entries:
-            path = collection + '/' + relative
-            if collection not in names:
-                raise ValueError('laya_learning_collection_unindexed')
-            row = db.execute('SELECT hash FROM membership WHERE gen=? AND scope=? '
-                             'AND path=? AND eligible=1', (generation, scope, path)).fetchone()
-            if (row != (revision,) or ('path', path) in excluded
-                    or ('hash', revision) in excluded):
-                raise ValueError('laya_learning_membership_unacknowledged')
-            if require_vector and not db.execute(
-                    'SELECT 1 FROM gen_vector_rows r JOIN gen_vector_seals s ON s.gen=r.gen '
-                    'WHERE r.gen=? AND r.scope=? AND r.path=? AND r.hash=? LIMIT 1',
-                    (generation, scope, path, revision)).fetchone():
-                raise ValueError('laya_learning_vector_unacknowledged')
-    return [list(entry) for entry in entries]
-
-
-def path_absent(project, collection, relative, *, bound=None):
-    """True when no eligible head member exists at ``collection/relative``."""
-    bound = selected(project) if bound is None else bound
-    if bound is None:
-        raise ValueError('laya_learning_route_legacy')
-    decision = bound[0]
-    with closing(_open(decision)) as db:
-        generation = _sealed_head(db, decision['scopeId'])
-        return db.execute('SELECT 1 FROM membership WHERE gen=? AND scope=? AND path=? '
-                          'AND eligible=1 LIMIT 1', (generation, decision['scopeId'],
-                                                     collection + '/' + relative)).fetchone() is None
-
-
-def file_revision(path: Path) -> str:
-    """Raw-source acknowledgement for a route that indexes wiki cards only."""
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError('laya_learning_source_unavailable')
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _log(project_root, status):

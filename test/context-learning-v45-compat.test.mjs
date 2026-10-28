@@ -12,5 +12,4 @@ test('v45 approved trainer reference remains readable but cannot execute after u
   assert.equal(result.missingOldCacheAcceptedForRead, true);
   assert.equal(result.tamperedOldCacheRejected, true);
   assert.equal(result.trainingAndObservationBlocked, true);
-  assert.equal(result.finalReservationBlocked, true);
 });

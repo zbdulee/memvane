@@ -105,7 +105,7 @@ class FullWorkerChecks(unittest.TestCase):
         self.assertNotIn('Popen',inspect.getsource(shared.launch))
         with patch.object(shared,'_policy',return_value={'checked':True}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
-             patch.object(shared,'_reconcile_source_cards'),patch.object(shared.job_telemetry,'emit'), \
+             patch.object(shared.job_telemetry,'emit'), \
              patch.object(shared.subprocess,'Popen',side_effect=AssertionError('direct worker spawn')), \
              patch('runtime_work.request',return_value={'status':'queued'}) as wake:
             self.assertEqual(shared.launch({},self.project),{'status':'queued'})
