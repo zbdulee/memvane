@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import json,tempfile,time,unittest,sys,threading
 from unittest.mock import patch
-from context_learning import shared,automatic_staging,automatic_cohort,learning_profile,runtime_authorization,inference_identity
+from context_learning import shared,automatic_staging,automatic_cohort,learning_profile,runtime_authorization,inference_identity,project_scope
 from context_learning.learning_queue import LearningQueue
 from context_learning.store import canonical
 try:from context_learning import candidate_apply as A
@@ -19,7 +19,7 @@ class Checks(unittest.TestCase):
    with shared._db_at(self.root/shared.DATABASE_NAME) as conn:yield conn
   patch.object(shared,'_db',side_effect=db).start();self.db=db
   patch.object(shared,'_case_active',return_value=True).start()
-  self.grant={'projectRoot':str(self.project),'operations':['quality_evaluate'], 'cohort':{'id':'test','minQualityTrainCases':100,'minTrainFamilies':5,'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10,'trainEditPrefixes':[f'train/{i}/' for i in range(5)],'validationEditPrefixes':[f'val/{i}/' for i in range(5)]}}
+  self.grant={'scope':project_scope.SCOPE,'projectRoot':str(self.project),'operations':['quality_evaluate'], 'cohort':{'schema':project_scope.COHORT_SCHEMA,'id':'test','minQualityTrainCases':100,'minTrainFamilies':5,'minValidationCases':50,'minValidationFamilies':5,'minEmptyValidation':10}}
   self.profile={'autoApply':True,'runtimeApprovalSha256':runtime_authorization.proposal_sha256(self.grant),'view':'tool-edit-8192-choice-v1','modelIdentitySha256':'a'*64,'maxQualityAgeSeconds':3600,'projectRoot':str(self.project)}
   self.scope=patch.object(learning_profile,'require',return_value=self.profile).start()
   patch.object(runtime_authorization,'require_operation',return_value=self.grant).start()
@@ -135,7 +135,7 @@ class Checks(unittest.TestCase):
           'observed_at_mono':time.monotonic(),'query_status':{'memory_pressure':'ok'},
           'memory_pressure':{'level':'normal','system_free_percent':60}}
   coord=self.root/'controller';coord.mkdir(mode=0o700)
-  with patch.object(learning_profile,'present',return_value=True),patch.object(shared,'resource_report',return_value=report),patch('context_learning.synthetic_experiment.project_for',return_value=self.project),patch.object(shared,'_predict',return_value=(score,{})),patch.object(automatic_staging,'require_operation',return_value=self.grant):
+  with patch.object(learning_profile,'present',return_value=True),patch.object(shared,'resource_report',return_value=report),patch.object(shared,'_predict',return_value=(score,{})),patch.object(automatic_staging,'require_operation',return_value=self.grant):
    result=automatic_staging.evaluate_pending(self.root,policy,self.cycle,trainer_factory=lambda _:SimpleNamespace(),coordinator=Coordinator(coord))
   self.assertEqual(result['status'],'staged_evaluated',result)
   self.assertGreater(result['metrics']['evaluatedAt'],time.time()-30)

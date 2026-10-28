@@ -25,10 +25,9 @@ def _case_evidence(rows):
 
 def _project(root, grant):
     from .project_scope import SCOPE
-    if grant.get('scope') == SCOPE:
-        return Path(grant['projectRoot'])
-    from .synthetic_experiment import project_for
-    return project_for(root)
+    if grant.get('scope') != SCOPE:
+        raise ValueError('runtime_authorization_cohort_scope_changed')
+    return Path(grant['projectRoot'])
 
 
 def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_fd=None):
@@ -67,16 +66,8 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
 
 
 def _quality_ready(train, validation, cohort):
-    from .project_scope import COHORT_SCHEMA
-    if cohort.get('schema') == COHORT_SCHEMA:
-        train_families = len({row[12] for row in train})
-        validation_families = len({row[12] for row in validation})
-    else:
-        train_families = sum(any(row[12].startswith(prefix) for row in train)
-                         for prefix in cohort['trainEditPrefixes'])
-        validation_families = sum(any(row[12].startswith(prefix)
-                                  for row in validation)
-                              for prefix in cohort['validationEditPrefixes'])
+    train_families = len({row[12] for row in train})
+    validation_families = len({row[12] for row in validation})
     empty = sum(not json.loads(row[5])['selected_ids'] for row in validation)
     ready = (len(train) >= cohort['minQualityTrainCases']
              and train_families >= cohort['minTrainFamilies']
@@ -120,7 +111,6 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
 
 def _prepare_staged(root,policy,grant):
     from .shared import _db, _case_active
-    from .synthetic_experiment import project_for
     from .laya_adapter import EDIT_INPUT_VIEW, model_identity
     from .learning_queue import LearningQueue
     root = Path(root)
@@ -193,7 +183,6 @@ def _prepare_staged(root,policy,grant):
 
 def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None,coordination=None):
     from .shared import _case, _case_active, _db, _predict
-    from .synthetic_experiment import project_for,reserve_train
     from .laya_adapter import EDIT_INPUT_VIEW
     from .resource_coordination import admission_policy
     controller,(coord_fd,admission)=coordination
@@ -215,9 +204,6 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             try:
                 require_operation(root, policy, 'local_train',
                                   approval_sha256=grant_sha)
-                from .project_scope import SCOPE
-                if grant.get('scope') != SCOPE:
-                    reserve_train(db, root, project, cycle_id)
             except ValueError as exc:
                 return {'status': 'experiment_paused', 'reason': str(exc)[:80]}
             db.execute('INSERT INTO cycles VALUES (?,?,?,?,NULL)',
@@ -331,7 +317,6 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
 def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*,trainer_factory,coordination):
     from .evaluation_queue import EvaluationQueue
     from .resource_coordination import admission_policy
-    from .synthetic_experiment import project_for
     from .shared import _db,_predict,_case,_case_active
     from .laya_adapter import EDIT_INPUT_VIEW
     cycle_id=job['id'];project=_project(root, grant);grant_sha=proposal_sha256(grant)
@@ -393,7 +378,6 @@ def _prepare_evaluation(root,policy,cycle_id):
     from .shared import _db,_case_active
     from .learning_queue import LearningQueue
     from .evaluation_queue import EvaluationQueue
-    from .synthetic_experiment import project_for
     from .resource_coordination import Coordinator
     root=Path(root)
     grant=require_operation(root,policy,'quality_evaluate')

@@ -2,8 +2,7 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" update-queued claude", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-reconcile claude", "timeout": 3 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" update-queued claude", "timeout": 5 }
         ] }
     ],
     "UserPromptSubmit": [
@@ -20,15 +19,11 @@
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" posttool claude", "timeout": 22 },
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" index claude", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" compile claude", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-event claude", "timeout": 5 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" compile claude", "timeout": 5 }
         ] },
       { "matcher": "Bash", "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" file-change-event claude", "timeout": 5 }
         ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-stop claude", "timeout": 3 } ] }
     ]
   }
 }

@@ -98,17 +98,11 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
     opts = config.get('contextLearning', {})
     if not isinstance(opts, dict) or opts.get('capture') is not True:
         return 'disabled'
-    is_edit = payload.get('context_origin') == 'tool_edit'
     gate = _edit_gate(payload)
     if gate is not None:
         return gate
     try:
         root = Path(project_root).resolve(strict=True)
-        deferred_allowed = None
-        if is_edit:
-            refused, deferred_allowed = _deferred_gate(payload, root)
-            if refused is not None:
-                return refused
         state = _private_state(config, root)
         if state is None:
             return 'unsafe_or_missing_state'
@@ -132,12 +126,6 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
             counts[phase['name']]=phase['returned_count']
             for hit in phase['results'][:phase_limit]:
                 file=_id(hit)
-                if deferred_allowed is not None:
-                    from .deferred_edit import candidate_allowed
-                    if not candidate_allowed(file, deferred_allowed):
-                        excluded.append({'candidate_id':file,'phase':phase['name'],
-                                         'reason':'not_from_registered_edit_source'})
-                        continue
                 decision=verdict(hit,phase['wiki_scoped']) if pool_mode else 'eligible'
                 if decision!='eligible':
                     excluded.append({'candidate_id':file,'phase':phase['name'],'reason':decision})
@@ -197,56 +185,22 @@ def observe(payload, config, project_root, final_results, *, phases=None, verdic
         elif not rows:
             return 'no_snapshot_candidates'
         sample=request(payload,rows,host=os.environ.get('QMD_ENGINE','claude'),request_id=str(uuid.uuid4()),sampling=sampling)
-        return _store(sample, config, root, state, compact_sources, current_corpus, is_edit)
+        return _store(sample, config, root, state, compact_sources, current_corpus)
     except Exception:
         return 'capture_unavailable'
 
 
 def _edit_gate(payload):
-    # An edit may be stored only after shared enqueue atomically consumes its
-    # one-use host-edit ticket. A project setting alone is never sufficient.
-    if payload.get('context_origin') == 'tool_edit' and (
-            not isinstance(payload.get('edit_event'), dict)
-            or not payload['edit_event'].get('ticket_id')):
-        return 'edit_ticket_required'
+    # Captures come from served recall prompts only. A host edit carries no
+    # selection evidence of its own and is never stored.
+    if payload.get('context_origin') == 'tool_edit':
+        return 'edit_capture_unsupported'
     return None
 
 
-def _deferred_gate(payload, root):
-    """``(refusal, allowed)`` for a deferred edit capture; ``(None, None)`` otherwise."""
-    if payload['edit_event'].get('deferred_capture') is not True:
-        return None, None
-    from .deferred_edit import pending, allowed_paths
-    ticket_id = payload['edit_event']['ticket_id']
-    if not pending(root, ticket_id):
-        return 'deferred_edit_observation_missing', None
-    if os.environ.get('QMD_DEFERRED_CAPTURE_REPLAY') != '1':
-        return 'deferred_index_pending', None
-    allowed = allowed_paths(root, ticket_id)
-    if not allowed:
-        return 'deferred_registered_candidates_unavailable', None
-    return None, allowed
-
-
-def _store(sample, config, root, state, compact_sources, current_corpus, is_edit):
+def _store(sample, config, root, state, compact_sources, current_corpus):
     """Private capture plus the enrolled shared queue; shared by QMD and Laya."""
     from .corpus import reconcile as reconcile_corpus
-    if is_edit:
-        if config.get('sharedLearning', {}).get('enabled') is not True:
-            return 'edit_shared_enrollment_required'
-        from .shared import enqueue, launch, activate_edit_case
-        shared_status = enqueue(config, root, sample, compact_sources)
-        if shared_status != 'awaiting_local':
-            return shared_status
-        status = capture(sample,enabled=True,state_dir=state,compact_sources=compact_sources)
-        activated = activate_edit_case(config, root, sample,
-                                       captured=status == 'stored')
-        if status == 'stored':
-            if current_corpus is not None:
-                reconcile_corpus(state, current_corpus)
-            if activated == 'queued':
-                launch(config, root)
-        return activated
     status = capture(sample,enabled=True,state_dir=state,compact_sources=compact_sources)
     if status == 'stored' and current_corpus is not None:
         reconcile_corpus(state, current_corpus)
@@ -289,7 +243,6 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
     opts = config.get('contextLearning', {})
     if not isinstance(opts, dict) or opts.get('capture') is not True:
         return 'disabled'
-    is_edit = payload.get('context_origin') == 'tool_edit'
     gate = _edit_gate(payload)
     if gate is not None:
         return gate
@@ -299,11 +252,6 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
         root = Path(project_root).resolve(strict=True)
         if str(root) != decision['projectRoot']:
             return 'laya_route_project_mismatch'
-        deferred_allowed = None
-        if is_edit:
-            refused, deferred_allowed = _deferred_gate(payload, root)
-            if refused is not None:
-                return refused
         if not isinstance(pool, list) or not pool:
             return 'no_snapshot_candidates'
         if len(pool) > CAPTURE_POOL_LIMIT:
@@ -319,12 +267,6 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
         rows = []; eligible = []; excluded = []; failures = []; compact_sources = {}
         for row in verified:
             cid = row['id']
-            if deferred_allowed is not None:
-                from .deferred_edit import candidate_allowed
-                if not candidate_allowed(cid, deferred_allowed):
-                    excluded.append({'candidate_id': cid, 'phase': 'primary',
-                                     'reason': 'not_from_registered_edit_source'})
-                    continue
             eligible.append(cid)
             text, revision = row['source_text'], row['revision_sha256']
             collection, _, relative = cid.partition('/')
@@ -359,6 +301,6 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
                     'candidate_limit': CAPTURE_POOL_LIMIT}
         sample = request(payload, rows, host=host, request_id=str(uuid.uuid4()),
                          sampling=sampling)
-        return _store(sample, config, root, state, compact_sources, current_corpus, is_edit)
+        return _store(sample, config, root, state, compact_sources, current_corpus)
     except Exception:
         return 'capture_unavailable'

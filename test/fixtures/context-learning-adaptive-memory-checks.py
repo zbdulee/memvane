@@ -257,13 +257,4 @@ class Memory(unittest.TestCase):
                 with self.assertRaises(local_cycle.ResourceDeferred):
                     trainer.call('train',{},Path(tmp)/'result.json',cwd=tmp)
 
-    def test_isolated_preflight_preserves_output_only_boundary(self):
-        from context_learning import isolated_train
-        with tempfile.TemporaryDirectory(dir='/tmp') as tmp, patch.object(
-                shared,'resource_report',return_value={'ready':False}):
-            plan={'policy':{},'root':Path(tmp),'output':Path(tmp)/'new-output'}
-            with self.assertRaises(ValueError):isolated_train._run_plan(plan,lambda:plan)
-            self.assertFalse((Path(tmp)/'resource-defer.json').exists())
-            self.assertFalse(plan['output'].exists())
-
 if __name__ == '__main__': unittest.main()

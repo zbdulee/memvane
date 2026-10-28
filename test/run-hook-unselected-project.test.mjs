@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
 
 const HOOK_ACTIONS = ['recall', 'update', 'update-queued', 'gate', 'posttool', 'index',
-  'compile', 'file-change-event', 'topical-event', 'topical-stop', 'topical-reconcile'];
+  'compile', 'file-change-event'];
 
 function setup({ settings = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'qmd-unselected-'));
@@ -51,7 +51,7 @@ test('a project without a selected route gets one SessionStart onboarding line a
       for (const engine of ['claude', 'codex']) {
         const result = hook(action, engine, home, project);
         assert.equal(result.status, 0, `${action} ${engine}: ${result.stderr}`);
-        assert.equal(result.stdout, action === 'topical-stop' ? '{}\n' : '', `${action} ${engine}`);
+        assert.equal(result.stdout, '', `${action} ${engine}`);
         assert.equal(result.stderr, '', `${action} ${engine}`);
       }
     }

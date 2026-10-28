@@ -1,4 +1,4 @@
-"""Runtime-authorization ledger reads must follow an active history selection.
+"""Learning-ledger access must follow an active history selection.
 
 After activation the legacy shared/private files are fenced and frozen; new
 writes land in the canonical history. A reader that opens the legacy path
@@ -6,10 +6,6 @@ directly reads stale data. The committed activation state (state + pointer)
 is written here the same way activate() writes it, because activate()
 refuses whenever `home` equals Path.home() and these readers resolve the
 account through Path.home(). Everything lives in a disposable home.
-
-isolated_train/derived_split are deliberately not covered: their preflights
-refuse an active history (`*_history_activation_unsupported`) and their
-sources are SHA-pinned by approved mappings.
 """
 import hashlib
 from pathlib import Path
@@ -18,13 +14,10 @@ import tempfile
 from unittest.mock import patch
 
 from context_learning.contracts import digest, request
-from context_learning.synthetic_experiment import PLANNED_BUNDLE_NAME, SHARED_NAME
-from context_learning import synthetic_experiment
 from context_learning import history_activation
 from context_learning.history_activation import (
     _atomic_file, _write_state, selected_database, writer_access, PROTOCOL)
 from context_learning.history_migration import prepare
-from context_learning import runtime_authorization as auth
 from context_learning import shared as shared_module
 from context_learning.shared import _db
 from context_learning.storage_layout import register_project, root as learning_root
@@ -33,10 +26,10 @@ from context_learning.store import canonical, database
 
 with tempfile.TemporaryDirectory(prefix='qmd-history-readers-') as name:
     home = Path(name).resolve()
-    project = home / 'novel'
-    story = project / PLANNED_BUNDLE_NAME
+    project = home / 'project'
+    story = project / 'story'
     story.mkdir(parents=True)
-    shared = project / SHARED_NAME
+    shared = project / '.shared-learning'
     shared.mkdir(mode=0o700)
     private_parent = project / 'private'
     private_parent.mkdir(mode=0o700)
@@ -102,44 +95,18 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-readers-') as name:
     assert selected_database(private_db, home=home) == history
 
     with patch.object(Path, 'home', return_value=home):
-        # runtime_authorization: a ticket written after activation exists only
-        # in the history and must enter the frozen baseline.
-        cutoff_ms = 4_102_444_800_000
-        cohort = {'schema': auth.COHORT_SCHEMA, 'id': 'fresh-edit-cohort-v1',
-                  'notBeforeUnixMs': cutoff_ms,
-                  'trainEditPrefixes': [
-                      '01_Settings/qmd-prospective/tr-a/',
-                      '02_Characters/qmd-prospective/tr-b/',
-                      '03_Plot/qmd-prospective/tr-c/',
-                      '01_Settings/qmd-prospective/tr-d/',
-                      '01_Settings/qmd-prospective/tr-e/'],
-                  'validationEditPrefixes': [
-                      '01_Settings/qmd-prospective/va-a/',
-                      '02_Characters/qmd-prospective/va-b/',
-                      '03_Plot/qmd-prospective/va-c/',
-                      '01_Settings/qmd-prospective/va-d/',
-                      '02_Characters/qmd-prospective/va-e/'],
-                  'minTrainCases': 5, 'minQualityTrainCases': 100,
-                  'minTrainFamilies': 5, 'minValidationCases': 50,
-                  'minValidationFamilies': 5, 'minEmptyValidation': 10,
-                  'baselineRawPaths': []}
-        new_path = cohort['trainEditPrefixes'][0] + 'after-activation.md'
         with writer_access(shared_db, home=home) as path:
             assert path == history
-            with sqlite3.connect(path) as db:
-                db.execute(
-                    "INSERT INTO edit_tickets (ticket_id,project_root,story_root,"
-                    "relative_path,episode,approval_sha256,parent_approval_sha256,"
-                    "document_sha256,source_side,source_start,segment_start,"
-                    "segment_end,segment_sha256,event_json,session_id,turn_id,"
-                    "tool_use_id,operation,created_at,expires_at) VALUES ("
-                    + ','.join('?' for _ in range(20)) + ')',
-                    ('history-ticket', str(project), str(story), new_path, 0,
-                     'a', 'b', 'c', 'after', 0, 0, 1, 'd', '{}', 's', 't', 'u',
-                     'write', 1.0, 2.0))
-        with patch.object(synthetic_experiment, 'project_for',
-                          return_value=project):
-            assert auth.baseline_raw_paths(story, cohort, shared) == [new_path]
+        # A case written after activation exists only in the history.
+        with _db(shared, home=home) as db:
+            db.execute("UPDATE cases SET status='queued' WHERE request_id=?",
+                       (request_id,))
+        with sqlite3.connect(history) as db:
+            assert db.execute('SELECT status FROM cases WHERE request_id=?',
+                              (request_id,)).fetchone() == ('queued',)
+        with sqlite3.connect(shared_db.as_uri() + '?mode=ro', uri=True) as db:
+            assert db.execute('SELECT status FROM cases WHERE request_id=?',
+                              (request_id,)).fetchone() == ('gold',)
 
     # No reader in these modules may open a learning ledger directly.
     core = Path(__file__).resolve().parents[2] / 'core/context_learning'

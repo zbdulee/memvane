@@ -389,51 +389,6 @@ class Checks(unittest.TestCase):
              patch.object(shared, 'wake_after_index', side_effect=OSError('busy')):
             self.assertTrue(runtime_handlers.laya_sync(row))
 
-    def test_provenance_ack_uses_laya_membership_and_source_bytes(self):
-        from context_learning import source_card_provenance as cards
-        from context_learning import topical_worker_provenance as topical
-        from context_learning.synthetic_scope import WIKI_COLLECTION
-        base = self.base / 'synthetic'
-        base.mkdir()
-        card_rel = 'generated/bridge.md'
-        card = body(5)
-        laya = LayaProject(base, wiki=WIKI_COLLECTION, cards=1)
-        self.addCleanup(laya.index.close)
-        laya.publish({WIKI_COLLECTION + '/' + card_rel: card})
-        story = laya.project
-        source = story / '01_Settings' / 'world.md'
-        source.parent.mkdir(parents=True)
-        source.write_text('# World\nThe bridge is blue.\n')
-        source_sha = sha(source.read_text())
-        expected = [['fantasy-20261008-settings', 'world.md', source_sha],
-                    [WIKI_COLLECTION, card_rel, sha(card)]]
-        with laya.route():
-            self.assertEqual(cards._index_ack(story, story, 'fantasy-20261008-settings',
-                                              'world.md', source_sha, card_rel, sha(card)),
-                             expected)
-            with self.assertRaisesRegex(ValueError, 'source_card_index_unacknowledged'):
-                cards._index_ack(story, story, 'fantasy-20261008-settings', 'world.md',
-                                 source_sha, card_rel, sha(body(6)))
-            with self.assertRaisesRegex(ValueError, 'source_card_index_unacknowledged'):
-                cards._index_ack(story, story, 'fantasy-20261008-settings', 'world.md',
-                                 'f' * 64, card_rel, sha(card))
-            with patch.object(topical, 'story_for', return_value=story):
-                rows = [{'collection': 'fantasy-20261008-settings',
-                         'path': story.name + '/world.md', 'sha256': source_sha}]
-                self.assertEqual(topical._ack(story, rows, card_rel, sha(card)), expected)
-                with self.assertRaisesRegex(ValueError, 'topical_worker_index_unacknowledged'):
-                    topical._ack(story, rows, 'generated/missing.md', sha(card))
-            self.assertTrue(laya_learning.path_absent(story, WIKI_COLLECTION,
-                                                      'generated/missing.md'))
-            self.assertFalse(laya_learning.path_absent(story, WIKI_COLLECTION, card_rel))
-            # A route whose wiki is another collection never acknowledges a card.
-            with self.assertRaisesRegex(ValueError, 'laya_learning_collection_unindexed'):
-                laya_learning.membership_ack(story, [['wiki', card_rel, sha(card)]])
-        with laya.route():
-            ack = laya_learning.membership_ack(
-                story, [[WIKI_COLLECTION, card_rel, sha(card)]], require_vector=True)
-        self.assertEqual(ack, [[WIKI_COLLECTION, card_rel, sha(card)]])
-
 
 if __name__ == '__main__':
     unittest.main()

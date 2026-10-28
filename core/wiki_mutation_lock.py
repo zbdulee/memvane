@@ -45,6 +45,8 @@ def lock(root):
         finally:
             held[key] = (fd, depth)
         return
+    # Every installed bundle version locks this same file name; renaming it
+    # would let an older bundle and a newer one mutate the wiki concurrently.
     path = root / '.topical-publish.lock'
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:

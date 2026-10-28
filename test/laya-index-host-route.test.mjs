@@ -16,7 +16,7 @@ test('Laya host route selector keeps absent QMD and blocks stale or invalid sele
         QMD_SKIP_BACKGROUND_WORKER: '1', PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 20 tests/);
+    assert.match(result.stderr, /Ran 19 tests/);
   } finally { removeTemp(home); }
 });
 
@@ -123,12 +123,11 @@ test('all always-fired selected hook actions refuse unproved install without QMD
   const base = {cwd: project, hook_event_name: 'PostToolUse', tool_name: 'Write',
     tool_input: {file_path: join(project, 'docs', 'a.md')}};
   const actions = ['update-queued', 'gate', 'posttool', 'index', 'compile',
-    'file-change-event', 'topical-event', 'topical-stop', 'topical-reconcile'];
+    'file-change-event'];
   try {
     for (const action of actions) {
       const payload = {...base, hook_event_name: action === 'gate' ? 'PreToolUse'
-        : action === 'update-queued' || action === 'topical-reconcile' ? 'SessionStart'
-          : action === 'topical-stop' ? 'Stop' : 'PostToolUse'};
+        : action === 'update-queued' ? 'SessionStart' : 'PostToolUse'};
       const result = spawnSync('bash', [hook, action, 'claude'], {
         cwd: home, input: JSON.stringify(payload), encoding: 'utf8', timeout: 10000,
         env: {...process.env, HOME: home, QMD_SETUP_GUARD_FIXTURE: '1',
@@ -137,8 +136,7 @@ test('all always-fired selected hook actions refuse unproved install without QMD
       assert.equal(result.status, 3, `${action}: ${result.stderr}`);
       assert.match(result.stderr, /QMD fallback refused/, action);
       assert.equal(existsSync(managerLog), false, action);
-      if (action === 'topical-stop') assert.equal(result.stdout.trim(), '{}');
-      else assert.equal(result.stdout, '', action);
+      assert.equal(result.stdout, '', action);
     }
   } finally { removeTemp(home); }
 });
@@ -185,10 +183,6 @@ test('malformed legacy input stays graceful while selected or stale routes block
       assert.equal(selected.status, 3, selected.stderr);
       assert.match(selected.stderr, /QMD fallback refused/);
     }
-    const topical = run('topical-reconcile', '', home,
-      {QMD_TOPICAL_PROJECT_ROOT: project});
-    assert.equal(topical.status, 3, topical.stderr);
-
     const invalidCwd = run('recall', JSON.stringify({cwd: 'relative', prompt: 'find'}), home);
     assert.equal(invalidCwd.status, 3, invalidCwd.stderr);
   } finally { removeTemp(home); }

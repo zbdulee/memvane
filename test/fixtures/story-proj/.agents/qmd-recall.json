@@ -1,7 +1,0 @@
-{
-  "name": "story-fixture",
-  "collections": ["story-manuscript", "story-plot"],
-  "minScore": 0.0,
-  "collectionPaths": { "story-manuscript": "04_Manuscript", "story-plot": "03_Plot" },
-  "lexicalPatterns": ["ep"]
-}

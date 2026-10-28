@@ -127,8 +127,7 @@ run-hook <action> <engine>
 ```
 
 Actions: `recall`, `update`, `update-queued`, `gate`, `posttool`, `index`,
-`compile`, `file-change-event`, `topical-event`, `topical-stop`,
-`topical-reconcile`.
+`compile`, `file-change-event`.
 
 The dispatcher resolves the plugin root from its own location, applies
 sandbox/headless no-op guards, and classifies the event cwd with
@@ -219,8 +218,8 @@ last published index read-only and sync, compile and index wakes wait.
 
 Every command in `hooks/hooks.json` and `hooks/hooks-codex.json` carries an
 explicit host `timeout`: 22 seconds for `recall` and `posttool`, 5 seconds for
-`update-queued`, `index`, `compile`, `topical-event` and `file-change-event`,
-3 seconds for `gate`, `topical-stop` and `topical-reconcile`. Prompt injection
+`update-queued`, `index`, `compile` and `file-change-event`, 3 seconds for
+`gate`. Prompt injection
 and the gate stay synchronous; maintenance hooks record a durable job and
 return.
 
@@ -228,13 +227,10 @@ Python hook entrypoints share one absolute monotonic deadline from
 `core/hook_budget.py` (SSOT). The default is 18 seconds;
 `QMD_HOOK_TOTAL_SECONDS` accepts 2–20 seconds and falls back to the default
 outside that range. The deadline is exported as `QMD_HOOK_DEADLINE_MONO`, so a
-child process inherits it and never resets an exhausted parent budget. Only a
-ticket-bound deferred capture replay (`QMD_DEFERRED_CAPTURE_REPLAY=1` with a
-32-hex ticket) uses the 55-second default / 60-second maximum.
+child process inherits it and never resets an exhausted parent budget.
 
 `run-hook` replaces its shell with the selected-route Python process, so a host
-timeout kills the work itself rather than a waiting shell. On a selected route
-the topical actions are proved no-ops.
+timeout kills the work itself rather than a waiting shell.
 
 ### 2. UserPromptSubmit Recall
 
@@ -373,7 +369,11 @@ evidence adapter exists, wiki output makes no repository-config claim from
 
 Verify and dedup workers are maintenance paths around this generated wiki state.
 They are intentionally fail-open so wiki maintenance does not break normal agent
-turns.
+turns. After each wiki lifecycle run, the same child runs the retroactive dedup
+scan (`core/wiki_dedup_scan.py`): it compares the stored laya-db chunk-vector
+centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
+above to `.auto-context/compile/dedup-needed.jsonl` for the `wiki-dedup`
+resolver. It makes no model or paid call.
 
 ## Laya Runtime and Embedding
 
@@ -543,6 +543,7 @@ Relevant logs:
 |---|---|
 | recall selection | `QMD_RECALL_LOG` (unset: none) |
 | wiki lifecycle | `~/.local/state/laya/auto-context/logs/wiki-lifecycle.log` |
+| wiki dedup scan | `~/.local/state/laya/auto-context/logs/wiki-dedup.log` |
 | compile extractor | `.auto-context/compile/extractor.log` |
 
 ## Test Strategy

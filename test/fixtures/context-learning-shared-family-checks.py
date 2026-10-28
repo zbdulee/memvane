@@ -11,24 +11,9 @@ from context_learning.contracts import digest, request
 from context_learning.shared import (_db, _due_threshold, _holdout_diagnostic,
                                      _evaluation_keys, _training_exposure_keys,
                                      _selection_exposure_keys, _screen_observation,
-                                     _training_provenance, _sync_synthetic_families,
-                                     _synthetic_family_keys,
+                                     _training_provenance,
                                      enqueue, observe_trial, status, train_due)
 from context_learning.store import canonical, capture
-from context_learning.synthetic_experiment import _final_query_families
-
-
-# A Settings edit with no manuscript episode has a verified file lineage, not
-# an invented common episode-0 source. Revisions of one file must still group.
-first_edit = _synthetic_family_keys('project', 0, 'edit:01_Settings/qmd-probes/first.md')
-same_edit = _synthetic_family_keys('project', 0, 'edit:01_Settings/qmd-probes/first.md')
-other_edit = _synthetic_family_keys('project', 0, 'edit:01_Settings/qmd-probes/other.md')
-assert first_edit == same_edit and first_edit.isdisjoint(other_edit)
-assert len(first_edit) == 1 and next(iter(first_edit)).startswith('target:')
-assert any(key.startswith('episode:') for key in _synthetic_family_keys(
-    'project', 28, 'edit:04_Manuscript/ep028.md'))
-assert any(key.startswith('episode:') for key in _synthetic_family_keys(
-    'project', 0, 'wiki/non-edit-source.md'))
 
 
 def scenario(base, *, focus_common):
@@ -176,22 +161,6 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     assert common_cycle["status"] == "complete", common_cycle
     assert common_cycle["metrics"]["evaluation_scope"] == "unseen_query_family_seen_corpus"
     assert common_cycle["metrics"]["candidate_document_disjoint"]["status"] == "unavailable"
-    atomic_root, _, _ = scenario(base / "atomic", focus_common=False)
-    with _db(atomic_root) as db:
-        project_key = db.execute("SELECT project_key FROM cases LIMIT 1").fetchone()[0]
-        for slot, rid in ((1, "case-0"), (2, "case-4")):
-            key = f"query:001:{slot}"
-            db.execute("INSERT INTO experiment_calls VALUES (?,?,?,?)",
-                       (key, "query", 1, 1.0))
-            db.execute("INSERT INTO experiment_query_tickets "
-                       "(call_key,episode,slot,prompt_sha256,source_id,source_sha256,request_id) "
-                       "VALUES (?,?,?,?,?,?,?)",
-                       (key, 1, slot, digest(rid), "wiki/same-target.md", digest("same"), rid))
-        before_families = db.execute("SELECT family_key,split FROM families ORDER BY family_key").fetchall()
-        before_cases = db.execute("SELECT request_id,family_keys FROM cases ORDER BY request_id").fetchall()
-        assert _sync_synthetic_families(db, project_key) is False
-        assert db.execute("SELECT family_key,split FROM families ORDER BY family_key").fetchall() == before_families
-        assert db.execute("SELECT request_id,family_keys FROM cases ORDER BY request_id").fetchall() == before_cases
     repeated_root, _, _ = scenario(base / "repeated", focus_common=False)
     repeated_project = repeated_root.parent / "project"
     repeated_private = repeated_root.parent / "private" / digest(str(repeated_project))
@@ -240,13 +209,6 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
         rows = db.execute("SELECT project_key,request_id,input_sha256,sample,bodies,gold,split,project_root,corpus_fingerprint,family_keys,trained_cycle FROM cases ORDER BY request_id").fetchall()
     assert [r[6] for r in rows] == ["train"] * 4 + ["holdout"]
     assert _holdout_diagnostic(rows) is None
-    assert _final_query_families(rows[:2])
-    try:
-        _final_query_families([rows[0], rows[0]])
-    except ValueError as exc:
-        assert str(exc) == "experiment_final_family_overlap"
-    else:
-        raise AssertionError("repeated_final_question_accepted")
     # Final target in a train pool as a negative was invisible to the old
     # selected-fact check, but its body is passed to Laya training.
     exposed = list(rows[0])

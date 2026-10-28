@@ -44,7 +44,6 @@ _ROW_KEYS = frozenset({"scope", "generation", "path", "hash", "body", "score"})
 _PROVIDER_RESULT_KEYS = frozenset({"profileId", "approvedProviderId",
                                    "providerArtifactSha256", "vector"})
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"})
-_PROVED_NOOP_ACTIONS = frozenset({"topical-event", "topical-stop", "topical-reconcile"})
 _PATCH_PATH = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$")
 _LOCATOR = re.compile(r"([^#]+)#L([1-9][0-9]{0,7})-L([1-9][0-9]{0,7})")
 MAX_SOURCE_LOCATIONS = 16
@@ -1442,8 +1441,8 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Prove the installed route before opening A-int; unsupported actions fail."""
-    if action not in ({"recall", "gate", "posttool", "compile", "update", "update-queued", "index",
-                       "file-change-event"} | _PROVED_NOOP_ACTIONS):
+    if action not in ("recall", "gate", "posttool", "compile", "update", "update-queued", "index",
+                      "file-change-event"):
         _fail("selected_action_unsupported")
     if host not in ("claude", "codex", "hermes"):
         _fail("unsupported_host")
@@ -1466,10 +1465,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
-    if action in _PROVED_NOOP_ACTIONS or (
-            action == "file-change-event" and not _successful_bash(payload)):
-        # The selector excludes automatic compile and topical pilot markers.
-        # These host events still fire, as does a failed or background Bash.
+    if action == "file-change-event" and not _successful_bash(payload):
+        # A failed or background Bash still fires the host event.
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         return {}
@@ -1653,7 +1650,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
             return {'action': 'continue'}
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
                                        'permissionDecision': 'allow'}}
-    # posttool/compile/index/file-change-event and topical no-ops: nothing is
+    # posttool/compile/index/file-change-event: nothing is
     # queued while the bundle is pending. The post-upgrade full scan covers it.
     if verify_selected_route_read_only(decision) != proof:
         _fail('selected_proof_changed')
@@ -1717,7 +1714,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             return {'action': 'continue'}
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
                                        'permissionDecision': 'allow'}}
-    # posttool/compile/index/file-change-event and topical no-ops: the main
+    # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}
 
@@ -1975,8 +1972,6 @@ def main(argv: list[str] | None = None) -> int:
             # A refused recall still leaves its reason (release QA §6: a missing
             # line would read as "the hook did not run").
             _write_selection_log(project_root, code, [])
-        if action == "topical-stop":
-            print("{}")
         return 3
 
 

@@ -75,6 +75,10 @@ refresh already enqueued for the same source hash is not enqueued again until
 trigger consent; minimal settings (`settingsModel: "minimal"`) need none. Only the selected laya-db route acts; the legacy
 QMD route only measures `ineligible`.
 
+After the lifecycle run, the same child runs the retroactive dedup scan
+(`wiki_dedup_scan.run`), which queues near-duplicate card pairs for the
+wiki-dedup resolver from the selected route's stored vectors.
+
 Fail-open: always exit 0, no stdout without `--json`, exceptions go to the log.
 """
 from __future__ import annotations
@@ -821,8 +825,19 @@ def main() -> int:
         result = run(args.cwd)
     except Exception as exc:  # fail-open: never break the update worker
         log(f"EXCEPTION: {exc!r}")
-        return 0
-    if args.json:
+        result = None
+    # The retroactive dedup scan shares this child's time limit and trigger.
+    # It logs to its own file and never changes this exit code or output.
+    try:
+        import wiki_dedup_scan
+        wiki_dedup_scan.run(args.cwd)
+    except Exception as exc:
+        try:
+            import wiki_dedup_scan
+            wiki_dedup_scan.log(f"EXCEPTION: {exc!r}")
+        except Exception:
+            pass
+    if args.json and result is not None:
         print(json.dumps(result, ensure_ascii=False))
     return 0
 

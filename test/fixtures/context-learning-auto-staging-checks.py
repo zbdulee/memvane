@@ -1,4 +1,8 @@
-"""Disposable normal-scheduler cohort proof; no live models or providers."""
+"""Disposable normal-scheduler staged-training proof; no live models or providers.
+
+Cohort admission is stubbed with a fixed train/holdout split by request ID;
+`general_cohort` owns real admission and has its own checks.
+"""
 from contextlib import contextmanager
 import json
 import os
@@ -10,44 +14,27 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from context_learning import (automatic_cohort, automatic_staging, shared,
-                              synthetic_teacher, synthetic_scope,
-                              synthetic_experiment, resource_coordination)
+                              project_scope, resource_coordination)
 from context_learning.store import canonical
 from context_learning.contracts import digest
-from context_learning.synthetic_experiment import SHARED_NAME
 
 
 with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
-    project = Path(tmp).resolve() / 'novel'; project.mkdir(mode=0o700)
-    story = synthetic_experiment.story_for(project); story.mkdir(mode=0o700)
-    root = project / SHARED_NAME; root.mkdir(mode=0o700)
+    project = Path(tmp).resolve() / 'project'; project.mkdir(mode=0o700)
+    root = project / '.shared-learning'; root.mkdir(mode=0o700)
     base = root / 'base.artifact'; base.write_bytes(b'base'); base.chmod(0o600)
     model = root / 'model'; model.mkdir(mode=0o700)
     cutoff = 5000
-    train_prefixes = [
-        '01_Settings/qmd-prospective/tr-world-lantern/',
-        '02_Characters/qmd-prospective/tr-character-keeper/',
-        '03_Plot/qmd-prospective/tr-plot-bridge/',
-        '01_Settings/qmd-prospective/tr-support-catalog/',
-        '01_Settings/qmd-prospective/tr-world-echo/']
-    validation_prefixes = [
-        '01_Settings/qmd-prospective/va-world-tide/',
-        '02_Characters/qmd-prospective/va-character-mapmaker/',
-        '03_Plot/qmd-prospective/va-plot-archive/',
-        '01_Settings/qmd-prospective/va-support-seal/',
-        '02_Characters/qmd-prospective/va-character-healer/']
-    cohort = {'schema': 'qmd-synthetic-edit-cohort-v1',
+    train_prefixes = [f'docs/train-{n}/' for n in range(5)]
+    validation_prefixes = [f'docs/validation-{n}/' for n in range(5)]
+    cohort = {'schema': project_scope.COHORT_SCHEMA,
         'id': 'staging-test-v1', 'notBeforeUnixMs': cutoff * 1000,
-        'trainEditPrefixes': train_prefixes,
-        'validationEditPrefixes': validation_prefixes,
         'minTrainCases': 5, 'minQualityTrainCases': 100,
         'minTrainFamilies': 5, 'minValidationCases': 50,
         'minValidationFamilies': 5,
-        'minEmptyValidation': 10,
-        'baselineRawPaths': [train_prefixes[0] + 'baseline-source.md',
-                             train_prefixes[0] + 'previously-ticketed.md']}
-    grant = {'cohort': cohort, 'projectRoot': str(project),
-        'storyRoot': str(story),
+        'minEmptyValidation': 10}
+    grant = {'scope': project_scope.SCOPE, 'cohort': cohort,
+        'projectRoot': str(project),
         'operations': ['gold', 'local_train', 'quality_evaluate']}
     policy = {'schema': shared.SCHEMA, 'enabled': True,
         '_runtime_authorization_v2': True,
@@ -66,8 +53,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             yield db
 
     def insert(rid, cid, path, at, *, split='train', status='gold',
-               selected=True, ticket=True, candidate_origin=None):
-        cid = 'fantasy-20261008-wiki/' + cid + '.md'
+               selected=True):
+        cid = 'project-wiki/' + cid + '.md'
         sample = {'schema_version': 4, 'request_id': rid,
             'prompt': {'text': 'technical question ' + rid},
             'candidates': [{'candidate_id': cid,
@@ -87,33 +74,26 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
                  canonical({cid: 'body ' + cid}), 'index', at, split,
                  families,
                  'active', status, gold))
-            if ticket:
-                db.execute("INSERT INTO edit_tickets (ticket_id,project_root,"
-                    "story_root,relative_path,episode,approval_sha256,"
-                    "parent_approval_sha256,document_sha256,source_side,"
-                    "source_start,segment_start,segment_end,segment_sha256,"
-                    "event_json,session_id,turn_id,tool_use_id,operation,"
-                    "created_at,expires_at,request_id,input_sha256) VALUES ("
-                    + ','.join('?' for _ in range(22)) + ')',
-                    ('ticket-' + rid, str(project), str(story),
-                     path, 0, 'a', 'b', digest(path), 'after', 0, 0, 1,
-                     'd', '{}', 's', 't', 'u', 'write', at, at + 600,
-                     rid, input_sha))
-                db.execute("UPDATE edit_tickets SET after_sha256=? "
-                           "WHERE ticket_id=?", (digest(path), 'ticket-' + rid))
-            if at >= cutoff:
-                db.execute("INSERT OR IGNORE INTO source_card_versions "
-                    "(registration_id,project_root,story_root,source_path,"
-                    "source_sha256,source_bytes,source_ticket_id,"
-                    "source_ticket_sha256,card_path,card_sha256,card_bytes,"
-                    "card_ticket_id,card_ticket_sha256,generation_method,"
-                    "index_ack,registered_at) VALUES (" +
-                    ','.join('?' for _ in range(16)) + ')',
-                    ('registration-' + rid, str(project), str(story),
-                     candidate_origin or path, digest(path), b'source',
-                     'source-' + rid, 'a',
-                     '.auto-context/wiki/' + cid.split('/', 1)[1], digest(cid),
-                     b'card', 'card-' + rid, 'b', 'host', 'ack', at))
+
+    def admitted(db, project_root, scoped_grant, statuses=('queued', 'first_done')):
+        """Fixed split: `train-N` trains, `validation-N` holds out, others never admit."""
+        assert scoped_grant['scope'] == project_scope.SCOPE
+        rows = db.execute(
+            "SELECT project_key,request_id,input_sha256,sample,bodies,gold,split,"
+            "project_root,corpus_fingerprint,family_keys,trained_cycle,captured_at,"
+            "status,use_state FROM cases WHERE project_root=? "
+            "ORDER BY captured_at,request_id", (str(project_root),)).fetchall()
+        result = []
+        for row in rows:
+            if row[11] < cutoff or row[12] not in statuses or row[13] != 'active':
+                continue
+            name, _, number = row[1].rpartition('-')
+            if name not in ('train', 'validation'):
+                continue
+            role = 'train' if name == 'train' else 'holdout'
+            # One exposure family per case, as distinct project sources give.
+            result.append((role, tuple(row[:12]) + (f'{role}/{number}',)))
+        return result
 
     insert('old-queued', 'legacy-card',
            train_prefixes[0] + 'old.md', 4000,
@@ -124,99 +104,17 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
     insert('old-pending', 'legacy-pending',
            train_prefixes[0] + 'pending.md', 4000.2,
            status='pending_review')
-    with shared._db_at(dbpath) as db:
-        db.execute("UPDATE cases SET error='synthetic_index_edit_not_settled' "
-                   "WHERE request_id='old-pending'")
     insert('sealed-eval', 'sealed-card',
            train_prefixes[0] + 'sealed-target.md', 4001,
            split='final')
-    insert('new-exposed', 'sealed-card',
-           train_prefixes[0] + 'exposed.md', 5001)
-    insert('new-target-reuse', 'entirely-new-card',
-           train_prefixes[0] + 'sealed-target.md', 5001.5)
-    insert('new-cross-family', 'cross-family-card',
-           train_prefixes[0] + 'new-cross-family.md', 5001.7,
-           candidate_origin=validation_prefixes[0] + 'foreign.md')
-    insert('new-topical-cross-family', 'topical-cross-family-card',
-           train_prefixes[0] + 'topical-cross-family.md', 5001.8)
-    insert('new-topical-unobserved', 'topical-unobserved-card',
-           train_prefixes[0] + 'genuine-edit-b.md', 5001.85)
-    insert('new-topical-stale-revision', 'topical-stale-card',
-           train_prefixes[0] + 'genuine-edit-c.md', 5001.86)
-    insert('new-old-raw-source', 'new-card-on-old-raw-source',
-           train_prefixes[0] + 'previously-ticketed.md', 5001.9)
-    insert('new-baseline-path', 'card-on-baseline-path',
-           train_prefixes[0] + 'baseline-source.md', 5001.96)
-    with shared._db_at(dbpath) as db:
-        db.execute("INSERT INTO edit_tickets (ticket_id,project_root,story_root,"
-            "relative_path,episode,approval_sha256,parent_approval_sha256,"
-            "document_sha256,source_side,source_start,segment_start,"
-            "segment_end,segment_sha256,event_json,session_id,turn_id,"
-            "tool_use_id,operation,created_at,expires_at) SELECT "
-            "'old-source-ticket',project_root,story_root,relative_path,"
-            "episode,approval_sha256,parent_approval_sha256,document_sha256,"
-            "source_side,source_start,segment_start,segment_end,"
-            "segment_sha256,event_json,session_id,turn_id,tool_use_id,"
-            "operation,4000,4600 FROM edit_tickets WHERE ticket_id=?",
-            ('ticket-new-old-raw-source',))
-        db.execute("DELETE FROM source_card_versions WHERE registration_id=?",
-                   ('registration-new-topical-cross-family',))
-        db.execute("DELETE FROM source_card_versions WHERE registration_id=?",
-                   ('registration-new-topical-unobserved',))
-        db.execute("DELETE FROM source_card_versions WHERE registration_id=?",
-                   ('registration-new-topical-stale-revision',))
-        topical_id = 'fantasy-20261008-wiki/topical-cross-family-card.md'
-        db.execute("INSERT INTO topical_worker_versions VALUES (" +
-                   ','.join('?' for _ in range(17)) + ')',
-            ('topical-new-cross-family', str(project), str(story),
-             '.auto-context/wiki/topical-cross-family-card.md',
-             digest(topical_id), b'card', 'generation', 'card',
-             canonical([{'revision': {'path':
-                 validation_prefixes[0] + 'foreign.md'}}]),
-             'a', 'b', 'c', 'd', 'e', '[]', 'active', 5001.8))
-        unobserved_id = 'fantasy-20261008-wiki/topical-unobserved-card.md'
-        db.execute("INSERT INTO topical_worker_versions VALUES (" +
-                   ','.join('?' for _ in range(17)) + ')',
-            ('topical-new-unobserved', str(project), str(story),
-             '.auto-context/wiki/topical-unobserved-card.md',
-             digest(unobserved_id), b'card', 'generation', 'card',
-             canonical([{'revision': {'path':
-                 train_prefixes[0] + 'unobserved-shell-a.md'}}]),
-             'a', 'b', 'c', 'd', 'e', '[]', 'active', 5001.85))
-        stale_id = 'fantasy-20261008-wiki/topical-stale-card.md'
-        db.execute("INSERT INTO topical_worker_versions VALUES (" +
-                   ','.join('?' for _ in range(17)) + ')',
-            ('topical-new-stale', str(project), str(story),
-             '.auto-context/wiki/topical-stale-card.md',
-             digest(stale_id), b'card', 'generation', 'card',
-             canonical([{'revision': {'path':
-                 train_prefixes[0] + 'genuine-edit-c.md',
-                 'sha256': digest('stale revision')}}]),
-             'a', 'b', 'c', 'd', 'e', '[]', 'active', 5001.86))
+    insert('new-unadmitted', 'unadmitted-card',
+           train_prefixes[0] + 'unadmitted.md', 5001)
     for n in range(5):
         insert('train-' + str(n), 'fresh-train-' + str(n),
                train_prefixes[n % 5] + 'source-' + str(n) + '.md',
                5002 + n)
-    with shared._db_at(dbpath) as db:
-        db.execute("DELETE FROM source_card_versions WHERE registration_id=?",
-                   ('registration-train-0',))
-        cid = 'fantasy-20261008-wiki/fresh-train-0.md'
-        # The attested topical source is the exact bound case edit. Its
-        # unbound source ticket may expire; the case ticket stays bound.
-        source = train_prefixes[0] + 'source-0.md'
-        db.execute("INSERT INTO topical_worker_versions VALUES (" +
-                   ','.join('?' for _ in range(17)) + ')',
-            ('topical-train-0', str(project), str(story),
-             '.auto-context/wiki/fresh-train-0.md', digest(cid), b'card',
-             'generation-0', 'card-0',
-             canonical([{'revision': {'path': source,
-                                      'sha256': digest(source)}}]),
-             'a', 'b', 'c', 'd', 'e', '[]', 'active', 5002))
-    with shared._db_at(dbpath) as db:
-        admitted = automatic_cohort.admitted(db, project, grant,
-                                              statuses=('queued', 'gold'))
-        assert {row[1] for _, row in admitted} == {
-            'train-' + str(n) for n in range(5)}, [row[1] for _, row in admitted]
+    admission = patch.object(automatic_cohort, 'admitted', side_effect=admitted)
+    admission.start()
 
     calls = []
     runtime_state = {'revoked': False, 'revoke_during_train': False,
@@ -259,9 +157,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             automatic_staging, 'require_operation', side_effect=operation), patch(
             'context_learning.runtime_authorization.require_operation',
             side_effect=operation), patch(
-            'context_learning.synthetic_experiment.project_for',
-            return_value=project), patch(
-            'context_learning.synthetic_experiment.reserve_train'), patch(
             'context_learning.laya_adapter.model_identity',
             return_value='local-model-identity'):
         from context_learning.local_cycle import ResourceDeferred
@@ -310,8 +205,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
                 return_value={'status': 'staged_waiting_quality_cohort'}):
             assert shared.run(root, project=project,
                 sync_config={})['status'] == 'staged_waiting_quality_cohort'
-        shared.recover_awaiting_edits(root, project, request_ids=[])
-        shared.recover_scope_deferred_edits(root, project, request_ids=[])
         with shared._db_at(dbpath) as db:
             assert db.execute("SELECT status FROM cases WHERE request_id='old-queued'").fetchone()[0] == 'queued'
             assert db.execute("SELECT status FROM cases WHERE request_id='old-awaiting'").fetchone()[0] == 'awaiting_local'
@@ -337,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             trainer_factory=lambda _: FakeTrainer())
         assert waiting_for_train['status'] == 'staged_waiting_quality_cohort'
         assert waiting_for_train['required_train'] == 100
-        assert waiting_for_train['validation_families'] == 5
+        assert waiting_for_train['validation_families'] == 50
         assert len(calls) == 1
         # Available historical labels cannot satisfy this head's train gate.
         with shared._db_at(dbpath) as db:
@@ -419,67 +312,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             trainer_factory=lambda _: FakeTrainer())
         assert same['status'] == 'staged_source_revoked' and len(calls) == 4
 
-        insert('queued-new', 'fresh-queued',
-               validation_prefixes[0] + 'queued.md', 5700,
-               status='queued')
-        import config
-        with patch.object(config, 'find_project_config',
-                return_value={'config': {}}), patch.object(
-                synthetic_scope, 'NOVEL_ROOT', project), patch.object(
-                synthetic_scope, '_synthetic_bundle'), patch.object(
-                synthetic_scope, 'policy_for', return_value={}), patch.object(
-                synthetic_experiment, 'shared_for', return_value=root), patch.object(
-                shared, '_safe_root', return_value=root), patch.object(
-                shared, '_reconcile_source_cards'), patch.object(
-                shared, '_policy', return_value=policy), patch.object(
-                shared, 'launch', return_value={'status': 'launched'}):
-            assert shared.wake_after_index(project)['status'] == 'launched'
-        with shared._db_at(dbpath) as db:
-            assert db.execute("SELECT status FROM cases WHERE request_id='old-awaiting'").fetchone()[0] == 'awaiting_local'
-            assert db.execute("SELECT status FROM cases WHERE request_id='old-pending'").fetchone()[0] == 'pending_review'
-        teacher_policy = {'projectRoot': str(project), 'model': 'gpt-6.1-sol',
-            'maxCalls': 20, 'reservedUsd': None,
-            'reserveUsdPerCall': None}
-        worker_policy = {**policy, 'goldModel': 'gpt-6.1-sol',
-                         'maxGoldCalls': 20}
-        provider_calls = []
-        def fake_gold(sample, *_):
-            provider_calls.append(sample['request_id'])
-            return {'selected_ids': [], 'usage': {}, 'elapsed_seconds': .1,
-                    'peak_rss_mib': 1}
-        runtime_state['revoked'] = True
-        with patch.object(synthetic_teacher, '_db', local_db), patch.object(
-                synthetic_teacher, '_case_active', return_value=True), patch.object(
-                synthetic_teacher, 'resource_report', side_effect=fresh_ready), patch.object(
-                synthetic_scope, '_synthetic_bundle'), patch.object(
-                synthetic_teacher, 'policy_for',
-                return_value=teacher_policy), patch.object(
-                synthetic_teacher, 'allowed_case',
-                return_value=(teacher_policy, None)), patch.object(
-                synthetic_experiment, 'load', return_value=None):
-            blocked_gold = synthetic_teacher.process_pending(root, project,
-                worker_policy, invoke=fake_gold, automatic_grant=grant)
-            assert blocked_gold['status'] == 'runtime_approval_required'
-            assert not provider_calls
-            runtime_state['revoked'] = False
-            result = synthetic_teacher.process_pending(root, project,
-                worker_policy, invoke=fake_gold, automatic_grant=grant)
-        assert result['status'] == 'drained', result
-        assert provider_calls == ['queued-new', 'queued-new']
-        with shared._db_at(dbpath) as db:
-            assert db.execute("SELECT status FROM cases WHERE request_id='old-queued'").fetchone()[0] == 'queued'
-            assert db.execute("SELECT status FROM cases WHERE request_id='old-awaiting'").fetchone()[0] == 'awaiting_local'
-            assert db.execute("SELECT status FROM cases WHERE request_id='old-pending'").fetchone()[0] == 'pending_review'
-            assert db.execute("SELECT status FROM cases WHERE request_id='queued-new'").fetchone()[0] == 'gold'
+    admission.stop()
 
     print(json.dumps({'staged_train': True, 'backlog_preserved': True,
         'evaluation_no_pointer': True, 'revoke_blocks': True,
-        'normal_gold_filtered': True, 'sealed_target_filtered': True,
-        'cross_family_candidate_filtered': True,
-        'topical_source_lineage_filtered': True,
-        'unobserved_same_family_source_filtered': True,
-        'stale_source_revision_filtered': True,
-        'frozen_old_raw_path_excluded': True,
-        'pre_activation_inventory_excluded': True,
-        'fresh_topical_source_admitted': True,
         'source_revocation_stages_without_evaluation': True}))

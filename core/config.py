@@ -155,7 +155,7 @@ DEFAULT_CONFIG = {
             "extractorPerRun": 10,   # run당 extractor spawn 상한 (초과분은 requeue)
             "cardsPerSource": 10,    # 소스당 카드 수 상한 (모델 출력 상한)
             "verifyPerRun": 3,       # 사람이 정하는 검수 예산의 하한
-            "dedupPairsPerScan": 8,  # retroactive scan 1회의 judge 호출 상한
+            "dedupPairsPerScan": 8,  # judge 호출 상한 키(retroactive scan은 judge를 부르지 않는다)
             "dedupPairsPerCompile": 1,  # write-time gate 1회의 judge 호출 상한
         },
         # **처리 시작 조건만 남는다**(상한은 budget). maxItems는 "이만큼 모이면 지금
@@ -166,7 +166,7 @@ DEFAULT_CONFIG = {
         },
         "semanticDedup": {
             "enabled": True,
-            # 무료 score gate의 scan당 쌍 상한(유료 judge 예산은 budget.dedupPairsPerScan).
+            # retroactive scan(`wiki_dedup_scan`) 1회가 dedup-needed 큐에 넣는 쌍 상한.
             "maxPairsPerScan": 10,
             # Retrieval floor for LLM judging. The daemon score is rank-bounded, not a
             # similarity (see wiki_dedup_judge.py), so it may only narrow the candidate
@@ -238,14 +238,13 @@ WIKI_STATUSES = {"generated", "verified", "tentative", "contested", "discarded",
 COMPILE_DEFAULT_STATUSES = {"generated", "tentative"}
 
 # --- dedup score 레버 (설정에서 상수로) ---------------------------------------
-# daemon score는 유사도가 아니라 **RRF 순위의 함수**라(rerank 경로도 blendedScore가 순위를
-# 섞는다 — wiki_dedup_judge 모듈 docstring의 실측 참조) 어떤 임계도 "두 카드가 같은 사실을
-# 말한다"를 표현할 수 없다. 판정은 LLM judge가 하고 score는 후보 retrieval floor
-# (`semanticDedup.candidateMinScore`)로만 남는다. 아래 넷은 judge가 **없는** 머신의 레거시
-# 무료 게이트 동작을 예전 기본값 그대로 동결한 것이다 — 설정으로 다시 열지 않는다(도달
-# 불가능한 값을 사용자가 조정하게 두는 것이 이 정리의 제거 대상이었다).
+# write-time gate의 retrieval 점수는 유사도가 아니라 순위 hint라 판정은 LLM judge가 하고
+# score는 후보 retrieval floor(`semanticDedup.candidateMinScore`)로만 남는다.
+# `DEDUP_AUTO_MERGE_THRESHOLD`는 retroactive scan(`wiki_dedup_scan`)의 후보 임계다 — 두 카드의
+# 저장된 laya-db chunk 벡터 중심점 사이 cosine이라 실제 유사도이고, 판정은 resolver 에이전트가
+# 한다. 넷 모두 설정으로 다시 열지 않는다(`DEPRECATED_REMOVED_KEYS`의 레버 4종).
 DEDUP_SCORE_THRESHOLD = 0.82        # ← semanticDedup.threshold (write-time 레거시 게이트)
-DEDUP_AUTO_MERGE_THRESHOLD = 0.9    # ← semanticDedup.autoMergeThreshold (scan 레거시 게이트)
+DEDUP_AUTO_MERGE_THRESHOLD = 0.9    # ← semanticDedup.autoMergeThreshold (scan cosine 후보 임계)
 DEDUP_TOP_K = 3                     # ← semanticDedup.topK (유사 카드 retrieval 개수)
 DEDUP_SIMILAR_PAGE_MAX_CHARS = 12000  # ← semanticDedup.similarPageMaxChars
 # onFail과 onInconclusive가 공유하는 값 집합. "none"이 유일한 "현행 유지"(카드를

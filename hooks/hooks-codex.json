@@ -2,8 +2,7 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" update-queued codex", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-reconcile codex", "timeout": 3 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" update-queued codex", "timeout": 5 }
         ] }
     ],
     "UserPromptSubmit": [
@@ -20,12 +19,8 @@
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" posttool codex", "timeout": 22 },
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" index codex", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" compile codex", "timeout": 5 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-event codex", "timeout": 5 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" compile codex", "timeout": 5 }
         ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook\" topical-stop codex", "timeout": 3 } ] }
     ]
   }
 }

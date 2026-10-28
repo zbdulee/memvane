@@ -2,7 +2,7 @@
 # auto-context 공통 hook 디스패처.
 # usage: run-hook <action> <engine> [--sandbox]
 #   action: recall | update | update-queued | posttool | index | compile | gate
-#   topical-event | topical-stop | topical-reconcile | file-change-event
+#   file-change-event
 #   engine: claude | codex | gemini
 # 모든 action은 이벤트 cwd의 Laya route를 먼저 분류한다. 선택된 route만
 # core/laya_host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
@@ -14,7 +14,7 @@ ENGINE="${2:-claude}"
 
 # 인자 없이 호출 시 usage 안내
 if [ -z "$ACTION" ]; then
-  echo "usage: run-hook <recall|update|update-queued|posttool|index|compile|gate> <claude|codex|gemini>" >&2
+  echo "usage: run-hook <recall|update|update-queued|posttool|index|compile|gate|file-change-event> <claude|codex|gemini>" >&2
   exit 1
 fi
 
@@ -30,12 +30,11 @@ case "$ENGINE" in
   gemini) [ -n "${GEMINI_SANDBOX:-}" ] && _qmd_sandbox=1 ;;
 esac
 if [ "$_qmd_sandbox" = 1 ]; then
-  [ "$ACTION" = "topical-stop" ] && printf '{}\n'
   exit 0
 fi
 
 case "$ACTION" in
-  recall|update|update-queued|gate|posttool|index|compile|file-change-event|topical-event|topical-stop|topical-reconcile) ;;
+  recall|update|update-queued|gate|posttool|index|compile|file-change-event) ;;
   *) echo "run-hook: unknown action '$ACTION'" >&2; exit 1 ;;
 esac
 
@@ -51,9 +50,6 @@ _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" ||
 trap 'rm -f "$_laya_route_payload"' EXIT
 cat >"$_laya_route_payload" || { echo '[laya-index] route payload unavailable' >&2; exit 3; }
 _laya_route_fallback="$PWD"
-case "$ACTION" in
-  topical-*) _laya_route_fallback="${QMD_TOPICAL_PROJECT_ROOT:-${QMD_TOPICAL_SANDBOX_ROOT:-$PWD}}" ;;
-esac
 _laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
 case "$_laya_route_state" in
   legacy)
@@ -75,7 +71,6 @@ case "$_laya_route_state" in
         fi
       fi
     fi
-    [ "$ACTION" = "topical-stop" ] && printf '{}\n'
     exit 0
     ;;
   candidate|preview|worktree)
@@ -92,7 +87,6 @@ case "$_laya_route_state" in
     ;;
   blocked)
     echo '[laya-index] selected route unavailable; QMD fallback refused' >&2
-    [ "$ACTION" = "topical-stop" ] && printf '{}\n'
     exit 3
     ;;
   *) echo '[laya-index] route lookup failed; QMD fallback refused' >&2; exit 3 ;;

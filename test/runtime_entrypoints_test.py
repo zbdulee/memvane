@@ -74,13 +74,6 @@ class EntryPoints(unittest.TestCase):
             result=teacher.process_pending(self.root,self.root,{})
         self.assertEqual(result['status'],'deferred_resource');policy.assert_not_called()
 
-    def test_synthetic_teacher_deferral_precedes_source_and_budget(self):
-        a=self.admission()
-        from context_learning import synthetic_teacher as teacher
-        with patch.object(a,'sample',return_value=None),patch.object(teacher,'policy_for') as policy:
-            result=teacher.process_pending(self.root,self.root,{})
-        self.assertEqual(result['status'],'deferred_resource');policy.assert_not_called()
-
     def test_custom_wiki_extractor_defer_never_launches_child(self):
         a=self.admission();import wiki_compile_worker as worker
         with patch.object(a,'sample',return_value=None),patch.object(worker.subprocess,'Popen') as spawn:
