@@ -1611,7 +1611,7 @@ class ResponseChecks(unittest.TestCase):
                     self.assertEqual(status, 3)
                     self.assertEqual(out.getvalue(), '')
                     self.assertEqual(err.getvalue(),
-                                     f'[memvane] {code}; QMD fallback refused\n')
+                                     f'[memvane] {code}; request refused\n')
 
 
 class BundleDriftChecks(unittest.TestCase):
@@ -1786,7 +1786,211 @@ class BundleDriftChecks(unittest.TestCase):
                 status = response.main(['serve-hook', 'recall', 'claude', str(payload), temp])
         self.assertEqual(status, 3)
         self.assertEqual(err.getvalue(),
-                         '[memvane] executing_bundle_not_selected; QMD fallback refused\n')
+                         '[memvane] executing_bundle_not_selected; request refused\n')
+
+
+class ProofRetryChecks(unittest.TestCase):
+    """A proof or view change during one recall (sync publish, upgrade)."""
+
+    LOCAL = str(Path(response.__file__).resolve().parents[1])
+
+    def setUp(self):
+        import laya_embed_resident
+        admission = patch.object(laya_embed_resident, 'admit_query')
+        admission.start()
+        self.addCleanup(admission.stop)
+        self.decision = {**v2_decision(), 'installId': 'c' * 32,
+                         'journalPath': '/synthetic/state/install-journal.sqlite',
+                         'generation': 'g-old'}
+
+    def proof(self, epoch, **changes):
+        return {'productRouteAllowed': True, 'selectionEpoch': epoch,
+                'executingPluginRoot': self.LOCAL, 'installId': 'c' * 32,
+                'projectRoot': '/synthetic/project', 'scopeId': SCOPE,
+                'dbIncarnation': 'a' * 32, 'bundleManifestSha256': 'd' * 64,
+                'vectorProfile': VECTOR_PROFILE,
+                'providerManifest': {'approvedProviderId': 'synthetic-provider'},
+                **changes}
+
+    def recall(self, *, verify, reselect=None, view=None, read_only=None, query=None):
+        """Run selected recall through the real proof and retry path."""
+        from contextlib import ExitStack, nullcontext
+        import config
+        import laya_incremental_docs_query
+        import laya_install_journal
+        import laya_index_runtime
+        import laya_local_embed_provider
+        calls = {'query': [], 'view': 0}
+        heads = iter(('generation-7', 'generation-8', 'generation-9'))
+
+        def query_v2(runtime, prompt, *args, pinned_generation=None, **kwargs):
+            head = next(heads)
+            pinned_generation.append(head)
+            calls['query'].append(head)
+            if query is not None:
+                query(len(calls['query']))
+            return [row(path='wiki/a.md', generation=head,
+                        body='---\ntitle: Alpha card\n---\n## Summary\nalpha fact.\n')], \
+                frozenset()
+
+        def view_check(decision, chosen, expected_head=None):
+            calls['view'] += 1
+            return True if view is None else view(calls['view'])
+
+        def no_read_only(_decision):
+            raise AssertionError('read-only proof was not expected')
+
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT)
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch.object(laya_install_journal, 'verify_selected_route',
+                               side_effect=verify))
+            ro = enter(patch.object(laya_install_journal, 'verify_selected_route_read_only',
+                                    side_effect=read_only or no_read_only))
+            selected = enter(patch.object(response, 'select_route',
+                                          side_effect=reselect or
+                                          (lambda *_a, **_k: dict(self.decision))))
+            enter(patch.object(laya_index_runtime, 'LayaIndexRuntime',
+                               return_value=nullcontext(runtime)))
+            enter(patch.object(laya_index_runtime, 'capacity_store_paths', return_value=None))
+            enter(patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider',
+                               return_value=lambda *_: [0.1, 0.2, 0.3]))
+            enter(patch.object(config, 'load_project_config',
+                               return_value=dict(self.decision['recallSettings'])))
+            enter(patch.object(laya_incremental_docs_query, 'query_incremental',
+                               return_value=([], frozenset(), {}, (), None)))
+            enter(patch.object(response, 'query_selected_v2', side_effect=query_v2))
+            enter(patch.object(response, '_select_verified_cards',
+                               side_effect=lambda _d, _s, _p, rows: (rows, 'ranked', None)))
+            enter(patch.object(response, '_selection_view_unchanged', side_effect=view_check))
+            try:
+                result = response.serve_selected('recall', 'codex', dict(self.decision),
+                                                 {'prompt': 'find alpha',
+                                                  'cwd': '/synthetic/project'})
+            except Exception as exc:
+                result = exc
+        return result, calls, selected, ro
+
+    def served(self, result):
+        self.assertIsInstance(result, dict, repr(result))
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('wiki/a.md', context)
+        return context
+
+    def test_epoch_advance_by_a_sync_publish_still_serves_verified_cards(self):
+        # cas_mark_new_write moves only the journal epoch; the pinned head is
+        # still the published one, so this recall serves without a retry.
+        proofs = iter([self.proof(3)] + [self.proof(4)] * 10)
+        result, calls, selected, _ro = self.recall(verify=lambda _d: next(proofs))
+        self.served(result)
+        self.assertEqual(calls['query'], ['generation-7'])
+        selected.assert_not_called()
+
+    def test_publish_during_recall_retries_once_from_a_fresh_proof(self):
+        # The sync wake advanced the epoch and published a new head between
+        # the pin and the final view check: one retry re-queries that head.
+        proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+        result, calls, selected, _ro = self.recall(
+            verify=lambda _d: next(proofs), view=lambda n: n != 1)
+        self.served(result)
+        self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+        self.assertEqual(selected.call_count, 1)
+        self.assertEqual(selected.call_args.args, ('/synthetic/project',))
+
+    def test_upgrade_activation_during_recall_serves_the_new_route(self):
+        # The upgrade rewrote the route mid-recall: re-selection yields the
+        # same install with a new bundle, proved in full before serving.
+        import laya_install_journal
+        upgraded = {**self.decision, 'generation': 'g-new', 'pluginRoot': self.LOCAL}
+        state = {'calls': 0}
+
+        def verify(decision):
+            state['calls'] += 1
+            if decision.get('generation') == 'g-new':
+                return self.proof(5, bundleManifestSha256='e' * 64)
+            if state['calls'] == 1:
+                return self.proof(3)
+            raise laya_install_journal.JournalEvidenceError('host_route_unverified')
+        result, calls, selected, _ro = self.recall(
+            verify=verify, reselect=lambda *_a, **_k: dict(upgraded))
+        self.served(result)
+        self.assertEqual(len(calls['query']), 2)
+        self.assertEqual(selected.call_count, 1)
+
+    def test_drifted_bundle_on_retry_serves_the_read_only_published_view(self):
+        import laya_install_journal
+        state = {'calls': 0}
+
+        def verify(_decision):
+            state['calls'] += 1
+            if state['calls'] == 1:
+                return self.proof(3)
+            if state['calls'] == 2:
+                return self.proof(4, bundleManifestSha256='e' * 64)
+            raise laya_install_journal.JournalEvidenceError('executing_bundle_not_selected')
+        read_only = {**self.proof(4, bundleManifestSha256='e' * 64),
+                     'productRouteAllowed': False, 'readOnlyAllowed': True}
+        result, calls, selected, ro = self.recall(
+            verify=verify, read_only=lambda _d: dict(read_only))
+        self.served(result)
+        self.assertEqual(len(calls['query']), 2)
+        self.assertGreaterEqual(ro.call_count, 2)
+        self.assertEqual(selected.call_count, 1)
+
+    def test_identity_change_or_repeated_change_still_refuses(self):
+        import laya_install_journal
+        for name, changes in (('install', {'installId': 'f' * 32}),
+                              ('project', {'projectRoot': '/synthetic/other'}),
+                              ('store', {'dbIncarnation': 'b' * 32}),
+                              ('journal', {'journalPath': '/synthetic/x/install-journal.sqlite'}),
+                              ('state', {'state': 'blocked'})):
+            with self.subTest(identity=name):
+                proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+                moved = {**self.decision, **changes}
+                result, calls, selected, _ro = self.recall(
+                    verify=lambda _d: next(proofs), view=lambda n: n != 1,
+                    reselect=lambda *_a, **_k: dict(moved))
+                self.assertIsInstance(result, response.HostResponseError)
+                self.assertEqual(str(result), 'selected_proof_changed')
+                self.assertEqual(calls['query'], ['generation-7'])
+                self.assertEqual(selected.call_count, 1)
+        with self.subTest('second change'):
+            proofs = iter([self.proof(3)] * 2 + [self.proof(4)] * 10)
+            result, calls, selected, _ro = self.recall(
+                verify=lambda _d: next(proofs), view=lambda _n: False)
+            self.assertIsInstance(result, response.HostResponseError)
+            self.assertEqual(str(result), 'selected_proof_changed')
+            self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+            self.assertEqual(selected.call_count, 1)
+        with self.subTest('bundle change at the same epoch'):
+            # Not an epoch advance: the final recheck refuses, and the
+            # retried proof (unchanged route, still the other bundle) is
+            # what serves; the first attempt's rows are never served.
+            proofs = iter([self.proof(3)] + [self.proof(3, bundleManifestSha256='e' * 64)] * 10)
+            result, calls, selected, _ro = self.recall(verify=lambda _d: next(proofs))
+            self.served(result)
+            self.assertEqual(calls['query'], ['generation-7', 'generation-8'])
+        with self.subTest('journal refusal mid-recall'):
+            state = {'calls': 0}
+
+            def verify(_decision):
+                state['calls'] += 1
+                if state['calls'] <= 1:
+                    return self.proof(3)
+                raise laya_install_journal.JournalEvidenceError('inactive_or_mismatched_journal')
+            result, calls, selected, _ro = self.recall(verify=verify)
+            self.assertIsInstance(result, laya_install_journal.JournalEvidenceError)
+            self.assertEqual(str(result), 'inactive_or_mismatched_journal')
+            selected.assert_not_called()
+
+    def test_non_proof_refusals_are_not_retried(self):
+        def stale(_n):
+            raise response.HostResponseError('index_stale_sync_queued')
+        result, calls, selected, _ro = self.recall(
+            verify=lambda _d: self.proof(3), query=stale)
+        self.assertEqual(str(result), 'index_stale_sync_queued')
+        self.assertEqual(len(calls['query']), 1)
+        selected.assert_not_called()
 
 
 if __name__ == "__main__":

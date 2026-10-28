@@ -1501,7 +1501,12 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Prove the installed route before opening A-int; unsupported actions fail."""
+    """Prove the installed route before opening A-int; unsupported actions fail.
+
+    A recall whose proof or published view moves while it runs (a sync
+    publish, a bundle upgrade activation) re-selects the route and runs once
+    more from a fresh proof; see ``_recall_retry_decision``.
+    """
     if action not in ("recall", "gate", "posttool", "compile", "update", "update-queued", "index",
                       "file-change-event"):
         _fail("selected_action_unsupported")
@@ -1509,6 +1514,97 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
+    if action != 'recall':
+        return _serve_selected_once(action, host, decision, payload)
+    started = time.monotonic()
+    try:
+        return _serve_selected_once(action, host, decision, payload)
+    except Exception as exc:
+        retry = _recall_retry_decision(exc, decision, payload, started)
+        if retry is None:
+            raise
+        changed = _retry_code(exc)
+    _LEARNING_CAPTURE[:] = []
+    _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
+                         changed=changed)
+    return _serve_selected_once(action, host, retry, payload)
+
+
+# A proof or published-view change seen inside one recall. Each names a
+# concurrent writer of the same install (sync publish, upgrade activation),
+# not a refusal of the route itself.
+_RETRYABLE_RECALL_CODES = frozenset(('selected_proof_changed', 'incremental_base_changed'))
+_RETRYABLE_JOURNAL_CODES = frozenset(('host_route_unverified', 'host_decision_changed'))
+# Fields a re-selected decision must share with the first one. Bundle,
+# generation and plugin root move with an upgrade; these never do.
+_RECALL_IDENTITY = ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath',
+                    'dbPath', 'queuePath', 'dbIncarnation')
+_WORKTREE_IDENTITY = ('state', 'worktreeRoot', 'worktreeProjectRoot', 'gitCommonDir')
+
+
+def _retry_code(exc: BaseException) -> str:
+    return str(exc) if re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) else 'unknown'
+
+
+def _decision_project_root(decision: dict):
+    if isinstance(decision.get('mainRoute'), dict):
+        return decision['mainRoute'].get('projectRoot')
+    return decision.get('projectRoot')
+
+
+def _decision_identity(decision) -> tuple | None:
+    if not isinstance(decision, dict):
+        return None
+    if decision.get('state') == 'worktree':
+        main = decision.get('mainRoute')
+        if not isinstance(main, dict) or main.get('state') != 'candidate':
+            return None
+        return (tuple(decision.get(key) for key in _WORKTREE_IDENTITY) +
+                tuple(main.get(key) for key in _RECALL_IDENTITY))
+    if decision.get('state') != 'candidate':
+        return None
+    return tuple(decision.get(key) for key in _RECALL_IDENTITY)
+
+
+def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
+                           started: float):
+    """The re-selected decision for one more recall, or None to refuse.
+
+    Only a proof/view change of the same install qualifies, and only while
+    at least half of the hook budget is left. The second attempt proves the
+    route from the top (full proof, or the read-only drift path), so its
+    rows never come from the first attempt's proof or pin. A changed
+    install, project, scope, journal or store identity keeps the refusal.
+    """
+    from laya_install_journal import JournalEvidenceError
+    if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
+            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES)):
+        return None
+    try:
+        import hook_budget
+        if time.monotonic() - started > hook_budget.remaining() / 2:
+            return None
+    except BaseException:
+        return None
+    identity = _decision_identity(decision)
+    if identity is None:
+        return None
+    target = payload.get('cwd')
+    if not isinstance(target, str) or not os.path.isabs(target):
+        target = (decision.get('worktreeProjectRoot') if decision.get('state') == 'worktree'
+                  else decision.get('projectRoot'))
+    if not isinstance(target, str):
+        return None
+    try:
+        fresh = select_route(target, action='recall')
+    except Exception:
+        return None
+    if _decision_identity(fresh) != identity:
+        return None
+    return fresh
+
+
+def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
     # The journal binds one owner cache; another host may execute only an
@@ -1780,6 +1876,21 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     return {}
 
 
+def _proof_still_current(refreshed: dict, proof: dict) -> bool:
+    """Same route proof, allowing only the journal epoch to move forward.
+
+    A sync owner marks its first publish of a wake with one epoch advance
+    (cas_mark_new_write). The served rows stay bound to their pinned head,
+    which ``_selection_view_unchanged`` checks separately.
+    """
+    if refreshed == proof:
+        return True
+    stable = lambda row: {key: value for key, value in row.items()
+                          if key != 'selectionEpoch'}
+    return (isinstance(refreshed, dict) and stable(refreshed) == stable(proof) and
+            refreshed.get('selectionEpoch', -1) >= proof.get('selectionEpoch', 0))
+
+
 def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   recheck, *, degraded: bool = False,
                   read_only_label: str = 'bundle_drift') -> dict:
@@ -1936,7 +2047,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
     if vector_fallback is not None:
         _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
         print(f'[memvane] {vector_fallback}; serving lexical results', file=sys.stderr)
-    if recheck(decision) != proof:
+    if not _proof_still_current(recheck(decision), proof):
         _fail("selected_proof_changed")
     if base_generation is not None and pinned_generation != [base_generation]:
         _fail('incremental_base_changed')
@@ -1961,7 +2072,7 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
-    if recheck(decision) != proof or not _selection_view_unchanged(
+    if not _proof_still_current(recheck(decision), proof) or not _selection_view_unchanged(
             decision, chosen, pinned_generation[0] if pinned_generation else None):
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
@@ -2028,7 +2139,7 @@ def main(argv: list[str] | None = None) -> int:
                    re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
         code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
                 or journal else "selected_proof_or_query_failed")
-        print(f"[memvane] {code}; QMD fallback refused", file=sys.stderr)
+        print(f"[memvane] {code}; request refused", file=sys.stderr)
         if action == "recall":
             # A refused recall still leaves its reason (release QA §6: a missing
             # line would read as "the hook did not run").

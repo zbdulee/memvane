@@ -30,7 +30,7 @@ for (const [skill, args] of [['query', ['검색 결과는?']], ['update', []]]) 
               QMD_QUERY_FIXTURE: 'test/fixtures/daemon-response.json'},
       });
       assert.equal(result.status, 3, result.stdout + result.stderr);
-      assert.match(result.stderr, /QMD fallback refused/);
+      assert.match(result.stderr, /request refused/);
       assert.equal(result.stdout, '');
       assert.equal(existsSync(managerLog), false, 'backend manager was invoked');
     } finally {
