@@ -5,6 +5,7 @@ prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import math
@@ -1520,8 +1521,9 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if action != 'recall':
         return _serve_selected_once(action, host, decision, payload)
     started = time.monotonic()
-    _RECALL_STATE.clear()
-    _RECALL_STATE['active'] = True
+    # Fresh state per call, bound to this thread/context only: an in-process
+    # host (Hermes) may run recalls concurrently or nested.
+    token = _RECALL_STATE.set({'epoch': None, 'wakes': {}})
     try:
         try:
             return _serve_selected_once(action, host, decision, payload)
@@ -1535,12 +1537,13 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                              changed=changed)
         return _serve_selected_once(action, host, retry, payload)
     finally:
-        _RECALL_STATE.clear()
+        _RECALL_STATE.reset(token)
 
 
 # Per-recall state shared by both attempts: the highest journal epoch seen
-# by any proof or recheck, and the one sync wake this recall recorded.
-_RECALL_STATE: dict = {}
+# by any proof or recheck, and the sync wake recorded per project root.
+_RECALL_STATE: contextvars.ContextVar = contextvars.ContextVar(
+    'memvane_recall_state', default=None)
 # The retry runs only when the time left after re-selection exceeds what the
 # first attempt took plus this margin.
 _RETRY_MARGIN_SECONDS = 1.0
@@ -1552,29 +1555,32 @@ def _recall_epoch(proof) -> None:
     A journal restore moves the epoch back; neither attempt may accept it.
     Outside a recall, or for a proof without an epoch, nothing is recorded.
     """
-    if not _RECALL_STATE.get('active') or not isinstance(proof, dict):
+    state = _RECALL_STATE.get()
+    if state is None or not isinstance(proof, dict):
         return
     epoch = proof.get('selectionEpoch')
     if type(epoch) is not int:
         return
-    floor = _RECALL_STATE.get('epoch')
+    floor = state['epoch']
     if floor is not None and epoch < floor:
         _fail('selected_proof_rolled_back')
-    _RECALL_STATE['epoch'] = epoch if floor is None else max(floor, epoch)
+    state['epoch'] = epoch if floor is None else max(floor, epoch)
 
 
 def _recall_sync_wake(project_root: str, **kwargs):
-    """Record the selected sync wake at most once per recall.
+    """Record the selected sync wake at most once per project root and recall.
 
     Each request bumps the wake revision; a retried recall reuses the first
     recorded result instead of asking for another sync run.
     """
     import runtime_work
-    if not _RECALL_STATE.get('active'):
+    state = _RECALL_STATE.get()
+    if state is None:
         return runtime_work.request('laya-sync', project_root, **kwargs)
-    if 'wake' not in _RECALL_STATE:
-        _RECALL_STATE['wake'] = runtime_work.request('laya-sync', project_root, **kwargs)
-    return _RECALL_STATE['wake']
+    wakes = state['wakes']
+    if project_root not in wakes:
+        wakes[project_root] = runtime_work.request('laya-sync', project_root, **kwargs)
+    return wakes[project_root]
 
 
 def _retry_time_left(started: float) -> float:

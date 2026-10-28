@@ -2137,6 +2137,69 @@ class ProofRetryChecks(unittest.TestCase):
         self.assertLessEqual(seen['select'], before + hook_budget.MAX_SECONDS)
         self.assertEqual(exported, '')
 
+    def test_overlapping_recalls_keep_their_own_floor_and_wakes(self):
+        # Hermes serves recalls in-process: a concurrent or nested recall
+        # must neither reset another one's epoch floor nor share its wakes.
+        import threading
+        import runtime_work
+        a_ready, b_done = threading.Event(), threading.Event()
+        outcome = {}
+
+        def epoch(value):
+            response._recall_epoch({'selectionEpoch': value})
+
+        def once(_action, _host, decision, _payload):
+            root = decision['projectRoot']
+            if root == '/p/a':
+                epoch(5)
+                epoch(6)
+                response._recall_sync_wake('/p/a')
+                a_ready.set()
+                b_done.wait(5)
+                # Nested recall of another project inside this one.
+                response.serve_selected('recall', 'hermes', {'projectRoot': '/p/n'},
+                                        {'prompt': 'q'})
+                response._recall_sync_wake('/p/a')
+                response._recall_sync_wake('/p/a2')
+                try:
+                    epoch(5)
+                except response.HostResponseError as exc:
+                    outcome['a'] = str(exc)
+                return {}
+            if root == '/p/b':
+                a_ready.wait(5)
+                epoch(1)
+                response._recall_sync_wake('/p/b')
+                response._recall_sync_wake('/p/b')
+                return {}
+            epoch(0)
+            response._recall_sync_wake(root)
+            return {}
+
+        def run(root):
+            try:
+                response.serve_selected('recall', 'claude', {'projectRoot': root},
+                                        {'prompt': 'q'})
+            finally:
+                if root == '/p/b':
+                    b_done.set()
+        with patch.object(response, '_serve_selected_once', side_effect=once), \
+             patch.object(runtime_work, 'request',
+                          side_effect=lambda *_a, **_k: {'status': 'queued'}) as wake:
+            threads = [threading.Thread(target=run, args=(root,))
+                       for root in ('/p/a', '/p/b')]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            # Outside any recall the wake is recorded as before, every time.
+            response._recall_sync_wake('/p/free')
+            response._recall_sync_wake('/p/free')
+        self.assertEqual(outcome.get('a'), 'selected_proof_rolled_back')
+        self.assertEqual(sorted(call.args[1] for call in wake.call_args_list),
+                         ['/p/a', '/p/a2', '/p/b', '/p/free', '/p/free', '/p/n'])
+        self.assertIsNone(response._RECALL_STATE.get())
+
     def test_non_proof_refusals_are_not_retried(self):
         def stale(_n):
             raise response.HostResponseError('index_stale_sync_queued')
