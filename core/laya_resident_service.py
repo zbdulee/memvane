@@ -868,18 +868,24 @@ class Service:
             binding = self.bindings.get(project)
         if binding is None:
             return
-        worker = self.workers.get(_worker_key(binding.manifest))
+        key = _worker_key(binding.manifest)
+        worker = self.workers.get(key)
+        still_uses_worker = False
         try:
             decision, proof, _mode = self.prove(project)
             from laya_embed_resident import _owner_identity
             owned = _owner_identity(decision, proof) == binding.identity
+            # A re-attested installation (same provider, new paths) keeps
+            # its shared worker; only a route this service no longer proves,
+            # or one bound to another provider, gives it up.
+            still_uses_worker = _worker_key(proof['providerManifest']) == key
         except Exception:
             owned = False
         if not owned or worker is None or not worker.alive():
             with self.lock:
                 self._release(project, reason='starting' if owned or worker is None
                               or worker.alive() else 'worker_exited',
-                              reclaim=not owned)
+                              reclaim=not owned and not still_uses_worker)
 
     def _forget(self, project):
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
