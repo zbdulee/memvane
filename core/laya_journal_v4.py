@@ -8,7 +8,10 @@ of this plugin that can execute against it reads v4:
 * the executing bundle (this code);
 * Claude's installed copy of the same marketplace plugin, from
   ``~/.claude/plugins/installed_plugins.json``;
-* every Codex cache copy under ``~/.codex/plugins/cache/<market>/<plugin>/``.
+* every Codex cache copy under ``~/.codex/plugins/cache/<market>/<plugin>/``;
+* the Hermes Agent plugin copy under ``${HERMES_HOME:-~/.hermes}/plugins/``
+  (the directory named after the plugin, or any whose ``plugin.yaml``
+  declares that name).
 
 A copy is v4-capable when its ``core/laya_install_journal.py`` declares
 ``VERSION = 4`` or later. An unknown layout, an unreadable record or any
@@ -24,6 +27,7 @@ COMMIT is rolled back by the next opener.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
@@ -33,6 +37,7 @@ V4 = 4
 WAITING = 'journal_v4_waiting_hosts'
 BUSY = 'journal_v4_install_busy'
 _VERSION_LINE = re.compile(r'^VERSION = (\d+)\s*$', re.MULTILINE)
+_NAME_LINE = re.compile(r'^name:\s*["\']?([A-Za-z0-9._-]+)["\']?\s*$', re.MULTILINE)
 
 
 def _executing_root():
@@ -50,9 +55,45 @@ def reads_v4(plugin_root):
     return len(found) == 1 and int(found[0]) >= V4
 
 
+def _hermes_homes(home, explicit):
+    homes = [home / '.hermes']
+    configured = None if explicit else os.environ.get('HERMES_HOME')
+    if configured:
+        homes.append(Path(configured).expanduser())
+    return homes
+
+
+def _hermes_copies(plugin, home, explicit):
+    """Hermes plugin copies of ``plugin``; raises when the plugin dir is unreadable."""
+    copies = set()
+    for hermes in _hermes_homes(home, explicit):
+        plugins = hermes / 'plugins'
+        if not plugins.exists() and not plugins.is_symlink():
+            continue
+        try:
+            children = sorted(plugins.iterdir())
+        except OSError as exc:
+            raise ValueError('hermes_install_unreadable') from exc
+        for child in children:
+            if not child.is_dir():
+                continue
+            if child.name == plugin:
+                copies.add(str(child))
+                continue
+            try:
+                declared = _NAME_LINE.findall((child / 'plugin.yaml').read_text(
+                    encoding='utf-8'))
+            except (OSError, UnicodeError):
+                continue
+            if declared[:1] == [plugin]:
+                copies.add(str(child))
+    return copies
+
+
 def host_copies(root=None, home=None):
     """Every host copy of the executing plugin; raises when unprovable."""
     root = Path(root or _executing_root())
+    explicit_home = home is not None
     home = Path(home or Path.home())
     caches = {'claude': home / '.claude' / 'plugins' / 'cache',
               'codex': home / '.codex' / 'plugins' / 'cache'}
@@ -84,6 +125,8 @@ def host_copies(root=None, home=None):
     codex = caches['codex'] / market / plugin
     if codex.is_dir():
         copies.update(str(child) for child in codex.iterdir() if child.is_dir())
+    # Hermes runs the same core against the same install journals.
+    copies.update(_hermes_copies(plugin, home, explicit_home))
     return sorted(copies)
 
 

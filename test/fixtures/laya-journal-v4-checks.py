@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -250,6 +251,31 @@ class HostGate(V3Selected):
     def copy_version(root, version):
         (root / 'core' / 'laya_install_journal.py').write_text(f'VERSION = {version}\n')
 
+    def test_conversion_waits_for_the_hermes_copy(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        plugins = self.home / '.hermes' / 'plugins'
+        hermes = self.copy(plugins / 'qmd-auto-context', 3)
+        self.assertIn(str(hermes), laya_journal_v4.host_copies(self.claude, self.home))
+        self.assertEqual(self.convert(), {'status': 'journal_v4_waiting',
+                                          'reason': 'journal_v4_waiting_hosts'})
+        self.assertEqual(stored(self.journal)[0], 3)
+        # A renamed directory is still found by the name its plugin.yaml declares.
+        renamed = plugins / 'laya-memory'
+        shutil.move(str(hermes), str(renamed))
+        (renamed / 'plugin.yaml').write_text('name: qmd-auto-context\nversion: "0.39.0"\n')
+        self.assertEqual(self.convert()['reason'], 'journal_v4_waiting_hosts')
+        # An unreadable Hermes plugin directory cannot be proven: hold.
+        plugins.chmod(0)
+        try:
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unreadable'))
+        finally:
+            plugins.chmod(0o755)
+        self.copy_version(renamed, 4)
+        self.assertEqual(self.convert()['status'], 'journal_v4_converted')
+        self.assertEqual(stored(self.journal)[0], 4)
+
     def test_busy_install_lock_defers_without_converting(self):
         import laya_journal_v4
         from laya_product_install import _install_lock
@@ -281,6 +307,59 @@ class HostGate(V3Selected):
             response._request_journal_v4(decision)
         self.assertEqual(requested, [(decision['projectRoot'], decision['journalPath'],
                                       'journal_v4_conversion')])
+
+
+class SchemaSnapshot(V3Selected):
+    def test_schema_version_reads_one_snapshot_while_conversion_commits(self):
+        journal = Path(self.journal)
+        outcome = []
+
+        def convert():
+            try:
+                outcome.append(J.convert_to_v4(journal)['status'])
+            except Exception as exc:  # noqa: BLE001 - asserted below
+                outcome.append(exc)
+
+        class Rows:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+        class Racing:
+            """Runs a whole v3->v4 conversion between the two schema reads."""
+
+            def __init__(self, db):
+                self.db, self.thread = db, None
+
+            @property
+            def in_transaction(self):
+                return self.db.in_transaction
+
+            def execute(self, sql, *args):
+                cursor = self.db.execute(sql, *args)
+                if sql == 'PRAGMA user_version' and self.thread is None:
+                    rows = cursor.fetchall()
+                    self.thread = threading.Thread(target=convert)
+                    self.thread.start()
+                    self.thread.join(1.0)  # a reader holding its snapshot blocks COMMIT
+                    return Rows(rows)
+                return cursor
+
+            def commit(self):
+                self.db.commit()
+
+            def rollback(self):
+                self.db.rollback()
+        with closing(sqlite3.connect(journal.as_uri() + '?mode=ro', uri=True, timeout=2,
+                                     isolation_level=None)) as db:
+            racing = Racing(db)
+            version = J._schema_version(racing)
+            racing.thread.join(10)
+        self.assertEqual(version, 3, 'v3 user_version paired with v4 table SQL')
+        self.assertEqual(outcome, ['journal_v4_converted'])
+        self.assertEqual(J.journal_version(journal), 4)
 
 
 class NewJournals(SelectedProject):

@@ -27,7 +27,7 @@ from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FI
 import laya_package  # noqa: F401
 from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
                                  inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA,
+                                 PRODUCTION_ATTESTATION_SCHEMA, RUNTIME_FILES_FIELD,
                                  production_provider_approved,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
@@ -157,6 +157,15 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
               'vectorProfile': proof['vectorProfile'],
               'providerManifest': provider_manifest,
               'dependencyClosure': dependency_closure}
+    try:
+        from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
+        files = sealed_files_sha256(provider_manifest.get('moduleEntryPath')
+                                    if isinstance(provider_manifest, dict) else None)
+    except (RuntimeUnavailable, OSError) as exc:
+        raise JournalEvidenceError('production_attestation_invalid') from exc
+    if files is not None:
+        # Seal every runtime file, not only the hashed entries and closure.
+        record[RUNTIME_FILES_FIELD] = files
     try:
         validate_production_provider_attestation(proof['vectorProfile'], proof, record)
     except BundleEvidenceError as exc:
@@ -424,7 +433,25 @@ def _observed_route(row, supplied_raw):
 
 
 def _schema_version(db):
-    """The journal format of an open connection, or None when unknown."""
+    """The journal format of an open connection, or None when unknown.
+
+    ``user_version`` and the table SQL are read in one read transaction (the
+    caller's, or one opened here): a v3->v4 conversion committing between
+    the two reads would otherwise pair v3 with v4 SQL (``journal_schema_unknown``).
+    """
+    if db.in_transaction:
+        return _schema_version_read(db)
+    db.execute('BEGIN')
+    try:
+        version = _schema_version_read(db)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return version
+
+
+def _schema_version_read(db):
     if db.execute('PRAGMA application_id').fetchone()[0] != APP_ID:
         return None
     version = db.execute('PRAGMA user_version').fetchone()[0]
@@ -1153,9 +1180,33 @@ def verify_worker_attestation(decision):
             proof.get('vectorProfile'), proof, record)
     except BundleEvidenceError as exc:
         raise JournalEvidenceError('worker_attestation_invalid') from exc
+    _verify_runtime_files(record)
     if verify_selected_route(decision) != selected:
         _fail('worker_selection_changed')
     return manifest
+
+
+def _verify_runtime_files(record):
+    """Re-hash every runtime file (node, JS dependencies, native, model)."""
+    from laya_embed_runtime import RuntimeUnavailable, verify_attested_files
+    try:
+        verify_attested_files(record['providerManifest'], record.get(RUNTIME_FILES_FIELD))
+    except (RuntimeUnavailable, OSError, KeyError, TypeError) as exc:
+        raise JournalEvidenceError('worker_runtime_files_invalid') from exc
+
+
+def verify_preview_worker_attestation(journal_path, provider_manifest):
+    """Before a pending build's worker starts: its sealed record's runtime files.
+
+    The preview proof already validated the record against the journal's
+    reviewed digest; this re-hashes every runtime file it executes.
+    """
+    record, _digest = _attestation(_private_parent(journal_path))
+    if (not isinstance(record, dict) or not isinstance(provider_manifest, dict) or
+            record.get('providerManifest') != provider_manifest):
+        _fail('worker_attestation_changed')
+    _verify_runtime_files(record)
+    return provider_manifest
 
 
 def verify_development_vector_approval(decision, approval_manifest_path):

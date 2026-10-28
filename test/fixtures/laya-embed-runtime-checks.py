@@ -508,6 +508,106 @@ class MovedProvider(Base):
             return REAL_REVIEW(**{**kw, 'plugin_root': str(host)})
 
 
+class RuntimeFiles(Base):
+    """Every executed file is provider content, not only the hashed entries."""
+
+    FIELD = 'runtimeFilesSha256'
+
+    def reattested(self):
+        """The 9 installs' shape: QMD-reviewed profile, files in a Laya generation."""
+        first = R.ensure_for_attestation(self.old_att)
+        source, commit = self.source_repo()
+        again = reattest(self.old_att, self.review(source, commit)['reviewedProvider'])
+        proof = {'sourceCommit': 'c' * 40, 'bundleManifestSha256': 'd' * 64,
+                 'ownershipManifestSha256': 'e' * 64, 'vectorProfile': again['vectorProfile']}
+        record = attestation_record(proof=proof,
+                                    journal_path=self.state / 'install-journal.sqlite',
+                                    reattested=again,
+                                    schema=bundle.PRODUCTION_ATTESTATION_SCHEMA)
+        # Sealed before the runtime file digest existed.
+        legacy = {key: value for key, value in record.items() if key != self.FIELD}
+        return first, source, commit, record, legacy
+
+    def changed_js_generation(self):
+        """Same node, module entry, model and native bytes; one JS file differs."""
+        dep = (self.qmd_runtime / 'generations' / 'g-0857' / 'package' / 'node_modules' /
+               'lifecycle-utils' / 'dist' / 'index.js')
+        dep.write_text('lifecycle, changed')
+        R.provision_from_attestation(self.old_att)
+        return R.select()
+
+    def test_changed_js_dependency_is_new_content_not_equivalent(self):
+        first, source, commit, record, legacy = self.reattested()
+        second = self.changed_js_generation()
+        self.assertNotEqual(second['generation'], first['generation'])
+        for key in ('nodeSha256', 'moduleEntrySha256', 'modelSha256'):
+            self.assertEqual(second[key], first[key])
+        changed = self.review(source, commit)
+        for name, attestation in (('legacy', legacy), ('sealed', record)):
+            with self.subTest(attestation=name):
+                self.assertIsNone(reattest(attestation, changed['reviewedProvider']))
+                self.assertFalse(auto.provider_equivalent(attestation, changed, self.plugin))
+                # The upgrade worker re-selects the attested generation.
+                self.assertEqual(R.ensure_for_attestation(attestation)['generation'],
+                                 first['generation'])
+        # Same bytes give the same digest: an existing install re-attests
+        # without a rebuild and gains the sealed field.
+        same = self.review(source, commit)['reviewedProvider']
+        self.assertEqual(record[self.FIELD], first[self.FIELD])
+        self.validate(record)
+        for attestation in (legacy, record):
+            again = reattest(attestation, same)
+            self.assertEqual(again[self.FIELD], first[self.FIELD])
+            self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'production_runtime_files_mismatch'):
+            self.validate({**record, self.FIELD: second[self.FIELD]})
+
+    def test_worker_start_rehashes_every_runtime_file(self):
+        import laya_install_journal as J
+        first, _source, _commit, record, legacy = self.reattested()
+        manifest = record['providerManifest']
+        self.assertEqual(R.verify_attested_files(manifest, record[self.FIELD]),
+                         first[self.FIELD])
+        J._verify_runtime_files(legacy)
+        dep = Path(first['generation']) / 'node_modules' / 'lifecycle-utils' / 'dist' / 'index.js'
+        dep.write_text('lifecycle, tampered')
+        for attestation in (record, legacy):
+            with self.assertRaisesRegex(J.JournalEvidenceError, 'worker_runtime_files_invalid'):
+                J._verify_runtime_files(attestation)
+        # A runtime outside a Laya generation cannot prove its JS files.
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_unowned$'):
+            R.verify_attested_files(self.old_att['providerManifest'])
+
+    def test_generation_is_durable_before_the_pointer_names_it(self):
+        events, opened = [], {}
+        real_open, real_fsync, real_write = os.open, os.fsync, R._write_private
+
+        def open_(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            opened[fd] = str(path)
+            return fd
+
+        def fsync(fd):
+            events.append(('fsync', opened.get(fd)))
+            return real_fsync(fd)
+
+        def write(path, raw):
+            if Path(path).name == R.ACTIVE:
+                events.append(('active', str(path)))
+            return real_write(path, raw)
+        with mock.patch.object(R.os, 'open', open_), mock.patch.object(R.os, 'fsync', fsync), \
+                mock.patch.object(R, '_write_private', write):
+            runtime = R.ensure_for_attestation(self.old_att)
+        generation = Path(runtime['generation'])
+        synced = [path for kind, path in
+                  events[:events.index(('active', str(R.root() / R.ACTIVE)))]
+                  if kind == 'fsync']
+        for directory in (generation, generation.parent, generation / 'node_modules',
+                          generation / 'bin', generation / 'models'):
+            self.assertIn(str(directory), synced)
+
+
 class UpgradeFence(unittest.TestCase):
     """The upgrade fence waits on the sockets the attestations seal."""
 
