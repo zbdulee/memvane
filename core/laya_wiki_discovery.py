@@ -144,6 +144,14 @@ def _locked(path, wait):
                 if time.monotonic() >= deadline:
                     raise DiscoveryBusy('lock_busy')
                 time.sleep(.02)
+        # A state move holds this lock across its rename: a writer that opened
+        # the lock before the rename finds its path gone and re-resolves.
+        try:
+            now = os.lstat(path)
+        except OSError as exc:
+            raise DiscoveryBlocked('state_dir_moved') from exc
+        if (now.st_dev, now.st_ino) != (info.st_dev, info.st_ino):
+            raise DiscoveryBlocked('state_dir_moved')
         yield
     finally:
         os.close(fd)  # closing the descriptor releases the flock
@@ -322,6 +330,46 @@ def _withdraw(path, decision, grant):
         return True
 
 
+# Refusals that mean the install directory moved under this writer.
+_MOVED = frozenset(('state_dir_moved', 'state_dir_unavailable', 'lock_unavailable'))
+
+
+def _relocated(decision):
+    """The same install's selected decision at its MemVane location, or None."""
+    try:
+        import laya_state_move
+        from laya_index_host_route import select_route_settled
+        fresh = select_route_settled(decision['projectRoot'], action='update')
+        return fresh if laya_state_move.relocated_decision(decision, fresh) else None
+    except Exception:
+        return None
+
+
+def _across_move(write):
+    """Run a grant write once more against the moved install, if it moved."""
+    import functools
+
+    @functools.wraps(write)
+    def wrapper(decision, *args, **kwargs):
+        try:
+            return write(decision, *args, **kwargs)
+        except (DiscoveryBlocked, FileNotFoundError) as exc:
+            if isinstance(exc, DiscoveryBlocked) and str(exc) not in _MOVED:
+                raise
+            fresh = _relocated(decision)
+            if fresh is None:
+                raise
+            return write(fresh, *args, **kwargs)
+    return wrapper
+
+
+def lock_path(queue_path):
+    """The discovery lock a state move holds for the install of ``queue_path``."""
+    queue = Path(queue_path)
+    return queue.parent / (queue.name + '.wiki-discovery.lock')
+
+
+@_across_move
 def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
     """Hook side: record one host event, provisional; no run may use it yet.
 
@@ -351,6 +399,7 @@ def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
     return grant
 
 
+@_across_move
 def activate_grant(decision, kind, grant, *, wait=HOOK_LOCK_SECONDS):
     """Hook side, after every check passed: make this event's grant usable.
 
@@ -375,6 +424,7 @@ def activate_grant(decision, kind, grant, *, wait=HOOK_LOCK_SECONDS):
     return True
 
 
+@_across_move
 def revoke_grant(decision, grant, *, wait=HOOK_LOCK_SECONDS):
     """Hook side: withdraw this event's grant after the hook failed.
 
