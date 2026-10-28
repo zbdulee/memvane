@@ -146,7 +146,21 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     for host in ('claude','codex'):invoke(host,'unsupported_adapter')
     old_adapter.parent.chmod(0o755)
     old_adapter.unlink()
-    for host in ('claude','codex'):invoke(host,'unsupported_adapter')
+    # A vanished anchor names its own reason; the running official adapter
+    # replaces it only when its bytes are the attested adapter.
+    for host in ('claude','codex'):invoke(host,'adapter_anchor_missing')
+    attestation=state/'laya-synthetic-attestation.json'
+    current_sha=hashlib.sha256((roots['claude',NEW]/'core/context_learning/laya_adapter.py')
+                               .read_bytes()).hexdigest()
+    private(attestation,{'attestation':{'adapter_sha256':'0'*64}})
+    for host in ('claude','codex'):invoke(host,'adapter_anchor_missing')
+    private(attestation,{'attestation':{'adapter_sha256':current_sha}})
+    for host in ('claude','codex'):invoke(host)
+    current_manifest=roots['claude',NEW]/'.claude-plugin/plugin.json'
+    current_bytes=current_manifest.read_bytes()
+    private(current_manifest,{'name':'another-plugin','version':NEW})
+    invoke('claude','adapter_anchor_missing');current_manifest.write_bytes(current_bytes)
+    attestation.unlink()
     old_adapter.write_bytes(old_bytes)
 
     manifest=roots['codex',OLD]/'.codex-plugin/plugin.json'
@@ -223,7 +237,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     for host in ('claude','codex'):
         policy['trainerArgv'][1]=str(roots[host,NEW]/'core/context_learning/laya_adapter.py')
         private(state/'live-selector.json',policy);invoke(host)
-    assert constructor_calls==7
+    assert constructor_calls==9
     print(json.dumps({'bothHosts':True,'versionPaths':True,'wrongAdapterDenied':True,
         'inventoryRequired':True,'originRequired':True,'manifestRequired':True,
         'unsafePathsDenied':True,'policyAndCheckpointUnchanged':True,

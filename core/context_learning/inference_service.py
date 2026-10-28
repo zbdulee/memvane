@@ -515,7 +515,7 @@ def _failure(exc):
 
 def _policy(state, pointer_name, *, deadline):
     from .dataset import read_private_json
-    from .adapter_binding import inference_argv
+    from .adapter_binding import attested_adapter, inference_argv
     policy = read_private_json(state / 'live-selector.json')
     if (not isinstance(policy, dict) or set(policy) != {
             'schema', 'trainerArgv', 'timeoutSeconds', 'maxRssMib'}
@@ -524,7 +524,9 @@ def _policy(state, pointer_name, *, deadline):
             or type(policy['maxRssMib']) is not int or not 128 <= policy['maxRssMib'] <= 8192):
         raise ServiceFailure('request_rejected')
     adapter = Path(__file__).with_name('laya_adapter.py').resolve()
-    normalized = {**policy, 'trainerArgv': inference_argv(policy['trainerArgv'], adapter, deadline=deadline)}
+    normalized = {**policy, 'trainerArgv': inference_argv(
+        policy['trainerArgv'], adapter, deadline=deadline,
+        attested_adapter_sha256=attested_adapter(state))}
     if pointer_name == 'experimental-checkpoint.json':
         active = read_private_json(state / pointer_name)
         from .laya_adapter import EDIT_INPUT_VIEW

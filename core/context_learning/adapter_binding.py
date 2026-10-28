@@ -302,13 +302,65 @@ def _local_binding(path, home, deadline, *, execution):
     return adapter_hash, fingerprint
 
 
-def inference_argv(argv, adapter, *, deadline=None):
-    """Keep the exact adapter case, or prove an official identical-code move."""
+def attested_adapter(state):
+    """``adapter_sha256`` of the selector's synthetic attestation, or None."""
+    from .dataset import read_private_json
+    try:
+        value = read_private_json(Path(state) / 'laya-synthetic-attestation.json')
+        digest = value['attestation']['adapter_sha256']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return digest if isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest) else None
+
+
+def _rebind_missing_anchor(current, home, deadline, attested):
+    """The running adapter, when the policy's anchor file no longer exists.
+
+    A host removes superseded plugin caches (and the pre-rename plugin id's
+    caches), so the anchor a policy names can vanish. The running adapter
+    replaces it only when it is itself an installed official copy (or the
+    registered local source the host executes) and its bytes are exactly the
+    adapter the synthetic attestation verified; the receipt and attestation
+    checks after this are unchanged.
+    """
+    if attested is None:
+        raise ValueError('adapter_anchor_missing')
+    try:
+        try:
+            target = _official_cache(current, home)
+            _installed_current(*target[:3], home, deadline)
+            digest = target[3].hex()
+        except ValueError:
+            digest = _local_binding(current, home, deadline, execution=True)[0].hex()
+    except BindingTimeout:
+        raise
+    except subprocess.TimeoutExpired as exc:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise BindingTimeout('trainer_timeout') from exc
+        raise ValueError('adapter_anchor_missing') from exc
+    except (OSError, ValueError, KeyError, TypeError, AttributeError,
+            UnicodeError, subprocess.SubprocessError) as exc:
+        raise ValueError('adapter_anchor_missing') from exc
+    if digest != attested:
+        raise ValueError('adapter_anchor_missing')
+    return digest
+
+
+def inference_argv(argv, adapter, *, deadline=None, attested_adapter_sha256=None):
+    """Keep the exact adapter case, or prove an official identical-code move.
+
+    A policy anchor that no longer exists is replaced by the running adapter
+    only under ``_rebind_missing_anchor``; otherwise it fails as
+    ``adapter_anchor_missing``.
+    """
     _inventory_timeout(deadline)
     current, configured = Path(adapter), Path(argv[1])
     if configured == current and not configured.is_symlink():
         return list(argv)
     home = Path.home()
+    if not os.path.lexists(configured):
+        _rebind_missing_anchor(current, home, deadline, attested_adapter_sha256)
+        return [argv[0], str(current), argv[2]]
     try:
         try:
             source = _official_cache(configured, home)

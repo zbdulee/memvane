@@ -487,7 +487,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
             return [], reason, None
         fallback = 'laya_selector_' + reason
         _write_selection_log(project, fallback, [])
-        print('[memvane] local selection unavailable; serving hybrid rank',
+        print('[memvane] local selection unavailable (' + reason + '); serving hybrid rank',
               file=sys.stderr)
     else:
         fallback = 'laya_selector_not_prepared'
