@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import time
@@ -79,24 +80,98 @@ def _policy(state):
     return policy
 
 
+def official_runtime(home=None):
+    """(interpreter, model dir or None) of the activated official learning runtime.
+
+    The installer writes ``runtimes/laya/active.json`` only after a verified
+    generation; ``runtime_setup._activated`` re-checks it is private, resolves
+    inside the runtime root and names an executable interpreter.
+    """
+    from .dataset import read_private_json
+    from .runtime_setup import _activated, runtime_base
+    root = runtime_base(home) / 'runtimes' / 'laya'
+    if not _activated(root):
+        raise HealRefused('learning_runtime_not_installed')
+    pointer = read_private_json(root / 'active.json')
+    model = pointer.get('model_dir')
+    return pointer['executable'], model if isinstance(model, str) else None
+
+
+def _approved_interpreter_hash(state, interpreter):
+    """The interpreter's content hash in the last prepared evidence, or None."""
+    from .dataset import read_private_json
+    from .inference_identity import MANIFEST
+    try:
+        manifest = read_private_json(Path(state) / MANIFEST)
+        entry = manifest.get(os.path.realpath(interpreter))
+        return entry[1] if isinstance(entry, list) and isinstance(entry[1], str) else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def check_scope(state, policy, *, home=None):
+    """Refuse before anything runs unless the policy is inside its approved scope.
+
+    With an accepted learning profile the acceptance must be intact and still
+    name exactly this policy: every ``trainerArgv`` element, the policy digest,
+    the model identity, and the interpreter (the activated official runtime,
+    whose content hash must equal the one the last prepared evidence recorded).
+    Without a profile the interpreter must be the activated official learning
+    runtime (and the model its model directory, when the pointer names one).
+    """
+    from .inference_identity import file_sha
+    argv = policy['trainerArgv']
+    interpreter, model = official_runtime(home)
+    if argv[0] != interpreter or (model is not None and argv[2] != model):
+        raise HealRefused('learning_runtime_not_official')
+    recorded = _approved_interpreter_hash(state, argv[0])
+    if recorded is not None and recorded != file_sha(os.path.realpath(argv[0])):
+        raise HealRefused('learning_runtime_changed')
+    from .learning_profile import NAME, digest, present
+    if not present(state):
+        return None
+    from .dataset import read_private_json
+    from .laya_adapter import model_identity
+    from .learning_profile import _hash
+    try:
+        envelope = read_private_json(Path(state) / NAME)
+        row = envelope['proposal']
+        intact = envelope == {'acceptedSha256': digest(row), 'proposal': row}
+        same = (intact and row.get('trainerArgv') == argv and
+                row.get('livePolicySha256') == _hash(Path(state) / POLICY) and
+                row.get('modelIdentitySha256') == model_identity(argv[2]) and
+                recorded is not None)
+    except Exception:
+        same = False
+    if not same:
+        raise HealRefused('learning_profile_rebind_required')
+    return row
+
+
 def rebind(state, *, home=None, deadline=None):
-    """Point the policy's adapter anchor at the running official adapter."""
+    """Check the approved scope, then point the adapter anchor at the running one.
+
+    Nothing runs before ``check_scope`` passes. A policy under an accepted
+    learning profile is never rewritten (its acceptance covers the policy).
+    """
     from runtime_lease import atomic_json
-    from .learning_profile import present
     policy = _policy(state)
     adapter = running_adapter()
     argv = policy['trainerArgv']
-    if argv[1] == str(adapter):
-        return policy, False
-    if present(state):
-        raise HealRefused('learning_profile_rebind_required')
-    try:
-        _official(adapter, Path(home) if home is not None else Path.home(), deadline)
-    except Exception as exc:
-        raise HealRefused('adapter_not_official') from exc
-    rebound = {**policy, 'trainerArgv': [argv[0], str(adapter), argv[2]]}
-    atomic_json(state / POLICY, rebound)
-    return rebound, True
+    if argv[1] != str(adapter):
+        from .learning_profile import present
+        if present(state):
+            raise HealRefused('learning_profile_rebind_required')
+        try:
+            _official(adapter, Path(home) if home is not None else Path.home(), deadline)
+        except Exception as exc:
+            raise HealRefused('adapter_not_official') from exc
+        candidate = {**policy, 'trainerArgv': [argv[0], str(adapter), argv[2]]}
+        check_scope(state, candidate, home=home)
+        atomic_json(state / POLICY, candidate)
+        return candidate, True
+    check_scope(state, policy, home=home)
+    return policy, False
 
 
 def _view(state):
@@ -146,16 +221,70 @@ def prepare(state, policy):
         raise HealRefused('inference_prepare_failed') from exc
 
 
+class HealDeferred(RuntimeError):
+    pass
+
+
+PREPARE_LOCK = 'learning-prepare.lock'
+
+
+def _prepare_lease(home):
+    """The per-user lease for background attest/prepare, or a deferral.
+
+    It lives under the MemVane state base, which a learning-state move never
+    renames, so every install's worker contends on the same lock.
+    """
+    import fcntl
+    import memvane_paths
+    base = memvane_paths.state_base(home)
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(base / PREPARE_LOCK, os.O_RDWR | os.O_CREAT |
+                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise HealRefused('learning_prepare_lock_unsafe')
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise HealDeferred('learning_prepare_busy') from None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def pressure(policy):
+    """None when memory admits one model load, else the deferral reason."""
+    from .resident import _admission
+    limits, _report = _admission(policy['maxRssMib'], already_running=False)
+    return None if limits is not None else 'learning_prepare_memory_pressure'
+
+
 def heal(project, *, home=None, deadline=None, state=None):
-    """Make a prepared selector admit predictions again; a status row."""
+    """Make a prepared selector admit predictions again; a status row.
+
+    Order: approved-scope check (nothing executes before it), anchor rebind,
+    the cheap ``admit`` gate, then under the per-user prepare lease and only
+    without memory pressure: attestation and inference preparation. A held
+    lease or pressure defers; a later worker run (a recall that misses local
+    selection requests one) retries.
+    """
     state = Path(state) if state is not None else namespace(project, home)
     if not (state / POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
         return {'status': 'selector_not_prepared'}
     policy, rebound = rebind(state, home=home, deadline=deadline)
     if admitted(state, policy['trainerArgv']):
         return {'status': 'selector_ready', 'rebound': rebound}
-    attest(state, policy)
-    prepare(state, policy)
+    lease = _prepare_lease(home)
+    try:
+        reason = pressure(policy)
+        if reason is not None:
+            raise HealDeferred(reason)
+        attest(state, policy)
+        prepare(state, policy)
+    finally:
+        os.close(lease)
     if not admitted(state, policy['trainerArgv']):
         raise HealRefused('inference_prepare_unverified')
     return {'status': 'selector_prepared', 'rebound': rebound}

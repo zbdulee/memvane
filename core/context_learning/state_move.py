@@ -109,14 +109,86 @@ def _held(stack, fd):
 
 
 def status(home=None):
-    """('switched' | 'fresh' | 'pending', legacy dir, MemVane dir)."""
+    """('switched' | 'fresh' | 'pending', legacy dir, MemVane dir).
+
+    A remaining intent is pending even after the switch: the checkpoint
+    fix-up and the sentinels finish before the move counts as done.
+    """
     from .runtime_setup import _state_switched
     current, legacy = _dirs(home)
+    if os.path.lexists(current / INTENT):
+        return 'pending', legacy, current
     if _state_switched(current):
         return 'switched', legacy, current
-    if os.path.lexists(current / INTENT) or any((legacy / name).is_dir() for name in NAMES):
+    if any((legacy / name).is_dir() for name in NAMES):
         return 'pending', legacy, current
     return 'fresh', legacy, current
+
+
+SENTINEL_SCHEMA = 'memvane-learning-state-moved-v1'
+
+
+def moved_sentinel(path):
+    """True when ``path`` is the regular file a move left in place of a tree."""
+    try:
+        info = Path(path).lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode)
+
+
+def _seal_old(legacy, name, current):
+    """Leave a read-only regular file where the moved tree was.
+
+    A process of an earlier bundle that resolved the old base before the move
+    then fails its ``mkdir -p`` or lock ``open`` (not a directory) instead of
+    creating a second lane or selection tree there.
+    """
+    path = legacy / name
+    body = (json.dumps({'schema': SENTINEL_SCHEMA, 'movedTo': str(current / name)},
+                       sort_keys=True) + '\n').encode()
+    for _attempt in range(3):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         getattr(os, 'O_NOFOLLOW', 0), 0o400)
+        except FileExistsError:
+            if moved_sentinel(path):
+                return
+            if path.is_dir() and not path.is_symlink():
+                # Recreated by a stale process inside the rename window.
+                try:
+                    os.rmdir(path)
+                except OSError:
+                    os.rename(path, legacy / (name + '.stray-' + str(time.time_ns())))
+                continue
+            raise LearningMoveRefused('learning_state_sentinel_blocked')
+        try:
+            os.write(fd, body)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _fsync(legacy)
+        return
+    raise LearningMoveRefused('learning_state_sentinel_blocked')
+
+
+def _finish(legacy, current):
+    """Idempotent tail of a move: checkpoints, sentinels, switch, intent.
+
+    The checkpoint fix-up precedes the switch, and a remaining intent keeps
+    the move pending (``status``), so a stop anywhere here resumes here.
+    """
+    rebased = _rebase_checkpoints(current / 'live-selection', legacy / 'live-selection',
+                                  current / 'live-selection')
+    for name in NAMES:
+        if os.path.lexists(current / name):
+            _seal_old(legacy, name, current)
+    _write_switch(current)
+    (_step or (lambda _name: None))('switched')
+    if os.path.lexists(current / INTENT):
+        os.unlink(current / INTENT)
+        _fsync(current)
+    return rebased
 
 
 def _hold_service(stack, home, *, wait):
@@ -214,6 +286,11 @@ def move(home=None, *, wait=DRAIN_WAIT_SECONDS):
         if fd is None:
             raise LearningMoveDeferred('learning_state_move_busy')
         _held(stack, fd)
+        if not any((legacy / name).is_dir() for name in NAMES):
+            # Both trees already moved (a run stopped after the renames):
+            # only the idempotent tail is left, no drain needed.
+            return {'status': 'learning_state_moved', 'checkpointsRebased':
+                    _finish(legacy, current)}
         _hold_service(stack, home, wait=wait)
         inference = next((base / 'laya-inference' for base in (legacy, current)
                           if (base / 'laya-inference').is_dir()), None)
@@ -229,15 +306,11 @@ def move(home=None, *, wait=DRAIN_WAIT_SECONDS):
         for name in NAMES:
             if (legacy / name).is_dir() and not os.path.lexists(current / name):
                 os.rename(legacy / name, current / name)
-                _fsync(legacy)
+                _seal_old(legacy, name, current)
                 _fsync(current)
                 mark('moved:' + name)
-        _write_switch(current)
-        mark('switched')
-        rebased = _rebase_checkpoints(current / 'live-selection', legacy / 'live-selection',
-                                      current / 'live-selection')
-        os.unlink(current / INTENT)
-        _fsync(current)
+        mark('renamed')
+        rebased = _finish(legacy, current)
     return {'status': 'learning_state_moved', 'checkpointsRebased': rebased}
 
 

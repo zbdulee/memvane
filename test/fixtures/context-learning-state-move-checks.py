@@ -53,7 +53,7 @@ class Kill(BaseException):
 
 class LearningMoveTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix='lsm-', dir='/private/tmp')
+        temp = tempfile.TemporaryDirectory(prefix='lsm-')
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
         support = (('Library', 'Application Support') if sys.platform == 'darwin'
@@ -82,8 +82,10 @@ class LearningMoveTests(unittest.TestCase):
         result = state_move.move(self.home, wait=0.2)
         self.assertEqual(result['status'], 'learning_state_moved', result)
         self.assertEqual(learning_state_base(self.home), self.current)
-        self.assertFalse((self.legacy / 'live-selection').exists())
-        self.assertFalse((self.legacy / 'laya-inference').exists())
+        # Read-only regular files stand where the trees were.
+        for name in ('live-selection', 'laya-inference'):
+            self.assertTrue((self.legacy / name).is_file())
+            self.assertTrue(state_move.moved_sentinel(self.legacy / name))
         moved = self.current / 'live-selection' / ('a' * 64)
         pointer = json.loads((moved / 'active-checkpoint.json').read_text())
         self.assertEqual(pointer['artifact_path'], str(moved / 'laya-base-x.artifact'))
@@ -143,6 +145,38 @@ class LearningMoveTests(unittest.TestCase):
         self.assertEqual(result['status'], 'learning_state_moved')
         self.assertEqual(learning_state_base(self.home), self.current)
 
+    def test_a_stop_after_the_switch_still_fixes_the_checkpoints(self):
+        def die(name):
+            if name == 'switched':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        self.assertEqual(state_move.status(self.home)[0], 'pending')
+        state_move.move(self.home, wait=0.2)
+        moved = self.current / 'live-selection' / ('a' * 64)
+        pointer = json.loads((moved / 'active-checkpoint.json').read_text())
+        self.assertEqual(pointer['artifact_path'], str(moved / 'laya-base-x.artifact'))
+        self.assertEqual(state_move.status(self.home)[0], 'switched')
+
+    def test_a_stale_process_cannot_recreate_the_old_lane_or_selection_tree(self):
+        # An earlier bundle's service_root resolved the old root, then paused
+        # before its mkdir while the move ran.
+        old_lane = learning_state_base(self.home) / 'laya-inference'
+        old_selection = learning_state_base(self.home) / 'live-selection'
+        self.assertEqual(old_lane, self.inference)
+        state_move.move(self.home, wait=0.2)
+        with self.assertRaises(OSError):
+            old_lane.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.assertRaises(OSError):
+            os.open(old_lane / 'compute.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        with self.assertRaises(OSError):
+            (old_selection / ('b' * 64)).mkdir(parents=True, exist_ok=True)
+        self.assertEqual(learning_state_base(self.home), self.current)
+        from context_learning.inference_service import service_root
+        self.assertEqual(service_root(create=True, home=self.home),
+                         self.current / 'laya-inference')
+
     def test_a_service_elected_before_the_move_serves_the_moved_root(self):
         old = str(self.inference)
         state_move.move(self.home, wait=0.2)
@@ -197,6 +231,7 @@ def prepare(state,policy):
     calls['prepare']+=1;prepared.append(1)
 selector_heal.attest=attest;selector_heal.prepare=prepare
 selector_heal.admitted=lambda state,argv:bool(prepared) or mode=='ready'
+selector_heal.pressure=lambda policy:'learning_prepare_memory_pressure' if mode=='pressure' else None
 text='---\ntitle: Synthetic\nstatus: verified\n---\nSynthetic complete body.\n'
 def choose():
     return live_select.choose(state,'Synthetic request',[{'id':'wiki/synthetic.md',
@@ -214,7 +249,7 @@ print(json.dumps(out))
 
 class SelectorHealTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix='lsh-', dir='/private/tmp')
+        temp = tempfile.TemporaryDirectory(prefix='lsh-')
         self.addCleanup(temp.cleanup)
         home = self.home = Path(temp.name).resolve() / 'User Home'
         home.mkdir(mode=0o700)
@@ -242,6 +277,19 @@ class SelectorHealTests(unittest.TestCase):
             file = model / name
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b'synthetic bytes')
+        # The activated official learning runtime: its interpreter is never
+        # executed here (attest/prepare and prediction are stubbed).
+        runtime = home / 'Library' / 'Application Support' / 'memvane' / 'runtimes' / 'laya'
+        if sys.platform != 'darwin':
+            runtime = home / '.local' / 'share' / 'memvane' / 'runtimes' / 'laya'
+        self.interpreter = runtime / 'generations' / ('g-' + 'c' * 32) / 'venv' / 'bin' / 'python'
+        self.interpreter.parent.mkdir(parents=True)
+        self.interpreter.write_text('#!/bin/sh\nexit 9\n')
+        self.interpreter.chmod(0o755)
+        for path in (runtime, runtime.parent, runtime.parent.parent):
+            path.chmod(0o700)
+        private(runtime / 'active.json', {'executable': str(self.interpreter),
+                                          'runtime_identity_sha256': 'd' * 64})
         self.state = home / 'state'
         self.state.mkdir(mode=0o700)
         artifact = self.state / 'head.artifact'
@@ -253,7 +301,7 @@ class SelectorHealTests(unittest.TestCase):
         # The anchor names a superseded cache the host already removed.
         gone = home / '.claude/plugins/cache' / MARKET / 'memvane' / '0.9.0'
         self.policy = {'schema': 'qmd-live-selector-v1',
-                       'trainerArgv': [sys.executable,
+                       'trainerArgv': [str(self.interpreter),
                                        str(gone / 'core/context_learning/laya_adapter.py'),
                                        str(model)],
                        'timeoutSeconds': 5, 'maxRssMib': 512}
@@ -274,12 +322,83 @@ class SelectorHealTests(unittest.TestCase):
         self.assertEqual(report['after'], 'selected', report)
         self.assertEqual(report['calls'], {'attest': 1, 'prepare': 1})
 
+    def current_adapter(self):
+        return str(self.roots['claude', NEW] / 'core/context_learning/laya_adapter.py')
+
+    def test_a_policy_outside_the_official_runtime_runs_nothing(self):
+        private(self.state / 'live-selector.json',
+                {**self.policy, 'trainerArgv': [sys.executable] + self.policy['trainerArgv'][1:]})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_official'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_an_interpreter_changed_since_its_prepared_evidence_runs_nothing(self):
+        private(self.state / 'laya-inference-manifest.json',
+                {os.path.realpath(self.interpreter): [[0], 'e' * 64]})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_changed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def profile(self, argv):
+        sys.path.insert(0, str(SOURCE / 'core'))
+        from context_learning.laya_adapter import model_identity
+        from context_learning.learning_profile import digest
+        from context_learning.local_cycle import _hash
+        policy = {**self.policy, 'trainerArgv': argv}
+        private(self.state / 'live-selector.json', policy)
+        row = {'trainerArgv': argv, 'livePolicySha256': _hash(self.state / 'live-selector.json'),
+               'modelIdentitySha256': model_identity(argv[2])}
+        private(self.state / 'learning-profile.json', {'acceptedSha256': digest(row),
+                                                       'proposal': row})
+        private(self.state / 'laya-inference-manifest.json',
+                {os.path.realpath(self.interpreter): [[0], hashlib.sha256(
+                    self.interpreter.read_bytes()).hexdigest()]})
+
+    def test_an_intact_profile_naming_this_policy_is_healed(self):
+        argv = [str(self.interpreter), self.current_adapter(), self.policy['trainerArgv'][2]]
+        self.profile(argv)
+        report = self.drive()
+        self.assertEqual(report['heal'], {'status': 'selector_prepared', 'rebound': False})
+        self.assertEqual(report['calls'], {'attest': 1, 'prepare': 1})
+
+    def test_a_profile_approving_another_interpreter_or_model_runs_nothing(self):
+        argv = [str(self.interpreter), self.current_adapter(), self.policy['trainerArgv'][2]]
+        self.profile(argv)
+        envelope = json.loads((self.state / 'learning-profile.json').read_text())
+        row = {**envelope['proposal'], 'trainerArgv': ['/other/python'] + argv[1:]}
+        sys.path.insert(0, str(SOURCE / 'core'))
+        from context_learning.learning_profile import digest
+        private(self.state / 'learning-profile.json', {'acceptedSha256': digest(row),
+                                                       'proposal': row})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_profile_rebind_required'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_held_prepare_lease_defers_and_runs_nothing(self):
+        lock = self.home / '.local' / 'state' / 'memvane' / 'learning-prepare.lock'
+        lock.parent.mkdir(parents=True)
+        for path in (lock.parent, lock.parent.parent, lock.parent.parent.parent):
+            path.chmod(0o700)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            report = self.drive()
+        finally:
+            os.close(fd)
+        self.assertEqual(report['heal'], {'error': 'learning_prepare_busy'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_memory_pressure_defers_and_runs_nothing(self):
+        report = self.drive('pressure')
+        self.assertEqual(report['heal'], {'error': 'learning_prepare_memory_pressure'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
     def test_ready_evidence_is_left_alone(self):
         report = self.drive('ready')
         self.assertEqual(report['heal'], {'status': 'selector_ready', 'rebound': True})
         self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
 
-    def test_an_accepted_learning_profile_needs_the_owner(self):
+    def test_an_accepted_learning_profile_is_not_rebound(self):
         private(self.state / 'learning-profile.json', {'proposal': {}})
         report = self.drive()
         self.assertEqual(report['heal'], {'error': 'learning_profile_rebind_required'})
