@@ -259,5 +259,63 @@ class VersionRule(unittest.TestCase):
         auto._not_older(source, side, other, bound_root=self.old, root=self.new)
 
 
+class LegacyRoots(unittest.TestCase):
+    """Fresh accounts get only MemVane roots; existing state keeps working."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='mv-roots-')
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+
+    def test_auto_context_state_stays_where_its_scan_state_is(self):
+        import memvane_paths
+        current = self.home / '.local' / 'state' / 'memvane' / 'auto-context'
+        self.assertEqual(memvane_paths.auto_context_state(self.home), current)
+        legacy = self.home / '.local' / 'state' / 'laya' / 'auto-context'
+        (legacy / 'scan-state').mkdir(parents=True)
+        self.assertEqual(memvane_paths.auto_context_state(self.home), legacy)
+        # The resolver run-lock creating the MemVane directory changes nothing.
+        (current / 'dedup-resolve-lock').mkdir(parents=True)
+        self.assertEqual(memvane_paths.auto_context_state(self.home), legacy)
+        (current / 'scan-state').mkdir()
+        self.assertEqual(memvane_paths.auto_context_state(self.home), current)
+
+    def test_learning_group_stays_with_a_provisioned_legacy_runtime(self):
+        from context_learning import runtime_setup, storage_layout
+        support = ('Library', 'Application Support') if sys.platform == 'darwin' \
+            else ('.local', 'share')
+        current = self.home.joinpath(*support, 'memvane')
+        legacy = self.home.joinpath(*support, 'qmd-auto-context')
+        self.assertEqual(runtime_setup.support_base(self.home), current)
+        self.assertEqual(runtime_setup.default_managed_root(self.home),
+                         current / 'runtimes' / 'laya')
+        (legacy / 'runtimes' / 'laya').mkdir(parents=True)
+        self.assertEqual(runtime_setup.support_base(self.home), current)  # no active.json
+        (legacy / 'runtimes' / 'laya' / 'active.json').write_text('{}')
+        self.assertEqual(runtime_setup.support_base(self.home), legacy)
+        self.assertEqual(storage_layout.root(self.home),
+                         self.home / 'Library' / 'Application Support' / 'memvane' / 'learning')
+
+    def test_legacy_adapter_cache_is_an_identity_anchor_only(self):
+        from context_learning import adapter_binding as binding
+        def cache(market, plugin, version='0.40.3'):
+            root = self.home / '.claude' / 'plugins' / 'cache' / market / plugin / version
+            adapter = root / 'core' / 'context_learning' / 'laya_adapter.py'
+            adapter.parent.mkdir(parents=True)
+            adapter.write_text('ADAPTER = 1\n')
+            for rel in ('.claude-plugin/plugin.json', 'package.json'):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(json.dumps({'name': plugin, 'version': version}))
+            return adapter
+        old = cache('qmd-auto-context-marketplace', 'qmd-auto-context')
+        new = cache('memvane-marketplace', 'memvane', '0.41.0')
+        self.assertEqual(binding._official_cache(old, self.home)[3],
+                         binding._official_cache(new, self.home)[3])
+        with self.assertRaisesRegex(ValueError, 'unsupported_adapter'):
+            binding._official_cache(cache('other-marketplace', 'qmd-auto-context'),
+                                    self.home)
+        self.assertEqual(binding.PLUGIN_ID, 'memvane@memvane-marketplace')
+
+
 if __name__ == '__main__':
     unittest.main()

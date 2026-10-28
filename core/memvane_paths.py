@@ -9,9 +9,10 @@ helper takes an optional ``home`` so tests run against a temporary HOME::
     config   ~/.config/memvane
     cache    ~/Library/Caches/memvane (macOS), ~/.cache/memvane (other)
 
-``LEGACY_*`` names the roots earlier releases used. They are only read, so an
-install created there keeps working (initial-build pointer lookup, embed
-runtime GC, the retired-backend cleanup); nothing creates them.
+``LEGACY_*`` names the roots earlier releases used. Nothing creates them; an
+install or per-user state already there keeps working in place
+(initial-build pointer lookup, ``auto_context_state``, embed runtime GC, the
+retired-backend cleanup).
 """
 from __future__ import annotations
 
@@ -72,5 +73,16 @@ def cache_root(home=None):
 
 
 def auto_context_state(home=None):
-    """Per-user logs and scan state outside any install."""
-    return state_base(home) / 'auto-context'
+    """Per-user logs and scan state outside any install.
+
+    An account that already keeps them under the pre-rename base continues
+    there (lifecycle cursors, pending lifecycle requests and dedup compare
+    state stay in effect) until that base is moved.
+    """
+    current = state_base(home) / 'auto-context'
+    legacy = legacy_state_base(home) / 'auto-context'
+    # Decided by the scan state alone: other entries (the resolver run-lock)
+    # may create the MemVane directory first.
+    if not (current / 'scan-state').exists() and (legacy / 'scan-state').is_dir():
+        return legacy
+    return current

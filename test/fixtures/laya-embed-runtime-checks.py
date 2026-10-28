@@ -508,6 +508,52 @@ class MovedProvider(Base):
             return REAL_REVIEW(**{**kw, 'plugin_root': str(host)})
 
 
+class LegacyStateBaseRuntime(Base):
+    """An install attested onto the pre-rename runtime (~/.local/state/laya)."""
+
+    def test_adoption_copies_the_legacy_runtime_into_the_memvane_root(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        legacy_root = self.home.joinpath(*legacy_parts, 'embed-runtime')
+        self.assertTrue(Path(old_runtime['generation']).is_relative_to(legacy_root))
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        # As the earlier move off QMD sealed it: the closure the profile was
+        # computed over stays as ``profileDependencyClosure``.
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        self.remove_qmd()
+        before = {path: path.read_bytes() for path in legacy_root.rglob('*')
+                  if path.is_file()}
+        self.assertFalse(R.root().exists())
+        runtime = R.ensure_for_attestation(legacy_att)
+        # Same content-addressed generation id, now under the MemVane root.
+        self.assertEqual(Path(runtime['generation']).parent, R.root() / 'generations')
+        self.assertEqual(Path(runtime['generation']).name,
+                         Path(old_runtime['generation']).name)
+        self.assertTrue(R.root().is_relative_to(self.home / '.local' / 'state' / 'memvane'))
+        self.assertTrue(R.matches(runtime, manifest, old_runtime['dependencyClosure']))
+        after = {path: path.read_bytes() for path in legacy_root.rglob('*')
+                 if path.is_file()}
+        self.assertEqual(after, before)  # the legacy runtime is only read
+        # The review names the MemVane copies and re-attests the same profile.
+        source, commit = self.source_repo()
+        review = self.review(source, commit)
+        reviewed = review['reviewedProvider']['providerManifest']
+        for key in ('nodePath', 'modelPath', 'moduleEntryPath'):
+            self.assertTrue(Path(reviewed[key]).is_relative_to(R.root()), key)
+        self.assertTrue(auto.provider_equivalent(legacy_att, review, self.plugin))
+        again = reattest(legacy_att, review['reviewedProvider'])
+        self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
+
+
 class UpgradeFence(unittest.TestCase):
     """The upgrade fence waits on the sockets the attestations seal."""
 
