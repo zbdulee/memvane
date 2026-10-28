@@ -26,6 +26,7 @@ REPO = FIXTURES.parents[1]
 sys.path.insert(0, str(CORE))
 EMBED = runpy.run_path(str(FIXTURES / 'laya-embed-runtime-checks.py'))
 import laya_embed_runtime as R  # noqa: E402
+import safe_rmtree  # noqa: E402
 import legacy_cleanup as C  # noqa: E402
 
 MACHO = b'\xcf\xfa\xed\xfe' + b'synthetic node binary'
@@ -33,6 +34,14 @@ MACHO = b'\xcf\xfa\xed\xfe' + b'synthetic node binary'
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+def locked_dir(case, path):
+    """A directory whose entries cannot be unlinked (mode 0500)."""
+    write(path / 'pinned', 'x')
+    path.chmod(0o500)
+    case.addCleanup(path.chmod, 0o700)
+    return path
 
 
 def write(path, raw, mode=None):
@@ -276,6 +285,38 @@ class GenerationGc(Machine):
         self.assertFalse(first.exists())
         self.assertEqual((keep / 'data').read_text(), 'outside')
 
+    def three_generations(self):
+        first = Path(self.provision()['generation'])
+        for bump in (b'2', b'3'):
+            self.model_bytes += bump
+            self.provision()
+        stale = R.root() / 'generations' / '.staging-dead'
+        stale.mkdir()
+        return first, stale
+
+    def test_failed_generation_keeps_the_removed_ones_reported(self):
+        first, stale = self.three_generations()
+        locked_dir(self, first / 'locked')
+        done = R.collect(approve=True)
+        self.assertEqual((done['status'], done['partial'], done['changesApplied']),
+                         ('partial', True, 1))
+        self.assertEqual(done['failed'], [{'generation': first.name,
+                                           'reason': 'laya_embed_runtime_remove_failed'}])
+        self.assertFalse(stale.exists())
+
+    def test_mount_point_inside_a_generation_is_refused_untouched(self):
+        first, stale = self.three_generations()
+        write(first / 'mnt' / 'volume-data', 'mounted')
+        with mock.patch.object(safe_rmtree, '_mount_points', create=True,
+                               return_value={str(first / 'mnt')}):
+            done = R.collect(approve=True)
+        self.assertEqual(done['status'], 'partial')
+        self.assertEqual(done['failed'], [{'generation': first.name,
+                                           'reason': 'laya_embed_runtime_mount_point'}])
+        self.assertTrue((first / 'mnt' / 'volume-data').exists())
+        self.assertTrue((first / 'runtime.json').exists())
+        self.assertFalse(stale.exists())
+
     def test_unreadable_attestation_blocks_gc(self):
         self.provision()
         install = self.home / '.local' / 'state' / 'laya' / ('b' * 32)
@@ -341,7 +382,7 @@ class LegacyCleanup(unittest.TestCase):
         self.assertEqual(agents['com.qmd-logrotate.plist.bak-20260616'], 'backup_untouched')
         actions = {row['category']: row['action'] for row in plan['paths']}
         self.assertEqual(actions['plugin_qmd_runtime'], 'remove')
-        self.assertEqual(actions['user_qmd_cache'], 'kept_needs_user_data_approval')
+        self.assertEqual(actions['user_qmd_cache'], 'preserved')
         self.assertEqual(plan['blockers'], [])
 
     def test_apply_needs_approval(self):
@@ -506,6 +547,81 @@ class LegacyCleanup(unittest.TestCase):
         self.assertEqual(self.killed, [])
         self.assertTrue(self.runtime.exists())
 
+    def support(self):
+        return self.runtime.parents[1]
+
+    def test_user_config_link_outside_the_approved_scope_is_preserved(self):
+        tmp = tempfile.TemporaryDirectory(prefix='llc-dotfiles-')
+        self.addCleanup(tmp.cleanup)
+        dotfiles = Path(tmp.name).resolve() / 'config'
+        (self.home / '.config').rename(dotfiles)
+        (self.home / '.config').symlink_to(dotfiles)
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'cleaned')
+        actions = {row['category']: row['action'] for row in result['paths']}
+        self.assertEqual(actions['user_qmd_config'], 'preserved')
+        self.assertEqual(actions['plugin_qmd_runtime'], 'removed')
+        self.assertTrue((dotfiles / 'qmd' / 'index.yml').exists())
+        self.assertTrue((self.home / '.config').is_symlink())
+
+    def test_processes_that_only_mention_a_target_do_not_block(self):
+        support, uid = self.support(), os.getuid()
+        self.processes.update({
+            9001: (uid, '/usr/bin/vim ' + str(support / 'backend' / 'daemon.log')),
+            9002: (uid, '/bin/cp -R ' + str(support / 'backend') + ' ' +
+                   str(support / 'backend-backup')),
+            9003: (uid, '/opt/node/bin/node /tmp/tool.js ' + str(self.entry)),
+            9004: (uid, '/opt/node/bin/node ' + str(support / 'backend-backup' / 'x.mjs')),
+        })
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'cleaned')
+        self.assertEqual(result['unverifiedProcesses'], [])
+        self.assertEqual(self.killed, [(4242, signal.SIGTERM)])
+
+    def test_node_running_a_target_script_with_options_still_blocks(self):
+        self.processes[9005] = (os.getuid(), '/opt/node/bin/node --no-warnings ' +
+                                str(self.support() / 'shared-qmd' / 'tool.mjs'))
+        result = self.apply(approved=True)
+        self.assertEqual(result['blockers'], ['qmd_daemon_unverified'])
+        self.assertTrue(self.runtime.exists())
+
+    def test_mount_point_inside_a_target_is_reported_not_deleted(self):
+        shared = self.support() / 'shared-qmd'
+        write(shared / 'mnt' / 'volume-data', 'mounted')
+        with mock.patch.object(safe_rmtree, '_mount_points', create=True,
+                               return_value={str(shared / 'mnt')}):
+            result = self.apply(approved=True)
+        self.assertEqual((result['status'], result['partial']), ('partial', True))
+        self.assertEqual(result['failed'], [{'path': str(shared),
+                                             'reason': 'legacy_cleanup_target_mount_point'}])
+        self.assertTrue((shared / 'store.sqlite').exists())
+        self.assertTrue((shared / 'mnt' / 'volume-data').exists())
+        self.assertFalse(self.runtime.exists())
+        self.assertFalse((self.support() / 'backend').exists())
+
+    def test_device_change_refuses_before_any_entry_is_removed(self):
+        mounted = self.runtime / 'zz-volume'
+        write(mounted / 'data', 'other device')
+        ino = mounted.stat().st_ino
+        with mock.patch.object(safe_rmtree, '_dev', create=True,
+                               side_effect=lambda info: info.st_dev + (info.st_ino == ino)):
+            with self.assertRaisesRegex(C.CleanupBlocked,
+                                        '^legacy_cleanup_target_mount_point$'):
+                C._remove_tree(self.runtime, self.home)
+        self.assertTrue(self.entry.exists())
+        self.assertTrue((mounted / 'data').exists())
+
+    def test_failed_target_keeps_completed_targets_reported(self):
+        shared = self.support() / 'shared-qmd'
+        locked_dir(self, shared / 'locked')
+        result = self.apply(approved=True)
+        self.assertEqual((result['status'], result['partial']), ('partial', True))
+        self.assertEqual([row['path'] for row in result['failed']], [str(shared)])
+        self.assertTrue(result['failed'][0]['reason'].startswith('legacy_cleanup_remove_failed:'))
+        self.assertIn({'path': str(self.runtime)}, result['completed'])
+        self.assertIn({'path': str(self.support() / 'backend')}, result['completed'])
+        self.assertGreater(result['changesApplied'], 2)
+
 
 class SetupEntryActions(unittest.TestCase):
     def setUp(self):
@@ -531,6 +647,17 @@ class SetupEntryActions(unittest.TestCase):
         self.assertEqual(plan['home'], str(self.home))
         code, refused = self.main('apply-legacy-cleanup')
         self.assertEqual((code, refused['reason']), (1, 'legacy_cleanup_approval_required'))
+
+    def test_partial_cleanup_reports_through_setup_entry(self):
+        support = self.home / 'Library' / 'Application Support' / 'qmd-auto-context'
+        write(support / 'runtimes' / 'qmd' / 'generations' / 'x', 'qmd')
+        locked_dir(self, support / 'shared-qmd' / 'locked')
+        code, result = self.main('apply-legacy-cleanup', '--approve-legacy-cleanup')
+        self.assertEqual((code, result['status'], result['partial']), (1, 'partial', True))
+        self.assertEqual(result['completed'], [{'path': str(support / 'runtimes' / 'qmd')}])
+        self.assertEqual([row['path'] for row in result['failed']],
+                         [str(support / 'shared-qmd')])
+        self.assertEqual(result['changesApplied'], 1)
 
     def test_runtime_actions_need_their_approval(self):
         code, refused = self.main('provision-index-runtime')
