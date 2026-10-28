@@ -408,7 +408,10 @@ generations and, with approval, removes those that are neither active, previous,
 nor named by any `~/.local/state/laya/*/production-provider-attestation.json`
 (historical `profileDependencyClosure` rows are ignored). `generations` must be a
 real private directory of the user inside the runtime, and GC enumerates and
-deletes through its directory descriptor without following links.
+deletes through its directory descriptor without following links. A generation
+that fails (a mount point inside it, a permission error) is reported in
+`failed` with `status: partial`, and the generations already removed stay in
+the report.
 
 ### Retired QMD backend cleanup
 
@@ -443,11 +446,26 @@ target, and with `older_host_bundle_bound` while any
 `~/.local/state/laya/*/reviewed-route.json` `pluginRoot` points at a bundle that
 still contains `core/backend_manager.sh` (that bundle would recreate
 `~/.cache/qmd` and `~/.config/qmd`). They also refuse with
-`qmd_daemon_unverified` while a live process named by a pid file or the
-read-only process table references a plugin target without passing that exact
-identity, and with `legacy_cleanup_target_unsafe` when a directory between HOME
-and a target is a link or not the user's; removal walks directory descriptors
-from HOME without following links. Run the cleanup only after both host
+`qmd_daemon_unverified` while a live node process (from a pid file or the
+read-only process table) runs an executable or script inside a plugin target
+without passing that exact identity; a process that only mentions a target
+path (an editor, a `backend-backup` copy) does not count. They refuse with
+`legacy_cleanup_target_unsafe` when a directory between HOME and an in-scope
+target is a link or not the user's. User QMD data outside the approval is
+`preserved` and never inspected, so a user-managed `~/.config` link does not
+block. Removal walks directory descriptors from HOME without following links
+and refuses a target that contains a mount point (device change or mount table
+entry) before deleting anything in it. A target that fails is reported in
+`failed` with `status: partial` (exit 1); the targets already removed stay in
+`completed`.
+
+Known limits: these checks guard against accidents (dotfile links, mounted
+volumes, stale layouts, reused pids), not against another process of the same
+user. Such a process can rename directories between the checks and the
+deletes, and on macOS (no pidfd) a pid can be reused between the last identity
+read and `SIGTERM`.
+
+Run the cleanup only after both host
 caches (Claude and Codex) load this release, every install has moved to it
 through the SessionStart bundle upgrade, and every install is re-attested onto
 the Laya embedding runtime.

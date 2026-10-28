@@ -182,5 +182,38 @@ class SelectedWikiChecks(unittest.TestCase):
         self.assertTrue(claim.exists())
 
 
+    def _idle(self):
+        compile_dir = self.root / '.auto-context' / 'compile'
+        return selected._compile_idle(self.root, compile_dir / 'source-queue.jsonl',
+                                      compile_dir / 'verify-queue.jsonl',
+                                      (self.decision, self.proof))
+
+    def test_running_worker_is_not_idle(self):
+        import wiki_compile_worker as wcw
+        (self.root / '.auto-context' / 'compile').mkdir(parents=True)
+        held = wcw.try_run_lock(self.root)
+        self.assertIsNotNone(held)
+        try:
+            with patch('wiki_freshness.unresolved_pending_refreshes_strict', return_value=[]):
+                self.assertIs(self._idle(), False)
+        finally:
+            os.close(held)
+        with patch('wiki_freshness.unresolved_pending_refreshes_strict', return_value=[]):
+            self.assertIs(self._idle(), True)
+
+    def test_claim_racing_the_idle_check_is_not_drained(self):
+        queue, claim = self._orphan_claim('source-queue.jsonl', os.getppid())
+        claim.rename(queue)
+
+        def claim_while_checking(_project):
+            # Another worker claims the queue while the idle check runs.
+            os.replace(queue, claim)
+            return []
+        with patch('wiki_freshness.unresolved_pending_refreshes_strict',
+                   side_effect=claim_while_checking):
+            self.assertIs(self._idle(), False)
+        self.assertTrue(claim.exists())
+
+
 if __name__ == '__main__':
     unittest.main()
