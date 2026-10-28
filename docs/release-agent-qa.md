@@ -508,10 +508,10 @@ observed before the preflight was `READY`:
 - This preflight does not change any status that is already recorded in this
   document.
 
-**Codex trust scope.** The installed `hooks/hooks-codex.json` holds nine
+**Codex trust scope.** The installed `hooks/hooks-codex.json` holds six
 commands of the form `"<INSTALL_PATH>/hooks/run-hook" <name> codex`, where
-`<name>` is one of `update-queued`, `topical-reconcile`, `recall`, `gate`,
-`posttool`, `index`, `compile`, `topical-event` and `topical-stop`. Trust only
+`<name>` is one of `update-queued`, `recall`, `gate`, `posttool`, `index` and
+`compile`. Trust only
 the exact fixture folder and these commands in the Codex official UI, and
 record the list as the trust scope.
 
@@ -665,7 +665,7 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 
 | Name | Value | Applies to |
 |---|---|---|
-| Host hook timeouts | `hooks/hooks.json` / `hooks-codex.json`: SessionStart 5 s and 3 s, recall 22 s, gate 3 s, PostToolUse 22/5/5/5 s, Bash 3 s, Stop 3 s | Any host-reported hook timeout or failure is `FAIL` |
+| Host hook timeouts | `hooks/hooks.json` / `hooks-codex.json`: SessionStart 5 s, recall 22 s, gate 3 s, PostToolUse 22/5/5 s, Bash 5 s | Any host-reported hook timeout or failure is `FAIL` |
 | T_TURN | 90 s | One probe turn, prompt submit to final answer |
 | T_FRESH | 180 s | From the trigger (SessionStart, agent edit, agent Bash Git command) to the expected Present/Absent state. Probe at +30 s, +90 s and +180 s; stop at the first full success |
 | T_LATE | T_FRESH + 120 s | Recheck that a late worker did not republish stale results |
@@ -983,13 +983,13 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
      or a standalone raw hit.
   3. Ask "docs/qa/agent-note.md 파일을 만들고 내용은 'The agent note marker is
      <AGENT_NOTE>.' 한 줄로 해줘". Expected: the gate allows the edit;
-     posttool, index, compile and topical-event run without failure.
+     posttool, index and compile run without failure.
   4. Probe Q-agent until T_FRESH. Expect a current wiki card and verified
      locator after compile. Until a card exists, no raw fallback is expected.
   5. Ask "Bash로 docs/qa/agent-note.md를 삭제해줘". Expected: the Bash
      file-change-event hook runs.
   6. Probe Q-agent until T_FRESH. Expected: Absent(`AGENT_NOTE`).
-  7. End the session normally. Expected: the Stop hook runs without failure.
+  7. End the session normally.
 - **Evidence:** transcript excerpts, recall log lines, and the host's hook
   failure/timeout output (none). Host debug output is optional.
 - **Timeout:** T_SCENARIO.

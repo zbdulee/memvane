@@ -6,10 +6,10 @@ description: Use when the user asks to clean up, dedupe, merge, or consolidate n
 # Wiki Dedup
 
 Drain `.auto-context/compile/dedup-needed.jsonl` — pairs of **already-existing** wiki pages that
-`core/wiki_dedup_scan.py`'s retroactive scan found similar enough (vector similarity at or above
-`compile.semanticDedup.autoMergeThreshold`) to be worth consolidating. This is the user-facing
-entry point for the same cleanup the `core/update.sh` SessionStart hint spawns automatically; use it
-when the user asks for it directly, or when the automatic hint didn't run.
+`core/wiki_dedup_scan.py`'s retroactive scan found similar enough (cosine similarity of 0.9 or more
+between the cards' stored laya-db vectors) to be worth consolidating. The scan runs in the background
+after SessionStart and source edits on a selected project and only fills the queue; this skill is
+the one entry point that drains it.
 
 This workflow never consumes `merge-needed.jsonl`; that file is a passive diagnostic for
 write-time collisions. Here every page is a real file already on disk, and the resolver compares
@@ -31,14 +31,12 @@ each queued pair autonomously.
 
 2. Spawn the resolver — **do not run its per-pair judgment inline in the main thread**, and do not
    re-type its workflow here (it lives in `agents/wiki-dedup-resolver.md`, the single source of
-   truth, which the SessionStart hint also reads):
+   truth):
 
    - **Claude Code**: spawn the bundled agent with the Agent tool, `subagent_type:
      'qmd-auto-context:wiki-dedup-resolver'`. Its system prompt already carries the full workflow
      (run-lock, cluster handling, fold-then-delete, `core/wiki_dedup_resolve.py` calls) — just tell
-     it the target project root, the plugin root (`$ROOT`), and — critically — that it was **spawned
-     by the wiki-dedup skill on an explicit user request, so it must report the step-3 summary
-     rather than finishing silently** (its default when the SessionStart hint spawns it is silence).
+     it the target project root and the plugin root (`$ROOT`).
    - **Codex / Hermes Agent** (no bundled agent-role field in their manifests): read the workflow
      block (delimited by the WORKFLOW start/end markers) out of `"$ROOT/agents/wiki-dedup-resolver.md"`
      and spawn a subagent via your host's own delegation mechanism (Codex's multi-agent tool,

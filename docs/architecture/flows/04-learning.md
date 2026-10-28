@@ -67,7 +67,7 @@ flowchart TD
 - [`core/context_learning/training_cursor.py:114-115`](../../../core/context_learning/training_cursor.py#L114-L115): 완전히 커밋된 cursor만 모델 실행 없이 완료로 처리합니다.
 - [`core/setup_entry.py:395`](../../../core/setup_entry.py#L395), [`core/setup_entry.py:435-439`](../../../core/setup_entry.py#L435-L439): learning profile action과 `--learning-choice`(`preserve`·`local-auto-apply`·`local-staged`·`off`)입니다.
 - [`core/runtime_work.py:37-57`](../../../core/runtime_work.py#L37-L57): coordinator의 실제 구현은 `context_learning.resource_coordination`에 있습니다. foreground demand 표시는 compute lock을 잡지 않습니다.
-- [`hooks/run-hook:85-90`](../../../hooks/run-hook#L85-L90): SessionStart는 소유자가 요청한 history cutover를 확인만 합니다. history를 선택하지는 않습니다.
+- [`hooks/run-hook:58-62`](../../../hooks/run-hook#L58-L62): SessionStart는 소유자가 요청한 history cutover를 확인만 합니다. history를 선택하지는 않습니다.
 
 ### QA 증거와 미검증
 

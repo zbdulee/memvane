@@ -1,19 +1,18 @@
 ---
 name: wiki-dedup-resolver
-description: Autonomous cleanup agent spawned only by the SessionStart hint when core/wiki_dedup_scan.py has queued candidate wiki page pairs to .auto-context/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through core/wiki_dedup_resolve.py. Runs silently; does not report to the user.
+description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that core/wiki_dedup_scan.py queued to .auto-context/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through core/wiki_dedup_resolve.py, and reports a short summary.
 ---
 
 # Wiki Dedup Resolver
 
 Resolves every pending pair in `.auto-context/compile/dedup-needed.jsonl` — pairs of
 ALREADY-EXISTING wiki pages that `core/wiki_dedup_scan.py`'s retroactive scan found similar enough
-(vector similarity at or above `compile.semanticDedup.autoMergeThreshold`, computed on body text
-only) to be worth checking for consolidation. The score is a candidate filter, not a verdict — the
-semantic comparison in step 4.b decides merge vs. skip. This resolver handles only pairs where every
-page involved is already a real file on disk; write-time `merge-needed.jsonl` records remain passive
-collision diagnostics and are not an input to this workflow. Whether you report at the end
-depends on who spawned you (step 5): autonomously from the SessionStart hint → silent, no chat
-summary; from the `wiki-dedup` skill on an explicit user request → report the short summary.
+(cosine similarity of 0.9 or more between the cards' stored laya-db vectors) to be worth checking
+for consolidation. The `score` is a candidate filter, not a verdict — the semantic comparison in
+step 4.b decides merge vs. skip. This resolver handles only pairs where every page involved is
+already a real file on disk; write-time `merge-needed.jsonl` records remain passive collision
+diagnostics and are not an input to this workflow. The `wiki-dedup` skill spawns you; report the
+short summary at the end (step 5).
 
 ## Workflow
 
@@ -109,12 +108,9 @@ summary; from the `wiki-dedup` skill on an explicit user request → report the 
    f. If any CLI call exits non-zero or prints non-JSON: STOP the whole run — do not process
       further entries. You cannot tell whether the queue mutated before the failure, and
       continuing risks double-processing against stale indices. Release the run-lock; whatever
-      remains in the queue re-surfaces via the next SessionStart hint.
-5. Release the run-lock, then report according to who spawned you: if you were spawned autonomously
-   by the `core/update.sh` SessionStart hint (an independent background maintenance task), do NOT
-   post a chat summary — this is silent cleanup. If you were spawned by the `wiki-dedup` skill on an
-   explicit user request, post a short summary: pairs resolved, cards deleted (filenames), cards
-   merged, pairs skipped (one-line reasons), and whether the queue is now empty.
+      remains in the queue stays there for the next `wiki-dedup` run.
+5. Release the run-lock, then post a short summary: pairs resolved, cards deleted (filenames),
+   cards merged, pairs skipped (one-line reasons), and whether the queue is now empty.
 <!-- WORKFLOW:END -->
 
 ## Notes
@@ -126,7 +122,6 @@ summary; from the `wiki-dedup` skill on an explicit user request → report the 
   section after `auto:end`); the first run's facts were sitting on a card whose `auto:end` body was
   0 lines, i.e. one source edit away from being erased. When in doubt, everything you author by
   hand goes below `auto:end`.
-- This agent is spawned two ways, both going through step 0's run-lock: autonomously from the
-  `core/update.sh` SessionStart hint (silent — no chat summary), or by the `wiki-dedup` skill on an
-  explicit user request (report the step-5 summary). It has no direct user-facing trigger phrases of
-  its own — the `wiki-dedup` skill is the user-facing entry point that routes to it.
+- The `wiki-dedup` skill spawns this agent on an explicit user request; every run goes through
+  step 0's run-lock. It has no direct user-facing trigger phrases of its own — the `wiki-dedup`
+  skill is the user-facing entry point that routes to it.

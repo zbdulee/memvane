@@ -65,8 +65,8 @@ flowchart TD
 - [`core/wiki_compile_enqueue.py:147-168`](../../../core/wiki_compile_enqueue.py#L147-L168): sync 경로입니다. docstring에 따르면 LLM을 호출하지 않고 메타데이터만 append합니다. `compile_gate`·`_safe_queue_path`·후보 산출 단계 중 하나에서 걸리면 사유만 반환합니다.
 - [`core/wiki_compile_enqueue.py:169-185`](../../../core/wiki_compile_enqueue.py#L169-L185): 수동 sync는 이번 wake 대상 행에 대해서만 revision hash를 계산합니다. 덕분에 enqueue 후 snapshot을 기록하기 전에 실패했다가 재시도하더라도 같은 revision의 행을 알아봅니다. hash가 없는 legacy 행은 억제하지 않고 유지합니다.
 - [`core/wiki_compile_enqueue.py:186-190`](../../../core/wiki_compile_enqueue.py#L186-L190): 기록된 행이나 대기 중인 wake가 있으면 `wiki_selected_laya.request_compile`을 호출합니다.
-- [`core/wiki_compile_enqueue.py:402-458`](../../../core/wiki_compile_enqueue.py#L402-L458): 편집 이벤트 경로입니다. 이벤트 종류, generated story scope, `postToolUse` 설정, compile gate, queue 경로를 차례로 검사합니다. `wiki_freshness.record_pending_refresh`가 None을 반환하면 enqueue하지 않습니다.
-- [`core/wiki_compile_enqueue.py:461-472`](../../../core/wiki_compile_enqueue.py#L461-L472): sandbox이면 즉시 0을 반환합니다. 비어 있거나 잘못된 JSON 입력은 무시합니다.
+- [`core/wiki_compile_enqueue.py:424-477`](../../../core/wiki_compile_enqueue.py#L424-L477): 편집 이벤트 경로입니다. 이벤트 종류, `postToolUse` 설정, compile gate, queue 경로를 차례로 검사합니다. `wiki_freshness.record_pending_refresh`가 None을 반환하면 enqueue하지 않습니다.
+- [`core/wiki_compile_enqueue.py:480-491`](../../../core/wiki_compile_enqueue.py#L480-L491): sandbox이면 즉시 0을 반환합니다. 비어 있거나 잘못된 JSON 입력은 무시합니다.
 - [`core/wiki_compile_worker.py:859-878`](../../../core/wiki_compile_worker.py#L859-L878): 반환값에 verify 대상 카드 목록이 포함됩니다. selected route identity가 바뀌었거나 route가 사라졌으면 `skipped`로 기록하고 job을 보존합니다.
 - [`core/wiki_compile_worker.py:879-908`](../../../core/wiki_compile_worker.py#L879-L908): 다음 경우를 `extractor_failed`로 기록합니다: 경로 탈출, `.md`가 아닌 파일, 숨김 경로, 컬렉션 불일치, compile source role이 아닌 파일.
 - [`core/wiki_compile_worker.py:909-929`](../../../core/wiki_compile_worker.py#L909-L929): 최신 미해결 pending을 바인딩한 다음 안정 snapshot을 뜨고, `maxSourceChars` 한도 안에서 decode합니다.

@@ -172,6 +172,16 @@ class Checks(unittest.TestCase):
         result = project.run()
         self.assertEqual((result['compared'], result['queued']), (1, 1), result)
 
+    def test_pair_held_by_a_running_resolver_is_not_queued_again(self):
+        project = self.project()
+        claimed = project.queue.with_name(project.queue.name + '.claimed.4242.' + 'a' * 32)
+        claimed.parent.mkdir(parents=True, exist_ok=True)
+        claimed.write_text(json.dumps({'pageA': 'entities/alpha-copy.md',
+                                       'pageB': 'entities/alpha.md', 'score': 0.99}) + '\n')
+        result = project.run()
+        self.assertEqual(result['queued'], 0, result)
+        self.assertEqual(project.queued(), [])
+
     def test_skip_ledger_suppresses_unchanged_bodies(self):
         project = self.project()
         ledger = project.root / '.auto-context' / 'compile' / 'dedup-skipped.jsonl'

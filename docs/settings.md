@@ -211,12 +211,12 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.budget.extractorPerRun` | `10` | run당 extractor 호출 상한입니다(50 클램프). 초과분은 requeue → [compile.budget](#compilebudget--한-run의-유료-호출-총량) |
 | `compile.budget.cardsPerSource` | `10` | 소스 1개에서 쓸 카드 수 상한입니다(50 클램프). 초과분은 기록만 하고 requeue하지 않습니다. |
 | `compile.budget.verifyPerRun` | `3` | 검수 예산의 **하한**입니다(50 클램프). 실제 예산은 그 run의 생산량으로 커집니다. |
-| `compile.budget.dedupPairsPerScan` | `8` | scan 단위 **유료** judge 호출 상한입니다. 값은 읽히지만 이 예산을 쓰는 scan 경로가 없습니다. |
+| `compile.budget.dedupPairsPerScan` | `8` | scan 단위 **유료** judge 호출 상한입니다. 값은 읽히지만 retroactive scan은 judge를 부르지 않아 이 예산을 쓰지 않습니다. |
 | `compile.budget.dedupPairsPerCompile` | `1` | write-time dedup gate 1회의 **유료** judge 호출 상한입니다. |
 | `compile.batch.idleSeconds` | `90` | **시작 조건**: 가장 오래된 잡이 이만큼 묵으면 개수가 모자라도 시작합니다. |
 | `compile.batch.maxItems` | `5` | **시작 조건**: 큐가 이만큼 모이면 즉시 시작합니다. 상한이 아닙니다(상한은 `budget`). |
 | `compile.semanticDedup.enabled` | `true` | 중복 카드 생성 방지 전체를 켜고 끕니다. |
-| `compile.semanticDedup.maxPairsPerScan` | `10` | 무료 score gate가 scan 1회에 볼 쌍 수입니다. 값은 읽히지만 이 값을 쓰는 scan 경로가 없습니다. |
+| `compile.semanticDedup.maxPairsPerScan` | `10` | retroactive scan 1회가 `dedup-needed.jsonl`에 넣는 쌍 상한입니다(1~100) → [Retroactive scan](#retroactive-scan) |
 | `compile.semanticDedup.candidateMinScore` | `0.3` | judge에 넘길 후보의 retrieval floor입니다. **판정 임계가 아닙니다** → [Semantic Dedup](#semantic-dedup) |
 | `compile.semanticDedup.judge.enabled` | `true` | LLM 본문 대조 판정을 씁니다. 끄면 레거시 무료 score 게이트로 degrade합니다. |
 | `compile.semanticDedup.judge.crossEngine` | `"prefer"` | 판정 엔진을 생산 엔진과 분리합니다(`prefer`·`require`·`off`). **write-time gate에만 적용됩니다** → [판정 엔진 분리 (dedup)](#판정-엔진-분리-dedup) |
@@ -1201,6 +1201,24 @@ judge는 **절대 merge/delete하지 않습니다.** 비용 상한은 write-time
 `budget.dedupPairsPerCompile`(기본 1)입니다. judge를 쓸 수 없는 머신(extractor 미설정·CLI 부재)
 에서는 위 상수로 동결된 레거시 무료 score 게이트로 degrade합니다.
 `QMD_DEDUP_JUDGE=off`는 프로세스 단위 kill switch입니다.
+
+#### Retroactive scan
+
+이미 디스크에 있는 카드끼리의 중복은 retroactive scan(`core/wiki_dedup_scan.py`)이 찾습니다.
+선택된 프로젝트에서 SessionStart·원문 편집 뒤 도는 wiki 수명 주기 자식이 수명 주기 run 다음에
+scan을 실행합니다. scan은 선택된 route의 laya-db sealed head에 저장된 위키 카드 chunk 벡터의
+중심점끼리 cosine을 비교하고, 0.9(`autoMergeThreshold` 상수) 이상인 쌍을
+`.auto-context/compile/dedup-needed.jsonl`에 `{pageA, pageB, score}`로 넣습니다. 이 score는
+검색 순위가 아니라 실제 cosine 유사도입니다. 모델·provider·judge를 부르지 않으므로 유료 호출이
+없고, 병합·삭제 판단은 `wiki-dedup` skill이 띄우는 resolver 에이전트가 합니다.
+
+- 디스크 바이트가 색인 해시와 같은 카드만 비교합니다. 게시 뒤 편집된 카드는 다음 게시를 기다립니다.
+- `superseded`·`discarded` 카드, `index.md`·`log.md`, 이미 큐에 있는 쌍, `dedup-skipped.jsonl`에
+  같은 본문 해시로 기록된 쌍은 넣지 않습니다.
+- run당 위키 카드 2,048장, 바뀐 카드 50장, `maxPairsPerScan` 쌍, 20초로 묶입니다. 비교한 색인
+  해시를 sync state 디렉터리의 `<key>-wiki-dedup.json`에 남겨 다음 run은 새로 바뀐 카드만 봅니다.
+- `compile.mode: "off"`나 `semanticDedup.enabled: false`면 돌지 않습니다. 로그는
+  `~/.local/state/laya/auto-context/logs/wiki-dedup.log`(`QMD_WIKI_DEDUP_LOG`)입니다.
 
 #### 판정 엔진 분리 (dedup)
 

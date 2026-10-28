@@ -328,8 +328,13 @@ def run(cwd: str) -> dict:
     max_pairs = max(1, min(max_pairs, 100))
     threshold = qmd_config.DEDUP_AUTO_MERGE_THRESHOLD
     suppressions = load_skip_suppressions(skipped_path)
+    # A resolver run holds its rows in `dedup-needed.jsonl.claimed.*` until it
+    # requeues the unresolved ones; those pairs are queued too.
     queued_keys = {pair_key(str(row.get("pageA", "")), str(row.get("pageB", "")))
-                   for row in wc.read_jsonl(queue_path)}
+                   for path in (queue_path, *sorted(queue_path.parent.glob(
+                       queue_path.name + ".claimed.*")))
+                   if not path.is_symlink()
+                   for row in wc.read_jsonl(path)}
     lines = []
     for card in to_scan:
         if (len(lines) >= max_pairs or result["compared"] >= MAX_PAGES_PER_SCAN
