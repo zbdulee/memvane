@@ -8,6 +8,6 @@ test('laya-owned embedding runtime: provisioning, re-attestation, QMD-free use',
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 14 tests/);
+  assert.match(result.stderr, /Ran 15 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

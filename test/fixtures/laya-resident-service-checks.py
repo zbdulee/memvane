@@ -372,6 +372,51 @@ class ServiceChecks(Fixture):
         self.routes[project] = self.routes.get(project) or self.project_route(project, manifest)
         self.wait(lambda: self.ready(manifest), message='not re-adopted after the upgrade')
 
+    def test_route_loss_reclaims_the_provider_worker(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        self.wait(lambda: self.ready(manifest))
+        worker = next(iter(service.workers.values()))
+        process = worker.handle.process
+        self.routes.pop(project)  # the route moved to another owner
+        self.assertTrue(resident.wait_for_release(manifest['serviceSocketPath'], timeout=5))
+        self.wait(lambda: process.poll() is not None, message='worker kept running')
+        self.assertEqual(service.workers, {})
+
+    def test_legacy_root_service_is_drained_before_a_memvane_service_starts(self):
+        legacy = self.base / 'legacy-svc'
+        legacy.mkdir(mode=0o700)
+        project, manifest = self.project('alpha')
+        svc.register(project, root=legacy)
+        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05)
+        self.services.append(old)
+        self.assertTrue(old.acquire(wait=5))
+        old.start()
+        self.wait(lambda: self.ready(manifest))
+        spawned = []
+        spawn = lambda argv, **kw: spawned.append(argv)
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.41.0', 'digest': 'new'}):
+            self.assertEqual(svc.ensure_service(root=self.root, learning_root=False,
+                                                legacy_root=legacy, spawn=spawn), 'replacing')
+            self.assertTrue(old.draining.is_set())
+            self.assertEqual(spawned, [])  # never two services at once
+            self.assertTrue(old.stopped.wait(10))
+            self.assertEqual(svc.ensure_service(root=self.root, learning_root=False,
+                                                legacy_root=legacy, spawn=spawn),
+                             'replacing')  # the lease is still held until close
+            old.close()
+            self.assertEqual(svc.ensure_service(root=self.root, learning_root=False,
+                                                legacy_root=legacy, spawn=spawn), 'starting')
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0][3:6], [str(CORE / 'laya_resident_service.py'), 'serve',
+                                           str(self.root)])
+        self.assertIsNone(svc.legacy_service_dir(home=self.base / 'nohome'))
+
     def project_route(self, project, manifest):
         name = Path(project).name
         decision = {'projectRoot': project, 'pluginRoot': '/synthetic/plugin',

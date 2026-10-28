@@ -87,6 +87,23 @@ def service_dir(*, create=False, home=None):
     return private_root(cursor)
 
 
+def legacy_service_dir(*, home=None):
+    """The pre-rename service directory (``~/.local/state/laya/service``), or None.
+
+    Read only: a service a pre-rename bundle started there still holds the
+    provider worker and the installations' sockets until it drains.
+    """
+    import memvane_paths
+    cursor = Path(home).resolve() if home is not None else _account_home()
+    path = cursor.joinpath(*memvane_paths.LEGACY_STATE_PARTS, 'service')
+    try:
+        return private_root(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except Exception:
+        return None
+
+
 def private_root(root):
     root = Path(root)
     info = root.lstat()
@@ -306,18 +323,52 @@ def _learning_root():
         return None
 
 
-def ensure_service(*, root=None, python=None, learning_root=None, spawn=None):
+_DEFAULT = object()
+
+
+def drain_legacy_service(legacy):
+    """Drain a pre-rename service before one starts under the MemVane root.
+
+    None when nothing runs at ``legacy``. Otherwise ``replacing``: a drain was
+    requested (or is under way) and no MemVane service may start until that
+    service released its lease, so one user never runs two services (two
+    provider workers, two owners of the same installation sockets).
+    """
+    if legacy is None:
+        return None
+    legacy = private_root(Path(legacy))
+    answer = hello(legacy)
+    if answer is None:
+        return 'replacing' if _lease_held(legacy) else None
+    if answer.get('status') != 'draining':
+        reply = exchange(legacy, {'command': 'drain', 'protocols': list(PROTOCOLS),
+                                  'bundle': bundle_identity(), 'python': None})
+        if reply is not None and reply.get('status') not in ('draining', 'stopped'):
+            raise _deferred('laya_service_replacement_refused')
+    return 'replacing'
+
+
+def ensure_service(*, root=None, python=None, learning_root=None, spawn=None,
+                   legacy_root=_DEFAULT):
     """Start, attach to or replace the per-user service; never waits for it.
 
     Returns ``ready``, ``starting`` or ``replacing``; raises ResourceDeferred
     ``laya_service_protocol_mismatch`` for an older client of an incompatible
     newer service. ``python`` asks for that interpreter (learning inference).
+    The default root first drains a service still running at the pre-rename
+    root (``legacy_root``); a later call starts the MemVane service.
     """
+    if legacy_root is _DEFAULT:
+        legacy_root = legacy_service_dir() if root is None else None
     if root is None:
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
             raise _deferred('laya_service_fixture')
         root = service_dir(create=True)
     root = private_root(Path(root))
+    if legacy_root is not None and Path(legacy_root) != root:
+        waiting = drain_legacy_service(legacy_root)
+        if waiting is not None:
+            return waiting
     answer = hello(root)
     mine = bundle_identity()
     if answer is None:
@@ -376,9 +427,10 @@ def request_adopt(project, *, root=None, spawn=None):
                          or os.environ.get('QMD_SANDBOX')):
         raise _deferred('laya_service_fixture')
     try:
+        legacy = legacy_service_dir() if root is None else None
         root = private_root(Path(root)) if root is not None else service_dir(create=True)
         register(project, root=root)
-        state = ensure_service(root=root, spawn=spawn)
+        state = ensure_service(root=root, spawn=spawn, legacy_root=legacy)
     except ResourceDeferred:
         raise
     except Exception as exc:
@@ -826,7 +878,8 @@ class Service:
         if not owned or worker is None or not worker.alive():
             with self.lock:
                 self._release(project, reason='starting' if owned or worker is None
-                              or worker.alive() else 'worker_exited')
+                              or worker.alive() else 'worker_exited',
+                              reclaim=not owned)
 
     def _forget(self, project):
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
@@ -1015,7 +1068,10 @@ class Service:
             if os.lstat(path).st_ino == binding.socket_inode:
                 os.unlink(path)
 
-    def _release(self, project, *, reason):
+    def _release(self, project, *, reason, reclaim=False):
+        """Release one installation; ``reclaim`` also stops its provider worker
+        when no other bound installation uses it (the route is no longer this
+        service's, so nothing here will query that model)."""
         from laya_embed_resident import _write_state
         binding = self.bindings.pop(project, None)
         if binding is None:
@@ -1026,6 +1082,16 @@ class Service:
         for fd in (binding.service_fd, binding.owner_fd):
             with suppress(OSError):
                 os.close(fd)
+        if reclaim:
+            key = _worker_key(binding.manifest)
+            worker = self.workers.get(key)
+            if (worker is not None and not worker.loading and
+                    not any(_worker_key(other.manifest) == key
+                            for other in self.bindings.values())):
+                self.workers.pop(key, None)
+                if worker.handle is not None:
+                    with suppress(Exception):
+                        worker.handle.stop()
 
     def _accept_loop(self, binding):
         while not binding.closed and not self.stopped.is_set():

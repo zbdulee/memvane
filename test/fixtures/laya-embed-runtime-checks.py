@@ -554,6 +554,33 @@ class LegacyStateBaseRuntime(Base):
         self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
 
 
+class LegacyStateBaseRuntimeChanged(Base):
+    """A changed file the attestation does not hash must not be adopted."""
+
+    def test_changed_dependency_in_a_legacy_generation_is_refused(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        self.remove_qmd()
+        dep = Path(old_runtime['generation']) / 'node_modules' / 'isexe' / 'index.js'
+        dep.write_text('changed')  # not among node/entry/model/native hashes
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_corrupt$'):
+            R.ensure_for_attestation(legacy_att)
+        generations = R.root() / 'generations'
+        self.assertFalse(generations.exists() and
+                         any(not p.name.startswith('.') for p in generations.iterdir()))
+
+
 class UpgradeFence(unittest.TestCase):
     """The upgrade fence waits on the sockets the attestations seal."""
 

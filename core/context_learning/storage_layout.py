@@ -23,10 +23,17 @@ LEGACY_ROOT_PARTS = ('Library', 'Application Support', 'qmd-auto-context', 'lear
 
 
 def root(home=None):
-    """The registry root; a registry created before the rename stays in place."""
+    """The registry root: the MemVane one once its database exists, else a
+    registry created under the pre-rename directory, else the MemVane one.
+
+    The database file is created atomically by the first registration, so a
+    bare (or interrupted) MemVane directory never hides an existing registry.
+    """
     base = Path(home or Path.home())
     current, legacy = base.joinpath(*ROOT_PARTS), base.joinpath(*LEGACY_ROOT_PARTS)
-    if not current.exists() and legacy.exists():
+    if (current / 'registry.sqlite3').is_file():
+        return current
+    if (legacy / 'registry.sqlite3').is_file():
         return legacy
     return current
 

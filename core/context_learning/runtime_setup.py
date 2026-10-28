@@ -41,21 +41,47 @@ def _sha(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+def _activated(runtime_root):
+    """True when ``runtime_root`` holds a valid activation pointer.
+
+    The pointer (``active.json``) is written atomically by the installer only
+    after a verified generation; a directory alone (an interrupted prepare)
+    activates nothing.
+    """
+    pointer = runtime_root/'active.json'
+    try:
+        info = pointer.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 1024 * 1024):
+            return False
+        value = json.loads(pointer.read_text('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    executable = value.get('executable') if isinstance(value, dict) else None
+    if not isinstance(executable, str) or not os.path.isabs(executable):
+        return False
+    return Path(executable).is_relative_to(runtime_root) and isinstance(
+        value.get('runtime_identity_sha256'), str)
+
+
 def support_base(home=None):
     """Per-user support directory of the learning runtime, selections and service.
 
     ``~/Library/Application Support/memvane`` on macOS, ``~/.local/share/memvane``
-    elsewhere. An account whose learning runtime was provisioned under the
-    pre-rename directory keeps that whole group (runtime, ``live-selection``,
-    ``laya-inference``) together until the runtime is re-provisioned under the
-    MemVane directory: the runtime is a virtual environment with its absolute
-    interpreter paths sealed into the inference proofs.
+    elsewhere. The group (runtime, ``live-selection``, ``laya-inference``)
+    follows the activated runtime: the MemVane directory once its runtime
+    has a valid activation pointer, else the pre-rename directory when its
+    runtime does, else the MemVane directory. The runtime is a virtual
+    environment whose absolute interpreter paths are sealed into the
+    inference proofs, so the group switches only when the MemVane runtime
+    is activated, never on a bare directory.
     """
     home = Path(home) if home is not None else Path.home()
     parts = ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
     current, legacy = home.joinpath(*parts, 'memvane'), home.joinpath(*parts, 'qmd-auto-context')
-    if (not (current/'runtimes'/'laya').exists() and
-            (legacy/'runtimes'/'laya'/'active.json').exists()):
+    if _activated(current/'runtimes'/'laya'):
+        return current
+    if _activated(legacy/'runtimes'/'laya'):
         return legacy
     return current
 

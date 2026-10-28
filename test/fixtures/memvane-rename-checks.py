@@ -209,7 +209,14 @@ class VersionRule(unittest.TestCase):
         self.assertLess(key('0.40.3'), key('0.41.0'))
         self.assertLess(key('0.41.0-dev.1'), key('0.41.0'))
         self.assertLess(key('0.9.9'), key('0.10.0'))
+        # SemVer precedence: numeric identifiers numerically, numeric before
+        # alphanumeric, a shorter equal prefix first; build metadata ignored.
+        self.assertLess(key('0.41.0-dev.2'), key('0.41.0-dev.10'))
+        self.assertLess(key('1.0.0-alpha'), key('1.0.0-alpha.1'))
+        self.assertLess(key('1.0.0-1'), key('1.0.0-alpha'))
+        self.assertEqual(key('0.41.0+build.7'), key('0.41.0'))
         self.assertIsNone(key('latest'))
+        self.assertIsNone(key('1.0.0-'))
 
     def test_bundle_version_falls_back_to_the_cache_directory_name(self):
         self.assertEqual(auto.bundle_version(self.new), '0.41.0')
@@ -257,6 +264,15 @@ class VersionRule(unittest.TestCase):
         with self.assertRaisesRegex(auto.UpgradeRefused, '^older_host_bundle$'):
             auto._not_older(source, side, other, bound_root=self.new, root=self.old)
         auto._not_older(source, side, other, bound_root=self.old, root=self.new)
+        # Diverged at the same version: neither side may take the install.
+        twin = bundle(self.home, '.codex', 'memvane-marketplace', 'memvane', '0.41.0')
+        for bound_commit, commit_id in ((side, other), (other, side)):
+            with self.assertRaisesRegex(auto.UpgradeRefused, '^older_host_bundle$'):
+                auto._not_older(source, bound_commit, commit_id,
+                                bound_root=self.new, root=twin)
+        # Diverged without versions: undecidable, refused.
+        with self.assertRaisesRegex(auto.UpgradeRefused, '^older_host_bundle$'):
+            auto._not_older(source, side, other)
 
 
 class LegacyRoots(unittest.TestCase):
@@ -280,21 +296,50 @@ class LegacyRoots(unittest.TestCase):
         (current / 'scan-state').mkdir()
         self.assertEqual(memvane_paths.auto_context_state(self.home), current)
 
-    def test_learning_group_stays_with_a_provisioned_legacy_runtime(self):
+    def test_learning_group_follows_the_activated_runtime(self):
         from context_learning import runtime_setup, storage_layout
         support = ('Library', 'Application Support') if sys.platform == 'darwin' \
             else ('.local', 'share')
         current = self.home.joinpath(*support, 'memvane')
         legacy = self.home.joinpath(*support, 'qmd-auto-context')
+
+        def activate(base):
+            runtime = base / 'runtimes' / 'laya'
+            runtime.mkdir(parents=True, exist_ok=True)
+            pointer = runtime / 'active.json'
+            pointer.write_text(json.dumps({
+                'executable': str(runtime / 'generations' / 'g-1' / 'venv' / 'bin' / 'python'),
+                'runtime_identity_sha256': 'a' * 64}))
+            pointer.chmod(0o600)
+            return pointer
         self.assertEqual(runtime_setup.support_base(self.home), current)
         self.assertEqual(runtime_setup.default_managed_root(self.home),
                          current / 'runtimes' / 'laya')
         (legacy / 'runtimes' / 'laya').mkdir(parents=True)
-        self.assertEqual(runtime_setup.support_base(self.home), current)  # no active.json
-        (legacy / 'runtimes' / 'laya' / 'active.json').write_text('{}')
+        self.assertEqual(runtime_setup.support_base(self.home), current)  # nothing active
+        activate(legacy)
         self.assertEqual(runtime_setup.support_base(self.home), legacy)
-        self.assertEqual(storage_layout.root(self.home),
-                         self.home / 'Library' / 'Application Support' / 'memvane' / 'learning')
+        # An interrupted MemVane prepare (bare directory) never hides it.
+        (current / 'runtimes' / 'laya' / 'generations').mkdir(parents=True)
+        self.assertEqual(runtime_setup.support_base(self.home), legacy)
+        bad = current / 'runtimes' / 'laya' / 'active.json'
+        bad.write_text('{"executable": "/elsewhere/python", "runtime_identity_sha256": "x"}')
+        bad.chmod(0o600)
+        self.assertEqual(runtime_setup.support_base(self.home), legacy)  # not inside root
+        activate(current)
+        self.assertEqual(runtime_setup.support_base(self.home), current)
+
+    def test_learning_registry_stays_with_its_database(self):
+        from context_learning import storage_layout
+        app = self.home / 'Library' / 'Application Support'
+        current, legacy = app / 'memvane' / 'learning', app / 'qmd-auto-context' / 'learning'
+        self.assertEqual(storage_layout.root(self.home), current)
+        legacy.mkdir(parents=True)
+        (legacy / 'registry.sqlite3').write_bytes(b'')
+        current.mkdir(parents=True)  # a bare directory hides nothing
+        self.assertEqual(storage_layout.root(self.home), legacy)
+        (current / 'registry.sqlite3').write_bytes(b'')
+        self.assertEqual(storage_layout.root(self.home), current)
 
     def test_legacy_adapter_cache_is_an_identity_anchor_only(self):
         from context_learning import adapter_binding as binding

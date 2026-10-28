@@ -328,16 +328,28 @@ def select_source(root, home=None):
     return source.resolve(), head
 
 
-_SEMVER = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?\Z')
+_SEMVER = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)'
+                     r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?\Z')
 
 
 def semver_key(version):
-    """Sortable key of ``X.Y.Z[-pre]`` (a pre-release sorts before its release)."""
+    """Sortable SemVer 2.0.0 precedence key, or None for a non-version.
+
+    Build metadata (``+...``) is ignored. A pre-release sorts before its
+    release; its dot-separated identifiers compare numerically when numeric,
+    lexically otherwise, numeric before alphanumeric, and a shorter equal
+    prefix first (``1.0.0-dev.2 < 1.0.0-dev.10 < 1.0.0``).
+    """
     match = _SEMVER.fullmatch(version) if isinstance(version, str) else None
     if match is None:
         return None
     major, minor, patch, pre = match.groups()
-    return (int(major), int(minor), int(patch), 0 if pre else 1, pre or '')
+    if pre is None:
+        tail = (1,)
+    else:
+        tail = (0, *((0, int(part), '') if part.isdigit() else (1, 0, part)
+                     for part in pre.split('.')))
+    return (int(major), int(minor), int(patch), tail)
 
 
 def bundle_version(root):
@@ -357,24 +369,25 @@ def bundle_version(root):
 def _not_older(source, bound_commit, commit, *, bound_root=None, root=None):
     """Never move an install back to an older bundle (no host ping-pong).
 
-    Git ancestry decides when the source clone knows both commits. The bundle
-    versions (semver) decide across plugin ids and whenever git cannot: the
-    executing bundle must be strictly newer. Nothing decidable means refusal.
+    Git proves the direction when the source clone knows both commits: the
+    executing commit an ancestor of the bound one refuses, the bound commit
+    an ancestor of the executing one is a forward move. Diverged histories,
+    and a clone that does not know the bound commit (another plugin id's
+    marketplace, a shallow clone), need a strictly newer bundle version
+    (semver of ``package.json`` or the cache directory name). Anything else
+    refuses, so two bundles can never take an install from each other.
     """
     if bound_commit == commit:
         return
-    code, _ = _git(source, 'merge-base', '--is-ancestor', commit, bound_commit)
-    if code == 0:
+    backward, _ = _git(source, 'merge-base', '--is-ancestor', commit, bound_commit)
+    if backward == 0:
         _refuse('older_host_bundle')
+    forward, _ = _git(source, 'merge-base', '--is-ancestor', bound_commit, commit)
+    if backward == 1 and forward == 0:
+        return
     bound = semver_key(bundle_version(bound_root)) if bound_root is not None else None
     current = semver_key(bundle_version(root)) if root is not None else None
-    if bound is not None and current is not None:
-        if current < bound or (code != 1 and current == bound):
-            _refuse('older_host_bundle')
-        return
-    if code != 1:
-        # The source clone does not know the bound commit (another plugin id's
-        # history, a shallow clone) and no version decides it.
+    if bound is None or current is None or current <= bound:
         _refuse('older_host_bundle')
 
 
