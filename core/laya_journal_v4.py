@@ -55,9 +55,9 @@ def reads_v4(plugin_root):
     return len(found) == 1 and int(found[0]) >= V4
 
 
-def _hermes_homes(home, explicit):
+def _hermes_homes(home):
     homes = [home / '.hermes']
-    configured = None if explicit else os.environ.get('HERMES_HOME')
+    configured = os.environ.get('HERMES_HOME')
     if configured:
         homes.append(Path(configured).expanduser())
     return homes
@@ -67,7 +67,9 @@ def _manifest_name(text):
     """The top-level ``name`` of a plugin.yaml; raises when it is not provable.
 
     A plain scalar may carry a ``# comment``; a quoted one ends at its quote.
-    No name, several, or a block/flow value is unprovable.
+    A quoted value with an escape (``\\`` in double quotes, ``''`` in single
+    quotes) is not interpreted. It, no name, several, or a block/flow value
+    is unprovable, which holds conversion.
     """
     names = []
     for line in text.splitlines():
@@ -77,7 +79,9 @@ def _manifest_name(text):
         value = match.group(1).strip()
         if value[:1] in ('"', "'"):
             end = value.find(value[0], 1)
-            if end < 0 or value[end + 1:].strip()[:1] not in ('', '#'):
+            if (end < 0 or value[end + 1:].strip()[:1] not in ('', '#')
+                    or (value[0] == "'" and value[end + 1:end + 2] == "'")
+                    or (value[0] == '"' and '\\' in value[1:end])):
                 raise ValueError('hermes_install_unprovable')
             value = value[1:end]
         else:
@@ -90,10 +94,10 @@ def _manifest_name(text):
     return names[0]
 
 
-def _hermes_copies(plugin, home, explicit):
+def _hermes_copies(plugin, home):
     """Hermes plugin copies of ``plugin``; raises when the plugin dir is unreadable."""
     copies = set()
-    for hermes in _hermes_homes(home, explicit):
+    for hermes in _hermes_homes(home):
         plugins = hermes / 'plugins'
         if not plugins.exists() and not plugins.is_symlink():
             continue
@@ -123,7 +127,6 @@ def _hermes_copies(plugin, home, explicit):
 def host_copies(root=None, home=None):
     """Every host copy of the executing plugin; raises when unprovable."""
     root = Path(root or _executing_root())
-    explicit_home = home is not None
     home = Path(home or Path.home())
     caches = {'claude': home / '.claude' / 'plugins' / 'cache',
               'codex': home / '.codex' / 'plugins' / 'cache'}
@@ -156,7 +159,7 @@ def host_copies(root=None, home=None):
     if codex.is_dir():
         copies.update(str(child) for child in codex.iterdir() if child.is_dir())
     # Hermes runs the same core against the same install journals.
-    copies.update(_hermes_copies(plugin, home, explicit_home))
+    copies.update(_hermes_copies(plugin, home))
     return sorted(copies)
 
 

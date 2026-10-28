@@ -186,8 +186,10 @@ def _spawn(project_root):
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True,
                      start_new_session=True,
+                     # HERMES_HOME: the journal v4 host gate must see a Hermes
+                     # copy installed under a custom Hermes home.
                      env={**{key: os.environ[key] for key in
-                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'HERMES_HOME')
                              if key in os.environ},
                           'PYTHONDONTWRITEBYTECODE': '1'})
 

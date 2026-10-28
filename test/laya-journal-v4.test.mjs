@@ -8,6 +8,6 @@ test('journal v4 conversion and content-based provider re-proof', () => {
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 23 tests/);
+  assert.match(result.stderr, /Ran 24 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

@@ -212,6 +212,11 @@ class Conversion(V3Selected):
 class HostGate(V3Selected):
     def setUp(self):
         super().setUp()
+        # Each test names its own Hermes home; never the session's.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('HERMES_HOME', None)
         self.cache = self.home / '.claude' / 'plugins' / 'cache' / 'mkt' / 'qmd-auto-context'
         self.claude = self.copy(self.cache / '0.38.0', 4)
         self.codex = self.copy(self.home / '.codex' / 'plugins' / 'cache' / 'mkt' /
@@ -284,10 +289,37 @@ class HostGate(V3Selected):
         (other / 'plugin.yaml').write_bytes(b'name: \xff\n')
         self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
                          (False, 'hermes_install_unreadable'))
-        (other / 'plugin.yaml').write_text('name: "other-plugin"  # unrelated\n')
         self.copy_version(renamed, 4)
+        # Quoted escapes are not interpreted: a v3 copy whose name is spelled
+        # with one (it may be this plugin) holds instead of being skipped.
+        self.copy(other, 3)
+        for escaped in ('name: "qmd\\x2dauto-context"\n', "name: 'qmd''auto'\n"):
+            (other / 'plugin.yaml').write_text(escaped)
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unprovable'))
+            self.assertEqual(stored(self.journal)[0], 3)
+        (other / 'plugin.yaml').write_text('name: "other-plugin"  # unrelated\n')
         self.assertEqual(self.convert()['status'], 'journal_v4_converted')
         self.assertEqual(stored(self.journal)[0], 4)
+
+    def test_conversion_waits_for_a_copy_under_a_custom_hermes_home(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        custom = self.home / 'hermes-elsewhere'
+        hermes = self.copy(custom / 'plugins' / 'qmd-auto-context', 3)
+        os.environ['HERMES_HOME'] = str(custom)
+        self.assertIn(str(hermes), laya_journal_v4.host_copies(self.claude, self.home))
+        self.assertEqual(self.convert(), {'status': 'journal_v4_waiting',
+                                          'reason': 'journal_v4_waiting_hosts'})
+        self.assertEqual(stored(self.journal)[0], 3)
+        # The detached upgrade worker that converts journals keeps it too.
+        spawned = []
+        with mock.patch.object(auto.subprocess, 'Popen',
+                               side_effect=lambda argv, **kw: spawned.append(kw['env'])):
+            auto._spawn(self.project)
+        self.assertEqual(spawned[0].get('HERMES_HOME'), str(custom))
+        self.copy_version(hermes, 4)
+        self.assertEqual(self.convert()['status'], 'journal_v4_converted')
 
     def test_busy_install_lock_defers_without_converting(self):
         import laya_journal_v4
