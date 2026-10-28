@@ -7,9 +7,12 @@ right before acting:
 * A QMD daemon is stopped only when its pid file under the plugin backend
   directory names a live process of this user whose exact command line is
   ``<node> <plugin QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http
-  --port <port of that pid file>``. The identity is read again immediately
-  before ``SIGTERM``. No process is found by pattern and none is killed with
-  ``SIGKILL``.
+  --port <port of that pid file>`` (the port-less legacy ``daemon.pid`` takes
+  the port its process carries). The identity is read again immediately
+  before ``SIGTERM``. No process is killed by pattern and none with
+  ``SIGKILL``. A live process that names a plugin target but fails that
+  identity, found through a pid file or the read-only process table, blocks
+  every change (``qmd_daemon_unverified``).
 * A LaunchAgent is unloaded and removed only when ``<label>.plist`` carries
   the ``managed-by: qmd-auto-context`` marker the retired backend wrote. Backup copies are reported and
   left in place.
@@ -17,7 +20,10 @@ right before acting:
   ``~/.local/state/memvane`` (or the pre-rename ``~/.local/state/laya``) still names a file inside it (the historical
   ``profileDependencyClosure`` rows are data, not files), no install route is
   still bound to a bundle that ships the QMD backend (it would recreate the
-  QMD directories), and no QMD daemon from that tree is still running.
+  QMD directories), and no QMD daemon from that tree is still running. Every
+  directory from HOME down to the target must be a real directory of this
+  user, and the delete walks directory descriptors without following links
+  (``legacy_cleanup_target_unsafe``).
 
 The plugin-owned trees are the QMD runtime, the shared QMD store and the QMD
 backend state. ``~/.cache/qmd`` and ``~/.config/qmd`` also hold the user's own
@@ -30,11 +36,12 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import signal
 import stat
 import subprocess
 import time
+
+import safe_rmtree
 
 MARKER = 'managed-by: qmd-auto-context'
 LABELS = ('com.qmd-mcp-daemon', 'com.qmd-keepalive', 'com.qmd-logrotate',
@@ -170,9 +177,40 @@ def _ps(pid):
 
 
 def _expected_command(runtime, port):
+    # ``port=None`` is the port-less legacy pid file: any port, captured.
     return re.compile(r'/.+/node ' + re.escape(str(runtime)) +
                       r'/generations/g-[0-9a-f]{32}/qmd-native\.mjs mcp --http --port ' +
-                      re.escape(str(port)) + r'\Z')
+                      (r'([0-9]{1,5})' if port is None else re.escape(str(port))) + r'\Z')
+
+
+def _plugin_targets(home):
+    return [path for path, category in targets(home) if category.startswith('plugin_')]
+
+
+def _names_target(command, home):
+    return any(str(path) in command for path in _plugin_targets(home))
+
+
+def _ps_all():
+    """(pid, uid, command line) of every process; read only."""
+    result = subprocess.run(['ps', '-axww', '-o', 'pid=,uid=,command='],
+                            stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, timeout=10, check=False)
+    if result.returncode != 0:
+        raise CleanupBlocked('legacy_cleanup_process_table_unavailable')
+    rows = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            rows.append((int(fields[0]), int(fields[1]), fields[2]))
+    return rows
+
+
+def unverified_processes(home, verified=(), *, ps_all=_ps_all):
+    """Live processes naming a plugin target that no verified pid file covers."""
+    return [{'pid': pid, 'uid': uid, 'command': command}
+            for pid, uid, command in ps_all()
+            if pid != os.getpid() and pid not in verified and _names_target(command, home)]
 
 
 def daemons(home, *, ps=_ps):
@@ -205,11 +243,18 @@ def daemons(home, *, ps=_ps):
             continue
         uid, command = seen
         row['command'] = command
-        if (uid != os.getuid() or row['port'] is None or
-                not _expected_command(runtime, row['port']).fullmatch(command)):
-            # Another process (or a reused pid) is never touched.
-            rows.append({**row, 'state': 'identity_mismatch'})
+        match = _expected_command(runtime, row['port']).fullmatch(command)
+        if uid != os.getuid() or match is None:
+            # Another process (or a reused pid) is never touched, but one that
+            # still names a plugin tree keeps every tree in place.
+            state = 'running_unverified' if _names_target(command, home) else 'identity_mismatch'
+            rows.append({**row, 'state': state})
             continue
+        if row['port'] is None:
+            # The legacy port-less pid file: pin the port the process carries
+            # so the re-check before SIGTERM compares the same exact identity.
+            row['port'] = int(match.group(1))
+            row['legacy'] = True
         rows.append({**row, 'state': 'running_verified'})
     return rows
 
@@ -252,14 +297,31 @@ def _tree_size(path):
     return files, size
 
 
-def plan(home=None, *, include_user_data=False, ps=_ps, sizes=True):
+def _ancestry_safe(path, home):
+    """False when a directory between HOME and ``path`` is a link or not ours."""
+    cursor = home
+    for name in path.relative_to(home).parts[:-1]:
+        cursor = cursor / name
+        try:
+            info = cursor.lstat()
+        except FileNotFoundError:
+            return True
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+                info.st_uid != os.getuid()):
+            return False
+    return True
+
+
+def plan(home=None, *, include_user_data=False, ps=_ps, ps_all=_ps_all, sizes=True):
     home = _home(home)
     roots = [path for path, _category in targets(home)]
     paths = []
     for path, category in targets(home):
         user = category.startswith('user_')
         row = {'path': str(path), 'category': category, 'exists': path.exists() or path.is_symlink()}
-        if path.is_symlink():
+        if not _ancestry_safe(path, home):
+            row['action'] = 'refused_unsafe_path'
+        elif path.is_symlink():
             row['action'] = 'refused_symlink'
         elif not row['exists']:
             row['action'] = 'absent'
@@ -269,8 +331,12 @@ def plan(home=None, *, include_user_data=False, ps=_ps, sizes=True):
                 row['files'], row['bytes'] = _tree_size(path)
         paths.append(row)
     found = daemons(home, ps=ps)
+    verified = {row['pid'] for row in found if row['state'] == 'running_verified'}
+    others = unverified_processes(home, verified, ps_all=ps_all)
     agents = launch_agents(home)
     blockers = []
+    if others or any(row['state'] == 'running_unverified' for row in found):
+        blockers.append('qmd_daemon_unverified')
     references = attestation_references(home, roots)
     if references:
         blockers.append('attestation_references_legacy_path')
@@ -280,8 +346,11 @@ def plan(home=None, *, include_user_data=False, ps=_ps, sizes=True):
     for row in paths:
         if row['action'] == 'refused_symlink':
             blockers.append('legacy_cleanup_target_symlink')
+        elif row['action'] == 'refused_unsafe_path':
+            blockers.append('legacy_cleanup_target_unsafe')
     return {'schema': 'qmd-auto-context-legacy-cleanup-v1', 'home': str(home),
             'includeUserData': include_user_data, 'daemons': found,
+            'unverifiedProcesses': others,
             'launchAgents': agents, 'paths': paths,
             'attestationReferences': references, 'olderBundles': older,
             'blockers': sorted(set(blockers)), 'changesApplied': 0}
@@ -310,18 +379,39 @@ def _launchctl(plist):
 
 
 def _remove_tree(path, home):
-    info = path.lstat()
-    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
-            info.st_uid != os.getuid() or home not in path.parents):
+    """Delete ``path`` through descriptors anchored at the verified HOME.
+
+    Every hop from HOME down is a real directory of this user opened with
+    ``O_NOFOLLOW`` relative to its parent, so a link anywhere on the way, or
+    swapped in after the plan, refuses instead of redirecting the delete.
+    """
+    try:
+        parts = path.relative_to(home).parts
+    except ValueError:
+        raise CleanupBlocked('legacy_cleanup_target_unsafe') from None
+    if not parts:
         raise CleanupBlocked('legacy_cleanup_target_unsafe')
-    shutil.rmtree(path)
+    uid = os.getuid()
+    try:
+        root = safe_rmtree.open_root(home, uid=uid)
+        try:
+            parent = safe_rmtree.open_path(root, parts[:-1], uid=uid)
+        finally:
+            os.close(root)
+        try:
+            safe_rmtree.rmtree_at(parent, parts[-1], uid=uid)
+        finally:
+            os.close(parent)
+    except safe_rmtree.UnsafeTree:
+        raise CleanupBlocked('legacy_cleanup_target_unsafe') from None
 
 
-def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, kill=os.kill,
-          launchctl=_launchctl, sleep=time.sleep, clock=time.monotonic):
+def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=_ps_all,
+          kill=os.kill, launchctl=_launchctl, sleep=time.sleep, clock=time.monotonic):
     if not approved:
         raise CleanupBlocked('legacy_cleanup_approval_required')
-    report = plan(home, include_user_data=include_user_data, ps=ps, sizes=False)
+    report = plan(home, include_user_data=include_user_data, ps=ps, ps_all=ps_all,
+                  sizes=False)
     if report['blockers']:
         return {**report, 'status': 'blocked'}
     home = Path(report['home'])
@@ -337,6 +427,12 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, kill=os
             stopped.append(row['pid'])
         elif outcome != 'already_stopped':
             report['blockers'].append('qmd_daemon_' + outcome)
+    if not report['blockers']:
+        # Nothing may still run from a tree about to be removed.
+        left = unverified_processes(home, ps_all=ps_all)
+        if left:
+            report['unverifiedProcesses'] = left
+            report['blockers'].append('qmd_daemon_unverified')
     if report['blockers']:
         # A daemon that did not stop keeps its runtime and state.
         return {**report, 'status': 'blocked', 'changesApplied': changes}

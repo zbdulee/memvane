@@ -179,8 +179,37 @@ def run(project: Path):
     return {'state': 'drained', 'processed': answer['processed']}
 
 
+def _recover_claims(queue: Path):
+    """Requeue dead-owner ``<queue>.claimed.*`` rows; True if any claim is left.
+
+    A worker that died after claiming leaves its rows only in the claim file.
+    The empty live queue must not read as drained while such a claim exists.
+    """
+    if not queue.parent.is_dir():
+        return False
+    import fcntl
+    from wiki_compile_enqueue import _queue_lock_path
+    from wiki_compile_worker import reclaim_orphaned_claimed
+    prefix = queue.name + '.claimed.'
+    with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            reclaim_orphaned_claimed(queue)
+            # A live owner's claim (its pid alive, within the backstop) is
+            # work in flight, not idle.
+            return any(child.name.startswith(prefix) for child in queue.parent.iterdir())
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _compile_idle(project: Path, source: Path, verify: Path, bound):
-    """True when no queue row or active refresh is left; None if unknown."""
+    """True when no queue row, claim or active refresh is left; None if unknown."""
+    try:
+        claimed = _recover_claims(source) | _recover_claims(verify)
+    except OSError:
+        return None
+    if claimed:
+        return False
     import wiki_freshness
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:

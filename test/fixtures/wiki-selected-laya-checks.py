@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import sys
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 
@@ -142,6 +143,43 @@ class SelectedWikiChecks(unittest.TestCase):
             result = selected.run(self.root)
         self.assertEqual(result['state'], 'pending')
         self.assertIn('wiki_compile_worker.py', child.call_args.args[0][2])
+
+
+    def _orphan_claim(self, queue_name, pid):
+        compile_dir = self.root / '.auto-context' / 'compile'
+        compile_dir.mkdir(parents=True, exist_ok=True)
+        claim = compile_dir / (queue_name + '.claimed.%d.%s' % (pid, 'f' * 32))
+        claim.write_text('{"source":"orphan"}\n', encoding='utf-8')
+        return compile_dir / queue_name, claim
+
+    def test_orphan_claim_with_empty_queue_is_not_drained(self):
+        # The worker died after claiming: its rows live only in the claim
+        # file while source-queue.jsonl is absent. That is not an idle queue.
+        queue, claim = self._orphan_claim('source-queue.jsonl', 4242421)
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '4242421'}), \
+             patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
+             patch.object(selected, 'recheck'), \
+             patch('wiki_lifecycle_request.claim', return_value={'claimed': True}), \
+             patch('wiki_lifecycle_request.run_lifecycle'), \
+             patch('wiki_freshness.unresolved_pending_refreshes_strict', return_value=[]), \
+             patch.object(selected.subprocess, 'run', return_value=SimpleNamespace(
+                 returncode=0, stdout='{"processed":0,"remaining":1}')) as child:
+            result = selected.run(self.root)
+        self.assertEqual(result['state'], 'pending')
+        child.assert_called_once()
+        self.assertFalse(claim.exists())
+        self.assertIn('"orphan"', queue.read_text(encoding='utf-8'))
+
+    def test_live_owner_claim_keeps_the_wake_pending(self):
+        # A claim of a live owner other than this process is work in flight.
+        _queue, claim = self._orphan_claim('verify-queue.jsonl', os.getppid())
+        with patch('wiki_freshness.unresolved_pending_refreshes_strict', return_value=[]):
+            idle = selected._compile_idle(
+                self.root, self.root / '.auto-context' / 'compile' / 'source-queue.jsonl',
+                self.root / '.auto-context' / 'compile' / 'verify-queue.jsonl',
+                (self.decision, self.proof))
+        self.assertIs(idle, False)
+        self.assertTrue(claim.exists())
 
 
 if __name__ == '__main__':
