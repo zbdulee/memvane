@@ -14,9 +14,9 @@ of this plugin that can execute against it reads v4:
   declares that name).
 
 The MemVane plugin also counts every copy of its earlier plugin id
-(``qmd-auto-context`` in ``qmd-auto-context-marketplace``, and a Hermes copy
-of that name): until such a copy is uninstalled it serves the installs that
-were not yet handed over, against the same journals.
+(``memvane_paths.LEGACY_PLUGIN_ID`` in ``LEGACY_MARKETPLACE``, and a Hermes
+copy of that name): until such a copy is uninstalled it serves the installs
+that were not yet handed over, against the same journals.
 
 A copy is v4-capable when its ``core/laya_install_journal.py`` declares
 ``VERSION = 4`` or later. An unknown layout, an unreadable record or any
