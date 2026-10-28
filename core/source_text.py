@@ -19,6 +19,12 @@ from pathlib import PurePosixPath
 SOURCE_TEXT_EXTENSIONS = ('.md', '.markdown', '.mdx', '.txt', '.rst', '.adoc')
 WIKI_TEXT_EXTENSIONS = ('.md',)
 
+# Scaffold pages `wiki_init` creates at the wiki root. They are never wiki
+# cards: search, lifecycle, dedup, source retirement and the compile proof scan
+# skip them. Only a generated root `log.md` stays out of the index itself; the
+# others stay indexed so the generation digest does not depend on this list.
+WIKI_META_PAGES = ('SCHEMA.md', 'index.md', 'log.md')
+
 # Exact directory-name match at any depth. Dot-prefixed names are skipped by a
 # separate rule in every walker; `.auto-context`, `.git`, `.hg` and `.svn` stay
 # listed because the enqueue gate also applies this set to collection roots.

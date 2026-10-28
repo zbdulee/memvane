@@ -96,11 +96,12 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
 import memvane_paths
 import scan_state
+import source_text
 import wiki_compile as wc
 import wiki_source_missing as wsm
 import wiki_source_retire
 
-META_PAGES = ("index.md", "log.md")
+META_PAGES = source_text.WIKI_META_PAGES
 DEFAULT_MAX_CARDS = 300
 # frontmatter만 보는 ineligible 집계의 읽기 창(실코퍼스 frontmatter는 수백 바이트).
 FRONTMATTER_READ_LIMIT = 16384

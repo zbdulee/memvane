@@ -162,6 +162,32 @@ class CatalogCase(unittest.TestCase):
 
 
 class CapacityTests(CatalogCase):
+    def test_root_schema_and_index_stay_indexed_but_are_not_cards(self):
+        # The search filter drops SCHEMA.md/index.md; the scan (and with it the
+        # generation digest) keeps them, so the filter needs no re-index.
+        roots = {'wiki': str(self.wiki)}
+        schema = '# Auto-context Wiki Schema\n\nordinary scaffold text\n'
+        index = '# Auto-context Wiki Index\n\n- decisions/\n'
+        self.write(self.wiki, 'SCHEMA.md', schema)
+        self.write(self.wiki, 'index.md', index)
+        self.write(self.wiki, 'card.md', '# Card\nordinary knowledge\n')
+        self.write(self.wiki, 'nested/SCHEMA.md', schema)
+        self.assertTrue(auxiliary_wiki_row('wiki/SCHEMA.md', schema, roots))
+        self.assertTrue(auxiliary_wiki_row('wiki/index.md', index, roots))
+        self.assertFalse(auxiliary_wiki_row('wiki/nested/SCHEMA.md', schema, roots))
+        self.assertFalse(auxiliary_wiki_row('wiki/card.md', 'x', roots))
+        catalog = self.open_catalog(create=True, roots=roots, wiki_only=True)
+        self.assertEqual(catalog.request_scan()['status'], 'started')
+        self.assertEqual(drive(catalog, max_bytes=4096)[-1]['status'], 'complete')
+        indexed = {'wiki/SCHEMA.md', 'wiki/index.md', 'wiki/card.md',
+                   'wiki/nested/SCHEMA.md'}
+        self.assertEqual({row[0] for row in catalog.members(
+            catalog.require_complete(), load_exclusions(self.index, SCOPE))}, indexed)
+        source = scan_collections(roots, SCOPE, self.index, max_bytes=4096,
+                                  wiki_only=True)
+        self.assertEqual(set(source.by_path), indexed)
+        self.assertEqual(self.catalog_manifest(catalog), source.manifest)
+
     def test_only_generated_root_wiki_log_is_not_indexed(self):
         roots = {'wiki': str(self.wiki)}
         generated = ('# Auto-context Wiki Log\n\n'

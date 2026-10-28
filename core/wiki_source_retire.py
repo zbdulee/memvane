@@ -14,6 +14,7 @@ import wiki_compile as wc
 import wiki_mutation_lock
 import wiki_selected_laya
 import yaml_scalars
+from source_text import WIKI_META_PAGES
 
 MAX_CARDS = 2_048
 MAX_CARD_BYTES = 5_000_000
@@ -154,7 +155,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
         for card in cards:
             subpath = card.relative_to(wiki_root)
             if (any(part.startswith('.') for part in subpath.parts)
-                    or card.name in ('index.md', 'log.md')):
+                    or card.name in WIKI_META_PAGES):
                 continue
             if card.is_symlink() or card.resolve() != card:
                 return {'state': 'blocked', 'survivors': []}
@@ -250,7 +251,7 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
     The SessionStart lifecycle uses this for a card it already judged; the
     judgement is repeated here under the card and wiki locks so a concurrent
     compiler rewrite or a human edit is never retired. Symlinks, dot paths,
-    index/log pages and paths outside ``wiki_root`` are refused. The caller
+    wiki meta pages and paths outside ``wiki_root`` are refused. The caller
     requests one laya-sync wake for the whole run.
     """
     root = Path(root).resolve()
@@ -264,7 +265,7 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
         except ValueError:
             return 'blocked'
         if (any(part.startswith('.') for part in subpath.parts)
-                or card.name in ('index.md', 'log.md')):
+                or card.name in WIKI_META_PAGES):
             return 'blocked'
         try:
             before = card.lstat()
@@ -321,7 +322,7 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
         except ValueError:
             return 'blocked'
         if (any(part.startswith('.') for part in subpath.parts)
-                or card.name in ('index.md', 'log.md')):
+                or card.name in WIKI_META_PAGES):
             return 'blocked'
         try:
             info = card.lstat()

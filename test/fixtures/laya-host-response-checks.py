@@ -647,6 +647,43 @@ class ResponseChecks(unittest.TestCase):
                              {'source_revisions_missing': 1, 'status_not_verified': 1})
             self.assertIn('2 matched wiki cards, none servable', stderr.getvalue())
 
+    def test_v2_scaffold_only_wiki_reports_no_match_not_unservable(self):
+        # wiki_init scaffold pages stay indexed but are never cards: an empty
+        # wiki answers "0 matching documents", not "none servable".
+        import io
+        import laya_index_capacity
+        index = FakeIndex()
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
+        decision = v2_decision()
+        decision['recallSettings'] = {**decision['recallSettings'],
+                                      'recallStrategy': 'wikiOnly'}
+        scaffold = (
+            row(path='wiki/SCHEMA.md', body='# Auto-context Wiki Schema\n\n'
+                'This wiki stores promoted, durable project knowledge.\n'),
+            row(path='wiki/index.md', body='# Auto-context Wiki Index\n\n- decisions/\n'),
+            row(path='wiki/log.md', body='# Auto-context Wiki Log\n\n'
+                'Append notable wiki maintenance events here.\n'))
+
+        def phase(*args, **kwargs):
+            source_filter = args[11]
+            return [item for item in scaffold if source_filter(item)], False
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / 'recall.log'
+            with patch.object(response, '_v2_phase', side_effect=phase), \
+                 patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                              return_value=FakeBoundCandidates()), \
+                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                found, _ = response.query_selected_v2(
+                    runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
+                    lambda *_: None, decision)
+            self.assertEqual(found, [])
+            self.assertNotIn('none servable', stderr.getvalue())
+            self.assertFalse(log.exists() and 'laya_wiki_rows_filtered' in log.read_text())
+        self.assertIn('search completed; 0 matching documents.',
+                      response.render_context(decision, found))
+
     def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
         import laya_index_capacity
         import wiki_freshness

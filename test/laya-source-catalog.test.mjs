@@ -9,6 +9,6 @@ test('step-bounded source catalog publishes complete snapshots and serves only f
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 20 tests/);
+  assert.match(result.stderr, /Ran 21 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

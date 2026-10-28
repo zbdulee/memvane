@@ -93,6 +93,31 @@ test('wiki lifecycle: ineligible은 provenance 없는 카드를 recall과 같은
   } finally { removeTemp(dir); }
 });
 
+// wiki_init 스캐폴드(SCHEMA.md·index.md·log.md)는 카드가 아니다. 카드 수·ineligible 집계에
+// 들어가면 빈 위키도 "부적격 카드 1장"으로 보고된다.
+test('wiki lifecycle: 루트 스캐폴드 페이지는 카드로 세지 않는다', () => {
+  const dir = setupProject();
+  try {
+    const wiki = join(dir, '.auto-context', 'wiki');
+    const scaffold = {
+      'SCHEMA.md': '# Auto-context Wiki Schema\n\nThis wiki stores promoted, durable project knowledge.\n',
+      'index.md': '# Auto-context Wiki Index\n\n- decisions/\n',
+      'log.md': '# Auto-context Wiki Log\n\nAppend notable wiki maintenance events here.\n',
+    };
+    for (const [name, text] of Object.entries(scaffold)) writeFileSync(join(wiki, name), text);
+    let r = runLifecycle(dir);
+    assert.equal(r.cards, 0, '스캐폴드만 있는 위키는 카드 0장이다');
+    assert.equal(r.ineligible, 0, '스캐폴드는 부적격 카드로 세지 않는다');
+    writeCard(dir, 'entities/ok.md', { status: 'verified' });
+    r = runLifecycle(dir);
+    assert.equal(r.cards, 1);
+    assert.equal(r.ineligible, 0);
+    for (const [name, text] of Object.entries(scaffold)) {
+      assert.equal(readFileSync(join(wiki, name), 'utf8'), text, `${name}을 건드리지 않는다`);
+    }
+  } finally { removeTemp(dir); }
+});
+
 // **`sourceScan.enabled`는 수명 주기 조치만 끈다.** `ineligible`은 별개 기능(provenance
 // 결측 총량)이고 별개 알림을 가지므로 그 스위치의 대상이 아니다. 커플링돼 있던 동안
 // `enabled:false`는 부적격 카드 N장을 **0장으로 보고**했고, update.sh는 0을 받으면 상태
