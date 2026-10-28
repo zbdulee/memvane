@@ -645,6 +645,10 @@ print(json.dumps(result))'''
             journal.cas_restore(self.journal_path, 10, old_raw)
         self.assertEqual(journal.inspect_journal(self.journal_path)['state'], 'active')
 
+    # Runtime file pinning has its own checks (laya-embed-runtime,
+    # laya-journal-v4). This synthetic manifest names no Laya runtime
+    # generation, so it reads as one pinned generation here.
+    @mock.patch('laya_embed_runtime.sealed_files_sha256', new=lambda _path: 'f' * 64)
     def test_fresh_wiki_active_upgrade_uses_real_journal_and_ledger(self):
         """Sealed old/new synthetic bundles, real CAS, no model or user store."""
         wiki = self.auto / 'wiki'
@@ -717,7 +721,9 @@ print(json.dumps(result))'''
                    'journalPath': str(self.journal_path),
                    'vectorProfile': second['vectorProfile'],
                    'providerManifest': self.provider_manifest(second),
-                   'dependencyClosure': self.closure}
+                   'dependencyClosure': self.closure,
+                   # Re-attestation seals the runtime file digest it compared.
+                   bundle.RUNTIME_FILES_FIELD: 'f' * 64}
         new_att_raw = journal._canon(new_att).encode()
         next_row = {**row, 'epoch': 5, 'phase': 'upgrading',
                     'routeSha256': hashlib.sha256(new_raw).hexdigest(),
