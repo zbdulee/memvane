@@ -6,7 +6,6 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
-import { readActivityLog } from './helpers/wiki_activity.mjs';
 
 const CARD_REL = '.auto-context/wiki/concepts/test-card.md';
 const HASH = 'abc123';
@@ -305,8 +304,8 @@ test('verify fail + onFail 기본(delete) → 카드 삭제, tombstone 없음, �
 });
 
 // The wiki holds only cards. A machine delete leaves a leftover index.md as it
-// is (the plugin neither reads nor rewrites it) and logs to the state root.
-test('verify fail delete → 남은 index.md는 그대로, log.md는 생기지 않고 state root 활동 로그에 deleted가 남는다', () => {
+// is (the plugin neither reads nor rewrites it) and writes no project log.md.
+test('verify fail delete → 남은 index.md는 그대로, log.md는 생기지 않는다', () => {
   const verifier = mockVerifier({ verdict: 'fail', claims: [{ claim: 'c', supported: false, quote: '', sourcePath: 'docs/source.md' }], reasons: ['source contradicts claim'] });
   const project = setupProject({ extractorArgv: ['python3', verifier] });
   try {
@@ -317,7 +316,6 @@ test('verify fail delete → 남은 index.md는 그대로, log.md는 생기지 �
     assert.equal(existsSync(join(project, CARD_REL)), false);
     assert.equal(readFileSync(join(wiki, 'index.md'), 'utf8'), leftover, 'leftover index.md is not touched');
     assert.equal(existsSync(join(wiki, 'log.md')), false, 'no project log.md');
-    assert.match(readActivityLog(project), /deleted concepts\/test-card\.md - Test Card/);
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
     assert.equal(log[0].result, 'deleted');
   } finally { removeTemp(project); }

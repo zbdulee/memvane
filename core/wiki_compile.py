@@ -21,6 +21,7 @@ import wiki_mutation_lock
 import wiki_activity_log
 import compile_paths as cp
 import config as qmd_config
+import source_text
 import wiki_dedup_judge
 import wiki_markers
 import yaml_scalars
@@ -262,6 +263,10 @@ def build_identity_index(wiki_root: Path) -> dict[str, set[Path]]:
     if not wiki_root.exists():
         return index
     for page in wiki_root.rglob("*.md"):
+        # Wiki-root meta pages left by earlier releases are not cards: they never
+        # answer an identity lookup, so a card is never written over one.
+        if source_text.is_wiki_meta_page(page, wiki_root):
+            continue
         try:
             text = page.read_text(encoding="utf-8")
         except OSError:
@@ -409,7 +414,9 @@ def resolve_target(root: Path, wiki_root: Path, candidate: dict, suggested_type:
                 target.relative_to(wiki_root)
             except ValueError:
                 return None, "unsafe", []
-            return target, "explicit", []
+            if not source_text.is_wiki_meta_page(target, wiki_root):
+                return target, "explicit", []
+            # A wiki-root meta page is never a card target: resolve by identity.
         # "fallback": untrusted wiki-relative targetPath — resolve by identity instead
     match_reason, matches = lookup_identity(candidate, identity_index)
     if len(matches) == 1:

@@ -312,9 +312,12 @@ numbered manuscript directory such as `04_Manuscript/`; a novel-preset wiki dire
 as `characters/` or a legacy `-manuscript`/`-plot` collection also selects it) plus the tail of the activity log. The card catalog is the selected
 memvane-db index. Card creation, update and deletion append one line to the activity log
 in the install state root (`<state root>/wiki-activity.log`, rotated to `.1` past 256 KiB;
-`core/wiki_activity_log.py`). The plugin does not create or read wiki-root `SCHEMA.md`,
-`index.md` or `log.md`; such files left by earlier releases stay on disk, are never
-treated as cards, and keep their existing index rows.
+`core/wiki_activity_log.py`). The state root is opened one path component at a time without
+following symlinks; a symlinked, foreign-owned or group/world-writable ancestor makes the
+write a silent no-op, and a project without a selected route logs nothing. The plugin does
+not create or read wiki-root `SCHEMA.md`, `index.md` or `log.md`; such files left by
+earlier releases stay on disk, are never treated as cards or card targets, are never served
+by search, and keep their existing index rows.
 
 Extractor config is intentionally symbolic by default. The worker resolves
 extractors in this order:
