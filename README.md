@@ -172,6 +172,13 @@ python3 -B "$ROOT/core/setup_entry.py" state-root-status
 python3 -B "$ROOT/core/setup_entry.py" move-state-roots
 ```
 
+학습 상태(이전 플러그인 지원 디렉터리의 `live-selection`, `laya-inference`)도
+같은 워커가 한 번 `~/Library/Application Support/memvane`으로 옮깁니다. 옮기는 동안
+resident service가 잠시 멈추고 검색은 lexical 결과를 돌려줍니다. 준비된 local
+selector는 업데이트 뒤 워커가 어댑터 앵커·synthetic attestation·inference 준비를
+다시 돌려 스스로 복구합니다(각 120초 이내). 학습 profile을 승인한 프로젝트는
+앵커가 바뀌면 다시 승인해야 합니다.
+
 ### 예전 QMD backend 정리
 
 이전 버전이 설치한 QMD daemon, managed LaunchAgent, 플러그인 QMD runtime과

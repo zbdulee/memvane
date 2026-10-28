@@ -906,7 +906,57 @@ def run(project_root, *, root=None, home=None):
                 key: value for key, value in result.items()
                 if key in ('status', 'reason', 'kind')}})
     _collect_shared(home)
+    events = next((Path(row['stateRoot']) for row in results
+                   if Path(row['stateRoot']).is_dir()), None)
+    learning = _learning_upkeep(project, home, events)
+    if learning:
+        results.append({'stateRoot': str(events) if events else '', **learning})
     return results
+
+
+def _learning_event(state, event, outcome, reason=None, **fields):
+    try:
+        import event_log
+        event_log.emit(event, outcome=outcome, reason=reason or None,
+                       state_root=Path(state) if state is not None else None,
+                       host='worker', **fields)
+    except Exception:
+        pass
+
+
+def _learning_upkeep(project, home, state):
+    """Move the learning state (once per account), then heal this project's selector.
+
+    Never raises; a deferral or refusal is an event and a later run retries.
+    """
+    out = {}
+    try:
+        from context_learning import state_move
+        moved = state_move.move(home)
+        if moved['status'] == 'learning_state_moved':
+            out['learningState'] = moved['status']
+            _learning_event(state, 'learning.state', 'moved',
+                            rebased=moved.get('checkpointsRebased'))
+    except Exception as exc:
+        out['learningState'] = _reason(exc)
+        _learning_event(state, 'learning.state', 'deferred', _reason(exc))
+        return out
+    try:
+        from context_learning import selector_heal
+        target = selector_heal.namespace(project, home)
+        if not (target / selector_heal.POLICY).is_file():
+            return out
+        _learning_event(state, 'learning.prepare', 'started')
+        started = time.monotonic()
+        healed = selector_heal.heal(project, home=home)
+        out['selector'] = healed['status']
+        _learning_event(state, 'learning.prepare', healed['status'],
+                        rebound=healed.get('rebound'),
+                        ms=(time.monotonic() - started) * 1000)
+    except Exception as exc:
+        out['selector'] = _reason(exc)
+        _learning_event(state, 'learning.prepare', 'failed', _reason(exc))
+    return out
 
 
 def _collect_shared(home):
@@ -952,6 +1002,14 @@ def move_all(*, root=None, home=None):
             rows.append({'stateRoot': pending['stateRoot'], 'status': 'project_missing'})
         elif project not in projects:
             projects.append(project)
+    # Projects whose only reason to run is a prepared selector.
+    try:
+        from context_learning.selector_heal import selector_projects
+        for project in selector_projects(home):
+            if project not in projects and Path(project).is_dir():
+                projects.append(project)
+    except Exception:
+        pass
     for project in projects:
         try:
             for row in run(project, root=root, home=home):
