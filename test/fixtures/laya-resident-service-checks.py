@@ -653,6 +653,8 @@ class ServiceBoundsChecks(Fixture):
             service = self.service()
             for manifest in manifests:
                 self.wait(lambda m=manifest: self.ready(m))
+            # The last readiness probe's handler returns its slot just after.
+            self.wait(lambda: service.connections._value == 4)
             free = []
             for _ in range(10):
                 free.append(service.connections._value)
@@ -850,7 +852,7 @@ class HungLoadChecks(unittest.TestCase):
         root.mkdir(mode=0o700)
         child_record = base / 'child.pid'
         env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
-               'LAYA_SERVICE_LOAD_STUCK_SECONDS': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
+               'LAYA_SERVICE_TIME_SCALE': '0.01', 'PYTHONDONTWRITEBYTECODE': '1'}
         driver = subprocess.Popen([sys.executable, '-B', __file__, '--hung-load-service',
                                    str(base), str(child_record)],
                                   env=env, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -880,6 +882,63 @@ class HungLoadChecks(unittest.TestCase):
         self.assertTrue(successor.acquire(wait=2))
 
 
+    def test_successor_waiting_from_drain_start_takes_the_lease(self):
+        # A busy learning phase, then a hung cold load: every drain phase fits
+        # one budget below the successor's own lease wait.
+        temp = tempfile.TemporaryDirectory(prefix='lrb-', dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name).resolve()
+        (base / 'svc').mkdir(mode=0o700)
+        child_record, draining = base / 'child.pid', base / 'draining'
+        scale = .01
+        env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
+               'LAYA_SERVICE_TIME_SCALE': str(scale),
+               # Read only by a service without the scaled budget (before the fix).
+               'LAYA_SERVICE_LOAD_STUCK_SECONDS': str(300 * scale),
+               'PYTHONDONTWRITEBYTECODE': '1'}
+        spawned = []
+
+        def spawn(*argv):
+            child = subprocess.Popen([sys.executable, '-B', __file__, *argv], env=env,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
+            spawned.append(child)
+            return child
+
+        def cleanup():
+            for child in spawned:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(5)
+            if child_record.exists():
+                with suppress_lookup():
+                    os.kill(int(child_record.read_text()), 9)
+        self.addCleanup(cleanup)
+        old = spawn('--hung-load-service', str(base), str(child_record), 'learning-busy')
+        deadline = time.monotonic() + 15
+        while not draining.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue(draining.exists(), 'drain never began')
+        successor = spawn('--successor', str(base / 'svc'),
+                          str(svc.SUCCESSOR_WAIT_SECONDS * scale))
+        self.assertEqual(successor.wait(30), 0, 'the successor gave up on the lease')
+        self.assertEqual(old.wait(10), svc.FORCED_EXIT_CODE)
+        with self.assertRaises(ProcessLookupError, msg='orphan embed child left running'):
+            os.kill(int(child_record.read_text()), 0)
+
+    def test_drain_budget_stays_below_the_successor_wait(self):
+        self.assertLessEqual(svc.DRAIN_SECONDS, svc.DRAIN_BUDGET_SECONDS)
+        self.assertLess(svc.DRAIN_BUDGET_SECONDS + svc.KILL_REAP_SECONDS,
+                        svc.SUCCESSOR_WAIT_SECONDS)
+        self.assertGreaterEqual(svc.SUCCESSOR_WAIT_SECONDS - svc.DRAIN_BUDGET_SECONDS, 60)
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1',
+                                     'LAYA_SERVICE_TIME_SCALE': '0.01'}):
+            self.assertLess(svc._scaled(svc.DRAIN_BUDGET_SECONDS),
+                            svc._scaled(svc.SUCCESSOR_WAIT_SECONDS))
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '',
+                                     'LAYA_SERVICE_TIME_SCALE': '0.01'}):
+            self.assertEqual(svc._scaled(svc.DRAIN_BUDGET_SECONDS), svc.DRAIN_BUDGET_SECONDS)
+
+
 class suppress_lookup:
     def __enter__(self):
         return self
@@ -888,7 +947,16 @@ class suppress_lookup:
         return kind is ProcessLookupError
 
 
-def hung_load_service(base, child_record):
+def successor(root, wait):
+    """A replacement that waits for the lease from drain start; 0 when it got it."""
+    service = svc.Service(Path(root), bundle={'version': '1.0.1', 'digest': 'n'},
+                          prove=lambda _p: None)
+    acquired = service.acquire(wait=float(wait))
+    service.close()
+    raise SystemExit(0 if acquired else 75)
+
+
+def hung_load_service(base, child_record, phase=''):
     """A service whose only cold load spawns its model child, then hangs forever."""
     base, child_record = Path(base), Path(child_record)
     root = base / 'svc'
@@ -910,19 +978,26 @@ def hung_load_service(base, child_record):
         child_record.write_text(str(child.pid))
         threading.Event().wait()  # never READY, never returns
     svc.LOAD_DRAIN_SECONDS = .2
+    if not hasattr(svc, '_scaled'):
+        # A service before the shared budget reads no time scale: same scaled values.
+        svc.DRAIN_SECONDS = 330 * float(os.environ.get('LAYA_SERVICE_TIME_SCALE', 1))
     svc.register(str(project), root=root)
     service = svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                          learning_root=str(base / 'learning') if phase else None,
                           prove=lambda _p: (decision, {'providerManifest': manifest},
                                             'selected'),
                           attest=lambda *_a: None, start_worker=start_worker,
                           admit=lambda: True, retire=lambda *_a: None, tick=.05)
     if not service.acquire(wait=5):
         raise SystemExit(75)
+    if phase == 'learning-busy':
+        service._learning_busy = lambda: True  # a learning request never finishes
     service.start()
     deadline = time.monotonic() + 10
     while not child_record.exists() and time.monotonic() < deadline:
         time.sleep(.02)
     service.begin_drain()
+    (base / 'draining').write_text('1')
     service.run()
 
 
@@ -1125,7 +1200,9 @@ def fake_worker(socket_path, identity, delay, record, slow, dimension):
 if __name__ == '__main__':
     if len(sys.argv) == 8 and sys.argv[1] == '--fake-worker':
         fake_worker(*sys.argv[2:])
-    elif len(sys.argv) == 4 and sys.argv[1] == '--hung-load-service':
+    elif len(sys.argv) in (4, 5) and sys.argv[1] == '--hung-load-service':
         hung_load_service(*sys.argv[2:])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--successor':
+        successor(*sys.argv[2:])
     else:
         unittest.main()

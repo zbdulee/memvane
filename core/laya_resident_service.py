@@ -61,18 +61,23 @@ READ_SECONDS = 10           # whole request read, from accept (5.1MB over a loca
 QUERY_SECONDS = 15          # a query or status request, from accept to answer
 DOCUMENT_SECONDS = 320      # a document request, from accept to answer
 RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
-DRAIN_SECONDS = 330         # one document_chunks request may take 300s
+# A successor waits this long for the lease, then gives up until a new request.
+SUCCESSOR_WAIT_SECONDS = 600
+# Every drain phase (in-flight requests and learning, a cold load to settle,
+# the forced-exit kill and reap) fits one budget measured from drain start,
+# strictly below the successor's wait; the margin covers stopping workers,
+# process exit and the successor's own scheduling. A legitimate cold load
+# (full runtime rehash of a few hundred MB, admission, the provider's 15 s
+# READY bound) ends far inside it. A cold load still running at the budget is
+# hung: the escape is process exit (``_force_exit``), never an in-process
+# lease release.
+DRAIN_MARGIN_SECONDS = 120
+DRAIN_BUDGET_SECONDS = SUCCESSOR_WAIT_SECONDS - DRAIN_MARGIN_SECONDS
+DRAIN_SECONDS = 330         # in-flight phase cap; one document_chunks request may take 300s
 LOAD_DRAIN_SECONDS = 5      # re-check interval while a drain waits for a cold load
-# A drain that has waited this long for one cold load treats it as hung. A
-# legitimate load is the full runtime rehash (a few hundred MB, well under a
-# minute), the admission check and the provider's 15 s READY bound; 300 s
-# leaves wide margin and stays below SUCCESSOR_WAIT_SECONDS, so the waiting
-# successor takes the lease in the same attempt. The escape is process exit
-# (``_force_exit``), never an in-process lease release.
-LOAD_STUCK_SECONDS = 300
+KILL_REAP_SECONDS = 5       # forced exit: confirm killed children are reaped
 FORCED_EXIT = 'forced-exit.json'
 FORCED_EXIT_CODE = 70
-SUCCESSOR_WAIT_SECONDS = 600
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
 _BUNDLE = None
 
@@ -696,13 +701,19 @@ def default_attest(decision, proof, mode):
             _fail('provider_attestation_invalid')
 
 
-def _load_stuck_seconds():
-    """The hung-load cap; a test (fixture flag only) may shorten it."""
-    shortened = os.environ.get('LAYA_SERVICE_LOAD_STUCK_SECONDS')
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' and shortened:
+def _scaled(seconds):
+    """A drain/lease time constant; a test (fixture flag only) may scale all of them.
+
+    One factor for every constant keeps their ordering (budget below the
+    successor's wait) in a scaled-down test.
+    """
+    factor = os.environ.get('LAYA_SERVICE_TIME_SCALE')
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' and factor:
         with suppress(ValueError, TypeError):
-            return max(0.0, float(shortened))
-    return LOAD_STUCK_SECONDS
+            factor = float(factor)
+            if 0 < factor <= 1:
+                return seconds * factor
+    return seconds
 
 
 def _own_children():
@@ -723,7 +734,7 @@ def _own_children():
     return children
 
 
-def _kill_children(timeout=5):
+def _kill_children(timeout=KILL_REAP_SECONDS):
     """SIGKILL every direct child (embed workers, a half-started one) and reap it."""
     killed = []
     for pid in _own_children():
@@ -795,7 +806,8 @@ class Service:
         self.threads = []
 
     # ------------------------------------------------------------ lifecycle
-    def acquire(self, *, successor_fd=None, wait=SUCCESSOR_WAIT_SECONDS):
+    def acquire(self, *, successor_fd=None, wait=None):
+        wait = _scaled(SUCCESSOR_WAIT_SECONDS) if wait is None else wait
         fd = _private_lock(self.root / LEASE)
         deadline = time.monotonic() + wait
         while True:
@@ -919,7 +931,9 @@ class Service:
         thread.start()
 
     def _finish_drain(self):
-        deadline = time.monotonic() + DRAIN_SECONDS
+        started = time.monotonic()
+        budget_end = started + _scaled(DRAIN_BUDGET_SECONDS)
+        deadline = min(started + _scaled(DRAIN_SECONDS), budget_end)
         with self.inflight_done:
             while self.inflight and time.monotonic() < deadline:
                 self.inflight_done.wait(.2)
@@ -931,10 +945,10 @@ class Service:
         # early: while a loader runs, the service keeps its lease and stays
         # draining (clients see absent sockets and serve lexical results).
         # Holding the lock afterwards keeps any new load out.
-        waited_from = time.monotonic()
-        while not self.cold_load.acquire(timeout=LOAD_DRAIN_SECONDS):
-            if time.monotonic() - waited_from >= _load_stuck_seconds():
-                self._force_exit(time.monotonic() - waited_from)
+        while not self.cold_load.acquire(timeout=max(.01, min(
+                _scaled(LOAD_DRAIN_SECONDS), budget_end - time.monotonic()))):
+            if time.monotonic() >= budget_end:
+                self._force_exit(time.monotonic() - started)
                 return
         with self.lock:
             for project in list(self.bindings):
@@ -954,7 +968,9 @@ class Service:
         lease flock and the stuck load thread dies with it. The lease is never
         released in-process while that thread is alive.
         """
-        killed, alive = _kill_children()
+        # Not scaled: a SIGKILLed child is reaped in milliseconds; the loop
+        # ends then, and KILL_REAP_SECONDS only bounds a pathological case.
+        killed, alive = _kill_children(KILL_REAP_SECONDS)
         with suppress(Exception):
             _atomic_json(self.root / FORCED_EXIT, {
                 'pid': os.getpid(), 'bundle': self.bundle, 'reason': 'cold_load_hung',
