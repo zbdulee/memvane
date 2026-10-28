@@ -687,6 +687,71 @@ class ServiceBoundsChecks(Fixture):
         # The lease is released only after the load settled and its model stopped.
         self.assertEqual(events, ['returned', ('stopped', True)])
 
+    def test_drain_keeps_the_lease_past_its_wait_interval_while_a_load_runs(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        events, handles = [], []
+        entered = threading.Event()
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            entered.set()
+            time.sleep(1.5)  # longer than several drain wait intervals
+            handle = start(manifest, admit)
+            handles.append(handle)
+            events.append('returned')
+            return handle
+        with patch.object(svc, 'LOAD_DRAIN_SECONDS', .2, create=True):
+            service = self.service(start=False)
+            service.start_worker = start_worker
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.assertTrue(entered.wait(5))
+            threading.Thread(target=lambda: service.stopped.wait(30) and events.append(
+                ('stopped', handles[0].process.poll() is not None if handles else None)),
+                daemon=True).start()
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(30))
+            self.wait(lambda: len(events) == 2)
+        self.assertEqual(events, ['returned', ('stopped', True)])
+
+    def test_drain_during_attestation_never_starts_a_worker(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        attesting, release = threading.Event(), threading.Event()
+
+        def attest(*_args):
+            attesting.set()
+            release.wait(10)
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.assertTrue(attesting.wait(5))
+        service.begin_drain()
+        release.set()
+        self.assertTrue(service.stopped.wait(30))
+        self.assertEqual(self.loads, [], 'a model started after the drain began')
+
+    def test_failed_listener_thread_start_releases_the_binding(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        starts = []
+        real = threading.Thread
+
+        class Flaky(real):
+            def start(self):
+                if self.name == 'laya-service-project':
+                    starts.append(1)
+                    if len(starts) == 1:
+                        raise RuntimeError("can't start new thread")
+                return super().start()
+        with patch.object(svc.threading, 'Thread', Flaky):
+            self.service()
+            self.wait(lambda: len(starts) >= 2, message='binding never re-adopted')
+            self.wait(lambda: self.ready(manifest))
+        self.assertEqual(len(embed(manifest)), DIM)
+
     def test_listener_fd_above_fd_setsize_still_accepts(self):
         import resource
         soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)

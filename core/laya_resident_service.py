@@ -62,7 +62,7 @@ QUERY_SECONDS = 15          # a query or status request, from accept to answer
 DOCUMENT_SECONDS = 320      # a document request, from accept to answer
 RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
 DRAIN_SECONDS = 330         # one document_chunks request may take 300s
-LOAD_DRAIN_SECONDS = 120    # a cold load (attestation, admission, 15s start) to settle
+LOAD_DRAIN_SECONDS = 5      # re-check interval while a drain waits for a cold load
 SUCCESSOR_WAIT_SECONDS = 600
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
 _BUNDLE = None
@@ -856,8 +856,12 @@ class Service:
             time.sleep(.2)
         # A cold load started before the drain finishes (and stops its model,
         # seeing the drain) before any lease is released, so a load never
-        # overlaps the successor. Holding the lock keeps any new load out.
-        self.cold_load.acquire(timeout=LOAD_DRAIN_SECONDS)
+        # overlaps the successor. There is no timeout that releases the lease
+        # early: while a loader runs, the service keeps its lease and stays
+        # draining (clients see absent sockets and serve lexical results).
+        # Holding the lock afterwards keeps any new load out.
+        while not self.cold_load.acquire(timeout=LOAD_DRAIN_SECONDS):
+            pass
         with self.lock:
             for project in list(self.bindings):
                 self._release(project, reason='starting')
@@ -1064,9 +1068,16 @@ class Service:
             _write_state(manifest, 'ready', attempts=0)
         except Exception:
             pass
-        thread = threading.Thread(target=self._accept_loop, args=(binding,),
-                                  name='laya-service-project', daemon=True)
-        thread.start()
+        try:
+            threading.Thread(target=self._accept_loop, args=(binding,),
+                             name='laya-service-project', daemon=True).start()
+        except Exception:
+            # No listener thread: release the binding (listener, socket and
+            # leases), so a later tick adopts this installation again.
+            with self.lock:
+                if self.bindings.get(project) is binding:
+                    self._release(project, reason='starting')
+            self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
         from laya_embed_resident import _write_state
@@ -1123,6 +1134,11 @@ class Service:
             self._later(project, 60)
             return
         self.attested.add(seal)
+        with self.lock:
+            if self.draining.is_set():
+                # The drain began during attestation: never start a model.
+                worker.loading = False
+                return
         reason = None
         try:
             handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
