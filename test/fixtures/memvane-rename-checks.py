@@ -296,49 +296,94 @@ class LegacyRoots(unittest.TestCase):
         (current / 'scan-state').mkdir()
         self.assertEqual(memvane_paths.auto_context_state(self.home), current)
 
-    def test_learning_group_follows_the_activated_runtime(self):
-        from context_learning import runtime_setup, storage_layout
-        support = ('Library', 'Application Support') if sys.platform == 'darwin' \
+    def support(self):
+        parts = ('Library', 'Application Support') if sys.platform == 'darwin' \
             else ('.local', 'share')
-        current = self.home.joinpath(*support, 'memvane')
-        legacy = self.home.joinpath(*support, 'qmd-auto-context')
+        return self.home.joinpath(*parts, 'memvane'), \
+            self.home.joinpath(*parts, 'qmd-auto-context')
 
-        def activate(base):
-            runtime = base / 'runtimes' / 'laya'
-            runtime.mkdir(parents=True, exist_ok=True)
-            pointer = runtime / 'active.json'
-            pointer.write_text(json.dumps({
-                'executable': str(runtime / 'generations' / 'g-1' / 'venv' / 'bin' / 'python'),
-                'runtime_identity_sha256': 'a' * 64}))
-            pointer.chmod(0o600)
-            return pointer
-        self.assertEqual(runtime_setup.support_base(self.home), current)
+    def activate(self, base, *, interpreter=True, **pointer):
+        runtime = base / 'runtimes' / 'laya'
+        executable = runtime / 'generations' / 'g-1' / 'venv' / 'bin' / 'python'
+        if interpreter:
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text('#!/bin/sh\n')
+            executable.chmod(0o700)
+        runtime.mkdir(parents=True, exist_ok=True)
+        path = runtime / 'active.json'
+        path.write_text(json.dumps({'executable': str(executable),
+                                    'runtime_identity_sha256': 'a' * 64, **pointer}))
+        path.chmod(0o600)
+
+    def test_runtime_follows_a_usable_activation_pointer(self):
+        from context_learning import runtime_setup
+        current, legacy = self.support()
+        base = runtime_setup.runtime_base
+        self.assertEqual(base(self.home), current)
         self.assertEqual(runtime_setup.default_managed_root(self.home),
                          current / 'runtimes' / 'laya')
         (legacy / 'runtimes' / 'laya').mkdir(parents=True)
-        self.assertEqual(runtime_setup.support_base(self.home), current)  # nothing active
-        activate(legacy)
-        self.assertEqual(runtime_setup.support_base(self.home), legacy)
-        # An interrupted MemVane prepare (bare directory) never hides it.
+        self.assertEqual(base(self.home), current)  # nothing activated
+        self.activate(legacy)
+        self.assertEqual(base(self.home), legacy)
+        # Not an activation of the MemVane runtime: a bare directory (an
+        # interrupted prepare), a pointer to a missing interpreter, a pointer
+        # outside its root, an unknown pointer shape.
         (current / 'runtimes' / 'laya' / 'generations').mkdir(parents=True)
-        self.assertEqual(runtime_setup.support_base(self.home), legacy)
-        bad = current / 'runtimes' / 'laya' / 'active.json'
-        bad.write_text('{"executable": "/elsewhere/python", "runtime_identity_sha256": "x"}')
-        bad.chmod(0o600)
-        self.assertEqual(runtime_setup.support_base(self.home), legacy)  # not inside root
-        activate(current)
-        self.assertEqual(runtime_setup.support_base(self.home), current)
+        self.assertEqual(base(self.home), legacy)
+        self.activate(current, interpreter=False)
+        self.assertEqual(base(self.home), legacy)
+        pointer = current / 'runtimes' / 'laya' / 'active.json'
+        pointer.write_text(json.dumps({'executable': '/bin/sh',
+                                       'runtime_identity_sha256': 'a' * 64}))
+        self.assertEqual(base(self.home), legacy)
+        self.activate(current, extra=1)
+        self.assertEqual(base(self.home), legacy)
+        self.activate(current)
+        self.assertEqual(base(self.home), current)
 
-    def test_learning_registry_stays_with_its_database(self):
+    def test_learning_state_stays_until_its_switch_is_recorded(self):
+        from context_learning import runtime_setup
+        current, legacy = self.support()
+        state = runtime_setup.learning_state_base
+        self.assertEqual(state(self.home), current)
+        (legacy / 'live-selection' / 'p1').mkdir(parents=True)
+        self.assertEqual(state(self.home), legacy)
+        # Activating the MemVane runtime moves the runtime, not the state.
+        self.activate(current)
+        self.assertEqual(runtime_setup.runtime_base(self.home), current)
+        self.assertEqual(state(self.home), legacy)
+        switch = current / runtime_setup.STATE_SWITCH
+        switch.write_text(json.dumps({'schema': 'other', 'root': str(current)}))
+        switch.chmod(0o600)
+        self.assertEqual(state(self.home), legacy)
+        switch.write_text(json.dumps({'schema': runtime_setup.STATE_SWITCH_SCHEMA,
+                                      'root': str(current)}))
+        self.assertEqual(state(self.home), current)
+
+    def test_learning_registry_stays_with_an_initialized_database(self):
+        import sqlite3
         from context_learning import storage_layout
         app = self.home / 'Library' / 'Application Support'
         current, legacy = app / 'memvane' / 'learning', app / 'qmd-auto-context' / 'learning'
         self.assertEqual(storage_layout.root(self.home), current)
-        legacy.mkdir(parents=True)
-        (legacy / 'registry.sqlite3').write_bytes(b'')
-        current.mkdir(parents=True)  # a bare directory hides nothing
+
+        def database(base, version):
+            base.mkdir(parents=True, exist_ok=True)
+            path = base / 'registry.sqlite3'
+            with sqlite3.connect(path) as db:
+                db.execute(f'PRAGMA user_version={version}')
+            path.chmod(0o600)
+        database(legacy, storage_layout.SCHEMA_VERSION)
         self.assertEqual(storage_layout.root(self.home), legacy)
-        (current / 'registry.sqlite3').write_bytes(b'')
+        current.mkdir(parents=True)
+        (current / 'registry.sqlite3').write_bytes(b'')  # created, never initialized
+        (current / 'registry.sqlite3').chmod(0o600)
+        self.assertEqual(storage_layout.root(self.home), legacy)
+        (current / 'registry.sqlite3').unlink()
+        database(current, 0)  # schema never written
+        self.assertEqual(storage_layout.root(self.home), legacy)
+        database(current, storage_layout.SCHEMA_VERSION)
         self.assertEqual(storage_layout.root(self.home), current)
 
     def test_legacy_adapter_cache_is_an_identity_anchor_only(self):

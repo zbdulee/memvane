@@ -14,7 +14,7 @@ const EXCLUDED = /^(test\/|docs\/plans\/|\.auto-context\/)/;
 const ALLOWED = {
   // Path and identity constants the migration, cleanup and readers need.
   'core/memvane_paths.py': [/LEGACY_(NAME|PLUGIN_ID|MARKETPLACE) = /],
-  'core/context_learning/runtime_setup.py': [/legacy = .*'qmd-auto-context'/],
+  'core/context_learning/runtime_setup.py': [/home.joinpath\(\*parts, 'qmd-auto-context'\)$/],
   'core/context_learning/storage_layout.py': [/^LEGACY_ROOT_PARTS = /],
   'core/context_learning/adapter_binding.py': [/\('qmd-auto-context-marketplace', 'qmd-auto-context'\)/],
   // Historical v45 trainer anchor (an exact path recorded in old policies).

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import settings_lock
 import project_learning_setup as setup
 from context_learning.local_cycle import _atomic_json
-from context_learning.runtime_setup import default_managed_root
+from context_learning.runtime_setup import learning_state_base
 from context_learning.shared import _project_key
 
 
@@ -16,7 +16,7 @@ def save(path,value):
 with tempfile.TemporaryDirectory(prefix='qmd-recovery-lock-',dir='/tmp') as folder:
  base=Path(folder).resolve();home=base/'home';home.mkdir(mode=0o700)
  project=base/'project';project.mkdir(mode=0o700)
- root=default_managed_root(home).parent.parent/'live-selection'/_project_key(project)
+ root=learning_state_base(home)/'live-selection'/_project_key(project)
  root.mkdir(mode=0o700,parents=True)
  settings=project/'.auto-context/settings.json';old={'capture':False};current={'capture':True}
  save(settings,current)

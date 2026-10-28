@@ -39,8 +39,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  settings={'indexing':True,'collections':['docs'],'collectionPaths':{'docs':'.'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
  save(project/'.auto-context/settings.json',settings)
  (project/'.auto-context').chmod(0o755)
- from context_learning.runtime_setup import default_managed_root
- root=default_managed_root(home).parent.parent/'live-selection'/_project_key(project);root.mkdir(mode=0o700,parents=True)
+ from context_learning.runtime_setup import learning_state_base
+ root=learning_state_base(home)/'live-selection'/_project_key(project);root.mkdir(mode=0o700,parents=True)
  model=base/'model';model.mkdir(mode=0o700)
  for name in MODEL_FILES:
   p=model/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(name)

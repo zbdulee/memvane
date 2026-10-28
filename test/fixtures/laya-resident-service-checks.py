@@ -417,6 +417,67 @@ class ServiceChecks(Fixture):
                                            str(self.root)])
         self.assertIsNone(svc.legacy_service_dir(home=self.base / 'nohome'))
 
+    def test_memvane_service_holds_the_pre_rename_lease_for_its_lifetime(self):
+        legacy = self.base / 'legacy-svc'
+        new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=legacy)
+        self.services.append(new)
+        self.assertTrue(new.acquire(wait=5))  # no pre-rename directory: nothing held
+        new.start()
+        self.assertIsNone(new.legacy_lease)
+        legacy.mkdir(mode=0o700)  # a 0.40.3 client created its service directory
+        self.wait(lambda: new.legacy_lease is not None, message='legacy lease not taken')
+        # A 0.40.3-style successor never gets the lease while MemVane runs ...
+        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=None)
+        self.services.append(old)
+        self.assertFalse(old.acquire(wait=.5))
+        # ... and a 0.40.3-style client sees a held lease: no spawn, it degrades.
+        spawned = []
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.40.3', 'digest': 'old'}):
+            self.assertEqual(svc.ensure_service(root=legacy, learning_root=False,
+                                                legacy_root=None,
+                                                spawn=lambda argv, **kw: spawned.append(argv)),
+                             'starting')
+        self.assertEqual(spawned, [])
+        # The MemVane client attaches to the running MemVane service.
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.41.0', 'digest': 'new'}):
+            self.assertIn(svc.ensure_service(root=self.root, learning_root=False,
+                                             legacy_root=legacy,
+                                             spawn=lambda argv, **kw: spawned.append(argv)),
+                          ('ready', 'starting'))
+        self.assertEqual(spawned, [])
+        new.begin_drain()
+        self.assertTrue(new.stopped.wait(10))
+        new.close()
+        self.assertTrue(old.acquire(wait=2))  # released only when MemVane stops
+
+    def test_worker_loaded_after_its_last_route_left_is_reclaimed(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        real_start = self.start_worker
+        handles = []
+
+        def start_worker(manifest, admit, **kw):
+            handle = real_start(manifest, admit, **kw)
+            self.routes.pop(project, None)  # the route left while it loaded
+            handles.append(handle)
+            return handle
+        self.start_worker = start_worker
+        with patch.object(svc, 'UNBOUND_WORKER_SECONDS', .2, create=True):
+            service = self.service()
+            self.wait(lambda: handles, message='worker never loaded')
+            self.wait(lambda: handles[0].process.poll() is not None,
+                      message='unbound worker kept running')
+        self.assertEqual(service.workers, {})
+        self.assertEqual(service.bindings, {})
+
     def project_route(self, project, manifest):
         name = Path(project).name
         decision = {'projectRoot': project, 'pluginRoot': '/synthetic/plugin',

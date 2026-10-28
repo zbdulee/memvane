@@ -51,6 +51,8 @@ DOCUMENT_SLOTS = 3          # QUERY_SLOTS + DOCUMENT_SLOTS stays below the worke
 DRAIN_SECONDS = 330         # one document_chunks request may take 300s
 SUCCESSOR_WAIT_SECONDS = 600
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
+UNBOUND_WORKER_SECONDS = 30  # a loaded worker no bound installation uses
+LEGACY_DRAIN_SECONDS = 5     # re-request a pre-rename drain while waiting
 _BUNDLE = None
 
 
@@ -87,15 +89,25 @@ def service_dir(*, create=False, home=None):
     return private_root(cursor)
 
 
+def _legacy_service_path(home=None):
+    import memvane_paths
+    cursor = Path(home).resolve() if home is not None else _account_home()
+    return cursor.joinpath(*memvane_paths.LEGACY_STATE_PARTS, 'service')
+
+
+def _default_service_path(home=None):
+    import memvane_paths
+    cursor = Path(home).resolve() if home is not None else _account_home()
+    return cursor.joinpath(*memvane_paths.STATE_PARTS, 'service')
+
+
 def legacy_service_dir(*, home=None):
     """The pre-rename service directory (``~/.local/state/laya/service``), or None.
 
     Read only: a service a pre-rename bundle started there still holds the
     provider worker and the installations' sockets until it drains.
     """
-    import memvane_paths
-    cursor = Path(home).resolve() if home is not None else _account_home()
-    path = cursor.joinpath(*memvane_paths.LEGACY_STATE_PARTS, 'service')
+    path = _legacy_service_path(home)
     try:
         return private_root(path)
     except (FileNotFoundError, NotADirectoryError):
@@ -365,11 +377,13 @@ def ensure_service(*, root=None, python=None, learning_root=None, spawn=None,
             raise _deferred('laya_service_fixture')
         root = service_dir(create=True)
     root = private_root(Path(root))
-    if legacy_root is not None and Path(legacy_root) != root:
+    answer = hello(root)
+    if (answer is None and legacy_root is not None and Path(legacy_root) != root
+            and not _lease_held(root)):
+        # No MemVane service (a running one holds the pre-rename lease too).
         waiting = drain_legacy_service(legacy_root)
         if waiting is not None:
             return waiting
-    answer = hello(root)
     mine = bundle_identity()
     if answer is None:
         if not _lease_held(root):
@@ -549,6 +563,7 @@ class Worker:
         self.failures = 0
         self.retry_at = 0.0
         self.loading = False
+        self.unbound_since = None
         self.slots = {'query': threading.BoundedSemaphore(QUERY_SLOTS),
                       'document': threading.BoundedSemaphore(DOCUMENT_SLOTS)}
 
@@ -639,8 +654,14 @@ class Service:
     def __init__(self, root, *, learning_root=None, bundle=None, prove=default_prove,
                  attest=default_attest, start_worker=default_start_worker,
                  admit=default_admit, retire=retire_legacy_resident, tick=1.0,
-                 learning=None):
+                 learning=None, legacy_root=_DEFAULT):
         self.root = private_root(Path(root))
+        if legacy_root is _DEFAULT:
+            # The account's own MemVane service also excludes a pre-rename one.
+            legacy_root = (_legacy_service_path() if self.root == _default_service_path()
+                           else None)
+        self.legacy_root = Path(legacy_root) if legacy_root is not None else None
+        self.legacy_lease = None
         self.learning_root = learning_root
         self.bundle = bundle or bundle_identity()
         self.prove, self.attest = prove, attest
@@ -677,6 +698,10 @@ class Service:
                     return False
                 time.sleep(.1)
         self.lease = fd
+        if not self._hold_legacy(deadline):
+            os.close(fd)
+            self.lease = None
+            return False
         if successor_fd is not None:
             os.close(successor_fd)
         path = self.root / CONTROL
@@ -691,6 +716,39 @@ class Service:
         self.control, self.control_inode = server, os.lstat(path).st_ino
         _atomic_json(self.root / PID, {'pid': os.getpid(), 'bundle': self.bundle,
                                        'socketInode': self.control_inode})
+        return True
+
+    def _hold_legacy(self, deadline):
+        """Hold the pre-rename service lease for this service's lifetime.
+
+        A pre-rename client (or its successor) can then never start a second
+        service: its successor waits on that lease and gives up, its client
+        sees a held lease and degrades to lexical results. A pre-rename
+        service still running is asked to drain while this waits. An absent
+        pre-rename directory is left absent (and retried on each tick).
+        """
+        if self.legacy_root is None or self.legacy_lease is not None:
+            return True
+        try:
+            legacy = private_root(self.legacy_root)
+        except Exception:
+            return True
+        fd = _private_lock(legacy / LEASE)
+        asked = 0.0
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return False
+                if time.monotonic() - asked >= LEGACY_DRAIN_SECONDS:
+                    asked = time.monotonic()
+                    with suppress(Exception):
+                        drain_legacy_service(legacy)
+                time.sleep(.1)
+        self.legacy_lease = fd
         return True
 
     def start(self):
@@ -725,6 +783,9 @@ class Service:
                     path.unlink()
                     (self.root / PID).unlink(missing_ok=True)
             self.control = None
+        if self.legacy_lease is not None:
+            os.close(self.legacy_lease)
+            self.legacy_lease = None
         if self.lease is not None:
             os.close(self.lease)
             self.lease = None
@@ -853,6 +914,12 @@ class Service:
 
     def _tick(self):
         now = time.monotonic()
+        if self.lease is not None and self.legacy_lease is None:
+            # One attempt per tick: the directory appeared, or a pre-rename
+            # service slipped in before this one held its lease.
+            if not self._hold_legacy(now):
+                with suppress(Exception):
+                    drain_legacy_service(self.legacy_root)
         for project in list(self.bindings):
             self._check_owned(project)
         for project in self.registered():
@@ -862,6 +929,26 @@ class Service:
                 if project in self.bindings or self.retry.get(project, 0) > now:
                     continue
             self._adopt(project)
+        self._reclaim_unbound(time.monotonic())
+
+    def _reclaim_unbound(self, now):
+        """Stop a loaded worker no bound installation has used for a while
+        (its last route went away, possibly while it was still loading)."""
+        with self.lock:
+            used = {_worker_key(binding.manifest) for binding in self.bindings.values()}
+            for key, worker in list(self.workers.items()):
+                if worker.loading or key in used:
+                    worker.unbound_since = None
+                    continue
+                if worker.unbound_since is None:
+                    worker.unbound_since = now
+                    continue
+                if now - worker.unbound_since < UNBOUND_WORKER_SECONDS:
+                    continue
+                self.workers.pop(key, None)
+                if worker.handle is not None:
+                    with suppress(Exception):
+                        worker.handle.stop()
 
     def _check_owned(self, project):
         with self.lock:
