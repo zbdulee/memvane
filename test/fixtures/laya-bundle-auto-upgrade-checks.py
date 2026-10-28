@@ -504,8 +504,16 @@ class RequestChecks(Base):
                              'queued')
             auto._write_status(self.state, status='running', executingRoot=str(root),
                                attempts=1, reason='')
+            # A live worker holds the upgrade lock: no second worker.
+            with auto._state_lock(self.state) as owned:
+                self.assertTrue(owned)
+                self.assertEqual(auto.request('/p', jpath, 'x',
+                                              spawn=spawned.append)['status'], 'running')
+            # Its process is gone (lock free): the same status is due at once.
             self.assertEqual(auto.request('/p', jpath, 'x', spawn=spawned.append)['status'],
-                             'running')
+                             'queued')
+            auto._write_status(self.state, status='running', executingRoot=str(root),
+                               attempts=1, reason='')
             auto._write_status(self.state, status='failed', executingRoot=str(root),
                                attempts=1, reason='initial_build_busy')
             now = auto.read_status(self.state)['updatedNs']
@@ -516,7 +524,7 @@ class RequestChecks(Base):
             auto._write_status(self.state, status='refused', executingRoot='/other',
                                attempts=1, reason='older_host_bundle')
             auto.request('/p', jpath, 'x', spawn=spawned.append)  # new bundle: retry
-        self.assertEqual(spawned, ['/p', '/p', '/p'])
+        self.assertEqual(spawned, ['/p', '/p', '/p', '/p'])
         with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}), \
              mock.patch.object(auto, 'executing_root', return_value=self.base / 'x'), \
              mock.patch.object(auto, '_spawn') as real_spawn:

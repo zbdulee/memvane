@@ -2147,11 +2147,19 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     manifest = proof.get("providerManifest")
     if not isinstance(manifest, dict):
         _fail("vector_provider_missing")
-    provider = ReviewedLocalQmdProvider(manifest)
     embedded = {}
     # Why this prompt has no query vector. Set once; later calls never touch
     # the socket again and the searches serve their lexical lists (#57 path).
     vector_off: list[str] = []
+    from laya_index_a import IndexContractError as _ProviderRefused
+    try:
+        provider = ReviewedLocalQmdProvider(manifest)
+    except _ProviderRefused as exc:
+        # A sealed manifest this provider cannot use (a socket path past its
+        # limit, a changed recipe): no query vector, the lexical lists serve.
+        provider = None
+        vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
+            r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
 
     def query_provider(text, profile):
         # The incremental and pinned searches ask the same warm service for
@@ -2250,7 +2258,8 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
             else:
                 rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
                                              proof["vectorProfile"],
-                                             query_provider if degraded else provider,
+                                             query_provider if degraded or provider is None
+                                             else provider,
                                              lexical_patterns=tuple(patterns))
                 title_only = frozenset()
     except Exception as exc:
@@ -2276,7 +2285,10 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
                   else 'selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
     vector_fallback = None
-    if vector_off and degraded:
+    if provider is None:
+        # Nothing to wake: the manifest itself is unusable.
+        vector_fallback = 'selected_' + vector_off[0]
+    elif vector_off and degraded:
         # A drifted bundle never wakes or starts a provider. Still name why
         # this answer has no vector list.
         vector_fallback = 'selected_' + read_only_label + '_' + vector_off[0]
@@ -2330,6 +2342,28 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     return host_payload(host, context)
 
 
+def _reselect(cwd, action, selection):
+    """The hook's second route read; it must equal the classified one.
+
+    A state move that lands between the two reads (the install directory moved
+    to the MemVane base) is the same install at its new paths: the second read
+    waits out the move window and is accepted when it is exactly that
+    relocation.
+    """
+    decision = select_route(cwd, action=action)
+    if decision.get('state') == 'blocked':
+        try:
+            import laya_state_move
+            decision = laya_state_move.settle_decision(cwd, action, decision, select_route)
+        except Exception:
+            pass
+    if decision != selection:
+        import laya_state_move
+        if not laya_state_move.relocated_decision(selection, decision):
+            _fail("selected_route_changed")
+    return decision
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 4 and args[0] == "serve-stdin":
@@ -2361,9 +2395,7 @@ def main(argv: list[str] | None = None) -> int:
         if selection["state"] not in ("candidate", "preview", "worktree"):
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
-        decision = select_route(cwd, action=action)
-        if decision != selection:
-            _fail("selected_route_changed")
+        decision = _reselect(cwd, action, selection)
         response = (serve_preview(action, host, decision, payload)
                     if decision['state'] == 'preview' else
                     serve_selected(action, host, decision, payload))

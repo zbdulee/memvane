@@ -59,9 +59,11 @@ class SelectedProject(unittest.TestCase):
     STATE_PARTS = ('state',)
     # Extra sealed provider-manifest fields (a real one names its socket).
     PROVIDER_EXTRA: dict = {}
+    # Where the temporary HOME is made (a subclass may need a short path).
+    TEMP_DIR, TEMP_PREFIX = None, 'laya-selected-'
 
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix='laya-selected-')
+        temp = tempfile.TemporaryDirectory(prefix=self.TEMP_PREFIX, dir=self.TEMP_DIR)
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
         patcher = mock.patch.dict(os.environ, {'HOME': str(self.home)})

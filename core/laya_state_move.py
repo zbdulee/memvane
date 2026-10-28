@@ -27,6 +27,7 @@ few small file writes under every writer lock.
 from __future__ import annotations
 
 from contextlib import ExitStack, closing
+import fcntl
 import hashlib
 import json
 import os
@@ -50,6 +51,11 @@ POLL_SECONDS = 0.025
 # A pointer older than this names a move whose worker stopped: no wait.
 FRESH_SECONDS = 120
 WAIT_ACTIONS = frozenset(('recall', 'update', 'update-queued'))
+# The provider's own limit on its Unix socket path (bytes), which the move
+# must not cross: ``laya`` -> ``memvane`` adds three bytes.
+SOCKET_PATH_LIMIT = 100
+# The move waits this long for a wiki grant writer to finish.
+DISCOVERY_WAIT_SECONDS = 2.0
 OTHER_INTENTS = ('inactive-upgrade-intent.json', 'bound-upgrade-intent.json')
 ROUTE_KEYS = ('journalPath', 'dbPath', 'queuePath')
 LEDGER_KEYS = ('journalPath', 'candidateDb', 'queueDb', 'catalogDb', 'bindingStore')
@@ -113,6 +119,8 @@ def _ensure_base(home=None):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             os.mkdir(cursor, 0o700)
+            # The new entry is durable before a rename commits into it.
+            _fsync(cursor.parent)
         info = cursor.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
                 stat.S_IMODE(info.st_mode) & 0o022):
@@ -329,6 +337,17 @@ def _docs_candidate(state):
     return rows[0][0]
 
 
+def _check_socket(old, new):
+    """Refuse a move that would push the provider socket path past its limit."""
+    def length(record):
+        path = record.get('providerManifest', {}).get('serviceSocketPath')
+        return len(path.encode('utf-8')) if isinstance(path, str) else None
+    before, after = length(old), length(new)
+    if (after is not None and after > SOCKET_PATH_LIMIT and
+            (before is None or before <= SOCKET_PATH_LIMIT)):
+        _fail('state_move_socket_path_too_long')
+
+
 def _settle_active_intent(project, state):
     """Archive the settled bundle-upgrade intent: it names the old root."""
     import laya_active_upgrade as active
@@ -392,7 +411,13 @@ def _prepare(project, state, home=None):
     attestation = json.loads(old_att)
     if journal_canon(attestation).encode('utf-8') != old_att:
         _fail('state_move_attestation_noncanonical')
-    new_att = journal_canon(relocated_attestation(attestation, state, target)).encode('utf-8')
+    moved_att = relocated_attestation(attestation, state, target)
+    new_att = journal_canon(moved_att).encode('utf-8')
+    _check_socket(attestation, moved_att)
+    for key in ROUTE_KEYS:
+        moved = json.loads(new_route)[key]
+        if os.path.normpath(moved) != moved or not os.path.isabs(moved):
+            _fail('state_move_path_invalid')
     new_row = {**row, **{key: _rebase(row[key], state, target) for key in LEDGER_KEYS},
                'epoch': row['epoch'] + 1, 'routeSha256': _sha(new_route),
                'attestationSha256': _sha(new_att)}
@@ -609,6 +634,17 @@ def _locks(stack, project, state):
         _fail('initial_build_busy')
     stack.enter_context(_operation_lock(project / '.auto-context' / MARKER))
     stack.enter_context(_provider_lane())
+    # Wiki grant writers (SessionStart hooks) serialize on this lock; one that
+    # waited across the rename finds its path gone and re-resolves the route.
+    import laya_wiki_discovery
+    from laya_fresh_wiki_origin import ROUTE
+    try:
+        queue = json.loads(_read(project / '.auto-context' / ROUTE, 8192))['queuePath']
+    except Exception:
+        queue = None
+    if isinstance(queue, str):
+        stack.enter_context(laya_wiki_discovery._locked(
+            state / laya_wiki_discovery.lock_path(queue).name, DISCOVERY_WAIT_SECONDS))
 
 
 def _provider_lane():
@@ -690,6 +726,29 @@ def _legacy_installs(home):
         return []
 
 
+def pending_moves(home=None):
+    """Installs (either base) holding an unfinished move intent, with their project."""
+    import laya_initial_build as build
+    found = []
+    for base in (memvane_paths.legacy_state_base(home), memvane_paths.state_base(home)):
+        try:
+            names = sorted(os.listdir(base))
+        except FileNotFoundError:
+            continue
+        for name in names:
+            state = base / name
+            if not _HEX32.fullmatch(name) or not intent_present(state):
+                continue
+            try:
+                intent = build._read_json(state / INTENT, max_bytes=LIMIT)
+                project = intent.get('projectRoot') if isinstance(intent, dict) else None
+            except Exception:
+                project = None
+            found.append({'installId': name, 'stateRoot': str(state),
+                          'projectRoot': project if isinstance(project, str) else None})
+    return found
+
+
 def _runtime_users(runtime, ps_all):
     """Live processes whose executable or script lies inside ``runtime``."""
     from legacy_cleanup import _NODE_ARGV, _within
@@ -736,12 +795,13 @@ def shared_plan(home=None, *, ps_all=None):
         blockers = []
         if copies:
             blockers.append('legacy_plugin_installed')
-        try:
-            from laya_resident_service import hello
-            if hello(service) is not None:
-                blockers.append('legacy_service_running')
-        except Exception:
-            pass
+        lease = _service_lease(service, create=False)
+        if lease is None:
+            # A pre-rename service, or the MemVane service that excludes one,
+            # holds it. The MemVane service retires the tree itself.
+            blockers.append('legacy_service_lease_held')
+        elif lease >= 0:
+            os.close(lease)
         rows.append({'tree': 'service', 'path': str(service),
                      'action': 'keep' if blockers else 'remove', 'blockers': blockers})
     pointers = legacy / 'initial-builds'
@@ -766,11 +826,59 @@ def shared_plan(home=None, *, ps_all=None):
             'legacyPluginCopies': copies, 'unknownEntries': others, 'trees': rows}
 
 
+def _service_lease(service, *, create=True):
+    """The pre-rename service lease, held exclusively by this process, or None.
+
+    Only this test decides that no service uses the directory: an answering
+    control socket is not required (the MemVane service holds this lease
+    while it answers on its own socket).
+    """
+    from laya_resident_service import LEASE
+    try:
+        fd = os.open(Path(service) / LEASE, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+    except FileNotFoundError:
+        if not create:
+            return -1
+        # No lease file: hold a fresh one so no service starts while we remove.
+        fd = os.open(Path(service) / LEASE, os.O_RDWR | os.O_CREAT | os.O_EXCL |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def legacy_service_retirable(home=None):
+    """No pre-rename install and no pre-rename plugin copy is left.
+
+    Then no client can open the pre-rename service lease again, so its holder
+    may remove the directory without splitting the lock's identity.
+    """
+    return not _legacy_installs(home) and not _legacy_plugin_copies(home)
+
+
+def _remove_service_tree(path, home):
+    """Remove the pre-rename service directory while holding its lease."""
+    from legacy_cleanup import CleanupBlocked, _remove_tree
+    fd = _service_lease(path)
+    if fd is None:
+        raise CleanupBlocked('legacy_service_lease_held')
+    try:
+        if not legacy_service_retirable(home):
+            raise CleanupBlocked('legacy_plugin_installed')
+        _remove_tree(path, home)
+    finally:
+        os.close(fd)
+
+
 def _move_auto_context(legacy, current):
     """Rename each pre-rename per-user log/scan entry into the MemVane tree."""
     target = current / 'auto-context'
     if not target.exists():
         os.mkdir(target, 0o700)
+        _fsync(current)
     # Scan state first: ``memvane_paths.auto_context_state`` follows it, so
     # writers switch to the MemVane tree before their logs move.
     for name in sorted(os.listdir(legacy), key=lambda item: (item != 'scan-state', item)):
@@ -805,6 +913,8 @@ def collect_shared(home=None, *, ps_all=None):
                 for name in os.listdir(path):
                     os.unlink(path / name)
                 os.rmdir(path)
+            elif row['action'] == 'remove' and row['tree'] == 'service':
+                _remove_service_tree(path, home)
             elif row['action'] == 'remove':
                 _remove_tree(path, home)
             elif row['action'] == 'move':
@@ -832,4 +942,4 @@ def status(home=None):
     for state in _legacy_installs(home):
         moves.append({'installId': state.name, 'stateRoot': str(state),
                       'intent': intent_present(state)})
-    return {**plan, 'pendingInstalls': moves}
+    return {**plan, 'pendingInstalls': moves, 'pendingMoves': pending_moves(home)}

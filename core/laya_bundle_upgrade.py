@@ -83,15 +83,18 @@ DEFERRALS = frozenset((
 NO_BACKOFF = frozenset(('legacy_hermes_copy_present',))
 # A state-root move waits for the same lanes plus the install and route locks.
 MOVE_DEFERRALS = DEFERRALS | frozenset((
-    'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending'))
+    'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
+    'lock_busy'))
 # A move a retry cannot clear: the install keeps working where it is.
 MOVE_REFUSALS = frozenset((
     'state_move_cross_device', 'state_move_target_exists',
     'qmd_origin_detach_required', 'state_move_base_unsafe',
-    'state_move_not_selected'))
+    'state_move_not_selected', 'state_move_socket_path_too_long',
+    'state_move_path_invalid'))
 # Refusals that are a supported resting state: no SessionStart notice. An
 # unselected build moves once it is selected; another volume keeps its place.
-MOVE_SILENT = frozenset(('state_move_cross_device', 'state_move_not_selected'))
+MOVE_SILENT = frozenset(('state_move_cross_device', 'state_move_not_selected',
+                         'state_move_socket_path_too_long'))
 # Provider manifest keys that must name the new bundle's own files.
 BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 # Refusals a later retry cannot clear without a source, host or review change.
@@ -238,11 +241,39 @@ def _due(status, root, now):
     return age >= RETRY_SECONDS
 
 
+def worker_holds(state):
+    """True while a worker holds this install's upgrade lock (it is alive).
+
+    The worker writes ``running`` only under that lock and a dead process
+    releases it, so a ``running`` status without a holder is a stopped run.
+    """
+    try:
+        fd = os.open(Path(state) / LOCK, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return False
+
+
 def request(project_root, journal_path, code='', *, spawn=None, now=None):
-    """Hook side: never waits; starts at most one detached worker."""
+    """Hook side: never waits; starts at most one detached worker.
+
+    A ``running`` status whose worker no longer holds the upgrade lock (it
+    died, for example inside a state move) is due at once.
+    """
     state = Path(journal_path).parent
     root = str(executing_root())
     status = read_status(state)
+    if (status is not None and status['status'] == 'running' and
+            status['executingRoot'] == root and not worker_holds(state)):
+        status = None
     if not _due(status, root, _now() if now is None else now):
         return {'status': status['status'], 'reason': status.get('reason', '')}
     if spawn is None:
@@ -914,6 +945,13 @@ def move_all(*, root=None, home=None):
             rows.append({'stateRoot': str(state), 'status': 'project_missing'})
         elif project not in projects:
             projects.append(project)
+    # A move that stopped after its rename lives under the MemVane base now.
+    for pending in laya_state_move.pending_moves(home):
+        project = pending['projectRoot']
+        if not project or not Path(project).is_dir():
+            rows.append({'stateRoot': pending['stateRoot'], 'status': 'project_missing'})
+        elif project not in projects:
+            projects.append(project)
     for project in projects:
         try:
             for row in run(project, root=root, home=home):
@@ -922,8 +960,10 @@ def move_all(*, root=None, home=None):
             rows.append({'projectRoot': project, 'status': 'failed', 'reason': _reason(exc)})
     shared = _collect_shared(home)
     left = [str(path) for path in laya_state_move._legacy_installs(home)]
-    return {'status': 'moved' if not left else 'partial', 'installs': rows,
-            'legacyInstalls': left, 'shared': shared}
+    pending = laya_state_move.pending_moves(home)
+    return {'status': 'moved' if not left and not pending else 'partial',
+            'installs': rows, 'legacyInstalls': left, 'pendingMoves': pending,
+            'shared': shared}
 
 
 def main(argv=None):

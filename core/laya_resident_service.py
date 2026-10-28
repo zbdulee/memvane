@@ -43,6 +43,8 @@ LEASE = 'service.lock'
 SUCCESSOR = 'successor.lock'
 PID = 'service.pid.json'
 PROJECTS = 'projects'
+# How often the service checks whether the pre-rename service directory can go.
+LEGACY_RETIRE_SECONDS = 600
 INTERPRETER = 'interpreter.json'
 WIRE_LIMIT = 64 * 1024
 REQUEST_LIMIT = 5_100_000
@@ -952,6 +954,7 @@ class Service:
         self.legacy_root = Path(legacy_root) if legacy_root is not None else None
         self.legacy_lease = None
         self.legacy_successor = None
+        self.legacy_retire_at = 0.0
         self.learning_root = learning_root
         self.bundle = bundle or bundle_identity()
         self.prove, self.attest = prove, attest
@@ -1052,6 +1055,39 @@ class Service:
                         drain_legacy_service(legacy)
                 time.sleep(.1)
         self.legacy_lease = fd
+        return True
+
+    def _retire_legacy(self, now):
+        """Remove the pre-rename service directory once nothing can use it.
+
+        Only the holder of its lease (this service) removes it, and only when
+        no pre-rename install or plugin copy is left
+        (``laya_state_move.legacy_service_retirable``): nothing can open that
+        lease again, so the lock file is never split between two holders.
+        """
+        if (self.legacy_root is None or self.legacy_lease is None or
+                now < self.legacy_retire_at):
+            return False
+        self.legacy_retire_at = now + LEGACY_RETIRE_SECONDS
+        try:
+            import memvane_paths
+            import laya_state_move
+            from legacy_cleanup import _remove_tree
+            home = self.legacy_root.parents[3]
+            if (self.legacy_root != memvane_paths.legacy_state_base(home) / 'service' or
+                    not laya_state_move.legacy_service_retirable(home)):
+                return False
+            _remove_tree(self.legacy_root, home)
+        except Exception:
+            return False
+        for name in ('legacy_lease', 'legacy_successor'):
+            fd = getattr(self, name)
+            if fd is not None:
+                with suppress(OSError):
+                    os.close(fd)
+                setattr(self, name, None)
+        with suppress(OSError):
+            os.rmdir(self.legacy_root.parent)
         return True
 
     def start(self):
@@ -1274,6 +1310,7 @@ class Service:
             if not self._hold_legacy(now):
                 with suppress(Exception):
                     drain_legacy_service(self.legacy_root)
+        self._retire_legacy(now)
         for project in list(self.bindings):
             self._check_owned(project)
         for project in self.registered():

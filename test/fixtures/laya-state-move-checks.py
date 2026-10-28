@@ -100,11 +100,11 @@ class MoveCase(SelectedProject):
         if laya_state_move is not None:
             stack.enter_context(mock.patch.object(laya_state_move, '_provider_lane',
                                                   lambda: nullcontext()))
-        self.requests = []
+        # The real hook-side request: only the detached spawn is recorded.
+        self.spawned = []
+        stack.enter_context(mock.patch.object(upgrade, '_fixture', return_value=False))
         stack.enter_context(mock.patch.object(
-            upgrade, 'request',
-            side_effect=lambda *args, **kwargs: self.requests.append(args) or
-            {'status': 'queued'}))
+            upgrade, '_spawn', side_effect=lambda project: self.spawned.append(project)))
 
     fail_new_counts = False
 
@@ -117,7 +117,8 @@ class MoveCase(SelectedProject):
         return dict(COUNTS)
 
     def run_worker(self):
-        return upgrade.run(str(self.project), root=str(self.plugin))
+        # The executing bundle, as the SessionStart worker runs it.
+        return upgrade.run(str(self.project))
 
     def assert_moved(self):
         self.assertFalse(os.path.lexists(self.state))
@@ -210,7 +211,7 @@ class NoticeTests(MoveCase):
         line = response._state_move_notice(decision)
         self.assertIn('~/.local/state/memvane', line)
         self.assertIn('search keeps serving', line)
-        self.assertEqual(self.requests[-1][2], 'state_root_move')
+        self.assertEqual(self.spawned, [str(self.project)])
         self.run_worker()
         self.assertIsNone(response._state_move_notice(self.decision()))
 
@@ -290,7 +291,10 @@ class CrashTests(MoveCase):
             blocked = host_route.select_route_settled(str(self.project), action='recall')
         self.assertEqual(blocked['state'], 'blocked', blocked)
         self.assertEqual(blocked['reason'], 'state_root_move_pending')
-        self.assertEqual(self.requests[-1][1], str(self.target / 'install-journal.sqlite'))
+        # The crashed worker left ``running``; its lock is free, so the very
+        # next prompt starts a worker (no 30-minute running window).
+        self.assertEqual(upgrade.read_status(self.target)['status'], 'running')
+        self.assertEqual(self.spawned, [str(self.project)])
         results = self.run_worker()
         self.assertEqual(results[0]['stateRoot'], str(self.target), results)
         self.assertEqual(results[0]['status'], 'state_move_complete', results)
@@ -435,6 +439,177 @@ class SharedTreeTests(MoveCase):
         result = self.collect()
         self.assertEqual(result['status'], 'collected', result)
         self.assertFalse(self.legacy.exists())
+
+
+class ReviewFixTests(MoveCase):
+    def test_owner_command_finishes_a_move_that_stopped_after_its_rename(self):
+        import laya_state_move as move
+
+        def die(name):
+            if name == 'moved':
+                raise Kill(name)
+        with mock.patch.object(move, '_step', die):
+            with self.assertRaises(Kill):
+                self.run_worker()
+        pending = move.status()['pendingMoves']
+        self.assertEqual([row['stateRoot'] for row in pending], [str(self.target)])
+        result = upgrade.move_all()
+        self.assertEqual(result['status'], 'moved', result)
+        self.assert_moved()
+        self.assertEqual(move.status().get('pendingMoves', []), [])
+
+    def test_hook_main_accepts_the_route_moved_between_its_two_reads(self):
+        payload = self.home / 'payload.json'
+        payload.write_text(json.dumps({'prompt': 'synthetic', 'cwd': str(self.project),
+                                       'hook_event_name': 'UserPromptSubmit'}))
+        real = response.select_hook_route
+        served = []
+
+        def classify_then_move(*args):
+            decision = real(*args)
+            self.run_worker()  # the worker finishes between the two route reads
+            return decision
+
+        def fake(host, chosen, payload, proof, recheck, *, degraded=False, **_):
+            served.append(chosen['journalPath'])
+            return {'served': True}
+        with mock.patch.object(response, 'select_hook_route', classify_then_move), \
+                mock.patch.object(response, '_serve_recall', fake), \
+                mock.patch.object(response, '_capture_learning', lambda *_: None):
+            code = response.main(['serve-hook', 'recall', 'claude', str(payload),
+                                  str(self.project)])
+        self.assertEqual(code, 0)
+        self.assertEqual(served, [str(self.target / 'install-journal.sqlite')])
+
+    def test_creating_the_memvane_base_fsyncs_its_parent(self):
+        import laya_state_move as move
+        synced = []
+        real = move._fsync
+
+        def record(path):
+            synced.append(str(path))
+            return real(path)
+        with mock.patch.object(move, '_fsync', record):
+            self.run_worker()
+        self.assert_moved()
+        state_dir = str(self.home / '.local' / 'state')
+        self.assertIn(state_dir, synced)
+        self.assertLess(synced.index(state_dir), synced.index(str(self.legacy)))
+
+    def test_wiki_grant_from_a_pre_move_decision_lands_at_the_new_root(self):
+        import laya_wiki_discovery as discovery
+        before = self.decision()
+        self.run_worker()
+        grant = discovery.record_grant(before, 'session_start')
+        _state, grants, _lock = discovery._paths(self.decision())
+        self.assertTrue(str(grants).startswith(str(self.target)))
+        self.assertIn(grant, grants.read_text())
+
+    def test_a_writer_waiting_on_the_discovery_lock_follows_the_move(self):
+        import laya_state_move as move
+        import laya_wiki_discovery as discovery
+        before = self.decision()
+        results, entered = [], threading.Event()
+
+        def pause(name):
+            if name == 'prepared':
+                entered.set()
+                time.sleep(0.3)
+
+        def writer():
+            entered.wait(5)
+            try:
+                results.append(discovery.record_grant(before, 'session_start', wait=3.0))
+            except Exception as exc:  # noqa: BLE001
+                results.append(exc)
+        thread = threading.Thread(target=writer)
+        thread.start()
+        with mock.patch.object(move, '_step', pause):
+            self.run_worker()
+        thread.join()
+        self.assertIsInstance(results[0], str, results)
+        _state, grants, _lock = discovery._paths(self.decision())
+        self.assertIn(results[0], grants.read_text())
+
+    def test_recall_with_an_unusable_provider_manifest_reaches_the_lexical_search(self):
+        decision = self.decision()
+        proof = journal_mod.verify_selected_route_read_only(decision)
+        # The fixture manifest is not a usable provider manifest: before this
+        # change the recall failed building the provider, now it searches.
+        with self.assertRaisesRegex(Exception, 'no_published_generation'):
+            response._serve_recall('claude', decision,
+                                   {'prompt': 'synthetic', 'cwd': str(self.project)},
+                                   proof, journal_mod.verify_selected_route_read_only,
+                                   degraded=True)
+
+
+class ShortHomeTests(MoveCase):
+    # /private/tmp/ls-XXXXXXXX is 24 bytes: the socket path is 99 bytes
+    # under the pre-rename base and would be 102 under the MemVane base.
+    TEMP_DIR, TEMP_PREFIX = '/private/tmp', 'ls-'
+
+    def test_a_move_past_the_socket_path_limit_is_refused_before_the_rename(self):
+        socket = json.loads((self.state / journal_mod.PRODUCTION_ATTESTATION).read_bytes())[
+            'providerManifest']['serviceSocketPath']
+        self.assertEqual(len(socket.encode()), 99)
+        results = self.run_worker()
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('refused', 'state_move_socket_path_too_long'), results)
+        self.assertTrue(self.state.is_dir())
+        self.assertFalse(self.target.exists())
+        decision = self.decision()
+        self.assertEqual(decision['state'], 'candidate')
+        self.assertEqual(decision['journalPath'], str(self.journal))
+        self.assertIsNone(response._state_move_notice(decision))
+
+
+class ServiceLeaseTests(MoveCase):
+    def setUp(self):
+        super().setUp()
+        self.service = self.legacy / 'service'
+        self.service.mkdir(mode=0o700)
+        (self.service / 'service.lock').write_bytes(b'')
+        (self.service / 'service.lock').chmod(0o600)
+        patcher = mock.patch.object(upgrade, '_collect_shared', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_held_service_lease_keeps_the_pre_rename_service_tree(self):
+        import fcntl
+        import laya_state_move as move
+        self.run_worker()
+        holder = os.open(self.service / 'service.lock', os.O_RDWR)
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = move.collect_shared(self.home, ps_all=lambda: [])
+            row = next(item for item in result['trees'] if item['tree'] == 'service')
+            self.assertEqual(row['blockers'], ['legacy_service_lease_held'])
+            self.assertTrue((self.service / 'service.lock').exists())
+        finally:
+            os.close(holder)
+        result = move.collect_shared(self.home, ps_all=lambda: [])
+        self.assertFalse(self.service.exists(), result)
+
+    def test_the_memvane_service_retires_the_tree_whose_lease_it_holds(self):
+        import laya_resident_service as svc
+        self.run_worker()
+        root = self.home / '.local' / 'state' / 'memvane' / 'service'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '0', 'digest': 'x'},
+                              legacy_root=self.service, tick=.05)
+        self.addCleanup(service.close)
+        self.assertTrue(service._hold_legacy(time.monotonic() + 1))
+        installed = self.home / '.claude' / 'plugins' / 'installed_plugins.json'
+        installed.parent.mkdir(parents=True)
+        installed.write_text(json.dumps({'plugins': {
+            'qmd-auto-context@qmd-auto-context-marketplace': [{'installPath': '/x'}]}}))
+        self.assertFalse(service._retire_legacy(time.monotonic()))
+        self.assertTrue(self.service.exists())
+        installed.write_text(json.dumps({'plugins': {}}))
+        service.legacy_retire_at = 0.0
+        self.assertTrue(service._retire_legacy(time.monotonic()))
+        self.assertFalse(self.service.exists())
+        self.assertIsNone(service.legacy_lease)
 
 
 def tearDownModule():

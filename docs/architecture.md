@@ -243,24 +243,36 @@ the old directory).
 | verify | marker classification, route selection, read-only journal proof, store counts | resumed |
 | settle | pointer removed, intent archived as `state-move-<tag>-settled.json` | resumed |
 
-The move holds the install lock, build owner, route operation lock and the
-provider lane for its whole run, so no selected writer runs; readers take no
-lock. After the rename a move only goes forward and needs no bundle review,
+The move holds the install lock, build owner, route operation lock, the
+provider lane and the install's wiki discovery lock for its whole run, so no
+selected writer runs; readers take no lock. A wiki grant writer that waited on
+the discovery lock across the rename finds its lock path gone
+(`state_dir_moved`) and writes once more through the re-selected route of the
+same install. After the rename a move only goes forward and needs no bundle review,
 network or model. A settled bundle-upgrade intent (it names the old root) is
-archived before the rename; an unsettled upgrade defers the move. A target on
-another volume refuses `state_move_cross_device` and the install keeps working
-where it is.
+archived before the rename; an unsettled upgrade defers the move. Before the
+rename every rewritten path is checked: a target on another volume refuses
+`state_move_cross_device`, and a provider socket path that would cross the
+provider's 100-byte limit only because of the longer base refuses
+`state_move_socket_path_too_long`; in both cases the install keeps working
+where it is. A newly created base directory is fsynced into its parent before
+the rename.
 
 Recall during the move: between the rename and the route write (a few small
 file writes) the route classifies `blocked`. For recall and SessionStart,
 `laya_index_host_route.select_route_settled` re-reads it every 25 ms for up to
-1.5 s while the project pointer is fresh. A recall that proved the old route and
-then hits a vanished path retries once (`_recall_retry_decision`), accepting
-only the same install, scope, incarnation and project at
-`~/.local/state/memvane/<install id>` with the same store basenames. If the
-worker dies inside that window, a recall gets no context, names
-`state_root_move_pending` and requests the worker, which resumes on its next
-run. The resident service re-proves each bound project, so it releases the
+1.5 s while the project pointer is fresh; the hook entry's second route read
+(`laya_host_response._reselect`) does the same and accepts exactly the
+relocated route. A recall that proved the old route and then hits a vanished
+path retries once (`_recall_retry_decision`), accepting only the same install,
+scope, incarnation and project at `~/.local/state/memvane/<install id>` with
+the same store basenames. If the worker dies inside that window, a recall gets
+no context, names `state_root_move_pending` and requests the worker: a
+`running` status whose worker no longer holds `bundle-auto-upgrade.lock` is due
+at once (`laya_bundle_upgrade.worker_holds`), so the next prompt starts the
+resume. A sealed provider manifest the provider cannot load no longer fails a
+recall: it serves the lexical lists with
+`selected_provider_manifest_<reason>`. The resident service re-proves each bound project, so it releases the
 old socket binding and adopts the moved one; recall serves lexical results for
 that gap, as on a bundle switch.
 
@@ -270,8 +282,13 @@ install is left under `~/.local/state/laya`:
 - `embed-runtime` is removed when no install attestation under either base
   names a file in it and no live process executes from it (read from the
   process table; nothing is signalled);
-- `service` is removed when no pre-rename plugin copy is installed in Claude,
-  Codex or Hermes and no pre-rename service answers;
+- `service` is removed only by a holder of its lease (`service.lock`, taken
+  non-blocking) and only when no pre-rename plugin copy is installed in
+  Claude, Codex or Hermes and no pre-rename install is left: then nothing can
+  open that lease again. The running MemVane service holds it (it excludes a
+  pre-rename service), so that service removes the directory itself
+  (`Service._retire_legacy`, checked every 10 minutes); with no service
+  running, the worker's shared pass takes the lease and removes it;
 - `auto-context` entries are renamed into `~/.local/state/memvane/auto-context`;
 - an empty `initial-builds` and then the empty base are removed.
 
@@ -285,7 +302,8 @@ python3 -B "$ROOT/core/setup_entry.py" move-state-roots
 ```
 
 `move-state-roots` runs the worker for every project that still has an
-install under the pre-rename base, then the shared pass.
+install under the pre-rename base or an unfinished move intent under either
+base, then the shared pass; `state-root-status` lists both.
 
 ### Bundle Adoption Trust Boundary
 
