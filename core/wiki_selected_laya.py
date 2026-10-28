@@ -179,11 +179,12 @@ def run(project: Path):
     return {'state': 'drained', 'processed': answer['processed']}
 
 
-def _recover_claims(queue: Path):
-    """Requeue dead-owner ``<queue>.claimed.*`` rows; True if any claim is left.
+def _queue_busy(queue: Path):
+    """True if ``queue`` holds rows or a live claim, decided under its lock.
 
-    A worker that died after claiming leaves its rows only in the claim file.
-    The empty live queue must not read as drained while such a claim exists.
+    Dead-owner ``<queue>.claimed.*`` rows are requeued first. Claim presence and
+    queue content are read under the same lock ``claim_queue`` moves rows
+    under, so a concurrent claim is seen as either the queue or its claim.
     """
     if not queue.parent.is_dir():
         return False
@@ -195,21 +196,33 @@ def _recover_claims(queue: Path):
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
             reclaim_orphaned_claimed(queue)
-            # A live owner's claim (its pid alive, within the backstop) is
-            # work in flight, not idle.
-            return any(child.name.startswith(prefix) for child in queue.parent.iterdir())
+            if any(child.name.startswith(prefix) for child in queue.parent.iterdir()):
+                return True
+            return bool(queue.exists() and queue.stat().st_size)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _compile_idle(project: Path, source: Path, verify: Path, bound):
-    """True when no queue row, claim or active refresh is left; None if unknown."""
+    """True when no worker, queue row, claim or active refresh is left; None if unknown."""
+    import wiki_compile_worker as wcw
+    run_lock = None
     try:
-        claimed = _recover_claims(source) | _recover_claims(verify)
+        if (source.parent / wcw.COMPILE_RUN_LOCK).exists():
+            # A running worker moves rows between queues; hold its run lock so
+            # none starts while the refresh ledger and both queues are read.
+            run_lock = wcw.try_run_lock(project)
+            if run_lock is None:
+                return False
+        return _idle_locked(project, source, verify, bound)
     except OSError:
         return None
-    if claimed:
-        return False
+    finally:
+        if run_lock is not None:
+            os.close(run_lock)
+
+
+def _idle_locked(project: Path, source: Path, verify: Path, bound):
     import wiki_freshness
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:
@@ -220,5 +233,6 @@ def _compile_idle(project: Path, source: Path, verify: Path, bound):
     from laya_source_exclusion import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
-    return not ((source.exists() and source.stat().st_size) or
-                (verify.exists() and verify.stat().st_size) or active_unresolved)
+    if active_unresolved:
+        return False
+    return not (_queue_busy(source) | _queue_busy(verify))

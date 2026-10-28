@@ -1088,12 +1088,13 @@ def collect(home=None, *, approve=False):
         attested, unreadable = _referenced_generations(home)
         fd = _generations_fd(runtime)
         try:
-            return _collect_at(fd, active, previous, attested, unreadable, approve)
+            return _collect_at(fd, active, previous, attested, unreadable, approve,
+                               runtime / 'generations')
         finally:
             os.close(fd)
 
 
-def _collect_at(fd, active, previous, attested, unreadable, approve):
+def _collect_at(fd, active, previous, attested, unreadable, approve, generations):
     rows = []
     for name in sorted(os.listdir(fd)):
         info = os.stat(name, dir_fd=fd, follow_symlinks=False)
@@ -1115,23 +1116,33 @@ def _collect_at(fd, active, previous, attested, unreadable, approve):
         return {'status': 'blocked', 'reason': 'attestation_unreadable',
                 'attestations': unreadable, 'generations': rows, 'changesApplied': 0}
     removed = 0
+    failed = []
     if approve:
         for row in rows:
             name = row['generation']
             if row['action'] == 'remove_stale_staging':
                 uid = None
             elif row['action'] == 'remove':
-                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                if stat.S_IMODE(info.st_mode) & 0o077:
-                    _fail('laya_embed_runtime_unsafe')
                 uid = os.getuid()
             else:
                 continue
             try:
-                safe_rmtree.rmtree_at(fd, name, uid=uid)
-            except safe_rmtree.UnsafeTree:
-                raise RuntimeUnavailable('laya_embed_runtime_unsafe') from None
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if uid is not None and stat.S_IMODE(info.st_mode) & 0o077:
+                    raise safe_rmtree.UnsafeTree('safe_rmtree_mode')
+                safe_rmtree.rmtree_at(fd, name, uid=uid, path=generations / name)
+            except OSError as exc:
+                # One refused or failed generation never hides the ones removed.
+                reason = ('laya_embed_runtime_mount_point'
+                          if str(exc) == 'safe_rmtree_mount_point' else
+                          'laya_embed_runtime_unsafe'
+                          if isinstance(exc, safe_rmtree.UnsafeTree) else
+                          'laya_embed_runtime_remove_failed')
+                row['action'], row['reason'] = 'failed', reason
+                failed.append({'generation': name, 'reason': reason})
+                continue
             row['action'] = 'removed'
             removed += 1
-    return {'status': 'collected' if approve else 'planned', 'active': active,
+    status = 'partial' if failed else 'collected' if approve else 'planned'
+    return {'status': status, 'partial': bool(failed), 'failed': failed, 'active': active,
             'previous': previous, 'generations': rows, 'changesApplied': removed}
