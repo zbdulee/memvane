@@ -484,7 +484,14 @@ class CrossHostWorkerChecks(Base):
         self.assertEqual((result['status'], result['reason']),
                          ('refused', 'older_host_bundle'))
         self.assertEqual(calls, [])
-        self.assertIn('host=claude', (self.state / auto.LOG).read_text())
+        import event_log
+        events = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertEqual([(row['outcome'], row.get('hostLayout')) for row in events],
+                         [('started', 'claude'), ('refused', None)])
+        self.assertEqual(events[1]['reason'], 'older_host_bundle')
+        self.assertEqual(events[1]['to'], root.name)
+        self.assertEqual(events[1]['host'], 'worker')
+        self.assertFalse((self.state / 'bundle-auto-upgrade.log').exists())
 
 
 class RequestChecks(Base):

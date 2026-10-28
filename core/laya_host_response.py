@@ -5,6 +5,7 @@ prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import contextvars
 import hashlib
 import json
@@ -16,6 +17,7 @@ import sys
 import time
 import unicodedata
 
+import event_log
 from laya_index_host_route import (MAX_HOOK_BYTES, select_hook_payload,
                                    select_hook_route, select_route)
 
@@ -326,42 +328,119 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
 
 def _log_selection(decision: dict, chosen: list, fallback: str | None = None,
                    vector: str | None = None) -> None:
-    """File-only `qmd_recall_selection` line for a served Laya recall.
+    """Record the served cards of a Laya recall in this call's event trace.
 
-    Mirrors the QMD route line (release QA §6): `selected[]` lists exactly the
-    injected documents with their project-relative path. ``fallback`` names
-    why ranked rows were served without the selector; ``vector`` why the
-    query vector was skipped. A no-op unless QMD_RECALL_LOG is set; never
-    writes stdout and never changes the result.
+    ``cards`` lists exactly the injected documents (project-relative path
+    and content sha). ``fallback`` names why ranked rows were served without
+    the selector; ``vector`` why the query vector was skipped. Never writes
+    stdout and never changes the result.
     """
-    if not os.environ.get("QMD_RECALL_LOG"):
+    trace = _TRACE.get()
+    if trace is None:
         return
     project = decision.get("projectRoot")
     root = project if "collections" in decision else decision.get("sourceRoot")
-    entries = []
+    cards = []
     for row in chosen:
         try:
             path = str(Path(root, _relative_path(row["path"], root)).relative_to(project))
         except Exception:
             path = str(row.get("path")) if isinstance(row, dict) else ""
-        entries.append({"file": path, "path": path})
+        sha = row.get("hash") if isinstance(row, dict) else None
+        cards.append({"path": path, "sha": sha if isinstance(sha, str) else None})
     extra = {key: value for key, value in (('selection_fallback', fallback),
                                            ('vector_fallback', vector)) if value}
-    _write_selection_log(project, "selected" if entries else "no_results_after_filter",
-                         entries, **extra)
+    trace['fields'].update(extra, cards=cards, count=len(cards))
+    trace['final'] = "selected" if cards else "no_results_after_filter"
 
 
 def _write_selection_log(project_root, reason: str, entries: list, **fields) -> None:
-    """Append one file-only `qmd_recall_selection` line; never raises or prints."""
-    log_path = os.environ.get("QMD_RECALL_LOG")
-    if not log_path:
+    """Add one diagnostic note (and its fields) to this call's event trace.
+
+    ``project_root``/``entries`` are kept for call-site compatibility; the
+    event's install comes from the route decision. Outside a traced hook
+    call this is a no-op. Never raises or prints.
+    """
+    trace = _TRACE.get()
+    if trace is None:
         return
     try:
-        import wiki_card
-        wiki_card.set_log_project_root(project_root)
-        wiki_card.log_recall_event(log_path, reason, route="laya",
-                                selected=entries, selected_count=len(entries),
-                                **fields)
+        trace['notes'].append(reason)
+        trace['fields'].update(fields)
+    except Exception:
+        pass
+
+
+# The event trace of the hook call in progress (one ``events.jsonl`` line).
+_TRACE: contextvars.ContextVar = contextvars.ContextVar('memvane_event_trace', default=None)
+
+
+def _refusal_code(exc: BaseException) -> str:
+    """Fixed refusal code of a hook failure; never a path, body or secret."""
+    from laya_index_a import IndexContractError
+    from laya_install_journal import JournalEvidenceError
+    bounded_vector = (type(exc) is IndexContractError and str(exc) in
+                      ('vector_deadline_exceeded', 'vector_budget_exceeded'))
+    # A journal proof code names the refused evidence (never a path or
+    # body); hiding it made a bundle update look like a query failure.
+    journal = (isinstance(exc, JournalEvidenceError) and
+               re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
+    return (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
+            or journal else "selected_proof_or_query_failed")
+
+
+@contextmanager
+def _event_scope(action: str, host: str, decision, payload):
+    """Trace one hook call and append one event for it to the install log.
+
+    A nested scope (the recall retry, a direct ``_serve_recall``) joins the
+    outer one, so one hook call writes exactly one line. A refusal is
+    recorded with its fixed code and re-raised unchanged.
+    """
+    outer = _TRACE.get()
+    if outer is not None:
+        yield outer
+        return
+    trace = {'notes': [], 'fields': {}, 'final': None, 'outcome': None, 'reason': None}
+    token = _TRACE.set(trace)
+    started = time.monotonic()
+    try:
+        yield trace
+    except Exception as exc:
+        trace['outcome'], trace['reason'] = 'refused', _refusal_code(exc)
+        try:
+            exc._memvane_event_logged = True
+        except Exception:
+            pass
+        raise
+    except BaseException as exc:
+        trace['outcome'] = 'interrupted'
+        trace['reason'] = event_log.code(type(exc).__name__)
+        raise
+    finally:
+        _TRACE.reset(token)
+        _emit_trace(action, host, decision, payload, trace, started)
+
+
+def _emit_trace(action, host, decision, payload, trace, started) -> None:
+    try:
+        fields = dict(trace['fields'])
+        notes = trace['notes']
+        outcome, reason = trace['outcome'], trace['reason']
+        if action == 'recall':
+            prompt = payload.get('prompt') if isinstance(payload, dict) else None
+            fields['prompt'] = event_log.prompt_fields(prompt)
+            fields.setdefault('count', 0)
+            if outcome is None:
+                outcome = 'served' if fields.get('count') else 'empty'
+                reason = trace['final'] or (notes[-1] if notes else 'no_context')
+        elif outcome is None:
+            outcome = 'ok'
+            reason = trace['final']
+        event_log.emit(action, outcome=outcome, reason=reason,
+                       ms=event_log.elapsed_ms(started), decision=decision,
+                       host=host, session=event_log.session_id(payload),
+                       notes=notes or None, **fields)
     except Exception:
         pass
 
@@ -1518,8 +1597,13 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
-    if action != 'recall':
-        return _serve_selected_once(action, host, decision, payload)
+    with _event_scope(action, host, decision, payload):
+        if action != 'recall':
+            return _serve_selected_once(action, host, decision, payload)
+        return _serve_selected_recall(action, host, decision, payload)
+
+
+def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict) -> dict:
     started = time.monotonic()
     # Fresh state per call, bound to this thread/context only: an in-process
     # host (Hermes) may run recalls concurrently or nested.
@@ -1534,7 +1618,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             changed = _retry_code(exc)
         _LEARNING_CAPTURE[:] = []
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
-                             changed=changed)
+                             retry=changed)
         return _serve_selected_once(action, host, retry, payload)
     finally:
         _RECALL_STATE.reset(token)
@@ -1681,6 +1765,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         proof = verify_selected_route(decision)
     except Exception as exc:
         drifted = _bundle_drift_proof(decision, exc)
+        _trace_fields(drift=_drift_code(exc))
         return _serve_bundle_drift(action, host, decision, payload, drifted,
                                    _drift_code(exc))
     loaded_root = str(Path(__file__).resolve().parent.parent)
@@ -1706,6 +1791,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
                 or outcome['queued'] < 0):
             _fail('selected_compile_enqueue_failed')
+        _trace_fields(queued=outcome['queued'])
         refreshed = verify_selected_route(decision)
         if ({key: value for key, value in refreshed.items() if key != 'selectionEpoch'} !=
                 {key: value for key, value in proof.items() if key != 'selectionEpoch'}
@@ -1781,6 +1867,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             _fail("selected_wiki_grant_failed")
         if grant is not None:
             _accept_wiki_grant(decision, grant_kind, grant)
+        _trace_final('sync_requested')
+        _trace_fields(grant=grant_kind if grant is not None else None)
         if action in ("index", "file-change-event"):
             return {}
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
@@ -1806,6 +1894,18 @@ def _request_journal_v4(decision: dict) -> None:
                                     'journal_v4_conversion')
     except Exception:
         pass
+
+
+def _trace_fields(**fields) -> None:
+    trace = _TRACE.get()
+    if trace is not None:
+        trace['fields'].update(fields)
+
+
+def _trace_final(reason: str) -> None:
+    trace = _TRACE.get()
+    if trace is not None:
+        trace['final'] = reason
 
 
 def _drift_code(exc: BaseException) -> str:
@@ -1860,6 +1960,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
+        _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
         if host == 'hermes':
@@ -1908,6 +2009,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     proof = recheck(main)
     if proof.get('readOnlyAllowed') is not True:
         _fail('worktree_read_only_unapproved')
+    _trace_fields(degraded='worktree')
     if action == 'recall':
         response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
                                  read_only_label='worktree')
@@ -1963,6 +2065,16 @@ def _proof_still_current(refreshed: dict, proof: dict) -> bool:
 def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
                   recheck, *, degraded: bool = False,
                   read_only_label: str = 'bundle_drift') -> dict:
+    with _event_scope('recall', host, decision, payload):
+        if degraded:
+            _trace_fields(degraded=read_only_label)
+        return _serve_recall_traced(host, decision, payload, proof, recheck,
+                                    degraded=degraded, read_only_label=read_only_label)
+
+
+def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
+                         recheck, *, degraded: bool = False,
+                         read_only_label: str = 'bundle_drift') -> dict:
     # The approved provider only connects to an already warm owner process.
     # The hook never starts a model or derives paths from the event or env.
     from laya_index_runtime import LayaIndexRuntime
@@ -2133,6 +2245,8 @@ def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
         rows = [row for row, _origin in sorted(
             ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
+    _trace_fields(selection=reason, candidates=len(rows),
+                  generation=pinned_generation[0] if pinned_generation else None)
     answer_limit = min(top_n, 3)
     chosen = chosen[:answer_limit]
     # Capture sees the verified pool and what was served: the selector's
@@ -2172,7 +2286,7 @@ def main(argv: list[str] | None = None) -> int:
         hook_budget.arm(watchdog=False, export=False)
     except hook_budget.HookDeadlineExceeded:
         pass
-    project_root = None
+    decision = payload = None
     started = time.monotonic()
     _LEARNING_CAPTURE[:] = []
     try:
@@ -2188,10 +2302,6 @@ def main(argv: list[str] | None = None) -> int:
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = select_route(cwd, action=action)
-        if isinstance(decision, dict) and isinstance(decision.get("projectRoot"), str):
-            project_root = decision["projectRoot"]
-        elif isinstance(decision, dict) and isinstance(decision.get("mainRoute"), dict):
-            project_root = decision["mainRoute"].get("projectRoot")
         if decision != selection:
             _fail("selected_route_changed")
         response = (serve_preview(action, host, decision, payload)
@@ -2206,21 +2316,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         # Hook stderr is intentionally terse. No source body, path, or secrets.
-        from laya_index_a import IndexContractError
-        from laya_install_journal import JournalEvidenceError
-        bounded_vector = (type(exc) is IndexContractError and str(exc) in
-                          ('vector_deadline_exceeded', 'vector_budget_exceeded'))
-        # A journal proof code names the refused evidence (never a path or
-        # body); hiding it made a bundle update look like a query failure.
-        journal = (isinstance(exc, JournalEvidenceError) and
-                   re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
-        code = (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
-                or journal else "selected_proof_or_query_failed")
+        code = _refusal_code(exc)
         print(f"[memvane] {code}; request refused", file=sys.stderr)
-        if action == "recall":
-            # A refused recall still leaves its reason (release QA §6: a missing
-            # line would read as "the hook did not run").
-            _write_selection_log(project_root, code, [])
+        if not getattr(exc, '_memvane_event_logged', False) and decision is not None:
+            # Refused before the traced call (route changed under the hook):
+            # still one line, so a refusal never reads as "the hook did not run".
+            event_log.emit(action, outcome='refused', reason=code,
+                           ms=event_log.elapsed_ms(started), decision=decision, host=host,
+                           session=event_log.session_id(payload))
         return 3
 
 

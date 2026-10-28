@@ -368,8 +368,9 @@ class HostGate(V3Selected):
             results = auto.run(self.project, root=self.claude, home=self.home)
         self.assertEqual(results[0]['status'], 'current')
         self.assertEqual(stored(self.journal)[0], 4)
-        self.assertIn('journal journal_v4_converted',
-                      (self.state / auto.LOG).read_text())
+        import event_log
+        self.assertIn(('journal.v4', 'journal_v4_converted'),
+                      [(row['event'], row['outcome']) for row in event_log.read(self.state)])
 
     def test_selected_session_start_requests_conversion_only_for_v3(self):
         requested = []

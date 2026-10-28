@@ -1,7 +1,7 @@
 // The project wiki holds only cards. The plugin neither creates nor reads
 // wiki-root SCHEMA.md / index.md / log.md: card rules ship in the bundle
 // (core/wiki_card_rules), the card catalog is memvane-db, and the activity log
-// lives in the install state root (core/wiki_activity_log.py).
+// is the install event log's `wiki` events (core/event_log.py).
 //
 // Every child process here runs with a temporary HOME: nothing may reach the
 // owner's real per-user state.
@@ -252,69 +252,84 @@ test('dedup merge with a selected install logs to its state root and leaves a le
       assert.equal(existsSync(join(wiki, 'entities', 'loser.md')), false);
       assert.equal(readFileSync(join(wiki, 'index.md'), 'utf8'), leftover);
       assert.equal(existsSync(join(wiki, 'log.md')), false);
-      assert.match(readFileSync(join(state, 'wiki-activity.log'), 'utf8'),
-        /^- \S+ deleted entities\/loser\.md - Loser Card\n$/);
+      assert.equal(existsSync(join(state, 'wiki-activity.log')), false);
+      const events = readFileSync(join(state, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].v, 1);
+      assert.equal(events[0].event, 'wiki');
+      assert.equal(events[0].outcome, 'deleted');
+      assert.equal(events[0].reason, 'dedup');
+      assert.equal(events[0].path, 'entities/loser.md');
+      assert.equal(events[0].title, 'Loser Card');
     } finally { removeTemp(project); removeTemp(state); }
   });
 });
 
-test('wiki_activity_log: state root only, no-follow walk, owner-only guards, size cap and tail', () => {
+test('wiki activity: event log in the state root only, no-follow walk, owner-only guards, rotation and tail', () => {
   withHome((home) => {
     const base = realTemp('wiki-activity-');
     const project = realTemp('wiki-activity-project-');
     try {
       const out = JSON.parse(py(home, [
         'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, "core")',
-        'import wiki_activity_log as L, wiki_compile_worker as W',
+        'import event_log as E, wiki_activity_log as L, wiki_compile_worker as W',
         `base = Path(${JSON.stringify(base)}); project = Path(${JSON.stringify(project)})`,
-        'def bound(d): return ({"journalPath": str(d / "install-journal.sqlite")}, {})',
+        'def bound(d): return ({"journalPath": str(d / "install-journal.sqlite"), "installId": "i1"}, {})',
         'state = base / "state"; state.mkdir(mode=0o700); os.chmod(state, 0o700)',
         'r = {}',
-        'r["path"] = str(L.log_path(project, bound(state)))',
-        'r["wrote"] = L.append(project, "created", "concepts/a.md", "A\\nB", bound=bound(state))',
-        'r["line"] = (state / L.LOG_NAME).read_text()',
+        'r["root"] = str(E.wiki_state_root(project, bound(state)))',
+        'r["wrote"] = L.append(project, "created", "concepts/a.md", "A\\nB", bound=bound(state), reason="compile")',
+        'r["line"] = json.loads((state / E.NAME).read_text())',
+        'r["legacy"] = (state / "wiki-activity.log").exists()',
         // Unselected project: no state root, nothing written anywhere.
-        'r["noBound"] = [L.log_path(project, None), L.append(project, "created", "x.md", "X", bound=None), L.tail(project, None)]',
+        'r["noBound"] = [E.wiki_state_root(project, None), L.append(project, "created", "x.md", "X", bound=None), L.tail(project, None)]',
         'r["noJournal"] = L.append(project, "created", "x.md", "X", bound=({}, {}))',
         // A symlinked ancestor is refused and nothing lands behind it.
         'real = base / "real"; (real / "inner").mkdir(parents=True, mode=0o700); os.chmod(real / "inner", 0o700)',
         'os.symlink(real, base / "link")',
-        'r["symlinkAncestor"] = [L.log_path(project, bound(base / "link" / "inner")), L.append(project, "created", "s.md", "S", bound=bound(base / "link" / "inner")), (real / "inner" / L.LOG_NAME).exists()]',
+        'r["symlinkAncestor"] = [L.append(project, "created", "s.md", "S", bound=bound(base / "link" / "inner")), (real / "inner" / E.NAME).exists()]',
         // A group/world-writable non-sticky ancestor is refused.
         'loose = base / "loose"; (loose / "inner").mkdir(parents=True); os.chmod(loose, 0o777); os.chmod(loose / "inner", 0o700)',
-        'r["looseAncestor"] = [L.append(project, "created", "l.md", "L", bound=bound(loose / "inner")), (loose / "inner" / L.LOG_NAME).exists()]',
+        'r["looseAncestor"] = [L.append(project, "created", "l.md", "L", bound=bound(loose / "inner")), (loose / "inner" / E.NAME).exists()]',
         // A state root with group/other bits is refused.
         'wide = base / "wide"; wide.mkdir(); os.chmod(wide, 0o755)',
-        'r["wideLeaf"] = [L.log_path(project, bound(wide)) is None, L.append(project, "created", "w.md", "W", bound=bound(wide))]',
+        'r["wideLeaf"] = [L.append(project, "created", "w.md", "W", bound=bound(wide)), (wide / E.NAME).exists()]',
         // A symlinked log file is refused; its target is untouched.
         'other = base / "other.txt"; other.write_text("keep")',
-        'lnk = base / "lnkstate"; lnk.mkdir(mode=0o700); os.chmod(lnk, 0o700); os.symlink(other, lnk / L.LOG_NAME)',
+        'lnk = base / "lnkstate"; lnk.mkdir(mode=0o700); os.chmod(lnk, 0o700); os.symlink(other, lnk / E.NAME)',
         'r["symlinkFile"] = [L.append(project, "created", "f.md", "F", bound=bound(lnk)), other.read_text()]',
-        // Size cap and tail.
-        'L.LOG_LIMIT = 300',
-        'for i in range(40): L.append(project, "updated", f"concepts/c{i}.md", "C", bound=bound(state))',
-        'r["capped"] = (state / L.LOG_NAME).stat().st_size <= L.LOG_LIMIT + 200 and (state / L.ROTATED_NAME).exists()',
+        // Rotation and tail: non-wiki events never reach the tail.
+        'E.LOG_LIMIT = 600',
+        'for i in range(40): L.append(project, "updated", f"concepts/c{i}.md", "C", bound=bound(state)); E.emit("recall", state_root=state, outcome="served", prompt=E.prompt_fields("SECRET PROMPT"))',
+        'r["capped"] = (state / E.NAME).stat().st_size <= E.LOG_LIMIT and (state / (E.NAME + ".1")).exists()',
         'r["tail"] = L.tail(project, bound(state), limit=60)',
         // The compile worker reads its logTail from the state root, never from the project.
         'wiki = project / ".auto-context" / "wiki"; wiki.mkdir(parents=True)',
         `(wiki / "log.md").write_text("# Auto-context Wiki Log\\n\\n${SENTINEL}\\n")`,
         'o = W.orientation(project, wiki, {}, bound(state))',
-        `r["orientation"] = [o["logTail"].endswith("concepts/c39.md - C\\n"), "${SENTINEL}" in json.dumps(o)]`,
+        `r["orientation"] = [o["logTail"].endswith("concepts/c39.md - C\\n"), "${SENTINEL}" in json.dumps(o), "recall" in o["logTail"], "sha256" in o["logTail"]]`,
         'print(json.dumps(r))',
       ]));
-      assert.equal(out.path, join(base, 'state', 'wiki-activity.log'));
+      assert.equal(out.root, join(base, 'state'));
       assert.equal(out.wrote, true);
-      assert.match(out.line, /^- \d{4}-\d\d-\d\dT[\d:]+Z created concepts\/a\.md - A B\n$/);
+      assert.equal(out.legacy, false);
+      assert.equal(out.line.event, 'wiki');
+      assert.equal(out.line.outcome, 'created');
+      assert.equal(out.line.reason, 'compile');
+      assert.equal(out.line.path, 'concepts/a.md');
+      assert.equal(out.line.title, 'A B');
+      assert.equal(out.line.install, 'i1');
+      assert.match(out.line.ts, /^\d{4}-\d\d-\d\dT[\d:.]+Z$/);
       assert.deepEqual(out.noBound, [null, false, '']);
       assert.equal(out.noJournal, false);
-      assert.deepEqual(out.symlinkAncestor, [null, false, false]);
+      assert.deepEqual(out.symlinkAncestor, [false, false]);
       assert.deepEqual(out.looseAncestor, [false, false]);
-      assert.deepEqual(out.wideLeaf, [true, false]);
+      assert.deepEqual(out.wideLeaf, [false, false]);
       assert.deepEqual(out.symlinkFile, [false, 'keep']);
       assert.equal(out.capped, true);
       assert.equal(out.tail.length <= 60, true);
       assert.match(out.tail, /concepts\/c39\.md - C\n$/);
-      assert.deepEqual(out.orientation, [true, false]);
+      assert.deepEqual(out.orientation, [true, false, false, false]);
     } finally { removeTemp(base); removeTemp(project); }
   });
 });

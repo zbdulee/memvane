@@ -69,7 +69,7 @@ locks/
   Pinned npm lock for the Laya embedding runtime (`locks/laya-embed-runtime`).
 
 skills/
-  Manual workflows (setup, query, update, wiki-compile, wiki-dedup).
+  Manual workflows (setup, query, update, wiki-compile, wiki-dedup, logs).
 
 agents/
   Resolver prompt for wiki-dedup queue cleanup.
@@ -329,12 +329,12 @@ configured host extractor, and passes candidate JSON to `core/wiki_compile.py`.
 The project wiki holds only cards. Orientation context is the bundled card-writing
 rules (`core/wiki_card_rules/default.md`, or `novel.md` when the project root has a
 numbered manuscript directory such as `04_Manuscript/`; a novel-preset wiki directory such
-as `characters/` or a legacy `-manuscript`/`-plot` collection also selects it) plus the tail of the activity log. The card catalog is the selected
-memvane-db index. Card creation, update and deletion append one line to the activity log
-in the install state root (`<state root>/wiki-activity.log`, rotated to `.1` past 256 KiB;
-`core/wiki_activity_log.py`). The state root is opened one path component at a time without
-following symlinks; a symlinked, foreign-owned or group/world-writable ancestor makes the
-write a silent no-op, and a project without a selected route logs nothing. The plugin does
+as `characters/` or a legacy `-manuscript`/`-plot` collection also selects it) plus recent
+card writes (`wiki.logTail`, rendered as `- <ts> <action> <path> - <title>` from `wiki` events
+only). The card catalog is the selected memvane-db index. Card creation, update, deletion and
+retirement append one `wiki` event (outcome = action, `reason`, `path`, `title`) to the install
+event log `<state root>/events.jsonl` (`core/wiki_activity_log.py` → `core/event_log.py`; see
+[Event Log](#event-log)); a project without a selected route logs nothing. The plugin does
 not create or read wiki-root `SCHEMA.md`, `index.md` or `log.md`; such files left by
 earlier releases stay on disk, are never treated as cards or card targets, are never served
 by search, and keep their existing index rows.
@@ -573,6 +573,7 @@ version; it does not pin the exact version. Before release, run `npm test`.
 | `update` | `skills/update/scripts/update.sh` → full-scan laya-sync wake |
 | `wiki-compile` | `core/wiki_extract.py` and `core/wiki_compile.py` (selected route only) |
 | `wiki-dedup` | `core/wiki_dedup_resolve.py` via resolver workflow |
+| `logs` | `skills/logs/scripts/logs.py` (read-only views of the install event log) |
 
 `query` and `update` act only on a selected route; a project that is not
 onboarded exits 1 with an onboarding notice, and a selected route whose proof
@@ -592,21 +593,81 @@ Expected empty-output cases:
 A selected route whose proof fails, a blocked route, or a failed route lookup
 exits 3 instead.
 
-To inspect recall selection, set `QMD_RECALL_LOG`:
+To see why a recall was empty or degraded, read the install event log
+(below) through the `logs` skill:
 
 ```bash
-QMD_RECALL_LOG=/tmp/qmd-recall.log bash skills/query/scripts/query.sh "$PWD" "question"
-tail -n 20 /tmp/qmd-recall.log
+python3 -B skills/logs/scripts/logs.py --cwd "$PWD" recalls --limit 10
 ```
 
-Relevant logs:
+### Event Log
 
-| Log | Default |
+`core/event_log.py` appends one JSON line per event to `<state root>/events.jsonl`,
+where the state root is the directory of the selected route's install journal
+(`journalPath`'s parent; a worktree uses its main route). A project without a
+selected route writes nothing, and nothing is written under the project or a
+per-user directory.
+
+- **Path safety.** The state root is reached one component at a time from `/`
+  without following symlinks; every ancestor is owned by the user or root and
+  is not group/world-writable unless sticky, and the state root is owned by the
+  user with mode `0700`. The file is opened relative to that directory with
+  `O_NOFOLLOW`, created `0600`, and must be a regular file owned by the user.
+- **Cost.** One `O_APPEND` write per line, lines capped at 4096 bytes (an
+  oversized line halves `cards` and `notes`, then drops `prompt.text`, then
+  keeps the envelope alone, and is marked `truncated: true`), no fsync. Past
+  4 MiB the file rotates under a non-blocking directory lock to
+  `events.jsonl.1` and `.2`.
+- **Failure.** Writes are best-effort and never raise, print or block a hook.
+  A write refused after the state root is proven (symlinked, foreign or
+  non-regular `events.jsonl`, failed write) increments `events.refused.json`
+  beside it, and the process carries its unwritten count as `dropped` on its
+  next written line. A state root that fails the path walk is reported by the
+  `logs` skill, so an empty log is always explained.
+- **Privacy.** Prompt text and document bodies are not written by default; a
+  prompt is `{sha256, chars}`. `MEMVANE_EVENT_LOG_PROMPTS=1` adds the first
+  1000 prompt characters (and the extractor stderr tail) as `text`. Keys naming
+  secrets (token, password, secret, credential, api key, authorization,
+  cookie) are dropped. See [privacy.md](privacy.md#event-log).
+
+Line envelope (`v` 1): `{ts, v, install, host, session, event, outcome, reason,
+ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
+
+| Event | Written by | Outcome / fields |
+|---|---|---|
+| `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`core/laya_host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` or `bundle_upgrade_pending` |
+| `hook.error` | `core/hook_main.py` | exception class and `file:line`, never the message |
+| `learning.capture` | context learning capture | capture status |
+| `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
+| `wake.sync`, `wake.compile` | off-hook dispatcher (`core/laya_runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
+| `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
+| `resident.adopt`, `resident.drain`, `resident.forced_exit` | `core/laya_resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
+| `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
+| `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
+
+A `recall` event's `reason` is the final outcome (`selected`,
+`no_results_after_filter`, `no_candidates`, or a refusal code) and `notes` lists
+the diagnostic codes on the way (`laya_vector_*`, `laya_selector_*`,
+`laya_recall_proof_retry`, `laya_wiki_rows_filtered`,
+`laya_selector_selected_zero`, `laya_exclusion_candidate_capped`, ...). It also
+carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
+`candidates`, `selection`, `selection_fallback`, `vector_fallback`, `degraded`
+(`bundle_drift` or `worktree`), `drift`, `retry`, `generation`,
+`filtered_count`/`filtered_reasons` and `prompt` (`{sha256, chars}`).
+
+The only code path that reads the log back is the compile worker's
+`wiki.logTail`, which renders `wiki` events alone. The bundle upgrade status
+file `bundle-auto-upgrade.json` sits beside the log.
+
+### Log Files
+
+| Log | Location |
 |---|---|
-| recall selection | `QMD_RECALL_LOG` (unset: none) |
-| wiki lifecycle | `~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log` |
-| wiki dedup scan | `~/.local/state/memvane/auto-context/logs/wiki-dedup.log` |
-| compile extractor | `.auto-context/compile/extractor.log` |
+| install event log | `<state root>/events.jsonl` (+ `.1`, `.2`) |
+| wiki lifecycle | `~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
+| wiki dedup scan | `~/.local/state/memvane/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
+| compile ledgers | `.auto-context/compile/` (`candidates.jsonl`, `verify-log.jsonl`, `merge-needed.jsonl`, `verify-deleted.jsonl`, `dedup-deleted.jsonl`, `discard-ledger.jsonl`, queues) |
+| context learning jobs | per-user learning state `job-telemetry.jsonl`, `worker.log` |
 
 ## Test Strategy
 

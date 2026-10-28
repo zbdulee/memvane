@@ -64,8 +64,6 @@ import time
 SCHEMA = 'laya-bundle-auto-upgrade-v1'
 STATUS = 'bundle-auto-upgrade.json'
 LOCK = 'bundle-auto-upgrade.lock'
-LOG = 'bundle-auto-upgrade.log'
-LOG_LIMIT = 256 * 1024
 RUNNING_SECONDS = 1800
 RETRY_SECONDS = 600
 REFUSED_RETRY_SECONDS = 6 * 3600
@@ -168,19 +166,26 @@ def _write_status(state, **fields):
     return value
 
 
-def _log(state, message):
+def _event(state, event, outcome, reason=None, **fields):
+    """One worker event in the install event log (``event_log``); never raises."""
     try:
-        path = _private_dir(state) / LOG
-        if path.is_symlink():
-            return
-        if path.exists() and path.stat().st_size > LOG_LIMIT:
-            os.replace(path, path.with_name(LOG + '.1'))
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND |
-                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        with os.fdopen(fd, 'a', encoding='utf-8') as out:
-            out.write(f'{time.time():.3f} {message}\n')
-    except (OSError, ValueError):
+        import event_log
+        event_log.emit(event, outcome=outcome, reason=reason or None,
+                       state_root=Path(state), host='worker', **fields)
+    except Exception:
         pass
+
+
+def _bound_bundle(state):
+    """(plugin root name, source commit prefix) the install is bound to, or Nones."""
+    try:
+        _kind, identity = classify(state)
+        root = identity.get('pluginRoot') if isinstance(identity, dict) else None
+        commit = identity.get('sourceCommit') if isinstance(identity, dict) else None
+        return (Path(root).name if isinstance(root, str) else None,
+                commit[:12] if isinstance(commit, str) else None)
+    except Exception:
+        return None, None
 
 
 # ------------------------------------------------------------ hook side API
@@ -661,7 +666,7 @@ def _upgrade_with_backoff(project, state, root, home):
         except Exception as exc:
             if wait is None or _reason(exc) not in DEFERRALS or _reason(exc) in NO_BACKOFF:
                 raise
-            _log(state, f'upgrade busy {_reason(exc)} retry_in={wait}s')
+            _event(state, 'bundle.upgrade', 'busy_wait', _reason(exc), retry_in=wait)
             _sleep(wait)
 
 
@@ -676,7 +681,7 @@ def _convert_journal(project, state, root, home):
         converted = laya_journal_v4.convert_install(state, project, root=root, home=home)
     except Exception as exc:
         converted = {'status': 'journal_v4_failed', 'reason': _reason(exc)}
-    _log(state, f"journal {converted.get('status')} {converted.get('reason', '')}")
+    _event(state, 'journal.v4', converted.get('status'), converted.get('reason'))
     return {'journalV4': converted.get('status')}
 
 
@@ -702,7 +707,11 @@ def run(project_root, *, root=None, home=None):
                         prior['executingRoot'] == str(root) else 0) + 1
             _write_status(state, status='running', executingRoot=str(root),
                           attempts=attempts, reason='')
-            _log(state, f'upgrade started host={_host(root, home)} root={root.name}')
+            started = time.monotonic()
+            from_root, from_commit = _bound_bundle(state)
+            moves = {'from': from_root, 'fromCommit': from_commit, 'to': root.name}
+            _event(state, 'bundle.upgrade', 'started', hostLayout=_host(root, home),
+                   attempt=attempts, **moves)
             try:
                 result = _upgrade_with_backoff(project, state, root, home)
                 result = {**result, **_convert_journal(project, state, root, home)}
@@ -727,7 +736,8 @@ def run(project_root, *, root=None, home=None):
                                   status='refused' if reason in REFUSALS else 'failed',
                                   executingRoot=str(root), attempts=attempts,
                                   reason=reason)
-            _log(state, f"upgrade {result.get('status')} {result.get('reason', '')}")
+            _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
+                   ms=(time.monotonic() - started) * 1000, kind=result.get('kind'), **moves)
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
                 if key in ('status', 'reason', 'kind')}})

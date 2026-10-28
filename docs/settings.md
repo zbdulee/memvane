@@ -266,7 +266,7 @@ binding store가 있는 **선택 Laya 위키 전용 검색**은 검색 시 원�
 검색하며, 값이 있으면 본문과 일치해야 합니다. `sourceRevisions`가 없는 카드는 검색하지 않습니다.
 `sourceRevisions`의 collection 이름이 현재 route에 없는 이름(이름이 바뀌었거나 복사된 프로젝트)이면
 경로로 판정합니다. 프로젝트 기준 경로가 raw collection 루트 안에 있어야 합니다.
-검색된 카드가 있는데 모두 걸러지면 stderr와 `QMD_RECALL_LOG`(`laya_wiki_rows_filtered`)에 사유별 개수를 남깁니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
+검색된 카드가 있는데 모두 걸러지면 stderr와 설치 이벤트 로그의 `recall` 이벤트(`notes`의 `laya_wiki_rows_filtered`, `filtered_reasons`)에 사유별 개수를 남깁니다. 준비된 체크포인트가 있으면 검증된 위키 후보 최대 15개를 로컬 Laya 선택 모델이
 평가해 최대 3개를 주입합니다. 체크포인트가 없거나 모델이 응답하지 못하면 검증된
 후보를 하이브리드 순위대로 최대 3개 주입합니다.
 binding store가 없는 구형 Laya 선택 경로도 직접 RRF 결과를 주입하지 않습니다.
@@ -289,8 +289,9 @@ compile, 성공적인 verification이 끝날 때까지 이 카드는 recall에 �
 status를 쓰지 않으며, `wiki-review` UI·skill·agent도 제공하지 않습니다. `merge-needed.jsonl`은
 승인 대기열이 아닌 non-trusted collision diagnostic입니다.
 
-운영 중 drop 원인은 `QMD_RECALL_LOG`의 `qmd_recall_selection`과
-`laya_wiki_rows_filtered`(사유별 개수)에서 봅니다. 로그와 injected context에는 원문 본문·secret value·SHA-256을 기록하지 않습니다.
+운영 중 drop 원인은 설치 이벤트 로그(`events.jsonl`)의 `recall` 이벤트 `reason`·`notes`와
+`filtered_reasons`(사유별 개수)에서 봅니다(`memvane:logs` 스킬). 이벤트 로그는 카드 경로·sha와
+프롬프트 sha256·길이만 남기고, 로그와 injected context에는 원문 본문·secret value를 기록하지 않습니다.
 
 P0는 `.env`를 source로 등록하지 않습니다. P1 structured-evidence adapter 전에는 `prod.env`의
 repository-config evidence 또는 runtime-current proof를 주장하지 않습니다.
@@ -485,22 +486,7 @@ dogfooding 두 코퍼스(카드 849장)의 주입 대상 본문 길이 분포입
 됩니다 — 이 값은 카드 파일 읽기 창까지 키우므로(UserPromptSubmit은 blocking hook입니다)
 설정이 I/O·CPU 예산을 무제한 늘리지 못하게 합니다.
 
-주입 본문이 비었는지는 `QMD_RECALL_LOG`의 `qmd_recall_selection` 줄에서 확인합니다 —
-`bodies_injected` / `bodies_truncated` / `bodies_window_truncated` / `bodies_empty` /
-`body_empty_reasons`(`path_unresolved`·`read_error`·`frontmatter_unterminated`·`empty_body`).
-`bodies_window_truncated`는 카드 파일이 읽기 창보다 커서 본문이 중간에서 끊긴 건수입니다
-(절단 표식이 붙습니다).
-
-title 계열은 `titles_from_frontmatter`(주입 건수 중 frontmatter title을 얻은 수)와
-`card_meta_issues`로 봅니다. `card_meta_issues` 값: `frontmatter_missing`,
-`title_missing`, `title_empty`, `title_block_scalar`(`title: >`),
-`title_unbalanced_quote`(인용부호가 열린 채 줄이 끝나 값이 잘림), `title_shortened`,
-같은 형태의 `status_*`, 그리고 `auto_block_truncated`/`after_auto_truncated`(읽기 창
-소진으로 본문 또는 그 뒤 수동 섹션이 잘림).
-
-카드 파일 읽기 자체가 실패했는지는 `card_read_failures` / `card_read_reasons`로 봅니다 —
-이쪽은 필터로 drop된 후보까지 포함하므로, `wikiPath` 오설정으로 검수 카드가 전부
-fail-closed drop된 경우(`path_unresolved`)를 진짜 미검수 카드와 구분할 수 있습니다.
+실제로 주입된 카드는 설치 이벤트 로그의 `recall` 이벤트 `cards`(경로·sha)와 `count`로 확인합니다.
 
 ## 원문 경로 주입
 
@@ -627,27 +613,15 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 > 않는다"가 아니라 "**자동 주입**은 wiki만 한다"는 뜻이고, raw는 에이전트의 명시적 검색으로
 > 계속 쓰입니다.
 
-주입·drop 여부는 `QMD_RECALL_LOG`의 `qmd_recall_selection` 줄에서 확인합니다 —
-`inject_source_paths_per_card` / `source_entries`(본 항목 수) / `sources_injected` /
-`sources_dropped` / `source_drop_reasons`. 사유 값: `missing`(존재하지 않음),
-`kind_not_file`(파일 소스가 아님 — url/slack 등), `too_long`(경로 길이 상한 초과),
-`outside_root`(루트 밖), `not_inline`(한 줄로 표시 불가), `duplicate`(중복 제거),
-`over_cap`(카드당 상한만큼 이미 채움), `over_scan_budget`(항목 조사 예산 소진 — 앞쪽
-항목이 대량으로 버려졌다는 신호), `no_path`(경로 없는 항목: `{kind: unknown}`,
-`{kind: "session", ref: …}`), 그리고 표기 형태별 `inline_sequence` / `block_mapping` /
-`multiline_flow` / `parse_failed`.
-
-`missing`은 소스가 이동·삭제된 **stale 링크**를 뜻합니다(dogfooding 849장 876항목 중
-32건). `kind_not_file` 2건은 실제 url/slack 소스입니다 — 예전에는 이 2건이 `missing`에
-섞여 stale 링크 집계를 오염시켰습니다.
+원문 경로 항목별 drop 사유는 이벤트 로그에 따로 남지 않습니다. 주입된 카드는 `recall` 이벤트의
+`cards`로 확인합니다.
 
 **`missing`·`kind_not_file`·`duplicate`로 빠진 카드에는 `↳` 줄이 아예 붙지 않습니다**
 (의도된 동작입니다). 깨진 경로를 주면 모델이 열어 보고 실패한 뒤 복구해야 하고, "원문
 없음" 표식을 붙이면 stale 카드마다 토큰만 늘고 모델이 할 수 있는 일은 없습니다.
 `duplicate`는 같은 경로가 상위 카드 아래에 이미 있으므로 손실이 아닙니다. stale 링크는
 주입에서 감추는 것이 아니라 소스 쪽에서 고쳐야 하는 문제입니다 —
-그 경로가 "wiki 수명 주기" 절입니다. 같은 줄의 `cards_all_sources_missing`은
-**살아 있는 원문이 하나도 없는 카드가 실제로 주입된 수**입니다(카드 사이 중복 제거 전 기준).
+그 경로가 "wiki 수명 주기" 절입니다.
 
 ### lex 게이트 — 무관 주입 차단
 
@@ -675,16 +649,6 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 - **프로브가 실패하면 게이트를 엽니다**(기존 동작 유지). 정밀도 최적화가 본 흐름을
   막으면 안 되기 때문입니다.
 - **끄는 설정 키는 없습니다.** 쓰이지 않을 레버를 미리 만들지 않는다는 원칙입니다.
-
-`QMD_RECALL_LOG`의 `qmd_recall_selection` 줄에 `lex_hits`·`lex_gate`·`lex_probe_scope`·
-`lex_gate_applied`·`lex_terms_absent_in_cut`·`lex_identifier_present`가 남습니다.
-`lex_gate` 값은 `not_needed`(게이트할 본문·경로가 없어 질의하지 않음) ·
-`no_lex_terms`(보낼 lex term이 없음 = 히트 0과 동치) · `skipped_fixture` ·
-`probe_failed`(프로브 실패/timeout → 게이트 열림) · `hits` · `no_hits` ·
-`identifier_term_present`(면제) · `ep_search_hits`(면제) · `ep_probe_failed` ·
-`lone_survivor_no_identifier_evidence`(발동) · `absent_terms_no_identifier_evidence`(발동)
-입니다. `lex_probe_scope`는 `all` / `ep_only` / `none`이며, 프로브를 보내지 않은 경로의
-`lex_hits`는 `null`입니다("안 물었다"와 "물었는데 0"을 구분해야 히트율 집계가 맞습니다).
 
 DF 좁히기가 **위치 컷 안** term을 버려서 만든 히트는 게이트가 증거로 쓰지 않습니다
 (기준 값은 `lex_terms_absent_in_cut`이고, `lex_terms_absent`는 조회 범위 기준의 기존 값입니다).
@@ -724,11 +688,6 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
   실패했을 때의 폴백이 상한 도입 전 상태로 되돌아가지 않게 하는 안전망입니다.
 - **조회에 실패하면 위치 컷으로 폴백합니다**(fail-open). 조회 term 은 6개, 패스 전체 시간은
   1초로 유계입니다.
-
-`qmd_recall_selection` 줄의 `lex_df` 가 결과를 말합니다: `present`(좁히기 채택) ·
-`lone_survivor`(남은 term < 2 → 위치 컷 유지) · `probe_failed`(조회 실패/예산 소진 → 위치
-컷 폴백, "히트 0"과 다릅니다) · `skipped_fixture` · `not_needed`. 함께 남는
-`lex_terms_absent` 는 코퍼스에 없어 뺀 term 수, `lex_query` 는 실제로 보낸 문자열입니다.
 
 ## 매칭 위치 기반 본문 인용
 
@@ -1174,12 +1133,7 @@ agent의 Bash 명령이 성공했을 때 수명 주기 요청이 하나 남고 �
 
 **주입 표식은 두지 않습니다.** 원문이 없는 카드는 수명 주기가 정리하고,
 `missing` 항목에는 `↳` 줄을 두지 않습니다(깨진 경로 표식은 토큰만 늘리고 모델이 할 수 있는
-일이 없습니다). 대신 진단 로그의 `cards_all_sources_missing`이
-"소스가 전멸한 카드가 실제로 주입됐다"는 사실을 토큰 비용 0으로 남깁니다. 이 카운터는
-`injectSourcePathsPerCard: 0`에서도 삽니다 — `QMD_RECALL_LOG`가 켜져 있으면 경로를
-주입하지 않고 **분류만** 수행합니다(주입 문자열은 바이트 동일). 로그가 꺼져 있으면
-분류도 하지 않아 추가 비용은 0입니다. 판정 기준은 주입 목록이 아니라 **살아 있는 파일
-소스 수**입니다(주입 목록은 관측 전용 모드와 카드 사이 중복 제거에서 비므로 과대 집계됩니다).
+일이 없습니다).
 
 ### Semantic Dedup
 
@@ -1289,7 +1243,7 @@ stale lock 회수 불가, 알림 영구 억제. 60초 이내의 시계 오차(NT
 
 `topN`을 줄이면 자동 주입되는 문서 수가 줄어듭니다. `minScore`는 순위 컷이므로 `topN`과
 어긋나지 않게 `1/topN` 근처로 맞추는 편이 예측 가능합니다(`topN: 2` → `0.5`). 실제 값은
-`QMD_RECALL_LOG` 로그를 보면서 조정하는 것이 좋습니다.
+`memvane:logs` 스킬의 `recalls` 출력(주입 카드 수·reason)을 보면서 조정하는 것이 좋습니다.
 
 ### recall 결과에서 특정 경로 제외
 
@@ -1325,15 +1279,17 @@ collection도 경로가 `.`으로 해석되므로 collection 이름마다 경로
 
 ## Troubleshooting
 
-컨텍스트가 기대와 다르게 들어오면 에이전트에게 recall 진단을 요청하세요. 선택된 Laya
-recall은 `QMD_RECALL_LOG`에 `route: "laya"`인 `qmd_recall_selection` 줄을 남깁니다. reason은
-`selected`, `no_results_after_filter`, `laya_wiki_rows_filtered`(사유별 개수),
-`laya_selector_candidate_invalid` 등이고, `selected[]`는 실제로 주입된 문서입니다.
+컨텍스트가 기대와 다르게 들어오면 에이전트에게 `memvane:logs` 스킬로 recall 진단을 요청하세요.
+선택된 Laya route의 recall은 hook 호출마다 설치 이벤트 로그
+`<install state root>/events.jsonl`에 `recall` 이벤트 한 줄을 남깁니다(항상 켜져 있습니다).
+`outcome`은 `served`/`empty`/`refused`, `reason`은 `selected`, `no_results_after_filter`,
+`no_candidates` 또는 refusal code이고, `notes`는 경로상의 진단(`laya_wiki_rows_filtered`,
+`laya_selector_candidate_invalid`, `laya_vector_*` 등), `cards[]`는 실제로 주입된 문서입니다.
 
 줄이 **하나도 없다**면 훅이 실행되지 않았거나 그 프로젝트에 선택된 Laya route가 없는
-것입니다(route가 없는 프로젝트는 recall을 하지 않습니다). `QMD_RECALL_LOG`를 켜고 줄의 유무를
-먼저 확인하세요. sandbox(`QMD_SANDBOX`)는 "즉시 무출력
-종료"가 계약이라 파일에도 쓰지 않는 유일한 예외입니다.
+것입니다(route가 없는 프로젝트는 recall을 하지 않고 이벤트도 남기지 않습니다). 스킬 헤더의
+`WARNING`은 state root나 `events.jsonl`이 안전 검사를 통과하지 못해 쓰기가 거부됐다는 뜻입니다.
+sandbox(`QMD_SANDBOX`)는 "즉시 무출력 종료"가 계약이라 이벤트도 쓰지 않는 유일한 예외입니다.
 
 설정을 바꿨는데도 동작이 이상하면 다음을 먼저 봅니다.
 

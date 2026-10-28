@@ -98,7 +98,7 @@ VERBATIM RULES (critical — these cards are keyword-searched, so identifiers AR
   - backtick code spans (`like_this`) — keep the backticks
   - file and directory paths (`core/recall.py`, `.auto-context/settings.json`) — keep the full path, do NOT shorten it to a basename
   - function/method/class/type signatures (`classifyOrigin()`, `load_project_config(cwd)`)
-  - configuration keys, field names, env vars, CLI flags (`compile.maxSourceChars`, `QMD_RECALL_LOG`, `--safe-mode`)
+  - configuration keys, field names, env vars, CLI flags (`compile.maxSourceChars`, `MEMVANE_EVENT_LOG_PROMPTS`, `--safe-mode`)
   - numeric thresholds, limits, versions, percentages — with their units (`12000자`, `34.7%`, `>=2.5.3`, `120 lines`)
   - error strings, status/reason codes, log lines, exit codes (`exit 127`, `no_results_after_filter`)
   - bracketed or prefixed tags and IDs (`[DEV20100]`, `EP13`, `AT-123`)

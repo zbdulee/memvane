@@ -15,7 +15,6 @@ that cannot be verified (``ValueError``); the latter never falls back to QMD.
 from __future__ import annotations
 
 from contextlib import closing
-import os
 from pathlib import Path
 import sys
 import time
@@ -138,15 +137,11 @@ def corpus_snapshot(project_root, config, *, decision=None):
         return None
 
 
-def _log(project_root, status):
-    log_path = os.environ.get('QMD_RECALL_LOG')
-    if not log_path:
-        return
+def _log(decision, host, status):
+    """One ``learning.capture`` event in the install log; never raises."""
     try:
-        import wiki_card
-        wiki_card.set_log_project_root(project_root)
-        wiki_card.log_recall_event(log_path, 'learning_capture', route='laya',
-                                event_override='qmd_context_capture', status=status)
+        import event_log
+        event_log.emit('learning.capture', outcome=status, decision=decision, host=host)
     except Exception:
         pass
 
@@ -173,5 +168,5 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
                                        host=host, decision=decision)
     except Exception:
         status = 'capture_unavailable'
-    _log(decision.get('projectRoot') if isinstance(decision, dict) else None, status)
+    _log(decision if isinstance(decision, dict) else None, host, status)
     return status

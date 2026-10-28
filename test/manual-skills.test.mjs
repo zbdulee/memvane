@@ -9,7 +9,7 @@ test("manual skills expose setup and existing skills; review and hint are not sk
     .filter((name) => name !== "qmd")
     .sort();
 
-  assert.deepEqual(skillDirs, ["query", "setup", "update", "wiki-compile", "wiki-dedup"]);
+  assert.deepEqual(skillDirs, ["logs", "query", "setup", "update", "wiki-compile", "wiki-dedup"]);
   assert.equal(existsSync("skills/sync"), false);
   assert.equal(existsSync("skills/wiki-source-repair"), false);
   assert.equal(existsSync("skills/hint"), false);
@@ -27,7 +27,7 @@ test("plugin descriptions list manual skills without hint", () => {
 
   for (const file of files) {
     const text = readFileSync(file, "utf8");
-    assert.match(text, /setup\/query\/update\/wiki-compile\/wiki-dedup manual skills/);
+    assert.match(text, /setup\/query\/update\/wiki-compile\/wiki-dedup\/logs manual skills/);
     assert.doesNotMatch(text, /wiki-source-repair/);
     assert.doesNotMatch(text, /wiki-review/);
   }

@@ -44,16 +44,13 @@ DEDUP_NEEDED = "dedup-needed.jsonl"
 DEDUP_SKIPPED = "dedup-skipped.jsonl"
 DEDUP_DELETED = "dedup-deleted.jsonl"
 DISCARD_LEDGER = "discard-ledger.jsonl"
-REVIEWED_MIGRATION = "reviewed-state-migration.jsonl"
 
 # --- 커서·식힘·로그 ---------------------------------------------------------
-DISCARD_CURSOR = ".discard-ledger.cursor"
 COMPILE_COOLDOWN = "cooldown"
 LEGACY_VERIFY_COOLDOWN = "verify-cooldown"  # 0.x 고아 파일 (읽지 않고 지우기만 한다)
 VERIFY_ENGINE_COOLDOWN = "verify-engine-cooldown.json"
 DEDUP_JUDGE_COOLDOWN = "dedup-judge-cooldown"
 DEDUP_JUDGE_ENGINE_COOLDOWN = "dedup-judge-engine-cooldown.json"
-EXTRACTOR_LOG = "extractor.log"
 CARD_WRITE_LOCK = ".card-write.lock"
 
 

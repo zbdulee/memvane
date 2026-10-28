@@ -54,7 +54,7 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
 - `QMD_SETUP_GUARD_FIXTURE=1` — `npm test`가 켜는 테스트 전용 스위치(`QMD_SANDBOX`와 같은 자리에서 읽힌다). 켜져 있으면 runtime wake를 시작하지 않고, 실제 계정 홈의 Laya embed runtime·legacy cleanup 대상을 읽거나 쓰지 않는다. 운영 hook에서는 설정하지 말 것.
 - `QMD_SANDBOX` / `GEMINI_SANDBOX` / `--sandbox` — 디스패처·코어 즉시 무출력 종료
 
-**테스트는 세션 env 의 `QMD_RECALL_LOG` 를 물려받으면 안 된다** — 62개 테스트 파일 중 51개가 `{...process.env}` 를 그대로 자식에 넘기고 이 변수를 한 번도 주지 않으므로, 사용자가 그 env 를 전역으로 켜 두면 테스트가 **라이브 진단 로그에 쓴다**(실측: `hook-main.test.mjs` 1회 실행에 57줄, 진단 로그에 traceback 610건 누적. 전부 첫 프레임이 `hook_main.py`). 파일별로 고치지 않고 **러너 진입점**에서 막는다 — `npm test` 는 `QMD_RECALL_LOG= node --test` 다(빈 문자열이면 `os.environ.get` 이 falsy 라 미설정과 같고, 테스트가 명시로 주는 경로는 그대로 먹는다). 직접 `node --test <파일>` 로 돌리면 이 가드가 없으므로, 예외를 일부러 던지는 파일은 자기 헬퍼에서도 비운다(`hook-main.test.mjs` 의 `cleanEnv`). 테스트가 제품 데이터를 건드리면 안 된다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `core/__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다.
+**테스트가 제품 데이터를 건드리면 안 된다** — 이벤트 로그는 검증된 install state root(0700, symlink 없는 경로)에만 쓰므로, 테스트는 임시 HOME과 fixture state root(`realpath`로 푼 임시 디렉터리)를 쓰고 소유자의 라이브 로그에 닿지 않는다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `core/__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다.
 
 ## 아키텍처 (큰 그림)
 
@@ -157,4 +157,4 @@ Claude·Codex는 marketplace plugin install이 제품 경로다. 제품용 `inst
 
 ## 운영상 함정 (디버깅 시 참고)
 
-- **빈 출력은 정상 동작일 수 있다.** 미온보딩 프로젝트(`legacy` route)·sandbox·결과 0건은 모두 의도적으로 무출력 종료한다. 빈 출력 ≠ 버그. 선택된 route의 recall은 `QMD_RECALL_LOG=<파일>`이 있으면 `qmd_recall_selection` 줄(`route: "laya"`, `reason`은 `selected`/`no_results_after_filter`, `selected[]`는 실제 주입한 문서)을 파일에만 남긴다. **모든 줄에 `project_root` 귀속이 붙는다**(`QMD_RECALL_LOG`는 전역 파일 하나다). 이 로그는 stdout(모델 컨텍스트)엔 나가지 않고 env가 없으면 no-op다.
+- **빈 출력은 정상 동작일 수 있다.** 미온보딩 프로젝트(`legacy` route)·sandbox·결과 0건은 모두 의도적으로 무출력 종료한다. 빈 출력 ≠ 버그. 선택된 route의 모든 hook 호출은 설치 이벤트 로그 `<install state root>/events.jsonl`에 한 줄을 남긴다(`core/event_log.py`, `laya_host_response._event_scope`). recall 줄은 `outcome`(`served`/`empty`/`refused`), 최종 `reason`(`selected`/`no_results_after_filter`/`no_candidates`/refusal code), 경로상의 진단 `notes`(`laya_vector_*`·`laya_selector_*`·`laya_recall_proof_retry`·`laya_wiki_rows_filtered` 등), 실제 주입한 카드 `cards[{path, sha}]`, `selection_fallback`·`vector_fallback`·`degraded`를 담고, 프롬프트는 `{sha256, chars}`로만 남긴다(`MEMVANE_EVENT_LOG_PROMPTS=1`일 때만 앞 1000자). 설치 단위 파일이라 `install`·`session` 필드로 귀속된다. 쓰기는 best-effort라 hook을 실패시키지 않고 stdout(모델 컨텍스트)엔 나가지 않는다. 읽기는 `memvane:logs` 스킬(`skills/logs/scripts/logs.py`)로 한다.

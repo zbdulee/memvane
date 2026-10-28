@@ -256,10 +256,52 @@ def _deferred_detail(result):
     return ':'.join(parts)
 
 
+def _event(target, kind, started, *, outcome, reason=None, result=None):
+    """One ``wake.*`` event (and ``index.publish``) in the target install's log."""
+    try:
+        import event_log
+        state_root = event_log.state_root_of(target.get('journalPath'))
+        if state_root is None:
+            return
+        result = result if isinstance(result, dict) else {}
+        common = {'state_root': state_root, 'install': target.get('installId'),
+                  'host': 'worker', 'session': None}
+        event_log.emit('wake.' + kind.removeprefix('laya-'), outcome=outcome, reason=reason,
+                       ms=event_log.elapsed_ms(started), bundle=target.get('sourceCommit'),
+                       generation=result.get('generation'),
+                       previousGeneration=target.get('generation'),
+                       detail=result.get('detail'), **common)
+        if result.get('state') == 'indexed':
+            event_log.emit('index.publish', outcome='published',
+                           generation=result.get('generation'),
+                           previousGeneration=target.get('generation'),
+                           epoch=target.get('selectionEpoch'), **common)
+    except Exception:
+        pass
+
+
 def run(kind, value, *, owner_fd=None):
     target = resolve(kind, value)
     if target['terminal']:
         return {'state': 'unchanged'}
+    started = time.monotonic()
+    try:
+        result = _run_target(kind, value, target, owner_fd)
+    except DispatchFailure as exc:
+        # Only a deferral's detail is fixed codes; a child's stderr tail never is.
+        _event(target, kind, started, outcome='failed', reason=exc.code,
+               result={'detail': getattr(exc, 'detail', None)}
+               if exc.code in ('target_deferred', 'target_preparing') else None)
+        raise
+    except Exception as exc:
+        _event(target, kind, started, outcome='failed', reason=type(exc).__name__)
+        raise
+    _event(target, kind, started, outcome=result.get('state'), reason=result.get('reason'),
+           result=result)
+    return result
+
+
+def _run_target(kind, value, target, owner_fd):
     commit = target['sourceCommit']
     bundle_sha = target['bundleManifestSha256']
     argv = [sys.executable, '-B', str(Path(__file__).with_name('laya_wake_entry.py')),
