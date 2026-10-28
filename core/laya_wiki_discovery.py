@@ -1,6 +1,6 @@
 """Selected v2 raw -> wiki source discovery from private source evidence.
 
-The Laya index contains wiki cards only. After a successful sync (indexed or
+The memvane-db index contains wiki cards only. After a successful sync (indexed or
 unchanged), the off-hook worker scans bounded raw roots and compares path/hash
 pairs with a private cursor; raw bodies never enter Laya membership, FTS or
 vectors. Cutover seeds the cursor from the proved QMD inventory before route

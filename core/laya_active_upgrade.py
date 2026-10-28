@@ -1,4 +1,4 @@
-"""Recoverable replacement of the sealed code for a selected Laya index.
+"""Recoverable replacement of the sealed code for a selected memvane-db index.
 
 The selection ledger is ``fresh-wiki-cutover.json``. This changes bundle
 ownership, never the index generation, vector profile, scope, project or
@@ -33,7 +33,7 @@ from laya_provider_reproof import attestation_record, reattest
 
 INTENT = 'active-upgrade-intent.json'
 LIMIT = 3 * 1024 * 1024
-REPLACEABLE = frozenset(('pluginRoot', 'bundleManifestSha256',
+REPLACEABLE = frozenset(('schema', 'pluginRoot', 'bundleManifestSha256',
                          'ownershipManifestSha256'))
 # The only ledger fields a bundle replacement may change.
 LEDGER_CHANGES = frozenset(('epoch', 'phase', 'routeSha256', 'attestationSha256',
@@ -211,7 +211,9 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
             old_decision['installId'] != selected['selected']['installId'] or
             old_decision['generation'] != selected['selected']['generation']):
         _fail('active_upgrade_identity_mismatch')
+    from laya_index_host_route import written_schema
     changed = {**old_decision,
+               'schema': written_schema(old_decision['schema']),
                'pluginRoot': proof['pluginRoot'],
                'bundleManifestSha256': proof['bundleManifestSha256'],
                'ownershipManifestSha256': proof['ownershipManifestSha256']}

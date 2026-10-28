@@ -10,8 +10,8 @@ import sys
 import tempfile
 
 SOURCE = Path.cwd()
-MARKET = 'qmd-auto-context-marketplace'
-PLUGIN = 'qmd-auto-context@' + MARKET
+MARKET = 'memvane-marketplace'
+PLUGIN = 'memvane@' + MARKET
 OLD, NEW = '1.0.0', '1.0.1'
 
 DRIVER = '''import json,sys,time
@@ -56,30 +56,30 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     roots = {}
     for host in ('claude', 'codex'):
         for version in (OLD, NEW):
-            root = home / ('.'+host) / 'plugins/cache' / MARKET / 'qmd-auto-context' / version
+            root = home / ('.'+host) / 'plugins/cache' / MARKET / 'memvane' / version
             root.mkdir(parents=True)
             shutil.copytree(SOURCE/'core', root/'core',
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             for directory in ('.claude-plugin', '.codex-plugin'):
-                private(root/directory/'plugin.json', {'name':'qmd-auto-context','version':version})
-            private(root/'package.json', {'name':'qmd-auto-context','version':version})
+                private(root/directory/'plugin.json', {'name':'memvane','version':version})
+            private(root/'package.json', {'name':'memvane','version':version})
             roots[host,version] = root
 
     claude_inventory = home / '.claude/plugins/installed_plugins.json'
     claude_known = home / '.claude/plugins/known_marketplaces.json'
     installed = {'version':2,'plugins':{PLUGIN:[{'scope':'user','version':NEW,
         'installPath':str(roots['claude',NEW]),'gitCommitSha':'a'*40}]}}
-    known = {MARKET:{'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}}
+    known = {MARKET:{'source':{'source':'github','repo':'zbdulee/memvane'}}}
     private(claude_inventory, installed); private(claude_known, known)
     inventory_file = home/'codex-inventory.json'
-    codex_inventory = {'installed':[{'pluginId':PLUGIN,'name':'qmd-auto-context',
+    codex_inventory = {'installed':[{'pluginId':PLUGIN,'name':'memvane',
         'marketplaceName':MARKET,'version':NEW,'installed':True,'enabled':True,
-        'source':{'source':'git','url':'https://github.com/zbdulee/qmd-auto-context.git'}}]}
+        'source':{'source':'git','url':'https://github.com/zbdulee/memvane.git'}}]}
     private(inventory_file, codex_inventory)
     binary = home/'bin/codex'; binary.parent.mkdir()
     binary.write_text('#!'+sys.executable+'\nimport json,os,sys\n'
         'assert "OPENAI_API_KEY" not in os.environ and "ANTHROPIC_API_KEY" not in os.environ\n'
-        'assert sys.argv[1:]==["plugin","list","--marketplace","qmd-auto-context-marketplace","--json"]\n'
+        'assert sys.argv[1:]==["plugin","list","--marketplace","memvane-marketplace","--json"]\n'
         'print(open('+repr(str(inventory_file))+').read())\n')
     binary.chmod(0o700)
     env = {**os.environ,'HOME':str(home),'CODEX_HOME':str(home/'.codex'),
@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
 
     manifest=roots['codex',OLD]/'.codex-plugin/plugin.json'
     original_manifest=manifest.read_bytes()
-    private(manifest,{'name':'qmd-auto-context','version':'wrong'})
+    private(manifest,{'name':'memvane','version':'wrong'})
     for host in ('claude','codex'):invoke(host,'unsupported_adapter')
     manifest.write_bytes(original_manifest)
     current_manifest=roots['claude',NEW]/'.claude-plugin/plugin.json'

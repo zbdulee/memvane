@@ -41,11 +41,27 @@ def _sha(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def default_managed_root(home=None):
+def support_base(home=None):
+    """Per-user support directory of the learning runtime, selections and service.
+
+    ``~/Library/Application Support/memvane`` on macOS, ``~/.local/share/memvane``
+    elsewhere. An account whose learning runtime was provisioned under the
+    pre-rename directory keeps that whole group (runtime, ``live-selection``,
+    ``laya-inference``) together until the runtime is re-provisioned under the
+    MemVane directory: the runtime is a virtual environment with its absolute
+    interpreter paths sealed into the inference proofs.
+    """
     home = Path(home) if home is not None else Path.home()
-    if sys.platform == 'darwin':
-        return home/'Library'/'Application Support'/'qmd-auto-context'/'runtimes'/'laya'
-    return home/'.local'/'share'/'qmd-auto-context'/'runtimes'/'laya'
+    parts = ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
+    current, legacy = home.joinpath(*parts, 'memvane'), home.joinpath(*parts, 'qmd-auto-context')
+    if (not (current/'runtimes'/'laya').exists() and
+            (legacy/'runtimes'/'laya'/'active.json').exists()):
+        return legacy
+    return current
+
+
+def default_managed_root(home=None):
+    return support_base(home)/'runtimes'/'laya'
 
 
 _PROBE = '''import importlib.metadata as m,json,sys

@@ -1,4 +1,4 @@
-"""Hermes Agent plugin entrypoint for qmd-auto-context."""
+"""Hermes Agent plugin entrypoint for MemVane."""
 
 from .hermes_adapter.plugin import register
 

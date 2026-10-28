@@ -8,11 +8,13 @@ import json
 import os
 from pathlib import Path
 
+import memvane_paths
+
 
 def state_dir(explicit=None):
     return Path(explicit) if explicit is not None else Path(os.environ.get(
         "QMD_SYNC_STATE_DIR",
-        str(Path.home() / ".local" / "state" / "laya" / "auto-context" / "scan-state"),
+        str(memvane_paths.auto_context_state() / "scan-state"),
     ))
 
 

@@ -11,7 +11,7 @@ Two consumers share these facts:
   this branch. A card is never retired because its source exists on another
   branch only.
 
-The facts are the ones a later laya-db (worktree, branch) view records per
+The facts are the ones a later memvane-db (worktree, branch) view records per
 source (worktree path, HEAD commit, tracked paths); this module only answers
 them per run. Every git call has a timeout and a run deadline. A ``.git``
 entry that git cannot answer raises ``GitUnavailable``: the caller holds.

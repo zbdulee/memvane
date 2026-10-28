@@ -633,11 +633,11 @@ class V2WorkerChecks(unittest.TestCase):
         status,out,err=self.recall(cwd)
         # Only the matched-but-unservable diagnostic may accompany a fresh answer.
         self.assertEqual(status,0)
-        self.assertRegex(err,r'\A(\[laya-index\] \d+ matched wiki cards, none servable \([^\n]*\)\n)?\Z')
+        self.assertRegex(err,r'\A(\[memvane\] \d+ matched wiki cards, none servable \([^\n]*\)\n)?\Z')
         return json.loads(out)['hookSpecificOutput']['additionalContext']
 
     def assert_refused(self,cwd,code):
-        self.assertEqual(self.recall(cwd),(3,'','[laya-index] %s; QMD fallback refused\n'%code))
+        self.assertEqual(self.recall(cwd),(3,'','[memvane] %s; QMD fallback refused\n'%code))
 
     def drain(self,queue):
         """Run the real synthetic worker behind the sealed-dispatch seam."""

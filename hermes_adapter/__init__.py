@@ -1,1 +1,1 @@
-"""Hermes Agent adapter for qmd-auto-context."""
+"""Hermes Agent adapter for MemVane."""

@@ -1,6 +1,6 @@
 """Read-only corpus fingerprint and immutable review-queue reconciliation.
 
-Only the selected Laya index's active document IDs/hashes and search settings
+Only the selected memvane-db index's active document IDs/hashes and search settings
 are read. This does not read private source bodies, issue a search, or call a
 teacher/model.
 """
@@ -17,7 +17,7 @@ def snapshot(project_root, config):
     """Return a complete active-index snapshot or None, never a guessed hash.
 
     Only a project on a selected Laya route has an index; it is fingerprinted
-    from laya-db (``laya_learning.corpus_snapshot``). Anything else, or an
+    from memvane-db (``laya_learning.corpus_snapshot``). Anything else, or an
     unverifiable selected route, returns None.
     """
     try:

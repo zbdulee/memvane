@@ -22,22 +22,22 @@ class LocalBinding(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home=Path(self.temp.name).resolve()/'home';self.home.mkdir(mode=0o700)
         self.market=self.home/'reviewed package'
-        self.source=self.market/'plugins/qmd-auto-context'
+        self.source=self.market/'plugins/memvane'
         self.source.mkdir(parents=True)
         for host in ['claude','codex']:
-            self.write(self.source/f'.{host}-plugin/plugin.json',{'name':'qmd-auto-context','version':VERSION})
-        self.write(self.source/'package.json',{'name':'qmd-auto-context','version':VERSION})
+            self.write(self.source/f'.{host}-plugin/plugin.json',{'name':'memvane','version':VERSION})
+        self.write(self.source/'package.json',{'name':'memvane','version':VERSION})
         for name,text in [('core/context_learning/laya_adapter.py','adapter = 1\n'),('core/context_learning/other.py','identity = 1\n'),('core/update.sh','true\n'),('hooks/hooks.json','{}\n')]:
             p=self.source/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
-        self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'qmd-auto-context','source':'./plugins/qmd-auto-context','version':VERSION}]})
-        self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'qmd-auto-context','source':{'source':'local','path':'./plugins/qmd-auto-context'},'version':VERSION}]})
+        self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':'./plugins/memvane','version':VERSION}]})
+        self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':{'source':'local','path':'./plugins/memvane'},'version':VERSION}]})
         self.cache={}
         for host in ['claude','codex']:
-            root=self.home/f'.{host}/plugins/cache'/MARKET/'qmd-auto-context'/VERSION
+            root=self.home/f'.{host}/plugins/cache'/MARKET/'memvane'/VERSION
             root.parent.mkdir(parents=True,exist_ok=True);shutil.copytree(self.source,root);self.cache[host]=root
         self.known={MARKET:{'source':{'source':'directory','path':str(self.market)},'installLocation':str(self.market)}}
         self.registry={'version':2,'plugins':{binding.PLUGIN_ID:[{'scope':'user','version':VERSION,'installPath':str(self.cache['claude'])}]}}
-        self.inventory={'installed':[{'pluginId':binding.PLUGIN_ID,'name':'qmd-auto-context','marketplaceName':MARKET,'version':VERSION,'installed':True,'enabled':True,'source':{'source':'local','path':str(self.source)},'marketplaceSource':{'sourceType':'local','source':str(self.market)}}]}
+        self.inventory={'installed':[{'pluginId':binding.PLUGIN_ID,'name':'memvane','marketplaceName':MARKET,'version':VERSION,'installed':True,'enabled':True,'source':{'source':'local','path':str(self.source)},'marketplaceSource':{'sourceType':'local','source':str(self.market)}}]}
         self.persist()
         self.addCleanup(patch.stopall)
         patch.object(Path,'home',return_value=self.home).start()
@@ -73,7 +73,7 @@ class LocalBinding(unittest.TestCase):
     def test_hook_tampering_denied(self):
         (self.cache['claude']/'hooks/hooks.json').write_text('{"tampered":true}\n');self.denied()
     def test_catalog_source_escape_denied(self):
-        self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'qmd-auto-context','source':'../rogue','version':VERSION}]});self.denied()
+        self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':'../rogue','version':VERSION}]});self.denied()
     def test_source_symlink_denied(self):
         p=self.source/'core/context_learning/other.py';p.unlink();p.symlink_to(self.cache['codex']/'core/context_learning/other.py');self.denied()
     def test_duplicate_inventory_denied(self):
@@ -92,10 +92,10 @@ class LocalBinding(unittest.TestCase):
         (self.source/'hooks').chmod(0o777)
         self.denied()
     def test_codex_catalog_remote_url_denied(self):
-        self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'qmd-auto-context','source':{'source':'url','url':'https://github.com/zbdulee/qmd-auto-context'},'version':VERSION}]})
+        self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':{'source':'url','url':'https://github.com/zbdulee/memvane'},'version':VERSION}]})
         self.denied(self.source,self.cache['codex'])
     def test_manifest_cache_mismatch_denied(self):
-        self.write(self.cache['codex']/'.claude-plugin/plugin.json',{'name':'qmd-auto-context','version':'wrong'})
+        self.write(self.cache['codex']/'.claude-plugin/plugin.json',{'name':'memvane','version':'wrong'})
         self.denied()
     def test_missing_claude_registry_denied(self):
         self.registry['plugins']={};self.persist();self.denied()
@@ -110,7 +110,7 @@ class LocalBinding(unittest.TestCase):
     def test_extra_cache_executable_denied(self):
         (self.cache['codex']/'core/unreviewed.py').write_text('extra = 1\n');self.denied()
     def test_rogue_identical_source_denied(self):
-        rogue=self.home/'rogue/plugins/qmd-auto-context';rogue.parent.mkdir(parents=True);shutil.copytree(self.source,rogue);self.denied(rogue,self.cache['codex'])
+        rogue=self.home/'rogue/plugins/memvane';rogue.parent.mkdir(parents=True);shutil.copytree(self.source,rogue);self.denied(rogue,self.cache['codex'])
     def many_files(self,count=150):
         for n in range(count):(self.source/f'core/generated_{n}.py').write_text(f'value = {n}\n')
         return count+4

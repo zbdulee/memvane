@@ -62,18 +62,25 @@ def _private_parent(path):
     return parent.resolve(strict=True)
 
 
+def _state_bases():
+    """State bases an existing install may live under (current, pre-rename)."""
+    import memvane_paths
+    return (memvane_paths.state_base(), memvane_paths.legacy_state_base())
+
+
 def _prepare_state_root(path, install_id):
     """Create only a fresh per-install directory under the local state base."""
     root = Path(path)
     if root.exists() or root.is_symlink():
         return _private_parent(root)
-    base = Path.home() / '.local' / 'state' / 'laya'
+    import memvane_paths
+    base = memvane_paths.state_base()
     if (not root.is_absolute() or root.parent != base or
             type(install_id) is not str or not re.fullmatch(r'[0-9a-f]{32}', install_id) or
             root.name != install_id):
         _fail('unsupported_state_root_creation')
     cursor = Path.home()
-    for name in ('.local', 'state', 'laya', install_id):
+    for name in (*memvane_paths.STATE_PARTS, install_id):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             os.mkdir(cursor, 0o700)
@@ -284,9 +291,10 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
             str(state.resolve(strict=False)) != str(state) or
             len(str(state / 'runtime' / 'laya-embed.sock').encode()) > 100):
         _fail('provider_review_paths_invalid')
-    # prepare creates only ~/.local/state/laya/<install id>; refuse before a digest.
+    # prepare creates only ~/.local/state/memvane/<install id>; refuse before a digest.
+    import memvane_paths
     if (not state.exists() and not state.is_symlink() and
-            (state.parent != Path.home() / '.local' / 'state' / 'laya' or
+            (state.parent != memvane_paths.state_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
         _fail('unsupported_state_root_creation')
     if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or
@@ -661,7 +669,7 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
     """
     import laya_initial_build as initial_build
     from laya_index_a import LayaIndexA
-    from laya_index_host_route import SCHEMA_V2
+    from laya_index_host_route import SCHEMA_V3
     roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
     proof, profile, _manifest = _adopt_and_attest(
         source_root=source_root, plugin_root=plugin_root, commit_id=commit_id,
@@ -689,7 +697,7 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
     generation = 'g-' + hashlib.sha256(
         ('laya-origin-generation:' + install_id + ':' +
          plan['proposalSha256']).encode()).hexdigest()[:32]
-    route = {'schema': SCHEMA_V2, 'status': 'active',
+    route = {'schema': SCHEMA_V3, 'status': 'active',
              'projectRoot': plan['projectRoot'],
              'settingsSha256': _settings_identity(plan),
              'dbPath': str(candidate), 'queuePath': str(queue),
@@ -1179,7 +1187,7 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
     state = _private_parent(state_root)
     if (state != Path(state_root) or type(install_id) is not str or
             not re.fullmatch(r'[0-9a-f]{32}', install_id) or state.name != install_id or
-            state.parent != Path.home() / '.local' / 'state' / 'laya'):
+            state.parent not in _state_bases()):
         _fail('unused_build_state_not_canonical')
     if type(commit_id) is not str or not re.fullmatch(r'[0-9a-f]{40}', commit_id):
         _fail('unused_build_commit_invalid')
@@ -1228,8 +1236,9 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
         if (ownership['installId'] != install_id or ownership['stateRoot'] != str(state) or
                 initial_build.read(state) != record):
             _fail('unused_build_identity_mismatch')
-        pointer_path = initial_build.pointer_path(str(project),
-                                                  initial_build._pointer_dir(create=False))
+        pointer_path = initial_build.registered_pointer_path(str(project))
+        if pointer_path is None:
+            _fail('unused_build_pointer_mismatch')
         pointer_bytes = _read_private(pointer_path, 65536)
         expected_pointer = {'schema': initial_build.POINTER_SCHEMA,
                             'projectRoot': identity['projectRoot'],

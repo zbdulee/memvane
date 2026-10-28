@@ -10,7 +10,7 @@ Do not include exploit details, credentials, private project content, or tokens
 in a public issue. Use GitHub's private vulnerability-reporting flow for this
 repository when it is available:
 
-<https://github.com/zbdulee/qmd-auto-context/security/advisories/new>
+<https://github.com/zbdulee/memvane/security/advisories/new>
 
 If private reporting is unavailable, contact the repository owner through
 GitHub without posting technical details publicly. Include affected version,

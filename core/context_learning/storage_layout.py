@@ -18,11 +18,17 @@ import uuid
 
 
 SCHEMA_VERSION = 1
-ROOT_PARTS = ('Library', 'Application Support', 'qmd-auto-context', 'learning')
+ROOT_PARTS = ('Library', 'Application Support', 'memvane', 'learning')
+LEGACY_ROOT_PARTS = ('Library', 'Application Support', 'qmd-auto-context', 'learning')
 
 
 def root(home=None):
-    return Path(home or Path.home()).joinpath(*ROOT_PARTS)
+    """The registry root; a registry created before the rename stays in place."""
+    base = Path(home or Path.home())
+    current, legacy = base.joinpath(*ROOT_PARTS), base.joinpath(*LEGACY_ROOT_PARTS)
+    if not current.exists() and legacy.exists():
+        return legacy
+    return current
 
 
 def _private_directory(path, *, create=False):

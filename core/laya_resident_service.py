@@ -71,9 +71,10 @@ def _account_home():
 
 
 def service_dir(*, create=False, home=None):
-    """``<account home>/.local/state/laya/service``: private, same owner."""
+    """``<account home>/.local/state/memvane/service``: private, same owner."""
+    import memvane_paths
     cursor = Path(home).resolve() if home is not None else _account_home()
-    for name in ('.local', 'state', 'laya', 'service'):
+    for name in (*memvane_paths.STATE_PARTS, 'service'):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             if not create:

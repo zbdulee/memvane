@@ -6,7 +6,7 @@ successful agent Bash record a request (`wiki_lifecycle_request`); the
 project's `laya-compile` wake runs this module as a bounded child before the
 compile worker, off the hook foreground.
 A card is in scope only when the plugin owns its bytes
-(`wiki_compile.auto_writable_text`: `createdBy: qmd-auto-context`, managed
+(`wiki_compile.auto_writable_text`: plugin `createdBy`, managed
 auto block, not `superseded`). Human pages and anything outside the project's
 wiki root are never read for action. The compiler-owned `sourceRevisions`
 frontmatter (path, collection, sha256) is the evidence; a card written before
@@ -42,7 +42,7 @@ point at another checkout, so it is undecidable instead. Undecidable cards
 unreadable source, a legacy card with some sources present and some missing)
 are kept and logged. Retirement archives the old bytes
 under `.auto-context/compile/retired-wiki/` before unlinking, removes the
-index line, and requests one `laya-sync` wake; the selected laya-db full scan
+index line, and requests one `laya-sync` wake; the selected memvane-db full scan
 drops absent wiki files from its next generation. A missing source on a card
 that still has live sources is retired only once those survivors are covered;
 otherwise the deleted path goes to the compile queue as a `sourceDelete` row,
@@ -72,7 +72,7 @@ The run is idempotent: a retired card is gone on the next run, the archive
 reuses same-content bytes, live-queue keys collapse a repeated enqueue, and a
 refresh already enqueued for the same source hash is not enqueued again until
 `REFRESH_RETRY_SECONDS` pass. Regeneration follows the legacy `session_start_source`
-trigger consent; minimal settings (`settingsModel: "minimal"`) need none. Only the selected laya-db route acts; the legacy
+trigger consent; minimal settings (`settingsModel: "minimal"`) need none. Only the selected memvane-db route acts; the legacy
 QMD route only measures `ineligible`.
 
 After the lifecycle run, the same child runs the retroactive dedup scan
@@ -94,6 +94,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
+import memvane_paths
 import scan_state
 import wiki_compile as wc
 import wiki_source_missing as wsm
@@ -135,7 +136,7 @@ DELETING = (MISSING, LEGACY_MISSING, UNPROVEN)
 def log_path() -> Path:
     return Path(os.environ.get(
         "QMD_WIKI_LIFECYCLE_LOG",
-        str(Path.home() / ".local" / "state" / "laya" / "auto-context" / "logs" / "wiki-lifecycle.log")))
+        str(memvane_paths.auto_context_state() / "logs" / "wiki-lifecycle.log")))
 
 
 def log(message: str) -> None:
@@ -555,7 +556,7 @@ def run(cwd: str) -> dict:
         return result
     if selected is None:
         result["route"] = "legacy"
-        log("SKIP: legacy QMD route (lifecycle acts on the selected laya-db route only)")
+        log("SKIP: legacy QMD route (lifecycle acts on the selected memvane-db route only)")
         return result
     result["route"] = "selected"
 

@@ -7,7 +7,7 @@
 
 두 경우 모두 메타데이터만 append하며 LLM을 호출하지 않습니다. 이후 비동기 worker `process_job`이 route identity·경로 범위·안정 snapshot·비용 가드를 통과한 job에 대해서만 extractor(모델 호출 경계)를 실행합니다. 그 결과로 위키 카드와 verify 대상이 만들어집니다.
 
-이 과정에서 raw는 카드 생성 입력과 path·hash freshness 메타데이터로만 쓰입니다. 카드 compile이 끝났다고 해서 Laya 색인 sync까지 끝난 것은 아닙니다(03 참조). 공식 Antigravity의 자동 편집 이벤트는 현재 이 경로로 들어오지 않습니다(01 참조).
+이 과정에서 raw는 카드 생성 입력과 path·hash freshness 메타데이터로만 쓰입니다. 카드 compile이 끝났다고 해서 MemVane 색인 sync까지 끝난 것은 아닙니다(03 참조). 공식 Antigravity의 자동 편집 이벤트는 현재 이 경로로 들어오지 않습니다(01 참조).
 
 ```mermaid
 flowchart TD
@@ -33,7 +33,7 @@ flowchart TD
   end
   CL[("compile candidate ledger")]
   WC[("위키 카드 .auto-context/wiki 와 verify queue")]
-  NX["Laya 색인 sync 는 별도 단계 03"]
+  NX["MemVane 색인 sync 는 별도 단계 03"]
 
   PT --> GT
   SY --> GT
@@ -76,5 +76,5 @@ flowchart TD
 
 - synthetic QA 증거는 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 다만 synthetic 증거는 selected route의 end-to-end compile이 통과했다는 뜻이 아닙니다. 해당 호스트 QA는 통과하지 않았습니다.
 - extractor 실행 이후의 카드 기록(`wiki_compile`)과 verify 처리 코드는 발췌 범위 밖입니다. 그래서 도표에서는 노드 하나로 요약했습니다.
-- compile 완료는 위키 카드가 생성되었다는 뜻일 뿐입니다. Laya index generation 게시와 recall 반영은 별개 단계입니다.
+- compile 완료는 위키 카드가 생성되었다는 뜻일 뿐입니다. memvane-db index generation 게시와 recall 반영은 별개 단계입니다.
 - 아키텍처 지도에 기록된 위험이 아직 남아 있습니다. enqueue와 snapshot 기록 사이에서 실패하면 중복 재시도가 일어날 수 있습니다.

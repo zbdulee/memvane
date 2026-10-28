@@ -1,4 +1,4 @@
-"""Off-hook, journal-bound full-scan sync for a selected Laya Index route.
+"""Off-hook, journal-bound full-scan sync for a selected memvane-db route.
 
 Runtime wakes contain only a project path. Every attempt rereads the selected
 route, installer journal, provider attestation and DB/queue incarnation. A

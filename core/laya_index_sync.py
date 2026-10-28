@@ -1,4 +1,4 @@
-"""Selected Laya Index full-scan writer for one explicitly bound source scope.
+"""Selected memvane-db full-scan writer for one explicitly bound source scope.
 
 The source is one v1 root string or a runtime-validated Mapping of disjoint
 collection roots; either way each publish is one full-membership generation.

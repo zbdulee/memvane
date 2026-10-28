@@ -139,18 +139,18 @@ def recall_context(
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") not in ("candidate", "worktree"):
-                return {"context": "[laya-index] selected route changed; QMD fallback refused"}
+                return {"context": "[memvane] selected route changed; QMD fallback refused"}
             return serve_selected("recall", "hermes", decision,
                                   {"prompt": prompt, "cwd": selected_cwd})
         if route_state != "legacy":
-            return {"context": "[laya-index] selected route unavailable; QMD fallback refused"}
+            return {"context": "[memvane] selected route unavailable; QMD fallback refused"}
         # Not onboarded: no recall.
     except Exception as exc:  # pragma: no cover - hook isolation
-        logger.debug("qmd-auto-context recall hook failed: %s", exc)
+        logger.debug("memvane recall hook failed: %s", exc)
         # A selected route must make proof or search failure visible to the host.
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
-            return {"context": "[laya-index] selected proof or query failed; QMD fallback refused"}
+            return {"context": "[memvane] selected proof or query failed; QMD fallback refused"}
     return None
 
 
@@ -174,12 +174,12 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
                            {"hook_event_name": "SessionStart", "cwd": selected_cwd})
             return None
         if route_state != "legacy":
-            logger.warning("laya-index selected route unavailable; QMD fallback refused")
+            logger.warning("[memvane] selected route unavailable; QMD fallback refused")
         # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
-        logger.debug("qmd-auto-context session update failed: %s", exc)
+        logger.debug("memvane session update failed: %s", exc)
         if selected_route:
-            logger.warning("laya-index selected session sync failed; QMD fallback refused")
+            logger.warning("[memvane] selected session sync failed; QMD fallback refused")
 
 
 def pre_edit_gate(
@@ -212,14 +212,14 @@ def pre_edit_gate(
                 "tool_input": tool_input, "cwd": selected_cwd})
             if answer.get("action") == "continue":
                 return None
-            return {"action": "block", "message": "Laya Index gate failed; QMD fallback refused"}
+            return {"action": "block", "message": "memvane-db gate failed; QMD fallback refused"}
         if route_state != "legacy":
-            return {"action": "block", "message": "Laya Index route unavailable; QMD fallback refused"}
+            return {"action": "block", "message": "memvane-db route unavailable; QMD fallback refused"}
         # Not onboarded: the edit is not gated.
     except Exception as exc:  # pragma: no cover - hook isolation
-        logger.debug("qmd-auto-context pre-edit gate failed: %s", exc)
+        logger.debug("memvane pre-edit gate failed: %s", exc)
         if selected_route:
-            return {"action": "block", "message": "Laya Index gate failed; QMD fallback refused"}
+            return {"action": "block", "message": "memvane-db gate failed; QMD fallback refused"}
     return None
 
 
@@ -263,9 +263,9 @@ def post_edit_sync(
                             "tool_input": tool_input, "cwd": selected_cwd})
             return None
         if route_state != "legacy":
-            logger.warning("laya-index selected route unavailable; QMD fallback refused")
+            logger.warning("[memvane] selected route unavailable; QMD fallback refused")
         # Not onboarded: no index or compile work.
     except Exception as exc:  # pragma: no cover - hook isolation
-        logger.debug("qmd-auto-context post-edit sync failed: %s", exc)
+        logger.debug("memvane post-edit sync failed: %s", exc)
         if selected_route:
-            logger.warning("laya-index selected post-edit action failed; QMD fallback refused")
+            logger.warning("[memvane] selected post-edit action failed; QMD fallback refused")

@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
+import wiki_markers
 import wiki_mutation_lock
 import compile_paths as cp
 import config as qmd_config
@@ -690,7 +691,7 @@ def card_changed_during_verify(
     `job_hash and fresh_hash and job_hash != fresh_hash`라, auto 블록이 없어
     `card_state`가 `""`를 돌려주면 대조를 통째로 건너뛰었다 — 이 가드가 막으려는 바로 그
     상황에서 fail-open했다. 실해: 검수 LLM 호출(수십 초) 동안 카드가 `status: generated` +
-    `createdBy: qmd-auto-context`만 남긴 **다른 본문**으로 교체되고 auto 블록이 빠지면
+    플러그인 `createdBy`만 남긴 **다른 본문**으로 교체되고 auto 블록이 빠지면
     (dedup consolidation·사람 편집이 정확히 그 모양이다) 옛 본문에 대한 verdict가 새 본문에
     적용된다. `pass`면 검증된 적 없는 내용에 `verified`가 찍히고, `fail`이면 방금 사람이 쓴
     본문이 삭제된다(삭제 원장에 본문이 없어 복구 불가).
@@ -726,7 +727,7 @@ def card_changed_during_verify(
     """
     return (
         fresh_status != "generated"
-        or fresh_meta.get("createdBy") != "qmd-auto-context"
+        or fresh_meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES
         or bool(job_hash and job_hash != fresh_hash)
         or payload_text is None
         or fresh_text is None
@@ -879,7 +880,7 @@ def process_verify_job(
     if text is None:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "card_missing"})
         return True, False
-    if status != "generated" or meta.get("createdBy") != "qmd-auto-context":
+    if status != "generated" or meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "not_generated"})
         return True, False
     job_hash = str(job.get("sourceHash") or "")

@@ -795,7 +795,7 @@ class DiscoveryChecks(unittest.TestCase):
             for code, refusal in refusals.items():
                 with self.subTest(code=code), patch.object(runtime_work, 'request', **refusal):
                     self.assertEqual(self.bash_status(),
-                                     (3, '', '[laya-index] %s; QMD fallback refused\n' % code))
+                                     (3, '', '[memvane] %s; QMD fallback refused\n' % code))
                     self.assertEqual(self.grants(), {'sync': 0, 'session_start': 0})
                     self.assertEqual(queue.pending(), [])
             # A later, unrelated out-of-band change woken by stale recall only.
@@ -822,7 +822,7 @@ class DiscoveryChecks(unittest.TestCase):
             with patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                               return_value=None):
                 self.assertEqual(self.hook('update', {'hook_event_name': 'SessionStart'}),
-                                 (3, '', '[laya-index] wiki_pending_refresh_unknown; '
+                                 (3, '', '[memvane] wiki_pending_refresh_unknown; '
                                          'QMD fallback refused\n'))
             self.assertEqual([row['kind'] for row in queue.pending()], ['laya-sync'])
             self.assertEqual(self.grants(), {'sync': 0, 'session_start': 0})
@@ -849,7 +849,7 @@ class DiscoveryChecks(unittest.TestCase):
             with patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                               side_effect=run_then_fail):
                 self.assertEqual(self.hook('update', {'hook_event_name': 'SessionStart'}),
-                                 (3, '', '[laya-index] wiki_pending_refresh_unknown; '
+                                 (3, '', '[memvane] wiki_pending_refresh_unknown; '
                                          'QMD fallback refused\n'))
             (status, results, failures), waiting = concurrent[0]
             self.assertEqual((status, failures), ({'status': 'drained', 'runs': 1}, []))
@@ -914,7 +914,7 @@ class DiscoveryChecks(unittest.TestCase):
             # full queue: the active grant is withdrawn, the hook fails.
             with patch.object(runtime_work, 'request', side_effect=second_refused()):
                 self.assertEqual(self.bash_status(),
-                                 (3, '', '[laya-index] selected_wiki_wake_failed; '
+                                 (3, '', '[memvane] selected_wiki_wake_failed; '
                                          'QMD fallback refused\n'))
             self.assertEqual(calls, [('laya-sync', False), ('laya-sync', True)])
             self.assertEqual((self.grants(), self.grants(1)), (zero, zero))
@@ -987,7 +987,7 @@ class DiscoveryChecks(unittest.TestCase):
                 with self.subTest(code=code), \
                         patch.object(discovery, 'activate_grant', side_effect=error):
                     self.assertEqual(self.bash_status(),
-                                     (3, '', '[laya-index] %s; QMD fallback refused\n' % code))
+                                     (3, '', '[memvane] %s; QMD fallback refused\n' % code))
                     self.assertEqual((self.grants(), self.grants(1)), (zero, waiting))
             # Both events' first wakes coalesced; no follow-up was requested.
             self.assertEqual([(row['kind'], row['revision']) for row in queue.pending()],

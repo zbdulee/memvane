@@ -3,14 +3,14 @@
 The provider review reads its executable inventory from here. Layout, all
 owner-only (0700 directories, 0600/0700 files), no symlinks::
 
-    ~/.local/state/laya/embed-runtime/
+    ~/.local/state/memvane/embed-runtime/
       .lock                  provisioning lock
       active.json            {"schema", "generation"}
       previous.json          the generation active.json named before the last switch
       generations/g-<id>/    runtime.json, bin/node, node_modules/..., models/<gguf>
 
 The root sits beside the install state roots and the per-user service under
-the same private Laya state base, outside ``~/.cache`` (a cache may be purged;
+the same private MemVane state base, outside ``~/.cache`` (a cache may be purged;
 the attested provider files must not be).
 
 A generation is content addressed: ``<id>`` is the digest of its sealed
@@ -88,7 +88,8 @@ def _canonical(value):
 
 
 def root(home=None):
-    return Path(home or Path.home()) / '.local' / 'state' / 'laya' / 'embed-runtime'
+    import memvane_paths
+    return memvane_paths.state_base(home or Path.home()) / 'embed-runtime'
 
 
 def _owner_dir(path):
@@ -112,7 +113,8 @@ def _runtime_root(home=None, *, create=False):
         # Test and sandbox runs never read or write the account's real runtime.
         _fail('laya_embed_runtime_fixture_real_home')
     cursor = base
-    for name in ('.local', 'state', 'laya', 'embed-runtime'):
+    import memvane_paths
+    for name in (*memvane_paths.STATE_PARTS, 'embed-runtime'):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             if not create:
@@ -886,12 +888,18 @@ def _remove_work(path):
 
 def _referenced_generations(home):
     """Generations a current install attestation still names."""
-    base = Path(home or Path.home()) / '.local' / 'state' / 'laya'
+    import memvane_paths
     generations = root(home) / 'generations'
     named = set()
-    try:
-        installs = [path for path in base.iterdir() if path.is_dir()]
-    except FileNotFoundError:
+    installs = []
+    # Installs not yet moved off the pre-rename state base still count.
+    for base in (memvane_paths.state_base(home or Path.home()),
+                 memvane_paths.legacy_state_base(home or Path.home())):
+        try:
+            installs.extend(path for path in base.iterdir() if path.is_dir())
+        except FileNotFoundError:
+            continue
+    if not installs:
         return named, []
     unreadable = []
     for install in installs:

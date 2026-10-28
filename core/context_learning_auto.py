@@ -137,7 +137,7 @@ def launch(project: Path, *, data_mode: str | None = None) -> dict:
         # test-only guard override into this deliberately scrubbed child env.
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
             env['QMD_SETUP_GUARD_FIXTURE'] = '1'
-        # The current-corpus gate reads the selected Laya index (laya-db).
+        # The current-corpus gate reads the selected memvane-db index.
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
         import runtime_work

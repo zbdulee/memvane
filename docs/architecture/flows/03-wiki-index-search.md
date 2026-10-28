@@ -34,7 +34,7 @@ flowchart TD
     SW["selected sync worker"]
     RS["raw path hash cursor freshness 및 위키 생성 전용 본문 색인 안 함"]
   end
-  IX[("Laya index generation wiki 전용 membership 본문 FTS vector")]
+  IX[("memvane-db index generation wiki 전용 membership 본문 FTS vector")]
   WC[("위키 카드 .auto-context/wiki")]
   PL[("wiki freshness pending ledger")]
 

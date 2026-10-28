@@ -91,7 +91,7 @@ test("active operator docs expose automatic trust and no removed review lifecycl
   }
 
   const combined = files.map((file) => readFileSync(file, "utf8")).join("\n");
-  assert.match(combined, /createdBy.*qmd-auto-context/is);
+  assert.match(combined, /createdBy.*memvane/is);
   assert.match(combined, /sourceRevisions/);
   assert.match(combined, /merge-needed.*passive|passive.*merge-needed/is);
 

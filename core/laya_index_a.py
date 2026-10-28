@@ -1,4 +1,4 @@
-"""A-int Laya Index contract slice: immutable generations in one SQLite DB.
+"""A-int memvane-db contract slice: immutable generations in one SQLite DB.
 
 Callers must supply a verified explicit database path and scope.
 Callers inject an explicit database path. GC is a read-only plan, never deletion.

@@ -1,4 +1,4 @@
-"""Durable record of one inactive initial Laya Index build (installer-owned).
+"""Durable record of one inactive initial memvane-db build (installer-owned).
 
 An install whose corpus one synchronous call cannot cover registers a build
 instead of embedding in-process. The build's data lives in the stores the
@@ -275,10 +275,18 @@ def create_or_verify(identity):
     return stored
 
 
-def _pointer_dir(create):
-    """``~/.local/state/laya/initial-builds``, created 0700 only if asked."""
+def _pointer_dir(create, *, legacy=False):
+    """``~/.local/state/memvane/initial-builds``, created 0700 only if asked.
+
+    ``legacy`` names the directory earlier releases used; it is read (and
+    retired from) but never created.
+    """
+    import memvane_paths
+    if legacy and create:
+        _fail('initial_build_pointer_legacy_create')
     cursor = Path.home()
-    for name in ('.local', 'state', 'laya', POINTERS):
+    parts = memvane_paths.LEGACY_STATE_PARTS if legacy else memvane_paths.STATE_PARTS
+    for name in (*parts, POINTERS):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             if not create:
@@ -291,6 +299,22 @@ def _pointer_dir(create):
     return _private_dir(cursor)
 
 
+def _pointer_dirs():
+    """Existing pointer directories, current first, then the legacy one."""
+    return [directory for directory in (_pointer_dir(create=False),
+                                        _pointer_dir(create=False, legacy=True))
+            if directory is not None]
+
+
+def registered_pointer_path(project_root):
+    """Path of the project's existing pointer (current directory first), or None."""
+    for directory in _pointer_dirs():
+        path = pointer_path(project_root, directory)
+        if path.exists() or path.is_symlink():
+            return path
+    return None
+
+
 def pointer_path(project_root, directory):
     digest = hashlib.sha256(str(project_root).encode('utf-8')).hexdigest()[:32]
     return Path(directory) / (digest + '.json')
@@ -301,6 +325,14 @@ def register_project(identity):
     _validate_identity(identity)
     pointer = {'schema': POINTER_SCHEMA, 'projectRoot': identity['projectRoot'],
                'stateRoot': identity['stateRoot'], 'installId': identity['installId']}
+    legacy = _pointer_dir(create=False, legacy=True)
+    if legacy is not None:
+        earlier = pointer_path(identity['projectRoot'], legacy)
+        prior = _read_json(earlier)
+        if prior is not None:
+            if prior != pointer:
+                _fail('initial_build_already_registered')
+            return str(earlier)
     path = pointer_path(identity['projectRoot'], _pointer_dir(create=True))
     existing = _read_json(path)
     if existing is None:
@@ -348,9 +380,15 @@ def retire_project_pointer(identity):
         stored = _read_json(archive)
     if stored != pointer:
         _fail('initial_build_pointer_archive_mismatch')
-    directory = _pointer_dir(create=False)
-    if directory is None:
-        return 'absent'
+    results = [_retire_pointer_in(directory, identity, pointer, stored)
+               for directory in _pointer_dirs()]
+    for answer in ('retired', 'other'):
+        if answer in results:
+            return answer
+    return 'absent'
+
+
+def _retire_pointer_in(directory, identity, pointer, stored):
     path = pointer_path(identity['projectRoot'], directory)
     holding = path.with_name('.retiring-' + identity['installId'] + '-' + path.name)
     held = _read_json(holding)
@@ -391,10 +429,11 @@ def lookup(project_root):
     A pointer that does not name a matching record fails closed rather than
     letting the wake fall through to another path.
     """
-    directory = _pointer_dir(create=False)
-    if directory is None:
-        return None
-    pointer = _read_json(pointer_path(project_root, directory))
+    pointer = None
+    for directory in _pointer_dirs():
+        pointer = _read_json(pointer_path(project_root, directory))
+        if pointer is not None:
+            break
     if pointer is None:
         return None
     if (set(pointer) != {'schema', 'projectRoot', 'stateRoot', 'installId'}

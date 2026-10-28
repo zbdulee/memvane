@@ -92,5 +92,5 @@ route record와 selection marker는 추적되지 않는 런타임 파일이라 l
   collection 스캔에서 파일 부재가 확인되면 현재 view에서 제외한다.
 
 checkout별 게시 generation, 콘텐츠 캐시 키/GC, 공유 위키의 완전한 의존성
-판정은 별도 구현·회귀 검증이 필요하다. 현재 Laya 색인 및 recall 경로가 이
+판정은 별도 구현·회귀 검증이 필요하다. 현재 MemVane 색인 및 recall 경로가 이
 계약을 이미 만족한다고 주장하지 않는다.

@@ -1,4 +1,4 @@
-"""Hermes Agent plugin registration for qmd-auto-context."""
+"""Hermes Agent plugin registration for MemVane."""
 
 from __future__ import annotations
 

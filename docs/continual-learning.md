@@ -122,10 +122,10 @@ that retains an unaccepted adapter path falls back with `unsupported_adapter`;
 readiness is not an execution or quality guarantee.
 
 For a different host/version path, the live selector accepts only a retained
-adapter under the current user's official `qmd-auto-context-marketplace`
+adapter under the current user's official `memvane-marketplace`
 Claude/Codex cache namespace. The owner-controlled regular files and host
 manifest/package version must match that namespace, the current host must
-report an official installation from `zbdulee/qmd-auto-context`, and both
+report an official installation from `zbdulee/memvane`, and both
 adapter files must have identical SHA-256 content. Only then is the adapter
 argument replaced **in memory** with the current package's adapter. The policy
 file, interpreter, model directory, checkpoint and authorization stay intact;
@@ -163,9 +163,13 @@ preparation described under the shared inference service below.
 
 Shared project settings should omit `contextLearning.stateRoot`. The private
 parent then defaults to the current user's plugin directory:
-`~/Library/Application Support/qmd-auto-context/live-selection` on macOS,
-or `~/.local/share/qmd-auto-context/live-selection` elsewhere, using the same
-home-location rule as the managed runtime. These displayed `~` prefixes mean
+`~/Library/Application Support/memvane/live-selection` on macOS,
+or `~/.local/share/memvane/live-selection` elsewhere, using the same
+home-location rule as the managed runtime. An account whose managed runtime
+is provisioned under the earlier `qmd-auto-context` support directory keeps
+the runtime, `live-selection` and `laya-inference` together there
+(`runtime_setup.support_base`): the runtime is a virtual environment whose
+absolute interpreter paths are sealed into the inference proofs. These displayed `~` prefixes mean
 the current user's home; literal `~` strings in `stateRoot` are not expanded.
 Each canonical project root still gets its own SHA-256 namespace beneath that
 parent. Existing state/checkpoint files at this default are reused in place;
@@ -238,7 +242,7 @@ selection: held-out validation decides whether a trained head is promoted.
 synthetic compatibility proof and an explicit runtime-selection gate. Importing
 it does not download Python, install packages or change an active runtime.
 The default selection mode is a plugin-owned generation under
-`~/Library/Application Support/qmd-auto-context/runtimes/laya` on macOS. A
+`~/Library/Application Support/memvane/runtimes/laya` on macOS. A
 managed interpreter must resolve inside that owner-only root and match the
 pinned Python 3.12.14 and package versions. An existing interpreter may be
 reused only with an explicit path and an attestation bound to the interpreter,
@@ -264,7 +268,7 @@ mutable trained checkpoints belong to private per-project state. The proposed
 sources are Astral uv's managed Python distribution and `laya==0.3.20` from
 PyPI; `managed_install_plan()` records the proposed exact dependency pins.
 Staging installs generations under
-`~/Library/Application Support/qmd-auto-context/runtimes/laya/generations/`.
+`~/Library/Application Support/memvane/runtimes/laya/generations/`.
 The lock is `core/context_learning/locks/laya-macos-arm64-py312.lock` (SHA-256
 `354c3c985a390d5045019e98871cc8a223237f25d891f36525e49f9a42e46447`), and
 wheels are synced with `uv pip sync --require-hashes --no-build` against

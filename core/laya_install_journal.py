@@ -21,7 +21,8 @@ from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
-                                   SCHEMA_V2 as ROUTE_SCHEMA_V2, select_route)
+                                   SCHEMA_V2 as ROUTE_SCHEMA_V2,
+                                   SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route)
 # Loaded for the executing-bundle proof (``_executing_from_candidate``),
 # which requires laya_package from the sealed core; no QMD inventory is read.
 import laya_package  # noqa: F401
@@ -235,7 +236,8 @@ def _route(raw, journal_path):
         raise JournalEvidenceError('invalid_route_bytes') from exc
     schema = route.get('schema') if isinstance(route, dict) else None
     expected_fields = (ROUTE_FIELDS if schema == ROUTE_SCHEMA else
-                       ROUTE_FIELDS_V2 if schema == ROUTE_SCHEMA_V2 else None)
+                       ROUTE_FIELDS_V2 if schema in (ROUTE_SCHEMA_V2, ROUTE_SCHEMA_V3)
+                       else None)
     if (not isinstance(route, dict) or expected_fields is None or
             set(route) != expected_fields or route.get('status') != 'active' or
             route.get('journalPath') != str(journal_path)):

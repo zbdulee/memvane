@@ -1,6 +1,6 @@
 """Automatic Laya bundle upgrade after a host plugin update.
 
-Every laya-db install is bound to one exact installed plugin bundle. When a
+Every memvane-db install is bound to one exact installed plugin bundle. When a
 host executes a different installed bundle, a SessionStart hook calls
 ``request``; it reads a small status file and may spawn one detached worker
 (``run``) off the hook foreground. The worker moves every install of that
@@ -48,6 +48,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -230,14 +231,14 @@ def notice_line(state, code):
     status = state.get('status') if isinstance(state, dict) else None
     reason = state.get('reason') if isinstance(state, dict) else ''
     reason = reason if isinstance(reason, str) and reason else code
-    head = '[laya-index] plugin bundle changed (' + code + '); '
+    head = '[memvane] plugin bundle changed (' + code + '); '
     if status in ('queued', 'running', None):
         return (head + 'search serves the last published index read-only and '
                 'sync waits while the index moves to this bundle.')
     if status == 'refused':
         return (head + 'automatic index upgrade needs review (' + reason + '); '
                 'search stays read-only on the last published index. Ask the '
-                'setup skill to upgrade or rebuild the Laya index.')
+                'setup skill to upgrade or rebuild the memvane-db index.')
     if status == 'complete':
         return (head + 'index upgrade finished; the next session uses it.')
     if status == 'deferred':
@@ -327,12 +328,53 @@ def select_source(root, home=None):
     return source.resolve(), head
 
 
-def _not_older(source, bound_commit, commit):
-    """Never move an install back to an older bundle (no host ping-pong)."""
+_SEMVER = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?\Z')
+
+
+def semver_key(version):
+    """Sortable key of ``X.Y.Z[-pre]`` (a pre-release sorts before its release)."""
+    match = _SEMVER.fullmatch(version) if isinstance(version, str) else None
+    if match is None:
+        return None
+    major, minor, patch, pre = match.groups()
+    return (int(major), int(minor), int(patch), 0 if pre else 1, pre or '')
+
+
+def bundle_version(root):
+    """Version of an installed bundle: its ``package.json``, else the cache
+    directory name (``<cache>/<marketplace>/<plugin>/<version>``), which
+    survives the host removing the bundle's files."""
+    root = Path(root)
+    try:
+        value = json.loads((root / 'package.json').read_text('utf-8')).get('version')
+        if semver_key(value) is not None:
+            return value
+    except (OSError, UnicodeError, ValueError, AttributeError):
+        pass
+    return root.name if semver_key(root.name) is not None else None
+
+
+def _not_older(source, bound_commit, commit, *, bound_root=None, root=None):
+    """Never move an install back to an older bundle (no host ping-pong).
+
+    Git ancestry decides when the source clone knows both commits. The bundle
+    versions (semver) decide across plugin ids and whenever git cannot: the
+    executing bundle must be strictly newer. Nothing decidable means refusal.
+    """
     if bound_commit == commit:
         return
     code, _ = _git(source, 'merge-base', '--is-ancestor', commit, bound_commit)
     if code == 0:
+        _refuse('older_host_bundle')
+    bound = semver_key(bundle_version(bound_root)) if bound_root is not None else None
+    current = semver_key(bundle_version(root)) if root is not None else None
+    if bound is not None and current is not None:
+        if current < bound or (code != 1 and current == bound):
+            _refuse('older_host_bundle')
+        return
+    if code != 1:
+        # The source clone does not know the bound commit (another plugin id's
+        # history, a shallow clone) and no version decides it.
         _refuse('older_host_bundle')
 
 
@@ -466,7 +508,8 @@ def upgrade_install(project_root, state, root, home=None):
         except Exception:
             pass  # The owner copy is gone: move the install to this root.
     source, commit = select_source(root, home)
-    _not_older(source, identity['sourceCommit'], commit)
+    _not_older(source, identity['sourceCommit'], commit,
+               bound_root=identity['pluginRoot'], root=root)
     old = _read_attestation(state)
     manifest = old.get('providerManifest') or {}
     _ensure_embed_runtime(old)

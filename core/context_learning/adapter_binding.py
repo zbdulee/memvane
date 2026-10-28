@@ -13,9 +13,14 @@ import stat
 import subprocess
 import time
 
-MARKETPLACE = 'qmd-auto-context-marketplace'
-PLUGIN_ID = 'qmd-auto-context@' + MARKETPLACE
-REPOSITORY = 'zbdulee/qmd-auto-context'
+PLUGIN_NAME = 'memvane'
+MARKETPLACE = 'memvane-marketplace'
+PLUGIN_ID = PLUGIN_NAME + '@' + MARKETPLACE
+REPOSITORY = 'zbdulee/memvane'
+# A policy written before the rename anchors on an adapter in the earlier
+# plugin id's cache; that cache stays a valid identity anchor (never executed).
+CACHE_IDENTITIES = ((MARKETPLACE, PLUGIN_NAME),
+                    ('qmd-auto-context-marketplace', 'qmd-auto-context'))
 REPOSITORY_URLS = frozenset({'https://github.com/' + REPOSITORY,
                             'https://github.com/' + REPOSITORY + '.git'})
 
@@ -104,7 +109,7 @@ def _owner_json(path, home):
 def _official_cache(path, home):
     parts = path.relative_to(home).parts
     if (len(parts) != 9 or parts[0] not in ('.claude', '.codex')
-            or parts[1:5] != ('plugins', 'cache', MARKETPLACE, 'qmd-auto-context')
+            or parts[1:3] != ('plugins', 'cache') or tuple(parts[3:5]) not in CACHE_IDENTITIES
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', parts[5])
             or parts[6:] != ('core', 'context_learning', 'laya_adapter.py')):
         raise ValueError('unsupported_adapter')
@@ -113,7 +118,7 @@ def _official_cache(path, home):
     content = _owned_bytes(path, home, 256 * 1024)
     for relative in ('.'+host+'-plugin/plugin.json', 'package.json'):
         metadata = _owner_json(root / relative, home)
-        if (not isinstance(metadata, dict) or metadata.get('name') != 'qmd-auto-context'
+        if (not isinstance(metadata, dict) or metadata.get('name') != parts[4]
                 or metadata.get('version') != version):
             raise ValueError('unsupported_adapter')
     return host, version, root, hashlib.sha256(content).digest()
@@ -139,7 +144,7 @@ def _installed_current(host, version, root, home, deadline):
             raise ValueError('unsupported_adapter')
         return
     item = _codex_installed(home, deadline)
-    if not (item.get('name') == 'qmd-auto-context'
+    if not (item.get('name') == PLUGIN_NAME
                and item.get('marketplaceName') == MARKETPLACE
                and item.get('version') == version
                and item.get('installed') is True and item.get('enabled') is True
@@ -180,24 +185,24 @@ def _local_catalog(market, host, home):
     rows = catalog.get('plugins')
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise ValueError('unsupported_adapter')
-    rows = [row for row in rows if row.get('name') == 'qmd-auto-context']
+    rows = [row for row in rows if row.get('name') == PLUGIN_NAME]
     if len(rows) != 1:
         raise ValueError('unsupported_adapter')
     row = rows[0]
     source = row.get('source')
-    expected = './plugins/qmd-auto-context'
+    expected = './plugins/' + PLUGIN_NAME
     if host == 'codex':
         if not isinstance(source, dict) or source != {'source': 'local', 'path': expected}:
             raise ValueError('unsupported_adapter')
     elif source != expected:
         raise ValueError('unsupported_adapter')
-    root = market / 'plugins/qmd-auto-context'
+    root = market / 'plugins' / PLUGIN_NAME
     version = row.get('version')
     if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', version):
         raise ValueError('unsupported_adapter')
     for relative in ('package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
         metadata = _owner_json(root / relative, home)
-        if not isinstance(metadata, dict) or metadata.get('name') != 'qmd-auto-context' or metadata.get('version') != version:
+        if not isinstance(metadata, dict) or metadata.get('name') != PLUGIN_NAME or metadata.get('version') != version:
             raise ValueError('unsupported_adapter')
     return root, version
 
@@ -262,7 +267,7 @@ def _local_binding(path, home, deadline, *, execution):
         if known.get('installLocation') != str(market):
             raise ValueError('unsupported_adapter')
         source, current_version = _local_catalog(market, host, home)
-        cache = home / '.claude/plugins/cache' / MARKETPLACE / 'qmd-auto-context' / current_version
+        cache = home / '.claude/plugins/cache' / MARKETPLACE / PLUGIN_NAME / current_version
         inventory = _owner_json(base / 'installed_plugins.json', home)
         entries = inventory['plugins'].get(PLUGIN_ID, [])
         if not isinstance(entries, list) or not entries or not all(
@@ -278,8 +283,8 @@ def _local_binding(path, home, deadline, *, execution):
             raise ValueError('unsupported_adapter')
         market = Path(origin['source'])
         source, current_version = _local_catalog(market, host, home)
-        cache = home / '.codex/plugins/cache' / MARKETPLACE / 'qmd-auto-context' / current_version
-        if (root != cache or item.get('name') != 'qmd-auto-context'
+        cache = home / '.codex/plugins/cache' / MARKETPLACE / PLUGIN_NAME / current_version
+        if (root != cache or item.get('name') != PLUGIN_NAME
                 or item.get('marketplaceName') != MARKETPLACE
                 or item.get('version') != current_version
                 or item.get('installed') is not True or item.get('enabled') is not True
