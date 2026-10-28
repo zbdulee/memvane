@@ -2342,13 +2342,11 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     return host_payload(host, context)
 
 
-def _reselect(cwd, action, selection):
-    """The hook's second route read; it must equal the classified one.
+def _reselect(cwd, action):
+    """The hook's second route read, waiting out a state-move window.
 
-    A state move that lands between the two reads (the install directory moved
-    to the MemVane base) is the same install at its new paths: the second read
-    waits out the move window and is accepted when it is exactly that
-    relocation.
+    It must equal the classified decision, or be exactly that install after a
+    state move landed between the two reads (``_relocated``).
     """
     decision = select_route(cwd, action=action)
     if decision.get('state') == 'blocked':
@@ -2357,11 +2355,15 @@ def _reselect(cwd, action, selection):
             decision = laya_state_move.settle_decision(cwd, action, decision, select_route)
         except Exception:
             pass
-    if decision != selection:
-        import laya_state_move
-        if not laya_state_move.relocated_decision(selection, decision):
-            _fail("selected_route_changed")
     return decision
+
+
+def _relocated(selection, decision):
+    try:
+        import laya_state_move
+        return laya_state_move.relocated_decision(selection, decision)
+    except Exception:
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2395,7 +2397,9 @@ def main(argv: list[str] | None = None) -> int:
         if selection["state"] not in ("candidate", "preview", "worktree"):
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
-        decision = _reselect(cwd, action, selection)
+        decision = _reselect(cwd, action)
+        if decision != selection and not _relocated(selection, decision):
+            _fail("selected_route_changed")
         response = (serve_preview(action, host, decision, payload)
                     if decision['state'] == 'preview' else
                     serve_selected(action, host, decision, payload))
