@@ -647,6 +647,40 @@ class ResponseChecks(unittest.TestCase):
                              {'source_revisions_missing': 1, 'status_not_verified': 1})
             self.assertIn('2 matched wiki cards, none servable', stderr.getvalue())
 
+    def test_v2_filtered_count_excludes_probe_only_rows(self):
+        import io
+        import laya_index_capacity
+        runtime = SimpleNamespace(index=FakeIndex(), scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
+        decision = v2_decision()
+        decision['recallSettings'] = {**decision['recallSettings'],
+                                      'recallStrategy': 'wikiOnly'}
+        draft = row(path='wiki/draft.md', body='---\ntitle: Draft\nstatus: generated\n'
+                    'createdBy: qmd-auto-context\n---\nbody\n')
+        legacy = row(path='wiki/legacy.md', body='---\ntitle: Old\nstatus: verified\n'
+                     'createdBy: qmd-auto-context\n---\nbody\n')
+
+        def phase(*args, **kwargs):
+            source_filter = args[11]
+            source_filter(draft)  # a DF probe row only
+            kwargs['diagnostics']['probeOnlyPaths'] = frozenset({draft['path']})
+            return [item for item in (legacy,) if source_filter(item)], False
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / 'recall.log'
+            with patch.object(response, '_v2_phase', side_effect=phase), \
+                 patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                              return_value=FakeBoundCandidates()), \
+                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                found, _ = response.query_selected_v2(
+                    runtime, 'find card', VECTOR_PROFILE, VECTOR_PROFILE,
+                    lambda *_: None, decision)
+            self.assertEqual(found, [])
+            lines = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(lines[0]['filtered_count'], 1)
+            self.assertEqual(lines[0]['filtered_reasons'], {'source_revisions_missing': 1})
+            self.assertIn('1 matched wiki cards, none servable', stderr.getvalue())
+
     def test_v2_scaffold_only_wiki_reports_no_match_not_unservable(self):
         # wiki_init scaffold pages stay indexed but are never cards: an empty
         # wiki answers "0 matching documents", not "none servable".
@@ -859,6 +893,106 @@ class ResponseChecks(unittest.TestCase):
                 source_filter=lambda item: item['path'].startswith('wiki/keep-'))
             self.assertEqual(sorted(item['path'] for item in found),
                              ['wiki/keep-a.md', 'wiki/keep-b.md'])
+
+    def _lexical_only_phase(self, index, source_filter, diagnostics=None,
+                            general=('alpha', 'beta', 'gamma')):
+        """Real ``_pinned_vector`` with a provider that is unavailable."""
+        import keywords
+        import laya_index_source_port as source_port
+        import laya_index_vector
+
+        class Pinned:
+            def __init__(self, _index):
+                pass
+
+            def profile_for_pin(self, _token):
+                return sealed_profile()
+
+        def unavailable(_prompt, _profile):
+            raise response._VectorUnavailable('selected_bundle_drift_provider_unavailable')
+        runtime = SimpleNamespace(index=index, scope=SCOPE)
+        with patch.object(source_port, '_seal', return_value=(SCOPE, 'generation-7', 'manifest')), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(source_port, '_verify_row', side_effect=lambda r, *_a: r), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': list(general), 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(laya_index_vector, 'LayaVectorIndex', Pinned):
+            return response._v2_phase(
+                runtime, 'token', 'alpha beta gamma', VECTOR_PROFILE, unavailable,
+                {'wiki': '/synthetic/wiki'}, ('wiki',), (), 0, (),
+                source_filter=source_filter,
+                **({} if diagnostics is None else {'diagnostics': diagnostics}))
+
+    def test_v2_lexical_only_floor_serves_verified_term_matches(self):
+        # Bundle drift / cold provider: the strict AND query of a natural
+        # prompt matches nothing, while each term matches verified cards.
+        by_term = {'"alpha"*': [row(path='wiki/a.md'), row(path='wiki/draft.md')],
+                   '"beta"*': [row(path='wiki/a.md'), row(path='wiki/b.md')],
+                   '"gamma"*': []}
+
+        class TermIndex(FakeIndex):
+            calls = []
+
+            def search_many(self, token, queries, limit, **_kw):
+                self.calls.append(queries)
+                return [[] if ' AND ' in query else list(by_term.get(query, []))
+                        for query in queries]
+        index = TermIndex()
+        found, evidence = self._lexical_only_phase(
+            index, lambda item: item['path'] != 'wiki/draft.md')
+        self.assertEqual([item['path'] for item in found], ['wiki/a.md', 'wiki/b.md'])
+        self.assertFalse(evidence)  # the floor is never body evidence
+        self.assertEqual(len(index.calls), 2)  # probe lists reused, no extra SQL
+        # Fused probe rows are candidates: a rejected one counts as matched.
+        diagnostics = {}
+        self._lexical_only_phase(TermIndex(), lambda item: item['path'] != 'wiki/draft.md',
+                                 diagnostics)
+        self.assertEqual(diagnostics['probeOnlyPaths'], frozenset())
+
+    def test_v2_lexical_only_floor_uses_one_or_query_after_probe_deadline(self):
+        from laya_index_a import IndexContractError
+
+        class TimedIndex(FakeIndex):
+            calls = []
+
+            def search_many(self, token, queries, limit, **kwargs):
+                self.calls.append((queries, kwargs['deadline_seconds']))
+                if len(self.calls) == 1:
+                    raise IndexContractError('fts_deadline_exceeded')
+                return [[row(path='wiki/a.md')] if ' OR ' in query else []
+                        for query in queries]
+        index = TimedIndex()
+        found, evidence = self._lexical_only_phase(index, lambda _item: True)
+        self.assertEqual([item['path'] for item in found], ['wiki/a.md'])
+        self.assertFalse(evidence)
+        self.assertEqual(index.calls[-1], (('"alpha"* OR "beta"* OR "gamma"*',), 2.0))
+
+    def test_v2_probe_only_rejections_are_not_counted_as_matches(self):
+        import keywords
+        import laya_index_source_port as source_port
+
+        class ProbeIndex(FakeIndex):
+            def search_many(self, token, queries, limit, **_kw):
+                return [[] if ' AND ' in query else [row(path='wiki/index.md')]
+                        for query in queries]
+        diagnostics = {}
+        with patch.object(source_port, '_seal', return_value=(SCOPE, 'generation-7', 'manifest')), \
+             patch.object(source_port, 'scan_collections',
+                          return_value=SimpleNamespace(manifest='manifest')), \
+             patch.object(source_port, '_verify_row', side_effect=lambda r, *_a: r), \
+             patch.object(keywords, 'build_lexical_terms',
+                          return_value={'generalTerms': ['alpha', 'beta'], 'epTerms': [],
+                                        'identifiers': []}), \
+             patch.object(response, '_pinned_vector', return_value=[]):
+            found, _ = response._v2_phase(
+                SimpleNamespace(index=ProbeIndex()), 'token', 'alpha beta',
+                VECTOR_PROFILE, lambda *_: None, {'wiki': '/synthetic/wiki'},
+                ('wiki',), (), 0, (), source_filter=lambda _item: False,
+                diagnostics=diagnostics)
+        self.assertEqual(found, [])
+        self.assertEqual(diagnostics['probeOnlyPaths'], frozenset({'wiki/index.md'}))
 
     def test_v2_lexical_full_page_with_few_proved_rows_is_capped(self):
         import keywords

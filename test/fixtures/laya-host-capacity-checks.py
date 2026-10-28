@@ -118,6 +118,21 @@ class HostCapacityTests(HostCapacityCase):
         # Published index bodies are checked without reopening wiki files.
         self.assertEqual(stats['files_opened'], 0)
 
+    def test_vector_unavailable_floor_serves_term_matches_and_finishes(self):
+        # No single row holds both terms, so the strict AND query is empty;
+        # the lexical floor still answers from verified per-term matches.
+        query = self.pinned()
+
+        def unavailable(_prompt, _route):
+            raise response._VectorUnavailable('selected_bundle_drift_provider_unavailable')
+        rows, evidence = response._v2_phase(self.runtime, self.token, 'otter heron',
+                                            self.route, unavailable, self.roots,
+                                            ('raw',), (), 0, (), query)
+        self.assertEqual(sorted(row['path'] for row in rows), ['raw/a.md', 'raw/b.md'])
+        self.assertFalse(evidence)
+        query.require_returned_verified()
+        self.assertEqual(query.finish()['dropped'], {})
+
     def test_changed_returned_file_keeps_last_published_answer(self):
         query = self.pinned()
         (self.raw / 'a.md').write_text('# A\nalpha otter, edited after sync\n',

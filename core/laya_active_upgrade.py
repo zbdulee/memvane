@@ -548,6 +548,20 @@ def finished_intent_receipt(state, project, intent):
     return target
 
 
+def _reextracted(intent, plugin_root):
+    """The settled intent's bundle root no longer holds its sealed files.
+
+    A host re-extracting the same version in place gives the files new
+    inodes; the receipt is archived and the same root is adopted again.
+    """
+    from laya_product_bundle import BundleEvidenceError
+    try:
+        live = inspect_full_plugin_candidate(str(plugin_root))
+    except BundleEvidenceError:
+        return True
+    return live['ownershipManifestSha256'] != intent['newProof']['ownershipManifestSha256']
+
+
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             accepted_provider_sha256, model_path, dimension, restore=False):
     """Resume one exact sealed upgrade; a failed step leaves a blocked route."""
@@ -578,11 +592,19 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 current_journal['state'] == 'restored_old' and
                 current_journal['selectedRouteSha256'] ==
                 intent['oldLedger']['routeSha256'])
+            settled_forward = (
+                current_row['phase'] == 'active' and
+                current_row['routeSha256'] == intent['newLedger']['routeSha256'] and
+                current_journal['state'] == 'active' and
+                current_journal['selectedRouteSha256'] ==
+                intent['newLedger']['routeSha256'])
         else:
-            settled_restored = False
+            settled_restored = settled_forward = False
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
-                                   or intent['newProof']['sourceCommit'] != commit_id):
+                                   or intent['newProof']['sourceCommit'] != commit_id
+                                   or (settled_forward and
+                                       _reextracted(intent, plugin_root))):
             # Only a settled intent is archived, and ``_archive_finished_intent``
             # is that proof. A settled
             # intent is a receipt: its new bundle is now the bound one, which
