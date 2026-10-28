@@ -244,6 +244,38 @@ class GenerationGc(Machine):
         self.assertEqual(self.generations(), sorted([first, third, fourth]))
         self.assertEqual(Path(R.select()['generation']).name, fourth)
 
+    def test_symlinked_generations_never_deletes_outside_the_runtime(self):
+        self.provision()
+        self.model_bytes += b'2'
+        self.provision()
+        self.model_bytes += b'3'
+        self.provision()
+        generations = R.root() / 'generations'
+        outside = self.base / 'outside-generations'
+        generations.rename(outside)
+        generations.symlink_to(outside)
+        (outside / '.staging-dead').mkdir()
+        before = sorted(p.name for p in outside.iterdir())
+        self.assertEqual(len(before), 4)
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_unsafe$'):
+            R.collect(approve=True)
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_unsafe$'):
+            R.collect()
+        self.assertEqual(sorted(p.name for p in outside.iterdir()), before)
+
+    def test_link_inside_a_removed_generation_is_not_followed(self):
+        first = Path(self.provision()['generation'])
+        for bump in (b'2', b'3'):
+            self.model_bytes += bump
+            self.provision()
+        keep = self.base / 'keep-me'
+        write(keep / 'data', 'outside')
+        (first / 'escape').symlink_to(keep)
+        done = R.collect(approve=True)
+        self.assertEqual(done['changesApplied'], 1)
+        self.assertFalse(first.exists())
+        self.assertEqual((keep / 'data').read_text(), 'outside')
+
     def test_unreadable_attestation_blocks_gc(self):
         self.provision()
         install = self.home / '.local' / 'state' / 'laya' / ('b' * 32)
@@ -287,13 +319,19 @@ class LegacyCleanup(unittest.TestCase):
         self.killed.append((pid, sig))
         self.processes.pop(pid, None)
 
+    def ps_all(self):
+        return [(pid, uid, command) for pid, (uid, command) in self.processes.items()]
+
     def apply(self, **options):
-        return C.apply(self.home, ps=self.ps, kill=self.kill,
+        return C.apply(self.home, ps=self.ps, ps_all=self.ps_all, kill=self.kill,
                        launchctl=self.launchctl.append, sleep=lambda _s: None, **options)
+
+    def plan(self, **options):
+        return C.plan(self.home, ps=self.ps, ps_all=self.ps_all, **options)
 
     def test_plan_is_read_only_and_classifies_everything(self):
         before = sorted(str(p) for p in self.home.rglob('*'))
-        plan = C.plan(self.home, ps=self.ps)
+        plan = self.plan()
         self.assertEqual(sorted(str(p) for p in self.home.rglob('*')), before)
         states = {row['port']: row['state'] for row in plan['daemons']}
         self.assertEqual(states, {8584: 'running_verified', 8484: 'identity_mismatch'})
@@ -341,8 +379,8 @@ class LegacyCleanup(unittest.TestCase):
             if pid == 4242:
                 self.checked = True
             return seen
-        result = C.apply(self.home, ps=changing, kill=self.kill, launchctl=self.launchctl.append,
-                         sleep=lambda _s: None, approved=True)
+        result = C.apply(self.home, ps=changing, ps_all=self.ps_all, kill=self.kill,
+                         launchctl=self.launchctl.append, sleep=lambda _s: None, approved=True)
         self.assertEqual(result['status'], 'blocked')
         self.assertIn('qmd_daemon_identity_changed', result['blockers'])
         self.assertEqual(self.killed, [])
@@ -350,7 +388,8 @@ class LegacyCleanup(unittest.TestCase):
 
     def test_daemon_that_survives_sigterm_keeps_its_trees(self):
         clock = iter(range(0, 100))
-        result = C.apply(self.home, ps=self.ps, kill=lambda pid, sig: self.killed.append(pid),
+        result = C.apply(self.home, ps=self.ps, ps_all=self.ps_all,
+                         kill=lambda pid, sig: self.killed.append(pid),
                          launchctl=self.launchctl.append, sleep=lambda _s: None,
                          clock=lambda: next(clock), approved=True)
         self.assertEqual(result['status'], 'blocked')
@@ -378,20 +417,94 @@ class LegacyCleanup(unittest.TestCase):
         self.assertEqual(result['blockers'], ['older_host_bundle_bound'])
         self.assertEqual(self.killed, [])
         (old_bundle / 'core' / 'backend_manager.sh').unlink()
-        self.assertEqual(C.plan(self.home, ps=self.ps)['blockers'], [])
+        self.assertEqual(self.plan()['blockers'], [])
 
     def test_profile_closure_rows_alone_do_not_block(self):
         install = self.home / '.local' / 'state' / 'laya' / ('d' * 32)
         write(install / 'production-provider-attestation.json', json.dumps({
             'providerManifest': {'modelPath': '/elsewhere/m.gguf'},
             'profileDependencyClosure': [{'path': str(self.entry)}]}))
-        self.assertEqual(C.plan(self.home, ps=self.ps)['blockers'], [])
+        self.assertEqual(self.plan()['blockers'], [])
 
     def test_fixture_runs_refuse_the_account_home(self):
         with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}), \
                 mock.patch.object(C, '_account_home', return_value=self.home):
             with self.assertRaisesRegex(C.CleanupBlocked, '^legacy_cleanup_fixture_real_home$'):
-                C.plan(self.home, ps=self.ps)
+                self.plan()
+
+    def outside_runtimes(self):
+        """Move ``runtimes`` outside HOME and leave a link in its place."""
+        tmp = tempfile.TemporaryDirectory(prefix='llc-out-')
+        self.addCleanup(tmp.cleanup)
+        outside = Path(tmp.name).resolve() / 'runtimes'
+        runtimes = self.runtime.parent
+        runtimes.rename(outside)
+        runtimes.symlink_to(outside)
+        return outside
+
+    def test_symlinked_ancestor_blocks_and_keeps_the_outside_tree(self):
+        outside = self.outside_runtimes()
+        plan = self.plan()
+        actions = {row['category']: row['action'] for row in plan['paths']}
+        self.assertEqual(actions['plugin_qmd_runtime'], 'refused_unsafe_path')
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('legacy_cleanup_target_unsafe', result['blockers'])
+        self.assertEqual(self.killed, [])
+        self.assertTrue((outside / 'qmd' / self.entry.relative_to(self.runtime)).exists())
+        self.assertTrue((outside / 'laya' / 'keep').exists())
+
+    def test_ancestor_swapped_after_plan_is_refused_at_removal(self):
+        support = self.runtime.parents[1]
+        plan = self.plan()
+        self.assertEqual(plan['blockers'], [])
+        outside = self.outside_runtimes()
+        with self.assertRaisesRegex(C.CleanupBlocked, '^legacy_cleanup_target_unsafe$'):
+            C._remove_tree(self.runtime, self.home)
+        self.assertTrue((outside / 'qmd' / self.entry.relative_to(self.runtime)).exists())
+        # A link inside a removed tree is unlinked, never followed.
+        keep = Path(tempfile.mkdtemp(prefix='llc-keep-'))
+        self.addCleanup(shutil.rmtree, keep, True)
+        write(keep / 'data', 'outside')
+        (support / 'shared-qmd' / 'escape').symlink_to(keep)
+        C._remove_tree(support / 'shared-qmd', self.home)
+        self.assertFalse((support / 'shared-qmd').exists())
+        self.assertEqual((keep / 'data').read_text(), 'outside')
+
+    def test_portless_legacy_pid_file_stops_the_verified_daemon(self):
+        write(self.backend / 'daemon.pid', '6161\n')
+        self.processes[6161] = (os.getuid(), '/opt/node/bin/node ' + str(self.entry) +
+                                ' mcp --http --port 8181')
+        plan = self.plan()
+        legacy = next(row for row in plan['daemons'] if row['pidFile'].endswith('/daemon.pid'))
+        self.assertEqual((legacy['state'], legacy['port']), ('running_verified', 8181))
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'cleaned')
+        self.assertIn((6161, signal.SIGTERM), self.killed)
+        self.assertNotIn(6161, self.processes)
+        self.assertFalse(self.runtime.exists())
+
+    def test_unverified_daemon_using_the_runtime_blocks_deletion(self):
+        write(self.backend / 'daemon.pid', '7171\n')
+        # Names the runtime but is not the exact daemon argv: never signalled.
+        self.processes[7171] = (os.getuid(), '/opt/node/bin/node ' + str(self.entry) +
+                                ' mcp --http')
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('qmd_daemon_unverified', result['blockers'])
+        self.assertEqual(self.killed, [])
+        self.assertTrue(self.runtime.exists())
+        self.assertEqual(self.launchctl, [])
+
+    def test_runtime_process_without_pid_file_blocks_deletion(self):
+        self.processes[8181] = (os.getuid() + 1, '/opt/node/bin/node ' + str(self.entry) +
+                                ' mcp --http --port 8585')
+        result = self.apply(approved=True)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['blockers'], ['qmd_daemon_unverified'])
+        self.assertEqual([row['pid'] for row in result['unverifiedProcesses']], [8181])
+        self.assertEqual(self.killed, [])
+        self.assertTrue(self.runtime.exists())
 
 
 class SetupEntryActions(unittest.TestCase):

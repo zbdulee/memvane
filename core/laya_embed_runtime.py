@@ -51,6 +51,8 @@ import shutil
 import stat
 import uuid
 
+import safe_rmtree
+
 SCHEMA = 'laya-embed-runtime-v1'
 RUNTIME_ID = 'qmd-2.5.3-node-llama-cpp-3.18.1'
 LLAMA_VERSION = '3.18.1'
@@ -919,44 +921,86 @@ def _referenced_generations(home):
     return named, unreadable
 
 
+def _generations_fd(runtime):
+    """Directory fd of ``runtime/generations``, a real private dir of this user.
+
+    GC enumerates and deletes through this fd, so a ``generations`` link (or one
+    swapped in after this check) never points the delete outside the runtime.
+    """
+    generations = runtime / 'generations'
+    try:
+        _owner_dir(generations)
+        if os.path.realpath(generations) != os.path.join(os.path.realpath(runtime),
+                                                         'generations'):
+            _fail('laya_embed_runtime_unsafe')
+        root = safe_rmtree.open_root(runtime, uid=os.getuid())
+        try:
+            fd = safe_rmtree.open_at(root, 'generations', uid=os.getuid())
+        finally:
+            os.close(root)
+    except FileNotFoundError:
+        raise RuntimeUnavailable('laya_embed_runtime_missing') from None
+    except OSError:
+        raise RuntimeUnavailable('laya_embed_runtime_unsafe') from None
+    if stat.S_IMODE(os.fstat(fd).st_mode) & 0o077:
+        os.close(fd)
+        _fail('laya_embed_runtime_unsafe')
+    return fd
+
+
 def collect(home=None, *, approve=False):
     """Remove generations other than active, previous and attested ones."""
     runtime = _runtime_root(home)
-    generations = runtime / 'generations'
     with _lock(runtime):
         active = _pointer(runtime / ACTIVE)
         previous = _pointer(runtime / PREVIOUS, missing_ok=True)
         attested, unreadable = _referenced_generations(home)
-        rows = []
-        for path in sorted(generations.iterdir()):
-            if path.name.startswith('.staging-'):
-                rows.append({'generation': path.name, 'action': 'remove_stale_staging'})
-            elif GENERATION.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
-                reason = ('active' if path.name == active else
-                          'previous' if path.name == previous else
-                          'attested' if path.name in attested else None)
-                rows.append({'generation': path.name,
-                             'action': 'keep' if reason else 'remove',
-                             **({'reason': reason} if reason else {})})
+        fd = _generations_fd(runtime)
+        try:
+            return _collect_at(fd, active, previous, attested, unreadable, approve)
+        finally:
+            os.close(fd)
+
+
+def _collect_at(fd, active, previous, attested, unreadable, approve):
+    rows = []
+    for name in sorted(os.listdir(fd)):
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        real_dir = stat.S_ISDIR(info.st_mode)
+        if name.startswith('.staging-') and real_dir:
+            rows.append({'generation': name, 'action': 'remove_stale_staging'})
+        elif GENERATION.fullmatch(name) and real_dir:
+            reason = ('active' if name == active else
+                      'previous' if name == previous else
+                      'attested' if name in attested else None)
+            rows.append({'generation': name,
+                         'action': 'keep' if reason else 'remove',
+                         **({'reason': reason} if reason else {})})
+        else:
+            rows.append({'generation': name, 'action': 'keep',
+                         'reason': 'unrecognized'})
+    if unreadable:
+        # An unreadable attestation may name any generation.
+        return {'status': 'blocked', 'reason': 'attestation_unreadable',
+                'attestations': unreadable, 'generations': rows, 'changesApplied': 0}
+    removed = 0
+    if approve:
+        for row in rows:
+            name = row['generation']
+            if row['action'] == 'remove_stale_staging':
+                uid = None
+            elif row['action'] == 'remove':
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_IMODE(info.st_mode) & 0o077:
+                    _fail('laya_embed_runtime_unsafe')
+                uid = os.getuid()
             else:
-                rows.append({'generation': path.name, 'action': 'keep',
-                             'reason': 'unrecognized'})
-        if unreadable:
-            # An unreadable attestation may name any generation.
-            return {'status': 'blocked', 'reason': 'attestation_unreadable',
-                    'attestations': unreadable, 'generations': rows, 'changesApplied': 0}
-        removed = 0
-        if approve:
-            for row in rows:
-                path = generations / row['generation']
-                if row['action'] == 'remove_stale_staging':
-                    _remove_staging(path)
-                elif row['action'] == 'remove':
-                    _owner_dir(path)
-                    shutil.rmtree(path)
-                else:
-                    continue
-                row['action'] = 'removed'
-                removed += 1
+                continue
+            try:
+                safe_rmtree.rmtree_at(fd, name, uid=uid)
+            except safe_rmtree.UnsafeTree:
+                raise RuntimeUnavailable('laya_embed_runtime_unsafe') from None
+            row['action'] = 'removed'
+            removed += 1
     return {'status': 'collected' if approve else 'planned', 'active': active,
             'previous': previous, 'generations': rows, 'changesApplied': removed}
