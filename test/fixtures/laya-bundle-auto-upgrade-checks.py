@@ -78,6 +78,13 @@ class Base(unittest.TestCase):
                                    side_effect=self.ensured.append)
         ensure.start()
         self.addCleanup(ensure.stop)
+        # Runtime file pinning has its own checks (laya-embed-runtime,
+        # laya-journal-v4). These synthetic manifests name no Laya runtime
+        # generation, so each reads as one pinned generation here.
+        pinned = mock.patch('laya_embed_runtime.sealed_files_sha256',
+                            new=lambda _path: 'f' * 64)
+        pinned.start()
+        self.addCleanup(pinned.stop)
 
     def claude_root(self, version='0.37.0'):
         root = (self.home / '.claude' / 'plugins' / 'cache' / 'mkt' /

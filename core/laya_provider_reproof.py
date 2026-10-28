@@ -14,15 +14,23 @@ moved closure keeps the reviewed digest in the manifest and the attestation
 carries the reviewed rows (``profileDependencyClosure``); the validator
 proves the live rows are the same files by layout and content.
 
+Every other executed file counts as content too. The old attestation's
+``runtimeFilesSha256`` (sealed, or read from the content-addressed
+runtime.json of the Laya generation it names) must equal the reviewed
+generation's, and the result seals it. An attestation outside a Laya
+generation has no trusted record of its JS dependencies, so it is never
+equivalent automatically: rebuild required.
+
 Any content change (model, dimension, runtime, recipe, provider, worker,
-node, module entry or native bytes) is not equivalent: rebuild required.
+node, module entry, native or other runtime bytes) is not equivalent:
+rebuild required.
 """
 from __future__ import annotations
 
 import hashlib
 
-from laya_product_bundle import (PROFILE_CLOSURE_FIELD, _canonical,
-                                 closure_layout)
+from laya_product_bundle import (PROFILE_CLOSURE_FIELD, RUNTIME_FILES_FIELD,
+                                 _canonical, closure_layout)
 
 # Manifest values that define the embedding content. Paths are excluded.
 CONTENT_KEYS = ('approvedProviderId', 'providerArtifactSha256',
@@ -52,6 +60,13 @@ def _reviewed_closure(attestation):
     return attestation.get(PROFILE_CLOSURE_FIELD) or attestation.get('dependencyClosure')
 
 
+def _runtime_files(old_attestation, new_manifest):
+    """(old, new) runtime file digests; raises when either cannot be read."""
+    from laya_embed_runtime import attested_files, sealed_files_sha256
+    return (attested_files(old_attestation),
+            sealed_files_sha256(new_manifest.get('moduleEntryPath')))
+
+
 def reattest(old_attestation, reviewed_provider):
     """The reviewed provider under the old vector profile, or None.
 
@@ -72,6 +87,15 @@ def reattest(old_attestation, reviewed_provider):
                 (old_manifest, old_profile, new_manifest, new_profile)) or
             set(new_manifest) != set(old_manifest)):
         return None
+    try:
+        old_files, new_files = _runtime_files(old_attestation, new_manifest)
+    except Exception:
+        return None
+    if old_files is None or new_files != old_files:
+        # No trusted full-file record of what the old worker ran, or a
+        # changed JS dependency (or any runtime file): new content.
+        return None
+    files = {RUNTIME_FILES_FIELD: new_files}
     same_closure_paths = new_closure == reviewed_closure
     content_keys = [key for key in CONTENT_KEYS
                     if not (key in CLOSURE_DERIVED_KEYS and not same_closure_paths)]
@@ -86,7 +110,7 @@ def reattest(old_attestation, reviewed_provider):
                     for key in CLOSURE_DERIVED_KEYS)):
             return None
         return {'vectorProfile': old_profile, 'providerManifest': new_manifest,
-                'dependencyClosure': new_closure}
+                'dependencyClosure': new_closure, **files}
     old_layout, new_layout = _layout(reviewed_closure), _layout(new_closure)
     if old_layout is None or old_layout != new_layout:
         return None
@@ -99,7 +123,7 @@ def reattest(old_attestation, reviewed_provider):
                    if key in old_manifest}}
     return {'vectorProfile': old_profile, 'providerManifest': manifest,
             'dependencyClosure': new_closure,
-            PROFILE_CLOSURE_FIELD: reviewed_closure}
+            PROFILE_CLOSURE_FIELD: reviewed_closure, **files}
 
 
 def _fingerprint_reproduced(old_manifest, new_manifest, old_profile):
@@ -134,6 +158,7 @@ def attestation_record(*, proof, journal_path, reattested, schema):
               'vectorProfile': proof['vectorProfile'],
               'providerManifest': reattested['providerManifest'],
               'dependencyClosure': reattested['dependencyClosure']}
-    if PROFILE_CLOSURE_FIELD in reattested:
-        record[PROFILE_CLOSURE_FIELD] = reattested[PROFILE_CLOSURE_FIELD]
+    for field in (PROFILE_CLOSURE_FIELD, RUNTIME_FILES_FIELD):
+        if field in reattested:
+            record[field] = reattested[field]
     return record
