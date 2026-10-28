@@ -26,7 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
-import select
+import selectors
 import signal
 import socket
 import stat
@@ -62,6 +62,7 @@ QUERY_SECONDS = 15          # a query or status request, from accept to answer
 DOCUMENT_SECONDS = 320      # a document request, from accept to answer
 RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
 DRAIN_SECONDS = 330         # one document_chunks request may take 300s
+LOAD_DRAIN_SECONDS = 120    # a cold load (attestation, admission, 15s start) to settle
 SUCCESSOR_WAIT_SECONDS = 600
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
 _BUNDLE = None
@@ -584,9 +585,8 @@ class Worker:
         self.failures = 0
         self.retry_at = 0.0
         self.loading = False
-        self.inflight = 0
+        self.inflight = 0           # reserved under the service lock with the lookup
         self.idle_since = None
-        self.counter = threading.Lock()
         self.slots = {'query': threading.BoundedSemaphore(QUERY_SLOTS),
                       'document': threading.BoundedSemaphore(DOCUMENT_SLOTS)}
 
@@ -598,25 +598,19 @@ class Worker:
         if deadline is None:
             deadline = time.monotonic() + (QUERY_SECONDS if kind == 'query'
                                            else DOCUMENT_SECONDS)
-        with self.counter:
-            self.inflight += 1
+        slot = self.slots['query' if kind == 'query' else 'document']
+        if not slot.acquire(timeout=min(_left(deadline), 5 if kind == 'query' else 300)):
+            raise TimeoutError('laya_service_slot_timeout')
         try:
-            slot = self.slots['query' if kind == 'query' else 'document']
-            if not slot.acquire(timeout=min(_left(deadline), 5 if kind == 'query' else 300)):
-                raise TimeoutError('laya_service_slot_timeout')
-            try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-                    conn.settimeout(min(_left(deadline), 5))
-                    conn.connect(self.socket_path)
-                    conn.settimeout(_left(deadline))
-                    conn.sendall(payload)
-                    conn.shutdown(socket.SHUT_WR)
-                    answer = _read_all(conn, RESPONSE_LIMIT, deadline)
-            finally:
-                slot.release()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(min(_left(deadline), 5))
+                conn.connect(self.socket_path)
+                conn.settimeout(_left(deadline))
+                conn.sendall(payload)
+                conn.shutdown(socket.SHUT_WR)
+                answer = _read_all(conn, RESPONSE_LIMIT, deadline)
         finally:
-            with self.counter:
-                self.inflight -= 1
+            slot.release()
         if not answer:
             raise ConnectionError('laya_service_worker_closed')
         return answer
@@ -860,6 +854,10 @@ class Service:
                 self.inflight_done.wait(.2)
         while self.learning_root and time.monotonic() < deadline and self._learning_busy():
             time.sleep(.2)
+        # A cold load started before the drain finishes (and stops its model,
+        # seeing the drain) before any lease is released, so a load never
+        # overlaps the successor. Holding the lock keeps any new load out.
+        self.cold_load.acquire(timeout=LOAD_DRAIN_SECONDS)
         with self.lock:
             for project in list(self.bindings):
                 self._release(project, reason='starting')
@@ -1083,8 +1081,8 @@ class Service:
                 worker.handle, worker.state = None, 'failed'
                 worker.failures += 1
                 worker.retry_at = time.monotonic() + 5
-            if (worker.loading or worker.retry_at > time.monotonic()
-                    or worker.state == 'terminal'):
+            if (self.draining.is_set() or worker.loading
+                    or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
                 return
             if not self.cold_load.acquire(blocking=False):
                 return  # another profile is loading; a later tick retries
@@ -1204,13 +1202,26 @@ class Service:
                 os.close(fd)
 
     def _accept_loop(self, binding):
+        try:
+            with selectors.DefaultSelector() as waiting:
+                waiting.register(binding.listener, selectors.EVENT_READ)
+                self._accept_until_closed(binding, waiting)
+        except Exception:
+            pass
+        if not binding.closed and not self.stopped.is_set():
+            # The listener thread failed while the binding still looked
+            # ready: release it, so the next tick adopts it again instead of
+            # every request timing out against a socket nobody accepts.
+            with self.lock:
+                if self.bindings.get(binding.project) is binding:
+                    self._release(binding.project, reason='starting')
+            self.wake.set()
+
+    def _accept_until_closed(self, binding, waiting):
         while not binding.closed and not self.stopped.is_set():
             # An idle listener holds no slot: wait for a pending peer first.
-            try:
-                readable, _, _ = select.select([binding.listener], [], [], .2)
-            except (OSError, ValueError):
-                return
-            if not readable:
+            # A selector, not select(): a listener fd above FD_SETSIZE is valid.
+            if not waiting.select(.2):
                 continue
             # The cap is taken before accept, so nothing is read past it; at
             # the cap the peer stays in the kernel backlog.
@@ -1218,12 +1229,14 @@ class Service:
                 continue
             try:
                 conn, _ = binding.listener.accept()
-            except (socket.timeout, TimeoutError):
+            except (socket.timeout, TimeoutError, BlockingIOError):
                 self.connections.release()
                 continue
             except OSError:
                 self.connections.release()
-                return
+                if binding.closed:
+                    return
+                raise
             accepted = time.monotonic()
             with self.lock:
                 self.inflight += 1
@@ -1242,7 +1255,7 @@ class Service:
             self.inflight_done.notify_all()
 
     def _serve_client(self, binding, conn, accepted=None):
-        kind = None
+        kind = reserved = None
         accepted = time.monotonic() if accepted is None else accepted
         try:
             if not _same_owner(conn):
@@ -1258,9 +1271,14 @@ class Service:
                 return
             kind = request.get('kind')
             manifest = binding.manifest
-            worker = self.workers.get(_worker_key(manifest))
-            if worker is None or not worker.alive():
-                raise ConnectionError('laya_service_worker_unavailable')
+            with self.lock:
+                # Lookup and in-flight reservation under the lock reclaim
+                # decides under: a found worker is never reclaimed mid-request.
+                worker = self.workers.get(_worker_key(manifest))
+                if worker is None or not worker.alive():
+                    raise ConnectionError('laya_service_worker_unavailable')
+                worker.inflight += 1
+                reserved = worker
             if request == {'kind': 'status'}:
                 from laya_embed_resident import _IDENTITY
                 conn.sendall(json.dumps({**{key: manifest[key] for key in _IDENTITY},
@@ -1280,6 +1298,9 @@ class Service:
             else:
                 _abort(conn)
         finally:
+            if reserved is not None:
+                with self.lock:
+                    reserved.inflight -= 1
             self._client_done()
 
 

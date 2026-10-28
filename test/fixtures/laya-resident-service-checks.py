@@ -659,6 +659,101 @@ class ServiceBoundsChecks(Fixture):
                 time.sleep(.05)
         self.assertEqual(free, [4] * 10, 'idle accept loops took connection slots')
 
+    def test_drain_waits_for_an_in_progress_load_and_stops_its_model(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        events, handles = [], []
+        entered = threading.Event()
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            entered.set()
+            time.sleep(1)  # the model is still loading when the drain begins
+            handle = start(manifest, admit)
+            handles.append(handle)
+            events.append('returned')
+            return handle
+        service = self.service(start=False)
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.assertTrue(entered.wait(5))
+        threading.Thread(target=lambda: service.stopped.wait(30) and events.append(
+            ('stopped', handles[0].process.poll() is not None if handles else None)),
+            daemon=True).start()
+        service.begin_drain()
+        self.assertTrue(service.stopped.wait(30))
+        self.wait(lambda: len(events) == 2)
+        # The lease is released only after the load settled and its model stopped.
+        self.assertEqual(events, ['returned', ('stopped', True)])
+
+    def test_listener_fd_above_fd_setsize_still_accepts(self):
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = 1400
+        if hard != resource.RLIM_INFINITY and hard < wanted:
+            self.skipTest('hard descriptor limit below FD_SETSIZE')
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, wanted), hard))
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        spare = []
+        self.addCleanup(lambda: [os.close(fd) for fd in spare])
+        null = os.open(os.devnull, os.O_RDONLY)
+        spare.append(null)
+        while max(spare) < 1100:
+            spare.append(os.dup(null))
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        self.service()
+        self.wait(lambda: self.ready(manifest), message='listener above FD_SETSIZE never served')
+        self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_failed_listener_thread_releases_the_binding_for_readoption(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        calls = []
+        real = svc.selectors.DefaultSelector
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError('selector unavailable')
+            return real()
+        with patch.object(svc.selectors, 'DefaultSelector', flaky):
+            self.service()
+            self.wait(lambda: len(calls) >= 2, message='failed binding never re-adopted')
+            self.wait(lambda: self.ready(manifest))
+            self.assertEqual(len(embed(manifest)), DIM)
+        self.assertEqual(len(self.loads), 1)
+
+    def test_request_between_lookup_and_forward_is_never_reclaimed(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        service.reclaim_seconds = 0
+        self.wait(lambda: self.ready(manifest))
+        handle = next(iter(service.workers.values())).handle
+        entered, release = threading.Event(), threading.Event()
+        real = svc.Worker.forward
+
+        def gated(worker, *args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return real(worker, *args, **kwargs)
+        results = []
+        with patch.object(svc.Worker, 'forward', gated):
+            thread = threading.Thread(target=lambda: results.append(
+                embed(manifest, kind='document')))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.routes.pop(project)  # the last binding goes away mid-request
+            self.assertTrue(resident.wait_for_release(manifest['serviceSocketPath'], timeout=5))
+            time.sleep(.3)
+            self.assertIsNone(handle.process.poll(), 'worker reclaimed under a request')
+            release.set()
+            thread.join(30)
+        self.assertEqual(len(results), 1)
+        self.wait(lambda: handle.process.poll() is not None, message='never reclaimed after')
+
     def test_slow_sender_is_cut_at_one_absolute_read_deadline(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)
