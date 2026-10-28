@@ -69,7 +69,8 @@ short summary at the end (step 5).
       (numbers, percentages, field names, queries) verbatim — they are the lexical search surface —
       and close the section with an HTML comment naming the page you merged from. Folded text
       follows the bundled card-writing rules (`$ROOT/core/wiki_card_rules/default.md`, or
-      `novel.md` for a novel-preset wiki); the project wiki holds no rules file of its own.
+      `novel.md` for a novel project, e.g. one with `04_Manuscript/` at its root); the project
+      wiki holds no rules file of its own.
    d. Then resolve the cluster's entries through step 4's normal per-entry loop: an entry pairing
       the keeper with a page you decided to delete → `--action merge --delete <that page>`; an
       entry pointing at a page you already deleted earlier in this run is now stale, and step

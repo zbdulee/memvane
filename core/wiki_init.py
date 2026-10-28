@@ -94,7 +94,8 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
         # 목록이 프롬프트와 갈리지 않는지는 test/update.test.mjs가 코드에서 유도해 단정한다.
         base_dirs = ["concepts", "entities", "decisions", "comparisons"]
         # novel 전용 디렉터리(characters·world·timeline·plot·style)는 compile 워커가 novel
-        # 카드 규칙을 고르는 표식이기도 하다(`wiki_compile_worker.NOVEL_WIKI_DIRS`).
+        # 카드 규칙을 고르는 보조 표식이다(주 표식은 루트의 `<숫자>_Manuscript/`,
+        # `wiki_compile_worker.card_rules_preset`).
         novel_dirs = ["characters", "world", "timeline", "plot", "style", "discarded", "decisions", "sessions"]
         dir_names = novel_dirs if preset == "novel" else base_dirs
         dirs = [wiki] + [wiki / name for name in dir_names]

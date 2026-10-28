@@ -307,9 +307,9 @@ orientation context, optionally asks the selected memvane-db index for similar w
 configured host extractor, and passes candidate JSON to `core/wiki_compile.py`.
 
 The project wiki holds only cards. Orientation context is the bundled card-writing
-rules (`core/wiki_card_rules/default.md`, or `novel.md` when the wiki has a novel-preset
-directory such as `characters/` or the project has a legacy `-manuscript`/`-plot`
-collection) plus the tail of the activity log. The card catalog is the selected
+rules (`core/wiki_card_rules/default.md`, or `novel.md` when the project root has a
+numbered manuscript directory such as `04_Manuscript/`; a novel-preset wiki directory such
+as `characters/` or a legacy `-manuscript`/`-plot` collection also selects it) plus the tail of the activity log. The card catalog is the selected
 memvane-db index. Card creation, update and deletion append one line to the activity log
 in the install state root (`<state root>/wiki-activity.log`, rotated to `.1` past 256 KiB;
 `core/wiki_activity_log.py`). The plugin does not create or read wiki-root `SCHEMA.md`,

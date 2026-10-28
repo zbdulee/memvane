@@ -13,6 +13,7 @@ import itertools
 import json
 import math
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -579,13 +580,39 @@ def is_hidden_source_path(rel_path: str) -> bool:
 
 CARD_RULES_DIR = Path(__file__).resolve().parent / "wiki_card_rules"
 CARD_RULES_PRESETS = ("default", "novel")
-# Directories only the novel preset of `wiki_init` creates. Their presence is
-# the durable novel marker: minimal settings carry no preset key.
+# Primary novel marker: a numbered manuscript directory at the project root
+# (`04_Manuscript/`, `03_Manuscript/`). Minimal settings carry no preset key.
+NOVEL_ROOT_DIR = re.compile(r"\d+_Manuscript")
+# Bound on root entries inspected; a project root with more is not scanned further.
+NOVEL_ROOT_SCAN_LIMIT = 4096
+# Secondary marker: directories only the novel preset of `wiki_init` creates.
 NOVEL_WIKI_DIRS = ("characters", "world", "timeline", "plot", "style")
 
 
-def card_rules_preset(wiki_root: Path, config: dict) -> str:
-    """"novel" for a novel-preset wiki or a legacy novel collection, else "default"."""
+def _has_manuscript_root_dir(root: Path) -> bool:
+    """Read-only, bounded scan of the project root for `<digits>_Manuscript/`."""
+    try:
+        with os.scandir(root) as entries:
+            for count, entry in enumerate(entries):
+                if count >= NOVEL_ROOT_SCAN_LIMIT:
+                    return False
+                if (NOVEL_ROOT_DIR.fullmatch(entry.name)
+                        and entry.is_dir(follow_symlinks=False)):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def card_rules_preset(root: Path, wiki_root: Path, config: dict) -> str:
+    """"novel" or "default" for the bundled card rules.
+
+    Novel when the project root has a `<digits>_Manuscript/` directory, the wiki
+    has a novel-preset directory, or a legacy `-manuscript`/`-plot` collection
+    is configured. Nothing is written.
+    """
+    if _has_manuscript_root_dir(Path(root)):
+        return "novel"
     collections = config.get("collections") if isinstance(config.get("collections"), list) else []
     if qmd_config.has_legacy_novel_collection(
             [item for item in collections if isinstance(item, str)]):
@@ -611,7 +638,7 @@ def orientation(root: Path, wiki_root: Path, config: dict, bound) -> dict:
     """
     import wiki_activity_log
     return {
-        "schema": card_rules(card_rules_preset(wiki_root, config)),
+        "schema": card_rules(card_rules_preset(root, wiki_root, config)),
         "logTail": wiki_activity_log.tail(root, bound),
     }
 

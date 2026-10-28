@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { removeTemp } from './helpers/temp.mjs';
@@ -39,12 +39,20 @@ test('wiki_init creates the wiki and type directories but no root files (default
   }
 });
 
-function setupProject({ novel = false } = {}) {
+// layout: 'default' (default wiki dirs), 'manuscript' (owner's novel layout:
+// numbered root dirs incl. 04_Manuscript/, default wiki dirs), 'wikiNovel'
+// (novel-preset wiki dir only, no manuscript root dir).
+function setupProject({ layout = 'default' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'wiki-cards-only-'));
   const wiki = join(dir, '.auto-context', 'wiki');
   mkdirSync(join(dir, '.auto-context', 'compile'), { recursive: true });
   mkdirSync(wiki, { recursive: true });
-  if (novel) mkdirSync(join(wiki, 'characters'));
+  for (const name of ['concepts', 'decisions', 'entities', 'comparisons']) mkdirSync(join(wiki, name));
+  if (layout === 'manuscript') {
+    for (const name of ['01_Settings', '02_Characters', '03_Plot', '04_Manuscript']) mkdirSync(join(dir, name));
+    writeFileSync(join(dir, 'build_nova_index.py'), '# synthetic\n');
+  }
+  if (layout === 'wikiNovel') mkdirSync(join(wiki, 'characters'));
   mkdirSync(join(dir, 'docs'), { recursive: true });
   writeFileSync(join(dir, 'docs', 'source.md'), '# Source\n\nDurable decision: generated wiki pages cite source markdown.\n');
   writeFileSync(join(dir, '.auto-context', 'settings.json'), JSON.stringify({
@@ -106,9 +114,9 @@ function runCompile(project, extractor) {
   });
 }
 
-for (const preset of ['default', 'novel']) {
-  test(`compile prompt carries the bundled ${preset} card rules and never reads project root files`, () => {
-    const project = setupProject({ novel: preset === 'novel' });
+for (const [layout, preset] of [['default', 'default'], ['manuscript', 'novel'], ['wikiNovel', 'novel']]) {
+  test(`compile prompt carries the bundled ${preset} card rules for a ${layout} layout and never reads project root files`, () => {
+    const project = setupProject({ layout });
     const capture = join(mkdtempSync(join(tmpdir(), 'capture-')), 'payload.json');
     try {
       const wiki = join(project, '.auto-context', 'wiki');
@@ -215,4 +223,42 @@ test('wiki_activity_log: install state root, owner-only guard, size cap and tail
     assert.equal(out.noJournal, true);
     assert.equal(existsSync(join(project, '.auto-context')), false, 'nothing is written into the project');
   } finally { removeTemp(state); removeTemp(project); }
+});
+
+test('card_rules_preset: a numbered *_Manuscript root dir means novel; other near-misses do not', () => {
+  const base = mkdtempSync(join(tmpdir(), 'card-rules-preset-'));
+  try {
+    const cases = {
+      owner04: { dirs: ['01_Settings', '02_Characters', '03_Plot', '04_Manuscript'] },
+      owner03: { dirs: ['01_Settings', '02_Characters', '03_Manuscript'] },
+      plain: { dirs: ['docs', 'src'] },
+      noDigits: { dirs: ['Manuscript', '_Manuscript'] },
+      lowercase: { dirs: ['04_manuscript'] },
+      suffixed: { dirs: ['04_Manuscript_old', 'x04_Manuscript'] },
+      fileNotDir: { files: ['04_Manuscript'] },
+      symlinkDir: { dirs: ['real'], links: [['real', '04_Manuscript']] },
+      nestedOnly: { dirs: ['docs', 'docs/04_Manuscript'] },
+    };
+    for (const [name, spec] of Object.entries(cases)) {
+      const root = join(base, name);
+      mkdirSync(join(root, '.auto-context', 'wiki'), { recursive: true });
+      for (const dir of spec.dirs || []) mkdirSync(join(root, dir), { recursive: true });
+      for (const file of spec.files || []) writeFileSync(join(root, file), '');
+      for (const [target, link] of spec.links || []) symlinkSync(join(root, target), join(root, link));
+    }
+    const out = JSON.parse(py([
+      'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, "core")',
+      'import wiki_compile_worker as w',
+      `base = Path(${JSON.stringify(base)})`,
+      'before = {p: sorted(os.listdir(base / p)) for p in os.listdir(base)}',
+      'result = {p: w.card_rules_preset(base / p, base / p / ".auto-context" / "wiki", {}) for p in sorted(os.listdir(base))}',
+      'result["_unchanged"] = before == {p: sorted(os.listdir(base / p)) for p in os.listdir(base)}',
+      'print(json.dumps(result))',
+    ]));
+    assert.deepEqual(out, {
+      owner04: 'novel', owner03: 'novel', plain: 'default', noDigits: 'default',
+      lowercase: 'default', suffixed: 'default', fileNotDir: 'default',
+      symlinkDir: 'default', nestedOnly: 'default', _unchanged: true,
+    });
+  } finally { removeTemp(base); }
 });
