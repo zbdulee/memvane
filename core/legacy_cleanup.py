@@ -17,10 +17,10 @@ right before acting:
   still be reused between the last identity read and the signal; the checks
   target accidents, not another process of the same user.
 * A LaunchAgent is unloaded and removed only when ``<label>.plist`` carries
-  the ``managed-by: qmd-auto-context`` marker. Backup copies are reported and
+  the ``managed-by: qmd-auto-context`` marker the retired backend wrote. Backup copies are reported and
   left in place.
 * A tree is removed only when no install attestation under
-  ``~/.local/state/laya`` still names a file inside it (the historical
+  ``~/.local/state/memvane`` (or the pre-rename ``~/.local/state/laya``) still names a file inside it (the historical
   ``profileDependencyClosure`` rows are data, not files), no install route is
   still bound to a bundle that ships the QMD backend (it would recreate the
   QMD directories), and no QMD daemon from that tree is still running. Every
@@ -75,6 +75,7 @@ def _home(home):
 
 
 def plugin_support(home):
+    """The pre-rename support directory that held the retired QMD backend."""
     return home / 'Library' / 'Application Support' / 'qmd-auto-context'
 
 
@@ -111,14 +112,22 @@ def _strings(value, skip=('profileDependencyClosure',)):
                 yield from _strings(item, skip)
 
 
+def _install_dirs(home):
+    """Install state roots under the MemVane and the pre-rename state base."""
+    import memvane_paths
+    installs = []
+    for base in (memvane_paths.state_base(home), memvane_paths.legacy_state_base(home)):
+        try:
+            installs.extend(sorted(path for path in base.iterdir() if path.is_dir()))
+        except FileNotFoundError:
+            continue
+    return installs
+
+
 def attestation_references(home, roots):
     """Install attestations that still name a file inside one of ``roots``."""
-    base = home / '.local' / 'state' / 'laya'
     found = []
-    try:
-        installs = sorted(path for path in base.iterdir() if path.is_dir())
-    except FileNotFoundError:
-        return found
+    installs = _install_dirs(home)
     for install in installs:
         path = install / 'production-provider-attestation.json'
         if not path.is_file():
@@ -142,12 +151,8 @@ def older_bundles(home):
     Such a bundle recreates ``~/.cache/qmd`` and ``~/.config/qmd`` on its next
     hook, so cleanup waits until every install moved to a bundle without it.
     """
-    base = home / '.local' / 'state' / 'laya'
     found = []
-    try:
-        installs = sorted(path for path in base.iterdir() if path.is_dir())
-    except FileNotFoundError:
-        return found
+    installs = _install_dirs(home)
     for install in installs:
         route = install / 'reviewed-route.json'
         if not route.is_file():

@@ -1,7 +1,7 @@
 """Context-learning evidence from a selected Laya route; never reads QMD.
 
-A project whose installer selected the Laya index serves recall, edits and
-index publishes from laya-db only. Learning reads the same evidence:
+A project whose installer selected the memvane-db index serves recall, edits and
+index publishes from memvane-db only. Learning reads the same evidence:
 
 * corpus fingerprint: the published, sealed head generation of the route's
   scope (eligible, non-excluded membership rows and their content hashes);

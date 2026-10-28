@@ -27,8 +27,8 @@ def service_root(*, create=False, home=None):
         import pwd
         home = pwd.getpwuid(os.getuid()).pw_dir
     home = Path(home).resolve()
-    parts = ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
-    root = home.joinpath(*parts, 'qmd-auto-context', 'laya-inference')
+    from .runtime_setup import learning_state_base
+    root = learning_state_base(home) / 'laya-inference'
     for part in (root, *root.parents):
         if part == home:
             break

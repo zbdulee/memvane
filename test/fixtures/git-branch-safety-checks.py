@@ -322,7 +322,7 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                           'degraded': degraded, 'label': read_only_label,
                           'readOnly': proof.get('readOnlyAllowed')})
             response._LEARNING_CAPTURE[:] = [('capture', 'would-run')]
-            return response.host_payload(host, '[laya-index] cards')
+            return response.host_payload(host, '[memvane] cards')
 
         def forbidden(*_args, **_kwargs):
             raise AssertionError('a worktree hook must not record work')
@@ -336,9 +336,9 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                                           {'prompt': 'q', 'cwd': str(worktree)})
             self.assertEqual(response._LEARNING_CAPTURE, [])
             context = out['hookSpecificOutput']['additionalContext']
-            self.assertTrue(context.startswith('[laya-index] read-only from the main checkout '
+            self.assertTrue(context.startswith('[memvane] read-only from the main checkout '
                                                + str(self.project)), context)
-            self.assertTrue(context.endswith('[laya-index] cards'))
+            self.assertTrue(context.endswith('[memvane] cards'))
             self.assertEqual(calls, [{'state': 'candidate', 'root': str(self.project),
                                       'degraded': True, 'label': 'worktree',
                                       'readOnly': True}])

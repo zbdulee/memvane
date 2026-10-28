@@ -127,11 +127,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     generation = prepared['generation']
     rejects(lambda: activate(generation, home=Path.home()),
             'history_legacy_ddl_unfenced')
-    pointer = home / 'Library/Application Support/qmd-auto-context/learning/history-active.json'
+    pointer = home / 'Library/Application Support/memvane/learning/history-active.json'
     source = Path(__file__).resolve().parents[2]
     hosts = {}
     for host in ('claude', 'codex'):
-        root = home / ('.claude' if host == 'claude' else '.codex') / 'plugins/cache/fake/qmd-auto-context/v-next'
+        root = home / ('.claude' if host == 'claude' else '.codex') / 'plugins/cache/fake/memvane/v-next'
         for relative in HOST_FILES:
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -183,7 +183,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     rejects(lambda: activate(generation, host_roots=hosts, home=home),
             'history_host_not_coordinated:claude')
     shutil.copy2(source / 'core/context_learning/codex_adapter.py', adapter)
-    old_codex = home / '.codex/plugins/cache/old/qmd-auto-context/v-old'
+    old_codex = home / '.codex/plugins/cache/old/memvane/v-old'
     old_codex.mkdir(parents=True)
     hosts['codex'] = [hosts['codex'], old_codex]
     rejects(lambda: activate(generation, host_roots=hosts, home=home),

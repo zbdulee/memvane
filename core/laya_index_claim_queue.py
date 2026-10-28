@@ -1,4 +1,4 @@
-"""Separate-DB claim queue for explicit Laya Index A-int bindings.
+"""Separate-DB claim queue for explicit memvane-db A-int bindings.
 
 Only explicit caller-provided paths. A selected host must prove installation
 and hold the queue-adjacent sync owner lock before recovering a prior lease.

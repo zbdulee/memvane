@@ -46,9 +46,9 @@ try:
     source = Path(__file__).resolve().parents[2]
     version = '9.9.9-dev-directory'
     marketplace = account / 'work/local-marketplace'
-    loaded = marketplace / 'plugins/qmd-auto-context-v9'
-    cache = account / '.claude/plugins/cache/local-mkt/qmd-auto-context' / version
-    codex = account / '.codex/plugins/cache/local-mkt/qmd-auto-context' / version
+    loaded = marketplace / 'plugins/memvane-v9'
+    cache = account / '.claude/plugins/cache/local-mkt/memvane' / version
+    codex = account / '.codex/plugins/cache/local-mkt/memvane' / version
     for root in (loaded, cache, codex):
         for relative in HOST_FILES:
             target = root / relative
@@ -59,18 +59,18 @@ try:
     manifest = marketplace / '.claude-plugin/marketplace.json'
 
     def records(*, source_kind='directory', entry_version=version,
-                relative='./plugins/qmd-auto-context-v9', install_path=None):
-        write_json(installed, {'version': 2, 'plugins': {'qmd-auto-context@local-mkt': [
+                relative='./plugins/memvane-v9', install_path=None):
+        write_json(installed, {'version': 2, 'plugins': {'memvane@local-mkt': [
             {'scope': 'user', 'installPath': str(install_path or cache), 'version': version}]}})
         write_json(known, {'local-mkt': {'source': (
             {'source': 'directory', 'path': str(marketplace)} if source_kind == 'directory'
             else 'not-a-mapping' if source_kind == 'string'
             else {'source': 'github', 'repo': 'example/qmd'})}})
         write_json(manifest, {'name': 'local', 'plugins': [
-            {'name': 'qmd-auto-context', 'version': entry_version, 'source': relative}]})
+            {'name': 'memvane', 'version': entry_version, 'source': relative}]})
 
     codex_listing = subprocess.CompletedProcess((), 0, json.dumps({'installed': [
-        {'name': 'qmd-auto-context', 'marketplaceName': 'local-mkt',
+        {'name': 'memvane', 'marketplaceName': 'local-mkt',
          'version': version, 'installed': True, 'enabled': True}]}), '')
     real_run = subprocess.run
 
@@ -115,7 +115,7 @@ try:
     rejects(lambda: _claude_load_roots(account), 'history_claude_marketplace_invalid')
     alias.unlink()
     # A trailing slash names the same folder.
-    records(relative='./plugins/qmd-auto-context-v9/')
+    records(relative='./plugins/memvane-v9/')
     assert _claude_load_roots(account) == [loaded.resolve()]
     # Malformed records keep the expected error codes.
     records(source_kind='string')

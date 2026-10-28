@@ -13,6 +13,11 @@ of this plugin that can execute against it reads v4:
   (the directory named after the plugin, or any whose ``plugin.yaml``
   declares that name).
 
+The MemVane plugin also counts every copy of its earlier plugin id
+(``memvane_paths.LEGACY_PLUGIN_ID`` in ``LEGACY_MARKETPLACE``, and a Hermes
+copy of that name): until such a copy is uninstalled it serves the installs
+that were not yet handed over, against the same journals.
+
 A copy is v4-capable when its ``core/laya_install_journal.py`` declares
 ``VERSION = 4`` or later. An unknown layout, an unreadable record or any
 older copy leaves the journal at v3; new code reads and CAS-writes v3
@@ -95,7 +100,9 @@ def _manifest_name(text):
 
 
 def _hermes_copies(plugin, home):
-    """Hermes plugin copies of ``plugin``; raises when the plugin dir is unreadable."""
+    """Hermes plugin copies of ``plugin`` (one name, or a set of names);
+    raises when the plugin dir is unreadable."""
+    names = {plugin} if isinstance(plugin, str) else set(plugin)
     copies = set()
     for hermes in _hermes_homes(home):
         plugins = hermes / 'plugins'
@@ -108,7 +115,7 @@ def _hermes_copies(plugin, home):
         for child in children:
             if not child.is_dir():
                 continue
-            if child.name == plugin:
+            if child.name in names:
                 copies.add(str(child))
                 continue
             manifest = child / 'plugin.yaml'
@@ -119,9 +126,34 @@ def _hermes_copies(plugin, home):
             except (OSError, UnicodeError) as exc:
                 raise ValueError('hermes_install_unreadable') from exc
             # An unprovable manifest raises ValueError: hold conversion.
-            if declared == plugin:
+            if declared in names:
                 copies.add(str(child))
     return copies
+
+
+LEGACY_HERMES = 'legacy_hermes_copy_present'
+
+
+def legacy_hermes_present(home=None):
+    """True while a Hermes copy of the earlier plugin id may still run.
+
+    That copy reads only v1/v2 routes, so a route this release publishes in
+    the project's ``.auto-context`` makes its edit gate block. An unreadable
+    or unprovable Hermes plugin directory counts as present (fail safe).
+    """
+    import memvane_paths
+    try:
+        return bool(_hermes_copies({memvane_paths.LEGACY_PLUGIN_ID},
+                                   Path(home or Path.home())))
+    except ValueError:
+        return True
+
+
+def refuse_while_legacy_hermes(home=None):
+    """Refuse publishing a route in a project while that Hermes copy may run."""
+    if legacy_hermes_present(home):
+        from laya_index_a import IndexContractError
+        raise IndexContractError(LEGACY_HERMES)
 
 
 def host_copies(root=None, home=None):
@@ -140,26 +172,30 @@ def host_copies(root=None, home=None):
             market, plugin = parts[0], parts[1]
     if market is None:
         raise ValueError('host_layout_unknown')
+    identities = [(market, plugin)]
+    import memvane_paths
+    if plugin == memvane_paths.PLUGIN_ID:
+        identities.append((memvane_paths.LEGACY_MARKETPLACE, memvane_paths.LEGACY_PLUGIN_ID))
     copies = {str(root)}
     record = home / '.claude' / 'plugins' / 'installed_plugins.json'
     if record.exists() or record.is_symlink():
         try:
-            rows = json.loads(record.read_text(encoding='utf-8'))['plugins'].get(
-                plugin + '@' + market, [])
+            installed = json.loads(record.read_text(encoding='utf-8'))['plugins']
+            rows = [row for market_id, plugin_id in identities
+                    for row in installed.get(plugin_id + '@' + market_id, [])]
         except (OSError, ValueError, KeyError, AttributeError, TypeError) as exc:
             raise ValueError('claude_install_record_unreadable') from exc
-        if not isinstance(rows, list):
-            raise ValueError('claude_install_record_unreadable')
         for row in rows:
             path = row.get('installPath') if isinstance(row, dict) else None
             if not isinstance(path, str):
                 raise ValueError('claude_install_record_unreadable')
             copies.add(path)
-    codex = caches['codex'] / market / plugin
-    if codex.is_dir():
-        copies.update(str(child) for child in codex.iterdir() if child.is_dir())
+    for market_id, plugin_id in identities:
+        codex = caches['codex'] / market_id / plugin_id
+        if codex.is_dir():
+            copies.update(str(child) for child in codex.iterdir() if child.is_dir())
     # Hermes runs the same core against the same install journals.
-    copies.update(_hermes_copies(plugin, home))
+    copies.update(_hermes_copies({plugin_id for _market, plugin_id in identities}, home))
     return sorted(copies)
 
 

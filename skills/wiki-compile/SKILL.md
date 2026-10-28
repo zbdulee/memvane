@@ -1,6 +1,6 @@
 ---
 name: wiki-compile
-description: Use when the user asks to save, compile, promote, or write a durable project/session conclusion into the qmd auto-context wiki. Accepts only compact durable summaries or candidate JSON; never paste a raw transcript.
+description: Use when the user asks to save, compile, promote, or write a durable project/session conclusion into the MemVane wiki. Accepts only compact durable summaries or candidate JSON; never paste a raw transcript.
 ---
 
 # Wiki Compile

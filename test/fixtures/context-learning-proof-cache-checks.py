@@ -29,7 +29,7 @@ def host_checks(root, state):
     artifact = state / 'base.artifact'; artifact.write_bytes(b'synthetic base'); artifact.chmod(0o600)
     private(state / 'active-checkpoint.json', {'schema_version': 1,
         'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()})
-    anchor = Path.home() / '.codex/plugins/cache/qmd-auto-context-marketplace/qmd-auto-context/1.0.1/core/context_learning/laya_adapter.py'
+    anchor = Path.home() / '.codex/plugins/cache/memvane-marketplace/memvane/1.0.1/core/context_learning/laya_adapter.py'
     argv = [sys.executable, str(adapter), str(model)]
     private(state / 'live-selector.json', {'schema': 'qmd-live-selector-v1',
         'trainerArgv': [sys.executable, str(anchor), str(model)], 'timeoutSeconds': 5, 'maxRssMib': 512})
@@ -247,16 +247,16 @@ else:
         home = Path(temporary).resolve() / 'User With Spaces'; home.mkdir(mode=0o700)
         roots = {}
         for host in ('claude', 'codex'):
-            root = home / ('.'+host) / 'plugins/cache/qmd-auto-context-marketplace/qmd-auto-context/1.0.1'
+            root = home / ('.'+host) / 'plugins/cache/memvane-marketplace/memvane/1.0.1'
             root.mkdir(parents=True)
             shutil.copytree(Path.cwd()/'core', root/'core', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-            private(root / ('.'+host+'-plugin/plugin.json'), {'name': 'qmd-auto-context', 'version': '1.0.1'})
-            private(root / 'package.json', {'name': 'qmd-auto-context', 'version': '1.0.1'})
+            private(root / ('.'+host+'-plugin/plugin.json'), {'name': 'memvane', 'version': '1.0.1'})
+            private(root / 'package.json', {'name': 'memvane', 'version': '1.0.1'})
             roots[host] = root
-        private(home/'.claude/plugins/known_marketplaces.json', {'qmd-auto-context-marketplace':
-            {'source': {'source': 'github', 'repo': 'zbdulee/qmd-auto-context'}}})
+        private(home/'.claude/plugins/known_marketplaces.json', {'memvane-marketplace':
+            {'source': {'source': 'github', 'repo': 'zbdulee/memvane'}}})
         private(home/'.claude/plugins/installed_plugins.json', {'plugins': {
-            'qmd-auto-context@qmd-auto-context-marketplace': [{'scope': 'user',
+            'memvane@memvane-marketplace': [{'scope': 'user',
                 'version': '1.0.1', 'installPath': str(roots['claude'])}]}})
         env = {**os.environ, 'HOME': str(home), 'CODEX_HOME': str(home/'.codex'),
                'PYTHONDONTWRITEBYTECODE': '1', 'QMD_RECALL_LOG': ''}

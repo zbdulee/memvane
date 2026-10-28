@@ -41,11 +41,106 @@ def _sha(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def default_managed_root(home=None):
+_POINTER_KEYS = ({'executable', 'runtime_identity_sha256'},
+                 {'executable', 'runtime_identity_sha256', 'previous'},
+                 {'executable', 'runtime_identity_sha256', 'attestation', 'adapter_path',
+                  'model_dir'},
+                 {'executable', 'runtime_identity_sha256', 'attestation', 'adapter_path',
+                  'model_dir', 'previous'})
+STATE_SWITCH = 'learning-state.json'
+STATE_SWITCH_SCHEMA = 'memvane-learning-state-v1'
+
+
+def _support_parts():
+    return ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
+
+
+def _support_dirs(home=None):
     home = Path(home) if home is not None else Path.home()
-    if sys.platform == 'darwin':
-        return home/'Library'/'Application Support'/'qmd-auto-context'/'runtimes'/'laya'
-    return home/'.local'/'share'/'qmd-auto-context'/'runtimes'/'laya'
+    parts = _support_parts()
+    return home.joinpath(*parts, 'memvane'), home.joinpath(*parts, 'qmd-auto-context')
+
+
+def _activated(runtime_root):
+    """True when ``runtime_root`` holds a usable activation pointer.
+
+    ``active.json`` (written atomically by the installer after a verified
+    generation) must be a private regular file with the pointer contract
+    ``choose_runtime`` accepts, and its interpreter must exist, be
+    executable and resolve inside the runtime root. A bare directory or a
+    pointer to a missing interpreter activates nothing.
+    """
+    pointer = runtime_root/'active.json'
+    try:
+        info = pointer.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 1024 * 1024):
+            return False
+        value = json.loads(pointer.read_text('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if not isinstance(value, dict) or set(value) not in _POINTER_KEYS:
+        return False
+    executable, identity = value['executable'], value['runtime_identity_sha256']
+    if (not isinstance(executable, str) or not os.path.isabs(executable) or
+            not isinstance(identity, str) or not re.fullmatch(r'[0-9a-f]{64}', identity)):
+        return False
+    real_root = os.path.realpath(runtime_root)
+    real = os.path.realpath(executable)
+    return (Path(executable).is_relative_to(runtime_root) and
+            Path(real).is_relative_to(real_root) and os.path.isfile(real) and
+            os.access(real, os.X_OK))
+
+
+def runtime_base(home=None):
+    """Support directory whose ``runtimes/laya`` is the managed runtime.
+
+    ``~/Library/Application Support/memvane`` on macOS, ``~/.local/share/memvane``
+    elsewhere, once its runtime is activated; else the pre-rename directory
+    when its runtime is activated; else the MemVane directory. The runtime
+    is a virtual environment with absolute interpreter paths, so it is
+    re-provisioned, never moved, and the switch is its activation pointer.
+    """
+    current, legacy = _support_dirs(home)
+    if _activated(current/'runtimes'/'laya'):
+        return current
+    if _activated(legacy/'runtimes'/'laya'):
+        return legacy
+    return current
+
+
+def _state_switched(current):
+    path = current/STATE_SWITCH
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 4096):
+            return False
+        value = json.loads(path.read_text('utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    return value == {'schema': STATE_SWITCH_SCHEMA, 'root': str(current)}
+
+
+def learning_state_base(home=None):
+    """Support directory of the learning state (``live-selection``, ``laya-inference``).
+
+    Independent of the runtime location. State written under the pre-rename
+    directory stays there (selectors, checkpoints, policies, the inference
+    service and its resource lanes) until a verified move records the switch
+    (``learning-state.json`` in the MemVane directory). A fresh account uses
+    the MemVane directory.
+    """
+    current, legacy = _support_dirs(home)
+    if _state_switched(current):
+        return current
+    if any((legacy/name).is_dir() for name in ('live-selection', 'laya-inference')):
+        return legacy
+    return current
+
+
+def default_managed_root(home=None):
+    return runtime_base(home)/'runtimes'/'laya'
 
 
 _PROBE = '''import importlib.metadata as m,json,sys

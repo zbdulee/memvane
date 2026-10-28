@@ -16,7 +16,7 @@ function runPython(source, env = {}) {
 test('Hermes plugin manifest declares qmd hook adapter only, leaving Claude/Codex manifests separate', () => {
   assert.equal(existsSync('plugin.yaml'), true, 'Hermes plugin.yaml should exist at repo root');
   const manifest = readFileSync('plugin.yaml', 'utf8');
-  assert.match(manifest, /name:\s*qmd-auto-context/);
+  assert.match(manifest, /name:\s*memvane/);
   for (const hook of ['pre_llm_call', 'on_session_start', 'pre_tool_call', 'post_tool_call']) {
     assert.match(manifest, new RegExp(hook), `missing ${hook}`);
   }

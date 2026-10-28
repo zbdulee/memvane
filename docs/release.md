@@ -27,7 +27,7 @@
    model smoke cannot satisfy that row. Search and embedding workload queue
    expansion is an optional decision after v2 opens; search and embedding
    product functionality still needs its own Laya gate.
-   For a Laya Index replacement release, require every `LI-*` row in the
+   For a memvane-db replacement release, require every `LI-*` row in the
    [agent QA gate](release-agent-qa.md) on the exact installed plugin. The
    host-loaded installer path and raw+wiki route have source and synthetic
    coverage; their installed-candidate behaviour, production provider/model

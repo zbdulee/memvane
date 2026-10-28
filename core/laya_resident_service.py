@@ -85,6 +85,7 @@ DRAIN_SAFETY_SECONDS = 60
 FORCED_EXIT = 'forced-exit.json'
 FORCED_EXIT_CODE = 70
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
+LEGACY_DRAIN_SECONDS = 5     # re-request a pre-rename drain while waiting
 _BUNDLE = None
 
 
@@ -105,9 +106,10 @@ def _account_home():
 
 
 def service_dir(*, create=False, home=None):
-    """``<account home>/.local/state/laya/service``: private, same owner."""
+    """``<account home>/.local/state/memvane/service``: private, same owner."""
+    import memvane_paths
     cursor = Path(home).resolve() if home is not None else _account_home()
-    for name in ('.local', 'state', 'laya', 'service'):
+    for name in (*memvane_paths.STATE_PARTS, 'service'):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             if not create:
@@ -118,6 +120,33 @@ def service_dir(*, create=False, home=None):
                 or stat.S_IMODE(info.st_mode) & 0o022):
             _fail('laya_service_root_unsafe')
     return private_root(cursor)
+
+
+def _legacy_service_path(home=None):
+    import memvane_paths
+    cursor = Path(home).resolve() if home is not None else _account_home()
+    return cursor.joinpath(*memvane_paths.LEGACY_STATE_PARTS, 'service')
+
+
+def _default_service_path(home=None):
+    import memvane_paths
+    cursor = Path(home).resolve() if home is not None else _account_home()
+    return cursor.joinpath(*memvane_paths.STATE_PARTS, 'service')
+
+
+def legacy_service_dir(*, home=None):
+    """The pre-rename service directory (``~/.local/state/laya/service``), or None.
+
+    Read only: a service a pre-rename bundle started there still holds the
+    provider worker and the installations' sockets until it drains.
+    """
+    path = _legacy_service_path(home)
+    try:
+        return private_root(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except Exception:
+        return None
 
 
 def private_root(root):
@@ -312,8 +341,24 @@ def default_spawn(argv, *, pass_fds):
                      start_new_session=True, env=env, cwd='/')
 
 
-def _spawn(root, *, python=None, learning_root=None, spawn=None):
-    """Start one successor that waits for the service lease; never a second."""
+def _try_lock(path):
+    """A held exclusive lock on ``path`` (a private lock file), or None when busy."""
+    fd = _private_lock(path)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _spawn(root, *, python=None, learning_root=None, spawn=None, legacy_successor=None):
+    """Start one successor that waits for the service lease; never a second.
+
+    ``legacy_successor`` is a held pre-rename ``successor.lock``: the
+    successor inherits it, so no pre-rename successor can be elected while
+    this one waits for (and then holds) the pre-rename service lease.
+    """
     fd = _private_lock(Path(root) / SUCCESSOR)
     try:
         try:
@@ -325,7 +370,11 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         # -I: the hosted learning inference requires an isolated interpreter.
         argv = [_interpreter(root, python), '-I', '-B', str(Path(__file__).resolve()), 'serve',
                 str(root), str(learning_root) if learning_root else '-', str(fd)]
-        (spawn or default_spawn)(argv, pass_fds=(fd,))
+        fds = (fd,)
+        if legacy_successor is not None:
+            argv.append(str(legacy_successor))
+            fds = (fd, legacy_successor)
+        (spawn or default_spawn)(argv, pass_fds=fds)
         return True
     finally:
         os.close(fd)
@@ -339,19 +388,86 @@ def _learning_root():
         return None
 
 
-def ensure_service(*, root=None, python=None, learning_root=None, spawn=None):
+_DEFAULT = object()
+
+
+def drain_legacy_service(legacy):
+    """Drain a pre-rename service before one starts under the MemVane root.
+
+    None when nothing runs at ``legacy``. Otherwise ``replacing``: a drain was
+    requested (or is under way) and no MemVane service may start until that
+    service released its lease, so one user never runs two services (two
+    provider workers, two owners of the same installation sockets).
+    """
+    if legacy is None:
+        return None
+    legacy = private_root(Path(legacy))
+    answer = hello(legacy)
+    if answer is None:
+        return 'replacing' if _lease_held(legacy) else None
+    if answer.get('status') != 'draining':
+        reply = exchange(legacy, {'command': 'drain', 'protocols': list(PROTOCOLS),
+                                  'bundle': bundle_identity(), 'python': None})
+        if reply is not None and reply.get('status') not in ('draining', 'stopped'):
+            raise _deferred('laya_service_replacement_refused')
+    return 'replacing'
+
+
+def _replace_legacy_service(root, legacy_root, *, python, learning_root, spawn):
+    """Hand a running pre-rename service over to a MemVane successor.
+
+    None when nothing runs at ``legacy_root``. Otherwise the pre-rename
+    ``successor.lock`` (the lock a pre-rename client takes to elect its
+    successor) is taken first, then a MemVane successor that inherits it is
+    started, and only then is the drain requested. A pre-rename client that
+    sees the drain cannot elect its own successor, so the MemVane successor
+    takes the pre-rename lease when the service exits: one drain, no loop.
+    A pre-rename successor already waiting keeps that lock; the MemVane
+    successor then takes it as soon as that one holds the lease (and drains
+    it in turn), so the handoff still converges.
+    """
+    try:
+        legacy = private_root(Path(legacy_root))
+    except Exception:
+        return None
+    if hello(legacy) is None and not _lease_held(legacy):
+        return None
+    held = _try_lock(legacy / SUCCESSOR)
+    try:
+        _spawn(root, python=python, learning_root=learning_root, spawn=spawn,
+               legacy_successor=held)
+    finally:
+        if held is not None:
+            os.close(held)  # the successor holds its inherited copy
+    drain_legacy_service(legacy)
+    return 'replacing'
+
+
+def ensure_service(*, root=None, python=None, learning_root=None, spawn=None,
+                   legacy_root=_DEFAULT):
     """Start, attach to or replace the per-user service; never waits for it.
 
     Returns ``ready``, ``starting`` or ``replacing``; raises ResourceDeferred
     ``laya_service_protocol_mismatch`` for an older client of an incompatible
     newer service. ``python`` asks for that interpreter (learning inference).
+    The default root first drains a service still running at the pre-rename
+    root (``legacy_root``); a later call starts the MemVane service.
     """
+    if legacy_root is _DEFAULT:
+        legacy_root = legacy_service_dir() if root is None else None
     if root is None:
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
             raise _deferred('laya_service_fixture')
         root = service_dir(create=True)
     root = private_root(Path(root))
     answer = hello(root)
+    if (answer is None and legacy_root is not None and Path(legacy_root) != root
+            and not _lease_held(root)):
+        # No MemVane service (a running one holds the pre-rename lease too).
+        waiting = _replace_legacy_service(root, legacy_root, python=python,
+                                          learning_root=learning_root, spawn=spawn)
+        if waiting is not None:
+            return waiting
     mine = bundle_identity()
     if answer is None:
         if not _lease_held(root):
@@ -409,9 +525,10 @@ def request_adopt(project, *, root=None, spawn=None):
                          or os.environ.get('QMD_SANDBOX')):
         raise _deferred('laya_service_fixture')
     try:
+        legacy = legacy_service_dir() if root is None else None
         root = private_root(Path(root)) if root is not None else service_dir(create=True)
         register(project, root=root)
-        state = ensure_service(root=root, spawn=spawn)
+        state = ensure_service(root=root, spawn=spawn, legacy_root=legacy)
     except ResourceDeferred:
         raise
     except Exception as exc:
@@ -813,8 +930,15 @@ class Service:
     def __init__(self, root, *, learning_root=None, bundle=None, prove=default_prove,
                  attest=default_attest, start_worker=default_start_worker,
                  admit=default_admit, retire=retire_legacy_resident, tick=1.0,
-                 learning=None, exit=os._exit):
+                 learning=None, exit=os._exit, legacy_root=_DEFAULT):
         self.root = private_root(Path(root))
+        if legacy_root is _DEFAULT:
+            # The account's own MemVane service also excludes a pre-rename one.
+            legacy_root = (_legacy_service_path() if self.root == _default_service_path()
+                           else None)
+        self.legacy_root = Path(legacy_root) if legacy_root is not None else None
+        self.legacy_lease = None
+        self.legacy_successor = None
         self.learning_root = learning_root
         self.bundle = bundle or bundle_identity()
         self.prove, self.attest = prove, attest
@@ -845,7 +969,7 @@ class Service:
         self.threads = []
 
     # ------------------------------------------------------------ lifecycle
-    def acquire(self, *, successor_fd=None, wait=None):
+    def acquire(self, *, successor_fd=None, wait=None, legacy_successor_fd=None):
         wait = _scaled(SUCCESSOR_WAIT_SECONDS) if wait is None else wait
         fd = _private_lock(self.root / LEASE)
         deadline = time.monotonic() + wait
@@ -859,6 +983,12 @@ class Service:
                     return False
                 time.sleep(.1)
         self.lease = fd
+        if legacy_successor_fd is not None and self.legacy_successor is None:
+            self.legacy_successor = legacy_successor_fd
+        if not self._hold_legacy(deadline):
+            os.close(fd)
+            self.lease = None
+            return False
         if successor_fd is not None:
             os.close(successor_fd)
         path = self.root / CONTROL
@@ -873,6 +1003,42 @@ class Service:
         self.control, self.control_inode = server, os.lstat(path).st_ino
         _atomic_json(self.root / PID, {'pid': os.getpid(), 'bundle': self.bundle,
                                        'socketInode': self.control_inode})
+        return True
+
+    def _hold_legacy(self, deadline):
+        """Hold the pre-rename service lease for this service's lifetime.
+
+        A pre-rename client (or its successor) can then never start a second
+        service: its successor waits on that lease and gives up, its client
+        sees a held lease and degrades to lexical results. A pre-rename
+        service still running is asked to drain while this waits. An absent
+        pre-rename directory is left absent (and retried on each tick).
+        """
+        if self.legacy_root is None or self.legacy_lease is not None:
+            return True
+        try:
+            legacy = private_root(self.legacy_root)
+        except Exception:
+            return True
+        fd = _private_lock(legacy / LEASE)
+        asked = 0.0
+        while True:
+            if self.legacy_successor is None:
+                # No pre-rename successor may be elected while this waits.
+                self.legacy_successor = _try_lock(legacy / SUCCESSOR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return False
+                if time.monotonic() - asked >= LEGACY_DRAIN_SECONDS:
+                    asked = time.monotonic()
+                    with suppress(Exception):
+                        drain_legacy_service(legacy)
+                time.sleep(.1)
+        self.legacy_lease = fd
         return True
 
     def start(self):
@@ -907,6 +1073,12 @@ class Service:
                     path.unlink()
                     (self.root / PID).unlink(missing_ok=True)
             self.control = None
+        if self.legacy_lease is not None:
+            os.close(self.legacy_lease)
+            self.legacy_lease = None
+        if self.legacy_successor is not None:
+            os.close(self.legacy_successor)
+            self.legacy_successor = None
         if self.lease is not None:
             os.close(self.lease)
             self.lease = None
@@ -1068,6 +1240,12 @@ class Service:
 
     def _tick(self):
         now = time.monotonic()
+        if self.lease is not None and self.legacy_lease is None:
+            # One attempt per tick: the directory appeared, or a pre-rename
+            # service slipped in before this one held its lease.
+            if not self._hold_legacy(now):
+                with suppress(Exception):
+                    drain_legacy_service(self.legacy_root)
         for project in list(self.bindings):
             self._check_owned(project)
         for project in self.registered():
@@ -1492,9 +1670,11 @@ def _learning_host(learning_root):
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 4 or args[0] != 'serve' or not args[3].isdigit():
+    if (len(args) not in (4, 5) or args[0] != 'serve' or
+            not all(arg.isdigit() for arg in args[3:])):
         return 2
     successor_fd = int(args[3])
+    legacy_successor_fd = int(args[4]) if len(args) == 5 else None
     try:
         held = os.fstat(successor_fd)
         named = os.lstat(Path(args[1]) / SUCCESSOR)
@@ -1506,7 +1686,19 @@ def main(argv=None):
     learning_root = None if args[2] == '-' else args[2]
     service = Service(root, learning_root=learning_root,
                       learning=_learning_host(learning_root) if learning_root else None)
-    if not service.acquire(successor_fd=successor_fd):
+    if legacy_successor_fd is not None:
+        # Only the pre-rename successor.lock this service's own root implies.
+        try:
+            held = os.fstat(legacy_successor_fd)
+            named = (os.lstat(service.legacy_root / SUCCESSOR)
+                     if service.legacy_root is not None else None)
+        except OSError:
+            named = None
+        if named is None or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+            os.close(legacy_successor_fd)
+            legacy_successor_fd = None
+    if not service.acquire(successor_fd=successor_fd,
+                           legacy_successor_fd=legacy_successor_fd):
         return 75
     try:
         service.run()

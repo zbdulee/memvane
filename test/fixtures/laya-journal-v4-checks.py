@@ -302,6 +302,36 @@ class HostGate(V3Selected):
         self.assertEqual(self.convert()['status'], 'journal_v4_converted')
         self.assertEqual(stored(self.journal)[0], 4)
 
+    def test_memvane_waits_for_every_copy_of_the_earlier_plugin_id(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        claude = self.home / '.claude' / 'plugins' / 'cache'
+        codex = self.home / '.codex' / 'plugins' / 'cache'
+        memvane = self.copy(claude / 'memvane-marketplace' / 'memvane' / '0.41.0', 4)
+        record = self.home / '.claude' / 'plugins' / 'installed_plugins.json'
+        old_claude = self.copy(claude / 'qmd-auto-context-marketplace' /
+                               'qmd-auto-context' / '0.38.0', 3)
+        record.write_text(json.dumps({'version': 2, 'plugins': {
+            'memvane@memvane-marketplace': [{'installPath': str(memvane)}],
+            'qmd-auto-context@qmd-auto-context-marketplace': [
+                {'installPath': str(old_claude)}]}}))
+        old_codex = self.copy(codex / 'qmd-auto-context-marketplace' /
+                              'qmd-auto-context' / '0.38.0', 3)
+        old_hermes = self.copy(self.home / '.hermes' / 'plugins' / 'qmd-auto-context', 3)
+        copies = laya_journal_v4.host_copies(memvane, self.home)
+        for copy in (memvane, old_claude, old_codex, old_hermes):
+            self.assertIn(str(copy), copies)
+        self.assertNotIn(str(self.codex), copies)  # another marketplace ('mkt')
+        convert = lambda: laya_journal_v4.convert_install(self.state, self.project,
+                                                          root=memvane, home=self.home)
+        for copy in (old_claude, old_codex, old_hermes):
+            self.assertEqual(convert(), {'status': 'journal_v4_waiting',
+                                         'reason': 'journal_v4_waiting_hosts'})
+            self.assertEqual(stored(self.journal)[0], 3)
+            self.copy_version(copy, 4)
+        self.assertEqual(convert()['status'], 'journal_v4_converted')
+        self.assertEqual(stored(self.journal)[0], 4)
+
     def test_conversion_waits_for_a_copy_under_a_custom_hermes_home(self):
         import laya_journal_v4
         self.copy_version(self.codex, 4)

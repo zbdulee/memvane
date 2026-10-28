@@ -1,4 +1,4 @@
-"""Source bundle and read-only active-artifact evidence for Laya Index.
+"""Source bundle and read-only active-artifact evidence for memvane-db.
 
 This module never selects an engine, replaces an installed file, or retires QMD.
 The bundle is a private, no-clobber *candidate*. An installation receipt must be

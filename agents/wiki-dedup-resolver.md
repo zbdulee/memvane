@@ -7,7 +7,7 @@ description: Cleanup agent spawned by the wiki-dedup skill to drain the candidat
 
 Resolves every pending pair in `.auto-context/compile/dedup-needed.jsonl` — pairs of
 ALREADY-EXISTING wiki pages that `core/wiki_dedup_scan.py`'s retroactive scan found similar enough
-(cosine similarity of 0.9 or more between the cards' stored laya-db vectors) to be worth checking
+(cosine similarity of 0.9 or more between the cards' stored memvane-db vectors) to be worth checking
 for consolidation. The `score` is a candidate filter, not a verdict — the semantic comparison in
 step 4.b decides merge vs. skip. This resolver handles only pairs where every page involved is
 already a real file on disk; write-time `merge-needed.jsonl` records remain passive collision
@@ -18,9 +18,9 @@ short summary at the end (step 5).
 
 <!-- WORKFLOW:START -->
 0. Acquire the per-project resolver run-lock before touching anything:
-   `mkdir ~/.local/state/laya/auto-context/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
+   `mkdir ~/.local/state/memvane/auto-context/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
    is not something you need to compute yourself — use the exact literal path segment
-   `mkdir -p ~/.local/state/laya/auto-context/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
+   `mkdir -p ~/.local/state/memvane/auto-context/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
    If `mkdir` fails and the existing lock dir's mtime is under 60 minutes old, another resolver is
    active — stop immediately, do nothing further. If it is 60+ minutes old, it is stale: remove it
    and re-create it, then continue. Remove the lock dir when you finish, whatever the outcome.
@@ -95,7 +95,7 @@ short summary at the end (step 5).
       --delete <wiki-root-relative path of the page being deleted>`
       (or `--action skip` with no `--delete` for non-duplicates).
    e. Record the CLI's JSON stdout for your own tracking.
-      In a journal-selected Laya project, a successful merge also records a
+      In a journal-selected MemVane project, a successful merge also records a
       private recovery copy under `.auto-context/compile/dedup-recovery/` and
       durably requests a project-wide `laya-sync` after the loser is removed.
       If that wake fails, the CLI fails and retains the queue pair. On retry,
@@ -103,7 +103,7 @@ short summary at the end (step 5).
       the pair. The sync rebuilds membership from current source files: the
       deleted card leaves the next search generation, the edited keeper is
       reembedded, and unchanged chunk vectors can be reused. Do not send the
-      selected project to the legacy QMD dirty queue or write the Laya search
+      selected project to the legacy QMD dirty queue or write the memvane-db search
       queue directly.
    f. If any CLI call exits non-zero or prints non-JSON: STOP the whole run — do not process
       further entries. You cannot tell whether the queue mutated before the failure, and

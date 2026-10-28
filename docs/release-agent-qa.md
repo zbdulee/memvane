@@ -74,7 +74,7 @@ provider를 활성화하지 않았다. 이 smoke는 전용 OS 계정/VM의 정�
 설치 소유 journal·DB/queue incarnation, 실제 QMD 이관·검색·학습,
 Codex hook 검증을 충족하지 않는다. 해당 행은 `NOT RUN`이다.
 현재 exact head의 Node 22/24/26 CI는
-[run 39448832807](https://github.com/zbdulee/qmd-auto-context/actions/runs/39448832807)에서 성공했다.
+[run 39448832807](https://github.com/zbdulee/memvane/actions/runs/39448832807)에서 성공했다.
 이 기록을 소스에 반영하면 Git tree가 바뀌므로, 위 설치의 exact identity와
 CI는 계속 **커밋 `40e500c`에만** 귀속된다.
 
@@ -122,7 +122,7 @@ site-packages만 `PYTHONPATH`에 더한 별도 47건 검사는
 재검사 `a0d0ecbf89784b50bcd52346cebc91da`는 1,650건 중
 1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)이었다.
 이는 이후 리뷰 수정 이전 소스이므로 최종 전체 회귀는 다시 필요하다.
-이전 head `753bc2f`의 CI [39514146609](https://github.com/zbdulee/qmd-auto-context/actions/runs/39514146609)는
+이전 head `753bc2f`의 CI [39514146609](https://github.com/zbdulee/memvane/actions/runs/39514146609)는
 Node 22·24·26 모두 성공했지만 이 변경의 CI가 아니다.
 Claude Opus는 `bb1087dd4ee942408fd681016387ba91`와
 `cc61044ea0a94c829ec29b36dd83770e`에서 replacement 증거와
@@ -294,7 +294,7 @@ barrier and learning conditions. This paragraph does not record L1 QA.
 RSS도 측정되지 않았다. 이 기능 smoke는 제품 provider 승인이나 L1 설치 검증이
 아니다. 원시 실행 로그가 별도 보존됐다는 주장은 하지 않는다.
 
-### Laya Index 전환 후보 추가 필수 행 (2026-10-18, 전부 NOT RUN)
+### memvane-db 전환 후보 추가 필수 행 (2026-10-18, 전부 NOT RUN)
 
 **통합 작업 체크포인트 (L0, 설치 후보 아님):** 제품 승인 항목의 자기참조를
 제거하고, exact Git tree 복사본과 설치 소유 journal에 외부 provider attestation
@@ -335,7 +335,7 @@ cache create 4,779 token이었다. 설정 변경 뒤 switching 고착, pending r
 `9be9f9657a674b5aa6402e8c66fc487a`에서 통과했다. 실제 QMD 데이터와
 모델은 이 리뷰에 제공하지 않았으며 L1 상태를 바꾸지 않는다.
 
-Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. 실제 설치 후보의 provider 승인과 선택은 아직 수행되지 않았다. 아래 행은 모두 `NOT RUN`이며 L0 통과로 대체할 수 없다.
+memvane-db로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. 실제 설치 후보의 provider 승인과 선택은 아직 수행되지 않았다. 아래 행은 모두 `NOT RUN`이며 L0 통과로 대체할 수 없다.
 
 | 행 | 설치 후보에서 확인할 실제 결과 |
 |---|---|
@@ -343,7 +343,7 @@ Laya Index로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더�
 | LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
 | LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
 | LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
-| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/laya/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
+| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
 | LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
 | LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
 
@@ -436,8 +436,9 @@ Operator rules:
   [runtime resource coordination](runtime-resource-coordination.md) and
   [development resource safety](development-resource-safety.md)). Never run
   the gate in a maintainer's daily account.
-- **Clean state.** A clean state has no qmd-auto-context plugin in either host,
-  no plugin state under `~/.local/state/laya` or
+- **Clean state.** A clean state has no `memvane` or `qmd-auto-context` plugin in either host,
+  no plugin state under `~/.local/state/memvane`, `~/.local/state/laya`,
+  `~/Library/Application Support/memvane` or
   `~/Library/Application Support/qmd-auto-context`, no previous fixtures, and no global Git `core.hooksPath`. Record how the state
   was reset: new account, snapshot restore, or documented removal.
 - **Approvals recorded before running:**
@@ -804,7 +805,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
      `additionalContext`). Probe Q-alpha: nothing is injected. Ask
      "문서에서 release QA alpha 찾아줘": the query skill returns the
      onboarding notice instead of results.
-  5. Ask "Laya 색인 준비 상태 보여줘". If the embedding runtime is missing,
+  5. Ask "MemVane 색인 준비 상태 보여줘". If the embedding runtime is missing,
      ask the `setup` skill to prepare it, review the stated network scope
      (npm registry, model host) or name the reviewed local GGUF, then
      approve. Expected: the runtime status reports `runtimeId`, generation,
@@ -926,7 +927,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part A: restore and forward recovery.**
 
 1. Request the official restore of this project's Laya selection
-   ("Laya 인덱스 전환을 되돌려줘") **before** its first selected write.
+   ("MemVane 인덱스 전환을 되돌려줘") **before** its first selected write.
    Expected: only the route file this selection published is withdrawn, the
    candidate stores, ledger and marker remain intact, and a fresh session no
    longer serves that route. After a selected write, restore reports
@@ -1140,9 +1141,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 3. Expected: `ALPHA_MAIN` is not injected as current. Either S-feature
    content, an empty result, or a marked stale result.
 
-**Part B: late worker flip-flop (selected Laya Index engine).**
+**Part B: late worker flip-flop (selected memvane-db engine).**
 
-Laya Index owns search and indexing in this release. Part B therefore runs on
+memvane-db owns search and indexing in this release. Part B therefore runs on
 a fixture whose route was selected through setup onboarding (LI-MIG in the
 same fixture).
 
@@ -1528,6 +1529,6 @@ Scenarios respect domain ownership. Two rules apply:
 | Scenario | Status | Note |
 |---|---|---|
 | RQA-ID-00, RQA-INST-01..04, RQA-HOOK-01..02, RQA-SYNC-01, RQA-GIT-01..03, RQA-WIKI-01..03, RQA-RES-01, RQA-PLAT-01 | `NOT RUN` | Specification only. No installed host, QMD, hook, install, model or network execution in this pass. The synthetic fixture helper was tested separately at L0. |
-| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected Laya Index engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. |
+| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected memvane-db engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. |
 | RQA-RES-02 | `BLOCKED` | Needs separate learning approval, safe synthetic installed-candidate resources, and observed OS-pressure stop/resume. L0 queue tests do not satisfy this row. |
 | LI-INST, LI-MIG, LI-SCOPE, LI-RECOVER, LI-COEXIST, LI-VECTOR, LI-RECALL | `NOT RUN` | Exact marketplace install and fresh-host scenarios have not run. Production provider approval, onboarding activation, and retrieval parity remain unresolved. |

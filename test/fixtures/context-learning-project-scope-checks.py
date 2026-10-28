@@ -44,10 +44,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
  installs={}
  version='0.1-test'
  for host in ('claude','codex'):
-  p=home/('.'+host)/'plugins/cache/qmd-auto-context-marketplace/qmd-auto-context'/version
+  p=home/('.'+host)/'plugins/cache/memvane-marketplace/memvane'/version
   p.mkdir(parents=True);shutil.copytree(Path(scope.__file__).parents[1],p/'core',ignore=shutil.ignore_patterns('__pycache__'))
   shutil.copytree(Path(scope.__file__).parents[2]/'hooks',p/'hooks')
-  save(p/('.'+host+'-plugin')/'plugin.json',{'name':'qmd-auto-context','version':version})
+  save(p/('.'+host+'-plugin')/'plugin.json',{'name':'memvane','version':version})
   installs[host]=[p]
  adapter=installs['codex'][0]/'core/context_learning/laya_adapter.py'
  policy={'trainerArgv':[str(python),str(adapter),str(model)],'modelInputView':EDIT_INPUT_VIEW,'baseArtifact':str(artifact),'batchMin':5,'batchMax':100}
@@ -102,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   with patch('context_learning.project_scope.time.time',return_value=expiry/1000+1):expect('expired',lambda:scope.require(root,policy,'local_train'))
   expect('operation',lambda:scope.require(root,policy,'apply'))
   # Official enablement changes revoke a grant even if old code remains.
-  save(home/'.claude/settings.json',{'enabledPlugins':{'qmd-auto-context@qmd-auto-context-marketplace':False}})
+  save(home/'.claude/settings.json',{'enabledPlugins':{'memvane@memvane-marketplace':False}})
   expect('changed',lambda:scope.require(root,policy,'local_train'))
   (home/'.claude/settings.json').unlink()
   # Project host settings are part of the accepted binding even if absent at
@@ -207,14 +207,14 @@ from types import SimpleNamespace
 from context_learning import history_activation as ha
 with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as folder:
  base=Path(folder).resolve();project=base/'project';project.mkdir(mode=0o700);home=base/'home'
- plugins=home/'.claude/plugins';VER='0.2-test';OFFICIAL='qmd-auto-context@qmd-auto-context-marketplace';STALE='qmd-auto-context@stale-qa'
- claude_cache=plugins/'cache/qmd-auto-context-marketplace/qmd-auto-context'/VER;claude_cache.mkdir(parents=True)
- stale_cache=plugins/'cache/stale-qa/qmd-auto-context/0.0-qa';stale_cache.mkdir(parents=True)
- codex_root=home/'.codex/plugins/cache/qmd-auto-context-marketplace/qmd-auto-context'/VER;codex_root.mkdir(parents=True)
+ plugins=home/'.claude/plugins';VER='0.2-test';OFFICIAL='memvane@memvane-marketplace';STALE='memvane@stale-qa'
+ claude_cache=plugins/'cache/memvane-marketplace/memvane'/VER;claude_cache.mkdir(parents=True)
+ stale_cache=plugins/'cache/stale-qa/memvane/0.0-qa';stale_cache.mkdir(parents=True)
+ codex_root=home/'.codex/plugins/cache/memvane-marketplace/memvane'/VER;codex_root.mkdir(parents=True)
  # An old QA directory marketplace reached through a symlinked temp parent.
  real=base/'real-tmp';linked=base/'linked-tmp';linked.symlink_to(real)
- save(real/'stale-market/.claude-plugin/marketplace.json',{'plugins':[{'name':'qmd-auto-context','version':'0.0-qa','source':'./plugins/qmd-auto-context'}]})
- save(plugins/'known_marketplaces.json',{'qmd-auto-context-marketplace':{'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}},
+ save(real/'stale-market/.claude-plugin/marketplace.json',{'plugins':[{'name':'memvane','version':'0.0-qa','source':'./plugins/memvane'}]})
+ save(plugins/'known_marketplaces.json',{'memvane-marketplace':{'source':{'source':'github','repo':'zbdulee/memvane'}},
                                          'stale-qa':{'source':{'source':'directory','path':str(linked/'stale-market')}}})
  official={'scope':'project','projectPath':str(project),'version':VER,'installPath':str(claude_cache)}
  stale={'scope':'user','version':'0.0-qa','installPath':str(stale_cache)}
@@ -225,8 +225,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   return [{'id':OFFICIAL,'enabled':official_enabled,**official,**extra},
           {'id':STALE,'enabled':stale_enabled,**stale},{'id':'unrelated@market','enabled':True}]
  def codex_list(*enabled):
-  rows=[('qmd-auto-context-marketplace',VER),('old-qa','0.0-qa')]
-  return {'installed':[{'name':'qmd-auto-context','marketplaceName':m,'version':v,'installed':True,'enabled':i in enabled}
+  rows=[('memvane-marketplace',VER),('old-qa','0.0-qa')]
+  return {'installed':[{'name':'memvane','marketplaceName':m,'version':v,'installed':True,'enabled':i in enabled}
                        for i,(m,v) in enumerate(rows)]}
  listing={};calls=[]
  trusted=base/'trusted-bin';trusted.mkdir(mode=0o700)
@@ -269,7 +269,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   expect('codex_ambiguous',resolve)
   listing['codex']=codex_list()
   expect('codex_ambiguous',resolve)
-  listing['codex']={'installed':[{'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'../x','installed':True,'enabled':True}]}
+  listing['codex']={'installed':[{'name':'memvane','marketplaceName':'memvane-marketplace','version':'../x','installed':True,'enabled':True}]}
   expect('codex_invalid',resolve)
   listing['codex']=codex_list(0)
   # Missing, duplicated or foreign-project installation records fail closed.
@@ -326,7 +326,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   records();listing['claude']=claude_list()
   assert resolve()['claude']==[claude_cache]
   # Freshness: a later CLI answer with a changed root is a different inventory.
-  listing['codex']={'installed':[{'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'0.3-new','installed':True,'enabled':True}]}
+  listing['codex']={'installed':[{'name':'memvane','marketplaceName':'memvane-marketplace','version':'0.3-new','installed':True,'enabled':True}]}
   expect('codex_record_missing',resolve)
   (codex_root.parent/'0.3-new').mkdir()
   assert resolve()['codex']==[codex_root.parent/'0.3-new']
@@ -347,12 +347,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
  # available solely on the account-global path.
  qa_roots={}
  for host in ('claude','codex'):
-  target=home/('.'+host)/'plugins/cache/qmd-laya-fixture-qa/qmd-auto-context'/VER
+  target=home/('.'+host)/'plugins/cache/qmd-laya-fixture-qa/memvane'/VER
   target.parent.mkdir(parents=True,exist_ok=True)
   target.mkdir()
   shutil.copytree(Path(scope.__file__).parents[1],target/'core',ignore=shutil.ignore_patterns('__pycache__'))
   shutil.copytree(Path(scope.__file__).parents[2]/'hooks',target/'hooks')
-  save(target/('.'+host+'-plugin/plugin.json'),{'name':'qmd-auto-context','version':VER})
+  save(target/('.'+host+'-plugin/plugin.json'),{'name':'memvane','version':VER})
   qa_roots[host]=[target]
  with patch.object(Path,'home',return_value=home),patch.object(ha,'_project_host_roots',return_value=qa_roots):
   selected=scope._installations(project)

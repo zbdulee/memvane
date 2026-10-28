@@ -1390,7 +1390,7 @@ class ResponseChecks(unittest.TestCase):
                     self.assertEqual(status, 3)
                     self.assertEqual(out.getvalue(), '')
                     self.assertEqual(err.getvalue(),
-                                     f'[laya-index] {code}; QMD fallback refused\n')
+                                     f'[memvane] {code}; QMD fallback refused\n')
 
 
 class BundleDriftChecks(unittest.TestCase):
@@ -1565,7 +1565,7 @@ class BundleDriftChecks(unittest.TestCase):
                 status = response.main(['serve-hook', 'recall', 'claude', str(payload), temp])
         self.assertEqual(status, 3)
         self.assertEqual(err.getvalue(),
-                         '[laya-index] executing_bundle_not_selected; QMD fallback refused\n')
+                         '[memvane] executing_bundle_not_selected; QMD fallback refused\n')
 
 
 if __name__ == "__main__":

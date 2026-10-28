@@ -31,7 +31,7 @@ development execution guard is separate; see
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. One per-user resident service
   (`laya_resident_service.py`, private root
-  `<account home>/.local/state/laya/service/`, same-owner peer check on every
+  `<account home>/.local/state/memvane/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
   per vector profile (provider identity, model and dimension) through
@@ -492,7 +492,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
   command; an idle learning-only service of an earlier bundle is retired as
   before.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
-  `~/.local/state/laya/embed-runtime` (`active.json`, `previous.json`,
+  `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
   content-addressed `generations/g-<id>/`). The bundle upgrade worker fills it
   from an install's sealed provider attestation. On a new machine the owner
   runs `core/setup_entry.py provision-index-runtime

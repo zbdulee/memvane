@@ -30,8 +30,8 @@ def _snapshot(path):
 def _private_state(config, root, *, create=True):
     options = config.get('contextLearning', {})
     if 'stateRoot' not in options:
-        from .runtime_setup import default_managed_root
-        parent = default_managed_root().parent.parent / 'live-selection'
+        from .runtime_setup import learning_state_base
+        parent = learning_state_base() / 'live-selection'
     else:
         configured = options['stateRoot']
         if not isinstance(configured, str):

@@ -150,7 +150,7 @@ def _installed_binding(rows):
         base=_path(row['root'],directory=True)
         host=row['host'];manifest=_path(base/('.'+host+'-plugin/plugin.json'))
         metadata=json.loads(manifest.read_text())
-        if (metadata.get('name')!='qmd-auto-context' or not isinstance(metadata.get('version'),str)):
+        if (metadata.get('name')!='memvane' or not isinstance(metadata.get('version'),str)):
             raise ValueError('project_scope_installation_invalid')
         files,fingerprint=_code_snapshot(base,Path.home())
         if files!=expected:raise ValueError('project_scope_code_changed')

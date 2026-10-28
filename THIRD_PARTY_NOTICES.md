@@ -1,12 +1,12 @@
 # Third-party notices
 
-Laya Index is an independent SQLite search engine derived from the ideas and
+memvane-db is an independent SQLite search engine derived from the ideas and
 file-format work of [QMD](https://github.com/tobi/qmd). The QMD-compatible
 chunking logic in `core/laya_qmd_chunking.mjs` is adapted from QMD's
 `src/store.ts` at the pinned fork commit
 `f4633f92a99ffdb2d0e885ed391fd8169133d70e`. The migration adapter also
 uses the QMD 2.5.3 and pinned-fork SQLite layouts as documented source formats.
-This notice does not imply that QMD maintains or endorses Laya Index.
+This notice does not imply that QMD maintains or endorses memvane-db.
 
 QMD is distributed under the MIT License:
 

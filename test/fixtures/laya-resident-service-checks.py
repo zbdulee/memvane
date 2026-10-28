@@ -19,6 +19,8 @@ import unittest
 from unittest.mock import patch
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
+# Last release under the earlier plugin id (its own resident client code).
+OLD_RELEASE = 'f9c33094e30d523415fe983ec7f3b4c35d5a21c0'
 sys.path.insert(0, str(CORE))
 
 from laya_index_a import IndexContractError
@@ -373,6 +375,139 @@ class ServiceChecks(Fixture):
         self.assertEqual(resident.read_owner_state(manifest)['reason'], 'starting')
         self.routes[project] = self.routes.get(project) or self.project_route(project, manifest)
         self.wait(lambda: self.ready(manifest), message='not re-adopted after the upgrade')
+
+    def old_client(self, legacy):
+        """One 0.40.3 client request, run by the 0.40.3 code itself (git history)."""
+        if not hasattr(self, 'old_core'):
+            import io
+            import tarfile
+            archive = subprocess.run(('git', '-C', str(CORE.parent), 'archive', '--format=tar',
+                                      OLD_RELEASE, 'core'), check=True,
+                                     capture_output=True).stdout
+            target = self.base / 'old-0.40.3'
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                tar.extractall(target, filter='data')
+            self.old_core = target / 'core'
+        script = ('import json, sys\n'
+                  'sys.path.insert(0, sys.argv[1])\n'
+                  'import laya_resident_service as s\n'
+                  'spawned = []\n'
+                  'state = s.ensure_service(root=sys.argv[2], learning_root=False,\n'
+                  '                         spawn=lambda argv, **kw: spawned.append(argv))\n'
+                  'print(json.dumps({"state": state, "spawned": len(spawned)}))\n')
+        done = subprocess.run((sys.executable, '-B', '-c', script, str(self.old_core),
+                               str(legacy)), capture_output=True, text=True, check=False,
+                              env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_handoff_elects_only_the_memvane_successor_against_a_0403_client(self):
+        legacy = self.base / 'legacy-svc'
+        legacy.mkdir(mode=0o700)
+        project, manifest = self.project('alpha')
+        svc.register(project, root=legacy)
+        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=None)
+        self.services.append(old)
+        self.assertTrue(old.acquire(wait=5))
+        old.start()
+        self.wait(lambda: self.ready(manifest))
+        inherited = []
+
+        def spawn(argv, *, pass_fds):  # the child keeps its copies of the locks
+            inherited.append((argv, [os.dup(fd) for fd in pass_fds]))
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.41.0', 'digest': 'new'}):
+            self.assertEqual(svc.ensure_service(root=self.root, learning_root=False,
+                                                legacy_root=legacy, spawn=spawn), 'replacing')
+        self.assertTrue(old.draining.is_set())
+        self.assertEqual(len(inherited), 1)  # the MemVane successor, started first
+        argv, fds = inherited[0]
+        self.assertEqual(argv[3:6], [str(CORE / 'laya_resident_service.py'), 'serve',
+                                     str(self.root)])
+        self.assertEqual(len(fds), 2)
+        # A 0.40.3 client asks during the drain: its own code elects no successor.
+        self.assertEqual(self.old_client(legacy), {'state': 'replacing', 'spawned': 0})
+        new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=legacy)
+        self.services.append(new)
+        acquired = []
+        thread = threading.Thread(target=lambda: acquired.append(new.acquire(
+            successor_fd=fds[0], wait=20, legacy_successor_fd=fds[1])))
+        thread.start()
+        self.assertTrue(old.stopped.wait(15))
+        old.close()
+        thread.join(20)
+        self.assertEqual(acquired, [True])
+        self.assertIsNotNone(new.legacy_lease)
+        # The pre-rename service stays down: later 0.40.3 requests elect nothing.
+        self.assertEqual(self.old_client(legacy), {'state': 'starting', 'spawned': 0})
+        self.assertIsNone(svc.legacy_service_dir(home=self.base / 'nohome'))
+
+    def test_memvane_service_holds_the_pre_rename_lease_for_its_lifetime(self):
+        legacy = self.base / 'legacy-svc'
+        new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=legacy)
+        self.services.append(new)
+        self.assertTrue(new.acquire(wait=5))  # no pre-rename directory: nothing held
+        new.start()
+        self.assertIsNone(new.legacy_lease)
+        legacy.mkdir(mode=0o700)  # a 0.40.3 client created its service directory
+        self.wait(lambda: new.legacy_lease is not None, message='legacy lease not taken')
+        # A 0.40.3-style successor never gets the lease while MemVane runs ...
+        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
+                          prove=self.prove, attest=lambda *_a: None,
+                          start_worker=self.start_worker, admit=lambda: True,
+                          retire=lambda *_a: None, tick=.05, legacy_root=None)
+        self.services.append(old)
+        self.assertFalse(old.acquire(wait=.5))
+        # ... and a 0.40.3-style client sees a held lease: no spawn, it degrades.
+        spawned = []
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.40.3', 'digest': 'old'}):
+            self.assertEqual(svc.ensure_service(root=legacy, learning_root=False,
+                                                legacy_root=None,
+                                                spawn=lambda argv, **kw: spawned.append(argv)),
+                             'starting')
+        self.assertEqual(spawned, [])
+        # The MemVane client attaches to the running MemVane service.
+        with patch.object(svc, 'bundle_identity',
+                          return_value={'version': '0.41.0', 'digest': 'new'}):
+            self.assertIn(svc.ensure_service(root=self.root, learning_root=False,
+                                             legacy_root=legacy,
+                                             spawn=lambda argv, **kw: spawned.append(argv)),
+                          ('ready', 'starting'))
+        self.assertEqual(spawned, [])
+        new.begin_drain()
+        self.assertTrue(new.stopped.wait(10))
+        new.close()
+        self.assertTrue(old.acquire(wait=2))  # released only when MemVane stops
+
+    def test_worker_loaded_after_its_last_route_left_is_reclaimed(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        real_start = self.start_worker
+        handles = []
+
+        def start_worker(manifest, admit, **kw):
+            handle = real_start(manifest, admit, **kw)
+            self.routes.pop(project, None)  # the route left while it loaded
+            handles.append(handle)
+            return handle
+        self.start_worker = start_worker
+        service = self.service()
+        service.reclaim_seconds = 0
+        self.wait(lambda: handles, message='worker never loaded')
+        self.wait(lambda: handles[0].process.poll() is not None,
+                  message='unbound worker kept running')
+        self.assertEqual(service.workers, {})
+        self.assertEqual(service.bindings, {})
 
     def project_route(self, project, manifest):
         name = Path(project).name

@@ -1,11 +1,11 @@
 ---
 name: update
-description: Use when the user asks to manually refresh, resync, or reconcile the auto-context index for a project — e.g. "인덱스 새로고침", "동기화해줘", "놓친 변경 반영", "refresh the index". Queues the selected Laya index's full-scan sync, which reconciles created, changed and deleted files.
+description: Use when the user asks to manually refresh, resync, or reconcile the memvane-db index for a project — e.g. "인덱스 새로고침", "동기화해줘", "놓친 변경 반영", "refresh the index". Queues the selected memvane-db index's full-scan sync, which reconciles created, changed and deleted files.
 ---
 
 # Update
 
-Queue a full-scan sync of the project's selected Laya index.
+Queue a full-scan sync of the project's selected memvane-db index.
 
 ## Workflow
 
@@ -25,6 +25,6 @@ Queue a full-scan sync of the project's selected Laya index.
 
 ## Safety
 
-- The wrapper acts only for a selected Laya route. A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- The wrapper acts only for a selected MemVane route. A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
 - A selected route whose proof fails exits 3; report the reason.
 - Preserve empty output as a valid graceful no-op state.

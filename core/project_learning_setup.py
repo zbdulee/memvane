@@ -95,8 +95,8 @@ def _namespace(project,root,*,mode='default'):
             raise ValueError('setup_synthetic_fixture_invalid')
         return project,root
     if mode!='default':raise ValueError('setup_mode_invalid')
-    from context_learning.runtime_setup import default_managed_root
-    expected=default_managed_root().parent.parent/'live-selection'/_project_key(project)
+    from context_learning.runtime_setup import learning_state_base
+    expected=learning_state_base()/'live-selection'/_project_key(project)
     if root!=expected or root==project or project in root.parents:
         raise ValueError('setup_namespace_invalid')
     return project,root

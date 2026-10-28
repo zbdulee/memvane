@@ -540,6 +540,112 @@ class MovedProvider(Base):
             return REAL_REVIEW(**{**kw, 'plugin_root': str(host)})
 
 
+class LegacyStateBaseRuntime(Base):
+    """An install attested onto the pre-rename runtime (~/.local/state/laya)."""
+
+    def test_adoption_copies_the_legacy_runtime_into_the_memvane_root(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        legacy_root = self.home.joinpath(*legacy_parts, 'embed-runtime')
+        self.assertTrue(Path(old_runtime['generation']).is_relative_to(legacy_root))
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        # As the earlier move off QMD sealed it: the closure the profile was
+        # computed over stays as ``profileDependencyClosure``.
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        self.remove_qmd()
+        before = {path: path.read_bytes() for path in legacy_root.rglob('*')
+                  if path.is_file()}
+        self.assertFalse(R.root().exists())
+        runtime = R.ensure_for_attestation(legacy_att)
+        # Same content-addressed generation id, now under the MemVane root.
+        self.assertEqual(Path(runtime['generation']).parent, R.root() / 'generations')
+        self.assertEqual(Path(runtime['generation']).name,
+                         Path(old_runtime['generation']).name)
+        self.assertTrue(R.root().is_relative_to(self.home / '.local' / 'state' / 'memvane'))
+        self.assertTrue(R.matches(runtime, manifest, old_runtime['dependencyClosure']))
+        after = {path: path.read_bytes() for path in legacy_root.rglob('*')
+                 if path.is_file()}
+        self.assertEqual(after, before)  # the legacy runtime is only read
+        # The review names the MemVane copies and re-attests the same profile.
+        source, commit = self.source_repo()
+        review = self.review(source, commit)
+        reviewed = review['reviewedProvider']['providerManifest']
+        for key in ('nodePath', 'modelPath', 'moduleEntryPath'):
+            self.assertTrue(Path(reviewed[key]).is_relative_to(R.root()), key)
+        self.assertTrue(auto.provider_equivalent(legacy_att, review, self.plugin))
+        again = reattest(legacy_att, review['reviewedProvider'])
+        self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
+
+
+class LegacyStateBaseRuntimeOtherDeps(Base):
+    """A MemVane generation with other JS deps never stands in for a legacy one."""
+
+    def test_legacy_attestation_without_files_digest_is_adopted_not_matched(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        legacy_att.pop(R.FILES_SHA, None)  # sealed before the runtime file digest
+        # The QMD source changes a dependency no attested entry hashes, then a
+        # MemVane generation is provisioned from it and made active.
+        for path in self.qmd_runtime.rglob('isexe/index.js'):
+            path.write_text('other dependency bytes')
+        other = R.ensure_for_attestation(self.old_att)
+        self.assertNotEqual(Path(other['generation']).name,
+                            Path(old_runtime['generation']).name)
+        self.assertNotEqual(other[R.FILES_SHA], old_runtime[R.FILES_SHA])
+        adopted = R.ensure_for_attestation(legacy_att)
+        self.assertEqual(Path(adopted['generation']).name,
+                         Path(old_runtime['generation']).name)
+        self.assertEqual(Path(adopted['generation']).parent, R.root() / 'generations')
+        self.assertEqual(adopted[R.FILES_SHA], old_runtime[R.FILES_SHA])
+
+
+class LegacyStateBaseRuntimeChanged(Base):
+    """A changed file the attestation does not hash must not be adopted."""
+
+    def test_changed_dependency_in_a_legacy_generation_is_refused(self):
+        import memvane_paths
+        legacy_parts = memvane_paths.LEGACY_STATE_PARTS
+        with mock.patch.object(memvane_paths, 'STATE_PARTS', legacy_parts), \
+                mock.patch.object(memvane_paths, 'state_base',
+                                  memvane_paths.legacy_state_base):
+            old_runtime = R.ensure_for_attestation(self.old_att)
+        manifest = dict(self.old_att['providerManifest'],
+                        nodePath=old_runtime['nodePath'],
+                        moduleEntryPath=old_runtime['moduleEntryPath'],
+                        modelPath=old_runtime['modelPath'])
+        legacy_att = dict(self.old_att, providerManifest=manifest,
+                          dependencyClosure=old_runtime['dependencyClosure'],
+                          profileDependencyClosure=self.old_closure)
+        self.remove_qmd()
+        dep = Path(old_runtime['generation']) / 'node_modules' / 'isexe' / 'index.js'
+        dep.write_text('changed')  # not among node/entry/model/native hashes
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_corrupt$'):
+            R.ensure_for_attestation(legacy_att)
+        generations = R.root() / 'generations'
+        self.assertFalse(generations.exists() and
+                         any(not p.name.startswith('.') for p in generations.iterdir()))
+
+
 class RuntimeFiles(Base):
     """Every executed file is provider content, not only the hashed entries."""
 

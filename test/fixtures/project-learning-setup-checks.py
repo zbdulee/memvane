@@ -15,7 +15,7 @@ from context_learning import adapter_binding
 if 'QMD_SETUP_FIXTURE_PACKAGE' not in os.environ:
  with tempfile.TemporaryDirectory(prefix='qmd-setup-installed-',dir='/tmp') as outer:
   outer=Path(outer).resolve();home=outer/'home'
-  package=home/'.codex/plugins/cache/qmd-auto-context-marketplace/qmd-auto-context/test'
+  package=home/'.codex/plugins/cache/memvane-marketplace/memvane/test'
   package.mkdir(parents=True)
   shutil.copytree(Path(setup.__file__).parent,package/'core',ignore=shutil.ignore_patterns('__pycache__'))
   shutil.copytree(Path(setup.__file__).parents[1]/'hooks',package/'hooks')
@@ -39,8 +39,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  settings={'indexing':True,'collections':['docs'],'collectionPaths':{'docs':'.'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
  save(project/'.auto-context/settings.json',settings)
  (project/'.auto-context').chmod(0o755)
- from context_learning.runtime_setup import default_managed_root
- root=default_managed_root(home).parent.parent/'live-selection'/_project_key(project);root.mkdir(mode=0o700,parents=True)
+ from context_learning.runtime_setup import learning_state_base
+ root=learning_state_base(home)/'live-selection'/_project_key(project);root.mkdir(mode=0o700,parents=True)
  model=base/'model';model.mkdir(mode=0o700)
  for name in MODEL_FILES:
   p=model/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(name)
@@ -48,15 +48,15 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  python=base/'python';python.write_text('runtime');python.chmod(0o700)
  installs={}
  for host in ('claude','codex'):
-  p=home/('.'+host)/'plugins/cache/qmd-auto-context-marketplace/qmd-auto-context/test';p.mkdir(parents=True,exist_ok=True)
+  p=home/('.'+host)/'plugins/cache/memvane-marketplace/memvane/test';p.mkdir(parents=True,exist_ok=True)
   if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[1],p/'core',ignore=shutil.ignore_patterns('__pycache__'))
   if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[2]/'hooks',p/'hooks')
-  save(p/('.'+host+'-plugin/plugin.json'),{'name':'qmd-auto-context','version':'test'})
-  save(p/'package.json',{'name':'qmd-auto-context','version':'test'})
+  save(p/('.'+host+'-plugin/plugin.json'),{'name':'memvane','version':'test'})
+  save(p/'package.json',{'name':'memvane','version':'test'})
   installs[host]=[p]
- save(home/'.claude/plugins/known_marketplaces.json',{'qmd-auto-context-marketplace':{'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}})
- save(home/'.claude/plugins/installed_plugins.json',{'plugins':{'qmd-auto-context@qmd-auto-context-marketplace':[{'version':'test','installPath':str(installs['claude'][0])}]}})
- codex={'name':'qmd-auto-context','marketplaceName':'qmd-auto-context-marketplace','version':'test','installed':True,'enabled':True,'source':{'source':'github','repo':'zbdulee/qmd-auto-context'}}
+ save(home/'.claude/plugins/known_marketplaces.json',{'memvane-marketplace':{'source':{'source':'github','repo':'zbdulee/memvane'}}})
+ save(home/'.claude/plugins/installed_plugins.json',{'plugins':{'memvane@memvane-marketplace':[{'version':'test','installPath':str(installs['claude'][0])}]}})
+ codex={'name':'memvane','marketplaceName':'memvane-marketplace','version':'test','installed':True,'enabled':True,'source':{'source':'github','repo':'zbdulee/memvane'}}
  adapter=installs['codex'][0]/'core/context_learning/laya_adapter.py'
  save(root/'live-selector.json',{'schema':'qmd-live-selector-v1','trainerArgv':[str(python),str(adapter),str(model)],'timeoutSeconds':30,'maxRssMib':4096})
  artifact=base/'base.artifact';artifact.write_text('immutable base');artifact.chmod(0o600)

@@ -1,16 +1,26 @@
 {
-  "name": "qmd-auto-context-marketplace",
-  "description": "qmd 기반 자동 컨텍스트 주입 플러그인 marketplace",
-  "owner": { "name": "zbdulee" },
+  "name": "memvane-marketplace",
+  "description": "MemVane 자동 컨텍스트 주입 플러그인 marketplace",
+  "owner": {
+    "name": "zbdulee"
+  },
   "plugins": [
     {
-      "name": "qmd-auto-context",
-      "description": "Laya 색인 기반 자동 컨텍스트 주입 — recall/update/posttool/index/compile hooks + setup/query/update/wiki-compile/wiki-dedup manual skills",
-  "version": "0.40.3",
+      "name": "memvane",
+      "description": "MemVane 자동 컨텍스트 주입 — memvane-db 색인 기반 recall/update/posttool/index/compile hooks + setup/query/update/wiki-compile/wiki-dedup manual skills",
+      "version": "0.41.0",
       "category": "Productivity",
-      "source": { "source": "url", "url": "https://github.com/zbdulee/qmd-auto-context" },
-      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
-      "author": { "name": "zbdulee" }
+      "source": {
+        "source": "url",
+        "url": "https://github.com/zbdulee/memvane"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "author": {
+        "name": "zbdulee"
+      }
     }
   ]
 }

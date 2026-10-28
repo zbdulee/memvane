@@ -70,7 +70,7 @@ class FreshOnboarding(BUILD['BuildCase']):
     def setUp(self):
         # The provider socket path of a real install is at most 100 bytes:
         # a short HOME directly under /tmp keeps it within that bound.
-        tmp = tempfile.TemporaryDirectory(prefix='lo-', dir='/tmp')
+        tmp = tempfile.TemporaryDirectory(prefix='l', dir='/tmp')
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name).resolve()
         env = mock.patch.dict(os.environ, {'HOME': str(self.home), 'QMD_SANDBOX': '1'})
@@ -79,7 +79,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         self.project = self.home / 'project'
         self.project.mkdir()
         cursor = self.home
-        for name in ('.local', 'state', 'laya', BUILD['INSTALL']):
+        for name in ('.local', 'state', 'memvane', BUILD['INSTALL']):
             cursor = cursor / name
             cursor.mkdir(mode=0o700)
         self.state = cursor
@@ -233,6 +233,20 @@ class FreshOnboarding(BUILD['BuildCase']):
                                              'skipPaths': ['drafts']}) + '\n')
         self.assertEqual(host_route.select_route(str(self.project))['state'], 'candidate')
         self.settings.write_bytes(settings_before)
+
+        # Onboarding writes only the MemVane roots: the route, the project
+        # pointer and the install all live under ~/.local/state/memvane, and no
+        # pre-rename root (~/.local/state/laya, .../qmd-auto-context) exists.
+        state_base = self.home / '.local' / 'state' / 'memvane'
+        self.assertEqual(route['journalPath'],
+                         str(state_base / BUILD['INSTALL'] / 'install-journal.sqlite'))
+        self.assertEqual(route['schema'], host_route.SCHEMA_V3)
+        self.assertEqual(initial_build.registered_pointer_path(str(self.project)).parent,
+                         state_base / 'initial-builds')
+        for legacy in (self.home / '.local' / 'state' / 'laya',
+                       self.home / 'Library' / 'Application Support' / 'qmd-auto-context',
+                       self.home / '.local' / 'share' / 'qmd-auto-context'):
+            self.assertFalse(legacy.exists(), legacy)
 
         # 7. Renaming the project changes the identity and blocks the route.
         self.settings.write_text(json.dumps({'name': 'renamed', 'skipPaths': []}) + '\n')

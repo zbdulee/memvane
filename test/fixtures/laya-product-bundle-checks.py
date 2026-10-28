@@ -710,7 +710,9 @@ print(json.dumps(result))'''
         _git(self.source, '-c', 'user.name=Synthetic Fixture',
              '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'v2')
         second = self.candidate('plugin-v2', _git(self.source, 'rev-parse', 'HEAD'))
-        new_route = {**old_route, 'pluginRoot': second['pluginRoot'],
+        from laya_index_host_route import written_schema
+        new_route = {**old_route, 'schema': written_schema(old_route['schema']),
+                     'pluginRoot': second['pluginRoot'],
                      'bundleManifestSha256': second['bundleManifestSha256'],
                      'ownershipManifestSha256': second['ownershipManifestSha256']}
         new_raw = bundle._canonical(new_route)

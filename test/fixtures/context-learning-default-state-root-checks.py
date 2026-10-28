@@ -15,8 +15,8 @@ from context_learning.seam import _private_state
 
 def default_parent(home):
     if sys.platform == 'darwin':
-        return home / 'Library/Application Support/qmd-auto-context/live-selection'
-    return home / '.local/share/qmd-auto-context/live-selection'
+        return home / 'Library/Application Support/memvane/live-selection'
+    return home / '.local/share/memvane/live-selection'
 
 
 def settings(parent=None):

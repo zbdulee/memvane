@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic wiki compile writer for qmd-auto-context.
+"""Deterministic wiki compile writer for MemVane.
 
 This command intentionally accepts already-compact candidate JSON. It does not
 persist raw transcripts and it does not run from query-time recall hooks.
@@ -884,7 +884,7 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
         f"status: {status}",
         f"created: {created}",
         f"updated: {created}",
-        "createdBy: qmd-auto-context",
+        f"createdBy: {wiki_markers.CREATED_BY}",
         f"confidence: {confidence}",
         "sources:",
     ])
@@ -1324,7 +1324,7 @@ def query_wiki_candidates(
                     qmd_config.DEDUP_TOP_K,
                     qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
                 if score >= min_score]
-    # Only a selected Laya index answers similarity; anything else has none.
+    # Only a selected memvane-db index answers similarity; anything else has none.
     return []
 
 
@@ -1420,7 +1420,7 @@ def auto_writable_text(text: str) -> tuple[bool, list[str]]:
     # superseded alone is historical and must never be revived by a refresh.
     if str(meta.get("status") or "").strip().lower() == "superseded":
         findings.append("protected_status")
-    if meta.get("createdBy") != "qmd-auto-context":
+    if meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES:
         findings.append("non_qmd_created_by")
     if not AUTO_BLOCK_RE.search(text):
         findings.append("managed_section_missing")

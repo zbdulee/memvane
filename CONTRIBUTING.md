@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve qmd auto-context.
+Thanks for helping improve MemVane.
 
 ## Before opening a change
 

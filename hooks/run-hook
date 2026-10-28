@@ -46,9 +46,9 @@ _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 
 # A route record is sticky. Classify the event's own cwd first; a selected
 # route enters only the installer-verified Laya service.
-_laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[laya-index] route lookup unavailable' >&2; exit 3; }
+_laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[memvane] route lookup unavailable' >&2; exit 3; }
 trap 'rm -f "$_laya_route_payload"' EXIT
-cat >"$_laya_route_payload" || { echo '[laya-index] route payload unavailable' >&2; exit 3; }
+cat >"$_laya_route_payload" || { echo '[memvane] route payload unavailable' >&2; exit 3; }
 _laya_route_fallback="$PWD"
 _laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
 case "$_laya_route_state" in
@@ -80,14 +80,14 @@ case "$_laya_route_state" in
     # timeout then kills the work itself, not a waiting shell with an
     # orphaned Python child. The open stdin fd survives unlinking.
     exec <"$_laya_route_payload"
-    rm -f "$_laya_route_payload" || { echo '[laya-index] route payload cleanup failed' >&2; exit 3; }
+    rm -f "$_laya_route_payload" || { echo '[memvane] route payload cleanup failed' >&2; exit 3; }
     trap - EXIT
     exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
   blocked)
-    echo '[laya-index] selected route unavailable; QMD fallback refused' >&2
+    echo '[memvane] selected route unavailable; QMD fallback refused' >&2
     exit 3
     ;;
-  *) echo '[laya-index] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
+  *) echo '[memvane] route lookup failed; QMD fallback refused' >&2; exit 3 ;;
 esac

@@ -20,7 +20,7 @@ test("query skill metadata and wrapper contract", () => {
   const meta = frontmatter(skill);
   assert.equal(meta.name, "query");
   assert.match(meta.description, /recall/i);
-  assert.match(meta.description, /Laya/);
+  assert.match(meta.description, /memvane-db/);
   assert.match(skill, /setup skill/);
 
   const wrapper = readFileSync("skills/query/scripts/query.sh", "utf8");

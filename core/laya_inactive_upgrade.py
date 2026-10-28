@@ -518,7 +518,9 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             if route['pluginRoot'] != old_proof['pluginRoot'] or \
                     route['vectorProfile'] != new_proof['vectorProfile']:
                 _fail('inactive_upgrade_old_route_changed')
-            route.update(pluginRoot=new_proof['pluginRoot'],
+            from laya_index_host_route import written_schema
+            route.update(schema=written_schema(route['schema']),
+                         pluginRoot=new_proof['pluginRoot'],
                          bundleManifestSha256=new_proof['bundleManifestSha256'],
                          ownershipManifestSha256=new_proof['ownershipManifestSha256'])
             new_route = _canonical(route)

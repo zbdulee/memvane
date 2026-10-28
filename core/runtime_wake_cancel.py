@@ -100,7 +100,9 @@ def ownership_proof(project_raw):
         _refuse('initial_build_not_registered')
     identity = record.get('identity') or {}
     state = Path(identity.get('stateRoot', ''))
-    pointer = initial_build.pointer_path(project, initial_build._pointer_dir(create=False))
+    pointer = initial_build.registered_pointer_path(project)
+    if pointer is None:
+        _refuse('initial_build_not_registered')
     _private_file(pointer)
     _private_file(state / 'initial-build.json')
     journal_path = Path(identity.get('journalPath', ''))

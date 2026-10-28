@@ -1,6 +1,6 @@
-# qmd auto-context
+# MemVane
 
-qmd auto-context는 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
+MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 에이전트 대화에 넣어 주는 플러그인입니다.
 
 매번 "이 문서도 참고해"라고 붙여 넣지 않아도, 에이전트가 질문과
@@ -21,9 +21,9 @@ qmd auto-context는 프로젝트 안의 문서, 메모, wiki를 자동으로 찾
 
 ## Quickstart (English)
 
-qmd auto-context injects relevant project wiki context into Claude Code, Codex,
+MemVane injects relevant project wiki context into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
-`setup` skill to onboard the project onto its Laya index. Onboarding reads a
+`setup` skill to onboard the project onto its memvane-db index. Onboarding reads a
 minimal `.auto-context/settings.json` (`{name, skipPaths}`), shows reviewed
 plans, and applies only on explicit request. Projects that are not onboarded get
 no indexing, recall, compile or learning work; their SessionStart shows one
@@ -63,25 +63,25 @@ continue below.
 
 ```bash
 # Claude Code: 대상 프로젝트에서 실행
-claude plugin marketplace add zbdulee/qmd-auto-context --scope project
-claude plugin install qmd-auto-context@qmd-auto-context-marketplace --scope project
+claude plugin marketplace add zbdulee/memvane --scope project
+claude plugin install memvane@memvane-marketplace --scope project
 
 # Codex: marketplace와 플러그인 등록 후 대상 프로젝트에서 신뢰 검토
-codex plugin marketplace add zbdulee/qmd-auto-context --sparse .agents/plugins
-codex plugin add qmd-auto-context@qmd-auto-context-marketplace
+codex plugin marketplace add zbdulee/memvane --sparse .agents/plugins
+codex plugin add memvane@memvane-marketplace
 ```
 
 Codex CLI에서는 `/plugins`에서 설치 상태를 볼 수 있습니다. 훅을 자동으로
 모두 신뢰하거나 다른 프로젝트까지 권한을 넓히지 말고, 대상 프로젝트에서
 실제 표시된 명령만 검토하세요. Hermes Agent는 별도로
-`hermes plugins install zbdulee/qmd-auto-context` 후
-`hermes plugins enable qmd-auto-context`를 사용합니다.
+`hermes plugins install zbdulee/memvane` 후
+`hermes plugins enable memvane`를 사용합니다.
 
 제품 설치는 각 에이전트의 plugin/marketplace 흐름을 사용합니다. 이 저장소는
 사용자용 `install.sh` 또는 `uninstall.sh`를 제공하지 않습니다.
 
-온보딩 상태는 에이전트에게 자연어로 요청하세요. 예를 들면 “Laya 색인 준비
-상태 보여줘”, “인덱스 활성화해줘”, “Laya 인덱스 전환을 되돌려줘”라고 말할 수
+온보딩 상태는 에이전트에게 자연어로 요청하세요. 예를 들면 “MemVane 색인 준비
+상태 보여줘”, “인덱스 활성화해줘”, “MemVane 인덱스 전환을 되돌려줘”라고 말할 수
 있습니다. 첫 색인 빌드는 비동기로 진행되며, 빌드가 봉인되고 활성화될 때까지
 검색 경로는 선택되지 않습니다. 임베딩 런타임 준비만으로 학습은 활성화되지
 않습니다.
@@ -91,13 +91,13 @@ Codex CLI에서는 `/plugins`에서 설치 상태를 볼 수 있습니다. 훅�
 Claude Code의 프로젝트 설치본은 다음 명령으로 갱신합니다.
 
 ```bash
-claude plugin marketplace update qmd-auto-context-marketplace
-claude plugin update qmd-auto-context@qmd-auto-context-marketplace --scope project
+claude plugin marketplace update memvane-marketplace
+claude plugin update memvane@memvane-marketplace --scope project
 # 사용자 범위(user scope)로 설치했다면 --scope 없이 실행합니다.
-claude plugin update qmd-auto-context@qmd-auto-context-marketplace
+claude plugin update memvane@memvane-marketplace
 ```
 
-Codex는 `codex plugin marketplace upgrade qmd-auto-context-marketplace` 후
+Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 `/plugins`에서 설치본을 확인하고 호스트가 제공하는 갱신 절차를 따릅니다.
 새 실행 코드의 훅 신뢰를 다시 검토하세요.
 
@@ -109,17 +109,60 @@ Codex는 `codex plugin marketplace upgrade qmd-auto-context-marketplace` 후
 달라고 요청하세요.
 
 플러그인 자체를 제거할 때는 호스트의 공식 명령인
-`claude plugin uninstall qmd-auto-context@qmd-auto-context-marketplace --scope project`
-또는 `codex plugin remove qmd-auto-context@qmd-auto-context-marketplace`를
+`claude plugin uninstall memvane@memvane-marketplace --scope project`
+또는 `codex plugin remove memvane@memvane-marketplace`를
 사용합니다. 제거는 플러그인 설치 해제이며 프로젝트 데이터 복구가 아닙니다.
 Codex 설치는 다른 프로젝트에도 영향을 줄 수 있으므로 제거 전에 사용 범위를
 확인하세요.
+
+### `qmd-auto-context` 플러그인에서 옮기기
+
+`qmd-auto-context@qmd-auto-context-marketplace`가 설치된 호스트는 새 플러그인
+`memvane@memvane-marketplace`를 설치하고, 프로젝트를 한 번 연 뒤 이전 플러그인을
+제거합니다. 새 번들은 SessionStart에서 이전 플러그인 id의 번들에 묶인 설치를 일반
+플러그인 업데이트와 같은 경로로 넘겨받습니다. 넘겨받은 route는 이전 번들이 읽지 않는
+형식이라 이전 번들은 그 설치를 되가져가지 못합니다. 대신 제거 전까지 이전 플러그인의
+훅이 그 프로젝트에서 exit 3으로 끝나 훅 오류가 표시됩니다(작업을 막지는 않습니다).
+그래서 넘겨받기를 확인한 직후 이전 플러그인을 제거합니다. 이전 플러그인을 먼저 제거하고
+새 플러그인을 설치해도 됩니다. 그때는 오류 표시가 없고, 새 플러그인이 설치되기 전까지
+그 프로젝트에 recall이 들어가지 않습니다.
+
+```bash
+# Claude Code (프로젝트 범위 설치 예시. 사용자 범위면 --scope를 뺍니다)
+claude plugin marketplace add zbdulee/memvane --scope project
+claude plugin install memvane@memvane-marketplace --scope project
+#   → 대상 프로젝트를 열어 SessionStart 안내로 넘겨받기를 확인합니다
+claude plugin uninstall qmd-auto-context@qmd-auto-context-marketplace --scope project
+claude plugin marketplace remove qmd-auto-context-marketplace
+
+# Codex
+codex plugin marketplace add zbdulee/memvane --sparse .agents/plugins
+codex plugin add memvane@memvane-marketplace
+#   → 대상 프로젝트를 열어 넘겨받기를 확인합니다
+codex plugin remove qmd-auto-context@qmd-auto-context-marketplace
+codex plugin marketplace remove qmd-auto-context-marketplace
+```
+
+Hermes Agent를 쓰면 이전 플러그인부터 제거합니다. 이전 Hermes 플러그인은 새 route를
+읽지 못하고 그 프로젝트의 편집을 막습니다(Claude·Codex의 이전 훅은 오류만 표시하고 막지
+않습니다). 그래서 이전 Hermes 플러그인이 설치돼 있는 동안 새 플러그인은 설치를 넘겨받지
+않고 마지막 색인을 읽기 전용으로 씁니다. SessionStart 안내가 그 사유를 보여 줍니다.
+비활성화만으로는 부족하고 제거해야 합니다.
+
+```bash
+hermes plugins remove qmd-auto-context
+hermes plugins install zbdulee/memvane
+hermes plugins enable memvane
+```
+
+넘겨받은 설치는 기존 상태 디렉터리(`~/.local/state/laya/<install id>`)를 그대로
+쓰고, 새로 온보딩하는 프로젝트는 `~/.local/state/memvane` 아래에 만들어집니다.
 
 ### 예전 QMD backend 정리
 
 이전 버전이 설치한 QMD daemon, managed LaunchAgent, 플러그인 QMD runtime과
 공유 store는 소유자가 한 번 정리합니다. Claude와 Codex 호스트 캐시가 모두 이
-버전을 읽고, 모든 설치가 이 번들로 옮겨져 Laya 임베딩 런타임으로 재증명된 뒤에
+버전을 읽고, 모든 설치가 이 번들로 옮겨져 MemVane 임베딩 런타임으로 재증명된 뒤에
 요청하세요.
 
 ```text
@@ -134,7 +177,7 @@ QMD 색인·설정·모델 캐시도 들어 있으므로, 이 둘은 별도로 �
 
 ## 프로젝트에서 켜기
 
-qmd auto-context는 프로젝트별 온보딩 방식입니다. Laya 색인이 선택되지 않은
+MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택되지 않은
 프로젝트는 아무 것도 색인하지 않습니다.
 
 온보딩은 `.auto-context/settings.json`의 minimal 형식만 읽습니다
@@ -166,8 +209,8 @@ qmd auto-context는 프로젝트별 온보딩 방식입니다. Laya 색인이 �
 링크를 확인해줘”라고 요청할 수도 있습니다. 생성·검증·색인 작업은 비동기 큐에
 잠시 대기할 수 있습니다. 큐 전체가 비어야 정상인 것은 아니며, 확인하려는 카드가
 아직 검색되지 않으면 그 카드의 상태를 확인하세요.
-위키 카드만 Laya 검색·주입 대상이고, 원문 파일 자체를 자동 주입하지 않습니다.
-위키 카드 안의 발췌와 원문 링크는 정상 콘텐츠입니다. 준비된 로컬 Laya 선택
+위키 카드만 MemVane 검색·주입 대상이고, 원문 파일 자체를 자동 주입하지 않습니다.
+위키 카드 안의 발췌와 원문 링크는 정상 콘텐츠입니다. 준비된 로컬 MemVane 선택
 모델이 있으면 검증된 검색 후보 최대 15개 중 최대 3개를 고릅니다. 모델이
 준비되지 않았거나 질의 시점에 응답하지 못하면 검증된 후보를 하이브리드 순위대로
 최대 3개 주입합니다. 질의 벡터를 쓸 수 없으면(임베딩 상주 프로세스 미기동·리소스
@@ -177,7 +220,7 @@ qmd auto-context는 프로젝트별 온보딩 방식입니다. Laya 색인이 �
 않습니다. 설정하지 않으면 추가 제외는 없습니다.
 로컬 임베딩 모델은 사용자당 하나인 상주 서비스가 한 번만 올려 모든 프로젝트의
 동기화·질의에 재사용합니다. 플러그인이 업데이트되면 진행 중인 요청을 마친 뒤 새
-버전으로 교체되고, 교체하는 동안 질의는 어휘 검색으로 답합니다. Laya의 SQLite
+버전으로 교체되고, 교체하는 동안 질의는 어휘 검색으로 답합니다. memvane-db의 SQLite
 검색 자체는 질문마다 실행되며 상주 검색 서버나 OS 부팅 서비스가 아닙니다. 모델
 준비 중이나 자원 압박으로 질의가 보류되면 그 요청은 검색 성공으로 보지 말고
 상태를 확인하세요.
@@ -185,7 +228,7 @@ qmd auto-context는 프로젝트별 온보딩 방식입니다. Laya 색인이 �
 선택을 되돌리고 싶을 때는 이렇게 요청합니다.
 
 ```text
-이 프로젝트 Laya 인덱스 전환을 되돌려줘.
+이 프로젝트 MemVane 인덱스 전환을 되돌려줘.
 ```
 
 선택된 색인이 아직 새 쓰기를 받지 않았을 때만 되돌립니다. 이미 새 쓰기가
@@ -228,7 +271,7 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 자동 검증이 실패하면 기본 설정에서는 해당 생성 문서를 삭제합니다. 검증기가
 없거나 timeout이 나거나 판단이 불확실한 경우에는 큐나 `generated` 상태가
 보존됩니다. `generated` 카드처럼 자동 신뢰 조건(`status: verified`,
-`createdBy: qmd-auto-context`, 비어 있지 않은 `sourceRevisions`)을 갖추지 못한
+`createdBy: memvane` 또는 이전 플러그인 이름 `qmd-auto-context`, 비어 있지 않은 `sourceRevisions`)을 갖추지 못한
 카드는 `recallVerifiedOnly` 값과 관계없이 recall에 주입되지 않습니다.
 
 민감한 원문 폴더는 `skipPaths`에 넣어 새 위키 생성 대상에서 뺍니다.
@@ -239,10 +282,10 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 
 | 요청 | 용도 |
 |---|---|
-| `이 프로젝트 auto-context 온보딩해줘.` | Laya 색인 온보딩 |
+| `이 프로젝트 auto-context 온보딩해줘.` | MemVane 색인 온보딩 |
 | `이 질문에 어떤 문서가 recall되는지 확인해줘.` | recall 결과 확인 |
 | `인덱스 새로고침해줘.` | 선택된 색인의 전체 스캔 동기화 큐잉 |
-| `Laya 임베딩 런타임 상태 보여줘.` | 임베딩 런타임 확인·준비·정리 |
+| `MemVane 임베딩 런타임 상태 보여줘.` | 임베딩 런타임 확인·준비·정리 |
 | `예전 QMD backend 정리 계획 보여줘.` | 예전 QMD backend 정리 점검 |
 
 ## 문제 해결

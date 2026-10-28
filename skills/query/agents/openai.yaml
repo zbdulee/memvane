@@ -1,4 +1,4 @@
 interface:
-  display_name: "Auto-context Query"
-  short_description: "Run manual auto-context recall"
-  default_prompt: "Use $query to search auto-context for this project."
+  display_name: "MemVane Query"
+  short_description: "Run manual MemVane recall"
+  default_prompt: "Use $query to search MemVane for this project."

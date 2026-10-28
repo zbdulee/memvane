@@ -15,6 +15,6 @@ plugin.
 - [ ] Added or updated deterministic tests
 - [ ] Ran `npm test`
 - [ ] Ran `git diff --check`
-- [ ] Live host/qmd verification, if any, is described below
+- [ ] Live host verification, if any, is described below
 
 Do not include credentials, private paths, prompts, or project content.

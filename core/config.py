@@ -241,7 +241,7 @@ COMPILE_DEFAULT_STATUSES = {"generated", "tentative"}
 # write-time gate의 retrieval 점수는 유사도가 아니라 순위 hint라 판정은 LLM judge가 하고
 # score는 후보 retrieval floor(`semanticDedup.candidateMinScore`)로만 남는다.
 # `DEDUP_AUTO_MERGE_THRESHOLD`는 retroactive scan(`wiki_dedup_scan`)의 후보 임계다 — 두 카드의
-# 저장된 laya-db chunk 벡터 중심점 사이 cosine이라 실제 유사도이고, 판정은 resolver 에이전트가
+# 저장된 memvane-db chunk 벡터 중심점 사이 cosine이라 실제 유사도이고, 판정은 resolver 에이전트가
 # 한다. 넷 모두 설정으로 다시 열지 않는다(`DEPRECATED_REMOVED_KEYS`의 레버 4종).
 DEDUP_SCORE_THRESHOLD = 0.82        # ← semanticDedup.threshold (write-time 레거시 게이트)
 DEDUP_AUTO_MERGE_THRESHOLD = 0.9    # ← semanticDedup.autoMergeThreshold (scan cosine 후보 임계)
@@ -309,7 +309,7 @@ DEFAULT_REASONING_EFFORT = {
 #
 # 프로젝트 settings가 `name`(필수)과 `skipPaths`(선택)만 가지면 나머지 effective 설정은
 # 플러그인이 결정적으로 유도한다. 다른 키가 하나라도 있으면 legacy 파일이며 지금까지와
-# 똑같이 정규화한다(부분 유도 없음). 이미 선택된 laya-db route는 settings 바이트 해시에
+# 똑같이 정규화한다(부분 유도 없음). 이미 선택된 memvane-db route는 settings 바이트 해시에
 # 묶여 있으므로 legacy 파일의 해석은 이 모델 때문에 바뀌지 않는다.
 MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths"})
 MINIMAL_SETTINGS_MODEL = "minimal"

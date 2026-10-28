@@ -1,19 +1,20 @@
-# qmd auto-context Architecture
+# MemVane Architecture
 
 기능별 그림과 짧은 해설은 [아키텍처 흐름도 목차](architecture/flows/README.md)를 참고하세요.
 
-This document describes the current runtime architecture of `qmd-auto-context`.
+This document describes the current runtime architecture of MemVane
+(plugin id `memvane`).
 It is meant for maintainers who need to change the plugin safely. For user-facing
 setup and troubleshooting, start with `README.md`.
 
 ## Scope
 
-`qmd-auto-context` is a host plugin that injects project-local wiki context
+MemVane is a host plugin that injects project-local wiki context
 into agent conversations. Every hook action first classifies the event cwd's
-Laya Index route; only a selected route does work. It coordinates:
+memvane-db route; only a selected route does work. It coordinates:
 
 - host hooks for Claude Code, Codex, and Hermes Agent;
-- per-project Laya Index onboarding from minimal `.auto-context/settings.json`;
+- per-project memvane-db onboarding from minimal `.auto-context/settings.json`;
 - the Laya wiki index, its off-hook full-scan sync and the local embedding
   runtime;
 - recall over the last published wiki index generation;
@@ -51,7 +52,7 @@ The main architectural rule is:
 ```text
 core/
   Platform-neutral behavior: route classification, selected-route host
-  responses, Laya Index install/sync/upgrade, embedding runtime, runtime wake
+  responses, memvane-db install/sync/upgrade, embedding runtime, runtime wake
   queue and resource admission, wiki compile/verify/dedup, extractor adapters,
   context learning, owner legacy cleanup.
 
@@ -89,8 +90,8 @@ flowchart TD
     Wakes[runtime wake queue core/runtime_work.py]
     Sync[core/laya_product_sync_worker.py]
     Resident[core/laya_resident_service.py]
-    Embed[~/.local/state/laya/embed-runtime]
-    Index[(Laya index DB, published generations)]
+    Embed[~/.local/state/memvane/embed-runtime]
+    Index[(memvane-db, published generations)]
     CompileQ[.auto-context/compile/source-queue.jsonl]
     Wiki[.auto-context/wiki]
 
@@ -246,7 +247,8 @@ Recall verifies the installed route proof, pins one completed index
 generation without model work in the hook, searches wiki-role rows only
 (lexical and vector), verifies each returned row against the published
 generation, and admits a card only when `wiki_card.is_auto_trusted_card`
-holds (`status: verified`, `createdBy: qmd-auto-context`, non-empty
+holds (`status: verified`, `createdBy: memvane` or the earlier plugin name
+`qmd-auto-context`, non-empty
 `sourceRevisions`). It does not reread current source files; after a source
 change, the last completed generation answers until the sync owner publishes a
 new one. Details are in [flow 03](architecture/flows/03-wiki-index-search.md).
@@ -301,7 +303,7 @@ with a hidden segment such as `.agents`, `.claude`, `.codex`, `.github`, or
 `.auto-context` is excluded.
 
 `core/wiki_compile_worker.py` later reads the source file, gathers wiki
-orientation context, optionally asks the selected Laya index for similar wiki pages, runs the
+orientation context, optionally asks the selected memvane-db index for similar wiki pages, runs the
 configured host extractor, and passes candidate JSON to `core/wiki_compile.py`.
 
 Extractor config is intentionally symbolic by default. The worker resolves
@@ -346,7 +348,7 @@ the configured host extractor:
   queue item or leave the card as `generated` according to the worker contract.
 
 Recall admits a wiki card only when it is `status: verified`, was created by
-`qmd-auto-context`, and has non-empty compiler-owned `sourceRevisions`. Source
+the plugin (`createdBy: memvane`, or the earlier plugin name `qmd-auto-context`), and has non-empty compiler-owned `sourceRevisions`. Source
 freshness is the index owner's job: it compares source hashes, queues refresh
 and regeneration, and publishes each document atomically; recall reads only
 the published generation.
@@ -370,7 +372,7 @@ evidence adapter exists, wiki output makes no repository-config claim from
 Verify and dedup workers are maintenance paths around this generated wiki state.
 They are intentionally fail-open so wiki maintenance does not break normal agent
 turns. After each wiki lifecycle run, the same child runs the retroactive dedup
-scan (`core/wiki_dedup_scan.py`): it compares the stored laya-db chunk-vector
+scan (`core/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
 above to `.auto-context/compile/dedup-needed.jsonl` for the `wiki-dedup`
 resolver. It makes no model or paid call.
@@ -382,7 +384,7 @@ embedding worker for each vector profile and serves every adopted
 install through that install's sealed socket (`<state>/runtime/laya-embed.sock`).
 Hooks never load a model.
 
-The embedding runtime lives in `~/.local/state/laya/embed-runtime`
+The embedding runtime lives in `~/.local/state/memvane/embed-runtime`
 (`core/laya_embed_runtime.py`): `active.json`, `previous.json` and immutable
 generations holding Node, node-llama-cpp, the native build and the GGUF model.
 A generation comes from an install attestation written by the bundle upgrade
@@ -405,7 +407,7 @@ accepted only with sha256
 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`.
 `--provider-model-file` uses a local copy of that exact file instead. GC lists
 generations and, with approval, removes those that are neither active, previous,
-nor named by any `~/.local/state/laya/*/production-provider-attestation.json`
+nor named by any `production-provider-attestation.json` under `~/.local/state/memvane/*/` or the pre-rename `~/.local/state/laya/*/`
 (historical `profileDependencyClosure` rows are ignored). `generations` must be a
 real private directory of the user inside the runtime, and GC enumerates and
 deletes through its directory descriptor without following links. A generation
@@ -439,11 +441,12 @@ deletes only marker-bearing plists, and removes
 configuration and model cache, so they are removed only with
 `--include-user-qmd-data`. Other trees under
 `~/Library/Application Support/qmd-auto-context` (`learning`, `laya-inference`,
-`live-selection`, `runtimes/laya`) are kept.
+`live-selection`, `runtimes/laya`) are kept: an account whose learning runtime
+lives there keeps using that group (see [continual learning](continual-learning.md)).
 
 Both actions refuse while an install attestation still names a file inside a
 target, and with `older_host_bundle_bound` while any
-`~/.local/state/laya/*/reviewed-route.json` `pluginRoot` points at a bundle that
+`~/.local/state/memvane/*/reviewed-route.json` `pluginRoot` points at a bundle that
 still contains `core/backend_manager.sh` (that bundle would recreate
 `~/.cache/qmd` and `~/.config/qmd`). They also refuse with
 `qmd_daemon_unverified` while a live node process (from a pid file or the
@@ -568,8 +571,8 @@ Relevant logs:
 | Log | Default |
 |---|---|
 | recall selection | `QMD_RECALL_LOG` (unset: none) |
-| wiki lifecycle | `~/.local/state/laya/auto-context/logs/wiki-lifecycle.log` |
-| wiki dedup scan | `~/.local/state/laya/auto-context/logs/wiki-dedup.log` |
+| wiki lifecycle | `~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log` |
+| wiki dedup scan | `~/.local/state/memvane/auto-context/logs/wiki-dedup.log` |
 | compile extractor | `.auto-context/compile/extractor.log` |
 
 ## Test Strategy

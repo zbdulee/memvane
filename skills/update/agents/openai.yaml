@@ -1,4 +1,4 @@
 interface:
-  display_name: "Auto-context Update"
-  short_description: "Queue a full-scan sync of the Laya index"
-  default_prompt: "Use $update to resync auto-context indexing for this project."
+  display_name: "MemVane Update"
+  short_description: "Queue a full-scan sync of the memvane-db index"
+  default_prompt: "Use $update to resync memvane-db indexing for this project."

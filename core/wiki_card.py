@@ -133,11 +133,11 @@ def strip_disclaimer(text: str) -> str:
     정규식(`^>\\s*Auto-generated...$`)을 쓰지 않는 이유: `\\s`가 개행을 넘어 매칭돼
     `>` 인용 줄이 많은 카드에서 백트래킹이 커진다. 줄 단위 접두 비교는 선형이다.
     """
-    if wiki_markers.AUTO_DISCLAIMER_PREFIX not in text:
+    if not any(prefix in text for prefix in wiki_markers.AUTO_DISCLAIMER_PREFIXES):
         return text
     return "\n".join(
         line for line in text.split("\n")
-        if not line.lstrip().startswith(wiki_markers.AUTO_DISCLAIMER_PREFIX)
+        if not line.lstrip().startswith(wiki_markers.AUTO_DISCLAIMER_PREFIXES)
     )
 
 
@@ -489,10 +489,10 @@ def frontmatter_source_revisions(block: str) -> list[dict]:
 
 
 def is_auto_trusted_card(meta: dict) -> bool:
-    """Static recall trust: qmd-created, verified, compiler-provenanced."""
+    """Static recall trust: plugin-created, verified, compiler-provenanced."""
     return (
         meta.get("status") in TRUSTED_WIKI_STATUSES
-        and meta.get("createdBy") == "qmd-auto-context"
+        and meta.get("createdBy") in wiki_markers.CREATED_BY_NAMES
         and bool(meta.get("sourceRevisions"))
     )
 

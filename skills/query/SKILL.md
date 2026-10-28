@@ -1,11 +1,11 @@
 ---
 name: query
-description: Use when the user asks to manually query, search, recall, or look up project docs via auto-context — e.g. "문서에서 찾아줘", "auto-context 검색", "recall this", "look up in notes". Runs the same Laya recall hook a prompt uses, against the project's selected Laya index. Read-only — never edits files.
+description: Use when the user asks to manually query, search, recall, or look up project docs via MemVane — e.g. "문서에서 찾아줘", "auto-context 검색", "memvane 검색", "recall this", "look up in notes". Runs the same MemVane recall hook a prompt uses, against the project's selected memvane-db index. Read-only — never edits files.
 ---
 
 # Query
 
-Run a manual auto-context recall query for the current project.
+Run a manual MemVane recall query for the current project.
 
 ## Workflow
 
@@ -25,6 +25,6 @@ Run a manual auto-context recall query for the current project.
 
 ## Safety
 
-- The wrapper answers only for a selected Laya route (or a linked git worktree of a selected main checkout, read-only). A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- The wrapper answers only for a selected MemVane route (or a linked git worktree of a selected main checkout, read-only). A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
 - A selected route whose proof fails exits 3; report the reason and do not search another way.
 - Preserve empty output as a valid no-result state.

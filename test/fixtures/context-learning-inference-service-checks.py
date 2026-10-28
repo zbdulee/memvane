@@ -202,7 +202,7 @@ class PathTests(unittest.TestCase):
                 root=service.service_root(create=True,home=home)
                 self.assertEqual(root,service.service_root(home=home))
                 self.assertEqual(root.stat().st_mode&0o777,0o700)
-                self.assertIn('qmd-auto-context',str(root))
+                self.assertIn('memvane',str(root))
                 root.chmod(0o755)
                 with self.assertRaises(ValueError):service.service_root(home=home)
 

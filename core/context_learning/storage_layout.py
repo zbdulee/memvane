@@ -18,11 +18,38 @@ import uuid
 
 
 SCHEMA_VERSION = 1
-ROOT_PARTS = ('Library', 'Application Support', 'qmd-auto-context', 'learning')
+ROOT_PARTS = ('Library', 'Application Support', 'memvane', 'learning')
+LEGACY_ROOT_PARTS = ('Library', 'Application Support', 'qmd-auto-context', 'learning')
+
+
+def _initialized(base):
+    """True when ``base`` holds a registry with its schema (``user_version``)."""
+    path = base / 'registry.sqlite3'
+    try:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size == 0):
+            return False
+        db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+        try:
+            return db.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        return False
 
 
 def root(home=None):
-    return Path(home or Path.home()).joinpath(*ROOT_PARTS)
+    """The registry root: the MemVane one once its registry is initialized,
+    else an initialized registry under the pre-rename directory, else the
+    MemVane one. An empty or interrupted MemVane registry hides nothing."""
+    base = Path(home or Path.home())
+    current, legacy = base.joinpath(*ROOT_PARTS), base.joinpath(*LEGACY_ROOT_PARTS)
+    if _initialized(current):
+        return current
+    if _initialized(legacy):
+        return legacy
+    return current
 
 
 def _private_directory(path, *, create=False):

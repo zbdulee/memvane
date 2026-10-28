@@ -303,7 +303,7 @@ def _claude_load_roots(account):
     known = _known_loader(plugins)
     roots = []
     for key, values in claude['plugins'].items():
-        if not key.startswith('qmd-auto-context@'):
+        if not key.startswith('memvane@'):
             continue
         marketplace = key.split('@', 1)[1]
         for item in values:
@@ -351,7 +351,7 @@ def _claude_load_root(plugins, marketplace, item, known):
     if not isinstance(manifest, dict) or not isinstance(manifest.get('plugins'), list):
         raise ValueError('history_claude_marketplace_invalid')
     entries = [row for row in manifest['plugins']
-               if isinstance(row, dict) and row.get('name') == 'qmd-auto-context']
+               if isinstance(row, dict) and row.get('name') == 'memvane']
     if len(entries) != 1 or entries[0].get('version') != item['version']:
         raise ValueError('history_claude_marketplace_changed')
     relative = entries[0].get('source')
@@ -382,11 +382,11 @@ def _discover_host_roots(account):
             raise ValueError('history_codex_inventory_unavailable')
         codex = json.loads(listed.stdout)
         entries = [item for item in codex['installed']
-                   if item.get('name') == 'qmd-auto-context'
+                   if item.get('name') == 'memvane'
                    and item.get('installed') is True
                    and item.get('enabled') is True]
         codex_roots = [account / '.codex/plugins/cache' / item['marketplaceName']
-                       / 'qmd-auto-context' / item['version'] for item in entries]
+                       / 'memvane' / item['version'] for item in entries]
         claude_roots = _claude_load_roots(account)
     except (OSError, KeyError, TypeError, ValueError, AttributeError,
             subprocess.TimeoutExpired) as exc:
@@ -480,7 +480,7 @@ def _project_claude_root(account, project):
         ident = row.get('id', row.get('pluginId')) if isinstance(row, dict) else None
         if not isinstance(ident, str):
             raise ValueError('history_project_claude_invalid')
-        if not ident.startswith('qmd-auto-context@'):
+        if not ident.startswith('memvane@'):
             continue
         if type(row.get('enabled')) is not bool:
             raise ValueError('history_project_claude_invalid')
@@ -550,7 +550,7 @@ def _project_codex_root(account, project):
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError('history_project_codex_invalid')
-        if row.get('name') != 'qmd-auto-context' or row.get('installed') is not True:
+        if row.get('name') != 'memvane' or row.get('installed') is not True:
             continue
         if type(row.get('enabled')) is not bool:
             raise ValueError('history_project_codex_invalid')
@@ -562,7 +562,7 @@ def _project_codex_root(account, project):
     if not all(isinstance(part, str) and _SAFE_SEGMENT.fullmatch(part)
                for part in (marketplace, version)):
         raise ValueError('history_project_codex_invalid')
-    root = account / '.codex/plugins/cache' / marketplace / 'qmd-auto-context' / version
+    root = account / '.codex/plugins/cache' / marketplace / 'memvane' / version
     if not root.is_dir():
         raise ValueError('history_project_codex_record_missing')
     return root

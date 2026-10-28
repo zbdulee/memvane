@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic, explicit front door for Laya index setup and maintenance.
+"""Deterministic, explicit front door for memvane-db index setup and maintenance.
 
 No host installation event calls this file. Status and plan actions are read
 only; every action that writes requires its explicit approval flag.

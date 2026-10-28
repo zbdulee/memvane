@@ -330,7 +330,7 @@ def gather_similar_pages(
         return [{"path": path.relative_to(root).as_posix(),
                  "score": score, "content": body}
                 for path, score, body in rows] or None
-    # Only a selected Laya index answers similarity.
+    # Only a selected memvane-db index answers similarity.
     return None
 
 

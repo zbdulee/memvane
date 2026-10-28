@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only host boundary for a reviewed Laya Index route candidate.
+"""Read-only host boundary for a reviewed memvane-db route candidate.
 
 Absence of the route record preserves the existing QMD path. Presence is
 sticky: malformed, stale, or unverifiable records block the hook instead of
@@ -31,6 +31,10 @@ import config
 
 SCHEMA = "laya-index-route-v1"
 SCHEMA_V2 = "laya-index-route-v2"
+# Same fields as v2. Every route this release writes uses v3: a release before
+# the MemVane rename reads only v1/v2, so it classifies a v3 route as blocked
+# and can neither serve nor move (downgrade) an install this release owns.
+SCHEMA_V3 = "memvane-route-v3"
 RECORD = "laya-index-route.json"
 QMD_SELECTION_MARKER = "laya-index-selection.json"
 MAX_RECORD_BYTES = 8192
@@ -41,6 +45,7 @@ FIELDS = frozenset({"schema", "status", "projectRoot", "settingsSha256",
                     "generation", "bundleManifestSha256",
                     "ownershipManifestSha256", "vectorProfile"})
 FIELDS_V2 = (FIELDS - {"collectionName", "sourceRoot"}) | {"collections"}
+FIELDS_V3 = FIELDS_V2
 COLLECTION_FIELDS = frozenset({"name", "role", "sourceRoot"})
 VECTOR_PROFILE_FIELDS = frozenset({"profileId", "modelId", "embeddingFingerprint",
                                    "dimension", "metric", "approvedProviderId",
@@ -54,6 +59,11 @@ ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "postto
                             "index", "compile", "file-change-event"})
 MAX_HOOK_BYTES = 2 * 1024 * 1024
 SETTINGS_IDENTITY_SCHEMA = "laya-settings-identity-v1"
+
+
+def written_schema(schema: str) -> str:
+    """The schema a rewritten route carries: v2 and v3 become v3, v1 stays."""
+    return SCHEMA_V3 if schema in (SCHEMA_V2, SCHEMA_V3) else schema
 
 
 def settings_identity_digest(project_root, collections) -> str:
@@ -106,7 +116,7 @@ def selected_collection_roots(project_root, collections):
     """Validate both source identities; only the wiki root is indexed.
 
     The legacy raw project root may contain the plugin's hidden wiki folder.
-    The raw scanner skips that hidden folder, while selected Laya indexes the
+    The raw scanner skips that hidden folder, while selected memvane-db indexes the
     explicitly named wiki root. Other overlapping roots remain unsafe.
     """
     wiki = wiki_index_roots(collections)
@@ -345,7 +355,7 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
         record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
         if (not isinstance(record, dict) or
                 (record.get('schema'), set(record)) not in
-                ((SCHEMA, FIELDS), (SCHEMA_V2, FIELDS_V2))):
+                ((SCHEMA, FIELDS), (SCHEMA_V2, FIELDS_V2), (SCHEMA_V3, FIELDS_V3))):
             raise ValueError("invalid_route_fields")
         if record["status"] != "active":
             raise ValueError("route_not_active")
@@ -747,9 +757,9 @@ def select_hook_route(action: str, payload_file: str, fallback_cwd: str) -> dict
         return _decision("blocked", str(exc) or "invalid_hook_payload")
 
 
-ONBOARDING_NOTICE = ('[auto-context] {root}: Laya 색인이 선택되지 않아 recall·색인·compile이 '
+ONBOARDING_NOTICE = ('[memvane] {root}: MemVane 색인이 선택되지 않아 recall·색인·compile이 '
                      '꺼져 있습니다. setup skill로 온보딩하세요.')
-BUILD_NOTICE = ('[auto-context] {root}: 초기 Laya 색인을 준비 중입니다. '
+BUILD_NOTICE = ('[memvane] {root}: 초기 MemVane 색인을 준비 중입니다. '
                 '빌드가 끝나면 setup skill로 활성화하세요.')
 
 

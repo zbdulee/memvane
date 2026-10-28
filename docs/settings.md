@@ -60,7 +60,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 route가 없는 프로젝트는 아무 작업도 받지 않고, settings 파일이 있으면 SessionStart에서
 setup skill로 온보딩하라는 안내 한 줄만 받습니다.
 
-**선택된 laya-db route.** route record는 settings 파일 바이트가 아니라 해석된 settings
+**선택된 memvane-db route.** route record는 settings 파일 바이트가 아니라 해석된 settings
 identity를 묶습니다(아래 "route의 settings binding"). minimal settings로 선택된 route는
 유도된 legacy 모양으로 검사합니다.
 
@@ -90,7 +90,7 @@ wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥�
 
 ### 임베딩 런타임과 retired QMD 정리 (유지보수 명령)
 
-Laya 색인의 임베딩 provider는 `~/.local/state/laya/embed-runtime`의 로컬 런타임입니다
+MemVane 색인의 임베딩 provider는 `~/.local/state/memvane/embed-runtime`의 로컬 런타임입니다
 (`active.json`·`previous.json`·`generations/`). 사용자는 setup skill에 자연어로 요청하고,
 아래는 그 skill이 쓰는 유지보수 명령입니다. `ROOT`는 설치된 플러그인 루트이며 이 명령들은
 `--project`가 필요 없습니다.
@@ -113,7 +113,7 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
   `--provider-model-file`은 같은 GGUF의 로컬 사본을 씁니다. npm registry·모델 호스트 접근이라
   `--approve-index-runtime-download` 없이는 거부합니다(`laya_embed_runtime_download_approval_required`).
 - **`gc-index-runtime`** — 세대 목록을 보여 주고, `--approve-index-runtime-gc`가 있으면 active·previous가
-  아니고 `~/.local/state/laya/*/production-provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
+  아니고 `~/.local/state/memvane/*/production-provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
   attestation의 `profileDependencyClosure` 기록은 참조로 세지 않습니다. 읽을 수 없는 attestation이
   있으면 `attestation_unreadable`로 막힙니다.
 - **`plan-legacy-cleanup`** — 읽기 전용입니다. 플러그인 QMD 데몬 pid 파일
@@ -130,7 +130,7 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
   `--include-user-qmd-data`를 함께 줄 때만 지웁니다. 같은 디렉터리의 `learning`·`laya-inference`·
   `live-selection`·`runtimes/laya`는 남깁니다.
 - **blocker** — 설치 attestation이 대상 트리 안의 파일을 아직 가리키면
-  `attestation_references_legacy_path`, `~/.local/state/laya/*/reviewed-route.json`의 `pluginRoot`가
+  `attestation_references_legacy_path`, `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가
   `core/backend_manager.sh`를 가진 이전 번들을 가리키면 `older_host_bundle_bound`입니다. plan은 blocker를
   보고하고 apply는 아무것도 바꾸지 않고 `blocked`로 끝납니다(이전 번들은 `~/.cache/qmd`·`~/.config/qmd`를 다시 만듭니다). 그래서 정리는 Claude·Codex
   host 캐시가 모두 이 릴리스를 로드하고, 모든 설치가 SessionStart 번들 업그레이드로 이 번들로 옮겨
@@ -255,7 +255,7 @@ compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. 예
 
 이는 설정이 아니라 고정된 정책입니다. 새 카드와 자동 업데이트 카드는
 `generated` 또는 `tentative`처럼 `verified`가 아닌 상태로 시작하며, 원문 revision 대조의
-기준은 `qmd-auto-context`가 만든 카드의 compiler-owned `sourceRevisions`입니다.
+기준은 플러그인이 만든 카드의 compiler-owned `sourceRevisions`입니다.
 
 binding store가 있는 **선택 Laya 위키 전용 검색**은 검색 시 원문을 다시 열거나
 해시를 계산하지 않고, 마지막으로 완료·게시된 위키 색인의 본문 해시·범위·세대·명시
@@ -377,7 +377,7 @@ lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전
 역할입니다. 선택된 Laya route는 `wiki` role만 색인·검색·주입하고([Recall Strategy](#recall-strategy)),
 나머지 role은 wiki compile의 입력이 되는지를 정합니다.
 
-| Role | Laya 색인·검색 | wiki compile 입력 |
+| Role | MemVane 색인·검색 | wiki compile 입력 |
 |---|:---:|:---:|
 | `raw` | X | O |
 | `session` | X | O |
@@ -1099,8 +1099,8 @@ fail-closed만으로는 "판정(유료) → 기록 실패 → 잡 보존 → 재
 tombstone(영구 억제)을 세우고, "소스를 고치면 재생성된다"는 전제가 깨집니다.
 사람이 직접 지운 카드는 이 마커가 없으므로 기존대로 tombstone 처리됩니다.
 
-verifier의 자동 삭제 대상은 qmd가 만든 `status: generated` 카드뿐입니다. recall trust는
-`status: verified` + `createdBy: qmd-auto-context` + 비어 있지 않은 compiler-owned
+verifier의 자동 삭제 대상은 플러그인이 만든 `status: generated` 카드뿐입니다. recall trust는
+`status: verified` + `createdBy: memvane`(또는 이전 플러그인 이름 `qmd-auto-context`) + 비어 있지 않은 compiler-owned
 `sourceRevisions`를 모두 요구하며, status 문자열 하나로 승격되지 않습니다.
 CLI 부재(exit 127)·timeout 같은 **transient 실패는 inconclusive가 아니며** 큐 보존 +
 cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카드가 삭제되지 않습니다.
@@ -1112,12 +1112,12 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 
 | 원문 상태 | 처리 |
 |---|---|
-| 기록된 원문 파일이 없음 | 카드를 보관한 뒤 삭제하고 laya-db에서 제거합니다 |
-| 원문 해시가 바뀜 | compile 큐에 재생성을 넣고, 새 카드가 laya-db를 갱신합니다 |
-| 카드에 `sourceRevisions`가 없음 | 카드를 보관한 뒤 삭제하고 laya-db에서 제거합니다 |
+| 기록된 원문 파일이 없음 | 카드를 보관한 뒤 삭제하고 memvane-db에서 제거합니다 |
+| 원문 해시가 바뀜 | compile 큐에 재생성을 넣고, 새 카드가 memvane-db를 갱신합니다 |
+| 카드에 `sourceRevisions`가 없음 | 카드를 보관한 뒤 삭제하고 memvane-db에서 제거합니다 |
 | 같음 | 유지합니다 |
 
-**대상은 플러그인이 만든 카드뿐입니다** — `createdBy: qmd-auto-context`이고 auto 블록이 있으며
+**대상은 플러그인이 만든 카드뿐입니다** — `createdBy`가 `memvane`(또는 이전 플러그인 이름 `qmd-auto-context`)이고 auto 블록이 있으며
 `superseded`가 아닌 카드입니다. 사람이 쓴 페이지, 심볼릭 링크, `.`으로 시작하는 경로,
 `index.md`/`log.md`, wiki root 밖의 파일은 건드리지 않습니다. 형식이 틀린 `sourceRevisions`,
 `allowRoots` 밖을 가리키는 원문, 읽을 수 없는 원문은 "판정 불가"로 남기고 로그만 씁니다.
@@ -1125,7 +1125,7 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 
 **삭제는 복구할 수 있습니다.** 옛 바이트는 `.auto-context/compile/retired-wiki/`에
 `<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워지고 `index.md` 줄이
-빠집니다. 그다음 `laya-sync`를 깨우면 laya-db full scan이 다음 세대에서 없는 wiki 파일을
+빠집니다. 그다음 `laya-sync`를 깨우면 memvane-db full scan이 다음 세대에서 없는 wiki 파일을
 뺍니다. 살아 있는 원문이 남은 공유 카드는 바로 지우지 않고 compile 큐에 `sourceDelete`
 행으로 넘깁니다 — compile worker가 살아 있는 원문을 먼저 재생성한 뒤 카드를 퇴역시킵니다.
 
@@ -1151,10 +1151,10 @@ run이 이어 봅니다. `QMD_SOURCE_SCAN_MAX` 환경변수는 디버그용 레�
 **멱등입니다.** 지운 카드는 다음 run에 없고, 보관은 같은 내용을 재사용하며, 아직 큐에 있는
 같은 행은 다시 넣지 않습니다. 이미 넣은 같은 원문 해시의 재생성은 7일 안에 다시 넣지 않습니다
 (상태는 sync state 디렉터리의 `<key>-wiki-lifecycle.json`). 처리 내역은
-`~/.local/state/laya/auto-context/logs/wiki-lifecycle.log`(`QMD_WIKI_LIFECYCLE_LOG`)에 남고,
-순환 커서 같은 scan 상태는 `~/.local/state/laya/auto-context/scan-state/`에 둡니다.
+`~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log`(`QMD_WIKI_LIFECYCLE_LOG`)에 남고,
+순환 커서 같은 scan 상태는 `~/.local/state/memvane/auto-context/scan-state/`에 둡니다.
 
-**선택된 laya-db route에서만 조치합니다.** route가 없는 프로젝트는 아무 작업도 받지 않습니다.
+**선택된 memvane-db route에서만 조치합니다.** route가 없는 프로젝트는 아무 작업도 받지 않습니다.
 
 **언제 도는가.** 선택된 프로젝트에서 세션이 시작될 때, 프로젝트 안 파일을 편집했을 때,
 agent의 Bash 명령이 성공했을 때 수명 주기 요청이 하나 남고 그 프로젝트의 wiki compile
@@ -1206,7 +1206,7 @@ judge는 **절대 merge/delete하지 않습니다.** 비용 상한은 write-time
 
 이미 디스크에 있는 카드끼리의 중복은 retroactive scan(`core/wiki_dedup_scan.py`)이 찾습니다.
 선택된 프로젝트에서 SessionStart·원문 편집 뒤 도는 wiki 수명 주기 자식이 수명 주기 run 다음에
-scan을 실행합니다. scan은 선택된 route의 laya-db sealed head에 저장된 위키 카드 chunk 벡터의
+scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 저장된 위키 카드 chunk 벡터의
 중심점끼리 cosine을 비교하고, 0.9(`autoMergeThreshold` 상수) 이상인 쌍을
 `.auto-context/compile/dedup-needed.jsonl`에 `{pageA, pageB, score}`로 넣습니다. 이 score는
 검색 순위가 아니라 실제 cosine 유사도입니다. 모델·provider·judge를 부르지 않으므로 유료 호출이
@@ -1218,7 +1218,7 @@ scan을 실행합니다. scan은 선택된 route의 laya-db sealed head에 저�
 - run당 위키 카드 2,048장, 바뀐 카드 50장, `maxPairsPerScan` 쌍, 20초로 묶입니다. 비교한 색인
   해시를 sync state 디렉터리의 `<key>-wiki-dedup.json`에 남겨 다음 run은 새로 바뀐 카드만 봅니다.
 - `compile.mode: "off"`나 `semanticDedup.enabled: false`면 돌지 않습니다. 로그는
-  `~/.local/state/laya/auto-context/logs/wiki-dedup.log`(`QMD_WIKI_DEDUP_LOG`)입니다.
+  `~/.local/state/memvane/auto-context/logs/wiki-dedup.log`(`QMD_WIKI_DEDUP_LOG`)입니다.
 
 #### 판정 엔진 분리 (dedup)
 
@@ -1252,7 +1252,7 @@ verify는 잡을 폐기, dedup은 쌍을 억제.)
 자동 merge나 trust 승격, SessionStart resolver 입력으로 사용되지 않습니다. 판정 기록은
 `merge-needed.jsonl`(write-time)에 `judgedBy`(판정 엔진) / `judgedMode`(달성된 관계) /
 `producedBy`(생산 엔진)로 남습니다. `wiki-dedup` skill은 이미 쌓인 `dedup-needed.jsonl`을
-resolver agent로 처리합니다(잠금 `~/.local/state/laya/auto-context/dedup-resolve-lock/`). 판정이 없었던 행에는 이 필드들을 쓰지 않습니다.
+resolver agent로 처리합니다(잠금 `~/.local/state/memvane/auto-context/dedup-resolve-lock/`). 판정이 없었던 행에는 이 필드들을 쓰지 않습니다.
 
 ## cooldown·lock의 "영구 정지" 방어
 

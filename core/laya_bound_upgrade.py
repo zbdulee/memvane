@@ -168,7 +168,9 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
             decision['installId'] != pending['installId'] or
             decision['generation'] != pending['generation']):
         _fail('bound_upgrade_identity_mismatch')
+    from laya_index_host_route import written_schema
     new_route = active._bytes({**decision,
+                               'schema': written_schema(decision['schema']),
                                'pluginRoot': proof['pluginRoot'],
                                'bundleManifestSha256': proof['bundleManifestSha256'],
                                'ownershipManifestSha256': proof['ownershipManifestSha256']})
