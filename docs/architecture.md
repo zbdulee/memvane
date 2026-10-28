@@ -378,7 +378,7 @@ resolver. It makes no model or paid call.
 ## Laya Runtime and Embedding
 
 `core/laya_resident_service.py` is one per-user process that owns the local
-embedding worker for each provider fingerprint and serves every adopted
+embedding worker for each vector profile and serves every adopted
 install through that install's sealed socket (`<state>/runtime/laya-embed.sock`).
 Hooks never load a model.
 

@@ -29,12 +29,13 @@ from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI, ReviewedLocalQmd
 import laya_resident_service as svc
 
 DIM = 4
+TIME_SCALE = .02  # subprocess drain checks: budget 9.6 s, successor wait 12 s
 RUNTIME = 'qmd-2.5.3-node-llama-cpp-3.18.1'
 RECIPE = 'qmd-query-format-single-document-v1'
 
 
-def manifest_for(socket_path):
-    digests = {'model': '1' * 64, 'provider': '2' * 64, 'worker': '3' * 64,
+def manifest_for(socket_path, *, model='1', dimension=DIM):
+    digests = {'model': model * 64, 'provider': '2' * 64, 'worker': '3' * 64,
                'node': '4' * 64, 'entry': '5' * 64, 'closure': '6' * 64}
     fingerprint = recipe_fingerprint(
         model_id=DEFAULT_EMBED_MODEL_URI, model_sha256=digests['model'], runtime_id=RUNTIME,
@@ -49,7 +50,7 @@ def manifest_for(socket_path):
             'nodeSha256': digests['node'], 'moduleEntryPath': '/synthetic/entry.mjs',
             'moduleEntrySha256': digests['entry'], 'modelPath': '/synthetic/model.gguf',
             'modelSha256': digests['model'], 'runtimeId': RUNTIME, 'modelId': DEFAULT_EMBED_MODEL_URI,
-            'embeddingFingerprint': fingerprint, 'dimension': DIM, 'recipeId': RECIPE,
+            'embeddingFingerprint': fingerprint, 'dimension': dimension, 'recipeId': RECIPE,
             'dependencyClosureApproved': True, 'dependencyClosureSha256': digests['closure']}
 
 
@@ -84,6 +85,7 @@ class Fixture(unittest.TestCase):
         self.loads = []
         self.admit_value = True
         self.routes = {}
+        self.modes = {}
         self.services = []
         self.addCleanup(self.stop_services)
 
@@ -94,13 +96,13 @@ class Fixture(unittest.TestCase):
                 service.stopped.wait(10)
             service.close()
 
-    def project(self, name):
+    def project(self, name, **variant):
         project = self.base / name
         project.mkdir()
         runtime = self.base / (name + '-state') / 'runtime'
         runtime.mkdir(parents=True, mode=0o700)
         runtime.parent.chmod(0o700)
-        manifest = manifest_for(runtime / 'laya-embed.sock')
+        manifest = manifest_for(runtime / 'laya-embed.sock', **variant)
         decision = {'projectRoot': str(project), 'pluginRoot': '/synthetic/plugin',
                     'installId': name, 'journalPath': str(runtime / 'journal'),
                     'scopeId': name, 'dbPath': str(runtime / 'db'), 'dbIncarnation': name,
@@ -113,7 +115,7 @@ class Fixture(unittest.TestCase):
         route = self.routes.get(project)
         if route is None:
             raise IndexContractError('provider_owner_route_unavailable')
-        return route[0], route[1], 'selected'
+        return route[0], route[1], self.modes.get(project, 'selected')
 
     def start_worker(self, manifest, admit, *, delay=0.05):
         if admit() is not True:
@@ -122,7 +124,7 @@ class Fixture(unittest.TestCase):
         process = subprocess.Popen(
             [sys.executable, '-B', __file__, '--fake-worker', manifest['serviceSocketPath'],
              json.dumps({key: manifest[key] for key in resident._IDENTITY}),
-             str(delay), str(record), str(self.base / 'slow')],
+             str(delay), str(record), str(self.base / 'slow'), str(manifest['dimension'])],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         if process.stdout.readline() != b'READY\n':
             raise IndexContractError('provider_start_failed')
@@ -381,9 +383,16 @@ class ServiceChecks(Fixture):
         return decision, {'providerManifest': manifest}
 
     def test_legacy_resident_is_stopped_by_exact_pid_then_adopted(self):
-        project, manifest = self.project('alpha')
-        other, other_manifest = self.project('beta')
-        fake_core = self.base / 'old' / 'core'
+        self.legacy_resident_replaced('alpha', 'beta')
+
+    def test_legacy_resident_of_a_spaced_project_path_is_matched_by_real_argv(self):
+        # A ps command string joins argv with spaces: such a project never matched.
+        self.legacy_resident_replaced('막차 뒤의 피난소', '막차 뒤의')
+
+    def legacy_resident_replaced(self, name, other_name):
+        project, manifest = self.project(name)
+        other, other_manifest = self.project(other_name)
+        fake_core = self.base / 'old copy' / 'core'
         fake_core.mkdir(parents=True)
         script = fake_core / 'laya_embed_resident.py'
         script.write_text('import fcntl,os,sys,time\n'
@@ -408,22 +417,49 @@ class ServiceChecks(Fixture):
         self.assertEqual(len(self.loads), 1)
 
     def test_exact_pid_match_refuses_ambiguity_and_changed_argv(self):
-        argv = '/py -B /r/core/laya_embed_resident.py serve /p /s/laya-embed.sock ' + 'a' * 64 + ' 3'
+        argv = ('/usr/bin/python3', ['/py', '-B', '/r/core/laya_embed_resident.py', 'serve',
+                                     '/p', '/s/laya-embed.sock', 'a' * 64, '3'])
+        extra = (argv[0], argv[1] + ['extra'])
+        moved = (argv[0], [part.replace('/p', '/q') if part == '/p' else part
+                           for part in argv[1]])
+        not_python = ('/bin/sh', argv[1])
         kills = []
         self.assertIsNone(svc.retire_legacy_resident(
             '/p', '/s/laya-embed.sock', rows=[(11, argv), (12, argv)],
             inspect=lambda pid: (os.getuid(), argv), kill=lambda *a: kills.append(a)))
         self.assertIsNone(svc.retire_legacy_resident(
             '/p', '/s/laya-embed.sock', rows=[(11, argv)],
-            inspect=lambda pid: (os.getuid(), argv + ' extra'), kill=lambda *a: kills.append(a)))
-        self.assertIsNone(svc.retire_legacy_resident(
-            '/p', '/s/laya-embed.sock', rows=[(11, argv.replace('/p ', '/q '))],
-            inspect=lambda pid: (os.getuid(), argv), kill=lambda *a: kills.append(a)))
+            inspect=lambda pid: (os.getuid(), extra), kill=lambda *a: kills.append(a)))
+        for row in (moved, not_python):
+            self.assertIsNone(svc.retire_legacy_resident(
+                '/p', '/s/laya-embed.sock', rows=[(11, row)],
+                inspect=lambda pid, row=row: (os.getuid(), row),
+                kill=lambda *a: kills.append(a)))
         self.assertEqual(kills, [])
         self.assertEqual(svc.retire_legacy_resident(
             '/p', '/s/laya-embed.sock', rows=[(11, argv)],
             inspect=lambda pid: (os.getuid(), argv), kill=lambda *a: kills.append(a)), 11)
         self.assertEqual(len(kills), 1)
+        # Real argv boundaries: one argument may hold spaces.
+        spaced = (argv[0], argv[1][:4] + ['/w/막차 뒤의 피난소'] + argv[1][5:])
+        self.assertEqual(svc.retire_legacy_resident(
+            '/w/막차 뒤의 피난소', '/s/laya-embed.sock', rows=[(12, spaced)],
+            inspect=lambda pid: (os.getuid(), spaced), kill=lambda *a: kills.append(a)), 12)
+        self.assertIsNone(svc.retire_legacy_resident(
+            '/w/막차', '/s/laya-embed.sock', rows=[(12, spaced)],
+            inspect=lambda pid: (os.getuid(), spaced), kill=lambda *a: kills.append(a)))
+
+    def test_process_argv_reads_real_boundaries_of_a_live_child(self):
+        child = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(30)',
+                                  'a b', '막차 뒤의 피난소'])
+        self.addCleanup(lambda: (child.poll() is None and child.kill(), child.wait()))
+        found = svc._process_argv(child.pid)
+        self.assertIsNotNone(found)
+        executable, argv = found
+        self.assertIn('python', os.path.basename(executable).lower())
+        self.assertEqual(argv[-2:], ['a b', '막차 뒤의 피난소'])
+        self.assertEqual(argv[1:4], ['-B', '-c', 'import time; time.sleep(30)'])
+        self.assertIn(child.pid, dict(svc._process_rows(os.getuid())))
 
 
     def test_full_attestation_runs_once_per_installation_and_only_to_bind(self):
@@ -463,6 +499,540 @@ class ServiceChecks(Fixture):
         self.wait(lambda: (resident.read_owner_state(bad_manifest) or {}).get('terminal') is True)
         self.assertEqual(resident.probe(bad_manifest), 'absent')
         self.assertFalse(resident.owner_lock_held(bad_manifest))
+
+
+class ServiceBoundsChecks(Fixture):
+    def test_read_only_proof_attaches_but_never_starts_a_worker(self):
+        drifted, drifted_manifest = self.project('alpha')
+        self.modes[drifted] = 'read_only'
+        svc.register(drifted, root=self.root)
+        service = self.service()
+        time.sleep(.5)  # many ticks: a drifted bundle must not cold-load the model
+        self.assertEqual(self.loads, [])
+        self.assertEqual(resident.probe(drifted_manifest), 'absent')
+        # A fully proven installation of the same profile starts the worker;
+        # the read-only one then only attaches to it.
+        selected, selected_manifest = self.project('beta')
+        svc.register(selected, root=self.root)
+        service.retry.pop(drifted, None)
+        self.wait(lambda: self.ready(selected_manifest))
+        service.retry.pop(drifted, None)
+        self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
+        self.assertEqual(len(self.loads), 1)
+
+    def test_every_new_worker_start_attests_first(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        events = []
+        service = self.service(start=False)
+        service.attest = lambda decision, proof, mode: events.append('attest')
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            events.append('start')
+            return start(manifest, admit)
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.wait(lambda: self.ready(manifest))
+        self.assertEqual(events, ['attest', 'start'], 'bind must not rehash again')
+        # A restart after the model process died is a new start: prove again.
+        next(iter(service.workers.values())).handle.process.kill()
+        self.wait(lambda: events.count('start') == 2, message='worker never restarted')
+        self.assertEqual(events, ['attest', 'start', 'attest', 'start'])
+
+    def test_failed_start_attestation_never_loads_the_model(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service(start=False)
+
+        def attest(*_args):
+            raise IndexContractError('provider_attestation_invalid')
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.wait(lambda: (resident.read_owner_state(manifest) or {}).get('terminal') is True)
+        self.assertEqual(self.loads, [])
+
+    def test_cold_loads_of_different_profiles_never_overlap(self):
+        alpha, alpha_manifest = self.project('alpha')
+        beta, beta_manifest = self.project('beta', model='9')
+        self.assertNotEqual(alpha_manifest['embeddingFingerprint'],
+                            beta_manifest['embeddingFingerprint'])
+        for project in (alpha, beta):
+            svc.register(project, root=self.root)
+        state = {'now': 0, 'max': 0}
+        lock = threading.Lock()
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            with lock:
+                state['now'] += 1
+                state['max'] = max(state['max'], state['now'])
+            try:
+                time.sleep(.4)  # one admission check, then a slow model load
+                return start(manifest, admit)
+            finally:
+                with lock:
+                    state['now'] -= 1
+        service = self.service(start=False)
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        for manifest in (alpha_manifest, beta_manifest):
+            self.wait(lambda m=manifest: self.ready(m))
+        self.assertEqual(len(self.loads), 2)
+        self.assertEqual(state['max'], 1, 'two cold loads passed admission together')
+
+    def test_profiles_differing_only_in_dimension_never_share_a_worker(self):
+        alpha, alpha_manifest = self.project('alpha')
+        beta, beta_manifest = self.project('beta', dimension=8)
+        self.assertEqual(alpha_manifest['embeddingFingerprint'],
+                         beta_manifest['embeddingFingerprint'])
+        for project in (alpha, beta):
+            svc.register(project, root=self.root)
+        self.service()
+        for manifest in (alpha_manifest, beta_manifest):
+            self.wait(lambda m=manifest: self.ready(m))
+        self.assertEqual(len(embed(alpha_manifest)), DIM)
+        self.assertEqual(len(embed(beta_manifest)), 8)
+        self.assertEqual(len(self.loads), 2)
+
+    def test_last_release_reclaims_the_unused_worker(self):
+        alpha, alpha_manifest = self.project('alpha')
+        beta, beta_manifest = self.project('beta')
+        for project in (alpha, beta):
+            svc.register(project, root=self.root)
+        service = self.service()
+        service.reclaim_seconds = 0
+        for manifest in (alpha_manifest, beta_manifest):
+            self.wait(lambda m=manifest: self.ready(m))
+        handle = next(iter(service.workers.values())).handle
+        self.routes.pop(alpha)
+        self.assertTrue(resident.wait_for_release(alpha_manifest['serviceSocketPath'], timeout=5))
+        time.sleep(.3)
+        self.assertIsNone(handle.process.poll(), 'a worker still bound was stopped')
+        self.routes.pop(beta)
+        self.wait(lambda: handle.process.poll() is not None, message='unused worker kept')
+        self.wait(lambda: service.workers == {}, message='worker entry kept')
+
+    def test_connection_cap_bounds_handlers_and_falls_back_to_lexical(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        with patch.object(svc, 'MAX_CONNECTIONS', 2, create=True), \
+                patch.object(svc, 'LISTEN_BACKLOG', 2, create=True):
+            self.service()
+            self.wait(lambda: self.ready(manifest))
+            idle = []
+            for _ in range(12):
+                conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                conn.settimeout(.2)
+                try:
+                    conn.connect(manifest['serviceSocketPath'])
+                except OSError:
+                    conn.close()
+                    continue
+                idle.append(conn)
+            time.sleep(.5)
+            handlers = [t for t in threading.enumerate() if t.name == 'laya-service-client']
+            self.assertLessEqual(len(handlers), 2, 'a handler thread per connection')
+            with self.assertRaisesRegex(IndexContractError, '^provider_unavailable$'):
+                embed(manifest)
+            for conn in idle:
+                conn.close()
+            self.wait(lambda: not [t for t in threading.enumerate()
+                                   if t.name == 'laya-service-client'])
+            self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_idle_listeners_hold_no_connection_slot(self):
+        manifests = []
+        for name in ('alpha', 'beta', 'gamma', 'delta'):
+            project, manifest = self.project(name)
+            svc.register(project, root=self.root)
+            manifests.append(manifest)
+        with patch.object(svc, 'MAX_CONNECTIONS', 4, create=True):
+            service = self.service()
+            for manifest in manifests:
+                self.wait(lambda m=manifest: self.ready(m))
+            # The last readiness probe's handler returns its slot just after.
+            self.wait(lambda: service.connections._value == 4)
+            free = []
+            for _ in range(10):
+                free.append(service.connections._value)
+                time.sleep(.05)
+        self.assertEqual(free, [4] * 10, 'idle accept loops took connection slots')
+
+    def test_drain_waits_for_an_in_progress_load_and_stops_its_model(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        events, handles = [], []
+        entered = threading.Event()
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            entered.set()
+            time.sleep(1)  # the model is still loading when the drain begins
+            handle = start(manifest, admit)
+            handles.append(handle)
+            events.append('returned')
+            return handle
+        service = self.service(start=False)
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.assertTrue(entered.wait(5))
+        threading.Thread(target=lambda: service.stopped.wait(30) and events.append(
+            ('stopped', handles[0].process.poll() is not None if handles else None)),
+            daemon=True).start()
+        service.begin_drain()
+        self.assertTrue(service.stopped.wait(30))
+        self.wait(lambda: len(events) == 2)
+        # The lease is released only after the load settled and its model stopped.
+        self.assertEqual(events, ['returned', ('stopped', True)])
+
+    def test_drain_keeps_the_lease_past_its_wait_interval_while_a_load_runs(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        events, handles = [], []
+        entered = threading.Event()
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            entered.set()
+            time.sleep(1.5)  # longer than several drain wait intervals
+            handle = start(manifest, admit)
+            handles.append(handle)
+            events.append('returned')
+            return handle
+        with patch.object(svc, 'LOAD_DRAIN_SECONDS', .2, create=True):
+            service = self.service(start=False)
+            service.start_worker = start_worker
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.assertTrue(entered.wait(5))
+            threading.Thread(target=lambda: service.stopped.wait(30) and events.append(
+                ('stopped', handles[0].process.poll() is not None if handles else None)),
+                daemon=True).start()
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(30))
+            self.wait(lambda: len(events) == 2)
+        self.assertEqual(events, ['returned', ('stopped', True)])
+
+    def test_drain_kills_a_worker_whose_stop_never_returns(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        hung = threading.Event()
+        self.addCleanup(hung.set)
+        start = self.start_worker
+
+        class Stuck(Handle):
+            def stop(self):
+                hung.wait(60)  # a stop that never finishes on its own
+        handles = []
+
+        def start_worker(manifest, admit):
+            handle = start(manifest, admit)
+            handles.append(Stuck(handle.process, handle.socket_path))
+            return handles[-1]
+        with patch.object(svc, 'MAX_EXIT_CLEANUP_SECONDS', 1, create=True):
+            service = self.service(start=False)
+            service.start_worker = start_worker
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.wait(lambda: self.ready(manifest))
+            began = time.monotonic()
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(10))
+        self.assertLess(time.monotonic() - began, 5, 'exit cleanup ignored its bound')
+        self.wait(lambda: handles[0].process.poll() is not None,
+                  message='stuck worker left running')
+        handles[0].process.stdout.close()
+
+    def test_drain_during_attestation_never_starts_a_worker(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        attesting, release = threading.Event(), threading.Event()
+
+        def attest(*_args):
+            attesting.set()
+            release.wait(10)
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.assertTrue(attesting.wait(5))
+        service.begin_drain()
+        release.set()
+        self.assertTrue(service.stopped.wait(30))
+        self.assertEqual(self.loads, [], 'a model started after the drain began')
+
+    def test_failed_listener_thread_start_releases_the_binding(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        starts = []
+        real = threading.Thread
+
+        class Flaky(real):
+            def start(self):
+                if self.name == 'laya-service-project':
+                    starts.append(1)
+                    if len(starts) == 1:
+                        raise RuntimeError("can't start new thread")
+                return super().start()
+        with patch.object(svc.threading, 'Thread', Flaky):
+            self.service()
+            self.wait(lambda: len(starts) >= 2, message='binding never re-adopted')
+            self.wait(lambda: self.ready(manifest))
+        self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_listener_fd_above_fd_setsize_still_accepts(self):
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = 1400
+        if hard != resource.RLIM_INFINITY and hard < wanted:
+            self.skipTest('hard descriptor limit below FD_SETSIZE')
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, wanted), hard))
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        spare = []
+        self.addCleanup(lambda: [os.close(fd) for fd in spare])
+        null = os.open(os.devnull, os.O_RDONLY)
+        spare.append(null)
+        while max(spare) < 1100:
+            spare.append(os.dup(null))
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        self.service()
+        self.wait(lambda: self.ready(manifest), message='listener above FD_SETSIZE never served')
+        self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_failed_listener_thread_releases_the_binding_for_readoption(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        calls = []
+        real = svc.selectors.DefaultSelector
+
+        def flaky():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError('selector unavailable')
+            return real()
+        with patch.object(svc.selectors, 'DefaultSelector', flaky):
+            self.service()
+            self.wait(lambda: len(calls) >= 2, message='failed binding never re-adopted')
+            self.wait(lambda: self.ready(manifest))
+            self.assertEqual(len(embed(manifest)), DIM)
+        self.assertEqual(len(self.loads), 1)
+
+    def test_request_between_lookup_and_forward_is_never_reclaimed(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        service.reclaim_seconds = 0
+        self.wait(lambda: self.ready(manifest))
+        handle = next(iter(service.workers.values())).handle
+        entered, release = threading.Event(), threading.Event()
+        real = svc.Worker.forward
+
+        def gated(worker, *args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return real(worker, *args, **kwargs)
+        results = []
+        with patch.object(svc.Worker, 'forward', gated):
+            thread = threading.Thread(target=lambda: results.append(
+                embed(manifest, kind='document')))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.routes.pop(project)  # the last binding goes away mid-request
+            self.assertTrue(resident.wait_for_release(manifest['serviceSocketPath'], timeout=5))
+            time.sleep(.3)
+            self.assertIsNone(handle.process.poll(), 'worker reclaimed under a request')
+            release.set()
+            thread.join(30)
+        self.assertEqual(len(results), 1)
+        self.wait(lambda: handle.process.poll() is not None, message='never reclaimed after')
+
+    def test_slow_sender_is_cut_at_one_absolute_read_deadline(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        with patch.object(svc, 'READ_SECONDS', 1, create=True):
+            self.service()
+            self.wait(lambda: self.ready(manifest))
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(conn.close)
+            conn.connect(manifest['serviceSocketPath'])
+            started = time.monotonic()
+            closed = None
+            while time.monotonic() - started < 4:
+                try:
+                    conn.sendall(b' ')  # one byte at a time, never the whole request
+                except OSError:
+                    closed = time.monotonic() - started
+                    break
+                time.sleep(.1)
+            self.assertIsNotNone(closed, 'a trickling sender kept its connection')
+            self.assertLess(closed, 3)
+
+
+class HungLoadChecks(unittest.TestCase):
+    def test_drain_past_a_hung_load_kills_its_children_and_exits(self):
+        temp = tempfile.TemporaryDirectory(prefix='lrh-', dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name).resolve()
+        root = base / 'svc'
+        root.mkdir(mode=0o700)
+        child_record = base / 'child.pid'
+        env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
+               'LAYA_SERVICE_TIME_SCALE': str(TIME_SCALE), 'PYTHONDONTWRITEBYTECODE': '1'}
+        driver = subprocess.Popen([sys.executable, '-B', __file__, '--hung-load-service',
+                                   str(base), str(child_record)],
+                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+
+        def cleanup():
+            for pid in ([driver.pid] if driver.poll() is None else []) + (
+                    [int(child_record.read_text())] if child_record.exists() else []):
+                with suppress_lookup():
+                    os.kill(pid, 9)
+            driver.wait(5)
+        self.addCleanup(cleanup)
+        try:
+            code = driver.wait(30)
+        except subprocess.TimeoutExpired:
+            self.fail('a drain behind a hung load never exited')
+        self.assertEqual(code, svc.FORCED_EXIT_CODE)
+        child = int(child_record.read_text())
+        with self.assertRaises(ProcessLookupError, msg='orphan embed child left running'):
+            os.kill(child, 0)
+        record = json.loads((root / svc.FORCED_EXIT).read_text())
+        self.assertEqual((record['reason'], record['unconfirmedChildren']), ('cold_load_hung', []))
+        self.assertIn(child, record['killedChildren'])
+        # The kernel released the lease with the process: a successor takes it.
+        successor = svc.Service(root, bundle={'version': '1.0.1', 'digest': 'n'},
+                                prove=lambda _p: None)
+        self.addCleanup(successor.close)
+        self.assertTrue(successor.acquire(wait=2))
+
+
+    def test_successor_waiting_from_drain_start_takes_the_lease(self):
+        # A busy learning phase, then a hung cold load: every drain phase fits
+        # one budget below the successor's own lease wait.
+        temp = tempfile.TemporaryDirectory(prefix='lrb-', dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name).resolve()
+        (base / 'svc').mkdir(mode=0o700)
+        child_record, draining = base / 'child.pid', base / 'draining'
+        scale = TIME_SCALE
+        env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
+               'LAYA_SERVICE_TIME_SCALE': str(scale),
+               # Read only by a service without the scaled budget (before the fix).
+               'LAYA_SERVICE_LOAD_STUCK_SECONDS': str(300 * scale),
+               'PYTHONDONTWRITEBYTECODE': '1'}
+        spawned = []
+
+        def spawn(*argv):
+            child = subprocess.Popen([sys.executable, '-B', __file__, *argv], env=env,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
+            spawned.append(child)
+            return child
+
+        def cleanup():
+            for child in spawned:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(5)
+            if child_record.exists():
+                with suppress_lookup():
+                    os.kill(int(child_record.read_text()), 9)
+        self.addCleanup(cleanup)
+        old = spawn('--hung-load-service', str(base), str(child_record), 'learning-busy')
+        deadline = time.monotonic() + 15
+        while not draining.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue(draining.exists(), 'drain never began')
+        successor = spawn('--successor', str(base / 'svc'),
+                          str(svc.SUCCESSOR_WAIT_SECONDS * scale))
+        self.assertEqual(successor.wait(30), 0, 'the successor gave up on the lease')
+        self.assertEqual(old.wait(10), svc.FORCED_EXIT_CODE)
+        with self.assertRaises(ProcessLookupError, msg='orphan embed child left running'):
+            os.kill(int(child_record.read_text()), 0)
+
+    def test_drain_budget_and_exit_cleanup_stay_below_the_successor_wait(self):
+        def total():
+            # Every drain phase, then the exit cleanup bound, then the safety gap.
+            return (svc._scaled(svc.DRAIN_BUDGET_SECONDS) + svc._exit_cleanup_seconds()
+                    + svc._scaled(svc.DRAIN_SAFETY_SECONDS))
+        self.assertLessEqual(svc.DRAIN_SECONDS, svc.DRAIN_BUDGET_SECONDS)
+        self.assertLessEqual(total(), svc.SUCCESSOR_WAIT_SECONDS)
+        # The scale the subprocess checks use keeps the same inequality, with
+        # the cleanup floor that a scaled test does not shrink.
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1',
+                                     'LAYA_SERVICE_TIME_SCALE': str(TIME_SCALE)}):
+            self.assertLessEqual(total(), svc._scaled(svc.SUCCESSOR_WAIT_SECONDS))
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '',
+                                     'LAYA_SERVICE_TIME_SCALE': '0.01'}):
+            self.assertEqual(svc._scaled(svc.DRAIN_BUDGET_SECONDS), svc.DRAIN_BUDGET_SECONDS)
+
+
+class suppress_lookup:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, _value, _tb):
+        return kind is ProcessLookupError
+
+
+def successor(root, wait):
+    """A replacement that waits for the lease from drain start; 0 when it got it."""
+    service = svc.Service(Path(root), bundle={'version': '1.0.1', 'digest': 'n'},
+                          prove=lambda _p: None)
+    acquired = service.acquire(wait=float(wait))
+    service.close()
+    raise SystemExit(0 if acquired else 75)
+
+
+def hung_load_service(base, child_record, phase=''):
+    """A service whose only cold load spawns its model child, then hangs forever."""
+    base, child_record = Path(base), Path(child_record)
+    root = base / 'svc'
+    project = base / 'alpha'
+    project.mkdir()
+    runtime = base / 'alpha-state' / 'runtime'
+    runtime.mkdir(parents=True, mode=0o700)
+    runtime.parent.chmod(0o700)
+    manifest = manifest_for(runtime / 'laya-embed.sock')
+    decision = {'projectRoot': str(project), 'pluginRoot': '/synthetic/plugin',
+                'installId': 'alpha', 'journalPath': str(runtime / 'journal'),
+                'scopeId': 'alpha', 'dbPath': str(runtime / 'db'), 'dbIncarnation': 'alpha',
+                'bundleManifestSha256': '7' * 64, 'ownershipManifestSha256': '8' * 64,
+                'vectorProfile': {'embeddingFingerprint': manifest['embeddingFingerprint']}}
+
+    def start_worker(_manifest, _admit):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'],
+                                 stdin=subprocess.DEVNULL)
+        child_record.write_text(str(child.pid))
+        threading.Event().wait()  # never READY, never returns
+    svc.LOAD_DRAIN_SECONDS = .2
+    if not hasattr(svc, '_scaled'):
+        # A service before the shared budget reads no time scale: same scaled values.
+        svc.DRAIN_SECONDS = 330 * float(os.environ.get('LAYA_SERVICE_TIME_SCALE', 1))
+    svc.register(str(project), root=root)
+    service = svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                          learning_root=str(base / 'learning') if phase else None,
+                          prove=lambda _p: (decision, {'providerManifest': manifest},
+                                            'selected'),
+                          attest=lambda *_a: None, start_worker=start_worker,
+                          admit=lambda: True, retire=lambda *_a: None, tick=.05)
+    if not service.acquire(wait=5):
+        raise SystemExit(75)
+    if phase == 'learning-busy':
+        service._learning_busy = lambda: True  # a learning request never finishes
+    service.start()
+    deadline = time.monotonic() + 10
+    while not child_record.exists() and time.monotonic() < deadline:
+        time.sleep(.02)
+    service.begin_drain()
+    (base / 'draining').write_text('1')
+    service.run()
 
 
 class ProofChecks(unittest.TestCase):
@@ -609,9 +1179,10 @@ class LearningChecks(unittest.TestCase):
                              sys.executable)
 
 
-def fake_worker(socket_path, identity, delay, record, slow):
+def fake_worker(socket_path, identity, delay, record, slow, dimension):
     identity = json.loads(identity)
     delay = float(delay)
+    dimension = int(dimension)
     lock = threading.Lock()
     state = {'pending': 0, 'max': 0}
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -644,7 +1215,7 @@ def fake_worker(socket_path, identity, delay, record, slow):
                     pause = float(Path(slow).read_text())
                 time.sleep(pause)
                 conn.sendall(json.dumps({**identity, 'ok': True,
-                                         'result': {'vector': [0.5] * DIM}}).encode())
+                                         'result': {'vector': [0.5] * dimension}}).encode())
             finally:
                 with lock:
                     state['pending'] -= 1
@@ -661,7 +1232,11 @@ def fake_worker(socket_path, identity, delay, record, slow):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 7 and sys.argv[1] == '--fake-worker':
+    if len(sys.argv) == 8 and sys.argv[1] == '--fake-worker':
         fake_worker(*sys.argv[2:])
+    elif len(sys.argv) in (4, 5) and sys.argv[1] == '--hung-load-service':
+        hung_load_service(*sys.argv[2:])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--successor':
+        successor(*sys.argv[2:])
     else:
         unittest.main()
