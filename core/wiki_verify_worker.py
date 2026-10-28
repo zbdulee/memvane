@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
+import wiki_activity_log
 import wiki_markers
 import wiki_mutation_lock
 import compile_paths as cp
@@ -502,9 +503,8 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
     except OSError:
         return 'retry'
     wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
-    wc.update_index(wiki_root, live_target, str(pending_meta.get('title') or live_target.stem))
-    wc.append_log(wiki_root, 'updated', live_target,
-                  str(pending_meta.get('title') or live_target.stem))
+    wiki_activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
+                             str(pending_meta.get('title') or live_target.stem))
     reindex_wiki(root, config)
     return 'published'
 
@@ -847,8 +847,6 @@ def process_verify_job(
                     and live_hash == job.get('sourceHash')
                     and live_meta.get('verifiedBodyHash') ==
                         yaml_scalars.card_body_hash(live_text)):
-                wc.update_index(wiki_root, live_target,
-                                str(live_meta.get('title') or live_target.stem))
                 reindex_wiki(root, config)
                 wake_pending_retirement(root)
                 log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
@@ -1172,17 +1170,14 @@ def apply_negative_verdict(
             log_verdict(log_path, {**record, 'result': 'pending_deleted',
                                    'suppressedSources': suppressed})
             return True
-        # 인덱스 줄도 같이 걷는다(사유는 wiki_compile.remove_from_index). 위 감사 원장·억제
-        # 마커와 달리 여기는 fail-closed하지 않는다 — 인덱스는 캐논이 아니라 항법이고,
-        # 실패해도 이 함수가 없던 시절의 어긋남으로 되돌아갈 뿐 새 손상은 아니다.
         wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
-        index_ok = wc.remove_from_index(wiki_root, target)
-        wc.append_log(wiki_root, "deleted", target, dead_title)
+        wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+                                 dead_title)
         record_machine_delete(root, compile_cfg, record, verdict)
         reindex_wiki(root, config)
         log_verdict(log_path, {
             **record, "result": "deleted",
-            "suppressedSources": suppressed, "indexOk": index_ok,
+            "suppressedSources": suppressed,
         })
         return True
     if action == "contested":

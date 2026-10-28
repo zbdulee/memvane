@@ -141,7 +141,7 @@ print(json.dumps(out))`;
 
 test('build_prompt embeds source content and a candidates-only instruction', () => {
   const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
-p=lib.build_prompt({'source':{'path':'docs/x.md','content':'UNIQ_SRC_BODY'},'wiki':{'schema':'S','index':'I','logTail':''}})
+p=lib.build_prompt({'source':{'path':'docs/x.md','content':'UNIQ_SRC_BODY'},'wiki':{'schema':'S','logTail':''}})
 print(json.dumps({'has_body':'UNIQ_SRC_BODY' in p,'has_candidates':'candidates' in p,'has_identity':'canonicalKey' in p and 'aliases' in p and 'targetPath' in p,'no_tools':'tool' in p.lower()}))`;
   const out = JSON.parse(runLib(py, ''));
   assert.equal(out.has_body, true);
@@ -175,7 +175,7 @@ print(lib.build_prompt(payload))
   assert.doesNotMatch(out, /some\/old\/index\/line\.md/);
 });
 
-test('build_prompt falls back to EXISTING WIKI INDEX exactly as before when similarPages is absent', () => {
+test('build_prompt has no index section and ignores a stale wiki.index when similarPages is absent', () => {
   const scriptWithout = `
 import sys
 sys.path.insert(0, 'core/extractors')
@@ -187,9 +187,10 @@ payload = {
 print(lib.build_prompt(payload))
 `;
   const withoutSimilarPages = execFileSync('python3', ['-c', scriptWithout], { encoding: 'utf8' });
-  assert.match(withoutSimilarPages, /EXISTING WIKI INDEX \(avoid duplicates\):/);
-  assert.match(withoutSimilarPages, /some\/old\/index\/line\.md/);
+  assert.doesNotMatch(withoutSimilarPages, /EXISTING WIKI INDEX/);
+  assert.doesNotMatch(withoutSimilarPages, /some\/old\/index\/line\.md/);
   assert.doesNotMatch(withoutSimilarPages, /TOP MATCHING EXISTING WIKI PAGES/);
+  assert.match(withoutSimilarPages, /CARD RULES \(bundled with the plugin\):\nSCHEMA/);
 
   const scriptEmpty = `
 import sys
@@ -197,7 +198,7 @@ sys.path.insert(0, 'core/extractors')
 import lib
 payload = {
     'source': {'path': 'docs/a.md', 'content': 'new source text'},
-    'wiki': {'schema': 'SCHEMA', 'index': '- some/old/index/line.md - Old Title', 'similarPages': []},
+    'wiki': {'schema': 'SCHEMA', 'similarPages': []},
 }
 print(lib.build_prompt(payload))
 `;

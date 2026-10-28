@@ -101,7 +101,6 @@ import wiki_compile as wc
 import wiki_source_missing as wsm
 import wiki_source_retire
 
-META_PAGES = source_text.WIKI_META_PAGES
 DEFAULT_MAX_CARDS = 300
 # frontmatter만 보는 ineligible 집계의 읽기 창(실코퍼스 frontmatter는 수백 바이트).
 FRONTMATTER_READ_LIMIT = 16384
@@ -180,7 +179,7 @@ def card_paths(wiki_root: Path) -> list[Path]:
                              if not name.startswith(".") and not (base / name).is_symlink())
         for name in filenames:
             if (not name.endswith(".md") or name.startswith(".")
-                    or (base == wiki_root and name in META_PAGES)):
+                    or source_text.is_wiki_meta_page(base / name, wiki_root)):
                 continue
             path = base / name
             try:

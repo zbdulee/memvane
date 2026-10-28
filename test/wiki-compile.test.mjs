@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, sym
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { removeTemp } from './helpers/temp.mjs';
+import { readActivityLog } from './helpers/wiki_activity.mjs';
 
 function repoTemp(prefix) {
   const base = join(homedir(), '.cache');
@@ -99,8 +100,10 @@ test('wiki_compile: lint-clean candidate writes generated markdown, audit files,
     assert.match(page, /Canonical config lives/);
     assert.match(readFileSync(join(work, '.auto-context', 'compile', 'candidates.jsonl'), 'utf8'), /Config Layout Decision/);
     assert.match(readFileSync(join(work, '.auto-context', 'compile', 'generated-manifest.jsonl'), 'utf8'), /config-layout/);
-    assert.match(readFileSync(join(work, '.auto-context', 'wiki', 'index.md'), 'utf8'), /decisions\/config-layout.md/);
-    assert.match(readFileSync(join(work, '.auto-context', 'wiki', 'log.md'), 'utf8'), /created/);
+    // The wiki holds only cards: no index.md/log.md; the activity line goes to the state root.
+    assert.equal(existsSync(join(work, '.auto-context', 'wiki', 'index.md')), false);
+    assert.equal(existsSync(join(work, '.auto-context', 'wiki', 'log.md')), false);
+    assert.match(readActivityLog(work), /created decisions\/config-layout\.md - Config Layout Decision/);
   } finally {
     removeTemp(work);
   }

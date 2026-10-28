@@ -50,7 +50,8 @@ from typing import Any, Mapping, NoReturn
 
 from laya_index_a import IndexContractError, _digest
 from source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
-                         WIKI_META_PAGES, WIKI_TEXT_EXTENSIONS, is_source_text)
+                         WIKI_TEXT_EXTENSIONS, is_source_text,
+                         is_wiki_meta_page)
 
 STALE = "index_stale"
 EXCLUSION_KINDS = frozenset({"path", "hash"})
@@ -66,7 +67,7 @@ _WIKI_LOG_HEADER = '# Auto-context Wiki Log\n\n'
 
 
 def generated_wiki_log_text(body: str) -> bool:
-    """The exact header emitted when the compiler creates the root log.
+    """The exact header earlier releases wrote when they created the root log.
 
     A partially appended event must not turn this maintenance file into a
     wiki card. The caller must also prove the path is the bound wiki root.
@@ -84,7 +85,7 @@ def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
     name = next(iter(wiki_roots))
     if path == name + '/log.md':
         return generated_wiki_log_text(body)
-    return any(path == name + '/' + page for page in WIKI_META_PAGES)
+    return path.startswith(name + '/') and is_wiki_meta_page(path[len(name) + 1:])
 
 
 def generated_wiki_log_file(dfd: int, name: str, expected: os.stat_result) -> bool:

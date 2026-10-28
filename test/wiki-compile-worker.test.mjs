@@ -1004,7 +1004,8 @@ print(json.dumps({'candidates': []}))
     runWorker(project);
     const receivedWiki = JSON.parse(readFileSync(dump, 'utf8'));
     assert.equal('similarPages' in receivedWiki, false);
-    assert.equal(typeof receivedWiki.index, 'string');
+    assert.deepEqual(Object.keys(receivedWiki).sort(), ['logTail', 'schema']);
+    assert.equal(typeof receivedWiki.schema, 'string');
   } finally {
     removeTemp(project);
   }

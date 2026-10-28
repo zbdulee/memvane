@@ -480,7 +480,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
         for path in files:
             rel_card = path.relative_to(wiki_root)
             if (any(part.startswith(".") for part in rel_card.parts)
-                    or rel_card.name in source_text.WIKI_META_PAGES):
+                    or source_text.is_wiki_meta_page(rel_card)):
                 continue
             if path.is_symlink() or path.resolve(strict=True) != path or not path.is_file():
                 return None
@@ -577,21 +577,43 @@ def is_hidden_source_path(rel_path: str) -> bool:
     return any(part.startswith(".") for part in Path(rel_path).parts)
 
 
-def orientation(root: Path) -> dict:
-    wiki = root / ".auto-context" / "wiki"
-    result = {}
-    for key, rel, limit in (
-        ("schema", "SCHEMA.md", 12000),
-        ("index", "index.md", 12000),
-        ("logTail", "log.md", 8000),
-    ):
-        path = wiki / rel
-        if not path.exists():
-            result[key] = ""
-            continue
-        text = path.read_text(encoding="utf-8")
-        result[key] = text[-limit:] if key == "logTail" else text[:limit]
-    return result
+CARD_RULES_DIR = Path(__file__).resolve().parent / "wiki_card_rules"
+CARD_RULES_PRESETS = ("default", "novel")
+# Directories only the novel preset of `wiki_init` creates. Their presence is
+# the durable novel marker: minimal settings carry no preset key.
+NOVEL_WIKI_DIRS = ("characters", "world", "timeline", "plot", "style")
+
+
+def card_rules_preset(wiki_root: Path, config: dict) -> str:
+    """"novel" for a novel-preset wiki or a legacy novel collection, else "default"."""
+    collections = config.get("collections") if isinstance(config.get("collections"), list) else []
+    if qmd_config.has_legacy_novel_collection(
+            [item for item in collections if isinstance(item, str)]):
+        return "novel"
+    for name in NOVEL_WIKI_DIRS:
+        path = wiki_root / name
+        if path.is_dir() and not path.is_symlink():
+            return "novel"
+    return "default"
+
+
+def card_rules(preset: str) -> str:
+    """The bundled card-writing rules. A project file never supplies them."""
+    name = preset if preset in CARD_RULES_PRESETS else "default"
+    return (CARD_RULES_DIR / f"{name}.md").read_text(encoding="utf-8")
+
+
+def orientation(root: Path, wiki_root: Path, config: dict, bound) -> dict:
+    """Extractor orientation: bundled card rules and the recent activity tail.
+
+    Nothing here reads the project wiki's root files; the card catalog is the
+    selected memvane-db index (`similarPages`).
+    """
+    import wiki_activity_log
+    return {
+        "schema": card_rules(card_rules_preset(wiki_root, config)),
+        "logTail": wiki_activity_log.tail(root, bound),
+    }
 
 
 def _argv_list(value) -> list[str] | None:
@@ -1059,7 +1081,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         return False, True, []
 
     wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
-    wiki_ctx = orientation(root)
+    wiki_ctx = orientation(root, wiki_root, config, selected_route)
     # topK·similarPageMaxChars는 설정이 아니라 상수다(qmd_config) — daemon score가 순위
     # 기반이라 사용자가 조정할 의미가 없었다.
     similar_pages = gather_similar_pages(

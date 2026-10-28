@@ -1,4 +1,9 @@
-"""Project wiki scaffold shared by direct initialization and recommended opt-in.
+"""Project wiki directories shared by direct initialization and recommended opt-in.
+
+The wiki holds only cards: this module creates the wiki root and the type
+directories, never root files. Card-writing rules ship in the bundle
+(`core/wiki_card_rules`), the card catalog is the memvane-db index, and the
+activity log lives in the install state root (`wiki_activity_log`).
 
 Both callers run this function in their own process. A caller may already hold
 wiki_mutation_lock.lock(target); the nested acquisition is thread-reentrant.
@@ -12,50 +17,6 @@ import tempfile
 
 import config as qmd_config
 import wiki_mutation_lock
-
-
-def ensure_project_file(path: Path, content: str) -> bool:
-    """Publish a new scaffold only after its complete bytes are durable.
-
-    Existing user files remain untouched. A prefix left by an older,
-    non-atomic writer is preserved but rejected instead of being accepted as
-    a complete scaffold.
-    """
-    payload = content.encode("utf-8")
-
-    def inspect_existing() -> None:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"unsafe wiki file path: {path}")
-        with path.open("rb") as existing:
-            prefix = existing.read(len(payload) + 1)
-        if len(prefix) < len(payload) and payload.startswith(prefix):
-            raise ValueError(f"incomplete wiki scaffold preserved: {path}")
-
-    if path.exists() or path.is_symlink():
-        inspect_existing()
-        return False
-
-    fd, temporary = tempfile.mkstemp(dir=str(path.parent),
-        prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        try:
-            remaining = memoryview(payload)
-            while remaining:
-                written = os.write(fd, remaining)
-                if written <= 0:
-                    raise OSError("short wiki scaffold write")
-                remaining = remaining[written:]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            inspect_existing()
-            return False
-        return True
-    finally:
-        os.unlink(temporary)
 
 
 def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
@@ -132,27 +93,19 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
         # wiki_compile.ALLOWED_TYPES/TYPE_DIRS의 session·query 항목은 그대로 둔다.
         # 목록이 프롬프트와 갈리지 않는지는 test/update.test.mjs가 코드에서 유도해 단정한다.
         base_dirs = ["concepts", "entities", "decisions", "comparisons"]
+        # novel 전용 디렉터리(characters·world·timeline·plot·style)는 compile 워커가 novel
+        # 카드 규칙을 고르는 표식이기도 하다(`wiki_compile_worker.NOVEL_WIKI_DIRS`).
         novel_dirs = ["characters", "world", "timeline", "plot", "style", "discarded", "decisions", "sessions"]
         dir_names = novel_dirs if preset == "novel" else base_dirs
         dirs = [wiki] + [wiki / name for name in dir_names]
         for path in dirs:
             ensure_project_dir(path, "wiki")
 
-        files = {
-            wiki / "SCHEMA.md": "# Auto-context Wiki Schema\n\nThis wiki stores promoted, durable project knowledge. Do not paste full transcripts here.\n",
-            wiki / "index.md": "# Auto-context Wiki Index\n\n- decisions/\n- concepts/\n- entities/\n- comparisons/\n",
-            wiki / "log.md": "# Auto-context Wiki Log\n\nAppend notable wiki maintenance events here.\n",
-        }
-        created = []
-        for path, content in files.items():
-            if ensure_project_file(path, content):
-                created.append(str(path))
-
-        # minimal settings는 wiki collection·compile을 플러그인이 유도한다. scaffold만
+        # minimal settings는 wiki collection·compile을 플러그인이 유도한다. 디렉터리만
         # 만들고 settings는 바이트 그대로 둔다(키를 더하면 legacy 파일이 된다).
         if initial_config is None and qmd_config.is_minimal_settings(config):
             if not quiet:
-                print(f"[qmd] wiki scaffold ready: {wiki} ({len(created)} files created)")
+                print(f"[qmd] wiki ready: {wiki}")
             return
 
         def slug(name: str) -> str:
@@ -215,7 +168,7 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
             raise
 
         if not quiet:
-            print(f"[qmd] wiki scaffold ready: {wiki} ({len(created)} files created)")
+            print(f"[qmd] wiki ready: {wiki}")
 
 if __name__ == "__main__":
     init_wiki(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "default")

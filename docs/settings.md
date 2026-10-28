@@ -1119,13 +1119,12 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 
 **대상은 플러그인이 만든 카드뿐입니다** — `createdBy`가 `memvane`(또는 이전 플러그인 이름 `qmd-auto-context`)이고 auto 블록이 있으며
 `superseded`가 아닌 카드입니다. 사람이 쓴 페이지, 심볼릭 링크, `.`으로 시작하는 경로,
-`index.md`/`log.md`, wiki root 밖의 파일은 건드리지 않습니다. 형식이 틀린 `sourceRevisions`,
+wiki root의 `SCHEMA.md`·`index.md`·`log.md`, wiki root 밖의 파일은 건드리지 않습니다. 형식이 틀린 `sourceRevisions`,
 `allowRoots` 밖을 가리키는 원문, 읽을 수 없는 원문은 "판정 불가"로 남기고 로그만 씁니다.
 원문 존재 판정은 주입 경로와 **같은 함수**(`wiki_card.resolve_existing_source`)를 씁니다.
 
 **삭제는 복구할 수 있습니다.** 옛 바이트는 `.auto-context/compile/retired-wiki/`에
-`<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워지고 `index.md` 줄이
-빠집니다. 그다음 `laya-sync`를 깨우면 memvane-db full scan이 다음 세대에서 없는 wiki 파일을
+`<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워집니다. 그다음 `laya-sync`를 깨우면 memvane-db full scan이 다음 세대에서 없는 wiki 파일을
 뺍니다. 살아 있는 원문이 남은 공유 카드는 바로 지우지 않고 compile 큐에 `sourceDelete`
 행으로 넘깁니다 — compile worker가 살아 있는 원문을 먼저 재생성한 뒤 카드를 퇴역시킵니다.
 
@@ -1213,7 +1212,7 @@ scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 �
 없고, 병합·삭제 판단은 `wiki-dedup` skill이 띄우는 resolver 에이전트가 합니다.
 
 - 디스크 바이트가 색인 해시와 같은 카드만 비교합니다. 게시 뒤 편집된 카드는 다음 게시를 기다립니다.
-- `superseded`·`discarded` 카드, `index.md`·`log.md`, 이미 큐에 있는 쌍, `dedup-skipped.jsonl`에
+- `superseded`·`discarded` 카드, wiki root의 `SCHEMA.md`·`index.md`·`log.md`, 이미 큐에 있는 쌍, `dedup-skipped.jsonl`에
   같은 본문 해시로 기록된 쌍은 넣지 않습니다.
 - run당 위키 카드 2,048장, 바뀐 카드 50장, `maxPairsPerScan` 쌍, 20초로 묶입니다. 비교한 색인
   해시를 sync state 디렉터리의 `<key>-wiki-dedup.json`에 남겨 다음 run은 새로 바뀐 카드만 봅니다.
