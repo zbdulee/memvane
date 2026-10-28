@@ -841,6 +841,91 @@ class ServiceBoundsChecks(Fixture):
             self.assertLess(closed, 3)
 
 
+class HungLoadChecks(unittest.TestCase):
+    def test_drain_past_a_hung_load_kills_its_children_and_exits(self):
+        temp = tempfile.TemporaryDirectory(prefix='lrh-', dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name).resolve()
+        root = base / 'svc'
+        root.mkdir(mode=0o700)
+        child_record = base / 'child.pid'
+        env = {**os.environ, 'HOME': str(base), 'QMD_SETUP_GUARD_FIXTURE': '1',
+               'LAYA_SERVICE_LOAD_STUCK_SECONDS': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
+        driver = subprocess.Popen([sys.executable, '-B', __file__, '--hung-load-service',
+                                   str(base), str(child_record)],
+                                  env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+
+        def cleanup():
+            for pid in ([driver.pid] if driver.poll() is None else []) + (
+                    [int(child_record.read_text())] if child_record.exists() else []):
+                with suppress_lookup():
+                    os.kill(pid, 9)
+            driver.wait(5)
+        self.addCleanup(cleanup)
+        try:
+            code = driver.wait(30)
+        except subprocess.TimeoutExpired:
+            self.fail('a drain behind a hung load never exited')
+        self.assertEqual(code, svc.FORCED_EXIT_CODE)
+        child = int(child_record.read_text())
+        with self.assertRaises(ProcessLookupError, msg='orphan embed child left running'):
+            os.kill(child, 0)
+        record = json.loads((root / svc.FORCED_EXIT).read_text())
+        self.assertEqual((record['reason'], record['unconfirmedChildren']), ('cold_load_hung', []))
+        self.assertIn(child, record['killedChildren'])
+        # The kernel released the lease with the process: a successor takes it.
+        successor = svc.Service(root, bundle={'version': '1.0.1', 'digest': 'n'},
+                                prove=lambda _p: None)
+        self.addCleanup(successor.close)
+        self.assertTrue(successor.acquire(wait=2))
+
+
+class suppress_lookup:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, _value, _tb):
+        return kind is ProcessLookupError
+
+
+def hung_load_service(base, child_record):
+    """A service whose only cold load spawns its model child, then hangs forever."""
+    base, child_record = Path(base), Path(child_record)
+    root = base / 'svc'
+    project = base / 'alpha'
+    project.mkdir()
+    runtime = base / 'alpha-state' / 'runtime'
+    runtime.mkdir(parents=True, mode=0o700)
+    runtime.parent.chmod(0o700)
+    manifest = manifest_for(runtime / 'laya-embed.sock')
+    decision = {'projectRoot': str(project), 'pluginRoot': '/synthetic/plugin',
+                'installId': 'alpha', 'journalPath': str(runtime / 'journal'),
+                'scopeId': 'alpha', 'dbPath': str(runtime / 'db'), 'dbIncarnation': 'alpha',
+                'bundleManifestSha256': '7' * 64, 'ownershipManifestSha256': '8' * 64,
+                'vectorProfile': {'embeddingFingerprint': manifest['embeddingFingerprint']}}
+
+    def start_worker(_manifest, _admit):
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'],
+                                 stdin=subprocess.DEVNULL)
+        child_record.write_text(str(child.pid))
+        threading.Event().wait()  # never READY, never returns
+    svc.LOAD_DRAIN_SECONDS = .2
+    svc.register(str(project), root=root)
+    service = svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                          prove=lambda _p: (decision, {'providerManifest': manifest},
+                                            'selected'),
+                          attest=lambda *_a: None, start_worker=start_worker,
+                          admit=lambda: True, retire=lambda *_a: None, tick=.05)
+    if not service.acquire(wait=5):
+        raise SystemExit(75)
+    service.start()
+    deadline = time.monotonic() + 10
+    while not child_record.exists() and time.monotonic() < deadline:
+        time.sleep(.02)
+    service.begin_drain()
+    service.run()
+
+
 class ProofChecks(unittest.TestCase):
     def test_drifted_bundle_is_served_by_read_only_proof(self):
         import laya_install_journal as journal
@@ -1040,5 +1125,7 @@ def fake_worker(socket_path, identity, delay, record, slow, dimension):
 if __name__ == '__main__':
     if len(sys.argv) == 8 and sys.argv[1] == '--fake-worker':
         fake_worker(*sys.argv[2:])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--hung-load-service':
+        hung_load_service(*sys.argv[2:])
     else:
         unittest.main()

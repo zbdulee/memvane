@@ -63,6 +63,15 @@ DOCUMENT_SECONDS = 320      # a document request, from accept to answer
 RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
 DRAIN_SECONDS = 330         # one document_chunks request may take 300s
 LOAD_DRAIN_SECONDS = 5      # re-check interval while a drain waits for a cold load
+# A drain that has waited this long for one cold load treats it as hung. A
+# legitimate load is the full runtime rehash (a few hundred MB, well under a
+# minute), the admission check and the provider's 15 s READY bound; 300 s
+# leaves wide margin and stays below SUCCESSOR_WAIT_SECONDS, so the waiting
+# successor takes the lease in the same attempt. The escape is process exit
+# (``_force_exit``), never an in-process lease release.
+LOAD_STUCK_SECONDS = 300
+FORCED_EXIT = 'forced-exit.json'
+FORCED_EXIT_CODE = 70
 SUCCESSOR_WAIT_SECONDS = 600
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
 _BUNDLE = None
@@ -687,6 +696,55 @@ def default_attest(decision, proof, mode):
             _fail('provider_attestation_invalid')
 
 
+def _load_stuck_seconds():
+    """The hung-load cap; a test (fixture flag only) may shorten it."""
+    shortened = os.environ.get('LAYA_SERVICE_LOAD_STUCK_SECONDS')
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' and shortened:
+        with suppress(ValueError, TypeError):
+            return max(0.0, float(shortened))
+    return LOAD_STUCK_SECONDS
+
+
+def _own_children():
+    """Direct child PIDs of this process (the listing's own ``ps`` excluded)."""
+    try:
+        listing = subprocess.Popen(['ps', '-A', '-o', 'pid=', '-o', 'ppid='],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True)
+        out, _ = listing.communicate(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    me, children = os.getpid(), []
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) == 2 and all(part.isdigit() for part in parts)
+                and int(parts[1]) == me and int(parts[0]) != listing.pid):
+            children.append(int(parts[0]))
+    return children
+
+
+def _kill_children(timeout=5):
+    """SIGKILL every direct child (embed workers, a half-started one) and reap it."""
+    killed = []
+    for pid in _own_children():
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+    deadline = time.monotonic() + timeout
+    left = set(killed)
+    while left and time.monotonic() < deadline:
+        for pid in list(left):
+            try:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                done = pid  # another thread's Popen.wait reaped it
+            if done == pid:
+                left.discard(pid)
+        if left:
+            time.sleep(.05)
+    return killed, sorted(left)
+
+
 def default_admit():
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
@@ -705,7 +763,7 @@ class Service:
     def __init__(self, root, *, learning_root=None, bundle=None, prove=default_prove,
                  attest=default_attest, start_worker=default_start_worker,
                  admit=default_admit, retire=retire_legacy_resident, tick=1.0,
-                 learning=None):
+                 learning=None, exit=os._exit):
         self.root = private_root(Path(root))
         self.learning_root = learning_root
         self.bundle = bundle or bundle_identity()
@@ -713,6 +771,7 @@ class Service:
         self.start_worker, self.admit, self.retire = start_worker, admit, retire
         self.tick_seconds = tick
         self.learning = learning
+        self.exit = exit
         self.lock = threading.RLock()
         self.workers = {}
         self.bindings = {}
@@ -872,8 +931,11 @@ class Service:
         # early: while a loader runs, the service keeps its lease and stays
         # draining (clients see absent sockets and serve lexical results).
         # Holding the lock afterwards keeps any new load out.
+        waited_from = time.monotonic()
         while not self.cold_load.acquire(timeout=LOAD_DRAIN_SECONDS):
-            pass
+            if time.monotonic() - waited_from >= _load_stuck_seconds():
+                self._force_exit(time.monotonic() - waited_from)
+                return
         with self.lock:
             for project in list(self.bindings):
                 self._release(project, reason='starting')
@@ -883,6 +945,26 @@ class Service:
                         worker.handle.stop()
             self.workers.clear()
         self.stopped.set()
+
+    def _force_exit(self, waited):
+        """A hung cold load: no worker may come up, then the process exits.
+
+        Every direct child is killed and reaped first (a model that reached
+        Popen included), then the process exits, so the kernel releases the
+        lease flock and the stuck load thread dies with it. The lease is never
+        released in-process while that thread is alive.
+        """
+        killed, alive = _kill_children()
+        with suppress(Exception):
+            _atomic_json(self.root / FORCED_EXIT, {
+                'pid': os.getpid(), 'bundle': self.bundle, 'reason': 'cold_load_hung',
+                'waitedSeconds': round(waited, 1), 'killedChildren': killed,
+                'unconfirmedChildren': alive, 'at': time.time()})
+        path = self.root / CONTROL
+        with suppress(OSError):
+            if self.control_inode is not None and os.lstat(path).st_ino == self.control_inode:
+                path.unlink()
+        self.exit(FORCED_EXIT_CODE)
 
     def _learning_busy(self):
         try:
