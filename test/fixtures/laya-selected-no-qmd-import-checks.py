@@ -65,7 +65,7 @@ class SelectedNoQmdImport(unittest.TestCase):
             import laya_runtime_dispatch, laya_product_sync_worker, wiki_selected_laya
             import laya_bundle_upgrade, laya_resident_service, runtime_work
             import wiki_card, wiki_compile, wiki_verify_worker, wiki_dedup_resolve
-            import wiki_lifecycle, wiki_source_missing, wiki_extract
+            import wiki_lifecycle, wiki_source_missing, wiki_extract, wiki_dedup_scan
             import context_learning.laya_learning
             report(loaded=loaded())
         ''')
@@ -78,6 +78,7 @@ class SelectedNoQmdImport(unittest.TestCase):
                               ('laya-product-sync-worker-checks.py', 30),
                               ('laya-runtime-dispatch-checks.py', 10),
                               ('wiki-selected-laya-checks.py', 8),
+                              ('wiki-dedup-scan-checks.py', 9),
                               ('laya-bundle-auto-upgrade-checks.py', 15),
                               ('laya-embed-runtime-checks.py', 13),
                               ('laya-runtime-provision-checks.py', 21)):
