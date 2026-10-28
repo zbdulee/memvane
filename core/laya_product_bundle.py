@@ -706,6 +706,8 @@ def _reseal(metadata, manifest_raw, owner_raw):
             _write(metadata / temp, raw)
             os.replace(metadata / temp, metadata / name)
         os.fsync(fd)
+    except OSError as exc:
+        raise BundleEvidenceError('unsafe_bundle_metadata') from exc
     finally:
         os.close(fd)
 

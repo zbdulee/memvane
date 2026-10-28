@@ -943,8 +943,10 @@ print(json.dumps(result))'''
     def bundle_upgrade(self, root, commit):
         """``laya_bundle_upgrade.upgrade_install``: real adoption and proofs.
 
-        Only the host source lookup, provider review, runtime pinning, build
-        record, store counts and resident lane are synthetic.
+        Real: adoption, bundle inspection, installer journal CAS, fresh-wiki
+        ledger/marker/route and ``_not_older`` on the git source. Synthetic:
+        host source lookup, provider review, runtime pinning, the legacy
+        Hermes gate, build record and wake, store counts and resident lane.
         """
         import laya_bundle_upgrade as auto
         import laya_embed_runtime
