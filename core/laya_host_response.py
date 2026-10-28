@@ -1741,8 +1741,10 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     install, project, scope, journal or store identity keeps the refusal.
     """
     from laya_install_journal import JournalEvidenceError
+    moved = _install_moved(decision)
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
-            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES)):
+            (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
+            moved):
         return None
     needed = time.monotonic() - started + _RETRY_MARGIN_SECONDS
     if _retry_time_left(started) <= needed:
@@ -1758,11 +1760,38 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
         return None
     try:
         fresh = select_route(target, action='recall')
+        if moved:
+            import laya_state_move
+            fresh = laya_state_move.settle_decision(target, 'recall', fresh, select_route)
     except Exception:
         return None
-    if _decision_identity(fresh) != identity or _retry_time_left(started) <= needed:
+    if moved:
+        import laya_state_move
+        if not laya_state_move.relocated_decision(decision, fresh):
+            return None
+    elif _decision_identity(fresh) != identity:
+        return None
+    if _retry_time_left(started) <= needed:
         return None
     return fresh
+
+
+def _install_moved(decision) -> bool:
+    """The decision's install directory left the pre-rename base under this recall.
+
+    Any failure of such a recall may come from the move (a store path that
+    vanished between the proof and a read); one retry re-selects the route,
+    which must name the same install at its MemVane location.
+    """
+    if not isinstance(decision, dict) or decision.get('state') != 'candidate':
+        return False
+    try:
+        import laya_state_move
+        state = Path(decision['journalPath']).parent
+        return (laya_state_move.legacy_root(state) and not os.path.lexists(state)
+                and laya_state_move.target_root(state).is_dir())
+    except Exception:
+        return False
 
 
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1840,8 +1869,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
+        move_notice = None
         if action in ("update", "update-queued"):
             _request_journal_v4(decision)
+            move_notice = _state_move_notice(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
@@ -1882,11 +1913,27 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action in ("index", "file-change-event"):
             return {}
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
+        if move_notice:
+            notice += "\n" + move_notice
         if host == "hermes":
             return {"status": "queued"}
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _state_move_notice(decision: dict, *, request_move: bool = True):
+    """SessionStart line while the install's state moves to the MemVane base.
+
+    Records at most one detached worker request; never waits.
+    """
+    try:
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.move_notice(decision['projectRoot'],
+                                               decision['journalPath'],
+                                               request_move=request_move)
+    except Exception:
+        return None
 
 
 def _request_journal_v4(decision: dict) -> None:
@@ -1970,6 +2017,9 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
+        move_notice = _state_move_notice(decision, request_move=False)
+        if move_notice:
+            notice += '\n' + move_notice
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
@@ -2097,11 +2147,19 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     manifest = proof.get("providerManifest")
     if not isinstance(manifest, dict):
         _fail("vector_provider_missing")
-    provider = ReviewedLocalQmdProvider(manifest)
     embedded = {}
     # Why this prompt has no query vector. Set once; later calls never touch
     # the socket again and the searches serve their lexical lists (#57 path).
     vector_off: list[str] = []
+    from laya_index_a import IndexContractError as _ProviderRefused
+    try:
+        provider = ReviewedLocalQmdProvider(manifest)
+    except _ProviderRefused as exc:
+        # A sealed manifest this provider cannot use (a socket path past its
+        # limit, a changed recipe): no query vector, the lexical lists serve.
+        provider = None
+        vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
+            r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
 
     def query_provider(text, profile):
         # The incremental and pinned searches ask the same warm service for
@@ -2200,7 +2258,8 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
             else:
                 rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
                                              proof["vectorProfile"],
-                                             query_provider if degraded else provider,
+                                             query_provider if degraded or provider is None
+                                             else provider,
                                              lexical_patterns=tuple(patterns))
                 title_only = frozenset()
     except Exception as exc:
@@ -2226,7 +2285,10 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
                   else 'selected_bundle_upgrade_index_stale')
         _request_stale_sync(decision, proof)
     vector_fallback = None
-    if vector_off and degraded:
+    if provider is None:
+        # Nothing to wake: the manifest itself is unusable.
+        vector_fallback = 'selected_' + vector_off[0]
+    elif vector_off and degraded:
         # A drifted bundle never wakes or starts a provider. Still name why
         # this answer has no vector list.
         vector_fallback = 'selected_' + read_only_label + '_' + vector_off[0]
@@ -2280,6 +2342,30 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     return host_payload(host, context)
 
 
+def _reselect(cwd, action):
+    """The hook's second route read, waiting out a state-move window.
+
+    It must equal the classified decision, or be exactly that install after a
+    state move landed between the two reads (``_relocated``).
+    """
+    decision = select_route(cwd, action=action)
+    if decision.get('state') == 'blocked':
+        try:
+            import laya_state_move
+            decision = laya_state_move.settle_decision(cwd, action, decision, select_route)
+        except Exception:
+            pass
+    return decision
+
+
+def _relocated(selection, decision):
+    try:
+        import laya_state_move
+        return laya_state_move.relocated_decision(selection, decision)
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 4 and args[0] == "serve-stdin":
@@ -2311,8 +2397,8 @@ def main(argv: list[str] | None = None) -> int:
         if selection["state"] not in ("candidate", "preview", "worktree"):
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
-        decision = select_route(cwd, action=action)
-        if decision != selection:
+        decision = _reselect(cwd, action)
+        if decision != selection and not _relocated(selection, decision):
             _fail("selected_route_changed")
         response = (serve_preview(action, host, decision, payload)
                     if decision['state'] == 'preview' else

@@ -347,6 +347,47 @@ def register_project(identity):
     return str(path)
 
 
+def relocate_project_pointer(old_pointer, new_pointer):
+    """Point the project's wake at its moved state root; idempotent.
+
+    Writes the new pointer in the MemVane directory (replacing only this
+    install's exact old pointer there), then removes this install's pointer
+    from the pre-rename directory. A pointer of another install refuses.
+    """
+    keys = {'schema', 'projectRoot', 'stateRoot', 'installId'}
+    if (not isinstance(old_pointer, dict) or not isinstance(new_pointer, dict) or
+            set(old_pointer) != keys or set(new_pointer) != keys or
+            old_pointer['schema'] != POINTER_SCHEMA or
+            any(old_pointer[key] != new_pointer[key] for key in
+                ('schema', 'projectRoot', 'installId'))):
+        _fail('initial_build_pointer_invalid')
+    project = old_pointer['projectRoot']
+    path = pointer_path(project, _pointer_dir(create=True))
+    current = _read_json(path)
+    if current is None:
+        try:
+            _write_json(path, new_pointer, replace=False)
+        except IndexContractError as exc:
+            if str(exc) != 'initial_build_record_exists':
+                raise
+        current = _read_json(path)
+    elif current == old_pointer:
+        _write_json(path, new_pointer, replace=True)
+        current = _read_json(path)
+    if current != new_pointer:
+        _fail('initial_build_pointer_changed')
+    legacy = _pointer_dir(create=False, legacy=True)
+    if legacy is not None:
+        earlier = pointer_path(project, legacy)
+        held = _read_json(earlier)
+        if held is not None:
+            if held not in (old_pointer, new_pointer):
+                _fail('initial_build_pointer_changed')
+            os.unlink(earlier)
+            _fsync_dir(legacy)
+    return str(path)
+
+
 RETIRED_POINTER = 'retired-build-pointer.json'
 
 

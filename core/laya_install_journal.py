@@ -893,6 +893,102 @@ def cas_activate(journal_path, expected_epoch, observed_route_raw):
     return _cas(journal_path, expected_epoch, activate)
 
 
+RELOCATED_ROUTE_FIELDS = frozenset(('journalPath', 'dbPath', 'queuePath'))
+RELOCATED_ATTESTATION_PATHS = (('journalPath',), ('providerManifest', 'serviceSocketPath'))
+
+
+def rebased(value, old_root, new_root):
+    """``value`` moved from under ``old_root`` to ``new_root``, else None."""
+    if type(value) is not str:
+        return None
+    if value == str(old_root):
+        return str(new_root)
+    if value.startswith(str(old_root) + '/'):
+        return str(new_root) + value[len(str(old_root)):]
+    return None
+
+
+def relocated_attestation(sealed, old_root, new_root):
+    """The sealed attestation with only its journal and socket paths moved."""
+    if not isinstance(sealed, dict):
+        _fail('relocation_attestation_mismatch')
+    expected = json.loads(_canon(sealed))
+    for keys in RELOCATED_ATTESTATION_PATHS:
+        holder = expected
+        for key in keys[:-1]:
+            holder = holder.get(key) if isinstance(holder, dict) else None
+        if not isinstance(holder, dict):
+            _fail('relocation_attestation_mismatch')
+        moved = rebased(holder.get(keys[-1]), old_root, new_root)
+        if moved is None:
+            _fail('relocation_attestation_mismatch')
+        holder[keys[-1]] = moved
+    return expected
+
+
+def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_route_raw,
+                            old_attestation_raw):
+    """Rebind the selected route after its install directory moved to a new parent.
+
+    The journal now lives at ``journal_path``. The selected bundle identity,
+    project, scope, store basenames and provider files stay exactly as sealed;
+    only the route's three state paths and the attestation's journal and
+    socket paths name the new directory. The sealed provider file identity
+    must be unchanged. ``previous*`` is cleared: no rollback target may name
+    the directory that no longer exists.
+    """
+    def relocate(path, row):
+        if row['state'] not in ('active', 'restored_old') or row['selected'] is None:
+            _fail('journal_not_active')
+        try:
+            old = json.loads(old_route_raw.decode('utf-8'), object_pairs_hook=_pairs,
+                             parse_constant=_nonfinite)
+        except (AttributeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise JournalEvidenceError('invalid_route_bytes') from exc
+        if not isinstance(old, dict) or type(old.get('journalPath')) is not str:
+            _fail('relocation_route_mismatch')
+        old_root, new_root = Path(old['journalPath']).parent, path.parent
+        old_route, old_sha = _route(old_route_raw, Path(old['journalPath']))
+        new_route, new_sha = _route(new_route_raw, path)
+        if (old_sha != row['selected_route_sha'] or old_root == new_root or
+                old_root.name != new_root.name or
+                set(old_route) != set(new_route) or
+                any(old_route[key] != new_route[key]
+                    for key in set(old_route) - RELOCATED_ROUTE_FIELDS) or
+                any(rebased(old_route[key], old_root, new_root) != new_route[key]
+                    for key in RELOCATED_ROUTE_FIELDS)):
+            _fail('relocation_route_mismatch')
+        if (_project(new_route) != (row['project_root'], row['project_dev'],
+                                    row['project_ino']) or
+                new_route['scopeId'] != row['scope_id'] or
+                any(new_route.get(k) != row['selected'].get(k) for k in
+                    ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
+                     'ownershipManifestSha256', 'vectorProfile'))):
+            _fail('relocation_identity_mismatch')
+        cleared = {'selected_route_sha': new_sha, 'previous': None,
+                   'previous_route_sha': None,
+                   'previous_provider_attestation_sha': None,
+                   'previous_provider_file_identity': None}
+        if row['provider_attestation_sha'] is None:
+            return cleared
+        if (type(old_attestation_raw) is not bytes or
+                hashlib.sha256(old_attestation_raw).hexdigest() !=
+                row['provider_attestation_sha']):
+            _fail('relocation_attestation_mismatch')
+        try:
+            sealed = json.loads(old_attestation_raw.decode('utf-8'), object_pairs_hook=_pairs,
+                                parse_constant=_nonfinite)
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise JournalEvidenceError('relocation_attestation_mismatch') from exc
+        record, digest = _attestation(path)
+        if (record != relocated_attestation(sealed, old_root, new_root) or
+                row['provider_file_identity'] is None or
+                _provider_file_identity(record) != row['provider_file_identity']):
+            _fail('relocation_attestation_mismatch')
+        return {**cleared, 'provider_attestation_sha': digest}
+    return _cas(journal_path, expected_epoch, relocate)
+
+
 def cas_mark_new_write(journal_path, expected_epoch):
     def mark(_path, row):
         if row['state'] != 'active' or row['selected'] is None:

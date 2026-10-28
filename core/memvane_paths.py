@@ -9,10 +9,14 @@ helper takes an optional ``home`` so tests run against a temporary HOME::
     config   ~/.config/memvane
     cache    ~/Library/Caches/memvane (macOS), ~/.cache/memvane (other)
 
-``LEGACY_*`` names the roots earlier releases used. Nothing creates them; an
-install or per-user state already there keeps working in place
-(initial-build pointer lookup, ``auto_context_state``, embed runtime GC, the
-retired-backend cleanup).
+``LEGACY_*`` names the roots earlier releases used. Nothing creates them.
+The bundle upgrade worker moves each install found under the pre-rename state
+base to the MemVane base (``laya_state_move``) and then retires the shared
+pre-rename trees once nothing references them. Until then readers accept the
+pre-rename location only where an unmoved install or tree can still be:
+install roots (``laya_product_install._state_bases``), the build pointer
+lookup, ``auto_context_state``, the embed runtime and retired-backend
+reference checks, and the pre-rename service lease.
 """
 from __future__ import annotations
 
@@ -58,6 +62,11 @@ def support_root(home=None):
     return _home(home).joinpath(*_support_parts(NAME))
 
 
+def install_root(install_id, home=None):
+    """``~/.local/state/memvane/<install id>``: where every install lives."""
+    return state_base(home) / install_id
+
+
 def legacy_support_root(home=None):
     return _home(home).joinpath(*_support_parts(LEGACY_NAME))
 
@@ -75,9 +84,9 @@ def cache_root(home=None):
 def auto_context_state(home=None):
     """Per-user logs and scan state outside any install.
 
-    An account that already keeps them under the pre-rename base continues
-    there (lifecycle cursors, pending lifecycle requests and dedup compare
-    state stay in effect) until that base is moved.
+    Read-compat: scan state still under the pre-rename base is used there
+    (lifecycle cursors, pending lifecycle requests and dedup compare state
+    stay in effect) until the worker moves that tree into the MemVane base.
     """
     current = state_base(home) / 'auto-context'
     legacy = legacy_state_base(home) / 'auto-context'

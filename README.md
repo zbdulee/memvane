@@ -155,8 +155,22 @@ hermes plugins install zbdulee/memvane
 hermes plugins enable memvane
 ```
 
-넘겨받은 설치는 기존 상태 디렉터리(`~/.local/state/laya/<install id>`)를 그대로
-쓰고, 새로 온보딩하는 프로젝트는 `~/.local/state/memvane` 아래에 만들어집니다.
+모든 설치의 상태 디렉터리는 `~/.local/state/memvane/<install id>`입니다. 이전
+플러그인이 `~/.local/state/laya/<install id>`에 만든 설치는 그 프로젝트의 다음
+SessionStart 뒤 백그라운드 워커가 같은 볼륨 안에서 `~/.local/state/memvane`으로
+옮깁니다. 옮기는 동안 SessionStart가 안내 한 줄을 보여 주고 검색은 계속 결과를
+돌려줍니다. 공유 디렉터리(`embed-runtime`, `service`, `auto-context`,
+`initial-builds`)는 마지막 설치가 옮겨지고 아무것도 참조하지 않을 때 정리되며, 그때
+`~/.local/state/laya`도 사라집니다. 업데이트 직후 sync가 돌고 있으면 이동은 다음
+세션으로 미뤄집니다. 남은 항목과 사유는 아래 명령으로 보고, 열지 않은 프로젝트까지
+지금 옮기려면 `move-state-roots`를 씁니다. `ROOT`는 설치된 플러그인 캐시
+(예: `~/.claude/plugins/cache/memvane-marketplace/memvane/<버전>`)이며, 저장소
+checkout에서 실행하면 번들 단계가 `host_layout_unknown`으로 거절됩니다.
+
+```bash
+python3 -B "$ROOT/core/setup_entry.py" state-root-status
+python3 -B "$ROOT/core/setup_entry.py" move-state-roots
+```
 
 ### 예전 QMD backend 정리
 

@@ -58,6 +58,7 @@ def main(argv=None):
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
                                           'plan-legacy-cleanup', 'apply-legacy-cleanup',
                                           'gc-index-runtime',
+                                          'state-root-status', 'move-state-roots',
                                           'plan-fresh-wiki-origin',
                                           'index-runtime-status', 'provision-index-runtime',
                                           'review-index-provider',
@@ -102,10 +103,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
             'plan-legacy-cleanup', 'apply-legacy-cleanup', 'index-runtime-status',
-            'provision-index-runtime', 'gc-index-runtime'):
+            'provision-index-runtime', 'gc-index-runtime', 'state-root-status',
+            'move-state-roots'):
         parser.error('--project is required for ' + args.action)
     try:
-        if args.action in ('plan-legacy-cleanup', 'apply-legacy-cleanup'):
+        if args.action == 'state-root-status':
+            # Read only: installs and shared trees still under ~/.local/state/laya.
+            import laya_state_move
+            result = laya_state_move.status()
+        elif args.action == 'move-state-roots':
+            # What each project's SessionStart worker does, for every project now.
+            import laya_bundle_upgrade
+            result = laya_bundle_upgrade.move_all()
+        elif args.action in ('plan-legacy-cleanup', 'apply-legacy-cleanup'):
             # The owner's one-time removal of the retired QMD backend.
             import legacy_cleanup
             if args.action == 'plan-legacy-cleanup':
