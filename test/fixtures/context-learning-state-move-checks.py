@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""Learning state move and automatic selector heal, synthetic HOME only.
+
+The move runs in-process against a temporary HOME passed explicitly. The heal
+runs in a child process whose HOME is the temporary one and whose code is a
+copy of ``core`` inside synthetic official plugin caches; the model, the
+synthetic attestation run and inference preparation are stubbed at the two
+heal seams (``selector_heal.attest``/``prepare``) and at the prediction
+transport, like ``context-learning-adapter-binding-checks.py``.
+"""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+SOURCE = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SOURCE / 'core'))
+from context_learning import state_move  # noqa: E402
+from context_learning.runtime_setup import learning_state_base  # noqa: E402
+
+REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+REAL = [REAL_HOME / 'Library' / 'Application Support' / name
+        for name in ('qmd-auto-context', 'memvane')]
+
+
+def _mtimes():
+    return {str(path): path.stat().st_mtime_ns if path.exists() else None for path in REAL}
+
+
+BEFORE = _mtimes()
+
+
+def private(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+
+
+class Kill(BaseException):
+    pass
+
+
+class LearningMoveTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='lsm-')
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        support = (('Library', 'Application Support') if sys.platform == 'darwin'
+                   else ('.local', 'share'))
+        self.legacy = self.home.joinpath(*support, 'qmd-auto-context')
+        self.current = self.home.joinpath(*support, 'memvane')
+        self.namespace = self.legacy / 'live-selection' / ('a' * 64)
+        self.namespace.mkdir(parents=True, mode=0o700)
+        for path in (self.legacy, self.legacy / 'live-selection'):
+            path.chmod(0o700)
+        artifact = self.namespace / 'laya-base-x.artifact'
+        artifact.write_bytes(b'head')
+        artifact.chmod(0o600)
+        private(self.namespace / 'active-checkpoint.json',
+                {'schema_version': 1, 'artifact_path': str(artifact),
+                 'artifact_sha256': hashlib.sha256(b'head').hexdigest()})
+        self.inference = self.legacy / 'laya-inference'
+        self.inference.mkdir(mode=0o700)
+        for name in ('provider.lock', 'compute.lock', 'runtime-worker.lock'):
+            (self.inference / name).write_bytes(b'')
+            (self.inference / name).chmod(0o600)
+        self.lock_inode = (self.inference / 'provider.lock').stat().st_ino
+
+    def test_move_switches_both_trees_and_rebases_the_checkpoint(self):
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+        result = state_move.move(self.home, wait=0.2)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+        self.assertEqual(learning_state_base(self.home), self.current)
+        # Read-only regular files stand where the trees were.
+        for name in ('live-selection', 'laya-inference'):
+            self.assertTrue((self.legacy / name).is_file())
+            self.assertTrue(state_move.moved_sentinel(self.legacy / name))
+        moved = self.current / 'live-selection' / ('a' * 64)
+        pointer = json.loads((moved / 'active-checkpoint.json').read_text())
+        self.assertEqual(pointer['artifact_path'], str(moved / 'laya-base-x.artifact'))
+        # Lane locks keep their inode: a holder from before the move and one
+        # from after it exclude each other.
+        self.assertEqual((self.current / 'laya-inference' / 'provider.lock').stat().st_ino,
+                         self.lock_inode)
+        from context_learning.inference_service import service_root
+        self.assertEqual(service_root(create=True, home=self.home),
+                         self.current / 'laya-inference')
+        self.assertEqual(state_move.move(self.home)['status'], 'learning_state_switched')
+
+    def test_a_busy_lane_defers_before_anything_moves(self):
+        fd = os.open(self.inference / 'runtime-worker.lock', os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred, 'learning_lane_busy'):
+                state_move.move(self.home, wait=0.2)
+        finally:
+            os.close(fd)
+        self.assertTrue((self.legacy / 'live-selection').is_dir())
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_service_still_holding_its_lease_defers_the_move(self):
+        service = self.home / '.local' / 'state' / 'memvane' / 'service'
+        service.mkdir(parents=True, mode=0o700)
+        for path in (service.parent, service.parent.parent, service.parent.parent.parent):
+            path.chmod(0o700)
+        (service / 'service.lock').write_bytes(b'')
+        (service / 'service.lock').chmod(0o600)
+        fd = os.open(service / 'service.lock', os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                        'learning_service_draining'):
+                state_move.move(self.home, wait=0.3)
+        finally:
+            os.close(fd)
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_setup_bound_namespace_is_not_moved(self):
+        private(self.namespace / state_move.SETUP_BINDINGS, {'phase': 'bound'})
+        with self.assertRaisesRegex(state_move.LearningMoveRefused,
+                                    'learning_state_move_bound'):
+            state_move.move(self.home, wait=0.2)
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_crash_between_the_renames_resumes(self):
+        def die(name):
+            if name == 'moved:live-selection':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        self.assertEqual(state_move.status(self.home)[0], 'pending')
+        result = state_move.move(self.home, wait=0.2)
+        self.assertEqual(result['status'], 'learning_state_moved')
+        self.assertEqual(learning_state_base(self.home), self.current)
+
+    def test_a_stop_after_the_switch_still_fixes_the_checkpoints(self):
+        def die(name):
+            if name == 'switched':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        self.assertEqual(state_move.status(self.home)[0], 'pending')
+        state_move.move(self.home, wait=0.2)
+        moved = self.current / 'live-selection' / ('a' * 64)
+        pointer = json.loads((moved / 'active-checkpoint.json').read_text())
+        self.assertEqual(pointer['artifact_path'], str(moved / 'laya-base-x.artifact'))
+        self.assertEqual(state_move.status(self.home)[0], 'switched')
+
+    def test_a_stale_process_cannot_recreate_the_old_lane_or_selection_tree(self):
+        # An earlier bundle's service_root resolved the old root, then paused
+        # before its mkdir while the move ran.
+        old_lane = learning_state_base(self.home) / 'laya-inference'
+        old_selection = learning_state_base(self.home) / 'live-selection'
+        self.assertEqual(old_lane, self.inference)
+        state_move.move(self.home, wait=0.2)
+        with self.assertRaises(OSError):
+            old_lane.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.assertRaises(OSError):
+            os.open(old_lane / 'compute.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        with self.assertRaises(OSError):
+            (old_selection / ('b' * 64)).mkdir(parents=True, exist_ok=True)
+        self.assertEqual(learning_state_base(self.home), self.current)
+        from context_learning.inference_service import service_root
+        self.assertEqual(service_root(create=True, home=self.home),
+                         self.current / 'laya-inference')
+
+    def test_service_root_resolved_before_the_seal_finds_the_moved_root(self):
+        from context_learning import inference_service, runtime_setup
+        state_move.move(self.home, wait=0.2)
+        real = runtime_setup.learning_state_base
+        calls = []
+
+        def cached_then_real(home=None):
+            calls.append(home)
+            # The first read was made before the move sealed the old base.
+            return self.legacy if len(calls) == 1 else real(home)
+        with mock.patch.object(runtime_setup, 'learning_state_base', cached_then_real):
+            root = inference_service.service_root(create=False, home=self.home)
+        self.assertEqual(root, self.current / 'laya-inference')
+
+    def test_recall_with_an_unreachable_learning_lane_serves_hybrid_rank(self):
+        # A recall whose learning state still resolves to the sealed old root:
+        # selection and query admission fail, recall serves ranked rows.
+        import importlib.util
+        from contextlib import ExitStack
+        import laya_embed_resident
+        import laya_host_response as response
+        from context_learning.inference_service import ServiceFailure
+        spec = importlib.util.spec_from_file_location(
+            'required_selection', SOURCE / 'test/fixtures/laya-required-selection-checks.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        real_admit = laya_embed_resident.admit_query
+        with ExitStack() as stack:
+            decision, _proof, _rows, _settings = fixture.Checks.host(None, stack)
+            stack.enter_context(mock.patch.object(laya_embed_resident, 'admit_query', real_admit))
+            stack.enter_context(mock.patch(
+                'context_learning.resource_coordination.default_root',
+                side_effect=ServiceFailure('unsafe_root')))
+            stack.enter_context(mock.patch(
+                'context_learning.seam._private_state',
+                side_effect=ServiceFailure('unsafe_root')))
+            stack.enter_context(mock.patch.object(response, '_request_selector_heal'))
+            # The fixture proof has no provider socket; waking it is not under test.
+            stack.enter_context(mock.patch.object(response, '_wake_provider',
+                                                  return_value='selected_provider_preparing'))
+            result = response.serve_selected('recall', 'codex', decision,
+                                             {'prompt': 'find card'})
+        context = result['hookSpecificOutput']['additionalContext']
+        self.assertIn('wiki/card00.md', context)
+        self.assertIn('hybrid rank score', context)
+
+    def test_a_recreated_old_tree_after_a_rename_is_sealed_on_resume(self):
+        def die(name):
+            if name == 'renamed:laya-inference':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        # A process of an earlier bundle recreated the old lane and holds it.
+        self.inference.mkdir(mode=0o700)
+        (self.inference / 'compute.lock').write_bytes(b'')
+        (self.inference / 'compute.lock').chmod(0o600)
+        fd = os.open(self.inference / 'compute.lock', os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                        'learning_state_stray_busy'):
+                state_move.move(self.home, wait=0.2)
+            self.assertTrue(self.inference.is_dir())
+        finally:
+            os.close(fd)
+        result = state_move.move(self.home, wait=0.2)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+        self.assertEqual(len(result['strays']), 1)
+        self.assertTrue(Path(result['strays'][0], 'compute.lock').is_file())
+        self.assertTrue(state_move.moved_sentinel(self.inference))
+        self.assertEqual(learning_state_base(self.home), self.current)
+
+    def test_selector_heal_requests_are_floored_per_install(self):
+        import laya_bundle_upgrade as upgrade
+        state = self.home / 'install'
+        state.mkdir(mode=0o700)
+        spawned = []
+        now = time.time_ns()
+        for offset in (0, 1, 200):
+            upgrade.request('/p', state / 'install-journal.sqlite', 'learning_selector',
+                            spawn=spawned.append, now=now + offset * 10**9)
+            # A deferred shared status would be due again after 120 seconds.
+            upgrade._write_status(state, status='deferred', executingRoot='/x',
+                                  attempts=0, reason='x')
+        self.assertEqual(spawned, ['/p'])
+        upgrade.request('/p', state / 'install-journal.sqlite', 'learning_selector',
+                        spawn=spawned.append, now=now + 601 * 10**9)
+        self.assertEqual(spawned, ['/p', '/p'])
+
+    def test_a_service_elected_before_the_move_serves_the_moved_root(self):
+        old = str(self.inference)
+        state_move.move(self.home, wait=0.2)
+        self.assertEqual(state_move.current_root(old, home=self.home),
+                         str(self.current / 'laya-inference'))
+
+    def test_a_recall_that_cannot_select_asks_the_worker_to_heal(self):
+        import laya_host_response as response
+        calls = []
+        with mock.patch('laya_bundle_upgrade.request',
+                        side_effect=lambda *args: calls.append(args)):
+            response._request_selector_heal({'projectRoot': '/p', 'journalPath': '/j'},
+                                            'adapter_anchor_missing')
+            response._request_selector_heal({'projectRoot': '/p', 'journalPath': '/j'},
+                                            'timeout')
+        self.assertEqual(calls, [('/p', '/j', 'learning_selector')])
+
+
+MARKET = 'memvane-marketplace'
+PLUGIN = 'memvane@' + MARKET
+OLD, NEW = '1.0.0', '1.0.1'
+DRIVER = r'''import json,sys,time
+from pathlib import Path
+sys.dont_write_bytecode=True
+root=Path(sys.argv[1]);state=Path(sys.argv[2]);mode=sys.argv[3]
+sys.path.insert(0,str(root/'core'))
+from context_learning import live_select, inference_service, selector_heal
+from context_learning.local_cycle import VerifiedLayaTrainer
+from context_learning.contracts import digest
+from runtime_lease import atomic_json
+calls={'attest':0,'prepare':0}
+def admission(self,*,cwd):
+    assert self.argv[1]==str(root/'core/context_learning/laya_adapter.py'),self.argv
+    return {}
+def prediction(state,policy,request,artifact_sha,**kwargs):
+    case=request['cases'][0]
+    return {'schema_version':1,'predictions':[{'request_id':case['request_id'],
+        'input_sha256':case['input_sha256'],'selected_ids':['wiki/synthetic.md']}]},{}
+VerifiedLayaTrainer.validate_prediction=admission
+inference_service.predict=prediction
+prepared=[]
+def attest(state,policy):
+    calls['attest']+=1
+    if mode=='defer':
+        from resource_deferred import ResourceDeferred
+        raise ResourceDeferred('trainer_adaptive_attestation_required')
+    import hashlib
+    atomic_json(state/'laya-synthetic-attestation.json',{'schema':'qmd-laya-live-proof-v1',
+        'verifiedAt':time.time(),'attestation':{'adapter_sha256':hashlib.sha256(
+        Path(policy['trainerArgv'][1]).read_bytes()).hexdigest()}})
+def prepare(state,policy):
+    calls['prepare']+=1;prepared.append(1)
+selector_heal.attest=attest;selector_heal.prepare=prepare
+selector_heal.admitted=lambda state,argv:bool(prepared) or mode=='ready'
+selector_heal.pressure=lambda policy:'learning_prepare_memory_pressure' if mode=='pressure' else None
+text='---\ntitle: Synthetic\nstatus: verified\n---\nSynthetic complete body.\n'
+def choose():
+    return live_select.choose(state,'Synthetic request',[{'id':'wiki/synthetic.md',
+        'revision_sha256':digest(text),'source_text':text}],corpus_fingerprint='a'*64)[1]
+out={'before':choose()}
+try:
+    out['heal']=selector_heal.heal(None,state=state)
+except Exception as exc:
+    out['heal']={'error':str(exc)}
+out['after']=choose();out['calls']=calls
+out['anchor']=json.loads((state/'live-selector.json').read_text())['trainerArgv'][1]
+print(json.dumps(out))
+'''
+
+
+def install_runtime(root, home, model):
+    """``stage_generation`` + ``activate_generation`` with synthetic uv and probe."""
+    from types import SimpleNamespace
+    from context_learning.runtime_installer import activate_generation, stage_generation
+    from context_learning.runtime_setup import MANAGED_DEPENDENCIES, probe_runtime
+    from context_learning.laya_adapter import model_identity
+
+    def sha(path):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    root.parent.mkdir(parents=True, exist_ok=True)
+    for path in (root.parent, root.parent.parent):
+        path.chmod(0o700)
+    uv = home / 'uv'
+    uv.write_text('synthetic uv')
+    uv.chmod(0o700)
+    lock = home / 'requirements.lock'
+    lock.write_text(''.join(f'{name}=={version} --hash=sha256:{"a" * 64}\n'
+                            for name, version in MANAGED_DEPENDENCIES.items()))
+
+    def runner(args, **_kwargs):
+        if args[1:] == ['--version']:
+            return SimpleNamespace(returncode=0, stdout='uv 0.12.20 (synthetic)')
+        if args[1:3] == ['python', 'install']:
+            generation = Path(args[args.index('--install-dir') + 1]).parent
+            python = generation / 'python/cpython-3.12.14-macos-aarch64-none/bin/python3.12'
+            python.parent.mkdir(parents=True)
+            python.write_text('synthetic python')
+            python.chmod(0o700)
+        elif args[1] == 'venv':
+            executable = Path(args[2]) / 'bin/python'
+            executable.parent.mkdir(parents=True)
+            executable.write_text('synthetic venv')
+            executable.chmod(0o700)
+        return SimpleNamespace(returncode=0, stdout='')
+
+    def fake_runtime(_):
+        return {'python': '3.12.14', 'versions': dict(MANAGED_DEPENDENCIES),
+                'laya_import': '0.3.20', 'torch_import': '2.14.0',
+                'mps_available': True, 'laya_direct_url': None}
+
+    def probe(executable, *, managed_root):
+        return probe_runtime(executable, managed_root=managed_root, runner=fake_runtime)
+    staged = stage_generation(root, uv, sha(uv), lock, sha(lock), runner=runner, probe=probe)
+    adapter = home / 'activation-adapter.py'
+    adapter.write_text('synthetic adapter')
+
+    def proof(executable, adapter_path, model_dir):
+        identity = probe(executable, managed_root=root)['runtime_identity_sha256']
+        return {'probe': {'runtime_identity_sha256': identity}, 'attestation': {
+            'schema_version': 1, 'runtime_identity_sha256': identity,
+            'base_model_sha256': model_identity(model_dir), 'adapter_sha256': sha(adapter_path),
+            'data_kind': 'synthetic_compact_wiki', 'checks': {
+                'tokenization_no_truncation': True, 'synthetic_inference': True,
+                'synthetic_one_step_train': True, 'checkpoint_reload': True,
+                'fixed_selection_mapping': True}}}
+    activate_generation(root, staged['executable'], adapter, model, prover=proof, probe=probe)
+    return staged
+
+
+class SelectorHealTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='lsh-')
+        self.addCleanup(temp.cleanup)
+        home = self.home = Path(temp.name).resolve() / 'User Home'
+        home.mkdir(mode=0o700)
+        self.roots = {}
+        for host in ('claude', 'codex'):
+            for version in (OLD, NEW):
+                root = home / ('.' + host) / 'plugins/cache' / MARKET / 'memvane' / version
+                root.mkdir(parents=True)
+                shutil.copytree(SOURCE / 'core', root / 'core',
+                                ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                for directory in ('.claude-plugin', '.codex-plugin'):
+                    private(root / directory / 'plugin.json', {'name': 'memvane', 'version': version})
+                private(root / 'package.json', {'name': 'memvane', 'version': version})
+                self.roots[host, version] = root
+        private(home / '.claude/plugins/installed_plugins.json',
+                {'version': 2, 'plugins': {PLUGIN: [{'scope': 'user', 'version': NEW,
+                 'installPath': str(self.roots['claude', NEW]), 'gitCommitSha': 'a' * 40}]}})
+        private(home / '.claude/plugins/known_marketplaces.json',
+                {MARKET: {'source': {'source': 'github', 'repo': 'zbdulee/memvane'}}})
+        self.env = {**os.environ, 'HOME': str(home), 'CODEX_HOME': str(home / '.codex'),
+                    'PYTHONDONTWRITEBYTECODE': '1', 'QMD_RECALL_LOG': ''}
+        model = home / 'model'
+        for name in ('model.safetensors', 'rl_agent_config.json', 'encoder/config.json',
+                     'tokenizer/tokenizer.json', 'tokenizer/tokenizer_config.json'):
+            file = model / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(b'synthetic bytes')
+        # The official learning runtime, staged and activated through the
+        # installer itself (uv, the interpreter run and the attestation are
+        # synthetic); its interpreter is never executed here.
+        support = (home / 'Library' / 'Application Support' / 'memvane' if sys.platform == 'darwin'
+                   else home / '.local' / 'share' / 'memvane')
+        self.runtime = install_runtime(support / 'runtimes' / 'laya', home, model)
+        self.interpreter = Path(self.runtime['executable'])
+        self.state = home / 'state'
+        self.state.mkdir(mode=0o700)
+        artifact = self.state / 'head.artifact'
+        artifact.write_bytes(b'head')
+        artifact.chmod(0o600)
+        private(self.state / 'active-checkpoint.json',
+                {'schema_version': 1, 'artifact_path': str(artifact),
+                 'artifact_sha256': hashlib.sha256(b'head').hexdigest()})
+        # The anchor names a superseded cache the host already removed.
+        gone = home / '.claude/plugins/cache' / MARKET / 'memvane' / '0.9.0'
+        self.policy = {'schema': 'qmd-live-selector-v1',
+                       'trainerArgv': [str(self.interpreter),
+                                       str(gone / 'core/context_learning/laya_adapter.py'),
+                                       str(model)],
+                       'timeoutSeconds': 5, 'maxRssMib': 512}
+        private(self.state / 'live-selector.json', self.policy)
+
+    def drive(self, mode='heal'):
+        out = subprocess.check_output([sys.executable, '-c', DRIVER,
+                                       str(self.roots['claude', NEW]), str(self.state), mode],
+                                      env=self.env, text=True, timeout=60)
+        return json.loads(out)
+
+    def test_a_removed_anchor_is_rebound_and_local_selection_returns(self):
+        report = self.drive()
+        self.assertEqual(report['before'], 'adapter_anchor_missing', report)
+        self.assertEqual(report['heal'], {'status': 'selector_prepared', 'rebound': True})
+        self.assertEqual(report['anchor'], str(self.roots['claude', NEW] /
+                                               'core/context_learning/laya_adapter.py'))
+        self.assertEqual(report['after'], 'selected', report)
+        self.assertEqual(report['calls'], {'attest': 1, 'prepare': 1})
+
+    def current_adapter(self):
+        return str(self.roots['claude', NEW] / 'core/context_learning/laya_adapter.py')
+
+    def test_a_policy_outside_the_official_runtime_runs_nothing(self):
+        private(self.state / 'live-selector.json',
+                {**self.policy, 'trainerArgv': [sys.executable] + self.policy['trainerArgv'][1:]})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_official'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_an_interpreter_changed_since_its_prepared_evidence_runs_nothing(self):
+        private(self.state / 'laya-inference-manifest.json',
+                {os.path.realpath(self.interpreter): [[0], 'e' * 64]})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_changed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def profile(self, argv):
+        sys.path.insert(0, str(SOURCE / 'core'))
+        from context_learning.laya_adapter import model_identity
+        from context_learning.learning_profile import digest
+        from context_learning.local_cycle import _hash
+        policy = {**self.policy, 'trainerArgv': argv}
+        private(self.state / 'live-selector.json', policy)
+        row = {'trainerArgv': argv, 'livePolicySha256': _hash(self.state / 'live-selector.json'),
+               'modelIdentitySha256': model_identity(argv[2])}
+        private(self.state / 'learning-profile.json', {'acceptedSha256': digest(row),
+                                                       'proposal': row})
+        private(self.state / 'laya-inference-manifest.json',
+                {os.path.realpath(self.interpreter): [[0], hashlib.sha256(
+                    self.interpreter.read_bytes()).hexdigest()]})
+
+    def test_an_intact_profile_naming_this_policy_is_healed(self):
+        argv = [str(self.interpreter), self.current_adapter(), self.policy['trainerArgv'][2]]
+        self.profile(argv)
+        report = self.drive()
+        self.assertEqual(report['heal'], {'status': 'selector_prepared', 'rebound': False})
+        self.assertEqual(report['calls'], {'attest': 1, 'prepare': 1})
+
+    def test_a_profile_approving_another_interpreter_or_model_runs_nothing(self):
+        argv = [str(self.interpreter), self.current_adapter(), self.policy['trainerArgv'][2]]
+        self.profile(argv)
+        envelope = json.loads((self.state / 'learning-profile.json').read_text())
+        row = {**envelope['proposal'], 'trainerArgv': ['/other/python'] + argv[1:]}
+        sys.path.insert(0, str(SOURCE / 'core'))
+        from context_learning.learning_profile import digest
+        private(self.state / 'learning-profile.json', {'acceptedSha256': digest(row),
+                                                       'proposal': row})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_profile_rebind_required'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_held_prepare_lease_defers_and_runs_nothing(self):
+        lock = self.home / '.local' / 'state' / 'memvane' / 'learning-prepare.lock'
+        lock.parent.mkdir(parents=True)
+        for path in (lock.parent, lock.parent.parent, lock.parent.parent.parent):
+            path.chmod(0o700)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            report = self.drive()
+        finally:
+            os.close(fd)
+        self.assertEqual(report['heal'], {'error': 'learning_prepare_busy'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_memory_pressure_defers_and_runs_nothing(self):
+        report = self.drive('pressure')
+        self.assertEqual(report['heal'], {'error': 'learning_prepare_memory_pressure'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_generation_whose_recorded_identity_changed_runs_nothing(self):
+        prepared = self.interpreter.parent.parent.parent / 'prepared.json'
+        value = json.loads(prepared.read_text())
+        prepared.chmod(0o600)
+        private(prepared, {**value, 'runtime_identity_sha256': 'f' * 64})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_changed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_pointer_without_its_activation_attestation_runs_nothing(self):
+        active = self.interpreter.parents[4] / 'active.json'
+        pointer = json.loads(active.read_text())
+        private(active, {'executable': pointer['executable'],
+                         'runtime_identity_sha256': pointer['runtime_identity_sha256']})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_installed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_a_pointer_to_an_unprepared_interpreter_runs_nothing(self):
+        prepared = self.interpreter.parent.parent.parent / 'prepared.json'
+        prepared.unlink()
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_runtime_not_installed'})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_ready_evidence_is_left_alone(self):
+        report = self.drive('ready')
+        self.assertEqual(report['heal'], {'status': 'selector_ready', 'rebound': True})
+        self.assertEqual(report['calls'], {'attest': 0, 'prepare': 0})
+
+    def test_an_accepted_learning_profile_is_not_rebound(self):
+        private(self.state / 'learning-profile.json', {'proposal': {}})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'learning_profile_rebind_required'})
+        self.assertEqual(report['anchor'], self.policy['trainerArgv'][1])
+        self.assertEqual(report['after'], 'adapter_anchor_missing')
+
+    def test_a_running_adapter_that_is_not_installed_is_not_adopted(self):
+        private(self.home / '.claude/plugins/installed_plugins.json',
+                {'version': 2, 'plugins': {}})
+        report = self.drive()
+        self.assertEqual(report['heal'], {'error': 'adapter_not_official'})
+        self.assertEqual(report['anchor'], self.policy['trainerArgv'][1])
+
+    def test_an_attestation_deferral_is_reported_not_bypassed(self):
+        report = self.drive('defer')
+        self.assertEqual(report['heal'], {'error': 'trainer_adaptive_attestation_required'})
+        self.assertEqual(report['calls'], {'attest': 1, 'prepare': 0})
+
+
+def tearDownModule():
+    if _mtimes() != BEFORE:
+        raise AssertionError('real learning state changed: ' + json.dumps(_mtimes()))
+
+
+if __name__ == '__main__':
+    unittest.main()

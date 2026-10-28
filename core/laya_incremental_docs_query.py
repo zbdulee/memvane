@@ -24,6 +24,10 @@ MAX_FTS = 100
 DEADLINE_SECONDS = 2.0
 
 
+class QueryVectorUnavailable(Exception):
+    """The provider has no query vector for this prompt; lexical lists serve."""
+
+
 def _fail(reason):
     raise IndexContractError(reason)
 
@@ -222,43 +226,58 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                 lexical_paths.append((position, [item[0] for item in matches]))
             # No provider call for a valid empty preview. A populated preview
             # uses only the already-running installer-attested provider.
-            supplied = provider(' '.join(prompt.split()), profile)
-            if (not isinstance(supplied, dict)
+            try:
+                supplied = provider(' '.join(prompt.split()), profile)
+            except QueryVectorUnavailable:
+                supplied = None
+            if supplied is None:
+                # No query vector (admission deferred, learning lane
+                # unreachable): the lexical lists collected above serve alone.
+                best, sealed = [], {}
+                for doc in active_docs:
+                    _rowid, path, digest, title, profile_id, _count = doc
+                    if (not isinstance(path, str) or not isinstance(digest, str)
+                            or not isinstance(title, str)
+                            or profile_id != profile['profileId']):
+                        _fail('preview_document_invalid')
+                    sealed[path] = doc
+            if supplied is not None and (not isinstance(supplied, dict)
                     or set(supplied) != _PROVIDER_RESULT_KEYS
                     or supplied['profileId'] != profile['profileId']
                     or supplied['approvedProviderId'] != profile['approvedProviderId']
                     or supplied['providerArtifactSha256'] != profile['providerArtifactSha256']):
                 _fail('preview_vector_provider_mismatch')
-            query = supplied['vector']
-            dimension = profile['dimension']
-            if (not isinstance(query, (list, tuple)) or len(query) != dimension
-                    or any(type(value) not in (float, int) or not math.isfinite(value)
-                           for value in query)):
-                _fail('preview_query_vector_invalid')
-            query_norm = math.sqrt(math.fsum(value * value for value in query))
-            if query_norm <= 0:
-                _fail('preview_query_vector_invalid')
-            best = []
-            sealed = {}
-            for doc in active_docs:
-                _check_deadline(deadline)
-                _rowid, path, digest, title, profile_id, chunks_count = doc
-                if (not isinstance(path, str) or not isinstance(digest, str)
-                        or not isinstance(title, str)
-                        or profile_id != profile['profileId']):
-                    _fail('preview_document_invalid')
-                chunks = _read_chunk_set(candidate, digest, title, profile_id,
-                                         dimension, deadline=deadline)
-                if chunks is None or len(chunks) != chunks_count:
-                    _fail('preview_vector_incomplete')
-                sealed[path] = doc
-                distance = min(1 - math.fsum(a * b for a, b in
-                               zip(query, chunk['vector'])) / (
-                               query_norm * math.sqrt(math.fsum(v * v for v in
-                                                                chunk['vector'])))
-                               for chunk in chunks)
-                best.append((distance, path))
-            best.sort(key=lambda item: (item[0], item[1]))
+            if supplied is not None:
+                query = supplied['vector']
+                dimension = profile['dimension']
+                if (not isinstance(query, (list, tuple)) or len(query) != dimension
+                        or any(type(value) not in (float, int) or not math.isfinite(value)
+                               for value in query)):
+                    _fail('preview_query_vector_invalid')
+                query_norm = math.sqrt(math.fsum(value * value for value in query))
+                if query_norm <= 0:
+                    _fail('preview_query_vector_invalid')
+                best = []
+                sealed = {}
+                for doc in active_docs:
+                    _check_deadline(deadline)
+                    _rowid, path, digest, title, profile_id, chunks_count = doc
+                    if (not isinstance(path, str) or not isinstance(digest, str)
+                            or not isinstance(title, str)
+                            or profile_id != profile['profileId']):
+                        _fail('preview_document_invalid')
+                    chunks = _read_chunk_set(candidate, digest, title, profile_id,
+                                             dimension, deadline=deadline)
+                    if chunks is None or len(chunks) != chunks_count:
+                        _fail('preview_vector_incomplete')
+                    sealed[path] = doc
+                    distance = min(1 - math.fsum(a * b for a, b in
+                                   zip(query, chunk['vector'])) / (
+                                   query_norm * math.sqrt(math.fsum(v * v for v in
+                                                                    chunk['vector'])))
+                                   for chunk in chunks)
+                    best.append((distance, path))
+                best.sort(key=lambda item: (item[0], item[1]))
         generation = 'preview-' + decision['installId']
         skip = tuple(decision['recallSettings']['skipPaths'])
 
