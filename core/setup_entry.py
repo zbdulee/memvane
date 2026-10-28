@@ -299,7 +299,7 @@ def main(argv=None):
                     result['retireStateRoot'] = pending['stateRoot']
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
-    return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing',
+    return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing', 'partial',
         'recovery_required', 'rolled_back_after_activation_failure') else 0
 
 
