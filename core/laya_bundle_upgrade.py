@@ -187,8 +187,10 @@ def _spawn(project_root):
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True,
                      start_new_session=True,
+                     # HERMES_HOME: the journal v4 host gate must see a Hermes
+                     # copy installed under a custom Hermes home.
                      env={**{key: os.environ[key] for key in
-                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'HERMES_HOME')
                              if key in os.environ},
                           'PYTHONDONTWRITEBYTECODE': '1'})
 
@@ -502,6 +504,22 @@ def _ensure_embed_runtime(attestation):
         _refuse(str(exc))
 
 
+def _require_pinned_runtime(attestation):
+    """Refuse before any copy when the old runtime's files cannot be proven.
+
+    Equivalence needs the full-file digest of what the old worker ran: sealed
+    in the attestation or read from the Laya generation it names. Copying an
+    unpinned tree into a generation would not make it equivalent.
+    """
+    import laya_embed_runtime
+    try:
+        pinned = laya_embed_runtime.attested_files(attestation)
+    except laya_embed_runtime.RuntimeUnavailable as exc:
+        _refuse(str(exc))
+    if pinned is None:
+        _refuse('provider_changed_rebuild_required')
+
+
 def upgrade_install(project_root, state, root, home=None):
     """Move one install to the executing bundle; returns a result row."""
     kind, identity = classify(state)
@@ -525,6 +543,7 @@ def upgrade_install(project_root, state, root, home=None):
                bound_root=identity['pluginRoot'], root=root)
     old = _read_attestation(state)
     manifest = old.get('providerManifest') or {}
+    _require_pinned_runtime(old)
     _ensure_embed_runtime(old)
     from laya_product_install import review_local_provider
     review = review_local_provider(source_root=str(source), plugin_root=str(root),

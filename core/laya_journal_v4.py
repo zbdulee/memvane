@@ -8,7 +8,15 @@ of this plugin that can execute against it reads v4:
 * the executing bundle (this code);
 * Claude's installed copy of the same marketplace plugin, from
   ``~/.claude/plugins/installed_plugins.json``;
-* every Codex cache copy under ``~/.codex/plugins/cache/<market>/<plugin>/``.
+* every Codex cache copy under ``~/.codex/plugins/cache/<market>/<plugin>/``;
+* the Hermes Agent plugin copy under ``${HERMES_HOME:-~/.hermes}/plugins/``
+  (the directory named after the plugin, or any whose ``plugin.yaml``
+  declares that name).
+
+The MemVane plugin also counts every copy of its earlier plugin id
+(``qmd-auto-context`` in ``qmd-auto-context-marketplace``, and a Hermes copy
+of that name): until such a copy is uninstalled it serves the installs that
+were not yet handed over, against the same journals.
 
 A copy is v4-capable when its ``core/laya_install_journal.py`` declares
 ``VERSION = 4`` or later. An unknown layout, an unreadable record or any
@@ -24,6 +32,7 @@ COMMIT is rolled back by the next opener.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
@@ -33,6 +42,7 @@ V4 = 4
 WAITING = 'journal_v4_waiting_hosts'
 BUSY = 'journal_v4_install_busy'
 _VERSION_LINE = re.compile(r'^VERSION = (\d+)\s*$', re.MULTILINE)
+_NAME_KEY = re.compile(r'name\s*:(.*)\Z')
 
 
 def _executing_root():
@@ -48,6 +58,77 @@ def reads_v4(plugin_root):
         return False
     found = _VERSION_LINE.findall(text)
     return len(found) == 1 and int(found[0]) >= V4
+
+
+def _hermes_homes(home):
+    homes = [home / '.hermes']
+    configured = os.environ.get('HERMES_HOME')
+    if configured:
+        homes.append(Path(configured).expanduser())
+    return homes
+
+
+def _manifest_name(text):
+    """The top-level ``name`` of a plugin.yaml; raises when it is not provable.
+
+    A plain scalar may carry a ``# comment``; a quoted one ends at its quote.
+    A quoted value with an escape (``\\`` in double quotes, ``''`` in single
+    quotes) is not interpreted. It, no name, several, or a block/flow value
+    is unprovable, which holds conversion.
+    """
+    names = []
+    for line in text.splitlines():
+        match = _NAME_KEY.match(line)  # column 0: top level only
+        if match is None:
+            continue
+        value = match.group(1).strip()
+        if value[:1] in ('"', "'"):
+            end = value.find(value[0], 1)
+            if (end < 0 or value[end + 1:].strip()[:1] not in ('', '#')
+                    or (value[0] == "'" and value[end + 1:end + 2] == "'")
+                    or (value[0] == '"' and '\\' in value[1:end])):
+                raise ValueError('hermes_install_unprovable')
+            value = value[1:end]
+        else:
+            value = re.split(r'\s#', value, maxsplit=1)[0].strip()
+        if not value or value[0] in '|>[{&*!':
+            raise ValueError('hermes_install_unprovable')
+        names.append(value)
+    if len(names) != 1:
+        raise ValueError('hermes_install_unprovable')
+    return names[0]
+
+
+def _hermes_copies(plugin, home):
+    """Hermes plugin copies of ``plugin`` (one name, or a set of names);
+    raises when the plugin dir is unreadable."""
+    names = {plugin} if isinstance(plugin, str) else set(plugin)
+    copies = set()
+    for hermes in _hermes_homes(home):
+        plugins = hermes / 'plugins'
+        if not plugins.exists() and not plugins.is_symlink():
+            continue
+        try:
+            children = sorted(plugins.iterdir())
+        except OSError as exc:
+            raise ValueError('hermes_install_unreadable') from exc
+        for child in children:
+            if not child.is_dir():
+                continue
+            if child.name in names:
+                copies.add(str(child))
+                continue
+            manifest = child / 'plugin.yaml'
+            if not manifest.exists() and not manifest.is_symlink():
+                continue  # not a Hermes plugin directory
+            try:
+                declared = _manifest_name(manifest.read_text(encoding='utf-8'))
+            except (OSError, UnicodeError) as exc:
+                raise ValueError('hermes_install_unreadable') from exc
+            # An unprovable manifest raises ValueError: hold conversion.
+            if declared in names:
+                copies.add(str(child))
+    return copies
 
 
 def host_copies(root=None, home=None):
@@ -66,24 +147,30 @@ def host_copies(root=None, home=None):
             market, plugin = parts[0], parts[1]
     if market is None:
         raise ValueError('host_layout_unknown')
+    identities = [(market, plugin)]
+    import memvane_paths
+    if plugin == memvane_paths.PLUGIN_ID:
+        identities.append((memvane_paths.LEGACY_MARKETPLACE, memvane_paths.LEGACY_PLUGIN_ID))
     copies = {str(root)}
     record = home / '.claude' / 'plugins' / 'installed_plugins.json'
     if record.exists() or record.is_symlink():
         try:
-            rows = json.loads(record.read_text(encoding='utf-8'))['plugins'].get(
-                plugin + '@' + market, [])
+            installed = json.loads(record.read_text(encoding='utf-8'))['plugins']
+            rows = [row for market_id, plugin_id in identities
+                    for row in installed.get(plugin_id + '@' + market_id, [])]
         except (OSError, ValueError, KeyError, AttributeError, TypeError) as exc:
             raise ValueError('claude_install_record_unreadable') from exc
-        if not isinstance(rows, list):
-            raise ValueError('claude_install_record_unreadable')
         for row in rows:
             path = row.get('installPath') if isinstance(row, dict) else None
             if not isinstance(path, str):
                 raise ValueError('claude_install_record_unreadable')
             copies.add(path)
-    codex = caches['codex'] / market / plugin
-    if codex.is_dir():
-        copies.update(str(child) for child in codex.iterdir() if child.is_dir())
+    for market_id, plugin_id in identities:
+        codex = caches['codex'] / market_id / plugin_id
+        if codex.is_dir():
+            copies.update(str(child) for child in codex.iterdir() if child.is_dir())
+    # Hermes runs the same core against the same install journals.
+    copies.update(_hermes_copies({plugin_id for _market, plugin_id in identities}, home))
     return sorted(copies)
 
 

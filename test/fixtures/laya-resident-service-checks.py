@@ -601,11 +601,16 @@ class ProofChecks(unittest.TestCase):
         import laya_install_journal as journal
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         proof = {'providerManifest': manifest}
-        with patch.object(journal, 'verify_worker_attestation', return_value=manifest) as verify:
-            svc.default_attest({}, proof, 'selected')
-            svc.default_attest({}, proof, 'preview')
-            svc.default_attest({}, proof, 'read_only')
+        decision = {'journalPath': '/tmp/x/install-journal.sqlite'}
+        with patch.object(journal, 'verify_worker_attestation', return_value=manifest) as verify, \
+                patch.object(journal, 'verify_preview_worker_attestation',
+                             return_value=manifest) as preview:
+            svc.default_attest(decision, proof, 'selected')
+            svc.default_attest(decision, proof, 'preview')
+            svc.default_attest(decision, proof, 'read_only')
         self.assertEqual(verify.call_count, 1)
+        # A pending build's worker start re-hashes its runtime files too.
+        self.assertEqual(preview.call_args.args, (decision['journalPath'], manifest))
         with patch.object(journal, 'verify_worker_attestation', return_value={**manifest, 'x': 1}):
             with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
                 svc.default_attest({}, proof, 'selected')

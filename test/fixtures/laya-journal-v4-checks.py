@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -211,6 +212,11 @@ class Conversion(V3Selected):
 class HostGate(V3Selected):
     def setUp(self):
         super().setUp()
+        # Each test names its own Hermes home; never the session's.
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('HERMES_HOME', None)
         self.cache = self.home / '.claude' / 'plugins' / 'cache' / 'mkt' / 'qmd-auto-context'
         self.claude = self.copy(self.cache / '0.38.0', 4)
         self.codex = self.copy(self.home / '.codex' / 'plugins' / 'cache' / 'mkt' /
@@ -250,6 +256,101 @@ class HostGate(V3Selected):
     def copy_version(root, version):
         (root / 'core' / 'laya_install_journal.py').write_text(f'VERSION = {version}\n')
 
+    def test_conversion_waits_for_the_hermes_copy(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        plugins = self.home / '.hermes' / 'plugins'
+        hermes = self.copy(plugins / 'qmd-auto-context', 3)
+        self.assertIn(str(hermes), laya_journal_v4.host_copies(self.claude, self.home))
+        self.assertEqual(self.convert(), {'status': 'journal_v4_waiting',
+                                          'reason': 'journal_v4_waiting_hosts'})
+        self.assertEqual(stored(self.journal)[0], 3)
+        # A renamed directory is still found by the name its plugin.yaml declares.
+        renamed = plugins / 'laya-memory'
+        shutil.move(str(hermes), str(renamed))
+        (renamed / 'plugin.yaml').write_text('name: qmd-auto-context\nversion: "0.39.0"\n')
+        self.assertEqual(self.convert()['reason'], 'journal_v4_waiting_hosts')
+        # An unreadable Hermes plugin directory cannot be proven: hold.
+        plugins.chmod(0)
+        try:
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unreadable'))
+        finally:
+            plugins.chmod(0o755)
+        # A comment after the name, and an unprovable manifest that holds.
+        (renamed / 'plugin.yaml').write_text('name: qmd-auto-context # renamed copy\n')
+        self.assertEqual(self.convert()['reason'], 'journal_v4_waiting_hosts')
+        other = plugins / 'other-plugin'
+        other.mkdir()
+        for unprovable in ('version: 1\n', 'name: |\n  qmd-auto-context\n'):
+            (other / 'plugin.yaml').write_text(unprovable)
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unprovable'))
+        (other / 'plugin.yaml').write_bytes(b'name: \xff\n')
+        self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                         (False, 'hermes_install_unreadable'))
+        self.copy_version(renamed, 4)
+        # Quoted escapes are not interpreted: a v3 copy whose name is spelled
+        # with one (it may be this plugin) holds instead of being skipped.
+        self.copy(other, 3)
+        for escaped in ('name: "qmd\\x2dauto-context"\n', "name: 'qmd''auto'\n"):
+            (other / 'plugin.yaml').write_text(escaped)
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unprovable'))
+            self.assertEqual(stored(self.journal)[0], 3)
+        (other / 'plugin.yaml').write_text('name: "other-plugin"  # unrelated\n')
+        self.assertEqual(self.convert()['status'], 'journal_v4_converted')
+        self.assertEqual(stored(self.journal)[0], 4)
+
+    def test_memvane_waits_for_every_copy_of_the_earlier_plugin_id(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        claude = self.home / '.claude' / 'plugins' / 'cache'
+        codex = self.home / '.codex' / 'plugins' / 'cache'
+        memvane = self.copy(claude / 'memvane-marketplace' / 'memvane' / '0.41.0', 4)
+        record = self.home / '.claude' / 'plugins' / 'installed_plugins.json'
+        old_claude = self.copy(claude / 'qmd-auto-context-marketplace' /
+                               'qmd-auto-context' / '0.38.0', 3)
+        record.write_text(json.dumps({'version': 2, 'plugins': {
+            'memvane@memvane-marketplace': [{'installPath': str(memvane)}],
+            'qmd-auto-context@qmd-auto-context-marketplace': [
+                {'installPath': str(old_claude)}]}}))
+        old_codex = self.copy(codex / 'qmd-auto-context-marketplace' /
+                              'qmd-auto-context' / '0.38.0', 3)
+        old_hermes = self.copy(self.home / '.hermes' / 'plugins' / 'qmd-auto-context', 3)
+        copies = laya_journal_v4.host_copies(memvane, self.home)
+        for copy in (memvane, old_claude, old_codex, old_hermes):
+            self.assertIn(str(copy), copies)
+        self.assertNotIn(str(self.codex), copies)  # another marketplace ('mkt')
+        convert = lambda: laya_journal_v4.convert_install(self.state, self.project,
+                                                          root=memvane, home=self.home)
+        for copy in (old_claude, old_codex, old_hermes):
+            self.assertEqual(convert(), {'status': 'journal_v4_waiting',
+                                         'reason': 'journal_v4_waiting_hosts'})
+            self.assertEqual(stored(self.journal)[0], 3)
+            self.copy_version(copy, 4)
+        self.assertEqual(convert()['status'], 'journal_v4_converted')
+        self.assertEqual(stored(self.journal)[0], 4)
+
+    def test_conversion_waits_for_a_copy_under_a_custom_hermes_home(self):
+        import laya_journal_v4
+        self.copy_version(self.codex, 4)
+        custom = self.home / 'hermes-elsewhere'
+        hermes = self.copy(custom / 'plugins' / 'qmd-auto-context', 3)
+        os.environ['HERMES_HOME'] = str(custom)
+        self.assertIn(str(hermes), laya_journal_v4.host_copies(self.claude, self.home))
+        self.assertEqual(self.convert(), {'status': 'journal_v4_waiting',
+                                          'reason': 'journal_v4_waiting_hosts'})
+        self.assertEqual(stored(self.journal)[0], 3)
+        # The detached upgrade worker that converts journals keeps it too.
+        spawned = []
+        with mock.patch.object(auto.subprocess, 'Popen',
+                               side_effect=lambda argv, **kw: spawned.append(kw['env'])):
+            auto._spawn(self.project)
+        self.assertEqual(spawned[0].get('HERMES_HOME'), str(custom))
+        self.copy_version(hermes, 4)
+        self.assertEqual(self.convert()['status'], 'journal_v4_converted')
+
     def test_busy_install_lock_defers_without_converting(self):
         import laya_journal_v4
         from laya_product_install import _install_lock
@@ -283,6 +384,59 @@ class HostGate(V3Selected):
                                       'journal_v4_conversion')])
 
 
+class SchemaSnapshot(V3Selected):
+    def test_schema_version_reads_one_snapshot_while_conversion_commits(self):
+        journal = Path(self.journal)
+        outcome = []
+
+        def convert():
+            try:
+                outcome.append(J.convert_to_v4(journal)['status'])
+            except Exception as exc:  # noqa: BLE001 - asserted below
+                outcome.append(exc)
+
+        class Rows:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+        class Racing:
+            """Runs a whole v3->v4 conversion between the two schema reads."""
+
+            def __init__(self, db):
+                self.db, self.thread = db, None
+
+            @property
+            def in_transaction(self):
+                return self.db.in_transaction
+
+            def execute(self, sql, *args):
+                cursor = self.db.execute(sql, *args)
+                if sql == 'PRAGMA user_version' and self.thread is None:
+                    rows = cursor.fetchall()
+                    self.thread = threading.Thread(target=convert)
+                    self.thread.start()
+                    self.thread.join(1.0)  # a reader holding its snapshot blocks COMMIT
+                    return Rows(rows)
+                return cursor
+
+            def commit(self):
+                self.db.commit()
+
+            def rollback(self):
+                self.db.rollback()
+        with closing(sqlite3.connect(journal.as_uri() + '?mode=ro', uri=True, timeout=2,
+                                     isolation_level=None)) as db:
+            racing = Racing(db)
+            version = J._schema_version(racing)
+            racing.thread.join(10)
+        self.assertEqual(version, 3, 'v3 user_version paired with v4 table SQL')
+        self.assertEqual(outcome, ['journal_v4_converted'])
+        self.assertEqual(J.journal_version(journal), 4)
+
+
 class NewJournals(SelectedProject):
     def test_new_journal_is_v4_and_needs_no_qmd_roots(self):
         version, sql, columns = stored(self.journal)
@@ -296,8 +450,39 @@ def sha_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def seal_generation(tree, home):
+    """Seal ``tree`` as a Laya runtime generation under ``home``; returns its path.
+
+    Same bytes give the same content-addressed name under any home.
+    """
+    import laya_embed_runtime as R
+    rows = []
+    for path in sorted(p for p in tree.rglob('*') if p.is_file()):
+        executable = bool(path.stat().st_mode & 0o100)
+        rows.append([path.relative_to(tree).as_posix(), sha_file(path),
+                     path.stat().st_size, executable])
+    manifest = {'schema': R.SCHEMA, 'runtimeId': R.RUNTIME_ID, 'node': R.NODE,
+                'moduleEntry': 'node_modules/node-llama-cpp/dist/index.js',
+                'nativePackage': 'node_modules/@node-llama-cpp/mac-arm64-metal',
+                'model': R.MODEL, 'files': rows}
+    raw = R._canonical(manifest)
+    (tree / R.MANIFEST).write_bytes(raw)
+    (tree / R.MANIFEST).chmod(0o600)
+    generations = home / '.local' / 'state' / 'laya' / 'embed-runtime' / 'generations'
+    generations.mkdir(parents=True, exist_ok=True)
+    for path in (generations, *[d for d in tree.rglob('*') if d.is_dir()], tree):
+        path.chmod(0o700)
+    target = generations / ('g-' + hashlib.sha256(raw).hexdigest()[:32])
+    os.rename(tree, target)
+    return target
+
+
 class ReproofBase(unittest.TestCase):
-    """Real files, the real validator and the frozen provider's manifest check."""
+    """Real files, the real validator and the frozen provider's manifest check.
+
+    The old provider runs from a sealed Laya runtime generation, the shape of
+    every existing install; ``moved`` puts the same bytes under another home.
+    """
 
     def setUp(self):
         from laya_index_vector import profile_identity
@@ -313,7 +498,7 @@ class ReproofBase(unittest.TestCase):
         self.state = self.base / 'state'
         (self.state / 'runtime').mkdir(parents=True, mode=0o700)
         self.state.chmod(0o700)
-        self.old = self.base / 'qmd-pkg'
+        self.old = self.base / 'staging'
         self.files = {'node': 'bin/node', 'module': 'node_modules/node-llama-cpp/dist/index.js',
                       'model': 'models/embeddinggemma-300M-Q8_0.gguf'}
         for key, rel in self.files.items():
@@ -323,7 +508,9 @@ class ReproofBase(unittest.TestCase):
         native.mkdir(parents=True)
         (native / 'llama-addon.node').write_bytes(b'addon' * 100)
         (native / 'libggml.dylib').write_bytes(b'ggml' * 100)
-        self.native = native
+        relative = native.relative_to(self.old)
+        self.old = seal_generation(self.old, self.base / 'h1')
+        native = self.native = self.old / relative
         closure = self.closure(native)
         closure_sha = hashlib.sha256(bundle._canonical(closure)).hexdigest()
         provider_sha = sha_file(self.root / 'core' / 'laya_local_embed_provider.py')
@@ -406,12 +593,23 @@ class ReproofBase(unittest.TestCase):
                 attestation['vectorProfile'], proof, attestation)
 
     def moved(self):
-        """Same bytes under a laya-owned runtime dir and a per-user service socket."""
-        new = self.base / 'laya-runtime'
+        """Same bytes in another home's generation and a per-user service socket."""
+        generations = self.base / 'h2' / '.local' / 'state' / 'laya' / 'embed-runtime'
+        new = generations / 'generations' / self.old.name
+        new.parent.mkdir(parents=True)
+        new.parent.chmod(0o700)
         shutil.copytree(self.old, new)
         service = self.base / 'service'
         service.mkdir(mode=0o700)
         return new, self.closure(new / self.native.relative_to(self.old)), service / 'laya.sock'
+
+    def unpinned(self):
+        """The same bytes outside any Laya generation (a QMD-era runtime tree)."""
+        plain = self.base / 'qmd-pkg'
+        shutil.copytree(self.old, plain)
+        (plain / 'runtime.json').unlink()
+        return self.attestation(plain, self.closure(plain / self.native.relative_to(self.old)),
+                                self.state / 'runtime' / 'laya-embed.sock')
 
 
 class ProviderReproof(ReproofBase):
@@ -476,6 +674,18 @@ class ProviderReproof(ReproofBase):
         self.assertFalse(auto.provider_equivalent(
             self.old_att, self.review(new, tampered, socket), self.root))
 
+    def test_unpinned_old_runtime_is_never_equivalent_automatically(self):
+        from laya_provider_reproof import reattest
+        unpinned = self.unpinned()
+        self.validate(unpinned)
+        new, closure, socket = self.moved()
+        review = self.review(new, closure, socket)
+        # Same hashed entries, but nothing records the old JS files: rebuild.
+        self.assertIsNone(reattest(unpinned, review['reviewedProvider']))
+        self.assertFalse(auto.provider_equivalent(unpinned, review, self.root))
+        # Pinned to a generation (every real install), the same move is equivalent.
+        self.assertTrue(auto.provider_equivalent(self.old_att, review, self.root))
+
     def test_validator_refuses_a_profile_closure_that_is_not_the_same_files(self):
         from laya_provider_reproof import attestation_record, reattest
         new, closure, socket = self.moved()
@@ -494,7 +704,7 @@ class ProviderReproof(ReproofBase):
 
 
 class WorkerReproof(ReproofBase):
-    def run_worker(self, review):
+    def run_worker(self, review, attestation=None):
         import laya_active_upgrade
         import laya_product_install as product
         state = self.base / 'worker-state'
@@ -514,7 +724,8 @@ class WorkerReproof(ReproofBase):
              mock.patch.object(auto, 'select_source',
                                return_value=(self.base / 'source', '2' * 40)), \
              mock.patch.object(auto, '_not_older'), \
-             mock.patch.object(auto, '_read_attestation', return_value=self.old_att), \
+             mock.patch.object(auto, '_read_attestation',
+                               return_value=attestation or self.old_att), \
              mock.patch.object(auto, '_ensure_embed_runtime'), \
              mock.patch.object(product, 'review_local_provider', return_value=review), \
              mock.patch.object(product, '_request_build_wake',
@@ -533,6 +744,14 @@ class WorkerReproof(ReproofBase):
         results, calls, _state = self.run_worker(self.review(new, closure, socket))
         self.assertEqual(results[0]['status'], 'active_upgrade_complete', results)
         self.assertEqual(len(calls), 1)
+
+    def test_worker_refuses_an_unpinned_runtime_before_copying_it(self):
+        new, closure, socket = self.moved()
+        results, calls, state = self.run_worker(self.review(new, closure, socket),
+                                                attestation=self.unpinned())
+        self.assertEqual(results[0], {'stateRoot': str(state), 'status': 'refused',
+                                      'reason': 'provider_changed_rebuild_required'})
+        self.assertEqual(calls, [])
 
     def test_worker_refuses_a_changed_model_as_rebuild_required(self):
         new, closure, socket = self.moved()

@@ -285,6 +285,13 @@ class FreshBoundCase(BUILD['BuildCase']):
 class UpgradeCase(FreshBoundCase):
     def setUp(self):
         super().setUp()
+        # Runtime file pinning has its own checks (laya-embed-runtime,
+        # laya-journal-v4). These synthetic manifests name no Laya runtime
+        # generation, so each reads as one pinned generation here.
+        pinned = mock.patch('laya_embed_runtime.sealed_files_sha256',
+                            new=lambda _path: 'f' * 64)
+        pinned.start()
+        self.addCleanup(pinned.stop)
         self.old_root = str(self.home / 'claude-cache' / 'old')
         self.new_root = str(self.home / 'claude-cache' / 'new')
         self.old = proof(self.old_root, OLD_COMMIT)

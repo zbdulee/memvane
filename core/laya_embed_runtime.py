@@ -31,6 +31,12 @@ Sources:
   pinned lock in ``locks/laya-embed-runtime``, and the GGUF from a local file
   or its pinned URL, accepted only with ``MODEL_SHA256``.
 
+Every executed file is part of the provider's identity, not only the
+entries the attestation hashes (node, module entry, native closure, model):
+``runtimeFilesSha256`` is the digest of the sealed ``files`` rows (relative
+path, sha256, size, exec bit), so the same bytes give the same digest at any
+location. Equivalence, re-attestation and a worker start compare it.
+
 ``collect`` removes generations that are neither active, previous, nor named
 by an install attestation.
 
@@ -67,6 +73,7 @@ MODEL = 'models/' + MODEL_NAME
 MODEL_SHA256 = 'f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc'
 NATIVE_SUFFIXES = ('.node', '.dylib', '.so')
 MANIFEST = 'runtime.json'
+FILES_SHA = 'runtimeFilesSha256'
 ACTIVE = 'active.json'
 PREVIOUS = 'previous.json'
 GENERATION = re.compile(r'g-[0-9a-f]{32}\Z')
@@ -263,6 +270,79 @@ def _verify_generation(generation):
     return manifest
 
 
+def files_sha256(manifest):
+    """Digest of every sealed file row; independent of the generation's location."""
+    return hashlib.sha256(_canonical(manifest['files'])).hexdigest()
+
+
+def generation_of(path):
+    """The Laya runtime generation directory a file path lies in, or None.
+
+    Structural: ``.../embed-runtime/generations/g-<id>/<file>``. Any HOME.
+    """
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return None
+    parts = Path(path).parts
+    for index in range(len(parts) - 1, 1, -1):
+        if (GENERATION.fullmatch(parts[index]) and parts[index - 1] == 'generations'
+                and parts[index - 2] == 'embed-runtime' and index < len(parts) - 1):
+            return Path(*parts[:index + 1])
+    return None
+
+
+def _sealed_manifest(generation):
+    """A generation's runtime.json, checked against its content-addressed name."""
+    try:
+        _owner_dir(generation.parent)
+        _owner_dir(generation)
+        manifest, raw = _read_json(generation / MANIFEST, 16 * 1024 * 1024)
+    except OSError as exc:
+        raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
+    if (not _manifest_valid(manifest) or
+            generation.name != 'g-' + hashlib.sha256(raw).hexdigest()[:32] or
+            raw != _canonical(manifest)):
+        _fail('laya_embed_runtime_corrupt')
+    return manifest
+
+
+def sealed_files_sha256(path):
+    """``runtimeFilesSha256`` of the generation holding ``path``; None when not one.
+
+    Reads only the sealed runtime.json (cheap); ``verify_attested_files``
+    re-hashes the files themselves.
+    """
+    generation = generation_of(path)
+    if generation is None:
+        return None
+    return files_sha256(_sealed_manifest(generation))
+
+
+def verify_attested_files(manifest, expected=None):
+    """Full re-hash of every file a provider manifest executes, before a start.
+
+    The node, module entry and model must lie in one sealed Laya generation;
+    every file in it is re-hashed against runtime.json, whose digest must
+    equal ``expected`` when the attestation sealed one. A runtime outside a
+    Laya generation cannot prove its JS dependencies and is refused.
+    """
+    if not isinstance(manifest, dict):
+        _fail('laya_embed_runtime_unowned')
+    generation = generation_of(manifest.get('moduleEntryPath'))
+    if (generation is None or
+            any(generation_of(manifest.get(key)) != generation
+                for key in ('nodePath', 'modelPath'))):
+        _fail('laya_embed_runtime_unowned')
+    try:
+        _owner_dir(generation.parent)
+        sealed = _verify_generation(generation)
+    except OSError as exc:
+        raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
+    digest = files_sha256(sealed)
+    if expected is not None and digest != expected:
+        _fail('laya_embed_runtime_mismatch')
+    return digest
+
+
 def _described(generation, manifest):
     by_name = {row[0]: row for row in manifest['files']}
     native = sorted(row for row in manifest['files']
@@ -276,6 +356,7 @@ def _described(generation, manifest):
             'modulePackage': str((generation / manifest['moduleEntry']).parents[1]),
             'nativePackage': str(generation / manifest['nativePackage']),
             'modelPath': str(generation / MODEL), 'modelSha256': by_name[MODEL][1],
+            FILES_SHA: files_sha256(manifest),
             'dependencyClosure': [{'path': str(generation / row[0]), 'sha256': row[1],
                                    'bytes': row[2]} for row in native]}
 
@@ -301,7 +382,13 @@ def _activate(runtime, name):
     """Point ``active.json`` at ``name``; the replaced one becomes ``previous.json``.
 
     ``active.json`` keeps its exact two-key shape, which older bundles verify.
+    The pointer names a generation only once its directory entries and its
+    own name in ``generations/`` are durable, on every path (new, reused after
+    an interrupted publish, or re-selected).
     """
+    generations = runtime / 'generations'
+    _fsync_tree(generations / name)
+    _fsync_dir(generations)
     try:
         current = _pointer(runtime / ACTIVE, missing_ok=True)
     except RuntimeUnavailable:
@@ -470,6 +557,23 @@ def _remove_staging(path):
         shutil.rmtree(path)
 
 
+def _fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_tree(path):
+    """fsync every directory of a renamed tree (files were fsynced on copy)."""
+    for directory, dirs, _files in os.walk(path, topdown=False, followlinks=False):
+        for name in dirs:
+            if (Path(directory) / name).is_symlink():
+                _fail('laya_embed_runtime_source_unsafe')
+        _fsync_dir(directory)
+
+
 def _write_private(path, raw):
     tmp = path.with_name('.' + path.name + '.' + uuid.uuid4().hex)
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0),
@@ -574,14 +678,23 @@ def _check_expected(described, expect):
         from laya_product_bundle import closure_layout
         if closure_layout(expect['closure']) != closure_layout(described['dependencyClosure']):
             _fail('laya_embed_runtime_source_changed')
+    if expect.get('files') is not None and described[FILES_SHA] != expect['files']:
+        _fail('laya_embed_runtime_source_changed')
 
 
-def matches(runtime, manifest, closure):
-    """True when ``runtime`` holds the same bytes an attestation names."""
+def matches(runtime, manifest, closure, files=None):
+    """True when ``runtime`` holds the same bytes an attestation names.
+
+    ``files`` is the attestation's ``runtimeFilesSha256`` (sealed, or derived
+    from the generation it names); without it only a legacy attestation
+    outside a Laya runtime compares by its hashed entries alone.
+    """
     if not isinstance(runtime, dict) or not isinstance(manifest, dict):
         return False
     if any(runtime.get(key) != manifest.get(key) for key in
            ('nodeSha256', 'moduleEntrySha256', 'modelSha256', 'runtimeId')):
+        return False
+    if files is not None and runtime.get(FILES_SHA) != files:
         return False
     from laya_product_bundle import closure_layout
     try:
@@ -607,34 +720,54 @@ def provision_from_attestation(attestation, home=None):
                       expect={'node': manifest.get('nodeSha256'),
                               'moduleEntry': manifest.get('moduleEntrySha256'),
                               'model': manifest.get('modelSha256'),
-                              'closure': closure},
+                              'closure': closure,
+                              'files': attestation.get(FILES_SHA)},
                       home=home)
+
+
+def attested_files(attestation):
+    """The runtime file digest an attestation pins, or None for a legacy one.
+
+    Sealed in the attestation, else derived from the Laya generation its
+    module entry lies in (that generation's name addresses every file).
+    """
+    manifest = attestation.get('providerManifest') if isinstance(attestation, dict) else None
+    sealed = attestation.get(FILES_SHA) if isinstance(attestation, dict) else None
+    if sealed is not None:
+        if not isinstance(sealed, str) or not SHA.fullmatch(sealed):
+            _fail('laya_embed_runtime_mismatch')
+        return sealed
+    if not isinstance(manifest, dict):
+        return None
+    return sealed_files_sha256(manifest.get('moduleEntryPath'))
 
 
 def ensure_for_attestation(attestation, home=None):
     """The active runtime when it already holds the attested bytes; else copy them."""
     manifest = attestation.get('providerManifest') if isinstance(attestation, dict) else None
     closure = attestation.get('dependencyClosure') if isinstance(attestation, dict) else None
+    owned = _owned_generation(manifest, home)
+    files = attested_files(attestation) if owned is not None else (
+        attestation.get(FILES_SHA) if isinstance(attestation, dict) else None)
     try:
         current = select(home)
     except RuntimeUnavailable as exc:
         if str(exc) not in ('laya_embed_runtime_missing', 'laya_embed_runtime_corrupt'):
             raise
         current = None
-    if current is not None and matches(current, manifest, closure):
+    if current is not None and matches(current, manifest, closure, files):
         return current
-    owned = _owned_generation(manifest, home)
     if owned is not None:
         # Already a Laya runtime: re-select that sealed generation after a
         # full check. Never copy out of it, or a changed dependency file that
         # the attestation does not hash would be sealed into a new generation.
-        return _reactivate(owned, manifest, closure, home)
+        return _reactivate(owned, manifest, closure, home, files)
     legacy = _legacy_generation(manifest, home)
     if legacy is not None:
         # A runtime generation under the pre-rename state base: the same rule
         # holds. Only a fully verified generation is copied, file for file,
         # and the copy must reproduce its sealed manifest exactly.
-        return _adopt_legacy(legacy, manifest, closure, home)
+        return _adopt_legacy(legacy, manifest, closure, home, attested_files(attestation))
     try:
         return provision_from_attestation(attestation, home)
     except RuntimeUnavailable as exc:
@@ -676,7 +809,7 @@ def _legacy_generation(manifest, home):
     return generations / relative.parts[0]
 
 
-def _adopt_legacy(source, manifest, closure, home):
+def _adopt_legacy(source, manifest, closure, home, files=None):
     """Copy one verified pre-rename generation into the runtime, byte for byte.
 
     The source is re-hashed in full (every file of its sealed manifest, no
@@ -690,7 +823,7 @@ def _adopt_legacy(source, manifest, closure, home):
         raise RuntimeUnavailable('laya_embed_runtime_source_unavailable') from exc
     except OSError as exc:
         raise RuntimeUnavailable('laya_embed_runtime_source_unsafe') from exc
-    if not matches(_described(source, sealed), manifest, closure):
+    if not matches(_described(source, sealed), manifest, closure, files):
         _fail('laya_embed_runtime_mismatch')
     raw = _canonical(sealed)
     runtime = _runtime_root(home, create=True)
@@ -735,7 +868,7 @@ def _adopt_legacy(source, manifest, closure, home):
     return select(home)
 
 
-def _reactivate(generation, manifest, closure, home):
+def _reactivate(generation, manifest, closure, home, files=None):
     runtime = _runtime_root(home)
     with _lock(runtime):
         try:
@@ -743,7 +876,7 @@ def _reactivate(generation, manifest, closure, home):
             described = _described(generation, _verify_generation(generation))
         except OSError as exc:
             raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
-        if not matches(described, manifest, closure):
+        if not matches(described, manifest, closure, files):
             _fail('laya_embed_runtime_mismatch')
         _activate(runtime, generation.name)
     return select(home)

@@ -480,4 +480,11 @@ from injected analytical tests; the shared OS reporter always attaches it.
   (network: npm registry and model host); `index-runtime-status` re-hashes the
   active generation, and `gc-index-runtime [--approve-index-runtime-gc]`
   removes generations that are neither active, previous, nor named by an
-  install attestation.
+  install attestation. `runtimeFilesSha256` is the digest of a generation's
+  sealed file rows (every executed file, JS dependencies included). An
+  attestation seals it at install or re-attestation; equivalence and
+  re-attestation compare it (an attestation without the field uses the
+  digest of the generation it names), and a worker start re-hashes every
+  file of that generation first. A new generation becomes durable (its
+  directories and its entry in `generations/` fsynced) before `active.json`
+  names it.
