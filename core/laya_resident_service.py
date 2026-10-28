@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import socket
 import stat
@@ -50,9 +51,10 @@ QUERY_SLOTS = 3
 DOCUMENT_SLOTS = 3          # QUERY_SLOTS + DOCUMENT_SLOTS stays below the worker's 7
 # Client connections handled at once, across every project listener. At the
 # cap the service stops accepting: further peers wait in the listen backlog
-# (LISTEN_BACKLOG per project), and a full backlog refuses at connect. The
-# frozen provider reads a refusal or its own timeout as provider_unavailable,
-# so a query falls back to lexical results.
+# (LISTEN_BACKLOG per project). A full backlog refuses at connect on macOS;
+# on Linux the connect waits for the client's own timeout. The frozen
+# provider reads either as provider_unavailable, so a query falls back to
+# lexical results.
 MAX_CONNECTIONS = 16
 LISTEN_BACKLOG = 8
 READ_SECONDS = 10           # whole request read, from accept (5.1MB over a local socket)
@@ -1203,7 +1205,15 @@ class Service:
 
     def _accept_loop(self, binding):
         while not binding.closed and not self.stopped.is_set():
-            # The cap is taken before accept, so nothing is read past it.
+            # An idle listener holds no slot: wait for a pending peer first.
+            try:
+                readable, _, _ = select.select([binding.listener], [], [], .2)
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            # The cap is taken before accept, so nothing is read past it; at
+            # the cap the peer stays in the kernel backlog.
             if not self.connections.acquire(timeout=.2):
                 continue
             try:

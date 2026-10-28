@@ -44,8 +44,9 @@ development execution guard is separate; see
   full attestation; a read-only proof (bundle drift) only attaches to a
   running worker. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
-  backlog of 8, and a full backlog refuses the connect, which the provider
-  reads as `provider_unavailable` (lexical results). A request is read within
+  backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
+  connect waits for the client's own timeout), which the provider reads as
+  `provider_unavailable` (lexical results). An idle listener holds no slot. A request is read within
   10 seconds of accept and answered within 15 (query) or 320 (document). A
   worker no binding uses and no request is using stops after 60 seconds. A refusal records `resource_deferred` (not an attempt)
   for each waiting installation and the service retries the load itself

@@ -643,6 +643,22 @@ class ServiceBoundsChecks(Fixture):
                                    if t.name == 'laya-service-client'])
             self.assertEqual(len(embed(manifest)), DIM)
 
+    def test_idle_listeners_hold_no_connection_slot(self):
+        manifests = []
+        for name in ('alpha', 'beta', 'gamma', 'delta'):
+            project, manifest = self.project(name)
+            svc.register(project, root=self.root)
+            manifests.append(manifest)
+        with patch.object(svc, 'MAX_CONNECTIONS', 4, create=True):
+            service = self.service()
+            for manifest in manifests:
+                self.wait(lambda m=manifest: self.ready(m))
+            free = []
+            for _ in range(10):
+                free.append(service.connections._value)
+                time.sleep(.05)
+        self.assertEqual(free, [4] * 10, 'idle accept loops took connection slots')
+
     def test_slow_sender_is_cut_at_one_absolute_read_deadline(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)
