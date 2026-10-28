@@ -37,7 +37,7 @@ V4 = 4
 WAITING = 'journal_v4_waiting_hosts'
 BUSY = 'journal_v4_install_busy'
 _VERSION_LINE = re.compile(r'^VERSION = (\d+)\s*$', re.MULTILINE)
-_NAME_LINE = re.compile(r'^name:\s*["\']?([A-Za-z0-9._-]+)["\']?\s*$', re.MULTILINE)
+_NAME_KEY = re.compile(r'name\s*:(.*)\Z')
 
 
 def _executing_root():
@@ -63,6 +63,33 @@ def _hermes_homes(home, explicit):
     return homes
 
 
+def _manifest_name(text):
+    """The top-level ``name`` of a plugin.yaml; raises when it is not provable.
+
+    A plain scalar may carry a ``# comment``; a quoted one ends at its quote.
+    No name, several, or a block/flow value is unprovable.
+    """
+    names = []
+    for line in text.splitlines():
+        match = _NAME_KEY.match(line)  # column 0: top level only
+        if match is None:
+            continue
+        value = match.group(1).strip()
+        if value[:1] in ('"', "'"):
+            end = value.find(value[0], 1)
+            if end < 0 or value[end + 1:].strip()[:1] not in ('', '#'):
+                raise ValueError('hermes_install_unprovable')
+            value = value[1:end]
+        else:
+            value = re.split(r'\s#', value, maxsplit=1)[0].strip()
+        if not value or value[0] in '|>[{&*!':
+            raise ValueError('hermes_install_unprovable')
+        names.append(value)
+    if len(names) != 1:
+        raise ValueError('hermes_install_unprovable')
+    return names[0]
+
+
 def _hermes_copies(plugin, home, explicit):
     """Hermes plugin copies of ``plugin``; raises when the plugin dir is unreadable."""
     copies = set()
@@ -80,12 +107,15 @@ def _hermes_copies(plugin, home, explicit):
             if child.name == plugin:
                 copies.add(str(child))
                 continue
+            manifest = child / 'plugin.yaml'
+            if not manifest.exists() and not manifest.is_symlink():
+                continue  # not a Hermes plugin directory
             try:
-                declared = _NAME_LINE.findall((child / 'plugin.yaml').read_text(
-                    encoding='utf-8'))
-            except (OSError, UnicodeError):
-                continue
-            if declared[:1] == [plugin]:
+                declared = _manifest_name(manifest.read_text(encoding='utf-8'))
+            except (OSError, UnicodeError) as exc:
+                raise ValueError('hermes_install_unreadable') from exc
+            # An unprovable manifest raises ValueError: hold conversion.
+            if declared == plugin:
                 copies.add(str(child))
     return copies
 

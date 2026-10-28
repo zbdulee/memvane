@@ -380,7 +380,13 @@ def _activate(runtime, name):
     """Point ``active.json`` at ``name``; the replaced one becomes ``previous.json``.
 
     ``active.json`` keeps its exact two-key shape, which older bundles verify.
+    The pointer names a generation only once its directory entries and its
+    own name in ``generations/`` are durable, on every path (new, reused after
+    an interrupted publish, or re-selected).
     """
+    generations = runtime / 'generations'
+    _fsync_tree(generations / name)
+    _fsync_dir(generations)
     try:
         current = _pointer(runtime / ACTIVE, missing_ok=True)
     except RuntimeUnavailable:
@@ -654,10 +660,6 @@ def _seal(runtime, generations, *, node, module_entry, model, expect):
             _remove_staging(staging)
         else:
             os.rename(staging, target)
-            # The pointer may name the generation only once its directory
-            # entries (and its own name in generations/) are durable.
-            _fsync_tree(target)
-            _fsync_dir(generations)
         _activate(runtime, target.name)
     except BaseException:
         if staging.exists():

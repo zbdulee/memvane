@@ -14,12 +14,12 @@ moved closure keeps the reviewed digest in the manifest and the attestation
 carries the reviewed rows (``profileDependencyClosure``); the validator
 proves the live rows are the same files by layout and content.
 
-Every other executed file counts as content too. When the old attestation
-runs from a Laya runtime generation, its ``runtimeFilesSha256`` (sealed, or
-read from that generation's content-addressed runtime.json) must equal the
-reviewed generation's, and the result seals it. A legacy attestation outside
-a Laya runtime has no such record; the bundle worker copies its attested
-sources into a generation before review, and the result seals that digest.
+Every other executed file counts as content too. The old attestation's
+``runtimeFilesSha256`` (sealed, or read from the content-addressed
+runtime.json of the Laya generation it names) must equal the reviewed
+generation's, and the result seals it. An attestation outside a Laya
+generation has no trusted record of its JS dependencies, so it is never
+equivalent automatically: rebuild required.
 
 Any content change (model, dimension, runtime, recipe, provider, worker,
 node, module entry, native or other runtime bytes) is not equivalent:
@@ -91,9 +91,11 @@ def reattest(old_attestation, reviewed_provider):
         old_files, new_files = _runtime_files(old_attestation, new_manifest)
     except Exception:
         return None
-    if old_files is not None and new_files != old_files:
-        return None  # a changed JS dependency (or any runtime file) is new content
-    files = {RUNTIME_FILES_FIELD: new_files} if new_files is not None else {}
+    if old_files is None or new_files != old_files:
+        # No trusted full-file record of what the old worker ran, or a
+        # changed JS dependency (or any runtime file): new content.
+        return None
+    files = {RUNTIME_FILES_FIELD: new_files}
     same_closure_paths = new_closure == reviewed_closure
     content_keys = [key for key in CONTENT_KEYS
                     if not (key in CLOSURE_DERIVED_KEYS and not same_closure_paths)]

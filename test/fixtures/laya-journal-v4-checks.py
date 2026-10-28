@@ -272,6 +272,19 @@ class HostGate(V3Selected):
                              (False, 'hermes_install_unreadable'))
         finally:
             plugins.chmod(0o755)
+        # A comment after the name, and an unprovable manifest that holds.
+        (renamed / 'plugin.yaml').write_text('name: qmd-auto-context # renamed copy\n')
+        self.assertEqual(self.convert()['reason'], 'journal_v4_waiting_hosts')
+        other = plugins / 'other-plugin'
+        other.mkdir()
+        for unprovable in ('version: 1\n', 'name: |\n  qmd-auto-context\n'):
+            (other / 'plugin.yaml').write_text(unprovable)
+            self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                             (False, 'hermes_install_unprovable'))
+        (other / 'plugin.yaml').write_bytes(b'name: \xff\n')
+        self.assertEqual(laya_journal_v4.hosts_ready(self.claude, self.home),
+                         (False, 'hermes_install_unreadable'))
+        (other / 'plugin.yaml').write_text('name: "other-plugin"  # unrelated\n')
         self.copy_version(renamed, 4)
         self.assertEqual(self.convert()['status'], 'journal_v4_converted')
         self.assertEqual(stored(self.journal)[0], 4)
@@ -375,8 +388,39 @@ def sha_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def seal_generation(tree, home):
+    """Seal ``tree`` as a Laya runtime generation under ``home``; returns its path.
+
+    Same bytes give the same content-addressed name under any home.
+    """
+    import laya_embed_runtime as R
+    rows = []
+    for path in sorted(p for p in tree.rglob('*') if p.is_file()):
+        executable = bool(path.stat().st_mode & 0o100)
+        rows.append([path.relative_to(tree).as_posix(), sha_file(path),
+                     path.stat().st_size, executable])
+    manifest = {'schema': R.SCHEMA, 'runtimeId': R.RUNTIME_ID, 'node': R.NODE,
+                'moduleEntry': 'node_modules/node-llama-cpp/dist/index.js',
+                'nativePackage': 'node_modules/@node-llama-cpp/mac-arm64-metal',
+                'model': R.MODEL, 'files': rows}
+    raw = R._canonical(manifest)
+    (tree / R.MANIFEST).write_bytes(raw)
+    (tree / R.MANIFEST).chmod(0o600)
+    generations = home / '.local' / 'state' / 'laya' / 'embed-runtime' / 'generations'
+    generations.mkdir(parents=True, exist_ok=True)
+    for path in (generations, *[d for d in tree.rglob('*') if d.is_dir()], tree):
+        path.chmod(0o700)
+    target = generations / ('g-' + hashlib.sha256(raw).hexdigest()[:32])
+    os.rename(tree, target)
+    return target
+
+
 class ReproofBase(unittest.TestCase):
-    """Real files, the real validator and the frozen provider's manifest check."""
+    """Real files, the real validator and the frozen provider's manifest check.
+
+    The old provider runs from a sealed Laya runtime generation, the shape of
+    every existing install; ``moved`` puts the same bytes under another home.
+    """
 
     def setUp(self):
         from laya_index_vector import profile_identity
@@ -392,7 +436,7 @@ class ReproofBase(unittest.TestCase):
         self.state = self.base / 'state'
         (self.state / 'runtime').mkdir(parents=True, mode=0o700)
         self.state.chmod(0o700)
-        self.old = self.base / 'qmd-pkg'
+        self.old = self.base / 'staging'
         self.files = {'node': 'bin/node', 'module': 'node_modules/node-llama-cpp/dist/index.js',
                       'model': 'models/embeddinggemma-300M-Q8_0.gguf'}
         for key, rel in self.files.items():
@@ -402,7 +446,9 @@ class ReproofBase(unittest.TestCase):
         native.mkdir(parents=True)
         (native / 'llama-addon.node').write_bytes(b'addon' * 100)
         (native / 'libggml.dylib').write_bytes(b'ggml' * 100)
-        self.native = native
+        relative = native.relative_to(self.old)
+        self.old = seal_generation(self.old, self.base / 'h1')
+        native = self.native = self.old / relative
         closure = self.closure(native)
         closure_sha = hashlib.sha256(bundle._canonical(closure)).hexdigest()
         provider_sha = sha_file(self.root / 'core' / 'laya_local_embed_provider.py')
@@ -485,12 +531,23 @@ class ReproofBase(unittest.TestCase):
                 attestation['vectorProfile'], proof, attestation)
 
     def moved(self):
-        """Same bytes under a laya-owned runtime dir and a per-user service socket."""
-        new = self.base / 'laya-runtime'
+        """Same bytes in another home's generation and a per-user service socket."""
+        generations = self.base / 'h2' / '.local' / 'state' / 'laya' / 'embed-runtime'
+        new = generations / 'generations' / self.old.name
+        new.parent.mkdir(parents=True)
+        new.parent.chmod(0o700)
         shutil.copytree(self.old, new)
         service = self.base / 'service'
         service.mkdir(mode=0o700)
         return new, self.closure(new / self.native.relative_to(self.old)), service / 'laya.sock'
+
+    def unpinned(self):
+        """The same bytes outside any Laya generation (a QMD-era runtime tree)."""
+        plain = self.base / 'qmd-pkg'
+        shutil.copytree(self.old, plain)
+        (plain / 'runtime.json').unlink()
+        return self.attestation(plain, self.closure(plain / self.native.relative_to(self.old)),
+                                self.state / 'runtime' / 'laya-embed.sock')
 
 
 class ProviderReproof(ReproofBase):
@@ -555,6 +612,18 @@ class ProviderReproof(ReproofBase):
         self.assertFalse(auto.provider_equivalent(
             self.old_att, self.review(new, tampered, socket), self.root))
 
+    def test_unpinned_old_runtime_is_never_equivalent_automatically(self):
+        from laya_provider_reproof import reattest
+        unpinned = self.unpinned()
+        self.validate(unpinned)
+        new, closure, socket = self.moved()
+        review = self.review(new, closure, socket)
+        # Same hashed entries, but nothing records the old JS files: rebuild.
+        self.assertIsNone(reattest(unpinned, review['reviewedProvider']))
+        self.assertFalse(auto.provider_equivalent(unpinned, review, self.root))
+        # Pinned to a generation (every real install), the same move is equivalent.
+        self.assertTrue(auto.provider_equivalent(self.old_att, review, self.root))
+
     def test_validator_refuses_a_profile_closure_that_is_not_the_same_files(self):
         from laya_provider_reproof import attestation_record, reattest
         new, closure, socket = self.moved()
@@ -573,7 +642,7 @@ class ProviderReproof(ReproofBase):
 
 
 class WorkerReproof(ReproofBase):
-    def run_worker(self, review):
+    def run_worker(self, review, attestation=None):
         import laya_active_upgrade
         import laya_product_install as product
         state = self.base / 'worker-state'
@@ -593,7 +662,8 @@ class WorkerReproof(ReproofBase):
              mock.patch.object(auto, 'select_source',
                                return_value=(self.base / 'source', '2' * 40)), \
              mock.patch.object(auto, '_not_older'), \
-             mock.patch.object(auto, '_read_attestation', return_value=self.old_att), \
+             mock.patch.object(auto, '_read_attestation',
+                               return_value=attestation or self.old_att), \
              mock.patch.object(auto, '_ensure_embed_runtime'), \
              mock.patch.object(product, 'review_local_provider', return_value=review), \
              mock.patch.object(product, '_request_build_wake',
@@ -612,6 +682,14 @@ class WorkerReproof(ReproofBase):
         results, calls, _state = self.run_worker(self.review(new, closure, socket))
         self.assertEqual(results[0]['status'], 'active_upgrade_complete', results)
         self.assertEqual(len(calls), 1)
+
+    def test_worker_refuses_an_unpinned_runtime_before_copying_it(self):
+        new, closure, socket = self.moved()
+        results, calls, state = self.run_worker(self.review(new, closure, socket),
+                                                attestation=self.unpinned())
+        self.assertEqual(results[0], {'stateRoot': str(state), 'status': 'refused',
+                                      'reason': 'provider_changed_rebuild_required'})
+        self.assertEqual(calls, [])
 
     def test_worker_refuses_a_changed_model_as_rebuild_required(self):
         new, closure, socket = self.moved()
