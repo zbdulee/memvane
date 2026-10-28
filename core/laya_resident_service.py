@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import socket
 import stat
@@ -48,10 +49,42 @@ REQUEST_LIMIT = 5_100_000
 RESPONSE_LIMIT = 65_000_000
 QUERY_SLOTS = 3
 DOCUMENT_SLOTS = 3          # QUERY_SLOTS + DOCUMENT_SLOTS stays below the worker's 7
-DRAIN_SECONDS = 330         # one document_chunks request may take 300s
+# Client connections handled at once, across every project listener. At the
+# cap the service stops accepting: further peers wait in the listen backlog
+# (LISTEN_BACKLOG per project). A full backlog refuses at connect on macOS;
+# on Linux the connect waits for the client's own timeout. The frozen
+# provider reads either as provider_unavailable, so a query falls back to
+# lexical results.
+MAX_CONNECTIONS = 16
+LISTEN_BACKLOG = 8
+READ_SECONDS = 10           # whole request read, from accept (5.1MB over a local socket)
+QUERY_SECONDS = 15          # a query or status request, from accept to answer
+DOCUMENT_SECONDS = 320      # a document request, from accept to answer
+RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
+# A successor waits this long for the lease, then gives up until a new request.
 SUCCESSOR_WAIT_SECONDS = 600
+# Every drain phase (in-flight requests and learning, a cold load to settle,
+# the forced-exit kill and reap) fits one budget measured from drain start,
+# strictly below the successor's wait; the margin covers stopping workers,
+# process exit and the successor's own scheduling. A legitimate cold load
+# (full runtime rehash of a few hundred MB, admission, the provider's 15 s
+# READY bound) ends far inside it. A cold load still running at the budget is
+# hung: the escape is process exit (``_force_exit``), never an in-process
+# lease release.
+DRAIN_MARGIN_SECONDS = 120
+DRAIN_BUDGET_SECONDS = SUCCESSOR_WAIT_SECONDS - DRAIN_MARGIN_SECONDS
+DRAIN_SECONDS = 330         # in-flight phase cap; one document_chunks request may take 300s
+LOAD_DRAIN_SECONDS = 5      # re-check interval while a drain waits for a cold load
+# Exit cleanup after the drain budget, on both paths: child discovery, kill
+# and reap (forced exit) or stopping every worker (normal), under one
+# deadline; a worker still stopping at the deadline is killed. The budget plus
+# this bound stays at least DRAIN_SAFETY_SECONDS below the successor's wait.
+MAX_EXIT_CLEANUP_SECONDS = 20
+MIN_EXIT_CLEANUP_SECONDS = 1  # floor under a scaled test: a reap takes milliseconds
+DRAIN_SAFETY_SECONDS = 60
+FORCED_EXIT = 'forced-exit.json'
+FORCED_EXIT_CODE = 70
 LOAD_RETRY_SECONDS = (5, 10, 20, 40, 60)
-UNBOUND_WORKER_SECONDS = 30  # a loaded worker no bound installation uses
 LEGACY_DRAIN_SECONDS = 5     # re-request a pre-rename drain while waiting
 _BUNDLE = None
 
@@ -459,45 +492,111 @@ def request_adopt(project, *, root=None, spawn=None):
 
 # ----------------------------------------------------------- legacy residents
 
-def _process_rows(uid):
+def _ps(*args):
     try:
-        shown = subprocess.run(['ps', '-ww', '-u', str(uid), '-o', 'pid=', '-o', 'command='],
-                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                               timeout=2, check=False)
+        shown = subprocess.run(['ps', *args], stdin=subprocess.DEVNULL, capture_output=True,
+                               text=True, timeout=2, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return None
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _darwin_argv(pid):
+    """(executable, argv) from ``KERN_PROCARGS2``: argc, exec path, then argv."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    argmax, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
+    if libc.sysctl((ctypes.c_int * 2)(1, 8), 2, ctypes.byref(argmax),  # KERN_ARGMAX
+                   ctypes.byref(size), None, ctypes.c_size_t(0)) != 0 or argmax.value <= 0:
+        return None
+    buffer = ctypes.create_string_buffer(argmax.value)
+    size = ctypes.c_size_t(argmax.value)
+    if libc.sysctl((ctypes.c_int * 3)(1, 49, pid), 3, buffer,  # KERN_PROCARGS2
+                   ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+        return None
+    raw = buffer.raw[:size.value]
+    if len(raw) < 4:
+        return None
+    argc = struct.unpack_from('i', raw)[0]
+    executable, _, rest = raw[4:].partition(b'\0')
+    parts = rest.lstrip(b'\0').split(b'\0')
+    if argc < 1 or len(parts) < argc:
+        return None
+    return os.fsdecode(executable), [os.fsdecode(part) for part in parts[:argc]]
+
+
+def _linux_argv(pid):
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as stream:
+            raw = stream.read(1 << 20)
+        executable = os.readlink(f'/proc/{pid}/exe')
+    except OSError:
+        return None
+    if not raw.endswith(b'\0'):
+        return None
+    return executable, [os.fsdecode(part) for part in raw[:-1].split(b'\0')]
+
+
+def _process_argv(pid):
+    """The exact (executable, argv) of one process; None when unreadable.
+
+    A ``ps`` command string joins argv with spaces, so a project path that
+    contains a space could never be told apart from extra arguments.
+    """
+    try:
+        if sys.platform == 'darwin':
+            return _darwin_argv(pid)
+        if sys.platform.startswith('linux'):
+            return _linux_argv(pid)
+    except (OSError, ValueError, AttributeError, struct.error):
+        return None
+    return None
+
+
+def _process_rows(uid):
+    shown = _ps('-u', str(uid), '-o', 'pid=')
     rows = []
-    for line in shown.stdout.splitlines():
-        pid, _, command = line.strip().partition(' ')
-        if pid.isdigit():
-            rows.append((int(pid), command.strip()))
+    for line in (shown or '').split():
+        if line.isdigit():
+            found = _process_argv(int(line))
+            if found is not None:
+                rows.append((int(line), found))
     return rows
 
 
 def _process_command(pid):
+    shown = (_ps('-o', 'uid=', '-p', str(pid)) or '').strip()
+    found = _process_argv(pid)
+    if not shown.isdigit() or found is None:
+        return None
+    return int(shown), found
+
+
+def _legacy_argv(process, project, socket_path):
+    """``<python> [flags] <root>/core/laya_embed_resident.py serve <project> <socket> <fp> <fd>``.
+
+    ``process`` is ``(executable, argv)`` with real argv boundaries; the
+    executable must be a Python interpreter.
+    """
     try:
-        shown = subprocess.run(['ps', '-ww', '-o', 'uid=', '-o', 'command=', '-p', str(pid)],
-                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                               timeout=2, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    uid, _, command = shown.stdout.strip().partition(' ')
-    if shown.returncode != 0 or not uid.isdigit():
-        return None
-    return int(uid), command.strip()
-
-
-def _legacy_argv(command, project, socket_path):
-    """``<python> -B <root>/core/laya_embed_resident.py serve <project> <socket> <fp> <fd>``."""
-    parts = command.split(' ')
-    for index, part in enumerate(parts):
-        if (part.endswith('/core/laya_embed_resident.py')
-                and parts[index + 1:index + 4] == ['serve', str(project), str(socket_path)]
-                and len(parts) == index + 6
-                and re.fullmatch(r'[0-9a-f]{64}', parts[index + 4])
-                and parts[index + 5].isdigit()):
-            return True
-    return False
+        executable, argv = process
+    except (TypeError, ValueError):
+        return False
+    if (not isinstance(executable, str) or not os.path.isabs(executable)
+            or 'python' not in os.path.basename(executable).lower()
+            or not isinstance(argv, list) or not all(isinstance(a, str) for a in argv)):
+        return False
+    scripts = [index for index, part in enumerate(argv)
+               if part.endswith('/core/laya_embed_resident.py')]
+    if len(scripts) != 1:
+        return False
+    index = scripts[0]
+    return (index >= 1 and os.path.isabs(argv[index])
+            and all(flag.startswith('-') for flag in argv[1:index])
+            and argv[index + 1:index + 4] == ['serve', str(project), str(socket_path)]
+            and len(argv) == index + 6
+            and re.fullmatch(r'[0-9a-f]{64}', argv[index + 4]) is not None
+            and argv[index + 5].isdigit())
 
 
 def retire_legacy_resident(project, socket_path, *, rows=None, inspect=None, kill=os.kill):
@@ -509,13 +608,14 @@ def retire_legacy_resident(project, socket_path, *, rows=None, inspect=None, kil
     """
     uid = os.getuid()
     rows = _process_rows(uid) if rows is None else rows
-    matches = [pid for pid, command in rows
-               if pid not in (os.getpid(), 1) and _legacy_argv(command, project, socket_path)]
+    matches = [(pid, process) for pid, process in rows
+               if pid not in (os.getpid(), 1) and _legacy_argv(process, project, socket_path)]
     if len(matches) != 1:
         return None
-    pid = matches[0]
+    pid, seen = matches[0]
     shown = (inspect or _process_command)(pid)
-    if shown is None or shown[0] != uid or not _legacy_argv(shown[1], project, socket_path):
+    if (shown is None or shown[0] != uid or shown[1] != seen
+            or not _legacy_argv(shown[1], project, socket_path)):
         return None
     with suppress(ProcessLookupError):
         kill(pid, signal.SIGTERM)
@@ -540,10 +640,18 @@ def _hold(conn, seconds=3):
     _abort(conn)
 
 
-def _read_all(conn, limit, timeout):
+def _left(deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError('laya_service_deadline')
+    return left
+
+
+def _read_all(conn, limit, deadline):
+    """Read to EOF before one absolute deadline; a slow sender cannot extend it."""
     data = bytearray()
-    conn.settimeout(timeout)
     while True:
+        conn.settimeout(_left(deadline))
         block = conn.recv(65536)
         if not block:
             return bytes(data)
@@ -563,7 +671,8 @@ class Worker:
         self.failures = 0
         self.retry_at = 0.0
         self.loading = False
-        self.unbound_since = None
+        self.inflight = 0           # reserved under the service lock with the lookup
+        self.idle_since = None
         self.slots = {'query': threading.BoundedSemaphore(QUERY_SLOTS),
                       'document': threading.BoundedSemaphore(DOCUMENT_SLOTS)}
 
@@ -571,17 +680,21 @@ class Worker:
         return (self.state == 'ready' and self.handle is not None
                 and self.handle.process.poll() is None)
 
-    def forward(self, payload, kind):
+    def forward(self, payload, kind, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic() + (QUERY_SECONDS if kind == 'query'
+                                           else DOCUMENT_SECONDS)
         slot = self.slots['query' if kind == 'query' else 'document']
-        if not slot.acquire(timeout=5 if kind == 'query' else 300):
+        if not slot.acquire(timeout=min(_left(deadline), 5 if kind == 'query' else 300)):
             raise TimeoutError('laya_service_slot_timeout')
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-                conn.settimeout(5)
+                conn.settimeout(min(_left(deadline), 5))
                 conn.connect(self.socket_path)
+                conn.settimeout(_left(deadline))
                 conn.sendall(payload)
                 conn.shutdown(socket.SHUT_WR)
-                answer = _read_all(conn, RESPONSE_LIMIT, 320)
+                answer = _read_all(conn, RESPONSE_LIMIT, deadline)
         finally:
             slot.release()
         if not answer:
@@ -605,8 +718,20 @@ class Binding:
 
 
 def _worker_key(manifest):
+    """The full vector profile a worker serves, not only the recipe fingerprint.
+
+    The fingerprint omits ``dimension``, which the worker config applies, so
+    two installs of one recipe at different dimensions never share a worker.
+    """
     from laya_embed_resident import _IDENTITY
-    return tuple(manifest[key] for key in _IDENTITY)
+    return tuple(manifest[key] for key in _IDENTITY) + tuple(
+        manifest[key] for key in ('modelId', 'dimension'))
+
+
+def _worker_socket(root, key):
+    digest = hashlib.sha256(json.dumps(list(key), sort_keys=True, default=str)
+                            .encode()).hexdigest()
+    return str(Path(root) / ('w-' + digest[:24] + '.sock'))
 
 
 def default_prove(project):
@@ -648,6 +773,94 @@ def default_attest(decision, proof, mode):
             _fail('provider_attestation_invalid')
 
 
+def _scaled(seconds):
+    """A drain/lease time constant; a test (fixture flag only) may scale all of them.
+
+    One factor for every constant keeps their ordering (budget below the
+    successor's wait) in a scaled-down test.
+    """
+    factor = os.environ.get('LAYA_SERVICE_TIME_SCALE')
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' and factor:
+        with suppress(ValueError, TypeError):
+            factor = float(factor)
+            if 0 < factor <= 1:
+                return seconds * factor
+    return seconds
+
+
+def _exit_cleanup_seconds():
+    return max(_scaled(MAX_EXIT_CLEANUP_SECONDS), MIN_EXIT_CLEANUP_SECONDS)
+
+
+def _own_children(timeout=5):
+    """Direct child PIDs of this process (the listing's own ``ps`` excluded)."""
+    try:
+        listing = subprocess.Popen(['ps', '-A', '-o', 'pid=', '-o', 'ppid='],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True)
+        out, _ = listing.communicate(timeout=max(.01, timeout))
+    except subprocess.TimeoutExpired:
+        with suppress(OSError):
+            listing.kill()
+            listing.wait(1)
+        return []
+    except OSError:
+        return []
+    me, children = os.getpid(), []
+    for line in out.splitlines():
+        parts = line.split()
+        if (len(parts) == 2 and all(part.isdigit() for part in parts)
+                and int(parts[1]) == me and int(parts[0]) != listing.pid):
+            children.append(int(parts[0]))
+    return children
+
+
+def _kill_children(deadline):
+    """SIGKILL every direct child (embed workers, a half-started one) and reap it.
+
+    Discovery, kill and reap all end by ``deadline`` (monotonic).
+    """
+    killed = []
+    for pid in _own_children(min(5, deadline - time.monotonic())):
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+    left = set(killed)
+    while left and time.monotonic() < deadline:
+        for pid in list(left):
+            try:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                done = pid  # another thread's Popen.wait reaped it
+            if done == pid:
+                left.discard(pid)
+        if left:
+            time.sleep(.05)
+    return killed, sorted(left)
+
+
+def _stop_handles(handles, deadline):
+    """Stop worker handles in parallel; kill any still stopping at ``deadline``."""
+    threads = []
+    for handle in handles:
+        thread = threading.Thread(target=_quiet_stop, args=(handle,),
+                                  name='laya-service-stop', daemon=True)
+        thread.start()
+        threads.append((handle, thread))
+    for _handle, thread in threads:
+        thread.join(max(0, deadline - time.monotonic()))
+    for handle, thread in threads:
+        if thread.is_alive():
+            with suppress(Exception):
+                handle.process.kill()
+            thread.join(max(0, deadline - time.monotonic()))
+
+
+def _quiet_stop(handle):
+    with suppress(Exception):
+        handle.stop()
+
+
 def default_admit():
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
@@ -666,7 +879,7 @@ class Service:
     def __init__(self, root, *, learning_root=None, bundle=None, prove=default_prove,
                  attest=default_attest, start_worker=default_start_worker,
                  admit=default_admit, retire=retire_legacy_resident, tick=1.0,
-                 learning=None, legacy_root=_DEFAULT):
+                 learning=None, exit=os._exit, legacy_root=_DEFAULT):
         self.root = private_root(Path(root))
         if legacy_root is _DEFAULT:
             # The account's own MemVane service also excludes a pre-rename one.
@@ -680,6 +893,7 @@ class Service:
         self.start_worker, self.admit, self.retire = start_worker, admit, retire
         self.tick_seconds = tick
         self.learning = learning
+        self.exit = exit
         self.lock = threading.RLock()
         self.workers = {}
         self.bindings = {}
@@ -690,6 +904,12 @@ class Service:
         self.stopped = threading.Event()
         self.wake = threading.Event()
         self.adopting = threading.Lock()
+        # One cold model load per service: admission measures memory before
+        # a load and the lock is the reservation held until that load ends,
+        # so loads of different profiles never pass the same check together.
+        self.cold_load = threading.Lock()
+        self.connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        self.reclaim_seconds = RECLAIM_SECONDS
         self.attested = set()
         self.lease = None
         self.control = None
@@ -697,7 +917,8 @@ class Service:
         self.threads = []
 
     # ------------------------------------------------------------ lifecycle
-    def acquire(self, *, successor_fd=None, wait=SUCCESSOR_WAIT_SECONDS):
+    def acquire(self, *, successor_fd=None, wait=None):
+        wait = _scaled(SUCCESSOR_WAIT_SECONDS) if wait is None else wait
         fd = _private_lock(self.root / LEASE)
         deadline = time.monotonic() + wait
         while True:
@@ -861,21 +1082,54 @@ class Service:
         thread.start()
 
     def _finish_drain(self):
-        deadline = time.monotonic() + DRAIN_SECONDS
+        started = time.monotonic()
+        budget_end = started + _scaled(DRAIN_BUDGET_SECONDS)
+        deadline = min(started + _scaled(DRAIN_SECONDS), budget_end)
         with self.inflight_done:
             while self.inflight and time.monotonic() < deadline:
                 self.inflight_done.wait(.2)
         while self.learning_root and time.monotonic() < deadline and self._learning_busy():
             time.sleep(.2)
+        # A cold load started before the drain finishes (and stops its model,
+        # seeing the drain) before any lease is released, so a load never
+        # overlaps the successor. There is no timeout that releases the lease
+        # early: while a loader runs, the service keeps its lease and stays
+        # draining (clients see absent sockets and serve lexical results).
+        # Holding the lock afterwards keeps any new load out.
+        while not self.cold_load.acquire(timeout=max(.01, min(
+                _scaled(LOAD_DRAIN_SECONDS), budget_end - time.monotonic()))):
+            if time.monotonic() >= budget_end:
+                self._force_exit(time.monotonic() - started)
+                return
+        cleanup_end = time.monotonic() + _exit_cleanup_seconds()
         with self.lock:
             for project in list(self.bindings):
                 self._release(project, reason='starting')
-            for worker in self.workers.values():
-                if worker.handle is not None:
-                    with suppress(Exception):
-                        worker.handle.stop()
+            handles = [worker.handle for worker in self.workers.values()
+                       if worker.handle is not None]
             self.workers.clear()
+        _stop_handles(handles, cleanup_end)
         self.stopped.set()
+
+    def _force_exit(self, waited):
+        """A hung cold load: no worker may come up, then the process exits.
+
+        Every direct child is killed and reaped first (a model that reached
+        Popen included), then the process exits, so the kernel releases the
+        lease flock and the stuck load thread dies with it. The lease is never
+        released in-process while that thread is alive.
+        """
+        killed, alive = _kill_children(time.monotonic() + _exit_cleanup_seconds())
+        with suppress(Exception):
+            _atomic_json(self.root / FORCED_EXIT, {
+                'pid': os.getpid(), 'bundle': self.bundle, 'reason': 'cold_load_hung',
+                'waitedSeconds': round(waited, 1), 'killedChildren': killed,
+                'unconfirmedChildren': alive, 'at': time.time()})
+        path = self.root / CONTROL
+        with suppress(OSError):
+            if self.control_inode is not None and os.lstat(path).st_ino == self.control_inode:
+                path.unlink()
+        self.exit(FORCED_EXIT_CODE)
 
     def _learning_busy(self):
         try:
@@ -941,50 +1195,46 @@ class Service:
                 if project in self.bindings or self.retry.get(project, 0) > now:
                     continue
             self._adopt(project)
-        self._reclaim_unbound(time.monotonic())
+        self._reclaim()
 
-    def _reclaim_unbound(self, now):
-        """Stop a loaded worker no bound installation has used for a while
-        (its last route went away, possibly while it was still loading)."""
+    def _reclaim(self):
+        """Stop a worker no binding uses and no request is using, after a grace."""
+        now = time.monotonic()
+        stopped = []
         with self.lock:
+            if self.draining.is_set():
+                return
             used = {_worker_key(binding.manifest) for binding in self.bindings.values()}
             for key, worker in list(self.workers.items()):
-                if worker.loading or key in used:
-                    worker.unbound_since = None
+                if (key in used or worker.loading or worker.inflight
+                        or worker.handle is None):
+                    worker.idle_since = None
                     continue
-                if worker.unbound_since is None:
-                    worker.unbound_since = now
-                    continue
-                if now - worker.unbound_since < UNBOUND_WORKER_SECONDS:
-                    continue
-                self.workers.pop(key, None)
-                if worker.handle is not None:
-                    with suppress(Exception):
-                        worker.handle.stop()
+                if worker.idle_since is None:
+                    worker.idle_since = now
+                if now - worker.idle_since >= self.reclaim_seconds:
+                    del self.workers[key]
+                    stopped.append(worker.handle)
+        for handle in stopped:
+            with suppress(Exception):
+                handle.stop()
 
     def _check_owned(self, project):
         with self.lock:
             binding = self.bindings.get(project)
         if binding is None:
             return
-        key = _worker_key(binding.manifest)
-        worker = self.workers.get(key)
-        still_uses_worker = False
+        worker = self.workers.get(_worker_key(binding.manifest))
         try:
             decision, proof, _mode = self.prove(project)
             from laya_embed_resident import _owner_identity
             owned = _owner_identity(decision, proof) == binding.identity
-            # A re-attested installation (same provider, new paths) keeps
-            # its shared worker; only a route this service no longer proves,
-            # or one bound to another provider, gives it up.
-            still_uses_worker = _worker_key(proof['providerManifest']) == key
         except Exception:
             owned = False
         if not owned or worker is None or not worker.alive():
             with self.lock:
                 self._release(project, reason='starting' if owned or worker is None
-                              or worker.alive() else 'worker_exited',
-                              reclaim=not owned and not still_uses_worker)
+                              or worker.alive() else 'worker_exited')
 
     def _forget(self, project):
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
@@ -1016,13 +1266,19 @@ class Service:
         except Exception:
             self._later(project, 30)
             return
-        worker = self.workers.get(key)
-        if worker is None or not worker.alive():
-            self._load(project, manifest, key)
-            return
-        owner_fd = _private_lock(path + '.resident.lock')
         seal = hashlib.sha256(json.dumps([project, identity], sort_keys=True,
                                          default=str).encode()).hexdigest()
+        worker = self.workers.get(key)
+        if worker is None or not worker.alive():
+            if mode == 'read_only':
+                # A drifted bundle only attaches to a worker that a full proof
+                # started. Changed native or JS files also read as bundle
+                # drift, so a read-only proof never starts a model process.
+                self._later(project, 5)
+                return
+            self._load(project, decision, proof, mode, manifest, key, seal)
+            return
+        owner_fd = _private_lock(path + '.resident.lock')
         attested = seal in self.attested
         try:
             fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1054,7 +1310,7 @@ class Service:
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(path)
             os.chmod(path, 0o600)
-            listener.listen(16)
+            listener.listen(LISTEN_BACKLOG)
             listener.settimeout(.2)
             binding = Binding(project, manifest, identity, mode, owner_fd, service_fd, listener)
         except Exception:
@@ -1077,17 +1333,23 @@ class Service:
             _write_state(manifest, 'ready', attempts=0)
         except Exception:
             pass
-        thread = threading.Thread(target=self._accept_loop, args=(binding,),
-                                  name='laya-service-project', daemon=True)
-        thread.start()
+        try:
+            threading.Thread(target=self._accept_loop, args=(binding,),
+                             name='laya-service-project', daemon=True).start()
+        except Exception:
+            # No listener thread: release the binding (listener, socket and
+            # leases), so a later tick adopts this installation again.
+            with self.lock:
+                if self.bindings.get(project) is binding:
+                    self._release(project, reason='starting')
+            self._later(project, 2)
 
-    def _load(self, project, manifest, key):
+    def _load(self, project, decision, proof, mode, manifest, key, seal):
         from laya_embed_resident import _write_state
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
-                name = 'w-' + manifest['embeddingFingerprint'][:16] + '.sock'
-                worker = self.workers[key] = Worker(key, str(self.root / name))
+                worker = self.workers[key] = Worker(key, _worker_socket(self.root, key))
             if worker.handle is not None and not worker.alive():
                 # The model process died: stop its handle, count one failure.
                 with suppress(Exception):
@@ -1095,18 +1357,53 @@ class Service:
                 worker.handle, worker.state = None, 'failed'
                 worker.failures += 1
                 worker.retry_at = time.monotonic() + 5
-            if (worker.loading or worker.retry_at > time.monotonic()
-                    or worker.state == 'terminal'):
+            if (self.draining.is_set() or worker.loading
+                    or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
                 return
+            if not self.cold_load.acquire(blocking=False):
+                return  # another profile is loading; a later tick retries
             worker.loading = True
-        with suppress(Exception):
-            _write_state(manifest, 'starting', attempts=min(3, worker.failures))
-        thread = threading.Thread(target=self._load_worker, args=(project, manifest, worker),
-                                  name='laya-service-load', daemon=True)
-        thread.start()
+        try:
+            with suppress(Exception):
+                _write_state(manifest, 'starting', attempts=min(3, worker.failures))
+            thread = threading.Thread(target=self._load_worker,
+                                      args=(project, decision, proof, mode, manifest,
+                                            worker, seal),
+                                      name='laya-service-load', daemon=True)
+            thread.start()
+        except BaseException:
+            with self.lock:
+                worker.loading = False
+            self.cold_load.release()
+            raise
 
-    def _load_worker(self, project, manifest, worker):
+    def _load_worker(self, project, decision, proof, mode, manifest, worker, seal):
+        try:
+            self._load_attested(project, decision, proof, mode, manifest, worker, seal)
+        finally:
+            self.cold_load.release()
+
+    def _load_attested(self, project, decision, proof, mode, manifest, worker, seal):
         from laya_embed_resident import _MAX_FAILURES, _write_state
+        try:
+            # Every new model process starts only after this installation's
+            # full attestation (model, worker, native closure, runtime files)
+            # proves again; the frozen provider's own check hashes five files.
+            self.attest(decision, proof, mode)
+        except Exception:
+            # This installation's evidence failed, not the shared worker.
+            with self.lock:
+                worker.loading = False
+            with suppress(Exception):
+                _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
+            self._later(project, 60)
+            return
+        self.attested.add(seal)
+        with self.lock:
+            if self.draining.is_set():
+                # The drain began during attestation: never start a model.
+                worker.loading = False
+                return
         reason = None
         try:
             handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
@@ -1173,10 +1470,7 @@ class Service:
             if os.lstat(path).st_ino == binding.socket_inode:
                 os.unlink(path)
 
-    def _release(self, project, *, reason, reclaim=False):
-        """Release one installation; ``reclaim`` also stops its provider worker
-        when no other bound installation uses it (the route is no longer this
-        service's, so nothing here will query that model)."""
+    def _release(self, project, *, reason):
         from laya_embed_resident import _write_state
         binding = self.bindings.pop(project, None)
         if binding is None:
@@ -1187,37 +1481,68 @@ class Service:
         for fd in (binding.service_fd, binding.owner_fd):
             with suppress(OSError):
                 os.close(fd)
-        if reclaim:
-            key = _worker_key(binding.manifest)
-            worker = self.workers.get(key)
-            if (worker is not None and not worker.loading and
-                    not any(_worker_key(other.manifest) == key
-                            for other in self.bindings.values())):
-                self.workers.pop(key, None)
-                if worker.handle is not None:
-                    with suppress(Exception):
-                        worker.handle.stop()
 
     def _accept_loop(self, binding):
+        try:
+            with selectors.DefaultSelector() as waiting:
+                waiting.register(binding.listener, selectors.EVENT_READ)
+                self._accept_until_closed(binding, waiting)
+        except Exception:
+            pass
+        if not binding.closed and not self.stopped.is_set():
+            # The listener thread failed while the binding still looked
+            # ready: release it, so the next tick adopts it again instead of
+            # every request timing out against a socket nobody accepts.
+            with self.lock:
+                if self.bindings.get(binding.project) is binding:
+                    self._release(binding.project, reason='starting')
+            self.wake.set()
+
+    def _accept_until_closed(self, binding, waiting):
         while not binding.closed and not self.stopped.is_set():
+            # An idle listener holds no slot: wait for a pending peer first.
+            # A selector, not select(): a listener fd above FD_SETSIZE is valid.
+            if not waiting.select(.2):
+                continue
+            # The cap is taken before accept, so nothing is read past it; at
+            # the cap the peer stays in the kernel backlog.
+            if not self.connections.acquire(timeout=.2):
+                continue
             try:
                 conn, _ = binding.listener.accept()
-            except (socket.timeout, TimeoutError):
+            except (socket.timeout, TimeoutError, BlockingIOError):
+                self.connections.release()
                 continue
             except OSError:
-                return
+                self.connections.release()
+                if binding.closed:
+                    return
+                raise
+            accepted = time.monotonic()
             with self.lock:
                 self.inflight += 1
-            threading.Thread(target=self._serve_client, args=(binding, conn),
-                             name='laya-service-client', daemon=True).start()
+            try:
+                threading.Thread(target=self._serve_client, args=(binding, conn, accepted),
+                                 name='laya-service-client', daemon=True).start()
+            except BaseException:
+                _abort(conn)
+                self._client_done()
+                raise
 
-    def _serve_client(self, binding, conn):
-        kind = None
+    def _client_done(self):
+        self.connections.release()
+        with self.inflight_done:
+            self.inflight -= 1
+            self.inflight_done.notify_all()
+
+    def _serve_client(self, binding, conn, accepted=None):
+        kind = reserved = None
+        accepted = time.monotonic() if accepted is None else accepted
         try:
             if not _same_owner(conn):
                 _abort(conn)
                 return
-            payload = _read_all(conn, REQUEST_LIMIT, 300)
+            payload = _read_all(conn, REQUEST_LIMIT, accepted + READ_SECONDS)
             try:
                 request = json.loads(payload.decode('utf-8'))
             except (UnicodeError, ValueError):
@@ -1227,16 +1552,23 @@ class Service:
                 return
             kind = request.get('kind')
             manifest = binding.manifest
-            worker = self.workers.get(_worker_key(manifest))
-            if worker is None or not worker.alive():
-                raise ConnectionError('laya_service_worker_unavailable')
+            with self.lock:
+                # Lookup and in-flight reservation under the lock reclaim
+                # decides under: a found worker is never reclaimed mid-request.
+                worker = self.workers.get(_worker_key(manifest))
+                if worker is None or not worker.alive():
+                    raise ConnectionError('laya_service_worker_unavailable')
+                worker.inflight += 1
+                reserved = worker
             if request == {'kind': 'status'}:
                 from laya_embed_resident import _IDENTITY
                 conn.sendall(json.dumps({**{key: manifest[key] for key in _IDENTITY},
                                          'status': 'ready'}).encode())
                 conn.close()
                 return
-            answer = worker.forward(payload, kind)
+            deadline = accepted + (QUERY_SECONDS if kind == 'query' else DOCUMENT_SECONDS)
+            answer = worker.forward(payload, kind, deadline)
+            conn.settimeout(_left(deadline))
             conn.sendall(answer)
             conn.close()
         except Exception:
@@ -1247,9 +1579,10 @@ class Service:
             else:
                 _abort(conn)
         finally:
-            with self.inflight_done:
-                self.inflight -= 1
-                self.inflight_done.notify_all()
+            if reserved is not None:
+                with self.lock:
+                    reserved.inflight -= 1
+            self._client_done()
 
 
 def _learning_host(learning_root):

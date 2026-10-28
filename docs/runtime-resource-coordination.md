@@ -34,10 +34,21 @@ development execution guard is separate; see
   `<account home>/.local/state/memvane/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
-  per provider identity through `start_owned_embed_service`; the cold load
-  passes `Coordinator.check(EMBED_POLICY)` (control lock, learning demand,
-  memory/pressure admission: under 10% free memory refuses) and never holds
-  the provider lane. A refusal records `resource_deferred` (not an attempt)
+  per vector profile (provider identity, model and dimension) through
+  `start_owned_embed_service`, one cold load at a time across the service;
+  the cold load passes `Coordinator.check(EMBED_POLICY)` (control lock,
+  learning demand, memory/pressure admission: under 10% free memory refuses)
+  and never holds the provider lane. The service-wide load lock is held from
+  that check until the worker is ready, so two loads never pass one check.
+  Every new worker start (a restart included) first proves the installation's
+  full attestation; a read-only proof (bundle drift) only attaches to a
+  running worker. Client connections are capped service-wide (16) before
+  any byte is read; at the cap the listeners stop accepting, peers wait in a
+  backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
+  connect waits for the client's own timeout), which the provider reads as
+  `provider_unavailable` (lexical results). An idle listener holds no slot. A request is read within
+  10 seconds of accept and answered within 15 (query) or 320 (document). A
+  worker no binding uses and no request is using stops after 60 seconds. A refusal records `resource_deferred` (not an attempt)
   for each waiting installation and the service retries the load itself
   after 5–60 seconds. The service adopts an installation by holding its
   `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
@@ -454,7 +465,15 @@ from injected analytical tests; the shared OS reporter always attaches it.
 - Replacement: a client from a strictly newer version asks the service to
   drain. Listeners close first (clients see an absent socket and serve lexical
   results, never exit 3), in-flight requests and the learning queue finish
-  (bounded at 330 seconds), owner leases are released with owner state
+  (bounded at 330 seconds), a cold load in progress settles, and every phase
+  fits one 480-second budget from drain start; exit cleanup (stopping
+  workers in parallel, killing any still stopping, or the forced-exit kill
+  and reap) has its own 20-second bound, so both end at least 60 seconds
+  before the successor's 600-second lease wait. A cold load still running at the budget
+  is hung: the service kills and reaps its own child processes, records
+  `service/forced-exit.json` and exits, so the kernel releases the lease; it
+  never releases the lease in-process while the load runs. Then owner leases
+  are released with owner state
   `starting` (not an attempt), then one successor holding `successor.lock`
   takes the service lease and re-adopts every registered installation. An
   older or equal version never drains a newer one (a rewrite of the same
@@ -465,9 +484,10 @@ from injected analytical tests; the shared OS reporter always attaches it.
   replaces the service under that interpreter, which is then remembered.
 - An installation still owned by a per-project resident of an earlier bundle
   is adopted after the shared worker is ready: the service signals only the
-  one process whose argv is exactly that installation's
-  `laya_embed_resident.py serve <project> <socket>` owner, re-verified by
-  UID and argv just before SIGTERM.
+  one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux
+  `/proc/<pid>/cmdline`, never a space-joined `ps` string) is exactly that
+  installation's `laya_embed_resident.py serve <project> <socket>` owner,
+  re-verified by UID, executable and argv just before SIGTERM.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired as
   before.
