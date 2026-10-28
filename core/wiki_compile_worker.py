@@ -480,7 +480,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
         for path in files:
             rel_card = path.relative_to(wiki_root)
             if (any(part.startswith(".") for part in rel_card.parts)
-                    or rel_card.name in ("index.md", "log.md")):
+                    or rel_card.name in source_text.WIKI_META_PAGES):
                 continue
             if path.is_symlink() or path.resolve(strict=True) != path or not path.is_file():
                 return None

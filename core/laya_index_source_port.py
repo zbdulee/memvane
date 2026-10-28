@@ -50,7 +50,7 @@ from typing import Any, Mapping, NoReturn
 
 from laya_index_a import IndexContractError, _digest
 from source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
-                         WIKI_TEXT_EXTENSIONS, is_source_text)
+                         WIKI_META_PAGES, WIKI_TEXT_EXTENSIONS, is_source_text)
 
 STALE = "index_stale"
 EXCLUSION_KINDS = frozenset({"path", "hash"})
@@ -75,12 +75,16 @@ def generated_wiki_log_text(body: str) -> bool:
 
 
 def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
-    """Filter only root metadata; a nested log.md is an ordinary wiki card."""
+    """Filter only root metadata; a nested log.md is an ordinary wiki card.
+
+    A root log.md is metadata only while it carries the generated header.
+    """
     if len(wiki_roots) != 1:
         return False
     name = next(iter(wiki_roots))
-    return (path == name + '/index.md' or
-            (path == name + '/log.md' and generated_wiki_log_text(body)))
+    if path == name + '/log.md':
+        return generated_wiki_log_text(body)
+    return any(path == name + '/' + page for page in WIKI_META_PAGES)
 
 
 def generated_wiki_log_file(dfd: int, name: str, expected: os.stat_result) -> bool:

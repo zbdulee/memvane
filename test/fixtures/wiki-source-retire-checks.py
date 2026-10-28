@@ -127,6 +127,30 @@ class DeletedSourceRetirement(RetireFixture):
         self.assertTrue(card.exists())
 
 
+class ScaffoldPagesAreNotCards(RetireFixture):
+    """wiki_init scaffold pages are never retired or stamped, whatever they hold."""
+    SCAFFOLD = ('SCHEMA.md', 'index.md', 'log.md')
+
+    def test_meta_pages_survive_retirement_and_stamping(self):
+        text = self.card().read_text(encoding='utf-8')
+        (self.wiki / 'card.md').unlink()
+        wiki_root = self.wiki.parent
+        for name in self.SCAFFOLD:
+            (wiki_root / name).write_text(text, encoding='utf-8')
+        self.assertEqual(self.run_retire(), ('retired', 1))
+        for name in self.SCAFFOLD:
+            page = wiki_root / name
+            self.assertEqual(page.read_text(encoding='utf-8'), text, name)
+            with patch.object(retire.wiki_selected_laya, 'recheck'), \
+                 patch.object(retire.wc, 'remove_from_index'):
+                self.assertEqual(retire.retire_card(
+                    self.root, wiki_root, self.selected, page, text, 'p' * 64), 'blocked')
+                self.assertEqual(retire.record_source_revisions(
+                    self.root, wiki_root, self.selected, page, text, []), 'blocked')
+            self.assertEqual(page.read_text(encoding='utf-8'), text, name)
+        self.assertFalse((self.root / '.auto-context/compile/retired-wiki').exists())
+
+
 class RenamedRawLabelRetirement(RetireFixture):
     """Cards citing a renamed raw collection (old label) after a minimal migration."""
     CONFIG = {'wikiPath': '.auto-context/wiki', 'indexing': True,

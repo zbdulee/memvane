@@ -209,6 +209,19 @@ class Checks(unittest.TestCase):
         project = self.project(cards)
         self.assertEqual(project.run()['queued'], 0)
 
+    def test_root_scaffold_pages_are_out_of_scope(self):
+        # wiki_init scaffold pages stay indexed but are never cards, even when
+        # their text looks like a near-duplicate card.
+        cards = standard()
+        for name in ('SCHEMA.md', 'index.md', 'log.md'):
+            cards[name] = (card('Beta harbor ' + name,
+                                'The harbor ferry leaves every 40 minutes.'), [0.01, 1.0])
+        project = self.project(cards)
+        project.run()
+        rows = project.queued()
+        self.assertEqual([{row['pageA'], row['pageB']} for row in rows],
+                         [{'entities/alpha.md', 'entities/alpha-copy.md'}], rows)
+
     def test_pair_cap_leaves_the_rest_pending_for_the_next_run(self):
         cards = standard()
         cards['entities/beta-copy.md'] = (card('Beta ferry', 'Ferries leave the harbor every 40 minutes.'),
