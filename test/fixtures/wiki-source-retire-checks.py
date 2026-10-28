@@ -57,8 +57,7 @@ class RetireFixture(unittest.TestCase):
 
     def run_retire(self, config=None, collection='raw', rel='docs/gone.md', full=False):
         with patch.object(retire.wiki_selected_laya, 'recheck'), \
-             patch.object(retire.wiki_selected_laya, 'request_sync') as wake, \
-             patch.object(retire.wc, 'remove_from_index'):
+             patch.object(retire.wiki_selected_laya, 'request_sync') as wake:
             result = retire.retire_deleted_source(
                 self.root, config or {'wikiPath': '.auto-context/wiki'},
                 self.selected, collection, rel, self.hash)
@@ -141,14 +140,51 @@ class ScaffoldPagesAreNotCards(RetireFixture):
         for name in self.SCAFFOLD:
             page = wiki_root / name
             self.assertEqual(page.read_text(encoding='utf-8'), text, name)
-            with patch.object(retire.wiki_selected_laya, 'recheck'), \
-                 patch.object(retire.wc, 'remove_from_index'):
+            with patch.object(retire.wiki_selected_laya, 'recheck'):
                 self.assertEqual(retire.retire_card(
                     self.root, wiki_root, self.selected, page, text, 'p' * 64), 'blocked')
                 self.assertEqual(retire.record_source_revisions(
                     self.root, wiki_root, self.selected, page, text, []), 'blocked')
             self.assertEqual(page.read_text(encoding='utf-8'), text, name)
         self.assertFalse((self.root / '.auto-context/compile/retired-wiki').exists())
+
+
+class NestedMetaNamedCards(RetireFixture):
+    """Only the wiki-root meta pages are skipped; `concepts/SCHEMA.md` is a card."""
+    NAMES = ('SCHEMA.md', 'index.md', 'log.md')
+
+    def test_nested_meta_named_cards_retire_with_their_deleted_source(self):
+        cards = [self.card(name) for name in self.NAMES]
+        self.assertEqual(self.run_retire(), ('retired', 1))
+        for card in cards:
+            self.assertFalse(card.exists(), card.name)
+        archived = list((self.root / '.auto-context/compile/retired-wiki').glob('*.md'))
+        self.assertEqual(len(archived), len(self.NAMES))
+
+    def test_retire_card_and_record_source_revisions_accept_nested_meta_names(self):
+        wiki_root = self.wiki.parent
+        for name in self.NAMES:
+            card = self.card(name)
+            text = card.read_text(encoding='utf-8')
+            with patch.object(retire.wiki_selected_laya, 'recheck'):
+                self.assertEqual(retire.retire_card(
+                    self.root, wiki_root, self.selected, card, text, 'p' * 64), 'retired', name)
+            self.assertFalse(card.exists(), name)
+            legacy = self.wiki / name
+            legacy.write_text(
+                '---\ntitle: Legacy\nstatus: generated\ncreatedBy: qmd-auto-context\n'
+                'sources:\n  - {kind: "file", path: "docs/still.md", collection: "raw"}\n'
+                '---\n\n<!-- qmd:auto:start id="main" sourceHash="a" -->\nfact\n'
+                '<!-- qmd:auto:end -->\n', encoding='utf-8')
+            revisions = [{'kind': 'file', 'path': 'docs/still.md', 'collection': 'raw',
+                          'sha256': hashlib.sha256(self.survivor.read_bytes()).hexdigest(),
+                          'size': self.survivor.stat().st_size, 'mtimeNs': 1}]
+            with patch.object(retire.wiki_selected_laya, 'recheck'):
+                self.assertEqual(retire.record_source_revisions(
+                    self.root, wiki_root, self.selected, legacy,
+                    legacy.read_text(encoding='utf-8'), revisions), 'recorded', name)
+            self.assertIn('sourceRevisions:', legacy.read_text(encoding='utf-8'))
+            legacy.unlink()
 
 
 class RenamedRawLabelRetirement(RetireFixture):

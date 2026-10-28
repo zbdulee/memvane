@@ -264,6 +264,12 @@ wiki compile은 원문 Markdown을 편집하면 `.auto-context/wiki`에 정리�
 
 minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태입니다.
 
+`.auto-context/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
+`core/wiki_card_rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
+생성·삭제 기록은 설치 state 디렉터리의 `wiki-activity.log`입니다. 이전 버전이
+만든 `SCHEMA.md`·`index.md`·`log.md`가 wiki 루트에 남아 있어도 카드로 취급하지
+않고 읽지도 않으므로, 지우든 두든 동작은 같습니다.
+
 자동 compile은 원문 범위 안의 Markdown만 대상으로 합니다.
 `.agents`, `.claude`, `.codex`, `.github`, `.auto-context`처럼 점으로 시작하는
 도구/메타데이터 경로는 자동 compile 대상에서 제외됩니다.

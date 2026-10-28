@@ -55,6 +55,20 @@ class SelectedWikiChecks(unittest.TestCase):
         self.assertEqual([row[0].name for row in rows], ['one.md'])
         self.assertGreater(rows[0][1], 0)
 
+    def test_local_retrieval_skips_root_meta_pages_but_not_nested_cards(self):
+        # Leftover wiki-root pages carry the same words as the query; they must
+        # never ground an extractor prompt. A nested card of the same name does.
+        for name in ('SCHEMA.md', 'index.md', 'log.md'):
+            (self.wiki / name).write_text('# Meta\nstarship archive', encoding='utf-8')
+        (self.wiki / 'concepts').mkdir()
+        (self.wiki / 'concepts' / 'index.md').write_text(
+            '# Nested\nstarship archive', encoding='utf-8')
+        with patch.object(selected, 'recheck'):
+            rows = selected.wiki_matches(self.root, self.wiki, 'starship archive', 10, 100,
+                                         bound=(self.decision, self.proof))
+        self.assertEqual([row[0].relative_to(self.wiki).as_posix() for row in rows],
+                         ['concepts/index.md'])
+
     def test_local_retrieval_withholds_mixed_source_excluded_card(self):
         def revision(path):
             body = path.encode()

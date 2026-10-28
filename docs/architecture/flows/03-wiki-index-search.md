@@ -1,6 +1,6 @@
 # 03 위키 색인과 검색 주입
 
-binding store가 있는 선택된 Laya v2 route의 recall은 hook 안에서 모델 작업 없이 완료된 index generation 하나를 pin합니다. wiki role만 검색하고 `index.md`·`log.md` 같은 관리 파일을 제외합니다. 검색은 색인 DB에 게시된 위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending refresh 원장을 다시 읽지 않습니다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기 전에는 마지막 완료본이 검색됩니다. 색인 무결성 또는 선택 증명이 실패하면 결과를 줄여서 내보내지 않고 실패합니다.
+binding store가 있는 선택된 Laya v2 route의 recall은 hook 안에서 모델 작업 없이 완료된 index generation 하나를 pin합니다. wiki role만 검색하고 wiki root의 `SCHEMA.md`·`index.md`·`log.md`(이전 릴리스가 만든 파일)를 제외합니다. 검색은 색인 DB에 게시된 위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending refresh 원장을 다시 읽지 않습니다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기 전에는 마지막 완료본이 검색됩니다. 색인 무결성 또는 선택 증명이 실패하면 결과를 줄여서 내보내지 않고 실패합니다.
 
 검색은 각 phase에서 최대 100개 후보를 확인하고, 그중 검증된 카드만으로 순위를 계산합니다. 100개를 모두 확인했는데 검증된 카드가 출력 상한(`topN`)보다 적으면 남은 카드만 반환합니다(0개 포함). 이 경우 `QMD_RECALL_LOG`에 `laya_exclusion_candidate_capped`를 남기며, 검증되지 않은 카드의 본문은 반환하지 않습니다.
 
@@ -24,7 +24,7 @@ flowchart TD
     CB["binding store 후보 질의 binding 없으면 실패"]
     PH["wiki 대상 lexical 및 vector 검색"]
     PD{"게시된 세대와 위키 본문 검증"}
-    FT["index.md log.md 와 명시 제외 카드 필터"]
+    FT["wiki root SCHEMA.md index.md log.md 와 명시 제외 카드 필터"]
     DV["완료본 반환 finish 후 pin release"]
   end
   subgraph ASY["비동기 sync owner"]
@@ -67,7 +67,7 @@ flowchart TD
 - [`core/laya_host_response.py:735-743`](../../../core/laya_host_response.py#L735-L743): 한 pin에서 검증된 위키 카드만 반환합니다. hook 안에서는 모델 작업을 하지 않습니다. `source_locations`에는 반환된 wiki 행의 검증된 span locator만 담깁니다.
 - [`core/laya_host_response.py:744-751`](../../../core/laya_host_response.py#L744-L751): provider 준비를 확인한 뒤 `wiki_index_roots`로 루트를 정합니다. wiki role이 없거나 `hierarchical`이 아니면 실패합니다.
 - [`core/laya_host_response.py`](../../../core/laya_host_response.py): generation을 pin합니다. binding store가 있으면 pin된 generation에 binding이 없을 때 fail closed로 처리합니다.
-- [`core/laya_host_response.py`](../../../core/laya_host_response.py): `index.md`·`log.md`를 뺀 뒤 게시된 카드의 생성 표식·본문 해시·출처 구조를 확인합니다. 원문 현재성은 검색 시점에 재검사하지 않습니다. `require_returned_verified`와 `finish`가 세대·범위·제외·루트 신원을 확인하고 마지막에는 pin을 release합니다.
+- [`core/laya_host_response.py`](../../../core/laya_host_response.py): wiki root의 `SCHEMA.md`·`index.md`·`log.md`를 뺀 뒤 게시된 카드의 생성 표식·본문 해시·출처 구조를 확인합니다. 원문 현재성은 검색 시점에 재검사하지 않습니다. `require_returned_verified`와 `finish`가 세대·범위·제외·루트 신원을 확인하고 마지막에는 pin을 release합니다.
 - [`core/laya_index_host_route.py:163-174`](../../../core/laya_index_host_route.py#L163-L174): 현재 다중 source 정책은 raw 컬렉션 1개와 wiki 컬렉션 1개, `hierarchical`, score cutoff 0입니다. raw 컬렉션은 freshness와 위키 생성용이며, 검색 대상이 아닙니다.
 - [`core/laya_wiki_discovery.py:519-539`](../../../core/laya_wiki_discovery.py#L519-L539): raw 루트 스캔은 이름과 hash만 반환합니다. raw 본문을 Laya membership에 추가하지 않습니다.
 - [`core/laya_index_source_port.py:301-351`](../../../core/laya_index_source_port.py#L301-L351): 명시된 루트만 symlink를 따라가지 않고 스캔해 path·sha256 manifest를 만듭니다.

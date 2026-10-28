@@ -22,7 +22,8 @@ explicit approval. The plugin does not provide a separate telemetry service.
 
 Optional wiki compile runs only for an onboarded project; its minimal settings
 turn compile on for that project. It passes selected Markdown source content and
-limited wiki orientation context to the configured host CLI to produce or verify
+the bundled card-writing rules, a bounded tail of the plugin's activity log and
+similar wiki cards to the configured host CLI to produce or verify
 wiki candidates. Depending on the configured host CLI and its account settings,
 that CLI may send the content to its provider. Review the host provider's
 privacy policy before onboarding a project that holds sensitive material.

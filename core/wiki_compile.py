@@ -18,9 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_mutation_lock
-from wiki_init import ensure_project_file
+import wiki_activity_log
 import compile_paths as cp
 import config as qmd_config
+import source_text
 import wiki_dedup_judge
 import wiki_markers
 import yaml_scalars
@@ -262,6 +263,10 @@ def build_identity_index(wiki_root: Path) -> dict[str, set[Path]]:
     if not wiki_root.exists():
         return index
     for page in wiki_root.rglob("*.md"):
+        # Wiki-root meta pages left by earlier releases are not cards: they never
+        # answer an identity lookup, so a card is never written over one.
+        if source_text.is_wiki_meta_page(page, wiki_root):
+            continue
         try:
             text = page.read_text(encoding="utf-8")
         except OSError:
@@ -409,7 +414,9 @@ def resolve_target(root: Path, wiki_root: Path, candidate: dict, suggested_type:
                 target.relative_to(wiki_root)
             except ValueError:
                 return None, "unsafe", []
-            return target, "explicit", []
+            if not source_text.is_wiki_meta_page(target, wiki_root):
+                return target, "explicit", []
+            # A wiki-root meta page is never a card target: resolve by identity.
         # "fallback": untrusted wiki-relative targetPath — resolve by identity instead
     match_reason, matches = lookup_identity(candidate, identity_index)
     if len(matches) == 1:
@@ -565,7 +572,7 @@ def trim_jsonl(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
 
     쓰기는 원자적이다. "절반을 의도적으로 버린다"와 "쓰기가 실패해 임의 지점에서
     잘린다"는 다르다 — 후자의 최악은 첫 write에서 실패해 로그가 통째로 비는 것이고,
-    그건 이 함수가 허용한 유실이 아니다(update_index와 같은 read-modify-write 클래스)."""
+    그건 이 함수가 허용한 유실이 아니다(read-modify-write 클래스)."""
     try:
         if path.stat().st_size <= max_bytes:
             return
@@ -1206,78 +1213,6 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
     }, blocks={yaml_scalars.SOURCE_SPANS_KEY: emitted}, expected_text=expected_text)
 
 
-@wiki_mutation_lock.guard_path
-def update_index(wiki_root: Path, target: Path, title: str) -> bool:
-    """index.md에 카드 1줄을 추가한다. **read-modify-write이므로 원자적으로 쓴다.**
-
-    `append_log`와의 비대칭이 여기 있다 — 둘 다 wiki 루트의 누적 파일인데 하나만
-    원자적 쓰기가 필요하다:
-      - index는 **전체를 읽어 전체를 다시 쓴다**(중복 줄 방지 검사 때문에). 즉 truncate
-        후 write이고, 실패하면 그때까지 누적된 인덱스 전부가 잘린다. 라이브 index.md는
-        106,717B(카드 1장당 1줄 ≈ 850줄)이고 **재생성 경로가 없다** — 잘리면 아무것도
-        복구하지 않는다. 카드가 생길 때마다(compile 경로) 호출되므로 노출도 높다.
-      - `append_log`는 `open("a")` **append 모드**라 기존 내용을 truncate하지 않는다.
-        164KB인데도 안전한 이유가 이것이다. 실패는 마지막 줄이 안 붙는 것으로 끝난다.
-        (두 함수의 최초 헤더 생성도 원자 게시해 부분 파일을 남기지 않는다.)
-    반환값은 "인덱스가 카드와 어긋나지 않았는가"다 — 인덱스는 캐논이 아니라 항법이므로
-    실패가 카드 쓰기만큼 치명적이지는 않지만, 조용히 실패하면 카드와 어긋난 채 남는다.
-    """
-    index = wiki_root / "index.md"
-    if not index.exists():
-        ensure_project_file(index, "# Auto-context Wiki Index\n\n")
-    rel = target.relative_to(wiki_root).as_posix()
-    line = f"- {rel} - {title}\n"
-    text = index.read_text(encoding="utf-8")
-    if rel in text:
-        return True
-    return write_text_atomic(index, text.rstrip() + "\n" + line)
-
-
-@wiki_mutation_lock.guard_path
-def remove_from_index(wiki_root: Path, target: Path) -> bool:
-    """index.md에서 카드 1줄을 제거한다. **`update_index`의 역연산이고 같은 이유로 원자적이다.**
-
-    이 함수가 없던 동안 인덱스는 append-only였다 — 카드가 지워져도(dedup merge, 기계 검수
-    삭제) 줄이 남아 인덱스가 실제 카드보다 계속 커졌다(실측: 항목 1,629개 중 253개가 없는
-    파일을 가리켰다). 이게 조용히 넘어가지 않는 이유는 `wiki_compile_worker.orientation()`이
-    이 파일 **앞 12,000자**를 컴파일 워커의 항법 정보로 넘기기 때문이다. 그 창 안의 죽은
-    줄은 워커에게 "이미 있는 카드"로 보인다.
-
-    **줄 매칭에 `rel in text`를 쓰지 않는다.** `update_index`의 중복 검사가 그 부분 문자열
-    비교인데, 제거에 같은 방식을 쓰면 `foo.md`를 지우라는 요청이 `foo-bar.md` 줄이나 경로를
-    본문에 포함한 제목 줄까지 지운다. 여기서는 `update_index`가 쓰는 형식 그대로
-    `- {rel} - `로 시작하는 줄만 지운다.
-
-    반환값은 `update_index`와 대칭이다 — "인덱스가 카드와 어긋나지 않았는가". 줄이 애초에
-    없었거나 index.md 자체가 없으면 True다(어긋난 게 없다). False는 쓰기 실패뿐이다.
-    인덱스는 캐논이 아니라 항법이므로 호출자는 실패에 fail-closed하지 않는다.
-    """
-    index = wiki_root / "index.md"
-    if not index.exists():
-        return True
-    rel = target.relative_to(wiki_root).as_posix()
-    prefix = f"- {rel} - "
-    try:
-        text = index.read_text(encoding="utf-8")
-    except OSError:
-        return False
-    kept = [line for line in text.splitlines(keepends=True) if not line.startswith(prefix)]
-    if len(kept) == len(text.splitlines(keepends=True)):
-        return True
-    return write_text_atomic(index, "".join(kept))
-
-
-@wiki_mutation_lock.guard_path
-def append_log(wiki_root: Path, action: str, target: Path, title: str) -> None:
-    """log.md에 1줄 append. **원자적 쓰기가 필요 없다** — 사유는 `update_index` docstring."""
-    log = wiki_root / "log.md"
-    if not log.exists():
-        ensure_project_file(log, "# Auto-context Wiki Log\n\n")
-    rel = target.relative_to(wiki_root).as_posix()
-    with log.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {now_iso()} {action} {rel} - {title}\n")
-
-
 def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
     roles = qmd_config.role_map(config)
     paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
@@ -1753,12 +1688,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # same-identity duplicates rather than size-trimming (which would drop a card's
     # entry and break tombstoning). Threshold-gated + atomic inside.
     compact_manifest(manifest_path)
-    # 인덱스 쓰기 실패는 카드 쓰기 실패처럼 중단시키지 않는다 — 카드는 이미 캐논으로
-    # 디스크에 있고 인덱스는 항법(navigation)이다. 대신 조용히 넘기지 않고 출력·후보
-    # 레코드에 남긴다(인덱스가 카드와 어긋난 채 남았다는 사실을 알 수 있어야 한다).
-    index_ok = True if pending_path is not None else update_index(wiki_root, target, title)
+    # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
     if pending_path is None:
-        append_log(wiki_root, action, target, title)
+        wiki_activity_log.append(root, action, target.relative_to(wiki_root).as_posix(),
+                                 title, bound=selected)
 
     collection, collection_path = find_wiki_collection(config)
     if pending_path is None and collection and collection_path and selected is not None:
@@ -1800,9 +1733,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 만든 검수 부채만큼 같은 run의 verify 예산을 늘려 큐가 배수보다 빨리 자라지 않게 한다.
     if verify_queued:
         result["verifyQueued"] = True
-    if not index_ok:
-        result["indexWriteFailed"] = True
-        append_jsonl(candidate_path, {**record, "indexWriteFailed": True})
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

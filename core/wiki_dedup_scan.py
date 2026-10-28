@@ -53,7 +53,6 @@ AUTO_MARKER_LINE_RE = re.compile(r"^<!-- qmd:auto:(start|end).*-->\n?", re.M)
 SUMMARY_HEADING_RE = re.compile(r"^## Summary\n+", re.M)
 
 EXCLUDED_STATUSES = {"superseded", "discarded"}
-META_PAGES = source_text.WIKI_META_PAGES
 SNAPSHOT_VERSION = 1
 # Changed cards compared per run. Each is compared against every indexed card.
 MAX_PAGES_PER_SCAN = 50
@@ -228,7 +227,7 @@ def _current_text(wiki_root: Path, card: _Card) -> str | None:
     """
     parts = Path(card.rel).parts
     if (not card.rel.endswith(".md") or any(part.startswith(".") for part in parts)
-            or card.rel in META_PAGES):
+            or source_text.is_wiki_meta_page(card.rel)):
         return None
     path = wiki_root / card.rel
     try:

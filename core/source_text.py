@@ -13,17 +13,35 @@ names that narrower set for wiki-only scans.
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import PurePath, PurePosixPath
 
 # Case-insensitive suffix match on the file name.
 SOURCE_TEXT_EXTENSIONS = ('.md', '.markdown', '.mdx', '.txt', '.rst', '.adoc')
 WIKI_TEXT_EXTENSIONS = ('.md',)
 
-# Scaffold pages `wiki_init` creates at the wiki root. They are never wiki
-# cards: search, lifecycle, dedup, source retirement and the compile proof scan
-# skip them. Only a generated root `log.md` stays out of the index itself; the
-# others stay indexed so the generation digest does not depend on this list.
+# Wiki-root pages that earlier plugin releases created beside the cards. The
+# plugin no longer creates or reads them, but existing projects keep them, so
+# they are never wiki cards: search, compile grounding, lifecycle, dedup,
+# source retirement and the compile proof scan skip them. Only a generated root
+# `log.md` stays out of the index itself; the others stay indexed so the
+# generation digest does not depend on this list. A card with the same name
+# below the root (`concepts/index.md`) is an ordinary card.
 WIKI_META_PAGES = ('SCHEMA.md', 'index.md', 'log.md')
+
+
+def is_wiki_meta_page(path, wiki_root=None) -> bool:
+    """True only for a `WIKI_META_PAGES` file directly under the wiki root.
+
+    `path` is relative to the wiki root, or absolute when `wiki_root` is given.
+    A path outside `wiki_root` is not a meta page.
+    """
+    if wiki_root is not None:
+        try:
+            path = PurePath(path).relative_to(PurePath(wiki_root))
+        except ValueError:
+            return False
+    parts = PurePath(path).parts
+    return len(parts) == 1 and parts[0] in WIKI_META_PAGES
 
 # Exact directory-name match at any depth. Dot-prefixed names are skipped by a
 # separate rule in every walker; `.auto-context`, `.git`, `.hg` and `.svn` stay

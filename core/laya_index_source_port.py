@@ -50,7 +50,8 @@ from typing import Any, Mapping, NoReturn
 
 from laya_index_a import IndexContractError, _digest
 from source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
-                         WIKI_META_PAGES, WIKI_TEXT_EXTENSIONS, is_source_text)
+                         WIKI_TEXT_EXTENSIONS, is_source_text,
+                         is_wiki_meta_page)
 
 STALE = "index_stale"
 EXCLUSION_KINDS = frozenset({"path", "hash"})
@@ -66,7 +67,7 @@ _WIKI_LOG_HEADER = '# Auto-context Wiki Log\n\n'
 
 
 def generated_wiki_log_text(body: str) -> bool:
-    """The exact header emitted when the compiler creates the root log.
+    """The exact header earlier releases wrote when they created the root log.
 
     A partially appended event must not turn this maintenance file into a
     wiki card. The caller must also prove the path is the bound wiki root.
@@ -75,16 +76,17 @@ def generated_wiki_log_text(body: str) -> bool:
 
 
 def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
-    """Filter only root metadata; a nested log.md is an ordinary wiki card.
+    """Search-time filter: every wiki-root meta page, whatever it holds.
 
-    A root log.md is metadata only while it carries the generated header.
+    A nested ``log.md``/``index.md``/``SCHEMA.md`` is an ordinary wiki card.
+    ``body`` is unused; the index stage alone keeps its header test (a root
+    ``log.md`` without the generated header stays indexed, so the generation
+    digest does not change).
     """
     if len(wiki_roots) != 1:
         return False
     name = next(iter(wiki_roots))
-    if path == name + '/log.md':
-        return generated_wiki_log_text(body)
-    return any(path == name + '/' + page for page in WIKI_META_PAGES)
+    return path.startswith(name + '/') and is_wiki_meta_page(path[len(name) + 1:])
 
 
 def generated_wiki_log_file(dfd: int, name: str, expected: os.stat_result) -> bool:

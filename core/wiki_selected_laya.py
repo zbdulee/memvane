@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 
+import source_text
+
 
 def selected(root: Path):
     from laya_index_host_route import select_route
@@ -104,8 +106,11 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
     for path in files:
         if path.is_symlink() or not path.is_file():
             raise ValueError('selected_wiki_source_unsafe')
-        path.relative_to(wiki_root)
-        if any(part.startswith('.') for part in path.relative_to(wiki_root).parts):
+        rel = path.relative_to(wiki_root)
+        # Wiki-root meta pages left by earlier releases are not cards; they must
+        # never ground an extractor prompt or a duplicate judgment.
+        if (any(part.startswith('.') for part in rel.parts)
+                or source_text.is_wiki_meta_page(rel)):
             continue
         size = path.stat().st_size
         total_bytes += size
