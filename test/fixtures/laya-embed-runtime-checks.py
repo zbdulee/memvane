@@ -271,6 +271,24 @@ class Base(unittest.TestCase):
                                state_root=str(self.state), commit_id=commit,
                                **{'dimension': DIM, **extra})
 
+    def pinned(self):
+        """The 9 installs' shape: QMD-reviewed profile, files in a Laya generation.
+
+        Built as the earlier move re-attestation sealed it; no runtime file
+        digest field yet.
+        """
+        runtime = R.ensure_for_attestation(self.old_att)
+        source, commit = self.source_repo()
+        reviewed = self.review(source, commit)['reviewedProvider']
+        old = self.old_att['providerManifest']
+        manifest = {**reviewed['providerManifest'],
+                    **{key: old[key] for key in ('approvedProviderId', 'embeddingFingerprint',
+                                                 'dependencyClosureSha256')}}
+        record = {**self.old_att, 'providerManifest': manifest,
+                  'dependencyClosure': reviewed['dependencyClosure'],
+                  'profileDependencyClosure': self.old_closure}
+        return runtime, source, commit, record
+
     def vectors(self, manifest, name):
         """One query and one document through the real service and client."""
         socket_dir = self.base / ('s-' + name)
@@ -433,11 +451,19 @@ class ReattestedInstall(Base):
 class MovedProvider(Base):
     """The 9 selected installs: bytes move, the vector profile stays."""
 
-    def test_reattest_after_move_keeps_profile_and_vectors_without_qmd(self):
-        before = self.vectors(self.old_att['providerManifest'], 'qmd')
-        self.validate(self.old_att)
-        runtime = R.ensure_for_attestation(self.old_att)
+    def test_unpinned_qmd_runtime_is_never_equivalent_automatically(self):
+        # Outside a Laya generation nothing records the JS files the old worker
+        # ran, so equal hashed entries are not enough: rebuild required.
+        R.ensure_for_attestation(self.old_att)
         source, commit = self.source_repo()
+        review = self.review(source, commit)
+        self.assertIsNone(reattest(self.old_att, review['reviewedProvider']))
+        self.assertFalse(auto.provider_equivalent(self.old_att, review, self.plugin))
+
+    def test_pinned_installs_keep_profile_and_vectors_without_qmd(self):
+        before = self.vectors(self.old_att['providerManifest'], 'qmd')
+        runtime, source, commit, record = self.pinned()
+        self.validate(record)
         review = self.review(source, commit)
         manifest = review['reviewedProvider']['providerManifest']
         self.assertEqual(manifest['nodePath'], runtime['nodePath'])
@@ -445,40 +471,50 @@ class MovedProvider(Base):
         # The path-derived profile differs; content equality re-attests it.
         self.assertNotEqual(review['reviewedProvider']['vectorProfile'],
                             self.old_att['vectorProfile'])
-        self.assertTrue(auto.provider_equivalent(self.old_att, review, self.plugin))
-        again = reattest(self.old_att, review['reviewedProvider'])
+        self.assertTrue(auto.provider_equivalent(record, review, self.plugin))
+        again = reattest(record, review['reviewedProvider'])
         self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
         self.assertEqual(again['profileDependencyClosure'], self.old_closure)
+        self.assertEqual(again['runtimeFilesSha256'], runtime['runtimeFilesSha256'])
         proof = {'sourceCommit': 'c' * 40, 'bundleManifestSha256': 'd' * 64,
                  'ownershipManifestSha256': 'e' * 64,
                  'vectorProfile': again['vectorProfile']}
-        record = attestation_record(proof=proof,
+        sealed = attestation_record(proof=proof,
                                     journal_path=self.state / 'install-journal.sqlite',
                                     reattested=again,
                                     schema=bundle.PRODUCTION_ATTESTATION_SCHEMA)
-        self.validate(record)
-        live = record['providerManifest']
+        self.validate(sealed)
+        live = sealed['providerManifest']
         self.assertEqual(ReviewedLocalQmdProvider(live).profile['profile_id'],
                          self.old_att['vectorProfile']['profileId'])
         # Delete every QMD directory and the old node: nothing still names them.
         self.remove_qmd()
-        names = json.dumps(record)
         for gone in (self.qmd_runtime, self.qmd_cache, self.fnm):
-            self.assertNotIn(str(gone), json.dumps({**record, 'profileDependencyClosure': []}))
-        self.assertIn(str(self.qmd_runtime), names)  # only as the reviewed closure rows
-        self.validate(record)
+            self.assertNotIn(str(gone), json.dumps({**sealed, 'profileDependencyClosure': []}))
+        self.validate(sealed)
         ReviewedLocalQmdProvider(live)._verify_artifacts()
         self.assertEqual(self.vectors(live, 'laya'), before)
         # A later bundle upgrade reviews the same runtime and stays equivalent.
-        self.assertIsNotNone(reattest(record, self.review(source, commit)['reviewedProvider']))
+        self.assertIsNotNone(reattest(sealed, self.review(source, commit)['reviewedProvider']))
         with self.assertRaisesRegex(IndexContractError, 'provider_artifact'):
             ReviewedLocalQmdProvider(self.old_att['providerManifest'])._verify_artifacts()
 
-    def test_bundle_worker_provisions_then_reattests_through_real_review(self):
-        source, commit = self.source_repo()
+    def test_bundle_worker_refuses_unpinned_and_reattests_pinned_installs(self):
+        _runtime, source, commit, record = self.pinned()
         host = self.home / '.claude' / 'plugins' / 'cache' / 'mkt' / 'qmd-auto-context' / '9.9.9'
         shutil.copytree(self.plugin, host)
+        with self.assertRaisesRegex(auto.UpgradeRefused,
+                                    '^provider_changed_rebuild_required$'):
+            self.upgrade_with(self.old_att, source, commit, host, [])
         calls = []
+        result = self.upgrade_with(record, source, commit, host, calls)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertIsNone(calls[0]['model_path'])
+        self.assertTrue(R.matches(R.select(), record['providerManifest'],
+                                  record['dependencyClosure'],
+                                  R.attested_files(record)))
+
+    def upgrade_with(self, attestation, source, commit, host, calls):
         identity = {'pluginRoot': str(self.plugin), 'sourceCommit': '1' * 40,
                     'bundleManifestSha256': 'a' * 64,
                     'vectorProfile': self.old_att['vectorProfile']}
@@ -487,7 +523,7 @@ class MovedProvider(Base):
                 mock.patch.object(auto, 'installed_commit', return_value=None), \
                 mock.patch.object(auto, 'select_source', return_value=(source, commit)), \
                 mock.patch.object(auto, '_not_older'), \
-                mock.patch.object(auto, '_read_attestation', return_value=self.old_att), \
+                mock.patch.object(auto, '_read_attestation', return_value=attestation), \
                 mock.patch.object(product, 'review_local_provider',
                                   lambda **kw: self.review_at(host, **kw)), \
                 mock.patch.object(product, '_request_build_wake',
@@ -495,17 +531,126 @@ class MovedProvider(Base):
                 mock.patch.object(laya_active_upgrade, 'upgrade',
                                   side_effect=lambda **kw: calls.append(kw) or
                                   {'status': 'active_upgrade_complete'}):
-            result = auto.upgrade_install(self.base / 'project', self.state, host)
-        self.assertEqual(result['status'], 'active_upgrade_complete', result)
-        self.assertIsNone(calls[0]['model_path'])
-        self.assertTrue(R.matches(R.select(), self.old_att['providerManifest'],
-                                  self.old_closure))
+            return auto.upgrade_install(self.base / 'project', self.state, host)
 
     def review_at(self, host, **kw):
         with mock.patch.dict(sys.modules, {'qmd_runtime': None}), \
                 mock.patch('platform.system', return_value='Darwin'), \
                 mock.patch('platform.machine', return_value='arm64'):
             return REAL_REVIEW(**{**kw, 'plugin_root': str(host)})
+
+
+class RuntimeFiles(Base):
+    """Every executed file is provider content, not only the hashed entries."""
+
+    FIELD = 'runtimeFilesSha256'
+
+    def reattested(self):
+        """The 9 installs' shape: QMD-reviewed profile, files in a Laya generation."""
+        first, source, commit, legacy = self.pinned()
+        again = reattest(legacy, self.review(source, commit)['reviewedProvider'])
+        proof = {'sourceCommit': 'c' * 40, 'bundleManifestSha256': 'd' * 64,
+                 'ownershipManifestSha256': 'e' * 64, 'vectorProfile': again['vectorProfile']}
+        record = attestation_record(proof=proof,
+                                    journal_path=self.state / 'install-journal.sqlite',
+                                    reattested=again,
+                                    schema=bundle.PRODUCTION_ATTESTATION_SCHEMA)
+        return first, source, commit, record, legacy
+
+    def changed_js_generation(self):
+        """Same node, module entry, model and native bytes; one JS file differs."""
+        dep = (self.qmd_runtime / 'generations' / 'g-0857' / 'package' / 'node_modules' /
+               'lifecycle-utils' / 'dist' / 'index.js')
+        dep.write_text('lifecycle, changed')
+        R.provision_from_attestation(self.old_att)
+        return R.select()
+
+    def test_changed_js_dependency_is_new_content_not_equivalent(self):
+        first, source, commit, record, legacy = self.reattested()
+        second = self.changed_js_generation()
+        self.assertNotEqual(second['generation'], first['generation'])
+        for key in ('nodeSha256', 'moduleEntrySha256', 'modelSha256'):
+            self.assertEqual(second[key], first[key])
+        changed = self.review(source, commit)
+        for name, attestation in (('legacy', legacy), ('sealed', record)):
+            with self.subTest(attestation=name):
+                self.assertIsNone(reattest(attestation, changed['reviewedProvider']))
+                self.assertFalse(auto.provider_equivalent(attestation, changed, self.plugin))
+                # The upgrade worker re-selects the attested generation.
+                self.assertEqual(R.ensure_for_attestation(attestation)['generation'],
+                                 first['generation'])
+        # Same bytes give the same digest: an existing install re-attests
+        # without a rebuild and gains the sealed field.
+        same = self.review(source, commit)['reviewedProvider']
+        self.assertEqual(record[self.FIELD], first[self.FIELD])
+        self.validate(record)
+        for attestation in (legacy, record):
+            again = reattest(attestation, same)
+            self.assertEqual(again[self.FIELD], first[self.FIELD])
+            self.assertEqual(again['vectorProfile'], self.old_att['vectorProfile'])
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'production_runtime_files_mismatch'):
+            self.validate({**record, self.FIELD: second[self.FIELD]})
+
+    def test_worker_start_rehashes_every_runtime_file(self):
+        import laya_install_journal as J
+        first, _source, _commit, record, legacy = self.reattested()
+        manifest = record['providerManifest']
+        self.assertEqual(R.verify_attested_files(manifest, record[self.FIELD]),
+                         first[self.FIELD])
+        J._verify_runtime_files(legacy)
+        dep = Path(first['generation']) / 'node_modules' / 'lifecycle-utils' / 'dist' / 'index.js'
+        dep.write_text('lifecycle, tampered')
+        for attestation in (record, legacy):
+            with self.assertRaisesRegex(J.JournalEvidenceError, 'worker_runtime_files_invalid'):
+                J._verify_runtime_files(attestation)
+        # A runtime outside a Laya generation cannot prove its JS files.
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_unowned$'):
+            R.verify_attested_files(self.old_att['providerManifest'])
+
+    def test_generation_is_durable_before_the_pointer_names_it(self):
+        self.assert_durable_before_pointer(lambda: R.ensure_for_attestation(self.old_att))
+
+    def test_reused_or_reselected_generation_is_durable_before_the_pointer(self):
+        # A publish interrupted after the rename left the target behind: the
+        # retry reuses it and must still make it durable before the pointer.
+        first = R.ensure_for_attestation(self.old_att)
+        (R.root() / R.ACTIVE).unlink()
+        self.assert_durable_before_pointer(lambda: R.provision_from_attestation(self.old_att))
+        _runtime, _source, _commit, record = self.pinned()
+        (R.root() / R.ACTIVE).write_text('{}')
+        (R.root() / R.ACTIVE).chmod(0o600)
+        self.assertEqual(self.assert_durable_before_pointer(
+            lambda: R.ensure_for_attestation(record))['generation'], first['generation'])
+
+    def assert_durable_before_pointer(self, publish):
+        events, opened = [], {}
+        real_open, real_fsync, real_write = os.open, os.fsync, R._write_private
+
+        def open_(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            opened[fd] = str(path)
+            return fd
+
+        def fsync(fd):
+            events.append(('fsync', opened.get(fd)))
+            return real_fsync(fd)
+
+        def write(path, raw):
+            if Path(path).name == R.ACTIVE:
+                events.append(('active', str(path)))
+            return real_write(path, raw)
+        with mock.patch.object(R.os, 'open', open_), mock.patch.object(R.os, 'fsync', fsync), \
+                mock.patch.object(R, '_write_private', write):
+            runtime = publish()
+        generation = Path(runtime['generation'])
+        synced = [path for kind, path in
+                  events[:events.index(('active', str(R.root() / R.ACTIVE)))]
+                  if kind == 'fsync']
+        for directory in (generation, generation.parent, generation / 'node_modules',
+                          generation / 'bin', generation / 'models'):
+            self.assertIn(str(directory), synced)
+        return runtime
 
 
 class UpgradeFence(unittest.TestCase):

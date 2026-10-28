@@ -669,9 +669,21 @@ def default_prove(project):
 
 
 def default_attest(decision, proof, mode):
+    """Full attestation before a worker starts or an installation binds.
+
+    Selected: the journal-bound record, then every runtime file re-hashed.
+    Preview: the preview proof validated the record; re-hash its runtime files.
+    Read-only proofs never start a worker and attach without re-hashing.
+    """
     if mode == 'selected':
         from laya_install_journal import verify_worker_attestation
         if verify_worker_attestation(decision) != proof['providerManifest']:
+            _fail('provider_attestation_invalid')
+    elif mode == 'preview':
+        from laya_install_journal import verify_preview_worker_attestation
+        if verify_preview_worker_attestation(decision['journalPath'],
+                                             proof['providerManifest']) \
+                != proof['providerManifest']:
             _fail('provider_attestation_invalid')
 
 

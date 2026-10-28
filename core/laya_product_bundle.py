@@ -62,6 +62,11 @@ PRODUCTION_ATTESTATION_FIELDS = frozenset((
 # Optional: the closure rows a re-attested provider's vector profile was
 # derived from, when the same native files now live at other paths.
 PROFILE_CLOSURE_FIELD = 'profileDependencyClosure'
+# Optional: the digest of every file of the Laya runtime generation the
+# provider executes (``laya_embed_runtime.FILES_SHA``), sealed at install or
+# re-attestation. The hashed entries alone do not cover JS dependencies.
+RUNTIME_FILES_FIELD = 'runtimeFilesSha256'
+OPTIONAL_ATTESTATION_FIELDS = frozenset((PROFILE_CLOSURE_FIELD, RUNTIME_FILES_FIELD))
 PROVIDER_MANIFEST_FIELDS = frozenset((
     'approvedProviderId', 'providerArtifactSha256', 'providerRelativePath',
     'providerPath', 'workerPath', 'workerSha256',
@@ -235,7 +240,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
     if (type(bundle_proof) is not dict or
             bundle_proof.get('status') != 'exact_commit_full_plugin_candidate_consistent' or
             type(attestation) is not dict or
-            set(attestation) - {PROFILE_CLOSURE_FIELD} != PRODUCTION_ATTESTATION_FIELDS or
+            set(attestation) - OPTIONAL_ATTESTATION_FIELDS != PRODUCTION_ATTESTATION_FIELDS or
             attestation.get('schema') != PRODUCTION_ATTESTATION_SCHEMA or
             type(profile) is not dict or profile != bundle_proof.get('vectorProfile') or
             attestation.get('vectorProfile') != profile or
@@ -304,6 +309,17 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             _fail('production_dependency_closure_mismatch')
     elif _sha(_canonical(closure)) != provider['dependencyClosureSha256']:
         _fail('production_dependency_closure_mismatch')
+    if RUNTIME_FILES_FIELD in attestation:
+        # The sealed runtime.json of the generation the provider runs from
+        # (its name addresses every file); the worker start re-hashes them.
+        from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
+        sealed = attestation[RUNTIME_FILES_FIELD]
+        try:
+            observed = sealed_files_sha256(provider['moduleEntryPath'])
+        except (RuntimeUnavailable, OSError) as exc:
+            raise BundleEvidenceError('production_runtime_files_mismatch') from exc
+        if type(sealed) is not str or not SHA.fullmatch(sealed) or observed != sealed:
+            _fail('production_runtime_files_mismatch')
     from laya_local_embed_provider import recipe_fingerprint
     from laya_index_vector import profile_identity
     try:
