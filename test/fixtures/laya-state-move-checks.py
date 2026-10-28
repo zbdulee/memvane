@@ -543,10 +543,43 @@ class ReviewFixTests(MoveCase):
                                    degraded=True)
 
 
+# The socket path under HOME is '/.local/state/laya/<32 hex>/runtime/laya-embed.sock'
+# (75 bytes); a 24-byte HOME puts it at 99 bytes before the move and 102 after.
+SHORT_HOME_BYTES = 24
+_RANDOM = 8  # tempfile's random name length
+
+
+def _short_home_base():
+    """(temp base, prefix) giving a HOME of exactly SHORT_HOME_BYTES, or None.
+
+    The platform temp dir first (realpath), then the system's short temp roots;
+    a prefix pads the name to the exact length.
+    """
+    import tempfile
+    seen = []
+    for raw in (tempfile.gettempdir(), '/tmp', '/var/tmp'):
+        try:
+            base = os.path.realpath(raw)
+        except OSError:
+            continue
+        if base in seen or not os.path.isdir(base) or not os.access(base, os.W_OK):
+            continue
+        seen.append(base)
+        pad = SHORT_HOME_BYTES - len(base.encode()) - 1 - _RANDOM
+        if pad >= 1:
+            return base, 'l' * pad
+    return None
+
+
 class ShortHomeTests(MoveCase):
-    # /private/tmp/ls-XXXXXXXX is 24 bytes: the socket path is 99 bytes
-    # under the pre-rename base and would be 102 under the MemVane base.
-    TEMP_DIR, TEMP_PREFIX = '/private/tmp', 'ls-'
+    def setUp(self):
+        found = _short_home_base()
+        if found is None:
+            self.skipTest('no writable temp directory short enough for a '
+                          f'{SHORT_HOME_BYTES}-byte HOME')
+        self.TEMP_DIR, self.TEMP_PREFIX = found
+        super().setUp()
+        self.assertEqual(len(str(self.home).encode()), SHORT_HOME_BYTES, self.home)
 
     def test_a_move_past_the_socket_path_limit_is_refused_before_the_rename(self):
         socket = json.loads((self.state / journal_mod.PRODUCTION_ATTESTATION).read_bytes())[
