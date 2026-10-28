@@ -143,6 +143,25 @@ class RevisionSkipChecks(unittest.TestCase):
         job['selectedRoute'] = wiki_selected_laya.route_identity(self.bound)
         return job
 
+    def test_nested_meta_named_card_is_compile_proof(self):
+        # Only wiki-root SCHEMA.md/index.md/log.md are meta pages. A verified card
+        # at concepts/index.md proves its revision like any other card.
+        self.compile_verified_once()
+        revision = self.revisions[0][0]
+        for name in ('SCHEMA.md', 'index.md'):
+            nested = self.cards[0].with_name(name)
+            self.cards[0].rename(nested)
+            self.cards[0] = nested
+            self.assertEqual(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision), 'concepts/' + name)
+            self.process('session_start')
+            self.assertEqual(len(self.extractor_calls), 1, name)
+        # The same card at the wiki root is a leftover meta page, never proof.
+        root_page = self.wiki / 'index.md'
+        self.cards[0].rename(root_page)
+        self.assertIsNone(worker.selected_compiled_revision_card(
+            self.root, self.bound, revision))
+
     def test_old_label_card_proves_the_revision_after_a_raw_rename(self):
         self.compile_verified_once()
         self.rename_raw()

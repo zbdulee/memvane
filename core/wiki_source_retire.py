@@ -14,7 +14,7 @@ import wiki_compile as wc
 import wiki_mutation_lock
 import wiki_selected_laya
 import yaml_scalars
-from source_text import WIKI_META_PAGES
+from source_text import is_wiki_meta_page
 
 MAX_CARDS = 2_048
 MAX_CARD_BYTES = 5_000_000
@@ -155,7 +155,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
         for card in cards:
             subpath = card.relative_to(wiki_root)
             if (any(part.startswith('.') for part in subpath.parts)
-                    or card.name in WIKI_META_PAGES):
+                    or is_wiki_meta_page(subpath)):
                 continue
             if card.is_symlink() or card.resolve() != card:
                 return {'state': 'blocked', 'survivors': []}
@@ -233,7 +233,6 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                     after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                 return {'state': 'blocked', 'survivors': []}
             card.unlink()
-            wc.remove_from_index(wiki_root, card)
             directory = os.open(card.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
             try:
                 os.fsync(directory)
@@ -265,7 +264,7 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
         except ValueError:
             return 'blocked'
         if (any(part.startswith('.') for part in subpath.parts)
-                or card.name in WIKI_META_PAGES):
+                or is_wiki_meta_page(subpath)):
             return 'blocked'
         try:
             before = card.lstat()
@@ -289,7 +288,6 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
                 after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
             return 'blocked'
         card.unlink()
-        wc.remove_from_index(wiki_root, card)
         directory = os.open(card.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
         try:
             os.fsync(directory)
@@ -322,7 +320,7 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
         except ValueError:
             return 'blocked'
         if (any(part.startswith('.') for part in subpath.parts)
-                or card.name in WIKI_META_PAGES):
+                or is_wiki_meta_page(subpath)):
             return 'blocked'
         try:
             info = card.lstat()

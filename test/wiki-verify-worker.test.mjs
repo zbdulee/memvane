@@ -303,24 +303,21 @@ test('verify fail + onFail 기본(delete) → 카드 삭제, tombstone 없음, �
   } finally { removeTemp(project); }
 });
 
-// index.md는 카드 생성 때 1줄씩 append만 되던 파일이라, 기계 삭제가 줄을 남기면
-// compile worker의 orientation(앞 12,000자)이 없는 카드를 있는 것으로 읽는다.
-test('verify fail delete → index.md에서 카드 줄이 사라지고 log.md에 deleted가 남는다', () => {
+// The wiki holds only cards. A machine delete leaves a leftover index.md as it
+// is (the plugin neither reads nor rewrites it) and writes no project log.md.
+test('verify fail delete → 남은 index.md는 그대로, log.md는 생기지 않는다', () => {
   const verifier = mockVerifier({ verdict: 'fail', claims: [{ claim: 'c', supported: false, quote: '', sourcePath: 'docs/source.md' }], reasons: ['source contradicts claim'] });
   const project = setupProject({ extractorArgv: ['python3', verifier] });
   try {
     const wiki = join(project, '.auto-context', 'wiki');
-    writeFileSync(join(wiki, 'index.md'),
-      '# Auto-context Wiki Index\n\n- concepts/\n- concepts/test-card.md - Test Card\n- concepts/keeper.md - Keeper\n');
+    const leftover = '# Auto-context Wiki Index\n\n- concepts/\n- concepts/test-card.md - Test Card\n';
+    writeFileSync(join(wiki, 'index.md'), leftover);
     runVerifyWorker(project);
     assert.equal(existsSync(join(project, CARD_REL)), false);
-    const lines = readFileSync(join(wiki, 'index.md'), 'utf8').split('\n');
-    assert.ok(!lines.some((l) => l.startsWith('- concepts/test-card.md ')), '삭제된 카드 줄이 남으면 안 된다');
-    assert.ok(lines.includes('- concepts/keeper.md - Keeper'), '다른 항목은 그대로');
-    assert.ok(lines.includes('- concepts/'), '섹션 표시 줄은 항목이 아니다');
-    assert.match(readFileSync(join(wiki, 'log.md'), 'utf8'), /deleted concepts\/test-card\.md - Test Card/);
+    assert.equal(readFileSync(join(wiki, 'index.md'), 'utf8'), leftover, 'leftover index.md is not touched');
+    assert.equal(existsSync(join(wiki, 'log.md')), false, 'no project log.md');
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
-    assert.equal(log[0].indexOk, true, '인덱스 정합 여부가 판정 로그에 표면화된다');
+    assert.equal(log[0].result, 'deleted');
   } finally { removeTemp(project); }
 });
 

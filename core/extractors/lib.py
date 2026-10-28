@@ -109,7 +109,7 @@ VERBATIM RULES (critical — these cards are keyword-searched, so identifiers AR
 - Never include secrets, API keys, tokens, or credentials — this OUTRANKS the verbatim rules. Name the key but write the value as <REDACTED>, or omit it entirely.
 - If SOURCE FILE below is marked truncated, summarize only what is shown and never assert that something is absent from the document.
 
-WIKI SCHEMA (for orientation):
+CARD RULES (bundled with the plugin):
 {schema}
 
 {existing_context_section}
@@ -178,10 +178,6 @@ _SIMILAR_PAGES_TEMPLATE = """TOP MATCHING EXISTING WIKI PAGES (reuse canonicalKe
 
 {pages}"""
 
-_INDEX_TEMPLATE = """EXISTING WIKI INDEX (avoid duplicates):
-{index}"""
-
-
 def render_existing_context_section(wiki: dict) -> str:
     similar_pages = wiki.get("similarPages")
     if isinstance(similar_pages, list) and similar_pages:
@@ -195,7 +191,8 @@ def render_existing_context_section(wiki: dict) -> str:
             blocks.append(f"### {path} (score: {score})\n{content}")
         if blocks:
             return _SIMILAR_PAGES_TEMPLATE.format(pages="\n\n".join(blocks))
-    return _INDEX_TEMPLATE.format(index=str(wiki.get("index", ""))[:4000])
+    # The card catalog is the selected memvane-db index; no match means no section.
+    return ""
 
 
 def read_payload() -> dict:
@@ -223,6 +220,8 @@ def build_prompt(payload: dict) -> str:
         types="/".join(ALLOWED_TYPES),
         # 목록(`{types}`)과 정의(`{type_guide}`)가 같은 dict에서 나온다 — 갈릴 수 없다.
         type_guide="\n".join(f"- {name}: {desc}" for name, desc in TYPE_GUIDE.items()),
+        # `wiki.schema` carries the bundled card rules (core/wiki_card_rules), never
+        # a project file. The key name stays for external extractor backends.
         schema=str(wiki.get("schema", ""))[:4000],
         existing_context_section=render_existing_context_section(wiki),
         path=str(source.get("path", "")),

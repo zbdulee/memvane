@@ -718,6 +718,56 @@ class ResponseChecks(unittest.TestCase):
         self.assertIn('search completed; 0 matching documents.',
                       response.render_context(decision, found))
 
+    def test_v2_existing_install_leftover_root_files_still_serve_cards(self):
+        # An install published before the wiki became cards-only keeps its
+        # root SCHEMA.md/index.md/log.md rows (customised schema, an index that
+        # names cards, a log with events). Recall serves the cards beside them,
+        # including a nested card that shares a meta-page name.
+        import io
+        import laya_index_capacity
+        import yaml_scalars
+        index = FakeIndex()
+        runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
+                                  binding_store=object())
+        decision = v2_decision()
+        revision = {'kind': 'file', 'path': 'docs/a.md', 'collection': 'raw',
+                    'sha256': 'e' * 64, 'size': 5, 'mtimeNs': 1}
+
+        def card(path, title):
+            text = ('---\ntitle: ' + title + '\nstatus: verified\n'
+                    'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
+                    + json.dumps(revision) + '\nverifiedBodyHash: {digest}\n'
+                    '---\n## Summary\nstarship archive fact.\n')
+            digest = yaml_scalars.card_body_hash(text.replace('{digest}', '0' * 64))
+            return row(path=path, body=text.replace('{digest}', digest))
+        leftovers = (
+            row(path='wiki/SCHEMA.md', body='# Auto-context Wiki Schema\n\nThis wiki '
+                'stores generated auxiliary knowledge. Generated cards must stay '
+                '`status: generated` and include qmd provenance.\n'),
+            row(path='wiki/index.md', body='# Auto-context Wiki Index\n\n'
+                '- concepts/keep.md - Keep\n- concepts/index.md - Nested\n'),
+            row(path='wiki/log.md', body='# Auto-context Wiki Log\n\n'
+                '- 2026-10-01T00:00:00Z created concepts/keep.md - Keep\n'))
+        cards = (card('wiki/concepts/keep.md', 'Keep'),
+                 card('wiki/concepts/index.md', 'Nested'))
+
+        def phase(*args, **kwargs):
+            source_filter = args[11]
+            return [item for item in leftovers + cards if source_filter(item)], True
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / 'recall.log'
+            with patch.object(response, '_v2_phase', side_effect=phase), \
+                 patch.object(laya_index_capacity, 'open_pinned_candidate_query',
+                              return_value=FakeBoundCandidates()), \
+                 patch.dict(os.environ, {'QMD_RECALL_LOG': str(log)}), \
+                 patch('sys.stderr', new_callable=io.StringIO) as stderr:
+                found, _ = response.query_selected_v2(
+                    runtime, 'starship archive', VECTOR_PROFILE, VECTOR_PROFILE,
+                    lambda *_: None, decision)
+            self.assertEqual([item['path'] for item in found],
+                             ['wiki/concepts/keep.md', 'wiki/concepts/index.md'])
+            self.assertNotIn('none servable', stderr.getvalue())
+
     def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
         import laya_index_capacity
         import wiki_freshness

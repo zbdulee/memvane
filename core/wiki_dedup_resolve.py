@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
 import config as qmd_config
+import wiki_activity_log
 import wiki_mutation_lock
 import wiki_compile as wc
 import wiki_dedup_scan as dedup_scan
@@ -206,17 +207,14 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             # cap it so it can't grow unbounded.
             wc.trim_jsonl(deleted_path)
         target.unlink()
-        # 카드가 사라졌으니 인덱스 줄도 걷는다. 순서는 unlink 다음이다 — 먼저 지웠다가
-        # unlink가 실패하면 살아 있는 카드가 인덱스에서만 사라진다(반대 방향의 어긋남).
-        # 인덱스는 항법이라 실패에 fail-closed하지 않고 결과에 실어 보낸다.
         meta, _ = wc.parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
-        index_ok = wc.remove_from_index(wiki_root, target)
-        wc.append_log(wiki_root, "deleted", target, title)
+        wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+                                 title, bound=laya_bound)
         # The caller requests sync after releasing the card locks but before
         # ACKing the dedup queue. A failure requeues this row for stale retry.
         return {"action": "deleted", "deletedPath": delete_rel,
-                "indexOk": index_ok, "_syncAfterMutation": laya_bound is not None}
+                "_syncAfterMutation": laya_bound is not None}
 
     return {"action": "rejected", "reason": "unknown_action"}
 

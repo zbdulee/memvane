@@ -215,10 +215,11 @@ class CapacityTests(CatalogCase):
         self.assertEqual({row['path'] for row in self.search(
             catalog, 'ordinary', max_proof_bytes=128)},
                          {'wiki/card.md', 'wiki/nested/log.md'})
-        # A user-authored page at the same name is not excluded by filename.
+        # A root log.md without the generated header stays indexed (the digest
+        # does not change), but search never serves any wiki-root meta page.
         normal = '# Useful log analysis\nordinary wiki knowledge\n'
         self.write(self.wiki, 'log.md', normal)
-        self.assertFalse(auxiliary_wiki_row('wiki/log.md', normal, roots))
+        self.assertTrue(auxiliary_wiki_row('wiki/log.md', normal, roots))
         self.assertEqual(catalog.request_scan()['status'], 'started')
         self.assertEqual(drive(catalog, max_bytes=128)[-1]['status'], 'complete')
         self.assertIn('wiki/log.md', {row[0] for row in catalog.members(
