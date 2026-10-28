@@ -621,14 +621,18 @@ per-user directory.
   (exclusive), so rotation never moves a file mid-append. Every lock is
   non-blocking: rotation waits for a later write when a writer holds the
   lock, a writer retries a few times within ~2 ms and then drops the line,
-  and a busy refusal counter drops its increment. A process reuses its proven
-  state-root fd after one `fstat` check. Files open with
+  and a busy refusal counter drops its increment. While rotation cannot get
+  the lock, the live file grows at most to twice the rotation size; past that,
+  lines are dropped and counted until a writer rotates. A process reuses its
+  proven state-root fd after one `fstat` and one `lstat` (the path must still
+  name that directory). Files open with
   `O_NONBLOCK|O_NOFOLLOW` and are used only as regular, user-owned files.
-- **Reading.** Readers take at most the newest 8 MiB and skip lines with
-  malformed envelopes. The extractor `wiki.logTail` renders only `wiki` events
+- **Reading.** Readers take at most the newest 8 MiB (counting every byte
+  read) and skip lines with malformed envelopes. The extractor `wiki.logTail` renders only `wiki` events
   with a known outcome (`created`, `updated`, `deleted`, `retired`), a
-  relative path without control characters, and a cleaned title capped at
-  200 characters.
+  relative path without Unicode control, format or separator characters
+  (`Cc`, `Cf`, `Cs`, `Zl`, `Zp`), and a title with those characters replaced
+  and capped at 200 characters.
 - **Failure.** Writes are best-effort and never raise, print or block a hook.
   A write refused after the state root is proven (symlinked, foreign or
   non-regular `events.jsonl`, failed write) increments `events.refused.json`

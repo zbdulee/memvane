@@ -25,7 +25,8 @@ be a regular file owned by the user.
 
 Cost. One line is one ``os.write`` on an ``O_APPEND`` descriptor, capped at
 ``MAX_LINE`` bytes, with no fsync. A process keeps its proven state-root fd
-and re-checks it with one ``fstat`` instead of re-walking the path. Past
+and re-checks it with one ``fstat`` plus one ``lstat`` of the path (the path
+must still name that directory) instead of re-walking every component. Past
 ``LOG_LIMIT`` bytes the file rotates: ``.1`` moves to ``.2`` and the live file
 to ``.1`` (two older generations). ``events.lock`` coordinates the two: a
 writer holds it shared from opening the live file through its write, and a
@@ -33,15 +34,19 @@ rotation needs it exclusive, so a rotation never moves a file a writer is
 about to append to. Every lock is non-blocking: rotation is skipped while any
 writer holds the lock, a writer retries the shared lock at most
 ``LOCK_ATTEMPTS`` times ``LOCK_WAIT`` apart (a rotation lasts two renames) and
-otherwise drops the line, and a busy refusal counter drops its increment. A
+otherwise drops the line, and a busy refusal counter drops its increment.
+While rotation cannot get the lock, the live file grows at most to
+``HARD_LIMIT_FACTOR`` rotation sizes; past that, lines are dropped and
+counted, and since dropping writers take no lock the next writer rotates. A
 file is opened with ``O_NONBLOCK|O_NOFOLLOW`` and used only when ``fstat``
 shows a regular, user-owned file. Writes are best-effort: ``emit`` never
 raises ``Exception`` and never prints.
 
 Reading. ``read`` takes at most ``READ_LIMIT`` bytes, newest first, and skips
-lines whose envelope types are wrong. ``wiki_tail`` renders only ``wiki``
-events with a known outcome, a relative path without control characters and a
-cleaned, capped title.
+lines whose envelope types are wrong; every byte read counts against that
+budget. ``wiki_tail`` renders only ``wiki`` events with a known outcome, a
+relative path without control, format (bidi, zero-width) or separator
+characters, and a title with those characters replaced and capped.
 
 Refusals. A write that fails after the state root is proven (the file is a
 symlink, foreign or not regular, or the write itself fails) increments the
@@ -68,11 +73,15 @@ from pathlib import Path
 import re
 import stat
 import time
+import unicodedata
 
 NAME = 'events.jsonl'
 REFUSED_NAME = 'events.refused.json'
 LOCK_NAME = 'events.lock'
 LOCK_ATTEMPTS = 5
+# The live file never grows past this many rotation sizes while a rotation
+# cannot get the exclusive lock; later lines are dropped and counted.
+HARD_LIMIT_FACTOR = 2
 LOCK_WAIT = 0.0005
 GENERATIONS = (NAME + '.1', NAME + '.2')
 LOG_LIMIT = 4 * 1024 * 1024
@@ -301,28 +310,32 @@ def _try_lock(fd: int, kind: int, attempts: int = 1) -> bool:
     return False
 
 
-def _rotate(dfd, lock_fd: int, size_hint: int) -> None:
-    """Rotate under the exclusive lock; any holder (writer or rotator) skips it.
+def _rotate(dfd, lock_fd: int, size_hint: int) -> bool:
+    """Rotate under the exclusive lock; returns whether the live file is now small.
 
-    Writers hold the shared lock from opening the live file to their write,
-    so no rotation can move the file a writer is about to append to.
+    Any holder (writer or rotator) makes this skip. Writers hold the shared
+    lock from opening the live file to their write, so no rotation can move
+    the file a writer is about to append to.
     """
     if not _try_lock(lock_fd, fcntl.LOCK_EX):
-        return
+        return False
     try:
         try:
             info = os.stat(NAME, dir_fd=dfd, follow_symlinks=False)
         except FileNotFoundError:
-            return
-        if not stat.S_ISREG(info.st_mode) or info.st_size + size_hint <= LOG_LIMIT:
-            return
+            return True
+        if not stat.S_ISREG(info.st_mode):
+            return False
+        if info.st_size + size_hint <= LOG_LIMIT:
+            return True
         try:
             os.replace(GENERATIONS[0], GENERATIONS[1], src_dir_fd=dfd, dst_dir_fd=dfd)
         except FileNotFoundError:
             pass
         os.replace(NAME, GENERATIONS[0], src_dir_fd=dfd, dst_dir_fd=dfd)
+        return True
     except OSError:
-        pass
+        return False
     finally:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -373,8 +386,12 @@ def _state_dir_fd(state_root) -> int:
     if fd is not None:
         try:
             info = os.fstat(fd)
+            # The path must still name this directory: a renamed and
+            # recreated state root is walked again, not written behind.
+            current = os.lstat(key)
             if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
-                    and not stat.S_IMODE(info.st_mode) & 0o077 and info.st_nlink > 0):
+                    and not stat.S_IMODE(info.st_mode) & 0o077 and info.st_nlink > 0
+                    and (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)):
                 return fd
         except OSError:
             pass
@@ -425,8 +442,14 @@ def _write(state_root, data: bytes) -> str | None:
         if info is not None and not stat.S_ISREG(info.st_mode):
             _count_refusal(dfd, 'events_not_regular')
             return 'events_not_regular'
-        if info is not None and info.st_size + len(data) > LOG_LIMIT:
-            _rotate(dfd, lock_fd, len(data))
+        if (info is not None and info.st_size + len(data) > LOG_LIMIT
+                and not _rotate(dfd, lock_fd, len(data))
+                and info.st_size + len(data) > HARD_LIMIT_FACTOR * LOG_LIMIT):
+            # Overlapping writers (or one stalled writer) keep the exclusive
+            # lock out: past the hard cap the line is dropped and counted.
+            # Dropping writers take no shared lock, so the next one rotates.
+            _count_refusal(dfd, 'events_over_hard_cap')
+            return 'events_over_hard_cap'
         if not _try_lock(lock_fd, fcntl.LOCK_SH, LOCK_ATTEMPTS):
             # A rotation held the lock past the bounded wait: drop, never block.
             return 'events_lock_busy'
@@ -568,10 +591,16 @@ def inspect(state_root) -> dict:
 
 def _read_file(dfd, name: str, window: int | None = None) -> bytes:
     """The last ``window`` bytes (whole lines) of a regular, owned file, or b''."""
+    return _read_counted(dfd, name, window)[0]
+
+
+def _read_counted(dfd, name: str, window: int | None = None) -> tuple[bytes, int]:
+    """``_read_file`` plus the bytes actually read (charged to a read budget)."""
     try:
         fd, info = _open_private(dfd, name, os.O_RDONLY)
     except (OSError, ValueError):
-        return b''
+        return b'', 0
+    consumed = 0
     try:
         start = 0 if window is None else max(0, info.st_size - window)
         os.lseek(fd, start, os.SEEK_SET)
@@ -582,14 +611,15 @@ def _read_file(dfd, name: str, window: int | None = None) -> bytes:
                 break
             chunks.append(chunk)
             left -= len(chunk)
+            consumed += len(chunk)
         data = b''.join(chunks)
         if start:
             # Drop the partial first line of a window.
             cut = data.find(b'\n')
             data = data[cut + 1:] if cut >= 0 else b''
-        return data
+        return data, consumed
     except OSError:
-        return b''
+        return b'', consumed
     finally:
         os.close(fd)
 
@@ -636,9 +666,9 @@ def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED) -> list
         for name in names:
             if left is not None and left <= 0:
                 break
-            data = _read_file(dfd, name, left)
+            data, consumed = _read_counted(dfd, name, left)
             if left is not None:
-                left -= len(data) + 1
+                left -= max(consumed, 1)
             chunks.append(_parse(data))
         return [row for chunk in reversed(chunks) for row in chunk]
     finally:
@@ -681,8 +711,12 @@ def wiki_state_root(root, bound=_UNRESOLVED) -> Path | None:
 
 
 _WIKI_OUTCOMES = frozenset(('created', 'updated', 'deleted', 'retired'))
-_UNSAFE_TEXT = re.compile(r'[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]')
-_WIKI_PATH = re.compile(r'[^\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]{1,256}\Z')
+# Control, format (bidi marks, zero-width), separator and surrogate characters.
+_UNSAFE_CATEGORIES = frozenset(('Cc', 'Cf', 'Cs', 'Zl', 'Zp'))
+
+
+def _unsafe_char(char: str) -> bool:
+    return unicodedata.category(char) in _UNSAFE_CATEGORIES
 
 
 def _wiki_line(row) -> str | None:
@@ -693,10 +727,12 @@ def _wiki_line(row) -> str | None:
     """
     outcome, path, title = row.get('outcome'), row.get('path'), row.get('title', '')
     if (outcome not in _WIKI_OUTCOMES or not isinstance(path, str)
-            or not _WIKI_PATH.fullmatch(path) or path.startswith('/') or '..' in path.split('/')
+            or not 0 < len(path) <= 256 or any(_unsafe_char(char) for char in path)
+            or path.startswith('/') or '..' in path.split('/')
             or not isinstance(title, str)):
         return None
-    title = ' '.join(_UNSAFE_TEXT.sub(' ', title).split())[:200]
+    title = ' '.join(''.join(' ' if _unsafe_char(char) else char
+                             for char in title[:1000]).split())[:200]
     return f"- {row['ts'][:19]}Z {outcome} {path} - {title}"
 
 

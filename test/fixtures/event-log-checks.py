@@ -582,6 +582,74 @@ class PreviewChecks(Base):
                          ('refused', 'initial_preview_proof_changed', 'preview', 'p1'))
 
 
+class ReviewTwoChecks(Base):
+    def test_live_file_stops_at_hard_cap_while_rotation_is_starved(self):
+        import fcntl
+        # A stalled writer holds the shared lock: no rotation can run.
+        lock = os.open(self.state / 'events.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        limit = 2000
+        with patch.object(event_log, 'LOG_LIMIT', limit):
+            results = [event_log.emit('x', state_root=self.state, pad='z' * 100)
+                       for _ in range(200)]
+        size = (self.state / event_log.NAME).stat().st_size
+        self.assertLessEqual(size, 2 * limit)
+        self.assertIn(False, results)
+        self.assertGreater(event_log.inspect(self.state)['refused'], 0)
+        self.assertEqual(event_log.inspect(self.state)['lastRefusal']['reason'],
+                         'events_over_hard_cap')
+        # Once the stalled writer goes away, the next writer rotates and writes.
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        with patch.object(event_log, 'LOG_LIMIT', limit):
+            self.assertTrue(event_log.emit('after', state_root=self.state))
+        self.assertTrue((self.state / (event_log.NAME + '.1')).exists())
+
+    def test_replaced_state_root_is_walked_again(self):
+        self.assertTrue(event_log.emit('first', state_root=self.state))
+        os.rename(self.state, self.base / 'state.old')
+        self.state.mkdir(mode=0o700)
+        os.chmod(self.state, 0o700)
+        self.assertTrue(event_log.emit('second', state_root=self.state))
+        self.assertEqual([row['event'] for row in event_log.read(self.state)], ['second'])
+        self.assertEqual([row['event'] for row in event_log.read(self.base / 'state.old')],
+                         ['first'])
+
+    def test_wiki_tail_drops_format_and_bidi_characters(self):
+        ts = '2026-10-28T00:00:00.000Z'
+        rows = [
+            {'v': 1, 'ts': ts, 'event': 'wiki', 'outcome': 'created', 'path': 'ok.md',
+             'title': 'A\u061cB\u200eC\u200fD\u2066E\ufeffF\u2028G'},
+            {'v': 1, 'ts': ts, 'event': 'wiki', 'outcome': 'created',
+             'path': 'evil\u200f.md', 'title': 'X'},
+            {'v': 1, 'ts': ts, 'event': 'wiki', 'outcome': 'created',
+             'path': 'zero\u200b.md', 'title': 'Y'},
+        ]
+        with open(self.state / event_log.NAME, 'a', encoding='utf-8') as out:
+            for row in rows:
+                out.write(json.dumps(row) + '\n')
+        tail = event_log.wiki_tail('/p', (self.decision, {}))
+        self.assertEqual(tail, '- 2026-10-28T00:00:00Z created ok.md - A B C D E F G\n')
+
+    def test_read_budget_counts_bytes_actually_read(self):
+        # Corrupt generations without a newline: dropping the partial first
+        # line leaves no data, but the bytes were still read.
+        for name in (event_log.NAME, event_log.NAME + '.1', event_log.NAME + '.2'):
+            (self.state / name).write_bytes(b'x' * 300000)
+            os.chmod(self.state / name, 0o600)
+        real_read = os.read
+        total = []
+
+        def counting(fd, size):
+            chunk = real_read(fd, size)
+            total.append(len(chunk))
+            return chunk
+        with patch.object(event_log, 'READ_LIMIT', 200000), \
+             patch.object(event_log.os, 'read', side_effect=counting):
+            self.assertEqual(event_log.read(self.state), [])
+        self.assertLessEqual(sum(total), 200000)
+
+
 class RetiredLogChecks(unittest.TestCase):
     def test_qmd_recall_log_is_not_read(self):
         hits = []
