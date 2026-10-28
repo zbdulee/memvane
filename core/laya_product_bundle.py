@@ -426,11 +426,20 @@ def _private(root):
         raise BundleEvidenceError('bundle_root_unavailable') from exc
 
 
+# Exact-commit proofs read the object database as committed: replacement
+# refs and grafts could substitute a tree under an unchanged commit id.
+GIT_PINNED = ('git', '--no-replace-objects')
+
+
+def git_pinned_env():
+    return {**os.environ, 'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_GRAFT_FILE': os.devnull}
+
+
 def _git(root, *args):
     try:
-        done = subprocess.run(('git', '-C', str(root), *args), check=True,
+        done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=15)
+                              timeout=15, env=git_pinned_env())
         return done.stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise BundleEvidenceError('source_commit_unavailable') from exc
@@ -623,30 +632,23 @@ def _skip_host_orphan_marker(root, current, files):
     files.remove('.orphaned_at')
 
 
-def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
-                             vector_profile=None):
-    """Seal an already installed, exact-commit host plugin in place.
+def _exec_matches(mode, committed_mode):
+    """Git executable iff the owner may execute; a plain blob has no exec bit.
 
-    This only adopts a private, owner-controlled host cache. It does not copy
-    executable files, change modes, register a host plugin, or select a route.
-    The caller must separately observe that the host loaded ``plugin_root``.
-    Existing metadata and any unexpected installed file fail closed.
+    Host caches extract executables as 0755, exact packaging writes 0700.
     """
-    source, installed = Path(source_root), Path(plugin_root)
-    if (not source.is_absolute() or source.is_symlink() or not source.is_dir() or
-            type(commit_id) is not str or not COMMIT.fullmatch(commit_id) or
-            not installed.is_absolute() or installed.is_symlink() or
-            not installed.is_dir() or installed == source):
-        _fail('invalid_installed_candidate_request')
-    source = source.resolve(strict=True)
-    installed = _private(installed)
-    metadata = installed / '.laya-product'
-    if metadata.exists() or metadata.is_symlink():
-        proof = inspect_full_plugin_candidate(installed)
-        if (proof['sourceCommit'] != commit_id or
-                proof['vectorProfile'] != vector_profile):
-            _fail('installed_candidate_already_owned')
-        return proof
+    if committed_mode == 0o700:
+        return bool(mode & 0o100)
+    return not mode & 0o111
+
+
+def _exact_commit_entries(source, installed, commit_id):
+    """Live identity of every installed file, each proven against ``commit_id``.
+
+    The installed file set must equal the committed tree; every blob must hash
+    to its committed object id and match the source bytes and exec mode.
+    Existing ``.laya-product`` metadata is never evidence here.
+    """
     if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
             _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
         _fail('source_commit_mismatch')
@@ -664,6 +666,8 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
         _skip_host_orphan_marker(installed, current, files)
         if current == installed and '.git' in dirs:
             dirs.remove('.git')  # Host marketplace clones may retain Git metadata.
+        if current == installed and '.laya-product' in dirs:
+            dirs.remove('.laya-product')  # Seal metadata, rewritten by the caller.
         for name in files:
             actual.add(str((current / name).relative_to(installed)))
     if actual != set(selected):
@@ -676,39 +680,123 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
     for name, committed in selected.items():
         source_raw, source_info = _read(source / name, MAX_FILE)
         installed_raw, installed_info = _read(installed / name, MAX_FILE)
-        if (source_info['mode'] & 0o111 != (0o111 if committed['mode'] == 0o700 else 0) or
+        if (not _exec_matches(source_info['mode'], committed['mode']) or
                 _git_blob_oid(source_raw, object_format) != committed['oid']):
             _fail('source_not_exact_commit')
         if (installed_info['dev'] != installed.stat().st_dev or
-                (installed_info['mode'] & 0o111) !=
-                (0o111 if committed['mode'] == 0o700 else 0) or
+                not _exec_matches(installed_info['mode'], committed['mode']) or
                 installed_info['mode'] & 0o022 or
                 installed_raw != source_raw or
                 (installed / name).stat().st_uid != os.getuid()):
             _fail('installed_blob_not_exact_commit')
         entries[name] = installed_info
+    return entries
+
+
+RESEAL_NAMES = ('.manifest.json.reseal', '.ownership-manifest.json.reseal')
+
+
+def _reseal(metadata, manifest_raw, owner_raw):
+    """Replace stale seal metadata after the files were re-proven exactly.
+
+    Only a private directory holding the two metadata files (and leftovers
+    of an interrupted reseal) is rewritten. A flock on the directory orders
+    installs that reseal the same root; each file moves in by rename.
+    """
+    import fcntl
+    try:
+        info = metadata.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('unsafe_bundle_metadata')
+        fd = os.open(metadata, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except OSError as exc:
+        raise BundleEvidenceError('unsafe_bundle_metadata') from exc
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        names = set(os.listdir(metadata))
+        if not names <= {'manifest.json', 'ownership-manifest.json', *RESEAL_NAMES}:
+            _fail('unsafe_bundle_metadata')
+        for name in RESEAL_NAMES:
+            (metadata / name).unlink(missing_ok=True)
+        for name, temp, raw in (('manifest.json', RESEAL_NAMES[0], manifest_raw),
+                                ('ownership-manifest.json', RESEAL_NAMES[1], owner_raw)):
+            _write(metadata / temp, raw)
+            os.replace(metadata / temp, metadata / name)
+        os.fsync(fd)
+    except OSError as exc:
+        raise BundleEvidenceError('unsafe_bundle_metadata') from exc
+    finally:
+        os.close(fd)
+
+
+def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
+                             vector_profile=None):
+    """Seal an already installed, exact-commit host plugin in place.
+
+    This only adopts a private, owner-controlled host cache. It does not copy
+    executable files, change modes, register a host plugin, or select a route.
+    The caller must separately observe that the host loaded ``plugin_root``.
+    Every installed file is proven against the source commit whether or not
+    seal metadata exists; an unexpected installed file fails closed. Existing
+    metadata that still verifies must name this commit and profile. Metadata
+    that no longer verifies (the host re-extracted the files in place) is
+    rewritten from the re-proven files.
+    """
+    source, installed = Path(source_root), Path(plugin_root)
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir() or
+            type(commit_id) is not str or not COMMIT.fullmatch(commit_id) or
+            not installed.is_absolute() or installed.is_symlink() or
+            not installed.is_dir() or installed == source):
+        _fail('invalid_installed_candidate_request')
+    source = source.resolve(strict=True)
+    installed = _private(installed)
+    metadata = installed / '.laya-product'
+    entries = _exact_commit_entries(source, installed, commit_id)
     artifacts = {name: {'sha256': row['sha256'], 'bytes': row['bytes'],
                         'mode': row['mode']} for name, row in entries.items()}
     profile = validate_vector_profile(vector_profile, artifacts)
-    os.mkdir(metadata, 0o700)
     manifest = {'schema': FULL_SCHEMA, 'kind': 'exact_commit_full_plugin_candidate',
                 'sourceCommit': commit_id, 'exactCommitVerifiedAtPackaging': True,
                 'artifacts': artifacts, 'vectorProfile': profile}
-    _write(metadata / 'manifest.json', _canonical(manifest))
-    owner = {'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(installed),
-             'bundleManifestSha256': _sha(_canonical(manifest)), 'entries': entries}
-    _write(metadata / 'ownership-manifest.json', _canonical(owner))
-    fd = os.open(metadata, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    manifest_raw = _canonical(manifest)
+    owner_raw = _canonical({'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(installed),
+                            'bundleManifestSha256': _sha(manifest_raw),
+                            'entries': entries})
+    if metadata.exists() or metadata.is_symlink():
+        try:
+            proof = inspect_full_plugin_candidate(installed)
+        except BundleEvidenceError:
+            proof = None
+        if proof is not None:
+            if (proof['sourceCommit'] != commit_id or
+                    proof['vectorProfile'] != vector_profile):
+                _fail('installed_candidate_already_owned')
+            if (proof['bundleManifestSha256'] != _sha(manifest_raw) or
+                    proof['ownershipManifestSha256'] != _sha(owner_raw)):
+                _fail('bundle_manifest_mismatch')
+            return proof
+        _reseal(metadata, manifest_raw, owner_raw)
+    else:
+        os.mkdir(metadata, 0o700)
+        _write(metadata / 'manifest.json', manifest_raw)
+        _write(metadata / 'ownership-manifest.json', owner_raw)
+        fd = os.open(metadata, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     fd = os.open(installed, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
-    return inspect_full_plugin_candidate(installed)
+    proof = inspect_full_plugin_candidate(installed)
+    if (proof['sourceCommit'] != commit_id or
+            proof['bundleManifestSha256'] != _sha(manifest_raw) or
+            proof['ownershipManifestSha256'] != _sha(owner_raw)):
+        _fail('bundle_manifest_mismatch')
+    return proof
 
 
 def prepare_full_plugin_candidate(source_root, plugin_root, *, commit_id,

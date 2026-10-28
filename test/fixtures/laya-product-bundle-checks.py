@@ -821,6 +821,260 @@ print(json.dumps(result))'''
             with self.assertRaisesRegex(Exception, 'forward_only'):
                 fresh_wiki.restore(self.project, self.journal_path)
 
+    # ---- same-root re-adoption with the real adoption and bundle proof ----
+
+    def host_root(self):
+        """A host cache copy of commit1 adopted in place (real adoption)."""
+        cache = self.root / 'host-cache' / 'mkt' / 'memvane'
+        cache.mkdir(parents=True)
+        root = cache / '0.41.4'
+        shutil.copytree(self.source, root, ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(root):
+            Path(directory).chmod(0o755)
+        return root, bundle.adopt_host_loaded_plugin(
+            self.source, root, commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+
+    def commit_v2(self):
+        changed = self.source / 'core' / 'laya_index_flow.py'
+        changed.write_text(changed.read_text() + '\n# v2 synthetic\n')
+        _git(self.source, 'add', '.')
+        _git(self.source, '-c', 'user.name=Synthetic Fixture',
+             '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'v2')
+        return _git(self.source, 'rev-parse', 'HEAD')
+
+    def reextract(self, root, tamper=None):
+        """Host rewrites every plugin file from the source tree: new inodes.
+
+        ``.laya-product`` survives untouched, as when a host re-extracts a
+        version directory in place.
+        """
+        for directory, dirs, files in os.walk(root):
+            if Path(directory) == root and '.laya-product' in dirs:
+                dirs.remove('.laya-product')
+            for name in files:
+                target = Path(directory) / name
+                relative = target.relative_to(root)
+                raw = (self.source / relative).read_bytes()
+                if tamper is not None and str(relative) == tamper:
+                    raw += b'\nimport os; os.system("echo tampered")\n'
+                mode = stat.S_IMODE(target.stat().st_mode)
+                temp = target.with_name('.' + name + '.new')
+                temp.write_bytes(raw)
+                temp.chmod(mode)
+                os.replace(temp, target)
+
+    def forge_metadata(self, root, commit):
+        """Self-consistent seal metadata over whatever bytes the root holds."""
+        meta = root / '.laya-product'
+        manifest = json.loads((meta / 'manifest.json').read_bytes())
+        entries = {name: bundle._read(root / name, bundle.MAX_FILE)[1]
+                   for name in manifest['artifacts']}
+        manifest = {**manifest, 'sourceCommit': commit,
+                    'artifacts': {name: {'sha256': row['sha256'], 'bytes': row['bytes'],
+                                         'mode': row['mode']}
+                                  for name, row in entries.items()}}
+        raw = bundle._canonical(manifest)
+        owner = {'schema': bundle.FULL_OWNER_SCHEMA, 'pluginRoot': str(root),
+                 'bundleManifestSha256': hashlib.sha256(raw).hexdigest(),
+                 'entries': entries}
+        for name, value in (('manifest.json', raw),
+                            ('ownership-manifest.json', bundle._canonical(owner))):
+            (meta / name).unlink()
+            bundle._write(meta / name, value)
+        return bundle.inspect_full_plugin_candidate(root)
+
+    def selected_on_host_root(self):
+        """A real journal, ledger, marker and route selected on a host root."""
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        self.settings.write_text(json.dumps({
+            'collections': ['docs', 'wiki'], 'indexing': True,
+            'collectionPaths': {'docs': '.', 'wiki': '.auto-context/wiki'},
+            'collectionRoles': {'docs': 'raw', 'wiki': 'wiki'},
+            'recallStrategy': 'wikiOnly', 'compile': {'mode': 'off'}}))
+        root, first = self.host_root()
+        route = self.route(first, 'g-' + '4' * 32)
+        route.pop('collectionName')
+        route.pop('sourceRoot')
+        route['schema'] = host.SCHEMA_V2
+        route['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)}]
+        route['settingsSha256'] = host.settings_identity_digest(
+            self.project, route['collections'])
+        raw = bundle._canonical(route)
+        created = journal.create_journal(self.journal_path, first, raw,
+                                         user_qmd_roots=[self.user_qmd])
+        receipt = journal.stage_production_attestation(
+            self.journal_path, first, self.provider_manifest(first), self.closure)
+        self.route_path.write_bytes(raw)
+        self.route_path.chmod(0o600)
+        selected = journal.cas_activate(self.journal_path, created['epoch'], raw)
+        (self.install / 'reviewed-route.json').write_bytes(raw)
+        (self.install / 'reviewed-route.json').chmod(0o600)
+        files = {'candidateDb': str(self.db_path), 'queueDb': str(self.queue_path),
+                 'catalogDb': str(self.install / 'catalog.sqlite'),
+                 'bindingStore': str(self.install / 'bindings.sqlite')}
+        for name in ('catalogDb', 'bindingStore'):
+            path = Path(files[name])
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE synthetic_backup_check (id INTEGER PRIMARY KEY)')
+            path.chmod(0o600)
+        row = {'schema': fresh_wiki.SCHEMA, 'epoch': 3, 'phase': 'active',
+               'projectRoot': str(self.project), 'journalPath': str(self.journal_path),
+               'routeSha256': hashlib.sha256(raw).hexdigest(),
+               'collections': route['collections'], **files,
+               'scope': route['scopeId'],
+               'indexGeneration': 'g-' + '4' * 32 + '-b' + 'f' * 64,
+               'sourceManifest': '2' * 64, 'bindingDigest': 'f' * 64,
+               'catalogScanId': '3' * 32, 'catalogRawDigest': '4' * 64,
+               'vectorProfileId': self.vector_profile['profileId'],
+               'vectorRows': 1, 'candidateIncarnation': self.incarnation,
+               'attestationSha256': receipt['attestationSha256'],
+               'providerFileIdentitySha256': selected['providerFileIdentitySha256'],
+               **{field: [1, 1] for _, field in fresh_wiki.FILES}}
+        fresh_wiki._write(self.install / fresh_wiki.LEDGER, row, replace=False)
+        fresh_wiki._write(self.auto / fresh_wiki.MARKER, fresh_wiki._marker(row),
+                          replace=False)
+        self.build_files = files
+        return root, first, raw
+
+    def bundle_upgrade(self, root, commit):
+        """``laya_bundle_upgrade.upgrade_install``: real adoption and proofs.
+
+        Real: adoption, bundle inspection, installer journal CAS, fresh-wiki
+        ledger/marker/route and ``_not_older`` on the git source. Synthetic:
+        host source lookup, provider review, runtime pinning, the legacy
+        Hermes gate, build record and wake, store counts and resident lane.
+        """
+        import laya_bundle_upgrade as auto
+        import laya_embed_runtime
+        counts = {'vectorChunkSets': 0, 'vectorChunks': 0, 'publishedDocuments': 0}
+        reviewed = {'proposalSha256': 'b' * 64, 'reviewedProvider': {
+            'vectorProfile': self.vector_profile,
+            'providerManifest': self.provider_manifest({'pluginRoot': str(root)}),
+            'dependencyClosure': self.closure}}
+        build = {'identity': {'projectRoot': str(self.project),
+                              'stateRoot': str(self.install),
+                              'vectorProfileId': self.vector_profile['profileId'],
+                              'journalPath': str(self.journal_path), **self.build_files}}
+        with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
+             mock.patch.object(auto, 'installed_commit', return_value=commit), \
+             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
+                               new=lambda _path: 'f' * 64), \
+             mock.patch('laya_journal_v4.refuse_while_legacy_hermes'), \
+             mock.patch.object(product_install, 'review_local_provider',
+                               return_value=reviewed), \
+             mock.patch.object(product_install, '_request_build_wake',
+                               return_value={'status': 'queued'}), \
+             mock.patch.object(active_upgrade, 'review_local_provider',
+                               return_value=reviewed), \
+             mock.patch.object(active_upgrade.build, 'read', return_value=build), \
+             mock.patch.object(active_upgrade, '_locked_provider', nullcontext), \
+             mock.patch.object(inactive_upgrade, '_store_counts', return_value=counts), \
+             mock.patch.object(fresh_wiki, '_identity', return_value=[1, 1]):
+            return auto.upgrade_install(self.project, self.install, root, home=self.root)
+
+    def assert_selected_proves(self, root, commit):
+        proof = bundle.inspect_full_plugin_candidate(root)
+        self.assertEqual(proof['sourceCommit'], commit)
+        selected = journal.inspect_journal(self.journal_path)['selected']
+        self.assertEqual(selected['ownershipManifestSha256'],
+                         proof['ownershipManifestSha256'])
+        done = self.prove_in_candidate_process(proof)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(json.loads(done.stdout)['productRouteAllowed'])
+
+    def test_adoption_accepts_our_own_exact_packaging(self):
+        # Exact packaging writes executables 0700; host caches extract 0755.
+        packaged = self.candidate('plugin-packaged', self.commit1)
+        self.assertEqual(stat.S_IMODE((Path(packaged['pluginRoot']) / 'hooks' /
+                                       'run-hook').stat().st_mode), 0o700)
+        adopted = bundle.adopt_host_loaded_plugin(
+            self.source, packaged['pluginRoot'], commit_id=self.commit1,
+            vector_profile=self.vector_profile)
+        self.assertEqual(adopted, packaged)
+        _root, hosted = self.host_root()
+        # Modes differ, so the two seals of one commit differ.
+        self.assertNotEqual(hosted['bundleManifestSha256'], packaged['bundleManifestSha256'])
+        plain = Path(packaged['pluginRoot']) / 'README.md'
+        plain.chmod(0o700)  # an exec bit on a plain blob is not the commit
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'installed_blob_not_exact_commit'):
+            bundle._exact_commit_entries(self.source, Path(packaged['pluginRoot']),
+                                         self.commit1)
+
+    def test_replacement_refs_cannot_swap_the_committed_tree(self):
+        # Keep HEAD's commit id, swap its tree through refs/replace.
+        target = self.source / 'core' / 'laya_index_runtime.py'
+        target.write_text(target.read_text() + '\n# swapped through refs/replace\n')
+        _git(self.source, 'add', '.')
+        tree = _git(self.source, 'write-tree')
+        forged = _git(self.source, '-c', 'user.name=Synthetic Fixture',
+                      '-c', 'user.email=fixture@example.invalid',
+                      'commit-tree', tree, '-m', 'forged')
+        _git(self.source, 'replace', self.commit1, forged)
+        self.assertEqual(_git(self.source, 'rev-parse', 'HEAD'), self.commit1)
+        self.assertIn(b'swapped', subprocess.run(
+            ('git', '-C', str(self.source), 'show', self.commit1 + ':core/laya_index_runtime.py'),
+            check=True, stdout=subprocess.PIPE).stdout)
+        root = self.root / 'host-cache-replaced'
+        shutil.copytree(self.source, root, ignore=shutil.ignore_patterns('.git'))
+        for directory, _dirs, _files in os.walk(root):
+            Path(directory).chmod(0o755)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError, 'source_not_exact_commit'):
+            bundle.adopt_host_loaded_plugin(self.source, root, commit_id=self.commit1,
+                                            vector_profile=self.vector_profile)
+        self.assertFalse((root / '.laya-product').exists())
+        import laya_bundle_upgrade as auto
+        self.assertEqual(auto._git(self.source, 'cat-file', '-p', self.commit1)[1]
+                         .splitlines()[0],
+                         'tree ' + _git(self.source, '--no-replace-objects', 'rev-parse',
+                                        self.commit1 + '^{tree}'))
+
+    def test_same_version_reextract_with_surviving_metadata_recovers(self):
+        root, first, _raw = self.selected_on_host_root()
+        self.assert_selected_proves(root, self.commit1)
+        self.reextract(root)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'bundle_file_identity_changed'):
+            bundle.inspect_full_plugin_candidate(root)
+        self.assertNotEqual(self.prove_in_candidate_process(first).returncode, 0)
+        result = self.bundle_upgrade(root, self.commit1)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        resealed = bundle.inspect_full_plugin_candidate(root)
+        self.assertEqual(resealed['bundleManifestSha256'], first['bundleManifestSha256'])
+        self.assertNotEqual(resealed['ownershipManifestSha256'],
+                            first['ownershipManifestSha256'])
+        self.assert_selected_proves(root, self.commit1)
+
+    def test_other_commit_metadata_over_tampered_core_file_is_refused(self):
+        root, _first, raw = self.selected_on_host_root()
+        commit2 = self.commit_v2()
+        self.reextract(root, tamper='core/laya_index_runtime.py')
+        forged = self.forge_metadata(root, commit2)
+        self.assertEqual(forged['sourceCommit'], commit2)
+        before = journal.inspect_journal(self.journal_path)
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'installed_blob_not_exact_commit'):
+            self.bundle_upgrade(root, commit2)
+        self.assertEqual(journal.inspect_journal(self.journal_path), before)
+        self.assertEqual(self.route_path.read_bytes(), raw)
+        self.assertEqual(fresh_wiki._load(self.install / fresh_wiki.LEDGER)['phase'],
+                         'active')
+
+    def test_other_commit_reextracted_untampered_takes_normal_upgrade(self):
+        root, first, _raw = self.selected_on_host_root()
+        commit2 = self.commit_v2()
+        self.reextract(root)  # commit2 bytes; commit1 metadata survives
+        result = self.bundle_upgrade(root, commit2)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        proof = bundle.inspect_full_plugin_candidate(root)
+        self.assertNotEqual(proof['bundleManifestSha256'], first['bundleManifestSha256'])
+        self.assert_selected_proves(root, commit2)
+
     def test_two_processes_contest_one_journal_epoch(self):
         self.initial()
         second, _route, raw = self.stage_v2_source()
