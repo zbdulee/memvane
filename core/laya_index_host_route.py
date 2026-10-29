@@ -28,6 +28,7 @@ import sys
 import unicodedata
 
 import config
+import project_dir
 
 SCHEMA = "laya-index-route-v1"
 SCHEMA_V2 = "laya-index-route-v2"
@@ -55,6 +56,9 @@ INCARNATION = re.compile(r"[0-9a-f]{32}\Z")
 PACKAGE_GENERATION = re.compile(r"g-[0-9a-f]{32}\Z")
 COLLECTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 PROVIDER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
+# A write action on a project whose `.memvane/` lost its settings to an older
+# branch checkout (``project_dir.layout`` ``split``).
+PROJECT_DIR_SPLIT = "project_dir_split"
 ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "posttool",
                             "index", "compile", "file-change-event"})
 MAX_HOOK_BYTES = 2 * 1024 * 1024
@@ -134,7 +138,8 @@ def selected_collection_roots(project_root, collections):
     if raw_root == wiki_root or raw_root in wiki_root.parents or wiki_root in raw_root.parents:
         project = Path(project_root)
         if (raw_root != project or
-                wiki_root != project / '.auto-context' / 'wiki'):
+                wiki_root not in tuple(project / name / project_dir.WIKI
+                                       for name in project_dir.NAMES)):
             raise ValueError('selected_collection_roots_overlap')
     return roots
 
@@ -310,7 +315,8 @@ def _derived_collections(record: dict, root: Path, settings_bytes: bytes) -> lis
     raw = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
     if not isinstance(raw, dict):
         raise ValueError("invalid_route_settings")
-    cfg = config.normalize_config(config.expand_minimal_settings(raw))
+    folder = project_dir.active_name(root)
+    cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     names, mappings = cfg.get("collections"), cfg.get("collectionPaths")
     if (not isinstance(names, list) or not isinstance(mappings, dict) or
             any(not isinstance(name, str) for name in names) or
@@ -328,14 +334,15 @@ def _candidate_paths(cwd: Path):
     # stops at HOME (or cwd outside HOME), but a nested cwd outside HOME must
     # not miss an already-selected route at its project root and enter QMD.
     # Candidate activation still requires config's exact project-root binding.
+    # The record is read from `.memvane/` first, then the `.auto-context/`
+    # fallback of a project not moved yet (``project_dir.runtime_file``).
     for directory in (cwd, *cwd.parents):
-        auto = directory / ".auto-context"
-        path = auto / RECORD
+        path = project_dir.runtime_file(directory, RECORD)
         try:
             path.lstat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             continue
-        yield directory, auto, path
+        yield directory, path.parent, path
 
 
 def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
@@ -344,11 +351,11 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
         if auto.is_symlink() or path.is_symlink() or not auto.is_dir():
             raise ValueError("unsafe_route_path")
         found = config.find_project_config(str(current))
+        settings = project_dir.settings_path(root)
         if (found.get("configFormat") != "auto-context-dir"
-                or found.get("projectRoot") != str(root)
-                or found.get("configPath") != str(root / ".auto-context" / "settings.json")):
+                or found.get("projectRoot") != str(root) or settings is None
+                or found.get("configPath") != str(settings)):
             raise ValueError("route_settings_not_selected")
-        settings = auto / "settings.json"
         if settings.is_symlink():
             raise ValueError("unsafe_route_settings")
         raw = _read_regular(path, MAX_RECORD_BYTES)
@@ -411,8 +418,9 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
             raise ValueError("invalid_route_settings")
         # A minimal {name, skipPaths} file is checked as its derived legacy
         # shape; any other file is checked exactly as written.
-        raw_settings = config.expand_minimal_settings(raw_settings)
-        cfg = config.normalize_config(raw_settings)
+        folder = project_dir.active_name(root)
+        raw_settings = config.expand_minimal_settings(raw_settings, folder)
+        cfg = config.normalize_config(raw_settings, folder)
         if cfg.get("indexing") is not True:
             raise ValueError("route_indexing_not_selected")
         raw_compile = raw_settings.get("compile", {})
@@ -509,7 +517,7 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         if (not requested.is_dir() or not root.is_absolute()
                 or str(root.resolve(strict=True)) != str(root)
                 or (current != root and root not in current.parents)
-                or found.get('configPath') != str(root / '.auto-context' / 'settings.json')):
+                or found.get('configPath') != str(project_dir.settings_path(root))):
             return _decision('blocked', 'initial_preview_project_mismatch')
         import laya_initial_build
         build = laya_initial_build.lookup(str(root))
@@ -527,7 +535,7 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         raw = _read_regular(route_path, MAX_RECORD_BYTES)
         if hashlib.sha256(raw).hexdigest() != identity['routeSha256']:
             return _decision('blocked', 'initial_preview_route_changed')
-        candidate = _classify_record(root, root / '.auto-context', route_path, current)
+        candidate = _classify_record(root, project_dir.folder(root), route_path, current)
         if candidate['state'] != 'candidate':
             return candidate
         expected = {'projectRoot': identity['projectRoot'],
@@ -601,13 +609,21 @@ def select_route(cwd: str, *, action: str = "recall") -> dict:
 
 
 def _settings_identity(project: Path) -> tuple:
-    """The derived project identity a worktree must share with its main checkout."""
-    raw = json.loads(_read_regular(project / ".auto-context" / "settings.json",
-                                   MAX_SETTINGS_BYTES).decode("utf-8"),
+    """The derived project identity a worktree must share with its main checkout.
+
+    The folder name is normalized: a worktree on a branch that still has
+    ``.auto-context/`` and a main checkout on ``.memvane/`` (or the reverse)
+    derive the same identity.
+    """
+    settings = project_dir.settings_path(project)
+    if settings is None:
+        raise ValueError("route_settings_not_selected")
+    raw = json.loads(_read_regular(settings, MAX_SETTINGS_BYTES).decode("utf-8"),
                      object_pairs_hook=_pairs)
     if not isinstance(raw, dict):
         raise ValueError("invalid_route_settings")
-    cfg = config.normalize_config(config.expand_minimal_settings(raw))
+    folder = project_dir.CURRENT
+    cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     paths = cfg.get("collectionPaths")
     return (cfg.get("name"), cfg.get("indexing"), tuple(cfg.get("collections") or ()),
             tuple(sorted(paths.items())) if isinstance(paths, dict) else None,
@@ -643,7 +659,8 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
             return None
         for directory in (current, *current.parents):
             for name in (RECORD, QMD_SELECTION_MARKER):
-                if os.path.lexists(directory / ".auto-context" / name):
+                if any(os.path.lexists(directory / folder / name)
+                       for folder in project_dir.NAMES):
                     return None
             if directory == worktree:
                 break
@@ -679,7 +696,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
         records = list(_candidate_paths(current))
         markers = []
         for directory in (current, *current.parents):
-            marker = directory / '.auto-context' / QMD_SELECTION_MARKER
+            marker = project_dir.runtime_file(directory, QMD_SELECTION_MARKER)
             if marker.exists() or marker.is_symlink():
                 markers.append((directory, marker))
     except (OSError, RuntimeError, ValueError):
@@ -722,6 +739,13 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if len(records) != 1:
         return _decision("blocked", "ambiguous_route_records")
     root, auto, path = records[0]
+    if action not in ("recall", "gate") and project_dir.layout(root) == "split":
+        # An older branch is checked out over a moved project: its
+        # `.auto-context/` is not indexed and a missing or partial
+        # `.memvane/wiki` is never published as a deletion. Search keeps the
+        # published index and the edit gate keeps allowing edits; every index
+        # and wiki writer holds.
+        return _decision("blocked", PROJECT_DIR_SPLIT)
     return _classify_record(root, auto, path, current)
 
 
@@ -736,11 +760,20 @@ def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
     decision = select_route(cwd, action=action)
     if decision.get("state") != "blocked":
         return decision
-    try:
-        import laya_state_move
-        return laya_state_move.settle_decision(cwd, action, decision, select_route)
-    except Exception:
-        return decision
+    return _settle_moves(cwd, action, decision)
+
+
+def _settle_moves(cwd: str, action: str, decision: dict) -> dict:
+    """Wait out a state-root move or a project folder move (``.memvane/``)."""
+    for name in ("laya_state_move", "laya_project_dir_move"):
+        if decision.get("state") != "blocked":
+            return decision
+        try:
+            module = __import__(name)
+            decision = module.settle_decision(cwd, action, decision, select_route)
+        except Exception:
+            pass
+    return decision
 
 
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
@@ -786,7 +819,8 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     """One SessionStart line for a project with settings but no selected route.
 
     The caller has already classified the event ``legacy``. A directory
-    without ``.auto-context/settings.json`` is not opted in and stays silent.
+    without ``.memvane/settings.json`` (or the ``.auto-context/`` fallback)
+    is not opted in and stays silent.
     """
     cwd = fallback_cwd
     try:
@@ -809,14 +843,49 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     return (BUILD_NOTICE if building else ONBOARDING_NOTICE).format(root=root)
 
 
+def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
+    """One SessionStart line for a blocked project whose folders need attention.
+
+    ``split`` (an older branch checked out over ``.memvane/``) and
+    ``conflict`` name what the owner does; ``adopt`` (git brought the
+    renamed folder, the runtime files are still in ``.auto-context/``) and a
+    move in progress request the upgrade worker. Never waits.
+    """
+    cwd = fallback_cwd
+    try:
+        payload = json.loads(_read_regular(Path(payload_file), MAX_HOOK_BYTES).decode("utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
+            cwd = payload["cwd"]
+    except (OSError, ValueError, TypeError, UnicodeError):
+        pass
+    if not Path(cwd).is_absolute():
+        return None
+    try:
+        import laya_project_dir_move as dir_move
+        found = config.find_project_config(cwd)
+        root = Path(found.get("projectRoot") or cwd)
+        line = dir_move.layout_notice(root)
+        if line is not None:
+            return line
+        record = project_dir.runtime_file(root, RECORD)
+        if not record.is_file():
+            return None
+        route = json.loads(_read_regular(record, MAX_RECORD_BYTES).decode("utf-8"))
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.project_dir_notice(str(root), route["journalPath"])
+    except Exception:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 3 and args[0] == "classify":
         decision = select_route_settled(args[2], action=args[1])
     elif len(args) == 4 and args[0] == "classify-hook":
         decision = select_hook_route(args[1], args[2], args[3])
-    elif len(args) == 3 and args[0] == "onboarding-notice":
-        notice = onboarding_notice(args[1], args[2])
+    elif len(args) == 3 and args[0] in ("onboarding-notice", "project-dir-notice"):
+        notice = (onboarding_notice if args[0] == "onboarding-notice"
+                  else project_dir_notice)(args[1], args[2])
         if notice:
             print(notice)
         return 0

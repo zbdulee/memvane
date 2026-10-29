@@ -70,7 +70,8 @@ def owner(root):
 
 
 def _settings_scope(project):
-    raw=read_private_json(_path(project/'.auto-context/settings.json'))
+    import project_dir
+    raw=read_private_json(_path(project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS))
     if not isinstance(raw,dict) or not isinstance(raw.get('collectionPaths'),dict):
         raise ValueError('project_scope_settings_invalid')
     result={key:raw.get(key) for key in ('indexing','collectionPaths','collections','allowRoots','skipPaths')}

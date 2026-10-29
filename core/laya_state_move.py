@@ -19,7 +19,7 @@ intent), ``move`` (the rename), ``switch`` (compare-and-replace writes; a
 resume replays them), ``verify`` and ``settle``. After the rename a move only
 goes forward and needs no bundle review, network or model.
 
-While the project pointer ``.auto-context/memvane-state-move.json`` exists a
+While the project pointer ``.memvane/memvane-state-move.json`` exists a
 hook that classifies the route ``blocked`` re-reads it briefly
 (``settle_decision``); the window between the rename and the route write is a
 few small file writes under every writer lock.
@@ -38,6 +38,7 @@ import stat
 import time
 
 import memvane_paths
+import project_dir
 
 SCHEMA = 'memvane-state-move-intent-v1'
 POINTER_SCHEMA = 'memvane-state-move-pointer-v1'
@@ -146,7 +147,7 @@ def _private_root(path):
 # ----------------------------------------------------------------- pointer
 
 def pointer_path(project):
-    return Path(project) / '.auto-context' / POINTER
+    return project_dir.runtime_file(project, POINTER)
 
 
 def read_pointer(project, home=None):
@@ -378,7 +379,7 @@ def _prepare(project, state, home=None):
     if os.path.lexists(target):
         _fail('state_move_target_exists')
     _settle_active_intent(project, state)
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     journal = state / JOURNAL
     row = fresh._load(state / fresh.LEDGER)
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
@@ -556,7 +557,7 @@ def _switch(intent, *, step=None):
     from laya_install_journal import PRODUCTION_ATTESTATION
     project = Path(intent['projectRoot'])
     old, new = Path(intent['fromRoot']), Path(intent['toRoot'])
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     mark = step or _step or (lambda _name: None)
     if os.path.lexists(old):
         if os.path.lexists(new):
@@ -591,7 +592,7 @@ def _verify(intent):
     from laya_index_host_route import select_route
     from laya_install_journal import verify_selected_route_read_only
     project, new = Path(intent['projectRoot']), Path(intent['toRoot'])
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     if fresh.classify_marker(project, auto / fresh.MARKER, auto / fresh.ROUTE) != 'candidate':
         _fail('state_move_unverified')
     decision = select_route(str(project), action='update')
@@ -632,14 +633,14 @@ def _locks(stack, project, state):
     stack.enter_context(_install_lock(state))
     if not stack.enter_context(build.owner(state)):
         _fail('initial_build_busy')
-    stack.enter_context(_operation_lock(project / '.auto-context' / MARKER))
+    stack.enter_context(_operation_lock(project_dir.folder(project) / MARKER))
     stack.enter_context(_provider_lane())
     # Wiki grant writers (SessionStart hooks) serialize on this lock; one that
     # waited across the rename finds its path gone and re-resolves the route.
     import laya_wiki_discovery
     from laya_fresh_wiki_origin import ROUTE
     try:
-        queue = json.loads(_read(project / '.auto-context' / ROUTE, 8192))['queuePath']
+        queue = json.loads(_read(project_dir.folder(project) / ROUTE, 8192))['queuePath']
     except Exception:
         queue = None
     if isinstance(queue, str):

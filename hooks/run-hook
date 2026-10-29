@@ -86,6 +86,21 @@ case "$_laya_route_state" in
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
   blocked)
+    if [ "$ACTION" = "update-queued" ]; then
+      # A project folder that needs the owner (an older branch checked out
+      # over .memvane/, both folders holding cards) or that is moving to
+      # .memvane/ names it once at SessionStart instead of failing silently.
+      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" project-dir-notice \
+        "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
+      if [ -n "$_laya_notice" ]; then
+        if [ "$ENGINE" = codex ]; then
+          printf '%s' "$_laya_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
+        else
+          printf '%s\n' "$_laya_notice"
+        fi
+        exit 0
+      fi
+    fi
     echo '[memvane] selected route unavailable; request refused' >&2
     exit 3
     ;;

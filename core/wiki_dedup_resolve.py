@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resolve one entry in the retroactive wiki dedup queue.
 
-Reads .auto-context/compile/dedup-needed.jsonl, applies one action to the
+Reads .memvane/compile/dedup-needed.jsonl, applies one action to the
 entry at --index, and rewrites the queue with that entry removed. Never
 touches entries other than the one resolved this run.
 
@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
+import project_dir
 import config as qmd_config
 import wiki_activity_log
 import wiki_mutation_lock
@@ -233,7 +234,7 @@ def main() -> int:
     found = qmd_config.find_project_config(args.cwd)
     root = Path(found["projectRoot"]).resolve()
     config = found["config"]
-    wiki_rel = config.get("wikiPath", ".auto-context/wiki")
+    wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
     wiki_root = wc.safe_managed_dir(root, wiki_rel)
     compile_dir = cp.compile_dir(root, create=True)
     if wiki_root is None or compile_dir is None:

@@ -16,19 +16,20 @@ import sys
 import tempfile
 
 import config as qmd_config
+import project_dir
 import wiki_mutation_lock
 
 
 def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
     target = Path(target).resolve()
-    settings_dir = target / ".auto-context"
+    settings_dir = project_dir.folder(target)
     settings = settings_dir / "settings.json"
     with wiki_mutation_lock.lock(target):
 
         def ensure_settings_dir() -> None:
             if settings_dir.exists():
                 if settings_dir.is_symlink() or not settings_dir.is_dir():
-                    print(f"[qmd] unsafe .auto-context path: {settings_dir}", file=sys.stderr)
+                    print(f"[qmd] unsafe project folder path: {settings_dir}", file=sys.stderr)
                     sys.exit(1)
             else:
                 settings_dir.mkdir(parents=True, exist_ok=False)
@@ -36,10 +37,10 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
                 resolved = settings_dir.resolve()
                 resolved.relative_to(target)
             except (OSError, ValueError):
-                print(f"[qmd] unsafe .auto-context path: {settings_dir}", file=sys.stderr)
+                print(f"[qmd] unsafe project folder path: {settings_dir}", file=sys.stderr)
                 sys.exit(1)
             if resolved != settings_dir:
-                print(f"[qmd] unsafe .auto-context path: {settings_dir}", file=sys.stderr)
+                print(f"[qmd] unsafe project folder path: {settings_dir}", file=sys.stderr)
                 sys.exit(1)
 
         if settings.is_symlink():
@@ -124,7 +125,7 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
 
         collection_paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
         collection_paths = {key: value for key, value in collection_paths.items() if isinstance(key, str) and isinstance(value, str)}
-        collection_paths[wiki_collection] = ".auto-context/wiki"
+        collection_paths[wiki_collection] = settings_dir.name + "/" + project_dir.WIKI
         config["collectionPaths"] = collection_paths
 
         collection_roles = config.get("collectionRoles") if isinstance(config.get("collectionRoles"), dict) else {}
@@ -133,7 +134,7 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
             collection_roles.setdefault(collection, "raw")
         collection_roles[wiki_collection] = "wiki"
         config["collectionRoles"] = collection_roles
-        # recallStrategy "hierarchical"·wikiPath ".auto-context/wiki"는 DEFAULT_CONFIG 기본값과
+        # recallStrategy "hierarchical"·wikiPath "<활성 폴더>/wiki"는 DEFAULT_CONFIG 기본값과
         # 같으므로 쓰지 않는다(생성기 delta-only). recallStrategy는 예전에 **대입**이라 기존 값을
         # 강제로 덮었으므로, 안 쓰는 것만으로는 부족하고 키를 지워야 같은 결과가 된다
         # ("키 없음 → 기본값 hierarchical"). wikiPath는 setdefault라 지우면 사용자 커스텀 경로를

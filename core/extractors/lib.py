@@ -96,7 +96,7 @@ VERBATIM RULES (critical — these cards are keyword-searched, so identifiers AR
 - Copy identifiers EXACTLY as the source writes them. Never paraphrase, translate, abbreviate, normalize, or replace an identifier with a generic description of it.
 - Whenever the source contains any of the following, carry it into summary verbatim:
   - backtick code spans (`like_this`) — keep the backticks
-  - file and directory paths (`core/recall.py`, `.auto-context/settings.json`) — keep the full path, do NOT shorten it to a basename
+  - file and directory paths (`core/recall.py`, `.memvane/settings.json`) — keep the full path, do NOT shorten it to a basename
   - function/method/class/type signatures (`classifyOrigin()`, `load_project_config(cwd)`)
   - configuration keys, field names, env vars, CLI flags (`compile.maxSourceChars`, `MEMVANE_EVENT_LOG_PROMPTS`, `--safe-mode`)
   - numeric thresholds, limits, versions, percentages — with their units (`12000자`, `34.7%`, `>=2.5.3`, `120 lines`)

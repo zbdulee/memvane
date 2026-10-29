@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import compile_paths as cp
+import project_dir
 import wiki_card
 import wiki_compile as wc
 import wiki_mutation_lock
@@ -134,7 +135,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             return {'state': 'held_branch', 'survivors': [], 'reason': hold}
     elif not lineage.still_valid():
         return {'state': 'held_branch', 'survivors': [], 'reason': 'git_state_changed'}
-    wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
+    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
     import source_label
@@ -303,7 +304,8 @@ def _record_retired(root, config, selected, card, text, reason, *, wiki_root=Non
     """One ``wiki`` retired event; never fails the retirement."""
     try:
         if wiki_root is None:
-            wiki_root = (root / (config or {}).get('wikiPath', '.auto-context/wiki')).resolve()
+            wiki_root = (root / (config or {}).get('wikiPath',
+                                                   project_dir.wiki_rel(root))).resolve()
         rel = Path(card).relative_to(wiki_root).as_posix()
         meta, _ = wc.parse_frontmatter(text)
         title = str(meta.get('title') or Path(card).stem)

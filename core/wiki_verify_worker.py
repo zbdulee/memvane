@@ -56,6 +56,7 @@ import wiki_activity_log
 import wiki_markers
 import wiki_mutation_lock
 import compile_paths as cp
+import project_dir
 import config as qmd_config
 import wiki_compile as wc
 import wiki_compile_worker as wcw
@@ -203,7 +204,7 @@ def engine_cooldown_path(root: Path) -> Path:
     # 모든 카드 검수를 막았고, 선호 엔진이 계속 같은 실패를 반복하는 상태(인증 안 된 CLI 등)에서
     # 다음 후보로 degrade하지 못해 **검수가 영구 정지**했다 — `recallVerifiedOnly` 기본값
     # 아래에서 그것은 wiki가 recall에서 사라지는 것과 같다.
-    return root / cp.COMPILE_DIR / cp.VERIFY_ENGINE_COOLDOWN
+    return cp.under(root, cp.VERIFY_ENGINE_COOLDOWN)
 
 
 # 엔진 단위 식힘 저장소의 구현은 `wcw`가 SSOT다(dedup judge가 자기 파일로 같은 헬퍼를
@@ -242,7 +243,7 @@ def verify_skipped_path(root: Path, vcfg: dict) -> Path:
     제거됐지만, 파일 자체가 밖을 가리키는 symlink면 `cp.ledger`가 여전히 None을 낸다.
     그때도 기본 경로로 떨어져 흔적을 남긴다(마커 없는 삭제보다 나은 실패다).
     """
-    return cp.ledger(root, cp.VERIFY_SKIPPED) or (root / cp.COMPILE_DIR / cp.VERIFY_SKIPPED)
+    return cp.ledger(root, cp.VERIFY_SKIPPED) or cp.under(root, cp.VERIFY_SKIPPED)
 
 
 def verify_deleted_path(root: Path, vcfg: dict) -> Path:
@@ -254,7 +255,7 @@ def verify_deleted_path(root: Path, vcfg: dict) -> Path:
     됐다(실측 3 run 연속). 설정 키(`compile.verify.deletedPath`)는 제거됐지만 symlink escape는
     남으므로 폴백도 남는다.
     """
-    return cp.ledger(root, cp.VERIFY_DELETED) or (root / cp.COMPILE_DIR / cp.VERIFY_DELETED)
+    return cp.ledger(root, cp.VERIFY_DELETED) or cp.under(root, cp.VERIFY_DELETED)
 
 
 # 유료 호출 전 원장 쓰기 가능성 판정. 정의는 `wiki_compile`이 SSOT다 — dedup scan도 같은
@@ -502,7 +503,7 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
             os.close(directory)
     except OSError:
         return 'retry'
-    wiki_root = (root / config.get('wikiPath', '.auto-context/wiki')).resolve()
+    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
     wiki_activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
                              str(pending_meta.get('title') or live_target.stem),
                              reason='pending_publish')
@@ -819,7 +820,7 @@ def process_verify_job(
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
         return True, False
-    wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
+    wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
     live_target = root / rel
     if live_target.is_symlink():
         log_verdict(log_path, {**base_record(job), 'result': 'skipped',
@@ -1171,7 +1172,7 @@ def apply_negative_verdict(
             log_verdict(log_path, {**record, 'result': 'pending_deleted',
                                    'suppressedSources': suppressed})
             return True
-        wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
+        wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
         wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
         record_machine_delete(root, compile_cfg, record, verdict)
@@ -1254,7 +1255,7 @@ def run(
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
     if queue is None or not queue.exists():
         return result
-    log_path = cp.ledger(root, cp.VERIFY_LOG) or (root / cp.COMPILE_DIR / cp.VERIFY_LOG)
+    log_path = cp.ledger(root, cp.VERIFY_LOG) or cp.under(root, cp.VERIFY_LOG)
 
     # **유료 호출 전 preflight: fail-closed 원장에 쓸 수 없으면 검수하지 않는다.**
     # fail-closed 삭제(원장 없이는 지우지 않는다)는 유지하지만 그 실패에 종점이 없으면
@@ -1269,7 +1270,7 @@ def run(
 
     # 0.x 전역 cooldown 파일의 고아 정리 — 이제 읽지도 쓰지도 않으므로 남아 있으면 "검수가
     # 식힘 중"이라는 잘못된 인상만 준다. 후보 단위 파일로 대체됐다(engine_cooldown_path).
-    (root / cp.COMPILE_DIR / cp.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
+    cp.under(root, cp.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
 
     claimed = wcw.claim_queue(queue)
     if claimed is None:

@@ -321,7 +321,7 @@ def display_card_path(path: Path, cwd: str) -> str:
     """모델이 그대로 Read할 수 있는 경로 문자열.
 
     hook payload의 `cwd`는 host 세션의 cwd이고 모델의 상대경로 Read도 같은 기준이라,
-    cwd 하위면 cwd 상대(보통 project root와 같으므로 `.auto-context/wiki/...`)로 낸다.
+    cwd 하위면 cwd 상대(보통 project root와 같으므로 `.memvane/wiki/...`)로 낸다.
     cwd가 project 하위 디렉터리인 세션에서는 `../..` 사슬 대신 절대경로를 낸다 —
     사슬은 읽기 어렵고 base를 오해하면 조용히 다른 파일을 가리킨다.
     """

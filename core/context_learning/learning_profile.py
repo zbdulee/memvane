@@ -20,7 +20,8 @@ def digest(value):return _digest(canonical(value))
 def present(root):return any((Path(root)/name).exists() or (Path(root)/name).is_symlink() for name in (NAME,INSTALL))
 
 def _settings(project):
-    path=Path(project)/'.auto-context/settings.json'
+    import project_dir
+    path=project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS
     if any(p.is_symlink() for p in (path,*path.parents)):raise ValueError('profile_settings_unsafe')
     info=path.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o022 or info.st_size>1024*1024:
@@ -182,7 +183,9 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
             if digest(current) not in (row['sourceSettingsSha256'],digest(row['settings'])):raise ValueError('profile_settings_cas_conflict')
             record={'acceptedSha256':accepted_sha256,'proposal':row,'phase':'intent'}
             _atomic_json(path,record);_sync(root);fault('intent')
-            _atomic_json(project/'.auto-context/settings.json',row['settings']);_sync(project/'.auto-context')
+            import project_dir
+            folder=project_dir.folder(project)
+            _atomic_json(folder/project_dir.SETTINGS,row['settings']);_sync(folder)
             record['phase']='settings_written';_atomic_json(path,record);_sync(root);fault('settings_written')
             _atomic_json(root/NAME,{'acceptedSha256':accepted_sha256,'proposal':row});_sync(root);fault('profile_written')
             record['phase']='activated';_atomic_json(path,record);_sync(root)

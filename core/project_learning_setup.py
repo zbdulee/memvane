@@ -51,6 +51,12 @@ BINDING_TEMP='.synthetic-binding-'
 LOCK_NAME='project-learning-setup.lock'
 
 
+
+def _project_settings(project):
+    """The project's settings file: `.memvane/` first, then `.auto-context/`."""
+    import project_dir
+    return project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS
+
 def proposal_sha256(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
@@ -437,7 +443,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         raise ValueError('setup_expiry_invalid')
     if not isinstance(cohort_id,str) or not project_scope.re.fullmatch('[a-z0-9][a-z0-9-]{2,63}',cohort_id):
         raise ValueError('setup_cohort_invalid')
-    settings_path=_path(project/'.auto-context/settings.json')
+    settings_path=_path(_project_settings(project))
     raw=learning_profile._settings(project)
     project_scope._settings_scope(project)
     inventory=_inventory(root)
@@ -547,7 +553,7 @@ def _backup(project,root,plan):
     if not parent.exists():parent.mkdir(mode=0o700)
     _path(parent,directory=True,private=True)
     backup=parent/uuid.uuid4().hex;backup.mkdir(mode=0o700)
-    copies=[(project/'.auto-context/settings.json',backup/'settings.json')]
+    copies=[(_project_settings(project),backup/'settings.json')]
     for path in sorted(root.rglob('*')):
         relative=path.relative_to(root)
         if relative.parts[0]==BACKUPS or path.name.endswith('.lock') or path.name==NAME:continue
@@ -608,7 +614,7 @@ def activate(plan,*,accepted_sha256,fault=lambda _:None):
         kwargs={'choice':'local-staged' if mode==SYNTHETIC_STAGED else 'local-auto-apply',
                 'mode':'preserve','expires_at_unix_ms':plan['expiresAtUnixMs'],'enable_learning':True}
         if mode==SYNTHETIC_STAGED:kwargs['staged_no_selection']=True
-        if file_sha(project/'.auto-context/settings.json')!=plan['sourceSettingsSha256']:raise ValueError('setup_settings_changed')
+        if file_sha(_project_settings(project))!=plan['sourceSettingsSha256']:raise ValueError('setup_settings_changed')
         profile=learning_profile.proposal(project,root,**kwargs)
         if profile['settings']!=plan['settings']:raise ValueError('setup_settings_changed')
         # Pre-record both possible install journal representations for recovery.
@@ -645,7 +651,7 @@ def recover(project,root):
         for relative,expected in manifest['files'].items():
             if '..' in Path(relative).parts or Path(relative).is_absolute():raise ValueError('setup_backup_changed')
             if file_sha(_path(backup/relative,private=True))!=expected:raise ValueError('setup_backup_changed')
-        settings=_path(project/'.auto-context/settings.json')
+        settings=_path(_project_settings(project))
         if file_sha(settings) not in {journal['sourceSettingsSha256'],journal.get('targetSettingsSha256')}:
             raise ValueError('setup_recovery_settings_changed')
         # Verify all configuration before changing any of it.

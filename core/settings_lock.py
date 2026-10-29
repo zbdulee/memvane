@@ -1,6 +1,8 @@
-"""The project settings writer lock: ``.auto-context/.install-update.lock``.
+"""The project settings writer lock: ``.memvane/.install-update.lock``.
 
-Every writer of ``.auto-context/settings.json`` (learning profile activation
+The lock lives in the project's active folder (``project_dir.folder``: a
+project not moved yet keeps ``.auto-context/``). Every writer of the
+project's ``settings.json`` (learning profile activation
 and recovery) holds this lock. Older installed bundles take the same file, so
 its name stays fixed for cross-version mutual exclusion.
 """
@@ -15,7 +17,8 @@ LOCK_NAME = '.install-update.lock'
 
 
 def _private_auto(root, *, create=False):
-    path = Path(root) / '.auto-context'
+    import project_dir
+    path = project_dir.folder(root)
     if create and not path.exists():
         path.mkdir(mode=0o700)
     if path.is_symlink() or (path.exists() and (not path.is_dir() or path.stat().st_uid != os.getuid()

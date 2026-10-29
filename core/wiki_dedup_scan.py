@@ -6,7 +6,7 @@ hashing shared by the dedup resolver and the verify worker.
 use; ``load_skip_suppressions`` reads the append-only skip ledger.
 
 ``run`` finds near-duplicate wiki cards that already sit on disk and queues
-each pair to ``.auto-context/compile/dedup-needed.jsonl`` for the
+each pair to ``.memvane/compile/dedup-needed.jsonl`` for the
 wiki-dedup-resolver agent (``skills/wiki-dedup``). It runs in the wiki
 lifecycle child (``wiki_lifecycle.main``), which the project's
 ``laya-compile`` wake starts after SessionStart or a source edit; it has no
@@ -256,6 +256,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
 def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
     import compile_paths as cp
+    import project_dir
     import config as qmd_config
     import scan_state
     import wiki_selected_laya
@@ -284,7 +285,7 @@ def run(cwd: str) -> dict:
         log("SKIP: no selected memvane-db route")
         return result
     decision = bound[0]
-    wiki_root = wc.safe_managed_dir(root, config.get("wikiPath", ".auto-context/wiki"))
+    wiki_root = wc.safe_managed_dir(root, config.get("wikiPath", project_dir.wiki_rel(root)))
     selected_wiki = next(item["sourceRoot"] for item in decision["collections"]
                          if item["role"] == "wiki")
     if wiki_root is None or str(wiki_root.resolve()) != selected_wiki:

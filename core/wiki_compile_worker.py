@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from resource_deferred import ResourceDeferred
 import compile_paths as cp
+import project_dir
 import config as qmd_config
 import cooldown as qmd_cooldown
 import source_text
@@ -281,11 +282,11 @@ def candidate_path(root: Path, compile_cfg: dict) -> Path:
     # `cp.ledger`가 None을 내는 것은 파일 자체가 compile 디렉터리 밖을 가리키는
     # symlink일 때뿐이다. 그때도 원장이 **한 줄도 남지 않는** 상태는 만들지 않는다
     # (그것이 과금 루프의 입구였다) — 기본 위치로 떨어뜨려 흔적을 남긴다.
-    return cp.ledger(root, cp.CANDIDATES) or (root / cp.COMPILE_DIR / cp.CANDIDATES)
+    return cp.ledger(root, cp.CANDIDATES) or cp.under(root, cp.CANDIDATES)
 
 
 def cooldown_path(root: Path) -> Path:
-    return root / cp.COMPILE_DIR / cp.COMPILE_COOLDOWN
+    return cp.under(root, cp.COMPILE_COOLDOWN)
 
 
 def cooldown_active(root: Path) -> bool:
@@ -1108,7 +1109,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         append_jsonl(cpath, bounded_failure("needs_extractor", job, "cooldown_active"))
         return False, True, []
 
-    wiki_root = (root / config.get("wikiPath", ".auto-context/wiki")).resolve()
+    wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
     wiki_ctx = orientation(root, wiki_root, config, selected_route)
     # topK·similarPageMaxChars는 설정이 아니라 상수다(qmd_config) — daemon score가 순위
     # 기반이라 사용자가 조정할 의미가 없었다.

@@ -137,7 +137,9 @@ def _preflight_multi_settings(route, project_root):
                                        _multi_settings_supported, _pairs,
                                        _read_regular, _source_for_collection,
                                        settings_identity_digest)
-    settings = Path(project_root) / '.auto-context' / 'settings.json'
+    import project_dir
+    settings = (project_dir.settings_path(project_root) or
+                project_dir.folder(project_root) / project_dir.SETTINGS)
     if settings.is_symlink():
         _fail('cutover_settings_unsafe')
     raw = _read_regular(settings, 2 * 1024 * 1024)
@@ -149,8 +151,9 @@ def _preflight_multi_settings(route, project_root):
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
         _fail('cutover_settings_unsupported')
-    parsed = config.expand_minimal_settings(parsed)
-    cfg = config.normalize_config(parsed)
+    folder = project_dir.active_name(project_root)
+    parsed = config.expand_minimal_settings(parsed, folder)
+    cfg = config.normalize_config(parsed, folder)
     declared = route['collections']
     names = tuple(item['name'] for item in declared)
     roles = config.role_map(cfg)

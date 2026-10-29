@@ -29,6 +29,8 @@ import stat
 import sys
 import tempfile
 
+import project_dir
+
 from laya_install_journal import (create_journal, inspect_journal,
                                   preflight_product_candidate,
                                   stage_production_attestation)
@@ -176,7 +178,7 @@ def _write_or_verify_private(path, raw):
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     """Review a new wiki-only Laya generation from minimal project settings.
 
-    The canonical ``.auto-context/settings.json`` must be minimal
+    The canonical ``.memvane/settings.json`` must be minimal
     (``{name, skipPaths}``); any other shape refuses as
     ``minimal_settings_required``. The settings file is never rewritten; the
     installer builds a separate private generation from the canonical wiki
@@ -193,7 +195,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     if (not project.is_absolute() or project.is_symlink() or
             project.resolve(strict=True) != project):
         _fail('invalid_project_root')
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     if ((auto / RECORD).exists() or (auto / RECORD).is_symlink() or
             (not _bound_marker and ((auto / QMD_SELECTION_MARKER).exists() or
                                     (auto / QMD_SELECTION_MARKER).is_symlink()))):
@@ -209,7 +211,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     # A new selection starts only from minimal ``{name, skipPaths}`` settings.
     if not config.is_minimal_settings(parsed):
         _fail('minimal_settings_required')
-    source_settings = config.expand_minimal_settings(parsed)
+    source_settings = config.expand_minimal_settings(parsed, project_dir.active_name(project))
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))
     roles = config.role_map(cfg)
@@ -230,7 +232,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
                          if item['role'] == 'raw'))
     wiki_root = Path(next(item['sourceRoot'] for item in collections
                           if item['role'] == 'wiki'))
-    if (raw_root != project or wiki_root != project / '.auto-context' / 'wiki'
+    if (raw_root != project or wiki_root != project_dir.folder(project) / project_dir.WIKI
             or not _multi_compile_supported(source_settings, cfg, project,
                                              str(wiki_root))):
         _fail('fresh_wiki_origin_settings_unsupported')
@@ -1485,7 +1487,7 @@ def restore_origin_selection(*, project_root, state_root):
 
 def _restore_fresh_wiki_selection(project, state, journal):
     import laya_fresh_wiki_origin as fresh
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     def observed():
         return {'cutoverPhase': fresh._load(state / fresh.LEDGER)['phase'],
                 'journalState': inspect_journal(journal)['state'],

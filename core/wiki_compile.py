@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_mutation_lock
 import wiki_activity_log
 import compile_paths as cp
+import project_dir
 import config as qmd_config
 import source_text
 import wiki_dedup_judge
@@ -376,7 +377,8 @@ def classify_explicit_target(raw: str, wiki_root: Path, suggested_type: str) -> 
     """Decide how to treat an extractor-provided targetPath.
 
     Extractors sometimes emit wiki-root-relative paths (``concepts/foo.md``)
-    instead of project-root-relative ones (``.auto-context/wiki/concepts/foo.md``).
+    instead of project-root-relative ones (``.memvane/wiki/concepts/foo.md``; a
+    ``.auto-context/wiki/...`` path is read as the same card).
     Returns one of:
     - ("use", path): wiki-root-relative path, normalized under wiki_root
     - ("fallback", None): looks wiki-root-relative but untrusted (bad extension,
@@ -409,7 +411,7 @@ def resolve_target(root: Path, wiki_root: Path, candidate: dict, suggested_type:
         if outcome == "use":
             return normalized, "explicit", []
         if outcome == "legacy":
-            target = (root / raw_target).resolve()
+            target = (root / project_dir.rebase_rel(raw_target.strip(), root)).resolve()
             try:
                 target.relative_to(wiki_root)
             except ValueError:
@@ -1218,7 +1220,7 @@ def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
     paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
     for name in config.get("collections", []):
         if qmd_config.is_wiki_collection(roles, name):
-            return name, paths.get(name, config.get("wikiPath", ".auto-context/wiki"))
+            return name, paths.get(name, config.get("wikiPath", project_dir.wiki_rel()))
     return None, None
 
 
@@ -1377,9 +1379,9 @@ def main() -> int:
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
         return 0
     mode = qmd_config.compile_mode(compile_cfg)
-    wiki_rel = config.get("wikiPath", ".auto-context/wiki")
+    wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
     wiki_root = safe_managed_dir(root, wiki_rel)
-    compile_dir = safe_managed_dir(root, ".auto-context/compile")
+    compile_dir = safe_managed_dir(root, cp.compile_rel(root))
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
