@@ -8,6 +8,6 @@ test('learning state moves to MemVane and a stale selector heals itself', () => 
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 27 tests/);
+  assert.match(result.stderr, /Ran 32 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

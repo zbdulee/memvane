@@ -17,9 +17,11 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -39,6 +41,7 @@ def _mtimes():
 
 
 BEFORE = _mtimes()
+RETRY = 'learning-state-move-retry.json'
 
 
 def private(path, value):
@@ -51,9 +54,91 @@ class Kill(BaseException):
     pass
 
 
+def hold(path):
+    """An exclusive flock on ``path`` (created private), or BlockingIOError."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+class FakeResident:
+    """The per-user resident service as the mover sees it.
+
+    It answers ``hello`` and ``drain`` on ``control.sock`` (the socket the
+    embedding clients reach the service through), holds the service lease
+    and, best effort like the hosted learning inference, the learning lanes
+    it would hold. ``drain`` stops it: the socket goes away and every lock is
+    released.
+    """
+    LANES = ('service-lease.lock', 'cpu-share-0.lock', 'runtime-monitor.lock')
+
+    def __init__(self, service, inference):
+        import laya_resident_service as svc
+        self.svc, self.service = svc, service
+        self.commands = []
+        self.fds = [hold(service / svc.LEASE)]
+        for name in self.LANES:
+            try:
+                self.fds.append(hold(inference / name))
+            except BlockingIOError:
+                pass
+        self.path = service / svc.CONTROL
+        if self.path.exists():
+            self.path.unlink()
+        self.server = socket.socket(socket.AF_UNIX)
+        self.server.bind(str(self.path))
+        os.chmod(self.path, 0o600)
+        self.server.listen(8)
+        self.server.settimeout(.02)
+        self.alive = True
+        self.thread = threading.Thread(target=self.loop, daemon=True)
+        self.thread.start()
+
+    def loop(self):
+        while self.alive:
+            try:
+                conn, _ = self.server.accept()
+            except (socket.timeout, OSError):
+                continue
+            with conn:
+                try:
+                    row = self.svc._read_line(conn, time.monotonic() + 1)
+                    self.commands.append(row.get('command'))
+                    if row.get('command') == 'drain':
+                        self.svc._write_line(conn, {'status': 'draining'})
+                        self.stop()
+                    else:
+                        self.svc._write_line(conn, {'status': 'ready', 'protocol': 1,
+                                                    'protocols': [1]})
+                except (OSError, ValueError):
+                    continue
+
+    def stop(self):
+        if not self.alive:
+            return
+        self.alive = False
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+        self.server.close()
+        for fd in self.fds:
+            os.close(fd)
+        self.fds = []
+
+    def serving(self):
+        return self.svc.hello(self.service) is not None
+
+
 class LearningMoveTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix='lsm-')
+        # /tmp: the resident service's control socket path stays below the
+        # AF_UNIX limit.
+        temp = tempfile.TemporaryDirectory(prefix='lsm-', dir='/tmp')
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
         support = (('Library', 'Application Support') if sys.platform == 'darwin'
@@ -76,6 +161,181 @@ class LearningMoveTests(unittest.TestCase):
             (self.inference / name).write_bytes(b'')
             (self.inference / name).chmod(0o600)
         self.lock_inode = (self.inference / 'provider.lock').stat().st_ino
+
+    def retry_now(self):
+        (self.current / RETRY).unlink(missing_ok=True)
+
+    def service_dir(self):
+        service = self.home / '.local' / 'state' / 'memvane' / 'service'
+        service.mkdir(parents=True, mode=0o700, exist_ok=True)
+        for path in (service, service.parent, service.parent.parent):
+            path.chmod(0o700)
+        return service
+
+    def resident(self):
+        fake = FakeResident(self.service_dir(), self.inference)
+        self.addCleanup(fake.stop)
+        return fake
+
+    def restarts(self):
+        calls = []
+        patcher = mock.patch.object(state_move, '_restart_service', calls.append, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def test_a_held_lane_defers_without_draining_the_embedding_service(self):
+        # The hosted inference and the embedding host are one process: a lane
+        # that defers the move must be found before the service is drained.
+        fake = self.resident()
+        restarts = self.restarts()
+        for name, reason in (('compute.lock', 'learning_lane_busy'),
+                             ('runtime-worker.lock', 'learning_runtime_worker_busy')):
+            fd = hold(self.inference / name)
+            try:
+                started = time.monotonic()
+                with self.assertRaisesRegex(state_move.LearningMoveDeferred, reason):
+                    state_move.move(self.home, wait=0.5)
+                self.assertLess(time.monotonic() - started, 3)
+            finally:
+                os.close(fd)
+            self.assertNotIn('drain', fake.commands)
+            self.assertTrue(fake.serving())
+            self.retry_now()
+        self.assertEqual(restarts, [])
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_respawning_service_and_runtime_worker_are_quiesced_and_the_move_completes(self):
+        # Live shape: the runtime wake worker re-takes its lease right after
+        # each bounded drain (self-rewake), and its sync wakes start the
+        # resident service again whenever none runs and no successor waits.
+        service = self.service_dir()
+        residents = [self.resident()]
+        restarts = self.restarts()
+        done = threading.Event()
+        cycles = []
+
+        def runtime_worker():
+            while not done.is_set():
+                try:
+                    fd = hold(self.inference / 'runtime-worker.lock')
+                except BlockingIOError:
+                    time.sleep(.005)
+                    continue
+                cycles.append(1)
+                time.sleep(.3)
+                os.close(fd)
+                time.sleep(.005)
+
+        def respawn():
+            import laya_resident_service as svc
+            while not done.is_set():
+                if not residents[-1].alive and svc.hello(service) is None:
+                    try:
+                        successor = hold(service / svc.SUCCESSOR)
+                    except BlockingIOError:
+                        successor = None
+                    if successor is not None:
+                        try:
+                            fake = FakeResident(service, self.inference)
+                            self.addCleanup(fake.stop)
+                            residents.append(fake)
+                        except BlockingIOError:
+                            pass
+                        finally:
+                            os.close(successor)
+                time.sleep(.02)
+        threads = [threading.Thread(target=runtime_worker, daemon=True),
+                   threading.Thread(target=respawn, daemon=True)]
+        for thread in threads:
+            thread.start()
+        try:
+            while not cycles:
+                time.sleep(.01)
+            result = state_move.move(self.home, wait=10)
+        finally:
+            done.set()
+            for thread in threads:
+                thread.join(timeout=5)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+        self.assertEqual(learning_state_base(self.home), self.current)
+        # One drain, and the service is started again right after the move.
+        self.assertEqual(sum(fake.commands.count('drain') for fake in residents), 1)
+        self.assertEqual(restarts, [self.home])
+        self.assertFalse((self.current / RETRY).exists())
+
+    def test_a_deferred_worker_run_returns_promptly_and_backs_off(self):
+        import laya_bundle_upgrade as upgrade
+        from context_learning import selector_heal
+        fake = self.resident()
+        restarts = self.restarts()
+        project = self.home / 'project'
+        project.mkdir()
+        heals = []
+        fd = hold(self.inference / 'runtime-worker.lock')
+        try:
+            with mock.patch.object(upgrade, '_project_states', return_value=[]), \
+                    mock.patch.object(upgrade, '_collect_shared'), \
+                    mock.patch.object(state_move, 'BUDGET_SECONDS', 1.0, create=True), \
+                    mock.patch.object(selector_heal, 'heal',
+                                      side_effect=lambda *a, **k: heals.append(a)):
+                for expected, bound in (('learning_runtime_worker_busy', 4),
+                                        ('learning_state_move_backoff', 1)):
+                    started = time.monotonic()
+                    rows = upgrade.run(project, home=self.home)
+                    self.assertLess(time.monotonic() - started, bound)
+                    self.assertNotIn('drain', fake.commands)
+                    self.assertEqual(rows[-1]['learningState'], expected, rows)
+        finally:
+            os.close(fd)
+        # The pending move never drained the embedding service, nor healed.
+        self.assertNotIn('drain', fake.commands)
+        self.assertTrue(fake.serving())
+        self.assertEqual(heals, [])
+        self.assertEqual(restarts, [])
+
+    def test_deferrals_back_off_exponentially_per_user(self):
+        clock = [time.time_ns()]
+        waits = []
+        fd = hold(self.inference / 'compute.lock')
+        try:
+            with mock.patch.object(state_move, '_now_ns', lambda: clock[0], create=True):
+                for _attempt in range(7):
+                    with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                                'learning_lane_busy'):
+                        state_move.move(self.home, wait=0.2)
+                    retry = json.loads((self.current / RETRY).read_text())
+                    waits.append((retry['nextNs'] - clock[0]) // 10**9)
+                    # Before it is due, a run defers at once and takes no lock.
+                    clock[0] += 60 * 10**9
+                    with mock.patch.object(state_move, '_lock',
+                                           side_effect=AssertionError('lock taken')):
+                        with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                                    'learning_state_move_backoff'):
+                            state_move.move(self.home, wait=0.2)
+                    clock[0] = retry['nextNs']
+                self.assertEqual(waits, [120, 240, 480, 960, 1920, 3600, 3600])
+                os.close(fd)
+                fd = None
+                self.assertEqual(state_move.move(self.home, wait=0.2)['status'],
+                                 'learning_state_moved')
+        finally:
+            if fd is not None:
+                os.close(fd)
+        self.assertFalse((self.current / RETRY).exists())
+
+    def test_the_learning_move_never_runs_inline_in_a_hook(self):
+        # Only the detached bundle upgrade worker (and the owner's command)
+        # runs the move; a hook only records a request.
+        allowed = {'core/laya_bundle_upgrade.py', 'core/context_learning/state_move.py'}
+        for path in sorted([*SOURCE.glob('core/**/*.py'), *SOURCE.glob('core/**/*.mjs'),
+                            *SOURCE.glob('hooks/**/*')]):
+            if not path.is_file() or str(path.relative_to(SOURCE)) in allowed:
+                continue
+            text = path.read_text(errors='replace')
+            for needle in ('state_move.move(', '_learning_upkeep(',
+                           'laya_bundle_upgrade.run(', 'upgrade.run('):
+                self.assertNotIn(needle, text, str(path))
 
     def test_move_switches_both_trees_and_rebases_the_checkpoint(self):
         self.assertEqual(learning_state_base(self.home), self.legacy)
@@ -102,7 +362,8 @@ class LearningMoveTests(unittest.TestCase):
         fd = os.open(self.inference / 'runtime-worker.lock', os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaisesRegex(state_move.LearningMoveDeferred, 'learning_lane_busy'):
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                        'learning_runtime_worker_busy'):
                 state_move.move(self.home, wait=0.2)
         finally:
             os.close(fd)
@@ -243,6 +504,7 @@ class LearningMoveTests(unittest.TestCase):
             self.assertTrue(self.inference.is_dir())
         finally:
             os.close(fd)
+        self.retry_now()
         result = state_move.move(self.home, wait=0.2)
         self.assertEqual(result['status'], 'learning_state_moved', result)
         self.assertEqual(len(result['strays']), 1)
