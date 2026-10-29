@@ -335,16 +335,42 @@ def _wiki_node(path):
 def _check_adoptable(project):
     """Every legacy entry is a runtime file that ``.memvane/`` does not hold yet."""
     legacy, current = legacy_folder(project), current_folder(project)
-    for name in sorted(os.listdir(legacy)):
-        if name in (project_dir.SETTINGS, project_dir.WIKI):
+    for name in os.listdir(legacy):
+        if name == project_dir.SETTINGS or (name == project_dir.WIKI and
+                                            project_dir._has_cards(legacy / name)):
             _fail('project_dir_conflict')
-        if os.path.lexists(current / name) and not _lock_name(name):
-            _fail('project_dir_conflict')
+    _merge(legacy, current, dry_run=True, skip=(project_dir.WIKI,))
 
 
 def _lock_name(name):
     """An empty lock file: a clash keeps the ``.memvane/`` one."""
     return name.endswith('.lock')
+
+
+def _merge(source, target, *, dry_run=False, skip=()):
+    """Move every entry of ``source`` into ``target``; directories present on
+    both sides (``compile/``, ``file-changes/``) merge entry by entry. A lock
+    file present on both sides keeps the ``.memvane/`` one; any other clash
+    refuses as ``project_dir_conflict`` before anything moves (``dry_run``)."""
+    for name in sorted(os.listdir(source)):
+        if name in skip:
+            continue
+        src, dst = source / name, target / name
+        if not os.path.lexists(dst):
+            if not dry_run:
+                os.rename(src, dst)
+            continue
+        if project_dir._real_dir(src) and project_dir._real_dir(dst):
+            _merge(src, dst, dry_run=dry_run)
+            if not dry_run:
+                os.rmdir(src)
+            continue
+        if not _lock_name(name) or project_dir._real_dir(src) or project_dir._real_dir(dst):
+            _fail('project_dir_conflict')
+        if not dry_run:
+            os.unlink(src)
+    if not dry_run:
+        _fsync(target)
 
 
 def _stage_clone(index, *, scope, head, manifest, gen, claim, claim_epoch, profile_id):
@@ -579,14 +605,15 @@ def _move_folder(intent):
             _fail('project_dir_move_folder_missing')
         return
     if os.path.lexists(legacy):
-        for name in sorted(os.listdir(legacy)):
-            if os.path.lexists(current / name):
-                if not _lock_name(name):
-                    _fail('project_dir_conflict')
-                os.unlink(legacy / name)
-                continue
-            os.rename(legacy / name, current / name)
-        _fsync(current)
+        wiki = legacy / project_dir.WIKI
+        if project_dir._has_cards(wiki):
+            _fail('project_dir_conflict')
+        _merge(legacy, current, dry_run=True, skip=(project_dir.WIKI,))
+        _merge(legacy, current, skip=(project_dir.WIKI,))
+        if os.path.lexists(wiki):
+            # Only dot files (a Finder .DS_Store) are left of the old wiki.
+            import shutil
+            shutil.rmtree(wiki)
         os.rmdir(legacy)
         _fsync(project)
 
@@ -804,15 +831,23 @@ def move(project_root, state, *, step=None):
 # ----------------------------------------------------------- owner notices
 
 def gitignore_suggestion(project):
-    """``.memvane`` lines the project's own .gitignore lacks for its
-    ``.auto-context`` ignore lines (printed, never written)."""
+    """``.gitignore`` lines the project lacks so that only settings and wiki
+    cards of ``.memvane/`` are tracked: the ``.memvane`` equivalents of its
+    ``.auto-context`` lines plus the runtime files (printed, never written)."""
     path = Path(project) / '.gitignore'
+    text = ''
     try:
-        if path.is_symlink() or not path.is_file():
-            return []
-        return project_dir.legacy_ignore_lines(path.read_text(encoding='utf-8'))
+        if path.is_file() and not path.is_symlink():
+            text = path.read_text(encoding='utf-8')
     except (OSError, UnicodeError):
-        return []
+        text = ''
+    present = {line.strip() for line in text.splitlines()}
+    suggested = project_dir.legacy_ignore_lines(text)
+    for suffix in project_dir.IGNORE_SUFFIXES:
+        line = project_dir.CURRENT + '/' + suffix
+        if line not in present and line not in suggested:
+            suggested.append(line)
+    return suggested
 
 
 def layout_notice(project):
@@ -839,9 +874,11 @@ def owner_steps(project):
     if project_dir.layout(project) != 'current':
         return lines
     suggested = gitignore_suggestion(project)
-    lines.append('[memvane] the project folder is now .memvane/; commit the rename: '
-                 'git add -A .memvane .auto-context')
     if suggested:
-        lines.append('[memvane] .gitignore ignores .auto-context runtime files; add: ' +
+        lines.append('[memvane] the project folder is now .memvane/; first add these '
+                     '.gitignore lines (runtime files stay untracked): ' +
                      ', '.join(suggested))
+    lines.append('[memvane] then commit the rename: git add -A .memvane .auto-context '
+                 '(or, without the .gitignore lines: git add -A .auto-context '
+                 '.memvane/settings.json .memvane/wiki)')
     return lines

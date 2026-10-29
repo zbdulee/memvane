@@ -36,8 +36,7 @@ RUNTIME_FILES = ('laya-index-route.json', 'laya-index-selection.json',
 RUNTIME_DIRS = ('compile', 'file-changes')
 # The project's own .gitignore lines MemVane suggests for the runtime files.
 IGNORE_SUFFIXES = ('compile/', 'file-changes/', 'laya-index-route.json',
-                   'laya-index-selection.json', '*.lock', '.*.lock',
-                   'settings.json.pre-minimal-*', '*.pre-migration', '*.bak-*')
+                   'laya-index-selection.json', 'memvane-*.json', '*.lock', '.*.lock')
 
 
 def _real_dir(path: Path) -> bool:
@@ -103,8 +102,19 @@ def settings_candidates(project) -> list[Path]:
     return [root / folder_name / SETTINGS for folder_name in NAMES]
 
 
+def _has_cards(wiki: Path) -> bool:
+    """Any non-dot file under ``wiki`` (a stray ``.DS_Store`` is not a card)."""
+    if not _real_dir(wiki):
+        return False
+    for _base, dirs, files in os.walk(wiki):
+        dirs[:] = [name for name in dirs if not name.startswith('.')]
+        if any(not name.startswith('.') for name in files):
+            return True
+    return False
+
+
 def _has_content(path: Path) -> bool:
-    return os.path.lexists(path / SETTINGS) or os.path.lexists(path / WIKI)
+    return os.path.lexists(path / SETTINGS) or _has_cards(path / WIKI)
 
 
 def layout(project) -> str:

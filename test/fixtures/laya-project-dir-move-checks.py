@@ -339,9 +339,11 @@ class MigrationTests(MoveCase):
         before = ignore.read_bytes()
         self.move()
         lines = dir_move.owner_steps(self.project)
-        self.assertIn('git add -A .memvane .auto-context', lines[0])
-        self.assertIn('.memvane/compile/', lines[1])
-        self.assertIn('.memvane/laya-index-route.json', lines[1])
+        # The .gitignore lines come first so the broad add stages no runtime file.
+        self.assertIn('.memvane/compile/', lines[0])
+        self.assertIn('.memvane/laya-index-route.json', lines[0])
+        self.assertIn('.memvane/laya-index-selection.json', lines[0])
+        self.assertIn('git add -A .memvane .auto-context', lines[1])
         self.assertEqual(ignore.read_bytes(), before)
 
     def test_recall_output_names_cards_under_memvane(self):
@@ -529,7 +531,16 @@ class GitBranchTests(MoveCase):
         shutil.move(str(other / '.auto-context'), str(other / '.memvane'))
         git(other, 'add', '-A', '.memvane', '.auto-context')
         git(other, 'commit', '-q', '-m', 'move elsewhere')
+        # Real installs keep per-machine runtime trees under the old folder.
+        (self.auto / 'compile').mkdir()
+        (self.auto / 'compile' / 'source-queue.jsonl').write_text('{"queued": 1}\n')
+        (self.auto / 'compile' / '.card-write.lock').write_text('')
+        (self.auto / 'file-changes').mkdir()
+        (self.auto / 'file-changes' / 'snapshot.json').write_text('{}')
         git(self.project, 'pull', '-q', '--no-rebase', str(other), 'before')
+        # A Finder dot file left in the old wiki is not a card.
+        (self.auto / 'wiki').mkdir(exist_ok=True)
+        (self.auto / 'wiki' / '.DS_Store').write_bytes(b'\0')
         self.assertEqual(project_dir.layout(self.project), 'adopt')
         self.assertEqual(self.decision()['state'], 'blocked')
         payload = self.home / 'payload.json'
@@ -540,6 +551,10 @@ class GitBranchTests(MoveCase):
         self.assertEqual(results[0]['status'], 'project_dir_move_complete', results)
         self.assertEqual(project_dir.layout(self.project), 'current')
         self.assert_moved()
+        current = self.project / '.memvane'
+        self.assertEqual((current / 'compile' / 'source-queue.jsonl').read_text(),
+                         '{"queued": 1}\n')
+        self.assertTrue((current / 'file-changes' / 'snapshot.json').is_file())
 
 
 def tearDownModule():
