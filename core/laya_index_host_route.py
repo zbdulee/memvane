@@ -129,7 +129,8 @@ def selected_collection_roots(project_root, collections):
     roots = {}
     for item in collections:
         value = item['sourceRoot']
-        if not _canonical_absolute(value) or not Path(value).is_dir():
+        if not _canonical_absolute(value) or not (Path(value).is_dir() or
+                                                  _split_wiki(Path(project_root), value)):
             raise ValueError('selected_collection_root_invalid')
         roots[item['name']] = value
     raw_root = Path(next(item['sourceRoot'] for item in collections
@@ -295,10 +296,25 @@ def _multi_compile_supported(raw: dict, cfg: dict, root: Path,
         return False
 
 
+def _split_wiki(root: Path, value: object) -> bool:
+    """``<root>/.memvane/wiki`` gone under an older branch checkout (``split``).
+
+    The selected identity still names it: search keeps the published index and
+    the edit gate keeps working while every writer holds (``project_dir_split``).
+    """
+    folder = Path(root) / project_dir.CURRENT
+    return (value in (project_dir.CURRENT + "/" + project_dir.WIKI,
+                      str(folder / project_dir.WIKI)) and
+            not os.path.lexists(folder / project_dir.WIKI) and
+            project_dir._real_dir(folder) and project_dir.layout(root) == "split")
+
+
 def _source_for_collection(root: Path, relative: object) -> str:
     if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
             or ".." in Path(relative).parts):
         raise ValueError("invalid_collection_path")
+    if _split_wiki(root, relative):
+        return str(root / relative)
     source = root / relative
     if (source.is_symlink() or not source.is_dir()
             or any(parent.is_symlink() for parent in (source, *source.parents)
@@ -673,6 +689,10 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         if main_project.resolve(strict=True) != main_project:
             return None
         main_decision = _select_route(str(main_project), action=action)
+        if main_decision.get("state") == "blocked":
+            # The main checkout's state or project folder may be moving: the
+            # worktree waits the same window as the main checkout's own hooks.
+            main_decision = _settle_moves(str(main_project), action, main_decision)
         if (main_decision.get("state") != "candidate"
                 or main_decision.get("projectRoot") != str(main_project)):
             return None
@@ -858,7 +878,12 @@ def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
             cwd = payload["cwd"]
     except (OSError, ValueError, TypeError, UnicodeError):
         pass
-    if not Path(cwd).is_absolute():
+    return project_dir_notice_for(cwd)
+
+
+def project_dir_notice_for(cwd: str) -> str | None:
+    """``project_dir_notice`` for an event cwd (Hermes calls it directly)."""
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return None
     try:
         import laya_project_dir_move as dir_move

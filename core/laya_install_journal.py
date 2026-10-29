@@ -1280,6 +1280,21 @@ def verify_selected_route(decision):
     return _verify_selected_route(decision)
 
 
+def verify_selected_route_for_write(decision, action='update'):
+    """``verify_selected_route`` with the hold only writers see.
+
+    Every index or wiki writer proves its route with this before and while it
+    writes: a project whose ``.memvane/`` lost its settings to an older branch
+    checkout refuses as ``project_dir_split`` even mid-run.
+    """
+    import project_dir
+    if (isinstance(decision, dict) and isinstance(decision.get('projectRoot'), str) and
+            action not in ('recall', 'gate') and
+            project_dir.layout(decision['projectRoot']) == 'split'):
+        _fail('project_dir_split')
+    return verify_selected_route(decision)
+
+
 def verify_selected_route_read_only(decision):
     """Route, journal, store and sealed-attestation proof without bundle proof.
 

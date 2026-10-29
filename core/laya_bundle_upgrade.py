@@ -394,6 +394,9 @@ def project_dir_notice(project_root, journal_path, *, request_move=True, spawn=N
     pending = dir_move.needed(project_root)
     status = read_status(state) if state.is_dir() else None
     if pointer is None and pending is None:
+        layout_line = dir_move.layout_notice(project_root)
+        if layout_line is not None:
+            return layout_line
         own = status.get('projectDir') if isinstance(status, dict) else None
         if (isinstance(own, dict) and own.get('reason') == 'project_dir_move_complete'
                 and project_dir.layout(project_root) == 'current'):

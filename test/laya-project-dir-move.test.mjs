@@ -8,6 +8,6 @@ test('the project folder moves to .memvane/ while recall keeps serving', () => {
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 14 tests/);
+  assert.match(result.stderr, /Ran 22 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

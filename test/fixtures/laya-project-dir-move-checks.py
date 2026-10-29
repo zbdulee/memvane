@@ -323,6 +323,24 @@ class MigrationTests(MoveCase):
         again = upgrade.run(str(self.project))
         self.assertEqual(again[0]['status'], 'current', again)
 
+    def test_queued_verify_jobs_follow_the_folder(self):
+        import wiki_verify_worker as verify
+        self.move()
+        tag = 'a' * 16
+        job = {'targetPath': '.auto-context/wiki/concepts/otter-ledger.md',
+               'pendingPath': '.auto-context/wiki/concepts/.otter-ledger.md.pending-' + tag,
+               'sourceHash': 'a' * 64, 'expectedTargetHash': 'b' * 64, 'ts': '2026-10-01T00:00:00Z'}
+        moved = verify.rebased_job(self.project, job)
+        self.assertEqual(moved['targetPath'], '.memvane/wiki/concepts/otter-ledger.md')
+        live = self.project / moved['targetPath']
+        self.assertTrue(live.is_file())
+        wiki = (self.project / '.memvane' / 'wiki').resolve()
+        found = verify.pending_replacement(self.project.resolve(), wiki, moved, live)
+        self.assertEqual(found[0], live.with_name('.otter-ledger.md.pending-' + tag))
+        newer = {**moved, 'ts': '2026-10-02T00:00:00Z'}
+        rows = verify._dedup_by_target([('old', job), ('new', newer)], self.project)
+        self.assertEqual([raw for raw, _job in rows], ['new'])
+
     def test_card_bytes_are_untouched_and_legacy_refs_resolve(self):
         before = {rel: (self.auto / 'wiki' / rel).read_bytes() for rel in CARDS}
         self.move()
@@ -436,15 +454,21 @@ class GitBranchTests(MoveCase):
     def commit_move(self):
         self.move()
         git(self.project, 'checkout', '-q', '-b', 'moved')
-        git(self.project, 'add', '-A', '.memvane/settings.json', '.memvane/wiki',
-            '.auto-context')
+        # The owner steps: the printed .gitignore lines, then the broad add.
+        lines = dir_move.gitignore_suggestion(self.project)
+        (self.project / '.gitignore').write_text('\n'.join(lines) + '\n')
+        git(self.project, 'add', '-A', '.memvane', '.auto-context', '.gitignore')
+        staged = git(self.project, 'diff', '--cached', '--name-only')
+        self.assertNotIn('laya-index-route.json', staged)
+        self.assertNotIn('.memvane-root', staged)
         git(self.project, 'commit', '-q', '-m', 'move the folder')
         status = git(self.project, 'show', '--stat', '-M', '--format=', 'HEAD')
         self.assertIn('=> .memvane', status)
 
     def test_rename_is_a_git_directory_rename(self):
         self.commit_move()
-        renames = git(self.project, 'diff', '-M', '--name-status', 'before', 'moved')
+        renames = git(self.project, 'diff', '-M', '--name-status', 'before', 'moved',
+                      '--', '.auto-context', '.memvane')
         self.assertTrue(all(line.startswith('R100') for line in renames.splitlines()),
                         renames)
         self.assertEqual(len(renames.splitlines()), 1 + len(CARDS))
@@ -487,13 +511,40 @@ class GitBranchTests(MoveCase):
         _gen, rows = self.recall(self.decision())
         self.assertTrue(rows)
 
-    def test_older_branch_with_the_wiki_gone_is_blocked_not_emptied(self):
+    def test_normal_older_branch_checkout_keeps_search_and_gate(self):
+        # Every card is tracked: git removes them all from .memvane/wiki.
         self.commit_move()
         gen, members = self.head()
+        wiki = self.project / '.memvane/wiki'
+        node = (wiki.stat().st_dev, wiki.stat().st_ino)
+        git(self.project, 'checkout', '-q', 'before')
+        self.assertEqual(project_dir.layout(self.project), 'split')
+        self.assertEqual(list(wiki.rglob('*.md')), [])
+        # The untracked anchor keeps the bound root (same inode) for search.
+        self.assertEqual((wiki.stat().st_dev, wiki.stat().st_ino), node)
+        decision = self.decision()
+        self.assertEqual(decision['state'], 'candidate', decision)
+        _gen, rows = self.recall(decision)
+        self.assertEqual(rows[0]['path'], self.WIKI + '/concepts/otter-ledger.md')
+        self.assertEqual(host_route.select_route(str(self.project), action='gate')['state'],
+                         'candidate')
+        self.assertEqual(host_route.select_route(str(self.project), action='update')['reason'],
+                         'project_dir_split')
+        self.assertEqual(self.head(), (gen, members))
+        git(self.project, 'checkout', '-q', 'moved')
+        self.assertEqual(self.head(), (gen, members))
+        _gen, rows = self.recall(self.decision())
+        self.assertTrue(rows)
+
+    def test_older_branch_without_the_anchor_keeps_the_gate_and_holds_writers(self):
+        self.commit_move()
+        gen, members = self.head()
+        (self.project / '.memvane/wiki' / project_dir.WIKI_ANCHOR).unlink()
         git(self.project, 'checkout', '-q', 'before')
         self.assertFalse((self.project / '.memvane/wiki').exists())
         self.assertEqual(project_dir.layout(self.project), 'split')
-        self.assertEqual(self.decision()['state'], 'blocked')
+        self.assertEqual(host_route.select_route(str(self.project), action='gate')['state'],
+                         'candidate')
         self.assertEqual(host_route.select_route(str(self.project), action='update')['reason'],
                          'project_dir_split')
         self.assertEqual(self.head(), (gen, members))
@@ -505,6 +556,74 @@ class GitBranchTests(MoveCase):
         new_gen, new_members = self.head()
         self.assertEqual(new_members, members)
         _gen, rows = self.recall(self.decision())
+        self.assertTrue(rows)
+
+    def test_writers_recheck_with_their_own_action_and_stop_mid_run(self):
+        import laya_product_sync_worker as sync_worker
+        import wiki_selected_laya
+        # The fixture has no sealed plugin bundle: prove routes read-only.
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        real = journal_mod._verify_selected_route
+
+        def proved(decision, **kwargs):
+            kwargs['read_only'] = True
+            return {**real(decision, **kwargs), 'productRouteAllowed': True}
+        stack.enter_context(mock.patch.object(journal_mod, '_verify_selected_route', proved))
+        self.commit_move()
+        gen, members = self.head()
+        # A sync and a compile run proved the route before the branch switch.
+        decision = host_route.select_route(str(self.project), action='update')
+        proof = sync_worker.verify_selected_route(decision)
+        bound = wiki_selected_laya.selected(self.project)
+        extra = self.project / '.memvane/wiki/concepts/untracked-note.md'
+        extra.write_text(card('Untracked note', 'untracked kingfisher note'))
+        git(self.project, 'checkout', '-q', 'before')
+        # Their next recheck before any publish or card write refuses.
+        with self.assertRaisesRegex(Exception, 'project_dir_split'):
+            sync_worker.verify_selected_route(decision)
+        with self.assertRaises(ValueError):
+            wiki_selected_laya.recheck(bound)
+        self.assertTrue(proof['productRouteAllowed'])
+        self.assertEqual(self.head(), (gen, members))
+
+    def test_merged_older_branch_names_the_conflict_at_session_start(self):
+        self.commit_move()
+        left = self.auto / 'wiki' / 'concepts' / 'merged-card.md'
+        left.parent.mkdir(parents=True)
+        left.write_text(card('Merged card', 'merged osprey note'))
+        self.assertEqual(project_dir.layout(self.project), 'conflict')
+        decision = self.decision()
+        self.assertEqual(decision['state'], 'candidate', decision)
+        notice = response._project_dir_move_notice(decision)
+        self.assertIn('ignores .auto-context/', notice)
+
+    def test_linked_worktree_waits_for_a_main_checkout_move(self):
+        git(self.project, 'checkout', '-q', '-b', 'side')
+        git(self.project, 'checkout', '-q', 'before')
+        tree = self.home / 'wt-side'
+        git(self.project, 'worktree', 'add', '-q', str(tree), 'side')
+        before = host_route.select_route(str(tree), action='recall')
+        self.assertEqual(before['state'], 'worktree', before)
+        seen, inside = [], threading.Event()
+
+        def pause(name):
+            if name == 'moved':
+                inside.set()
+                time.sleep(0.3)
+
+        def reader():
+            inside.wait(5)
+            seen.append(host_route.select_route_settled(str(tree), action='recall'))
+        thread = threading.Thread(target=reader)
+        thread.start()
+        self.move(step=pause)
+        thread.join()
+        self.assertEqual(seen[0]['state'], 'worktree', seen[0])
+        after = host_route.select_route(str(tree), action='recall')
+        self.assertTrue(response._relocated(before, after))
+        self.assertTrue(response._project_dir_moved(before))
+        _gen, rows = self.recall(after['mainRoute'])
         self.assertTrue(rows)
 
     def test_linked_worktrees_on_either_folder_share_the_main_index(self):
@@ -523,21 +642,61 @@ class GitBranchTests(MoveCase):
                 _gen, rows = self.recall(main)
                 self.assertTrue(rows)
 
-    def test_a_pulled_rename_is_adopted(self):
-        # Another checkout committed the move; this one pulls it while its
-        # runtime files stay in .auto-context/.
+    def pull_rename(self):
         other = self.home / 'other'
         git(self.home, 'clone', '-q', str(self.project), str(other))
         shutil.move(str(other / '.auto-context'), str(other / '.memvane'))
         git(other, 'add', '-A', '.memvane', '.auto-context')
         git(other, 'commit', '-q', '-m', 'move elsewhere')
+        git(self.project, 'pull', '-q', '--no-rebase', str(other), 'before')
+
+    def test_adopt_keeps_untracked_cards_and_pending_replacements(self):
+        wiki = self.auto / 'wiki' / 'concepts'
+        pending = wiki / '.otter-ledger.md.pending-0123456789abcdef'
+        pending.write_text('pending replacement bytes')
+        note = wiki / 'untracked-note.md'
+        note.write_text(card('Untracked note', 'untracked kingfisher note'))
+        self.pull_rename()
+        self.assertEqual(project_dir.layout(self.project), 'adopt')
+        results = upgrade.run(str(self.project))
+        self.assertEqual(results[0]['status'], 'project_dir_move_complete', results)
+        moved = self.project / '.memvane/wiki/concepts'
+        self.assertEqual((moved / pending.name).read_text(), 'pending replacement bytes')
+        self.assertTrue((moved / note.name).is_file())
+        self.assertFalse(os.path.lexists(self.auto))
+
+    def test_adopt_refuses_a_clash_and_keeps_the_old_tree(self):
+        self.pull_rename()
+        clash = self.auto / 'wiki' / 'concepts' / 'otter-ledger.md'
+        clash.parent.mkdir(parents=True, exist_ok=True)
+        clash.write_text('a different untracked otter card')
+        self.assertEqual(project_dir.layout(self.project), 'adopt')
+        with self.assertRaisesRegex(Exception, 'project_dir_conflict'):
+            self.move()
+        self.assertEqual(clash.read_text(), 'a different untracked otter card')
+        self.assertTrue((self.auto / host_route.RECORD).is_file())
+
+    def test_hermes_session_start_requests_the_adoption(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from hermes_adapter import core_bridge
+        self.pull_rename()
+        self.spawned.clear()
+        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'HERMES_SANDBOX': '',
+                                          'CLAUDE_SANDBOX': '', 'CODEX_SANDBOX': '',
+                                          'GEMINI_SANDBOX': '', 'HERMES_HEADLESS': ''}):
+            core_bridge.session_update(cwd=str(self.project))
+        self.assertEqual(self.spawned, [str(self.project)])
+
+    def test_a_pulled_rename_is_adopted(self):
+        # Another checkout committed the move; this one pulls it while its
+        # runtime files stay in .auto-context/.
         # Real installs keep per-machine runtime trees under the old folder.
         (self.auto / 'compile').mkdir()
         (self.auto / 'compile' / 'source-queue.jsonl').write_text('{"queued": 1}\n')
         (self.auto / 'compile' / '.card-write.lock').write_text('')
         (self.auto / 'file-changes').mkdir()
         (self.auto / 'file-changes' / 'snapshot.json').write_text('{}')
-        git(self.project, 'pull', '-q', '--no-rebase', str(other), 'before')
+        self.pull_rename()
         # A Finder dot file left in the old wiki is not a card.
         (self.auto / 'wiki').mkdir(exist_ok=True)
         (self.auto / 'wiki' / '.DS_Store').write_bytes(b'\0')

@@ -815,6 +815,7 @@ def process_verify_job(
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     import wiki_selected_laya
+    job = rebased_job(root, job)
     selected_route = wiki_selected_laya.selected(root)
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
@@ -1199,14 +1200,27 @@ def apply_negative_verdict(
     return True
 
 
-def _dedup_by_target(rows: list) -> list:
+def rebased_job(root: Path, job: dict) -> dict:
+    """A queued job's card paths in the project's active folder.
+
+    A job queued before the project folder moved names
+    ``.auto-context/wiki/...``; it is the same card under ``.memvane/wiki``.
+    """
+    if not isinstance(job, dict):
+        return job
+    moved = {key: project_dir.rebase_rel(job[key], root)
+             for key in ('targetPath', 'pendingPath') if isinstance(job.get(key), str)}
+    return {**job, **moved} if moved else job
+
+
+def _dedup_by_target(rows: list, root: Path | None = None) -> list:
     """targetPath 기준 latest-wins — 같은 카드에 잡이 여러 개면 최신만 검증."""
     latest: dict = {}
     order: list = []
     for raw_line, job in rows:
         if job is None:
             continue
-        key = job.get("targetPath", "")
+        key = project_dir.rebase_rel(job.get("targetPath", ""), root)
         ts = wcw._parse_ts(job.get("ts")) or 0.0
         if key not in latest:
             order.append(key)
@@ -1282,7 +1296,7 @@ def run(
         return result
 
     malformed = [raw for raw, job in rows if job is None]
-    kept = _dedup_by_target(rows)
+    kept = _dedup_by_target(rows, root)
     max_per_run = max(1, min(
         int(wcw.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), qmd_config.MAX_VERIFY_PER_RUN
     ))

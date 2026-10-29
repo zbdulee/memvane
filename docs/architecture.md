@@ -350,7 +350,7 @@ move runs, recall waits up to 1.5 s and retries once; search keeps serving.
 | `legacy` | `.auto-context/` only | read from there; the worker renames it |
 | `current` | `.memvane/` only | normal |
 | `adopt` | `.memvane/` has the settings, `.auto-context/` only runtime files | the worker moves the runtime files |
-| `split` | `.auto-context/` has the settings, `.memvane/` does not (an older branch checked out over a moved project) | `.memvane/` wins; index and wiki writers hold with `project_dir_split` (recall and the edit gate continue), no second index; SessionStart prints a notice |
+| `split` | `.auto-context/` has the settings, `.memvane/` does not (an older branch checked out over a moved project) | `.memvane/` wins; index and wiki writers hold with `project_dir_split`, also mid-run (their route proof, `verify_selected_route_for_write`, refuses a split layout); recall and the edit gate continue (the untracked `.memvane/wiki/.memvane-root` keeps the bound wiki directory through the checkout); no second index; SessionStart prints a notice |
 | `conflict` | both hold settings or wiki cards (an older branch merged) | `.memvane/` wins, `.auto-context/` is ignored; the notice says to `git mv` leftover cards |
 
 Linked worktrees on either folder name share the main checkout's index. After

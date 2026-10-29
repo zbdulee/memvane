@@ -174,7 +174,18 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
                            {"hook_event_name": "SessionStart", "cwd": selected_cwd})
             return None
         if route_state != "legacy":
-            logger.warning("[memvane] selected route unavailable; request refused")
+            # A project folder that needs the owner or is moving to .memvane/
+            # requests the upgrade worker here, as the command hooks do.
+            notice = None
+            try:
+                core = Path(__file__).resolve().parent.parent / "core"
+                if str(core) not in sys.path:
+                    sys.path.insert(0, str(core))
+                from laya_index_host_route import project_dir_notice_for
+                notice = project_dir_notice_for(_cwd(cwd, **kwargs))
+            except Exception as exc:  # pragma: no cover - hook isolation
+                logger.debug("memvane project folder notice failed: %s", exc)
+            logger.warning(notice or "[memvane] selected route unavailable; request refused")
         # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("memvane session update failed: %s", exc)

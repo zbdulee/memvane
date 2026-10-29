@@ -256,7 +256,12 @@ def _wiki_root_of(decision):
 
 
 def moved_away(decision):
-    """The decision names ``.auto-context/wiki`` and the project now has ``.memvane/``."""
+    """The decision names ``.auto-context/wiki`` and the project now has ``.memvane/``.
+
+    A linked worktree decision answers for its main checkout's route.
+    """
+    if isinstance(decision, dict) and decision.get('state') == 'worktree':
+        decision = decision.get('mainRoute')
     if not isinstance(decision, dict) or decision.get('state') != 'candidate':
         return False
     try:
@@ -271,6 +276,11 @@ def relocated_decision(old, new):
     """True when ``new`` is ``old`` after its project folder moved to ``.memvane/``."""
     if not isinstance(old, dict) or not isinstance(new, dict):
         return False
+    if old.get('state') == 'worktree' and new.get('state') == 'worktree':
+        if any(old.get(key) != new.get(key) for key in
+               ('worktreeRoot', 'worktreeProjectRoot', 'gitCommonDir')):
+            return False
+        return relocated_decision(old.get('mainRoute'), new.get('mainRoute'))
     if old.get('state') != 'candidate' or new.get('state') != 'candidate':
         return False
     try:
@@ -335,11 +345,11 @@ def _wiki_node(path):
 def _check_adoptable(project):
     """Every legacy entry is a runtime file that ``.memvane/`` does not hold yet."""
     legacy, current = legacy_folder(project), current_folder(project)
-    for name in os.listdir(legacy):
-        if name == project_dir.SETTINGS or (name == project_dir.WIKI and
-                                            project_dir._has_cards(legacy / name)):
-            _fail('project_dir_conflict')
-    _merge(legacy, current, dry_run=True, skip=(project_dir.WIKI,))
+    if os.path.lexists(legacy / project_dir.SETTINGS):
+        _fail('project_dir_conflict')
+    # Everything git did not move (untracked cards, the compiler's hidden
+    # pending replacements) moves too; a clash refuses before anything moves.
+    _merge(legacy, current, dry_run=True)
 
 
 def _lock_name(name):
@@ -365,8 +375,15 @@ def _merge(source, target, *, dry_run=False, skip=()):
             if not dry_run:
                 os.rmdir(src)
             continue
-        if not _lock_name(name) or project_dir._real_dir(src) or project_dir._real_dir(dst):
+        if project_dir._real_dir(src) or project_dir._real_dir(dst):
             _fail('project_dir_conflict')
+        if not (_lock_name(name) or name in project_dir.DISPOSABLE):
+            try:
+                same = Path(src).read_bytes() == Path(dst).read_bytes()
+            except OSError:
+                same = False
+            if not same:
+                _fail('project_dir_conflict')
         if not dry_run:
             os.unlink(src)
     if not dry_run:
@@ -605,17 +622,21 @@ def _move_folder(intent):
             _fail('project_dir_move_folder_missing')
         return
     if os.path.lexists(legacy):
-        wiki = legacy / project_dir.WIKI
-        if project_dir._has_cards(wiki):
-            _fail('project_dir_conflict')
-        _merge(legacy, current, dry_run=True, skip=(project_dir.WIKI,))
-        _merge(legacy, current, skip=(project_dir.WIKI,))
-        if os.path.lexists(wiki):
-            # Only dot files (a Finder .DS_Store) are left of the old wiki.
-            import shutil
-            shutil.rmtree(wiki)
+        _merge(legacy, current, dry_run=True)
+        _merge(legacy, current)
+        # Every entry moved: rmdir refuses a folder that is not empty.
         os.rmdir(legacy)
         _fsync(project)
+
+
+def _anchor_wiki(project):
+    """Keep ``.memvane/wiki`` alive across git checkouts of older branches."""
+    wiki = current_folder(project) / project_dir.WIKI
+    anchor = wiki / project_dir.WIKI_ANCHOR
+    if project_dir._real_dir(wiki) and not os.path.lexists(anchor):
+        fd = os.open(anchor, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        os.close(fd)
+        _fsync(wiki)
 
 
 def _rebind_catalog(intent):
@@ -695,6 +716,7 @@ def _switch(intent, *, step=None):
         _replace_ledger(state, intent['oldLedger'], intent['fencedLedger'])
     _mark(step, 'fenced')
     _move_folder(intent)
+    _anchor_wiki(intent['projectRoot'])
     _mark(step, 'moved')
     _rebind_catalog(intent)
     _swap_store(intent)
@@ -879,6 +901,7 @@ def owner_steps(project):
                      '.gitignore lines (runtime files stay untracked): ' +
                      ', '.join(suggested))
     lines.append('[memvane] then commit the rename: git add -A .memvane .auto-context '
-                 '(or, without the .gitignore lines: git add -A .auto-context '
-                 '.memvane/settings.json .memvane/wiki)')
+                 "(or, without the .gitignore lines: git add -A .auto-context "
+                 ".memvane/settings.json .memvane/wiki ':!.memvane/wiki/" +
+                 project_dir.WIKI_ANCHOR + "')")
     return lines

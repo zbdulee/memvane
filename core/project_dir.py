@@ -34,9 +34,16 @@ RUNTIME_FILES = ('laya-index-route.json', 'laya-index-selection.json',
                  'memvane-state-move.json',
                  'memvane-project-move.json')
 RUNTIME_DIRS = ('compile', 'file-changes')
+ROUTE = 'laya-index-route.json'
+# An untracked hidden file that keeps `.memvane/wiki` (and its inode) alive
+# when git checks out a branch whose cards live elsewhere; walkers skip it.
+WIKI_ANCHOR = '.memvane-root'
+# Finder metadata a merge may drop when both folders hold one.
+DISPOSABLE = frozenset(('.DS_Store',))
 # The project's own .gitignore lines MemVane suggests for the runtime files.
 IGNORE_SUFFIXES = ('compile/', 'file-changes/', 'laya-index-route.json',
-                   'laya-index-selection.json', 'memvane-*.json', '*.lock', '.*.lock')
+                   'laya-index-selection.json', 'memvane-*.json', '*.lock', '.*.lock',
+                   'wiki/' + '.memvane-root')
 
 
 def _real_dir(path: Path) -> bool:
@@ -124,10 +131,13 @@ def layout(project) -> str:
     ``legacy``    only ``.auto-context/`` (not moved yet);
     ``current``   only ``.memvane/``;
     ``adopt``     ``.memvane/`` holds the settings (a pulled or checked-out
-                  rename) while ``.auto-context/`` holds only runtime files;
+                  rename) while ``.auto-context/`` keeps the runtime files
+                  (the route record) and whatever git did not move (untracked
+                  cards, hidden pending replacements);
     ``split``     ``.memvane/`` has no settings while ``.auto-context/`` has
                   them: an older branch is checked out over a moved project;
-    ``conflict``  both folders hold settings or wiki cards.
+    ``conflict``  both folders hold settings or wiki cards and the runtime
+                  files are in ``.memvane/`` (an older branch was merged).
     """
     root = Path(project)
     current, legacy = root / CURRENT, root / LEGACY
@@ -141,6 +151,9 @@ def layout(project) -> str:
     current_settings = os.path.lexists(current / SETTINGS)
     if os.path.lexists(legacy / SETTINGS) and not current_settings:
         return 'split'
+    if (current_settings and not os.path.lexists(legacy / SETTINGS) and
+            os.path.lexists(legacy / ROUTE) and not os.path.lexists(current / ROUTE)):
+        return 'adopt'
     if _has_content(legacy):
         return 'conflict'
     return 'adopt' if current_settings else 'conflict'
