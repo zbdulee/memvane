@@ -1954,7 +1954,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
-            return {"status": "queued"}
+            # Hermes has no SessionStart context: the adapter carries the
+            # move/conflict lines into the next turn.
+            return ({"status": "queued", "notice": move_notice} if move_notice
+                    else {"status": "queued"})
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)

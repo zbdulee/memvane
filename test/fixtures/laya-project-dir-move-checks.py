@@ -716,6 +716,71 @@ class GitBranchTests(MoveCase):
         self.assertTrue((current / 'file-changes' / 'snapshot.json').is_file())
 
 
+class SettingsOnlyGitTests(MoveCase):
+    """A repository that tracks only the settings; every card is untracked."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.project, 'init', '-q', '-b', 'before')
+        git(self.project, 'add', '.auto-context/settings.json')
+        git(self.project, 'commit', '-q', '-m', 'settings only')
+
+    def test_adopt_creates_the_wiki_and_moves_every_untracked_card(self):
+        other = self.home / 'other'
+        git(self.home, 'clone', '-q', str(self.project), str(other))
+        shutil.move(str(other / '.auto-context'), str(other / '.memvane'))
+        git(other, 'add', '-A', '.memvane', '.auto-context')
+        git(other, 'commit', '-q', '-m', 'move elsewhere')
+        git(self.project, 'pull', '-q', '--no-rebase', str(other), 'before')
+        self.assertFalse(os.path.lexists(self.project / '.memvane' / 'wiki'))
+        self.assertEqual(project_dir.layout(self.project), 'adopt')
+        results = upgrade.run(str(self.project))
+        self.assertEqual(results[0]['status'], 'project_dir_move_complete', results)
+        self.assertFalse(os.path.lexists(self.auto))
+        self.assert_moved()
+
+
+class LeftoverTests(MoveCase):
+    def test_metadata_left_in_the_old_folder_is_current_and_tidied(self):
+        self.move()
+        leftover = self.auto / 'wiki' / 'concepts'
+        leftover.mkdir(parents=True)
+        (self.auto / 'wiki' / '.DS_Store').write_bytes(b'\0')
+        (self.auto / 'Thumbs.db').write_bytes(b'\0')
+        self.assertEqual(project_dir.layout(self.project), 'current')
+        self.assertEqual(dir_move.needed(self.project), 'tidy')
+        results = upgrade.run(str(self.project))
+        self.assertEqual(results[0]['status'], 'current', results)
+        self.assertFalse(os.path.lexists(self.auto))
+        self.assertEqual(self.decision()['state'], 'candidate')
+
+    def test_a_real_file_in_the_old_folder_is_never_tidied(self):
+        self.move()
+        (self.auto / 'wiki').mkdir(parents=True)
+        (self.auto / 'wiki' / '.DS_Store').write_bytes(b'\0')
+        note = self.auto / 'wiki' / 'note.md'
+        note.write_text('a card')
+        self.assertNotEqual(project_dir.layout(self.project), 'current')
+        self.assertFalse(dir_move.tidy(self.project))
+        self.assertEqual(note.read_text(), 'a card')
+
+    def test_hermes_carries_the_conflict_notice_into_the_next_turn(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from hermes_adapter import core_bridge
+        self.move()
+        left = self.auto / 'wiki' / 'concepts' / 'merged-card.md'
+        left.parent.mkdir(parents=True)
+        left.write_text(card('Merged card', 'merged osprey note'))
+        self.assertEqual(project_dir.layout(self.project), 'conflict')
+        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'HERMES_SANDBOX': '',
+                                          'CLAUDE_SANDBOX': '', 'CODEX_SANDBOX': '',
+                                          'GEMINI_SANDBOX': '', 'HERMES_HEADLESS': ''}):
+            core_bridge.session_update(cwd=str(self.project))
+        carried = core_bridge._with_session_notice(str(self.project), None)
+        self.assertIn('ignores .auto-context/', carried['context'])
+        self.assertIsNone(core_bridge._with_session_notice(str(self.project), None))
+
+
 def tearDownModule():
     pass
 

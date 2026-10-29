@@ -392,6 +392,7 @@ def project_dir_notice(project_root, journal_path, *, request_move=True, spawn=N
     except Exception:
         pointer = None
     pending = dir_move.needed(project_root)
+    pending = None if pending == 'tidy' else pending
     status = read_status(state) if state.is_dir() else None
     if pointer is None and pending is None:
         layout_line = dir_move.layout_notice(project_root)

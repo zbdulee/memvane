@@ -180,13 +180,37 @@ def intent_present(state):
 
 
 def needed(project):
-    """'rename', 'adopt' or None: the move this project's layout asks for."""
+    """'rename', 'adopt', 'tidy' or None: the move this project's layout asks for.
+
+    ``tidy`` removes a moved project's leftover ``.auto-context/`` that holds
+    only file-manager metadata and empty directories.
+    """
     layout = project_dir.layout(project)
     if layout == 'legacy':
         return 'rename'
     if layout == 'adopt':
         return 'adopt'
+    if (layout == 'current' and
+            project_dir.only_disposable(legacy_folder(project))):
+        return 'tidy'
     return None
+
+
+def tidy(project):
+    """Remove a leftover ``.auto-context/`` only while it is exactly metadata."""
+    legacy = legacy_folder(project)
+    if not project_dir.only_disposable(legacy):
+        return False
+    for base, dirs, files in os.walk(legacy, topdown=False):
+        for name in files:
+            if not project_dir.disposable_name(name):
+                return False
+            os.unlink(os.path.join(base, name))
+        for name in dirs:
+            os.rmdir(os.path.join(base, name))
+    os.rmdir(legacy)
+    _fsync(Path(project))
+    return True
 
 
 # ------------------------------------------------------------- hook side
@@ -430,8 +454,10 @@ def _prepare(project, state, mode):
     row = fresh._load(state / fresh.LEDGER)
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
         _fail('project_dir_move_not_selected')
-    old_route = _read(legacy_dir / fresh.ROUTE, 8192)
-    old_marker = _read(legacy_dir / fresh.MARKER, 8192)
+    route_path = project_dir.runtime_file(project, fresh.ROUTE)
+    marker_path = project_dir.runtime_file(project, fresh.MARKER)
+    old_route = _read(route_path, 8192)
+    old_marker = _read(marker_path, 8192)
     reviewed = _read(state / 'reviewed-route.json', 8192)
     old_att = _read(state / PRODUCTION_ATTESTATION)
     old_ledger = _read(state / fresh.LEDGER, 1024 * 1024)
@@ -440,8 +466,7 @@ def _prepare(project, state, mode):
             _sha(old_route) != row['routeSha256'] or
             _sha(old_att) != row['attestationSha256'] or
             old_ledger != _canonical(row) or
-            fresh.classify_marker(project, legacy_dir / fresh.MARKER,
-                                  legacy_dir / fresh.ROUTE) != 'candidate' or
+            fresh.classify_marker(project, marker_path, route_path) != 'candidate' or
             selected['state'] not in ('active', 'restored_old') or
             selected['selectedRouteSha256'] != row['routeSha256']):
         _fail('project_dir_move_selection_changed')
@@ -474,6 +499,11 @@ def _prepare(project, state, mode):
         if bound is None or bound.source_manifest != manifest:
             _fail('project_dir_move_head_unbound')
         node = tuple(bound.roots[0][2:])
+        if mode == 'adopt' and not os.path.lexists(current_root):
+            # Only the settings were committed: every card is still in the old
+            # wiki and moves into this directory.
+            os.mkdir(current_root, 0o700)
+            _fsync(Path(current_root).parent)
         live = _wiki_node(legacy_root if mode == 'rename' else current_root)
         if mode == 'rename' and live != node:
             _fail('project_dir_move_root_changed')
@@ -820,6 +850,8 @@ def move(project_root, state, *, step=None):
     mode = intent['mode'] if intent is not None else needed(project)
     if mode is None:
         return {'status': 'project_dir_current'}
+    if mode == 'tidy':
+        return {'status': 'project_dir_current', 'tidied': tidy(project)}
     with ExitStack() as stack:
         _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
@@ -829,7 +861,7 @@ def move(project_root, state, *, step=None):
             intent = None
         if intent is None:
             mode = needed(project)
-            if mode is None:
+            if mode in (None, 'tidy'):
                 return {'status': 'project_dir_current'}
             from laya_journal_v4 import refuse_while_legacy_hermes
             refuse_while_legacy_hermes(None)

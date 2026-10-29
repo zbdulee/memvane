@@ -38,8 +38,26 @@ ROUTE = 'laya-index-route.json'
 # An untracked hidden file that keeps `.memvane/wiki` (and its inode) alive
 # when git checks out a branch whose cards live elsewhere; walkers skip it.
 WIKI_ANCHOR = '.memvane-root'
-# Finder metadata a merge may drop when both folders hold one.
-DISPOSABLE = frozenset(('.DS_Store',))
+# File-manager metadata: a merge may drop it when both folders hold one, and a
+# legacy folder holding only this (and empty directories) is not a project folder.
+DISPOSABLE = frozenset(('.DS_Store', 'Thumbs.db', 'desktop.ini', '.localized'))
+
+
+def disposable_name(name) -> bool:
+    return name in DISPOSABLE or name.startswith('._')
+
+
+def only_disposable(tree) -> bool:
+    """``tree`` holds nothing but file-manager metadata and empty directories."""
+    tree = Path(tree)
+    if not _real_dir(tree):
+        return False
+    for _base, dirs, files in os.walk(tree):
+        if any(os.path.islink(os.path.join(_base, name)) for name in dirs):
+            return False
+        if any(not disposable_name(name) for name in files):
+            return False
+    return True
 # The project's own .gitignore lines MemVane suggests for the runtime files.
 IGNORE_SUFFIXES = ('compile/', 'file-changes/', 'laya-index-route.json',
                    'laya-index-selection.json', 'memvane-*.json', '*.lock', '.*.lock',
@@ -149,6 +167,9 @@ def layout(project) -> str:
     if not has_legacy:
         return 'current'
     current_settings = os.path.lexists(current / SETTINGS)
+    if current_settings and only_disposable(legacy):
+        # A leftover of Finder metadata or empty directories is not a folder.
+        return 'current'
     if os.path.lexists(legacy / SETTINGS) and not current_settings:
         return 'split'
     if (current_settings and not os.path.lexists(legacy / SETTINGS) and
