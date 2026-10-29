@@ -1095,22 +1095,28 @@ def _learning_event(state, event, outcome, reason=None, **fields):
 def _learning_upkeep(project, home, state):
     """Move the learning state (once per account), then heal this project's selector.
 
-    Never raises; a deferral or refusal is an event and a later run retries.
+    Never raises; a deferral or refusal is an event and a later run retries
+    once the move's per-user backoff has passed. One attempt is bounded
+    (``state_move.BUDGET_SECONDS``); while the move is pending the heal does
+    not run.
     """
     out = {}
     try:
         from context_learning import state_move
-        moved = state_move.move(home)
+        moved = state_move.move(home, events=state)
         if moved['status'] == 'learning_state_moved':
             out['learningState'] = moved['status']
             _learning_event(state, 'learning.state', 'moved',
-                            rebased=moved.get('checkpointsRebased'))
+                            rebased=moved.get('checkpointsRebased'),
+                            residentRestart=moved.get('residentRestart'))
             for stray in moved.get('strays') or ():
                 # A tree an earlier bundle recreated at the old base, set aside.
                 _learning_event(state, 'learning.state', 'stray_set_aside', path=stray)
     except Exception as exc:
         out['learningState'] = _reason(exc)
-        _learning_event(state, 'learning.state', 'deferred', _reason(exc))
+        _learning_event(state, 'learning.state', 'deferred', _reason(exc),
+                        retryIn=getattr(exc, 'retry_in', None),
+                        residentRestart=getattr(exc, 'restart', None))
         return out
     try:
         from context_learning import selector_heal
