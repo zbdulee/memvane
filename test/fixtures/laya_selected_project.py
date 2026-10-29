@@ -66,7 +66,10 @@ class SelectedProject(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix=self.TEMP_PREFIX, dir=self.TEMP_DIR)
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
-        patcher = mock.patch.dict(os.environ, {'HOME': str(self.home)})
+        # QMD_SANDBOX: no fixture path may start runtime workers or write a
+        # runtime wake outside this temp HOME (a test that needs the
+        # unsandboxed hook path clears it itself, around a mocked spawn).
+        patcher = mock.patch.dict(os.environ, {'HOME': str(self.home), 'QMD_SANDBOX': '1'})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.project = self.home / 'project'

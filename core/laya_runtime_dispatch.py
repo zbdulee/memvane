@@ -280,6 +280,25 @@ def _event(target, kind, started, *, outcome, reason=None, result=None):
         pass
 
 
+def drop_event(kind, value, *, reason, attempts=None):
+    """Best-effort ``wake.drop`` in the install log of a still-routed project.
+
+    A wake whose project directory is gone has no install log left to reach;
+    the queue-side drop ledger (``runtime-wake-drops.json``) records it.
+    """
+    try:
+        if not Path(value).is_dir():
+            return False
+        import event_log
+        from laya_index_host_route import select_route
+        decision = select_route(str(value), action='update')
+        return event_log.emit('wake.drop', outcome='dropped', reason=reason,
+                              decision=decision, host='worker', session=None,
+                              kind=kind, attempts=attempts)
+    except Exception:
+        return False
+
+
 def run(kind, value, *, owner_fd=None):
     target = resolve(kind, value)
     if target['terminal']:

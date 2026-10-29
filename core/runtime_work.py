@@ -1,7 +1,24 @@
 """Persistent wake hints for existing workers; no model/service installation.
 
-Content queues own ACK/checkpoints. One bounded UID-global waiter holds only its
-dispatch lease while sleeping, never a writer, trainer or compute lease.
+Content queues own ACK/checkpoints. One bounded UID-global worker holds only
+its dispatch lease, never a writer, trainer or compute lease.
+
+A worker runs only while a wake is due. With nothing due (every row backed
+off) drain returns at once and no successor is spawned, so the lease is free
+between attempts. A backed-off row runs once it is due through whichever comes
+first: ``hook_wake`` (every hook's exit), ``request`` (recall pulls its sync row
+due), or the resident service's ``runtime_monitor`` child, which polls the
+queue every few seconds and wakes a worker when a row is due, so an idle user's
+retries still run while the resident service is up.
+
+A learning-state move asks running workers to yield (``runtime-worker-yield.json``):
+drain stops before claiming its next wake and no worker is spawned until the
+mover holds the lease or its request expires. A child already running is not
+interrupted.
+
+The queue lives in the per-user runtime root of the passwd home. A HOME that
+is a disposable temp directory (test fixtures) gets its own queue under that
+HOME instead, so a test can never write the real user's queue.
 """
 from contextlib import contextmanager
 import fcntl
@@ -34,6 +51,12 @@ KINDS=wake_policy.KINDS
 RETRY=wake_policy.RETRY
 MAX_WAKES=wake_policy.MAX_WAKES
 HANDOFF_SECONDS=180
+YIELD_FILE='runtime-worker-yield.json'
+# A yield request older than this is ignored even if its expiry says
+# otherwise: a mover's whole attempt is bounded well below it.
+YIELD_MAX_SECONDS=600
+DROP_DETAIL_FILE='runtime-wake-drops.json'
+DROP_DETAIL_MAX_ROWS=64
 
 
 def Coordinator(*args,**kwargs):
@@ -43,9 +66,63 @@ def Coordinator(*args,**kwargs):
     return coordinator(*args,**kwargs)
 
 
+def _temp_roots():
+    roots={'/tmp','/var/tmp','/var/folders'}
+    try:
+        import tempfile
+        roots.add(tempfile.gettempdir())
+    except (OSError,RuntimeError):pass
+    try:roots.add(os.confstr('CS_DARWIN_USER_TEMP_DIR'))
+    except (AttributeError,ValueError,OSError):pass
+    resolved=set()
+    for root in roots:
+        if root:
+            try:resolved.add(Path(root).resolve())
+            except (OSError,RuntimeError):pass
+    return resolved
+
+
+def disposable_home():
+    """HOME when it is a temp directory other than the passwd home, else None.
+
+    A real host never points HOME into the platform temp area; a fixture does.
+    Only then does the queue follow HOME, so the per-user root (one service
+    per OS user, whatever HOME/CODEX_HOME a host sets) is otherwise unchanged.
+    """
+    raw=os.environ.get('HOME')
+    if not raw:return None
+    try:
+        import pwd
+        home=Path(raw).resolve()
+        if home==Path(pwd.getpwuid(os.getuid()).pw_dir).resolve():return None
+    except (OSError,KeyError,RuntimeError,ValueError):return None
+    return home if any(home.is_relative_to(root) for root in _temp_roots()) else None
+
+
 def default_root():
+    home=disposable_home()
+    if home is not None:
+        from context_learning.inference_service import service_root
+        return service_root(create=True,home=home)
     from context_learning.resource_coordination import default_root as root
     return root()
+
+
+def yield_requested(root,*,now=None):
+    """Whether a learning-state mover asked workers to step aside right now."""
+    path=Path(root)/YIELD_FILE
+    try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    except OSError:return False
+    try:
+        info=os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
+                or info.st_mode&0o077 or info.st_size>512):return False
+        with os.fdopen(os.dup(fd),'rb') as source:until=json.loads(source.read()).get('until')
+    except (OSError,ValueError,AttributeError):return False
+    finally:os.close(fd)
+    now=time.time() if now is None else now
+    return (type(until) in (int,float) and math.isfinite(until)
+            and now<until<=now+YIELD_MAX_SECONDS)
 
 
 def sample():
@@ -160,9 +237,15 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
         while runs<max_runs and clock()<deadline:
             rows=queue.pending()
             if not rows:return {'status':'drained','runs':runs}
+            # A mover waits for this lease: never start another child for it.
+            if yield_requested(queue.root):return {'status':'yielded','runs':runs}
             due=wake_policy.due_rows(rows,wall())
-            row=wake_policy.next_row(due) if due else None
-            try:can_run=row is not None and (injected_ready() if injected_ready is not None else admitted(row))
+            # Only backed-off rows: release the lease now instead of sleeping
+            # on it; a hook, a request or the runtime monitor wakes a worker
+            # again once one is due.
+            if not due:return {'status':'pending','runs':runs}
+            row=wake_policy.next_row(due)
+            try:can_run=(injected_ready() if injected_ready is not None else admitted(row))
             except (OSError,ValueError,TypeError,KeyError,ResourceDeferred):can_run=False
             if not can_run:
                 sleep(wake_policy.idle_wait(deadline-clock()));continue
@@ -177,7 +260,8 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
             except Exception as exc:done=False;error=exc
             runs+=1
             with queue.connect() as db:
-                step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall())
+                step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'])
+                if step.get('drop'):_record_drop(queue.root,row,step,error,wall())
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
@@ -203,7 +287,29 @@ def _record_failure_detail(root,row,error,now):
     """
     detail=getattr(error,'detail',None)
     if not isinstance(detail,str) or not detail:return
-    path=root/FAILURE_DETAIL_FILE
+    _record_tail(root/FAILURE_DETAIL_FILE,row['id'],{'kind':row['kind'],'target':row['target'],'at':now,
+        'reason':wake_policy.failure_reason(error),
+        'detail':detail.encode('utf-8','replace')[-FAILURE_DETAIL_MAX_BYTES:].decode('utf-8','replace')})
+
+
+def _record_drop(root,row,step,error,now):
+    """Record one dropped wake (``wake.drop``) beside the queue and, when the
+    project is still routed, in its install event log."""
+    reason=step['drop']
+    _record_tail(root/DROP_DETAIL_FILE,row['id'],{'event':'wake.drop','kind':row['kind'],
+        'target':row['target'],'at':now,'reason':reason,'attempts':row['attempts']+step['count'],
+        'lastFailure':wake_policy.failure_reason(error) if error is not None else None},
+        limit=DROP_DETAIL_MAX_ROWS)
+    if row['kind'] in ('laya-sync','laya-compile'):
+        try:
+            from laya_runtime_dispatch import drop_event
+            drop_event(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
+        except Exception:
+            pass
+
+
+def _record_tail(path,key,entry,*,limit=FAILURE_DETAIL_MAX_ROWS):
+    """Bounded private JSON map, newest ``limit`` entries kept."""
     try:
         rows={}
         try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
@@ -218,28 +324,34 @@ def _record_failure_detail(root,row,error,now):
                         except ValueError:rows={}
             finally:os.close(fd)
         if not isinstance(rows,dict):rows={}
-        rows[row['id']]={'kind':row['kind'],'target':row['target'],'at':now,
-            'reason':wake_policy.failure_reason(error),
-            'detail':detail.encode('utf-8','replace')[-FAILURE_DETAIL_MAX_BYTES:].decode('utf-8','replace')}
+        rows[key]=entry
         keep=sorted(rows.items(),key=lambda item:item[1].get('at',0) if isinstance(item[1],dict) else 0)
-        _atomic_json(path,dict(keep[-FAILURE_DETAIL_MAX_ROWS:]))
+        _atomic_json(path,dict(keep[-limit:]))
     except (OSError,ValueError,TypeError):
         pass
 
 
-def wake():
-    """Pass the dispatch lease across spawn, avoiding one child per session."""
-    queue=WakeQueue()
-    if not queue.path.exists() or not queue.pending():return False
+def _wake(queue=None):
+    """'spawned', 'busy' (another owner holds the lease), 'idle' or 'yield'."""
+    queue=WakeQueue() if queue is None else queue
+    if not queue.path.exists():return 'idle'
+    # Backed-off rows alone never start a worker that would only wait.
+    if not wake_policy.any_due(queue.pending(),time.time()):return 'idle'
+    if yield_requested(queue.root):return 'yield'
     fd=_lock(queue.root/'runtime-worker.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:return False
+        except BlockingIOError:return 'busy'
         subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'worker',str(fd)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
-        return True
+        return 'spawned'
     finally:os.close(fd)
+
+
+def wake(queue=None):
+    """Pass the dispatch lease across spawn, avoiding one child per session."""
+    return _wake(queue)=='spawned'
 
 
 def _handoff():
@@ -250,6 +362,7 @@ def _handoff():
     changing the common queue. Only an explicit new Laya request starts this.
     """
     queue=WakeQueue()
+    if yield_requested(queue.root):return False
     fd=_lock(queue.root/'runtime-worker-handoff.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -262,6 +375,12 @@ def _handoff():
 
 
 def _handoff_worker(queue,handoff_fd):
+    """Wait as the one handoff contender, then drain as an ordinary worker.
+
+    The handoff lock only limits waiting contenders to one; it is released as
+    soon as the lease is held, so a learning-state mover waiting for it is not
+    held for this worker's drain.
+    """
     lease_path=queue.root/'runtime-worker.lock'
     lease=_lock(lease_path)
     try:
@@ -275,6 +394,7 @@ def _handoff_worker(queue,handoff_fd):
         finally:
             signal.setitimer(signal.ITIMER_REAL,0)
             signal.signal(signal.SIGALRM,prior)
+        os.close(handoff_fd);handoff_fd=None
         # A queued kernel waiter gets the old owner's released lease before
         # that owner can self-rewake. drain preserves the shared revision ACK.
         _drain_and_rewake(queue,lease)
@@ -282,7 +402,7 @@ def _handoff_worker(queue,handoff_fd):
         if lease is not None:
             try:os.close(lease)
             except OSError:pass
-        os.close(handoff_fd)
+        if handoff_fd is not None:os.close(handoff_fd)
 
 
 def request(kind,target='',*,start=True,pull_due=False):
@@ -290,8 +410,9 @@ def request(kind,target='',*,start=True,pull_due=False):
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1' or os.environ.get('QMD_SANDBOX'):return
     offered=WakeQueue().offer(kind,target,pull_due=pull_due) if pull_due else WakeQueue().offer(kind,target)
     if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':
-        started=wake()
-        if not started and kind in ('laya-sync','laya-compile') and offered=='queued':
+        # Contend only for a lease another worker holds; a not-yet-due row
+        # or a mover's yield request needs no waiting contender.
+        if _wake()=='busy' and kind in ('laya-sync','laya-compile') and offered=='queued':
             _handoff()
     # A retained wake is durable and promoted when a slot frees; only a
     # dropped one needs the caller's own request file and the next hook.
@@ -303,7 +424,7 @@ def _drain_and_rewake(queue,fd):
     """Keep a pending durable wake live after this bounded owner exits.
 
     drain closes its passed lease before returning. The successor is spawned
-    only if the queue still has rows and the same kernel lock can be acquired;
+    only if a row is due and the same kernel lock can be acquired;
     another owner or a concurrent request can win safely. Checking even after
     a drained result closes the enqueue-versus-last-read race.
     """

@@ -18,7 +18,20 @@ def retired(row):
     return True
 
 
+def _target_missing(row):
+    """A Laya wake whose project directory is gone is void, never retried.
+
+    Only a missing directory counts: a route that is merely not selected yet
+    (``target_unavailable`` during a move) still backs off and retries.
+    """
+    try:
+        return not Path(row['target']).is_dir()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def laya_sync(row):
+    if _target_missing(row):return wake_policy.Dropped('target_missing')
     from laya_runtime_dispatch import run
     result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
     if result['state']=='indexed':
@@ -33,6 +46,7 @@ def laya_sync(row):
 
 
 def laya_compile(row):
+    if _target_missing(row):return wake_policy.Dropped('target_missing')
     from laya_runtime_dispatch import run
     result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
     return result['state']=='drained'

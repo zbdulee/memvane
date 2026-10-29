@@ -103,7 +103,9 @@ development execution guard is separate; see
 `runtime_work.py` stores only fixed handler kinds, project paths/update keys,
 revision, due time and attempt state in private `runtime-wakes.sqlite3` beside
 the UID-global Laya coordination locks. The root comes from the OS UID home,
-not overridden HOME/CODEX_HOME. It stores no prompts, bodies, arbitrary argv or
+not overridden HOME/CODEX_HOME; only a HOME inside the platform temp area
+(`/tmp`, `/var/folders`, `TMPDIR`: test fixtures) gets its own queue under that
+HOME, so a test never writes the user's queue. It stores no prompts, bodies, arbitrary argv or
 credentials. Original content queues, claims and model cursors own actual work.
 
 Selected-route hook wakes (`laya-sync`, `laya-compile`) and local learning
@@ -119,17 +121,37 @@ promotion as slots open; when both stores are full the caller receives an
 explicit capacity deferral. The learning request file remains for the next
 normal hook in that case.
 
-The waiter polls at five-second intervals for **at most 60 seconds of dispatch
-loop lifetime and eight dispatches**. It sleeps with only its own dispatch lease,
-never compute, trainer, writer or embed locks. Resource recovery during that
-window can resume without another hook. A dispatch already executing at the end
-of that budget finishes its current operation, so this is not a hard task wall
-time. Backoff grows from five seconds to at most 300 seconds, and pending work
-remains durable when the waiter exits. **While the shared selector inference
-daemon and its monitor are alive, retained wake hints restart a waiter without a
-new hook. When that daemon/monitor is absent, after logout or reboot the next
-normal hook is needed.** No boot/login service,
-LaunchAgent, extra credential or security permission is used.
+A worker starts only when a wake is due, and runs **at most 60 seconds of
+dispatch loop lifetime and eight dispatches**. When no row is due (every row
+backed off) it returns at once, releases its lease and spawns no successor; a
+hook, a recall's sync request (which pulls its row due) or the monitor below
+starts a worker again once a row is due. While a due wake waits for compute
+admission the worker polls at five-second intervals within that window,
+holding only its own dispatch lease, never compute, trainer, writer or embed
+locks. A dispatch already executing at the end of that budget finishes its
+current operation, so this is not a hard task wall time. Backoff grows from
+five seconds to at most 300 seconds, and pending work remains durable when the
+waiter exits. **While the shared selector inference daemon and its monitor are
+alive, a backed-off wake runs once it is due without a new hook. When that
+daemon/monitor is absent, after logout or reboot the next normal hook is
+needed.** No boot/login service, LaunchAgent, extra credential or security
+permission is used.
+
+A `laya-sync`/`laya-compile` wake whose project directory no longer exists is
+acknowledged without dispatch. One whose counted failures reach
+`RETRY_CAP_ATTEMPTS` (144, about 12 hours at the 300-second ceiling) is dropped
+instead of retried; the next sync or compile request creates a fresh row. Both
+are recorded as `wake.drop` (`reason` `target_missing` or `retry_cap`) in the
+private `runtime-wake-drops.json` beside the queue (newest 64), and a
+`retry_cap` drop of a still-routed project also in its install `events.jsonl`.
+
+A request whose wake cannot start a worker because another one holds the lease
+starts one handoff contender (`runtime-worker-handoff.lock`, at most 180
+seconds). The contender releases that lock as soon as it holds the worker
+lease. A learning-state move writes `runtime-worker-yield.json` (an expiry
+within its attempt budget) before it waits for both locks: a draining worker
+claims no further wake, and no worker or contender is spawned, while it
+stands. A child already running is not interrupted.
 
 Learning retries recheck `laya_learning.ready` and retain the existing history
 worker fence. The runtime dispatcher starts at most one owned learning child

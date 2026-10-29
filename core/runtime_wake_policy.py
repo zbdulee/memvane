@@ -29,6 +29,12 @@ RETRY_BASE_SECS = 5
 RETRY_MAX_EXPONENT = 6
 RETRY_MAX_SECS = 300
 IDLE_WAIT_SECS = 5
+# Counted failures after which a Laya wake is dropped (``retry_cap``) instead
+# of retried forever. At the 300 s backoff ceiling this is about 12 hours of
+# failing attempts; the next sync/compile request creates a fresh row.
+RETRY_CAP_ATTEMPTS = 144
+RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
+DROP_REASONS = frozenset(('target_missing', 'retry_cap'))
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 CLEANUP_DEFERRED_REASON = 'resource_deferred'
@@ -70,6 +76,33 @@ class DispatchFailure(ValueError):
         super().__init__(code)
 
 
+class Dropped:
+    """Truthy handler answer: the wake is ACKed as void and recorded as a drop.
+
+    A handler returns it when its target no longer exists, so the row is
+    removed once instead of retrying a vanished directory forever.
+    """
+
+    __slots__ = ('reason',)
+
+    def __init__(self, reason):
+        if reason not in DROP_REASONS:
+            raise ValueError('invalid_drop_reason')
+        self.reason = reason
+
+    def __bool__(self):
+        return True
+
+    def __eq__(self, other):
+        return isinstance(other, Dropped) and other.reason == self.reason
+
+    def __hash__(self):
+        return hash(('Dropped', self.reason))
+
+    def __repr__(self):
+        return 'Dropped(%r)' % self.reason
+
+
 def validate_wake(kind, target):
     """Raise ValueError('invalid_runtime_wake') unless (kind, target) is fixed-shape."""
     if kind not in KINDS or not isinstance(target, str) or len(target.encode()) > MAX_TARGET_BYTES:
@@ -108,6 +141,11 @@ def due_rows(rows, now):
     return [row for row in rows if row['due'] <= now]
 
 
+def any_due(rows, now):
+    """Whether a worker has anything to run now; backed-off rows alone do not count."""
+    return any(row['due'] <= now for row in rows)
+
+
 def next_row(due):
     """Highest-priority due wake: kind class, then oldest due, then id."""
     return min(due, key=lambda row: (KINDS[row['kind']], row['due'], row['id']))
@@ -139,7 +177,7 @@ def failure_reason(error):
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
-def settle(attempts, *, done, now, error=None):
+def settle(attempts, *, done, now, error=None, kind=None):
     """Decide what happens to a claimed wake after one execution.
 
     ack: delete the claimed revision; a newer revision (enqueued while running)
@@ -147,11 +185,20 @@ def settle(attempts, *, done, now, error=None):
     retry: keep the row, push ``due`` back by the backoff and count the attempt.
     An owner that is still preparing is retried after a fixed delay without
     counting; the prior count from real failures is kept unchanged.
+    drop: an ACK that is recorded as a drop. A handler's ``Dropped`` answer
+    (target gone) and a Laya wake whose counted failures reach
+    ``RETRY_CAP_ATTEMPTS`` are dropped; the cap is checked only here, after a
+    real attempt, so an explicit re-request still runs once.
     """
     if done and error is None:
+        if isinstance(done, Dropped):
+            return {'ack': True, 'due': now, 'reason': None, 'count': 0, 'drop': done.reason}
         return {'ack': True, 'due': now, 'reason': None, 'count': 0}
     if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
         return {'ack': False, 'due': now + PREPARING_RETRY_SECS,
                 'reason': failure_reason(error), 'count': 0}
+    if kind in RETRY_CAPPED_KINDS and attempts + 1 >= RETRY_CAP_ATTEMPTS:
+        return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
+                'drop': 'retry_cap'}
     return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),
             'count': 1}

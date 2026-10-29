@@ -560,7 +560,9 @@ class DiscoveryChecks(unittest.TestCase):
             with patch.object(discovery, 'drain_after_sync',
                               side_effect=RuntimeError('crash_after_publish')):
                 status, results, failures = self.drain_all(queue)
-            self.assertEqual((status, results), ({'status': 'waiting'}, []))
+            # Only the backed-off wake is left: drain returns at once (no idle
+            # wait on the lease) and the wake stays pending.
+            self.assertEqual((status, results), ({'status': 'pending', 'runs': 1}, []))
             self.assertEqual([type(exc).__name__ for exc in failures], ['RuntimeError'])
             # runtime_work.drain kept the wake: an exception is not an ACK.
             self.assertEqual([(row['kind'], row['attempts'], row['reason']) for row in queue.pending()],

@@ -119,6 +119,37 @@ class PolicyDecisions(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.DispatchFailure('private/path', 'a' * 40)
 
+    def test_laya_retry_cap_drops_instead_of_retrying_forever(self):
+        cap = policy.RETRY_CAP_ATTEMPTS
+        deferred = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64)
+        for kind in ('laya-sync', 'laya-compile'):
+            below = policy.settle(cap - 2, done=False, error=deferred, now=10, kind=kind)
+            self.assertEqual((below['ack'], below.get('drop')), (False, None))
+            at = policy.settle(cap - 1, done=False, error=deferred, now=10, kind=kind)
+            self.assertEqual((at['ack'], at['drop'], at['count']), (True, 'retry_cap', 1))
+            self.assertEqual(at['reason'], policy.failure_reason(deferred))
+        # Waiting on a starting owner is not a failure and never reaches the cap.
+        preparing = policy.DispatchFailure('target_preparing', 'a' * 40, 'c' * 64)
+        self.assertFalse(policy.settle(cap * 3, done=False, error=preparing, now=10,
+                                       kind='laya-sync')['ack'])
+        # Other kinds keep their own retry semantics.
+        for kind in ('learning', 'auto', None):
+            self.assertFalse(policy.settle(cap * 3, done=False, now=10, kind=kind)['ack'])
+
+    def test_dropped_answer_acks_as_a_recorded_drop(self):
+        self.assertEqual(policy.settle(7, done=policy.Dropped('target_missing'), now=10),
+                         {'ack': True, 'due': 10, 'reason': None, 'count': 0,
+                          'drop': 'target_missing'})
+        self.assertTrue(policy.Dropped('retry_cap'))
+        with self.assertRaises(ValueError):
+            policy.Dropped('/private/path')
+
+    def test_any_due_ignores_backed_off_rows(self):
+        rows = [{'due': 20}, {'due': 30}]
+        self.assertFalse(policy.any_due(rows, 19.9))
+        self.assertTrue(policy.any_due(rows, 20))
+        self.assertFalse(policy.any_due([], 100))
+
 
 class DrainThroughSeam(unittest.TestCase):
     def setUp(self):
@@ -282,8 +313,135 @@ runtime._handoff_worker(queue,fd)
             clock[0] += dt
         result = runtime.drain(self.queue, execute=lambda _: self.fail('not due'), ready=lambda: True,
                                clock=lambda: clock[0], wall=lambda: 104, sleep=sleep, max_seconds=7)
+        # Only a backed-off row: return at once and free the lease, no idle wait.
         self.assertEqual(result, {'status': 'pending', 'runs': 0})
-        self.assertEqual(slept, [5, 2])
+        self.assertEqual(slept, [])
+
+    def spawns(self):
+        spawned = []
+        patcher = patch.object(runtime.subprocess, 'Popen',
+                               side_effect=lambda *args, **kw: spawned.append(args[0]))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        root = patch.object(runtime, 'default_root', return_value=self.root)
+        root.start()
+        self.addCleanup(root.stop)
+        return spawned
+
+    def test_backed_off_rows_alone_spawn_no_worker(self):
+        spawned = self.spawns()
+        now = time.time()
+        self.queue.put('laya-compile', '/synthetic/a', now=now + 600)
+        self.queue.put('learning', '/synthetic/b', now=now + 900)
+        self.assertFalse(runtime.wake())
+        # A bounded worker that found nothing due exits without a successor.
+        lease = runtime._lock(self.root / 'runtime-worker.lock')
+        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(runtime._drain_and_rewake(self.queue, lease), {'status': 'pending', 'runs': 0})
+        # A new request for a backed-off Laya row neither spawns a worker nor
+        # a handoff contender while the lease is free.
+        self.assertEqual(runtime.request('laya-compile', '/synthetic/a'), {'status': 'queued'})
+        self.assertEqual(spawned, [])
+        self.assertTrue(self.lease_free())
+        # Once a row is due, the same wake starts exactly one worker.
+        self.queue.put('index', '', now=now - 1)
+        self.assertTrue(runtime.wake())
+        self.assertEqual([argv[3] for argv in spawned], ['worker'])
+
+    def lease_free(self, name='runtime-worker.lock'):
+        fd = os.open(self.root / name, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        finally:
+            os.close(fd)
+
+    def test_handoff_contender_releases_handoff_lock_once_it_holds_the_lease(self):
+        handoff = runtime._lock(self.root / 'runtime-worker-handoff.lock')
+        fcntl.flock(handoff, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        observed = []
+
+        def draining(queue, fd):
+            # Another open file description: flock conflicts even in-process.
+            observed.append((self.lease_free('runtime-worker-handoff.lock'),
+                             self.lease_free('runtime-worker.lock')))
+        with patch.object(runtime, '_drain_and_rewake', side_effect=draining):
+            runtime._handoff_worker(self.queue, handoff)
+        self.assertEqual(observed, [(True, False)])
+        with self.assertRaises(OSError):
+            os.fstat(handoff)
+
+    def yield_for(self, seconds):
+        from runtime_lease import atomic_json
+        atomic_json(self.root / runtime.YIELD_FILE, {'until': time.time() + seconds})
+
+    def test_yield_request_stops_drain_and_spawns_until_it_expires(self):
+        spawned = self.spawns()
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
+        calls = []
+
+        def run(row):
+            calls.append(row['target'])
+            if len(calls) == 1:
+                self.yield_for(30)  # a mover starts waiting during this child
+            return True
+        self.assertEqual(self.drain(run, max_runs=2), {'status': 'yielded', 'runs': 1})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertFalse(runtime.wake())
+        self.assertEqual(runtime.request('laya-sync', '/synthetic/c'), {'status': 'queued'})
+        self.assertEqual(spawned, [])
+        # An expired or absurd request is ignored.
+        for until in (time.time() - 1, time.time() + 10 ** 6):
+            from runtime_lease import atomic_json
+            atomic_json(self.root / runtime.YIELD_FILE, {'until': until})
+            self.assertFalse(runtime.yield_requested(self.root))
+        (self.root / runtime.YIELD_FILE).unlink()
+        self.assertTrue(runtime.wake())
+
+    def drops(self):
+        import json
+        return json.loads((self.root / runtime.DROP_DETAIL_FILE).read_text())
+
+    def test_wakes_for_a_vanished_project_are_dropped_and_recorded(self):
+        gone = self.root / 'laya-selected-gone' / 'project'
+        alive = self.root / 'alive'
+        alive.mkdir()
+        self.queue.put('laya-sync', str(gone), now=0)
+        self.queue.put('laya-compile', str(gone), now=0)
+        self.queue.put('laya-sync', str(alive), now=0)
+        ran = []
+        import laya_runtime_dispatch
+        with patch.object(laya_runtime_dispatch, 'run',
+                          side_effect=lambda kind, target, **kw: ran.append(target)
+                          or {'state': 'unchanged'}):
+            result = runtime.drain(self.queue, execute=runtime.dispatch, ready=lambda: True,
+                                   clock=lambda: 0, wall=lambda: 100, sleep=lambda _: None,
+                                   max_runs=3)
+        self.assertEqual(result, {'status': 'drained', 'runs': 3})
+        self.assertEqual(ran, [str(alive)])
+        self.assertEqual(self.rows(), [])
+        recorded = sorted((entry['kind'], entry['reason'], entry['target'], entry['event'])
+                          for entry in self.drops().values())
+        self.assertEqual(recorded, [('laya-compile', 'target_missing', str(gone), 'wake.drop'),
+                                    ('laya-sync', 'target_missing', str(gone), 'wake.drop')])
+
+    def test_a_laya_wake_failing_up_to_the_cap_is_dropped_and_recorded(self):
+        self.queue.put('laya-compile', '/synthetic/a', now=0)
+        with self.queue.connect() as db:
+            db.execute('UPDATE wakes SET attempts=?', (policy.RETRY_CAP_ATTEMPTS - 1,))
+        self.drain(self.failing('target_deferred', detail='deferred:pending:unlabeled'), wall=100)
+        self.assertEqual(self.rows(), [])
+        entry, = self.drops().values()
+        self.assertEqual((entry['reason'], entry['attempts'], entry['kind']),
+                         ('retry_cap', policy.RETRY_CAP_ATTEMPTS, 'laya-compile'))
+        self.assertTrue(entry['lastFailure'].startswith('dispatch:target_deferred:'))
+        # A later request starts a fresh history.
+        self.queue.put('laya-compile', '/synthetic/a', now=200)
+        self.assertEqual(self.rows()[0]['attempts'], 0)
 
     def test_exception_records_type_name(self):
         self.queue.put('cleanup', '/synthetic/a', now=0)

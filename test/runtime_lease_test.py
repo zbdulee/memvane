@@ -50,7 +50,10 @@ class Aliases(unittest.TestCase):
         from context_learning import resource_coordination
         with tempfile.TemporaryDirectory() as raw:
             root=Path(os.path.realpath(raw));os.chmod(root,0o700)
-            with patch.object(resource_coordination,'default_root',return_value=root):
+            # A temp-area HOME (a sandboxed run) has its own queue root; the
+            # shim delegates for every other HOME.
+            with patch.object(resource_coordination,'default_root',return_value=root), \
+                 patch.object(runtime_work,'disposable_home',return_value=None):
                 self.assertEqual(runtime_work.default_root(),root)
                 self.assertEqual(runtime_work.WakeQueue().root,root)
             controller=runtime_work.Coordinator(root)
