@@ -34,6 +34,12 @@ IDLE_WAIT_SECS = 5
 # failing attempts; the next sync/compile request creates a fresh row.
 RETRY_CAP_ATTEMPTS = 144
 RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
+# A project directory that is missing only proves it is gone once it stayed
+# missing across this long and this many consecutive attempts (an unmounted
+# volume or a checkout being re-cloned comes back). Missing-target retries are
+# outside RETRY_CAP_ATTEMPTS so this window can be reached.
+MISSING_DROP_SECS = 86400
+MISSING_DROP_MIN_ATTEMPTS = 3
 DROP_REASONS = frozenset(('target_missing', 'retry_cap'))
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
@@ -74,6 +80,13 @@ class DispatchFailure(ValueError):
         # reason, which stays a fixed non-sensitive shape.
         self.detail = detail
         super().__init__(code)
+
+
+class TargetMissing(ValueError):
+    """A Laya wake's project directory does not exist (yet): back off."""
+
+    def __init__(self):
+        super().__init__('target_missing')
 
 
 class Dropped:
@@ -172,12 +185,14 @@ def retry_delay(attempts):
 
 
 def failure_reason(error):
+    if isinstance(error, TargetMissing):
+        return 'target_missing'
     if isinstance(error, DispatchFailure):
         return 'dispatch:' + error.code + ':' + (error.commit or 'none') + ':' + (error.bundle or 'none')
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
-def settle(attempts, *, done, now, error=None, kind=None):
+def settle(attempts, *, done, now, error=None, kind=None, missing_since=None):
     """Decide what happens to a claimed wake after one execution.
 
     ack: delete the claimed revision; a newer revision (enqueued while running)
@@ -188,7 +203,11 @@ def settle(attempts, *, done, now, error=None, kind=None):
     drop: an ACK that is recorded as a drop. A handler's ``Dropped`` answer
     (target gone) and a Laya wake whose counted failures reach
     ``RETRY_CAP_ATTEMPTS`` are dropped; the cap is checked only here, after a
-    real attempt, so an explicit re-request still runs once.
+    real attempt, so an explicit re-request still runs once. A ``TargetMissing``
+    failure backs off like any counted failure and is dropped
+    (``target_missing``) only once the target stayed missing since
+    ``missing_since`` for ``MISSING_DROP_SECS`` and ``MISSING_DROP_MIN_ATTEMPTS``
+    consecutive attempts; it never reaches the retry cap.
     """
     if done and error is None:
         if isinstance(done, Dropped):
@@ -197,6 +216,13 @@ def settle(attempts, *, done, now, error=None, kind=None):
     if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
         return {'ack': False, 'due': now + PREPARING_RETRY_SECS,
                 'reason': failure_reason(error), 'count': 0}
+    if isinstance(error, TargetMissing):
+        if (missing_since is not None and now - missing_since >= MISSING_DROP_SECS
+                and attempts + 1 >= MISSING_DROP_MIN_ATTEMPTS):
+            return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
+                    'drop': 'target_missing'}
+        return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),
+                'count': 1}
     if kind in RETRY_CAPPED_KINDS and attempts + 1 >= RETRY_CAP_ATTEMPTS:
         return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
                 'drop': 'retry_cap'}

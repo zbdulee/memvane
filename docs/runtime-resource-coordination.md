@@ -103,9 +103,10 @@ development execution guard is separate; see
 `runtime_work.py` stores only fixed handler kinds, project paths/update keys,
 revision, due time and attempt state in private `runtime-wakes.sqlite3` beside
 the UID-global Laya coordination locks. The root comes from the OS UID home,
-not overridden HOME/CODEX_HOME; only a HOME inside the platform temp area
-(`/tmp`, `/var/folders`, `TMPDIR`: test fixtures) gets its own queue under that
-HOME, so a test never writes the user's queue. It stores no prompts, bodies, arbitrary argv or
+not overridden HOME/CODEX_HOME. A test run (`npm test`, the shared Laya
+fixtures) sets `MEMVANE_TEST_RUNTIME_ROOT` inside the platform temp area, and
+every runtime participant resolves that root instead, so a test never writes
+the user's queue; the variable is ignored outside the temp area. It stores no prompts, bodies, arbitrary argv or
 credentials. Original content queues, claims and model cursors own actual work.
 
 Selected-route hook wakes (`laya-sync`, `laya-compile`) and local learning
@@ -123,9 +124,15 @@ normal hook in that case.
 
 A worker starts only when a wake is due, and runs **at most 60 seconds of
 dispatch loop lifetime and eight dispatches**. When no row is due (every row
-backed off) it returns at once, releases its lease and spawns no successor; a
-hook, a recall's sync request (which pulls its row due) or the monitor below
-starts a worker again once a row is due. While a due wake waits for compute
+backed off) it returns at once, releases its lease and spawns no worker
+successor. One detached timer per user (`runtime-wake-timer.lock`, never the
+worker lease) then sleeps until the earliest due time, re-reading the queue at
+least every 15 seconds, and wakes a worker when a row falls due; it exits when
+the queue is empty and hands over to a successor after an hour. Any wake that
+finds only backed-off rows arms it, so a retry runs on time without another
+hook or a running resident service. A hook, a recall's sync request (which
+pulls its row due) and the monitor below also start a worker once a row is
+due. While a due wake waits for compute
 admission the worker polls at five-second intervals within that window,
 holding only its own dispatch lease, never compute, trainer, writer or embed
 locks. A dispatch already executing at the end of that budget finishes its
@@ -137,8 +144,14 @@ daemon/monitor is absent, after logout or reboot the next normal hook is
 needed.** No boot/login service, LaunchAgent, extra credential or security
 permission is used.
 
-A `laya-sync`/`laya-compile` wake whose project directory no longer exists is
-acknowledged without dispatch. One whose counted failures reach
+A `laya-sync`/`laya-compile` wake whose project directory is missing is
+acknowledged without dispatch when the path is in the platform temp area (a
+removed test project). Elsewhere a missing directory may come back (an
+unmounted volume, a re-clone): the wake backs off as `target_missing`, its
+first miss is kept in `runtime-wake-missing.json` beside the queue, and it is
+dropped only after it stayed missing for 24 hours and at least 3 consecutive
+attempts; a run that finds the directory again clears that record. Missing
+retries never count toward the retry cap. A wake whose counted failures reach
 `RETRY_CAP_ATTEMPTS` (144, about 12 hours at the 300-second ceiling) is dropped
 instead of retried; the next sync or compile request creates a fresh row. Both
 are recorded as `wake.drop` (`reason` `target_missing` or `retry_cap`) in the
@@ -260,6 +273,8 @@ spawn denial remains unavailable, never a permission bypass. Shutdown closes the
 pipe and reaps only the monitor it created, with bounded cleanup.
 
 The child checks registered durable wake hints every5seconds when work exists;
+a due `laya-sync`/`laya-compile` wake is woken without the learning admission
+check (the target bundle admits its own work), learning/auto wakes wait for it;
 with an empty queue it waits30seconds and performs no OS pressure probe or worker
 spawn. Observations occur before the nonblocking coordination check. Healthy
 recovery requires the task/reserve budget, load below65% of its configured

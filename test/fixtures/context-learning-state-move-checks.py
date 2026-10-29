@@ -563,6 +563,16 @@ class LearningMoveTests(unittest.TestCase):
         self.assertFalse((self.current / 'laya-inference' / 'runtime-worker-yield.json').exists())
         self.assertEqual(learning_state_base(self.home), self.current)
 
+    def test_a_sleeping_wake_timer_does_not_defer_the_move(self):
+        # The wake queue's timer holds only its own lock while it sleeps
+        # toward the next due wake; it is not a lane.
+        fd = hold(self.inference / 'runtime-wake-timer.lock')
+        try:
+            result = state_move.move(self.home, wait=1)
+        finally:
+            os.close(fd)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+
     def test_a_busy_lane_defers_before_anything_moves(self):
         fd = os.open(self.inference / 'runtime-worker.lock', os.O_RDWR)
         try:

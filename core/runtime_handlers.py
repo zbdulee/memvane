@@ -18,20 +18,28 @@ def retired(row):
     return True
 
 
-def _target_missing(row):
-    """A Laya wake whose project directory is gone is void, never retried.
+def _missing_target(row):
+    """None while the project directory exists, else the missing outcome.
 
-    Only a missing directory counts: a route that is merely not selected yet
-    (``target_unavailable`` during a move) still backs off and retries.
+    A missing directory in the platform temp area (a removed test fixture
+    project) is void and dropped at once. Anywhere else it may come back (an
+    unmounted volume, a re-clone): ``TargetMissing`` backs off, and the queue
+    drops the wake only after it stayed missing for a day
+    (``runtime_wake_policy.MISSING_DROP_SECS``). A route that is merely not
+    selected yet (``target_unavailable`` during a move) is not missing.
     """
     try:
-        return not Path(row['target']).is_dir()
+        if Path(row['target']).is_dir():return None
     except (OSError, TypeError, ValueError):
-        return False
+        return None
+    from runtime_lease import in_platform_temp
+    if in_platform_temp(row['target']):return wake_policy.Dropped('target_missing')
+    raise wake_policy.TargetMissing()
 
 
 def laya_sync(row):
-    if _target_missing(row):return wake_policy.Dropped('target_missing')
+    missing=_missing_target(row)
+    if missing is not None:return missing
     from laya_runtime_dispatch import run
     result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
     if result['state']=='indexed':
@@ -46,7 +54,8 @@ def laya_sync(row):
 
 
 def laya_compile(row):
-    if _target_missing(row):return wake_policy.Dropped('target_missing')
+    missing=_missing_target(row)
+    if missing is not None:return missing
     from laya_runtime_dispatch import run
     result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
     return result['state']=='drained'

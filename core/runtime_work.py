@@ -4,21 +4,25 @@ Content queues own ACK/checkpoints. One bounded UID-global worker holds only
 its dispatch lease, never a writer, trainer or compute lease.
 
 A worker runs only while a wake is due. With nothing due (every row backed
-off) drain returns at once and no successor is spawned, so the lease is free
-between attempts. A backed-off row runs once it is due through whichever comes
-first: ``hook_wake`` (every hook's exit), ``request`` (recall pulls its sync row
-due), or the resident service's ``runtime_monitor`` child, which polls the
-queue every few seconds and wakes a worker when a row is due, so an idle user's
-retries still run while the resident service is up.
+off) drain returns at once and no worker successor is spawned, so the lease is
+free between attempts. Instead one detached timer per user (``timer``, holding
+only ``runtime-wake-timer.lock``, never the worker lease) sleeps until the
+earliest due time and wakes a worker then; it re-reads the queue at least every
+``TIMER_CHUNK_SECONDS``, exits when the queue is empty and hands over to a
+successor after ``TIMER_MAX_SECONDS``. Any wake that finds only backed-off rows
+arms it, so a retry runs on time without another hook. ``hook_wake``,
+``request`` (recall pulls its sync row due) and the resident service's
+``runtime_monitor`` still wake a worker as soon as something is due.
 
 A learning-state move asks running workers to yield (``runtime-worker-yield.json``):
 drain stops before claiming its next wake and no worker is spawned until the
 mover holds the lease or its request expires. A child already running is not
 interrupted.
 
-The queue lives in the per-user runtime root of the passwd home. A HOME that
-is a disposable temp directory (test fixtures) gets its own queue under that
-HOME instead, so a test can never write the real user's queue.
+The queue lives in the per-user runtime root of the passwd home, shared with
+the coordinator, the resident service's monitor and the learning-state mover.
+A test run resolves that root to ``MEMVANE_TEST_RUNTIME_ROOT`` instead
+(``inference_service.service_root``), so a test never writes the user's queue.
 """
 from contextlib import contextmanager
 import fcntl
@@ -57,6 +61,12 @@ YIELD_FILE='runtime-worker-yield.json'
 YIELD_MAX_SECONDS=600
 DROP_DETAIL_FILE='runtime-wake-drops.json'
 DROP_DETAIL_MAX_ROWS=64
+# First time each wake found its project directory missing (TargetMissing).
+MISSING_FILE='runtime-wake-missing.json'
+TIMER_LOCK='runtime-wake-timer.lock'
+TIMER_CHUNK_SECONDS=15
+TIMER_MIN_SLEEP_SECONDS=.5
+TIMER_MAX_SECONDS=3600
 
 
 def Coordinator(*args,**kwargs):
@@ -66,44 +76,7 @@ def Coordinator(*args,**kwargs):
     return coordinator(*args,**kwargs)
 
 
-def _temp_roots():
-    roots={'/tmp','/var/tmp','/var/folders'}
-    try:
-        import tempfile
-        roots.add(tempfile.gettempdir())
-    except (OSError,RuntimeError):pass
-    try:roots.add(os.confstr('CS_DARWIN_USER_TEMP_DIR'))
-    except (AttributeError,ValueError,OSError):pass
-    resolved=set()
-    for root in roots:
-        if root:
-            try:resolved.add(Path(root).resolve())
-            except (OSError,RuntimeError):pass
-    return resolved
-
-
-def disposable_home():
-    """HOME when it is a temp directory other than the passwd home, else None.
-
-    A real host never points HOME into the platform temp area; a fixture does.
-    Only then does the queue follow HOME, so the per-user root (one service
-    per OS user, whatever HOME/CODEX_HOME a host sets) is otherwise unchanged.
-    """
-    raw=os.environ.get('HOME')
-    if not raw:return None
-    try:
-        import pwd
-        home=Path(raw).resolve()
-        if home==Path(pwd.getpwuid(os.getuid()).pw_dir).resolve():return None
-    except (OSError,KeyError,RuntimeError,ValueError):return None
-    return home if any(home.is_relative_to(root) for root in _temp_roots()) else None
-
-
 def default_root():
-    home=disposable_home()
-    if home is not None:
-        from context_learning.inference_service import service_root
-        return service_root(create=True,home=home)
     from context_learning.resource_coordination import default_root as root
     return root()
 
@@ -259,9 +232,13 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
             try:done=execute(served);error=None
             except Exception as exc:done=False;error=exc
             runs+=1
+            missing=isinstance(error,wake_policy.TargetMissing)
+            since=_missing_since(queue.root,row,wall()) if missing else None
             with queue.connect() as db:
-                step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'])
+                step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
+                                        missing_since=since)
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall())
+                if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
@@ -308,22 +285,47 @@ def _record_drop(root,row,step,error,now):
             pass
 
 
+def _missing_since(root,row,now):
+    """When this wake first found its target missing (recorded now if new)."""
+    entry=_read_map(root/MISSING_FILE).get(row['id'])
+    if (isinstance(entry,dict) and entry.get('target')==row['target']
+            and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
+            and entry['at']<=now):
+        return entry['at']
+    _record_tail(root/MISSING_FILE,row['id'],{'at':now,'target':row['target']},limit=MAX_WAKES)
+    return now
+
+
+def _clear_missing(root,key):
+    path=root/MISSING_FILE
+    if not path.exists():return
+    rows=_read_map(path)
+    if key in rows:
+        rows.pop(key)
+        try:_atomic_json(path,rows)
+        except (OSError,ValueError,TypeError):pass
+
+
+def _read_map(path):
+    """A private JSON object written by ``_record_tail``; {} when absent or unsafe."""
+    try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    except OSError:return {}
+    try:
+        info=os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
+                or info.st_mode&0o077 or info.st_size>1<<20):return {}
+        with os.fdopen(os.dup(fd),'rb') as source:
+            try:rows=json.loads(source.read())
+            except ValueError:return {}
+    except OSError:return {}
+    finally:os.close(fd)
+    return rows if isinstance(rows,dict) else {}
+
+
 def _record_tail(path,key,entry,*,limit=FAILURE_DETAIL_MAX_ROWS):
     """Bounded private JSON map, newest ``limit`` entries kept."""
     try:
-        rows={}
-        try:fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
-        except FileNotFoundError:fd=None
-        if fd is not None:
-            try:
-                info=os.fstat(fd)
-                if (stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid()
-                        and not info.st_mode&0o077 and info.st_size<=1<<20):
-                    with os.fdopen(os.dup(fd),'rb') as source:
-                        try:rows=json.loads(source.read())
-                        except ValueError:rows={}
-            finally:os.close(fd)
-        if not isinstance(rows,dict):rows={}
+        rows=_read_map(path)
         rows[key]=entry
         keep=sorted(rows.items(),key=lambda item:item[1].get('at',0) if isinstance(item[1],dict) else 0)
         _atomic_json(path,dict(keep[-limit:]))
@@ -335,9 +337,14 @@ def _wake(queue=None):
     """'spawned', 'busy' (another owner holds the lease), 'idle' or 'yield'."""
     queue=WakeQueue() if queue is None else queue
     if not queue.path.exists():return 'idle'
-    # Backed-off rows alone never start a worker that would only wait.
-    if not wake_policy.any_due(queue.pending(),time.time()):return 'idle'
-    if yield_requested(queue.root):return 'yield'
+    rows=queue.pending()
+    if not rows:return 'idle'
+    # Backed-off rows alone never start a worker that would only wait: the
+    # lease-free timer runs them once they are due.
+    if not wake_policy.any_due(rows,time.time()):
+        _arm_timer(queue);return 'idle'
+    if yield_requested(queue.root):
+        _arm_timer(queue);return 'yield'
     fd=_lock(queue.root/'runtime-worker.lock')
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -352,6 +359,51 @@ def _wake(queue=None):
 def wake(queue=None):
     """Pass the dispatch lease across spawn, avoiding one child per session."""
     return _wake(queue)=='spawned'
+
+
+def _arm_timer(queue):
+    """Start the one per-user timer unless it already runs; True when started."""
+    try:
+        fd=_lock(queue.root/TIMER_LOCK)
+    except (OSError,ValueError):
+        return False
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return False
+        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'timer',str(fd)],
+            stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            close_fds=True,pass_fds=(fd,),start_new_session=True)
+        return True
+    except OSError:
+        return False
+    finally:os.close(fd)
+
+
+def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.sleep,
+          max_seconds=TIMER_MAX_SECONDS):
+    """Wake a worker whenever a row falls due; hold no worker lease meanwhile.
+
+    The caller holds ``runtime-wake-timer.lock``. Returns 'empty' once the
+    queue has no row, 'expired' at ``max_seconds`` (the caller arms a
+    successor) or 'gone' when the queue cannot be read (a moved root).
+    """
+    wake_once=wake_once or _wake
+    deadline=clock()+max_seconds
+    while clock()<deadline:
+        try:rows=queue.pending()
+        except (OSError,ValueError,sqlite3.Error):return 'gone'
+        if not rows:return 'empty'
+        now=wall();earliest=min(row['due'] for row in rows)
+        if earliest<=now:
+            try:wake_once(queue)
+            except (OSError,ValueError,sqlite3.Error):return 'gone'
+            # A spawned or running worker settles what is due; look again
+            # after one chunk for what its backoff leaves.
+            delay=TIMER_CHUNK_SECONDS
+        else:
+            delay=min(earliest-now,TIMER_CHUNK_SECONDS)
+        sleep(max(TIMER_MIN_SLEEP_SECONDS,min(delay,deadline-clock())))
+    return 'expired'
 
 
 def _handoff():
@@ -453,6 +505,14 @@ def main(argv):
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')
         _drain_and_rewake(queue,fd);return 0
+    if argv[:1]==['timer'] and len(argv)==2:
+        queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)
+        expected=(queue.root/TIMER_LOCK).stat()
+        if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_timer_lease_changed')
+        try:outcome=timer(queue)
+        finally:os.close(fd)
+        if outcome=='expired':_arm_timer(queue)
+        return 0
     if argv[:1]==['handoff'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)
         expected=(queue.root/'runtime-worker-handoff.lock').stat()

@@ -33,9 +33,39 @@ def _check_root(root, home):
                 raise ServiceFailure('unsafe_root')
 
 
+TEST_ROOT_ENV = 'MEMVANE_TEST_RUNTIME_ROOT'
+
+
+def _test_root(create):
+    """The test-only runtime root, or None.
+
+    ``npm test`` (the development guard) and the shared fixtures export
+    ``MEMVANE_TEST_RUNTIME_ROOT`` so every runtime participant of a test run
+    (wake queue, worker lease, coordinator, monitor) resolves one temp root and
+    never the user's. It is honoured only inside the platform temp area, so a
+    stray value can never redirect a real install.
+    """
+    raw = os.environ.get(TEST_ROOT_ENV)
+    if not raw:
+        return None
+    from runtime_lease import in_platform_temp
+    base = Path(raw)
+    if not base.is_absolute() or not in_platform_temp(base):
+        return None
+    base = base.resolve()
+    root = base / 'laya-inference'
+    if create:
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.mkdir(mode=0o700, exist_ok=True)
+    return resident._private_state(root)
+
+
 def service_root(*, create=False, home=None):
     # Host HOME/CODEX_HOME overrides must not create a second user service.
     if home is None:
+        test_root = _test_root(create)
+        if test_root is not None:
+            return test_root
         import pwd
         home = pwd.getpwuid(os.getuid()).pw_dir
     home = Path(home).resolve()

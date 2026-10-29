@@ -1,10 +1,12 @@
-"""Guard: a test's runtime wakes stay inside its temp HOME.
+"""Guard: a test's runtime wakes never reach the user's runtime root.
 
-The per-user wake queue normally lives under the passwd home, whatever HOME a
-host sets. A fixture HOME in the platform temp area gets its own queue, so a
-test that clears the sandbox flags still cannot write the real user's queue.
-The passwd home is a decoy directory here; nothing outside this test's temp
-tree is opened.
+The per-user runtime root (wake queue, worker lease, coordinator, monitor)
+lives under the passwd home, whatever HOME a host sets. A test run sets
+``MEMVANE_TEST_RUNTIME_ROOT`` (``npm test`` through the development guard, the
+shared Laya fixtures in their temp HOME), and every participant resolves that
+root instead, so a test that clears the sandbox flags still cannot write the
+user's queue. The passwd home is a decoy directory here; nothing outside this
+test's temp tree is opened.
 """
 import os
 from pathlib import Path
@@ -48,32 +50,41 @@ class Decoy(unittest.TestCase):
         for patcher in (mock.patch.object(pwd, 'getpwuid', getpwuid),
                         mock.patch.dict(os.environ, {
                             'HOME': str(self.home), 'QMD_SETUP_GUARD_FIXTURE': '',
-                            'QMD_SANDBOX': '', 'QMD_RUNTIME_DISPATCH': '1'}),
+                            'QMD_SANDBOX': '', 'QMD_RUNTIME_DISPATCH': '1',
+                            'MEMVANE_TEST_RUNTIME_ROOT': ''}),
                         mock.patch.object(runtime_work.subprocess, 'Popen',
                                           side_effect=AssertionError('runtime worker spawned'))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
 
-class TempHomeGuard(Decoy):
-    def test_an_unsandboxed_request_under_a_temp_home_never_writes_the_passwd_home(self):
+class TestRuntimeRootGuard(Decoy):
+    def test_an_unsandboxed_request_writes_only_the_test_runtime_root(self):
+        override = self.home.parent / 'test-runtime'
         project = self.home / 'project'
         project.mkdir()
-        self.assertEqual(runtime_work.request('laya-sync', str(project), start=False),
-                         {'status': 'queued'})
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': str(override)}):
+            self.assertEqual(runtime_work.request('laya-sync', str(project), start=False),
+                             {'status': 'queued'})
+            root = override / 'laya-inference'
+            # Every participant resolves the same root: queue, coordinator
+            # (worker lease, monitor) and the service root itself.
+            from context_learning import inference_service, resource_coordination
+            self.assertEqual(runtime_work.WakeQueue().root, root)
+            self.assertEqual(resource_coordination.Coordinator().root, root)
+            self.assertEqual(inference_service.service_root(), root)
+            self.assertEqual([row['target'] for row in runtime_work.WakeQueue().pending()],
+                             [str(project)])
         self.assertEqual(queues(self.passwd_home), [])
-        written = queues(self.home)
-        self.assertEqual(len(written), 1, written)
-        self.assertTrue(runtime_work.WakeQueue().root.is_relative_to(self.home))
-        self.assertEqual([row['target'] for row in runtime_work.WakeQueue().pending()],
-                         [str(project)])
+        self.assertEqual(queues(override), [str(root / QUEUE)])
 
-    def test_a_real_or_host_home_keeps_the_per_user_queue(self):
-        # Production: HOME is the passwd home, or a host override outside the
-        # temp area; both keep the one per-user queue.
-        for home in (str(self.passwd_home), '/nonexistent-host-home'):
-            with self.subTest(home=home), mock.patch.dict(os.environ, {'HOME': home}):
-                self.assertIsNone(runtime_work.disposable_home())
+    def test_without_the_override_every_home_keeps_the_per_user_root(self):
+        # Production: HOME (temp or a host override) never moves the root;
+        # an override outside the platform temp area is ignored.
+        for env in ({'MEMVANE_TEST_RUNTIME_ROOT': ''},
+                    {'MEMVANE_TEST_RUNTIME_ROOT': '/nonexistent-memvane-root'},
+                    {'MEMVANE_TEST_RUNTIME_ROOT': '', 'HOME': '/nonexistent-host-home'}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
                 self.assertTrue(runtime_work.WakeQueue().root.is_relative_to(self.passwd_home))
 
 
@@ -85,13 +96,17 @@ class SelectedProjectGuard(Decoy):
         class Probe(SelectedProject):
             def runTest(probe):
                 observed['sandbox'] = os.environ.get('QMD_SANDBOX')
-                observed['home'] = probe.home
                 observed['request'] = runtime_work.request('laya-sync', str(probe.project))
+                # Even a test that clears the sandbox stays in its temp HOME.
+                with mock.patch.dict(os.environ, {'QMD_SANDBOX': ''}):
+                    runtime_work.request('laya-sync', str(probe.project), start=False)
+                observed['queues'] = queues(probe.home)
         result = unittest.TestResult()
         Probe().run(result)
         self.assertEqual(result.errors + result.failures, [])
         self.assertEqual(observed['sandbox'], '1')
         self.assertIsNone(observed['request'])
+        self.assertEqual(len(observed['queues']), 1, observed['queues'])
         self.assertEqual(queues(self.passwd_home), [])
 
 

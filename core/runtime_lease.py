@@ -14,6 +14,36 @@ import tempfile
 MAX_FILE = 16 * 1024 * 1024
 
 
+def platform_temp_roots():
+    """Resolved platform temp roots: /tmp, /var/tmp, /var/folders, TMPDIR, Darwin user temp."""
+    roots = {'/tmp', '/var/tmp', '/var/folders'}
+    try:
+        roots.add(tempfile.gettempdir())
+    except (OSError, RuntimeError):
+        pass
+    try:
+        roots.add(os.confstr('CS_DARWIN_USER_TEMP_DIR'))
+    except (AttributeError, ValueError, OSError):
+        pass
+    resolved = set()
+    for root in roots:
+        if root:
+            try:
+                resolved.add(Path(root).resolve())
+            except (OSError, RuntimeError):
+                pass
+    return resolved
+
+
+def in_platform_temp(path):
+    """Whether ``path`` (resolved) lies in the platform temp area."""
+    try:
+        path = Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return any(path.is_relative_to(root) for root in platform_temp_roots())
+
+
 def private_state(state):
     state = Path(state)
     if not state.is_absolute() or state.is_symlink() or not state.is_dir():

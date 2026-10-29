@@ -88,6 +88,9 @@ WORKER = 'runtime-worker.lock'
 HANDOFF = 'runtime-worker-handoff.lock'
 # Read by runtime_work.yield_requested (same name, same {"until": epoch}).
 YIELD = 'runtime-worker-yield.json'
+# The wake queue's timer (runtime_work.TIMER_LOCK) holds no lane: it only
+# wakes a worker, which the yield request and the held worker lease keep out.
+TIMER = 'runtime-wake-timer.lock'
 # Lanes the resident service holds while it hosts learning inference (and a
 # learning-only service of an earlier bundle while it runs): they free only
 # once it stops.
@@ -446,7 +449,8 @@ def _quiesce_lanes(stack, inference, deadline, home=None):
         # keeps every worker out, and nothing may follow the directory move.
         _clear_yield(inference)
     for name in sorted(os.listdir(inference)):
-        if not name.endswith('.lock') or name in held or _service_lane(name):
+        if (not name.endswith('.lock') or name in held or _service_lane(name)
+                or name == TIMER):
             continue
         fd = _lock(inference / name)
         if fd is None:
@@ -500,7 +504,7 @@ def _hold_lanes(stack, inference, held, deadline):
     if inference is None or not inference.is_dir():
         return
     for name in sorted(os.listdir(inference)):
-        if not name.endswith('.lock') or name in held:
+        if not name.endswith('.lock') or name in held or name == TIMER:
             continue
         while True:
             fd = _lock(inference / name)
