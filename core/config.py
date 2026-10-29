@@ -131,7 +131,7 @@ DEFAULT_CONFIG = {
         },
         "reasoningEffort": {
             "generation": "low",
-            "verify": "medium",
+            "verify": "low",
             "semanticDedup": "medium",
             "engines": {},
         },
@@ -177,10 +177,9 @@ DEFAULT_CONFIG = {
             "candidateMinScore": 0.3,
             "judge": {
                 "enabled": True,
-                # 중복 판정 엔진을 **신규 후보를 만든** 엔진과 분리한다(CROSS_ENGINE_MODES).
-                # 기존 카드 두 장을 비교하는 retroactive scan은 생산자를 모르므로 이 값과
-                # 무관하게 예전 순서(host engine → 풀)를 그대로 쓴다.
-                "crossEngine": "prefer",
+                # 기본은 신규 후보를 만든 host CLI만 사용한다. 다른 엔진을 쓰는
+                # prefer/require 정책은 사용자가 명시적으로 선택할 수 있다.
+                "crossEngine": "off",
                 "timeout": 120,
                 "cooldownSeconds": 600,
                 "maxCharsPerPage": 6000,
@@ -191,10 +190,9 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "onFail": "delete",
             "onInconclusive": "delete",
-            # 검수 엔진 분리(VERIFY_CROSS_ENGINE 참고). builtins가 비면 검수 후보 엔진을
-            # compile.extractor 풀에서 물려받는다 — adapter argv 해석은 여전히 한 벌
-            # (wiki_compile_worker.resolve_extractor_argv)이다.
-            "crossEngine": "prefer",
+            # 같은 host CLI의 독립 호출로 검수한다. 다른 CLI 설치를 요구하지 않는다.
+            # prefer/require를 명시하면 기존 교차 엔진 정책을 사용할 수 있다.
+            "crossEngine": "off",
             "builtins": [],
             "cooldownSeconds": 600,
         },
@@ -253,13 +251,12 @@ DEDUP_SIMILAR_PAGE_MAX_CHARS = 12000  # ← semanticDedup.similarPageMaxChars
 # onFail과 onInconclusive가 공유하는 값 집합. "none"이 유일한 "현행 유지"(카드를
 # generated로 남김) 표현이므로, 기본값을 delete로 올려도 기존 동작을 명시 선택할 수 있다.
 VERIFY_ON_FAIL = {"delete", "contested", "none"}
-# 기계 검수 엔진을 카드를 만든 엔진과 분리하는 정책. LLM 자기 검수는 성능을 떨어뜨리고
-# (Huang et al. ICLR'24) 문헌이 제시한 완화법은 생성 모델과 판정 모델의 분리다.
+# 기계 검수 엔진 선택 정책. 기본은 현재 host의 독립 호출이며 교차 엔진은 명시 선택이다.
 #   prefer  — 다른 엔진을 먼저 시도하고, 없으면 같은 엔진으로 검증(자기검증으로 기록)
 #   require — 다른 엔진만 허용. 없으면 검증하지 않고 큐를 보존한다(카드는 generated로
 #             남아 recallVerifiedOnly 기본값 아래 recall에서 빠진다 — 단일 CLI 머신에서는
 #             wiki가 통째로 사라지므로 명시 선택만 허용한다)
-#   off     — 0.x 동작(카드를 만든 엔진으로 검증)
+#   off     — 기본값. 카드를 만든 엔진으로 검증, host 불명확하면 다른 CLI로 폴백하지 않음
 VERIFY_CROSS_ENGINE = {"prefer", "require", "off"}
 # dedup judge(`compile.semanticDedup.judge.crossEngine`)가 **같은 어휘**를 쓴다. 값 집합을
 # 따로 두면 두 파이프라인의 정책 이름이 갈려 사용자가 한쪽만 끄게 된다. 뜻도 같다 —
@@ -284,6 +281,20 @@ VERIFY_PROOF_FIELDS = ("verifiedBy", "verifiedAt", "verifiedMode", "verifiedBody
 # (`wiki_compile_enqueue`·`sync`·`wiki_compile_worker`)과 같은 문자열이어야 한다. 갈려 있던
 # 동안 planner의 빈 문자열 가드가 사실상 죽은 분기였다.
 UNKNOWN_ENGINE = "unknown"
+
+
+def generation_engine_order(engine):
+    """Bounded extraction plan; a known host never falls back to another CLI.
+
+    The caller uses each entry for the real extraction itself, not a separate
+    model probe. CLI availability/authentication is decided by that actual
+    attempt. Successful provenance is recorded by the worker, never inferred
+    from this plan or the installed CLI order.
+    """
+    host = engine.strip() if isinstance(engine, str) else ""
+    if not host or host == UNKNOWN_ENGINE:
+        return ("codex", "claude", "hermes")
+    return (host,)
 COMPILE_TRIGGERS = {
     "explicit_user_approval",
     "post_session_summary",
@@ -321,7 +332,7 @@ MINIMAL_WIKI_COLLECTION_PATH = ".memvane/wiki"
 MINIMAL_WIKI_SUFFIX = "-wiki"
 # laya_index_host_route.COLLECTION_NAME 상한(64)에서 "-wiki" 접미를 뺀 길이.
 MINIMAL_SLUG_MAX = 64 - len(MINIMAL_WIKI_SUFFIX)
-MINIMAL_COMPILE_TRIGGERS = ("post_tool_source", "post_sync_source", "manual")
+MINIMAL_COMPILE_TRIGGERS = ("post_tool_source", "post_sync_source", "session_start_source", "manual")
 MINIMAL_EXTRACTOR_BUILTINS = ("claude", "codex", "hermes")
 
 

@@ -26,7 +26,8 @@ test("update skill metadata and wrapper contract", () => {
   const wrapper = readFileSync("skills/update/scripts/update.sh", "utf8");
   assert.match(wrapper, /SKILL_DIR=.*dirname/);
   assert.match(wrapper, /laya_index_host_route\.py" classify update/);
-  assert.match(wrapper, /run-hook" update claude/);
+  assert.match(wrapper, /run-hook" update "\$HOST_ENGINE"/);
+  assert.match(wrapper, /current host is required/);
   assert.doesNotMatch(wrapper, /backend_manager|setup_guard|recall\.py|core\/update\.sh/);
   assert.ok((statSync("skills/update/scripts/update.sh").mode & 0o111) !== 0, "wrapper must be executable");
 });

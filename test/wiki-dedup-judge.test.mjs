@@ -155,7 +155,7 @@ test('judge_engine_pool: backends-only config resolves without a producer (retro
   // missed -> judge permanently "unavailable" -> every scan silently degraded to the
   // legacy score gate. Both dogfood projects use exactly that shape.
   const py = `import json,os,sys; sys.path.insert(0,'core'); import wiki_dedup_judge as j
-cfg_backends = {'extractor': {'backends': {'codex': ['/x/codex'], 'claude': ['/x/claude']}}}
+cfg_backends = {'extractor': {'backends': {'codex': ['/x/codex'], 'claude': ['/x/claude']}}, 'semanticDedup': {'judge': {'crossEngine': 'prefer'}}}
 cfg_builtins = {'extractor': {'builtins': ['codex'], 'backends': {'claude': ['/x/claude']}}}
 out = {}
 out['pool_no_producer'] = j.judge_engine_pool(cfg_backends)
@@ -193,6 +193,9 @@ print(json.dumps(out))`;
 // ------------------------------------------------- write-time gate (wiki_compile)
 
 function writeCompileSettings(work, compile = {}) {
+  // These fixture cases exercise explicit cross-engine judging and degradation.
+  // The host-only default is covered by a separate no-policy-override case.
+  const semanticDedup = compile.semanticDedup || {};
   mkdirSync(join(work, '.auto-context'), { recursive: true });
   writeFileSync(join(work, '.auto-context', 'settings.json'), JSON.stringify({
     indexing: true,
@@ -205,9 +208,31 @@ function writeCompileSettings(work, compile = {}) {
       defaultStatus: 'generated',
       verify: { enabled: false },
       ...compile,
+      semanticDedup: { ...semanticDedup, judge: { crossEngine: 'prefer', ...(semanticDedup.judge || {}) } },
     },
   }));
 }
+
+test('default dedup uses the producing host only and never guesses another installed host', () => {
+  const out = JSON.parse(runLib(`import json,sys; sys.path.insert(0,'core')
+import config, wiki_dedup_judge as j
+cfg = config.normalize_config({'compile': {'extractor': {'backends': {
+    'claude': ['/x/claude'], 'codex': ['/x/codex'], 'hermes': ['/x/hermes']}}}})['compile']
+out = {}
+for host in ('claude','codex','hermes','unknown',''):
+    attempts, mode, reason = j.plan_judge_attempts(cfg, host)
+    out[host] = {'engines': [a['engine'] for a in attempts], 'modes': [a['mode'] for a in attempts], 'policy': mode, 'reason': reason}
+print(json.dumps(out))`));
+  for (const host of ['claude', 'codex', 'hermes']) {
+    assert.deepEqual(out[host].engines, [host]);
+    assert.deepEqual(out[host].modes, ['self']);
+    assert.equal(out[host].policy, 'off');
+  }
+  for (const host of ['unknown', '']) {
+    assert.deepEqual(out[host].engines, []);
+    assert.equal(out[host].reason, 'producing_engine_unavailable');
+  }
+});
 
 function writeExistingCard(work, rel, body = 'The stalker asked for CCTV footage at the front desk.') {
   const full = join(work, '.auto-context', 'wiki', rel);

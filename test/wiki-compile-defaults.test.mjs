@@ -52,8 +52,23 @@ b=d.full_compile_block('/PR'); print(json.dumps({
   assert.equal(b.cooldown, 600);
   assert.deepEqual(b.batch, { idleSeconds: 90, maxItems: 5 });
   assert.deepEqual(b.reasoningEffort, {
-    generation: 'low', verify: 'medium', semanticDedup: 'medium', engines: {},
+    generation: 'low', verify: 'low', semanticDedup: 'medium', engines: {},
   });
+});
+
+test('emitted inference policy follows runtime defaults without sharing mutable nested values', () => {
+  const out = JSON.parse(run(`import json,sys; sys.path.insert(0,'core')
+import config as c, wiki_compile_defaults as d
+first=d.full_compile_block('/PR')
+same = first['reasoningEffort'] == c.DEFAULT_CONFIG['compile']['reasoningEffort'] and first['verify'] == c.DEFAULT_CONFIG['compile']['verify']
+first['reasoningEffort']['engines']['codex'] = {'verify':'high'}
+first['verify']['builtins'].append('other')
+again=d.full_compile_block('/PR')
+print(json.dumps({'same':same,'effort':again['reasoningEffort'],'verify':again['verify']}))`));
+  assert.equal(out.same, true);
+  assert.deepEqual(out.effort, { generation: 'low', verify: 'low', semanticDedup: 'medium', engines: {} });
+  assert.equal(out.verify.crossEngine, 'off');
+  assert.deepEqual(out.verify.builtins, []);
 });
 
 // delta-only 계약: 생성기가 **생략한** 키는 전부 DEFAULT_CONFIG와 값이 같아야 하고,

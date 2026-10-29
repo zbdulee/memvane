@@ -27,7 +27,7 @@ Durable claim: the source documents cite markdown.
 `;
 }
 
-function setupProject({ verify = {}, extractorArgv = null, extractor = null, cardStatus = 'generated', cardExtraFm = '', jobOverrides = {}, withSource = true } = {}) {
+function setupProject({ verify = {}, extractorArgv = null, extractor = null, cardStatus = 'generated', cardExtraFm = '', jobOverrides = {}, withSource = true, useDefaultHostPolicy = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'qwiki-verify-'));
   mkdirSync(join(dir, '.auto-context', 'compile'), { recursive: true });
   mkdirSync(join(dir, '.auto-context', 'wiki', 'concepts'), { recursive: true });
@@ -48,7 +48,9 @@ function setupProject({ verify = {}, extractorArgv = null, extractor = null, car
       // 단일 argv(`extractor.argv`)는 스키마에서 사라졌다 — 모든 argv는 엔진 라벨을
       // 통해서만 온다. 잡의 생성 엔진이 'claude'이므로 그 라벨 아래에 둔다.
       extractor: extractor || { backends: extractorArgv ? { claude: extractorArgv } : {}, timeout: 30 },
-      verify: { enabled: true, timeout: 30, ...verify },
+      // Most cases below exercise explicit cross-engine preference/legacy degrade.
+      // Default host-only behavior is tested separately without this override.
+      verify: { enabled: true, timeout: 30, ...(useDefaultHostPolicy ? {} : { crossEngine: 'prefer' }), ...verify },
     },
   }));
   writeFileSync(join(dir, CARD_REL), cardText(cardStatus, cardExtraFm));
@@ -783,6 +785,26 @@ function calls(tracker) {
   return existsSync(tracker) ? readFileSync(tracker, 'utf8').trim().split('\n').filter(Boolean) : [];
 }
 
+for (const host of ['codex', 'claude', 'hermes']) {
+  test(`default verification uses only ${host} even with all host adapters configured`, () => {
+    const tracker = trackerFile(`host-default-${host}`);
+    const project = setupProject({
+      useDefaultHostPolicy: true,
+      jobOverrides: { engine: host },
+      extractor: { timeout: 30, backends: Object.fromEntries(
+        ['claude', 'codex', 'hermes'].map((engine) => [engine, mockEngine(engine, tracker, 'pass')])) },
+    });
+    try {
+      assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+      assert.deepEqual(calls(tracker), [host]);
+      const log = jsonl(join(project, '.auto-context/compile/verify-log.jsonl'))[0];
+      assert.equal(log.verifiedMode, 'self');
+      assert.equal(log.crossEngine, 'off');
+      assert.equal(log._qmd.reasoningEffort.requested, 'low');
+    } finally { removeTemp(project); }
+  });
+}
+
 test('cross-engine: 카드를 만든 엔진(claude)이 아닌 codex가 검수하고 verifiedMode를 기록한다', () => {
   const tracker = trackerFile('cross');
   const project = setupProject({
@@ -1136,7 +1158,7 @@ test('verify.builtins를 좁혀도 prefer에서 생성 엔진은 최후 후보�
 import json, sys; sys.path.insert(0, 'core')
 import wiki_verify_worker as w
 cfg = {"extractor": {"builtins": ["claude", "codex"], "backends": {}}}
-attempts, mode, reason = w.plan_verify_attempts(cfg, {"builtins": ["codex"]}, "claude")
+attempts, mode, reason = w.plan_verify_attempts(cfg, {"builtins": ["codex"], "crossEngine": "prefer"}, "claude")
 print(json.dumps([[a["engine"], a["mode"]] for a in attempts]))
 `], { cwd: process.cwd(), encoding: 'utf8' });
     assert.deepEqual(JSON.parse(plan), [['codex', 'cross-engine'], ['claude', 'self']]);
@@ -1234,7 +1256,7 @@ print("{}")
   } finally { removeTemp(project); }
 });
 
-test('crossEngine:off + 귀속 불가 라벨 → 폐기 대신 풀 첫 후보로 폴백(mode unknown)', () => {
+test('crossEngine:off + 귀속 불가 라벨 → 다른 CLI 호출 없이 큐 보존', () => {
   const tracker = trackerFile('off-unattributed');
   const project = setupProject({
     jobOverrides: { engine: 'unknown' },
@@ -1242,11 +1264,12 @@ test('crossEngine:off + 귀속 불가 라벨 → 폐기 대신 풀 첫 후보로
     extractor: { timeout: 30, backends: { codex: mockEngine('codex', tracker, 'pass') } },
   });
   try {
-    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
-    assert.deepEqual(calls(tracker), ['codex']);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 0);
+    assert.deepEqual(calls(tracker), []);
     const text = readFileSync(join(project, CARD_REL), 'utf8');
-    assert.match(text, /^status: verified$/m, '폐기하면 그 카드는 영원히 검수되지 않는다');
-    assert.match(text, /^verifiedMode: "?unknown"?$/m, '거짓 교차검증 주장 금지');
+    assert.match(text, /^status: generated$/m);
+    assert.match(readFileSync(join(project, '.auto-context/compile/verify-queue.jsonl'), 'utf8'), /test-card/);
+    assert.equal(jsonl(join(project, '.auto-context/compile/verify-log.jsonl'))[0].reason, 'producing_engine_unavailable');
   } finally { removeTemp(project); }
 });
 
