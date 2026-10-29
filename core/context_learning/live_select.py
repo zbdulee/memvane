@@ -55,13 +55,15 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 or not 128 <= policy['maxRssMib'] <= 8192):
             return None, 'invalid_policy', {}
         adapter = Path(__file__).with_name('laya_adapter.py').resolve()
-        from .adapter_binding import BindingTimeout, inference_argv
+        from .adapter_binding import BindingTimeout, attested_adapter, inference_argv
         try:
-            argv = inference_argv(policy['trainerArgv'], adapter, deadline=deadline)
+            argv = inference_argv(policy['trainerArgv'], adapter, deadline=deadline,
+                                  attested_adapter_sha256=attested_adapter(state))
         except BindingTimeout:
             return None, 'timeout', {}
-        except ValueError:
-            return None, 'unsupported_adapter', {}
+        except ValueError as exc:
+            return None, ('adapter_anchor_missing' if str(exc) == 'adapter_anchor_missing'
+                          else 'unsupported_adapter'), {}
         policy = {**policy, 'trainerArgv': argv}
         if pointer_name not in ('active-checkpoint.json', 'experimental-checkpoint.json'):
             return None, 'invalid_pointer', {}

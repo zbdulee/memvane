@@ -21,14 +21,7 @@ class ServiceFailure(ValueError):
         self.timing = timing or {}
 
 
-def service_root(*, create=False, home=None):
-    # Host HOME/CODEX_HOME overrides must not create a second user service.
-    if home is None:
-        import pwd
-        home = pwd.getpwuid(os.getuid()).pw_dir
-    home = Path(home).resolve()
-    from .runtime_setup import learning_state_base
-    root = learning_state_base(home) / 'laya-inference'
+def _check_root(root, home):
     for part in (root, *root.parents):
         if part == home:
             break
@@ -38,8 +31,38 @@ def service_root(*, create=False, home=None):
             info = part.stat()
             if not part.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise ServiceFailure('unsafe_root')
+
+
+def service_root(*, create=False, home=None):
+    # Host HOME/CODEX_HOME overrides must not create a second user service.
+    if home is None:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    home = Path(home).resolve()
+    from .runtime_setup import learning_state_base
+    root = learning_state_base(home) / 'laya-inference'
+    try:
+        _check_root(root, home)
+    except ServiceFailure:
+        # Resolved just before a learning-state move sealed the old tree
+        # (a regular file now stands there): resolve once more.
+        moved = learning_state_base(home) / 'laya-inference'
+        if moved == root:
+            raise
+        root = moved
+        _check_root(root, home)
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        moved = learning_state_base(home) / 'laya-inference'
+        if moved != root:
+            # The learning state moved while this resolved the old base:
+            # never leave (or use) a second lane directory there.
+            try:
+                root.rmdir()
+            except OSError:
+                pass
+            moved.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root = moved
     return resident._private_state(root)
 
 
@@ -515,7 +538,7 @@ def _failure(exc):
 
 def _policy(state, pointer_name, *, deadline):
     from .dataset import read_private_json
-    from .adapter_binding import inference_argv
+    from .adapter_binding import attested_adapter, inference_argv
     policy = read_private_json(state / 'live-selector.json')
     if (not isinstance(policy, dict) or set(policy) != {
             'schema', 'trainerArgv', 'timeoutSeconds', 'maxRssMib'}
@@ -524,7 +547,9 @@ def _policy(state, pointer_name, *, deadline):
             or type(policy['maxRssMib']) is not int or not 128 <= policy['maxRssMib'] <= 8192):
         raise ServiceFailure('request_rejected')
     adapter = Path(__file__).with_name('laya_adapter.py').resolve()
-    normalized = {**policy, 'trainerArgv': inference_argv(policy['trainerArgv'], adapter, deadline=deadline)}
+    normalized = {**policy, 'trainerArgv': inference_argv(
+        policy['trainerArgv'], adapter, deadline=deadline,
+        attested_adapter_sha256=attested_adapter(state))}
     if pointer_name == 'experimental-checkpoint.json':
         active = read_private_json(state / pointer_name)
         from .laya_adapter import EDIT_INPUT_VIEW

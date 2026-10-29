@@ -305,8 +305,15 @@ python3 -B "$ROOT/core/setup_entry.py" move-state-roots
 ```
 
 `move-state-roots` runs the worker for every project that still has an
-install under the pre-rename base or an unfinished move intent under either
-base, then the shared pass; `state-root-status` lists both.
+install under the pre-rename base, an unfinished move intent under either
+base, or a prepared local selector, then the shared pass; `state-root-status`
+lists the first two.
+
+After the install steps, every worker run moves the learning state once per
+account (`~/Library/Application Support/qmd-auto-context/{live-selection,laya-inference}`
+to `.../memvane`, `core/context_learning/state_move.py`) and heals the
+project's prepared selector (`core/context_learning/selector_heal.py`); see
+[continual learning](continual-learning.md#learning-state-location).
 
 ### Project folder
 
@@ -796,6 +803,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `resident.adopt`, `resident.drain`, `resident.forced_exit` | `core/laya_resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
+| `learning.state`, `learning.prepare` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound` |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

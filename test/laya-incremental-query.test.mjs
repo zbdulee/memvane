@@ -9,6 +9,6 @@ test('incremental wiki reads shadow old head rows before ranking', () => {
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 7 tests/);
+  assert.match(result.stderr, /Ran 8 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

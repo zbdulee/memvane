@@ -473,10 +473,21 @@ def _select_verified_cards(decision, settings, prompt, rows):
     pool = rows[:15]
     if not pool:
         return [], 'no_candidates', None
-    if selector_prepared(settings, project):
-        result = select_published(
-            pool, prompt=prompt, config=settings, project_root=project,
-            wiki_names=names, scope_id=decision['scopeId'])
+    try:
+        prepared = selector_prepared(settings, project)
+    except Exception:
+        # Learning state unreachable (moving, sealed old root): hybrid rank.
+        prepared, result = True, {'reason': 'selector_unavailable', 'final_results': []}
+    else:
+        result = None
+    if prepared:
+        if result is None:
+            try:
+                result = select_published(
+                    pool, prompt=prompt, config=settings, project_root=project,
+                    wiki_names=names, scope_id=decision['scopeId'])
+            except Exception:
+                result = {'reason': 'selector_unavailable', 'final_results': []}
         reason = result['reason']
         if reason in ('selected', 'no_candidates'):
             return result['final_results'], reason, None
@@ -487,7 +498,8 @@ def _select_verified_cards(decision, settings, prompt, rows):
             return [], reason, None
         fallback = 'laya_selector_' + reason
         _write_selection_log(project, fallback, [])
-        print('[memvane] local selection unavailable; serving hybrid rank',
+        _request_selector_heal(decision, reason)
+        print('[memvane] local selection unavailable (' + reason + '); serving hybrid rank',
               file=sys.stderr)
     else:
         fallback = 'laya_selector_not_prepared'
@@ -501,6 +513,22 @@ def _select_verified_cards(decision, settings, prompt, rows):
               file=sys.stderr)
         return [], 'candidate_invalid', None
     return pool, 'ranked', fallback
+
+
+def _request_selector_heal(decision, reason):
+    """Ask the background worker to re-prepare a selector a release left stale.
+
+    Never waits; the worker request is throttled per install.
+    """
+    try:
+        from context_learning.selector_heal import HEALABLE
+        if reason not in HEALABLE:
+            return
+        import laya_bundle_upgrade
+        laya_bundle_upgrade.request(decision['projectRoot'], decision['journalPath'],
+                                    'learning_selector')
+    except Exception:
+        pass
 
 
 def _selection_view_unchanged(decision, chosen, expected_head=None):
@@ -1554,15 +1582,16 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail('initial_preview_provider_unavailable')
     from laya_local_embed_provider import ReviewedLocalQmdProvider
     from laya_embed_resident import admit_query
-    from laya_incremental_docs_query import query_incremental
-    from resource_deferred import ResourceDeferred
+    from laya_incremental_docs_query import QueryVectorUnavailable, query_incremental
     provider = ReviewedLocalQmdProvider(manifest)
 
     def admitted_provider(text, profile):
         try:
             admit_query()
-        except ResourceDeferred:
-            _fail('initial_preview_provider_resource_deferred')
+        except Exception as exc:
+            # Pressure, or the learning-side lane unreachable (a state move):
+            # the preview serves its lexical lists.
+            raise QueryVectorUnavailable('initial_preview_provider_resource_deferred') from exc
         return provider(text, profile)
 
     rows, title_only, locations, _shadow, _base = query_incremental(
@@ -2224,12 +2253,10 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     from laya_embed_resident import admit_query
     try:
         admit_query()
-    except Exception as exc:
-        from resource_deferred import ResourceDeferred
-        if not isinstance(exc, ResourceDeferred):
-            raise
-        # Query admission refused under pressure: no vector for this prompt,
-        # the verified published generation is still searched lexically.
+    except Exception:
+        # Query admission refused under pressure, or its learning-side lane
+        # unreachable: no vector for this prompt, the verified published
+        # generation is still searched lexically.
         vector_off.append('resource_deferred')
     settings = config.load_project_config(decision["projectRoot"])
     v2 = "collections" in decision

@@ -245,6 +245,51 @@ def _due(status, root, now):
     return age >= RETRY_SECONDS
 
 
+SELECTOR_HEAL_CODE = 'learning_selector'
+SELECTOR_REQUEST = 'selector-heal-request.json'
+# A recall that misses local selection asks for a worker at most this often
+# per install, whatever state the shared bundle status is in.
+SELECTOR_REQUEST_SECONDS = 600
+
+
+def _selector_request_due(state, now=None):
+    """Record this selector-heal request if the per-install floor has passed.
+
+    The check and the record happen under one non-blocking lock, so two
+    concurrent hooks never both pass; a busy lock means another hook is
+    recording a request right now.
+    """
+    now = _now() if now is None else now
+    state = Path(state)
+    try:
+        fd = os.open(state / (SELECTOR_REQUEST + '.lock'),
+                     os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        path = state / SELECTOR_REQUEST
+        try:
+            last = json.loads(path.read_text('utf-8')).get('requestedNs')
+        except (OSError, ValueError, AttributeError):
+            last = None
+        if type(last) is int and 0 <= now - last < SELECTOR_REQUEST_SECONDS * 10**9:
+            return False
+        tmp = state / ('.' + SELECTOR_REQUEST + '.' + str(os.getpid()))
+        with open(tmp, 'w', encoding='utf-8') as out:
+            os.fchmod(out.fileno(), 0o600)
+            json.dump({'requestedNs': now}, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, path)
+        return True
+    finally:
+        os.close(fd)
+
+
 def worker_holds(state):
     """True while a worker holds this install's upgrade lock (it is alive).
 
@@ -274,6 +319,8 @@ def request(project_root, journal_path, code='', *, spawn=None, now=None):
     """
     state = Path(journal_path).parent
     root = str(executing_root())
+    if code == SELECTOR_HEAL_CODE and not _selector_request_due(state, now):
+        return {'status': 'throttled', 'reason': SELECTOR_HEAL_CODE}
     status = read_status(state)
     if (status is not None and status['status'] == 'running' and
             status['executingRoot'] == root and not worker_holds(state)):
@@ -1023,7 +1070,60 @@ def run(project_root, *, root=None, home=None):
                 key: value for key, value in result.items()
                 if key in ('status', 'reason', 'kind')}})
     _collect_shared(home)
+    events = next((Path(row['stateRoot']) for row in results
+                   if Path(row['stateRoot']).is_dir()), None)
+    learning = _learning_upkeep(project, home, events)
+    if learning:
+        results.append({'stateRoot': str(events) if events else '', **learning})
     return results
+
+
+def _learning_event(state, event, outcome, reason=None, **fields):
+    try:
+        import event_log
+        event_log.emit(event, outcome=outcome, reason=reason or None,
+                       state_root=Path(state) if state is not None else None,
+                       host='worker', **fields)
+    except Exception:
+        pass
+
+
+def _learning_upkeep(project, home, state):
+    """Move the learning state (once per account), then heal this project's selector.
+
+    Never raises; a deferral or refusal is an event and a later run retries.
+    """
+    out = {}
+    try:
+        from context_learning import state_move
+        moved = state_move.move(home)
+        if moved['status'] == 'learning_state_moved':
+            out['learningState'] = moved['status']
+            _learning_event(state, 'learning.state', 'moved',
+                            rebased=moved.get('checkpointsRebased'))
+            for stray in moved.get('strays') or ():
+                # A tree an earlier bundle recreated at the old base, set aside.
+                _learning_event(state, 'learning.state', 'stray_set_aside', path=stray)
+    except Exception as exc:
+        out['learningState'] = _reason(exc)
+        _learning_event(state, 'learning.state', 'deferred', _reason(exc))
+        return out
+    try:
+        from context_learning import selector_heal
+        target = selector_heal.namespace(project, home)
+        if not (target / selector_heal.POLICY).is_file():
+            return out
+        _learning_event(state, 'learning.prepare', 'started')
+        started = time.monotonic()
+        healed = selector_heal.heal(project, home=home)
+        out['selector'] = healed['status']
+        _learning_event(state, 'learning.prepare', healed['status'],
+                        rebound=healed.get('rebound'),
+                        ms=(time.monotonic() - started) * 1000)
+    except Exception as exc:
+        out['selector'] = _reason(exc)
+        _learning_event(state, 'learning.prepare', 'failed', _reason(exc))
+    return out
 
 
 def _collect_shared(home):
@@ -1069,6 +1169,14 @@ def move_all(*, root=None, home=None):
             rows.append({'stateRoot': pending['stateRoot'], 'status': 'project_missing'})
         elif project not in projects:
             projects.append(project)
+    # Projects whose only reason to run is a prepared selector.
+    try:
+        from context_learning.selector_heal import selector_projects
+        for project in selector_projects(home):
+            if project not in projects and Path(project).is_dir():
+                projects.append(project)
+    except Exception:
+        pass
     for project in projects:
         try:
             for row in run(project, root=root, home=home):
