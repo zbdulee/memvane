@@ -64,6 +64,10 @@ SETUP_BINDINGS = 'synthetic-binding-init.json'
 # Wall budget of one attempt: the runtime worker's turn (its drain runs at
 # most 60 s), the resident service's drain and the lanes it held.
 BUDGET_SECONDS = 75
+# A drain is never started with less of the budget left than this: a drain
+# cannot be taken back, so one that could not finish would cost search
+# without moving anything.
+DRAIN_RESERVE_SECONDS = 15
 RETRY = 'learning-state-move-retry.json'
 RETRY_SCHEMA = 'memvane-learning-state-move-retry-v1'
 BACKOFF_BASE_SECONDS = 120
@@ -375,11 +379,13 @@ def _quiesce_lanes(stack, inference, deadline):
     return held
 
 
-def _hold_service(stack, home, deadline, drained):
+def _hold_service(stack, home, deadline, drained, reserve):
     """Drain the per-user resident service and hold its successor lock and lease.
 
-    ``drained['service']`` is set once a drain was requested, so the caller
-    starts the service again whatever this attempt's outcome.
+    A service serving a request, or too little budget left for its drain,
+    defers before the drain. ``drained['service']`` is set once a drain was
+    requested, so the caller starts the service again whatever this
+    attempt's outcome.
     """
     import laya_resident_service as svc
     root = svc.service_dir(home=home)
@@ -389,7 +395,12 @@ def _hold_service(stack, home, deadline, drained):
     if successor is None:
         raise LearningMoveDeferred('learning_service_starting')
     _held(stack, successor)
-    if svc.hello(root) is not None:
+    answer = svc.hello(root)
+    if answer is not None:
+        if answer.get('inflight'):
+            raise LearningMoveDeferred('learning_service_busy')
+        if deadline - time.monotonic() < reserve:
+            raise LearningMoveDeferred('learning_service_budget')
         drained['service'] = True
         reply = svc.exchange(root, {'command': 'drain', 'protocols': list(svc.PROTOCOLS),
                                     'bundle': svc.bundle_identity(), 'python': None,
@@ -551,8 +562,13 @@ def move(home=None, *, wait=None):
     if any((legacy / name).is_dir() for name in NAMES):
         if os.stat(legacy).st_dev != os.stat(current).st_dev:
             raise LearningMoveRefused('learning_state_cross_device')
-    _backoff_due(current)
-    deadline = time.monotonic() + (BUDGET_SECONDS if wait is None else wait)
+    if not os.path.lexists(current / INTENT):
+        # A started move (intent present) resumes at once: its old trees
+        # may already be sealed.
+        _backoff_due(current)
+    budget = BUDGET_SECONDS if wait is None else wait
+    deadline = time.monotonic() + budget
+    reserve = min(DRAIN_RESERVE_SECONDS, budget / 2)
     drained = {'service': False}
     try:
         with ExitStack() as stack:
@@ -561,7 +577,7 @@ def move(home=None, *, wait=None):
                 raise LearningMoveDeferred('learning_state_move_busy')
             _held(stack, fd)
             try:
-                result = _move_locked(stack, home, legacy, current, deadline, drained)
+                result = _move_locked(stack, home, legacy, current, deadline, drained, reserve)
             except Exception as exc:
                 # Any stop after the move lock (a busy lane, a service that
                 # did not drain, a control socket that failed) backs off.
@@ -574,7 +590,7 @@ def move(home=None, *, wait=None):
             _restart_service(home)
 
 
-def _move_locked(stack, home, legacy, current, deadline, drained):
+def _move_locked(stack, home, legacy, current, deadline, drained, reserve):
     mark = _step or (lambda _name: None)
     del STRAYS[:]
     if os.path.lexists(current / INTENT):
@@ -595,7 +611,7 @@ def _move_locked(stack, home, legacy, current, deadline, drained):
     for name in NAMES:
         if (legacy / name).is_dir() and os.path.lexists(current / name):
             raise LearningMoveRefused('learning_state_target_exists')
-    _hold_service(stack, home, deadline, drained)
+    _hold_service(stack, home, deadline, drained, reserve)
     _hold_lanes(stack, inference, held, deadline)
     from runtime_lease import atomic_json
     atomic_json(current / INTENT, {'schema': 'memvane-learning-state-move-v1',

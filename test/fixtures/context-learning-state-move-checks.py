@@ -95,6 +95,7 @@ class FakeResident:
         self.server.listen(8)
         self.server.settimeout(.02)
         self.alive = True
+        self.inflight = 0
         self.thread = threading.Thread(target=self.loop, daemon=True)
         self.thread.start()
 
@@ -113,7 +114,8 @@ class FakeResident:
                         self.stop()
                     else:
                         self.svc._write_line(conn, {'status': 'ready', 'protocol': 1,
-                                                    'protocols': [1]})
+                                                    'protocols': [1],
+                                                    'inflight': self.inflight})
                 except (OSError, ValueError):
                     continue
 
@@ -204,6 +206,45 @@ class LearningMoveTests(unittest.TestCase):
             self.retry_now()
         self.assertEqual(restarts, [])
         self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_service_serving_a_request_or_a_spent_budget_is_not_drained(self):
+        fake = self.resident()
+        restarts = self.restarts()
+        fake.inflight = 1
+        with self.assertRaisesRegex(state_move.LearningMoveDeferred, 'learning_service_busy'):
+            state_move.move(self.home, wait=2)
+        self.retry_now()
+        fake.inflight = 0
+        # The runtime worker's turn used the budget up to the drain reserve.
+        real = state_move._wait_lock
+
+        def slow(path, deadline):
+            time.sleep(1.1)
+            return real(path, deadline)
+        with mock.patch.object(state_move, '_wait_lock', slow):
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred,
+                                        'learning_service_budget'):
+                state_move.move(self.home, wait=2)
+        self.assertNotIn('drain', fake.commands)
+        self.assertTrue(fake.serving())
+        self.assertEqual(restarts, [])
+        self.assertEqual(learning_state_base(self.home), self.legacy)
+
+    def test_a_started_move_resumes_without_waiting_for_the_backoff(self):
+        def die(name):
+            if name == 'moved:live-selection':
+                raise Kill(name)
+        with mock.patch.object(state_move, '_step', die):
+            with self.assertRaises(Kill):
+                state_move.move(self.home, wait=0.2)
+        fd = hold(self.inference / 'compute.lock')
+        try:
+            with self.assertRaisesRegex(state_move.LearningMoveDeferred, 'learning_lane_busy'):
+                state_move.move(self.home, wait=0.2)
+        finally:
+            os.close(fd)
+        self.assertTrue((self.current / RETRY).exists())
+        self.assertEqual(state_move.move(self.home, wait=0.2)['status'], 'learning_state_moved')
 
     def test_a_respawning_service_and_runtime_worker_are_quiesced_and_the_move_completes(self):
         # Live shape: the runtime wake worker re-takes its lease right after
