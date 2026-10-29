@@ -18,6 +18,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+      - name: Prepare pinned compatibility fixture
+        timeout-minutes: 2
+        env:
+          LEGACY_FIXTURE_COMMIT: f9c33094e30d523415fe983ec7f3b4c35d5a21c0
+        run: |
+          # The immutable 0.40.3 fixture lives in the predecessor repository,
+          # outside this checkout's history. Compatibility tests archive its core.
+          git fetch --no-tags https://github.com/zbdulee/qmd-auto-context.git "$LEGACY_FIXTURE_COMMIT"
+          git cat-file -e "${LEGACY_FIXTURE_COMMIT}^{commit}"
+          git cat-file -e "${LEGACY_FIXTURE_COMMIT}:core"
       - name: Verify runtime prerequisites
         run: |
           node --version
