@@ -1,6 +1,6 @@
 # 01 설치와 호스트 hook 경로
 
-호스트 에이전트의 hook 이벤트는 `hooks/run-hook`으로 들어옵니다. 여기서 가장 먼저 sandbox·headless 가드와 route 판정을 거칩니다. route가 선택된 상태(`candidate`·`preview`·`worktree`)이면 셸이 동기 Laya 응답 프로세스로 교체됩니다. `blocked`이거나 판정이 실패하면 `request refused`와 종료 코드 3으로 거부됩니다. route가 없는 `legacy` 프로젝트는 색인·recall·compile·학습 작업을 하지 않습니다. SessionStart(`update-queued`)에서만 `.auto-context/settings.json`이 있는 프로젝트에 setup 스킬로 온보딩하라는 안내 한 줄을 출력합니다(Codex는 SessionStart JSON으로 감쌉니다). route 기록과 selection marker는 hook이 바꾸지 않습니다. 이를 변경하는 것은 off-hook 설치자 명령(`core/setup_entry.py`의 action)이며, 명시 승인 플래그가 필요합니다.
+호스트 에이전트의 hook 이벤트는 `hooks/run-hook`으로 들어옵니다. 여기서 가장 먼저 sandbox·headless 가드와 route 판정을 거칩니다. route가 선택된 상태(`candidate`·`preview`·`worktree`)이면 셸이 동기 Laya 응답 프로세스로 교체됩니다. `blocked`이거나 판정이 실패하면 `request refused`와 종료 코드 3으로 거부됩니다. route가 없는 `legacy` 프로젝트는 색인·recall·compile·학습 작업을 하지 않습니다. SessionStart(`update-queued`)에서만 `.memvane/settings.json`(없으면 `.auto-context/settings.json`)이 있는 프로젝트에 setup 스킬로 온보딩하라는 안내 한 줄을 출력합니다(Codex는 SessionStart JSON으로 감쌉니다). route 기록과 selection marker는 hook이 바꾸지 않습니다. 이를 변경하는 것은 off-hook 설치자 명령(`core/setup_entry.py`의 action)이며, 명시 승인 플래그가 필요합니다.
 
 엔진 범위에는 제한이 있습니다.
 
@@ -33,7 +33,7 @@ flowchart TD
     IP["setup_entry plan 및 prepare action"]
     IA["setup_entry activate recover restore action"]
   end
-  RS[("프로젝트 .auto-context route record 와 selection marker")]
+  RS[("프로젝트 .memvane route record 와 selection marker")]
   JS[("설치 state root install-journal.sqlite")]
 
   EV --> SB
@@ -68,9 +68,9 @@ flowchart TD
 - Hermes: 별도 Python plugin으로, `post_tool_call`을 관찰만 합니다. 이 문서의 `run-hook` route·enqueue·compile 경로에는 속하지 않습니다.
 - [`core/setup_entry.py:56-106`](../../../core/setup_entry.py#L56-L106): 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`·`plan-legacy-cleanup`·`apply-legacy-cleanup`은 `--project` 없이 실행합니다.
 - [`core/setup_entry.py:131-279`](../../../core/setup_entry.py#L131-L279): index-origin 계열 action을 `laya_product_install`에 위임합니다.
-- `core/laya_product_install.py` `plan_fresh_wiki_origin`: `.auto-context` 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
+- `core/laya_product_install.py` `plan_fresh_wiki_origin`: 프로젝트 활성 폴더(`.memvane`, 옮기기 전 프로젝트는 `.auto-context`) 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
 - [`core/laya_product_install.py:565-566`](../../../core/laya_product_install.py#L565-L566): 설치 state root 아래의 `install-journal.sqlite`와 `runtime/laya-embed.sock`입니다.
-- `core/laya_fresh_wiki_origin.py`: ledger(`fresh-wiki-cutover.json`, state root)·marker(`laya-index-selection.json`)·route(`laya-index-route.json`, 둘 다 프로젝트 `.auto-context/`) 파일 이름입니다.
+- `core/laya_fresh_wiki_origin.py`: ledger(`fresh-wiki-cutover.json`, state root)·marker(`laya-index-selection.json`)·route(`laya-index-route.json`, 둘 다 프로젝트 폴더 `.memvane/`) 파일 이름입니다.
 
 ### QA 증거와 미검증
 

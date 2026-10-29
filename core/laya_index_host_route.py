@@ -867,6 +867,10 @@ def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
         line = dir_move.layout_notice(root)
         if line is not None:
             return line
+        # Only a move blocks the route here; any other block stays a refusal.
+        if (project_dir.layout(root) != "adopt" and
+                dir_move.read_pointer(root) is None):
+            return None
         record = project_dir.runtime_file(root, RECORD)
         if not record.is_file():
             return None

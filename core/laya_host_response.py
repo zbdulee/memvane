@@ -1760,7 +1760,8 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
         return None
     try:
         fresh = select_route(target, action='recall')
-        if moved and fresh.get('state') == 'blocked':
+        # A move fences readers for a few writes: the re-read waits it out.
+        if fresh.get('state') == 'blocked':
             from laya_index_host_route import _settle_moves
             fresh = _settle_moves(target, 'recall', fresh)
     except Exception:

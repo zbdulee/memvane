@@ -35,7 +35,7 @@ flowchart TD
     RS["raw path hash cursor freshness 및 위키 생성 전용 본문 색인 안 함"]
   end
   IX[("memvane-db index generation wiki 전용 membership 본문 FTS vector")]
-  WC[("위키 카드 .auto-context/wiki")]
+  WC[("위키 카드 .memvane/wiki")]
   PL[("wiki freshness pending ledger")]
 
   UP --> PV

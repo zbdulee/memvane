@@ -91,7 +91,8 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
     from .shared import _policy,_safe_root
     import config
     # A namespace cannot be a source collection or another project's store.
-    if cfg['sharedLearning']['enabled'] and _safe_root(config.normalize_config(cfg),project)!=root:
+    import project_dir
+    if cfg['sharedLearning']['enabled'] and _safe_root(config.normalize_config(cfg,project_dir.active_name(project)),project)!=root:
         raise ValueError('profile_namespace_invalid')
     policy=_policy(root)
     from .runtime_authorization import require_operation,proposal_sha256

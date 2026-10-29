@@ -13,6 +13,8 @@ __pycache__/
 .tmp-qmd-*/
 
 # Wiki compile queues, verifier logs, cooldowns, and locks are per-machine runtime state.
+# `.memvane/` is the project folder; `.auto-context/` is a checkout not moved yet.
+.memvane/compile/
 .auto-context/compile/
 .tmp-qmd-notice-*/
 
@@ -23,8 +25,15 @@ __pycache__/
 # Laya selection runtime state per machine: the selected route record, the
 # selection marker, project locks (laya-qmd-cutover-operation.lock,
 # .install-update.lock) and local settings backups.
+.memvane/laya-index-route.json
+.memvane/laya-index-selection.json
+.memvane/memvane-*.json
+.memvane/*.lock
+.memvane/.*.lock
+.memvane/settings.json.pre-minimal-*
 .auto-context/laya-index-route.json
 .auto-context/laya-index-selection.json
+.auto-context/memvane-*.json
 .auto-context/*.lock
 .auto-context/.*.lock
 .auto-context/settings.json.pre-minimal-*

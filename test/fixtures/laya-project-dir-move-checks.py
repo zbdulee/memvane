@@ -226,16 +226,16 @@ class MoveCase(SelectedProject):
         return gen, rows
 
     def serve(self, decision, query='otter'):
-        """Recall as the host retries it: a decision proved before the move
-        is re-selected once and must be the same install after the move."""
+        """Recall as the host retries it (``_recall_retry_decision``): a
+        decision proved before the move is re-selected once and must be the
+        same install after the move."""
+        started = time.monotonic()
         try:
             return self.recall(decision, query)
-        except Exception:
-            if not response._project_dir_moved(decision):
-                raise
-            fresh_decision = host_route.select_route_settled(str(self.project),
-                                                             action='recall')
-            if not response._relocated(decision, fresh_decision):
+        except Exception as exc:
+            fresh_decision = response._recall_retry_decision(
+                exc, decision, {'cwd': str(self.project)}, started)
+            if fresh_decision is None:
                 raise
             return self.recall(fresh_decision, query)
 

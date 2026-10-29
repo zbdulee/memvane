@@ -21,7 +21,7 @@ flowchart TD
     PR["pending refresh 기록"]
     WK["request_compile wake 요청"]
   end
-  SQ[("compile source queue .auto-context/compile")]
+  SQ[("compile source queue .memvane/compile")]
   PLG[("wiki freshness pending ledger")]
   subgraph WRK["비동기 compile worker process_job"]
     RI{"selected route identity 일치"}
@@ -32,7 +32,7 @@ flowchart TD
     EX["extractor 실행 모델 호출 경계"]
   end
   CL[("compile candidate ledger")]
-  WC[("위키 카드 .auto-context/wiki 와 verify queue")]
+  WC[("위키 카드 .memvane/wiki 와 verify queue")]
   NX["MemVane 색인 sync 는 별도 단계 03"]
 
   PT --> GT

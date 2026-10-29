@@ -1,11 +1,11 @@
 ---
 name: wiki-dedup-resolver
-description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that core/wiki_dedup_scan.py queued to .auto-context/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through core/wiki_dedup_resolve.py, and reports a short summary.
+description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that core/wiki_dedup_scan.py queued to .memvane/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through core/wiki_dedup_resolve.py, and reports a short summary.
 ---
 
 # Wiki Dedup Resolver
 
-Resolves every pending pair in `.auto-context/compile/dedup-needed.jsonl` — pairs of
+Resolves every pending pair in `.memvane/compile/dedup-needed.jsonl` — pairs of
 ALREADY-EXISTING wiki pages that `core/wiki_dedup_scan.py`'s retroactive scan found similar enough
 (cosine similarity of 0.9 or more between the cards' stored memvane-db vectors) to be worth checking
 for consolidation. The `score` is a candidate filter, not a verdict — the semantic comparison in
@@ -30,8 +30,8 @@ short summary at the end (step 5).
 2. Before reading the queue, run
    `python3 "$ROOT/core/wiki_dedup_resolve.py" --cwd <cwd> --recover-queue`.
    It reclaims dead-owner `dedup-needed.jsonl.claimed.*` files under the queue
-   lock. Then read `.auto-context/compile/dedup-needed.jsonl` in the target
-   project. Empty or missing → release the run-lock and stop; nothing to do.
+   lock. Then read `.memvane/compile/dedup-needed.jsonl` in the target
+   project (`.auto-context/compile/dedup-needed.jsonl` when it has no `.memvane/`). Empty or missing → release the run-lock and stop; nothing to do.
 3. Before resolving ANY entry, read the whole queue and group entries into clusters: two entries
    belong to the same cluster when they share a page (e.g. (A,B) and (B,C) share B → one cluster
    {A,B,C}). An entry sharing no page with any other entry is its own cluster and needs nothing
@@ -99,7 +99,7 @@ short summary at the end (step 5).
       (or `--action skip` with no `--delete` for non-duplicates).
    e. Record the CLI's JSON stdout for your own tracking.
       In a journal-selected MemVane project, a successful merge also records a
-      private recovery copy under `.auto-context/compile/dedup-recovery/` and
+      private recovery copy under `.memvane/compile/dedup-recovery/` and
       durably requests a project-wide `laya-sync` after the loser is removed.
       If that wake fails, the CLI fails and retains the queue pair. On retry,
       step 4.a's stale `--action skip` requests the sync before acknowledging

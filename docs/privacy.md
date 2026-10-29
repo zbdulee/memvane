@@ -6,7 +6,7 @@ MemVane is inactive until a project is onboarded onto a selected Laya
 Index route through the reviewed setup flow. A project without a selected route
 gets no indexing, recall, compile or learning work.
 
-For an onboarded project, the wiki cards under `.auto-context/wiki` are indexed
+For an onboarded project, the wiki cards under `.memvane/wiki` are indexed
 into a local memvane-db index under the install's private state directory. Raw
 project files are read to generate wiki cards and to track path and hash
 freshness; their bodies are not indexed. Embeddings are computed on the machine

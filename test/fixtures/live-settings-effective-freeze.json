@@ -237,7 +237,7 @@
     ],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   },
   "novel.json": {
     "allowRoots": [],
@@ -335,7 +335,7 @@
     "skipPaths": [],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   },
   "novel_귀신은_약효가_돌_때_보인다.json": {
     "allowRoots": [],
@@ -572,7 +572,7 @@
     "skipPaths": [],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   },
   "novela.json": {
     "allowRoots": [],
@@ -676,7 +676,7 @@
     "skipPaths": [],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   },
   "qmd-auto-context.json": {
     "allowRoots": [],
@@ -774,7 +774,7 @@
     "skipPaths": [],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   },
   "service-engineering.json": {
     "allowRoots": [],
@@ -1003,6 +1003,6 @@
     "skipPaths": [],
     "staleQueueThreshold": 20,
     "topN": 3,
-    "wikiPath": ".auto-context/wiki"
+    "wikiPath": ".memvane/wiki"
   }
 }

@@ -6,9 +6,9 @@ import {readFileSync} from 'node:fs';
 // The product is MemVane (plugin id `memvane`, DB memvane-db, tag `[memvane]`).
 // Earlier names may remain only as documented compatibility shims; every other
 // tracked, user-facing occurrence is a regression. Tests, dated plans and the
-// repository's own project data (`.auto-context/`) are outside the guard.
+// repository's own project data (`.memvane/`) are outside the guard.
 const FORBIDDEN = /qmd-auto-context|\[laya-index\]|\[auto-context\]|Laya Index|laya-db|Laya 색인|qmd auto-context/i;
-const EXCLUDED = /^(test\/|docs\/plans\/|\.auto-context\/)/;
+const EXCLUDED = /^(test\/|docs\/plans\/|\.memvane\/|\.auto-context\/)/;
 
 // file -> lines that may name an earlier identity, each with its reason.
 const ALLOWED = {

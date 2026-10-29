@@ -1112,9 +1112,9 @@ def invalid_session_start_sync(input_config):
 
 
 def normalize_config(input_config, folder=None):
-    """`folder`는 프로젝트의 활성 폴더 이름이다(생략하면 `.memvane`). minimal 펼침의
-    wiki 경로와 `wikiPath` 기본값, 두 폴더 이름 중 하나로 시작하는 `wikiPath`·
-    `collectionPaths` 값이 그 폴더를 따른다."""
+    """`folder`는 프로젝트의 활성 폴더 이름이다. 주면 minimal 펼침의 wiki 경로와 두 폴더
+    이름 중 하나로 시작하는 `wikiPath`·`collectionPaths` 값이 그 폴더를 따른다. 생략하면
+    minimal 펼침과 `wikiPath` 기본값은 `.memvane`이고 적힌 값은 그대로다."""
     minimal = is_minimal_settings(input_config)
     if minimal:
         input_config = expand_minimal_settings(input_config, folder)
@@ -1125,8 +1125,9 @@ def normalize_config(input_config, folder=None):
 
 
 def _rebase_folder(config, folder):
+    # Without a known project folder explicit values are kept as written.
     if folder is None or not project_dir.is_folder_name(folder):
-        folder = project_dir.CURRENT
+        return config
 
     def moved(value):
         if not isinstance(value, str):

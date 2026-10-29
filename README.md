@@ -24,10 +24,11 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 MemVane injects relevant project wiki context into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
 `setup` skill to onboard the project onto its memvane-db index. Onboarding reads a
-minimal `.auto-context/settings.json` (`{name, skipPaths}`), shows reviewed
-plans, and applies only on explicit request. Projects that are not onboarded get
-no indexing, recall, compile or learning work; their SessionStart shows one
-onboarding notice line when they have `.auto-context/settings.json`.
+minimal `.memvane/settings.json` (`{name, skipPaths}`; a project that only has
+`.auto-context/` is read from there), shows reviewed plans, and applies only on
+explicit request. Projects that are not onboarded get no indexing, recall,
+compile or learning work; their SessionStart shows one onboarding notice line
+when they have `.memvane/settings.json`.
 The local embedding runtime uses Node 22, 24 or 26 and a prebuilt native
 package for Apple Silicon macOS (arm64).
 
@@ -172,6 +173,23 @@ python3 -B "$ROOT/core/setup_entry.py" state-root-status
 python3 -B "$ROOT/core/setup_entry.py" move-state-roots
 ```
 
+### 프로젝트 폴더 `.memvane/`
+
+프로젝트별 설정·위키 카드·런타임 파일은 프로젝트 루트의 `.memvane/`에 있습니다.
+`.auto-context/`만 있는 선택된 프로젝트는 다음 SessionStart 뒤 백그라운드 워커가
+폴더 이름을 `.memvane/`로 한 번 바꾸고(색인은 다시 임베딩하지 않습니다), 그동안
+검색은 계속 결과를 돌려줍니다. 옮긴 뒤 SessionStart 안내가 보여 주는 대로 이름
+변경을 커밋합니다.
+
+```bash
+git add -A .memvane .auto-context
+```
+
+프로젝트 `.gitignore`에 `.auto-context` 줄이 있으면 같은 안내가 대응하는
+`.memvane/...` 줄을 보여 줍니다. 플러그인은 `.gitignore`를 고치지 않으므로 그 줄을
+직접 추가합니다. 폴더를 옮기기 전 브랜치를 체크아웃하거나 병합해 두 폴더가 함께
+있으면 MemVane은 `.memvane/`를 쓰고, SessionStart 안내가 정리 방법을 알려 줍니다.
+
 ### 예전 QMD backend 정리
 
 이전 버전이 설치한 QMD daemon, managed LaunchAgent, 플러그인 QMD runtime과
@@ -194,8 +212,9 @@ QMD 색인·설정·모델 캐시도 들어 있으므로, 이 둘은 별도로 �
 MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택되지 않은
 프로젝트는 아무 것도 색인하지 않습니다.
 
-온보딩은 `.auto-context/settings.json`의 minimal 형식만 읽습니다
-([minimal settings](docs/settings.md#minimal-settings)).
+온보딩은 `.memvane/settings.json`의 minimal 형식만 읽습니다
+([minimal settings](docs/settings.md#minimal-settings)). `.auto-context/`만 있는
+프로젝트는 그 폴더의 같은 파일을 읽습니다.
 
 ```json
 {
@@ -206,7 +225,7 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 
 이 형식에서는 프로젝트 루트 전체가 위키 생성 원천이고 검색은 위키만 합니다.
 `.`으로 시작하는 폴더와 `skipPaths`에 걸리는 폴더로는 위키를 만들지 않습니다.
-`.auto-context/wiki`의 위키 카드는 검색 대상입니다. 두 키 외의 키가 있으면
+`.memvane/wiki`의 위키 카드는 검색 대상입니다. 두 키 외의 키가 있으면
 온보딩은 `minimal_settings_required`로 거부하고, 에이전트는 파일을 대신 고치지
 않습니다. 파일이 준비되면 에이전트에게 요청하세요.
 
@@ -269,7 +288,7 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 
 ## Wiki Compile
 
-wiki compile은 원문 Markdown을 편집하면 `.auto-context/wiki`에 정리된 wiki
+wiki compile은 원문 Markdown을 편집하면 `.memvane/wiki`에 정리된 wiki
 초안을 만듭니다.
 처음 생성된 문서는 `generated` 상태이며, 별도 자동 검증이 원문과 생성 문서를
 다시 대조해 통과한 문서만 `verified`로 승격합니다. 사용자가 모든 문서를
@@ -278,7 +297,7 @@ wiki compile은 원문 Markdown을 편집하면 `.auto-context/wiki`에 정리�
 
 minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태입니다.
 
-`.auto-context/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
+`.memvane/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
 `core/wiki_card_rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
 생성·수정·삭제 기록은 설치 state 디렉터리 이벤트 로그(`events.jsonl`)의 `wiki`
 이벤트입니다. 이전 버전이
@@ -286,7 +305,7 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 않고 읽지도 않으므로, 지우든 두든 동작은 같습니다.
 
 자동 compile은 원문 범위 안의 Markdown만 대상으로 합니다.
-`.agents`, `.claude`, `.codex`, `.github`, `.auto-context`처럼 점으로 시작하는
+`.agents`, `.claude`, `.codex`, `.github`, `.memvane`처럼 점으로 시작하는
 도구/메타데이터 경로는 자동 compile 대상에서 제외됩니다.
 
 자동 검증이 실패하면 기본 설정에서는 해당 생성 문서를 삭제합니다. 검증기가
@@ -345,4 +364,4 @@ minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태�
 - 설정 레퍼런스: [docs/settings.md](docs/settings.md)
 - 데이터 처리와 개인정보: [docs/privacy.md](docs/privacy.md)
 - 유지보수자용 구조: [docs/architecture.md](docs/architecture.md)
-- 프로젝트별 설정: `.auto-context/settings.json`
+- 프로젝트별 설정: `.memvane/settings.json`
