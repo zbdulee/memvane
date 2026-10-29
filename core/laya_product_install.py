@@ -932,9 +932,23 @@ def retire_drifted_origin(*, project_root, state_root):
                 identity['stateRoot'] != str(state) or
                 identity['journalPath'] != str(journal)):
             _fail('initial_build_project_mismatch')
-        if record['phase'] != 'bound':
+        if record['phase'] not in ('building', 'sealed', 'bound', 'retired'):
             _fail('fresh_wiki_build_not_bound')
+        # Finalization can persist the ledger/marker before recording `bound`.
+        # A rescan can subsequently clear `sealed`. Retire that interrupted
+        # binding only when all its durable ownership fields still agree.
+        ledger = fresh._load(state / fresh.LEDGER)
+        pairs = {'projectRoot': 'projectRoot', 'journalPath': 'journalPath',
+                 'candidateDb': 'candidateDb', 'queueDb': 'queueDb',
+                 'catalogDb': 'catalogDb', 'bindingStore': 'bindingStore',
+                 'routeSha256': 'routeSha256', 'attestationSha256': 'attestationSha256',
+                 'vectorProfileId': 'vectorProfileId', 'candidateIncarnation': 'dbIncarnation',
+                 'scope': 'scopeId', 'collections': 'collections'}
+        if any(ledger[key] != identity[value] for key, value in pairs.items()):
+            _fail('fresh_wiki_retirement_identity_mismatch')
         row = fresh.retire(project, journal)
+        if record['phase'] not in ('bound', 'retired'):
+            record = initial_build.advance(record, phase='retired', sealed=None)
         pointer = initial_build.retire_project_pointer(identity)
         return {'status': 'fresh_wiki_binding_retired', 'changesApplied': 1,
                 'stateRoot': str(state), 'buildPointer': pointer,

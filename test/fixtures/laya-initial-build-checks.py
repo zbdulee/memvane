@@ -420,6 +420,26 @@ class BuildProgressTests(BuildCase):
 
 
 class FreshnessAndRecoveryTests(BuildCase):
+    def test_retirement_preserves_terminal_bound_record_and_releases_pointer(self):
+        import laya_fresh_wiki_origin as fresh
+        identity = self.register()
+        self.corpus(1)
+        self.until_settled()
+        bound = initial_build.advance(self.record(), phase='bound')
+        fields = {'projectRoot': 'projectRoot', 'journalPath': 'journalPath',
+                  'candidateDb': 'candidateDb', 'queueDb': 'queueDb',
+                  'catalogDb': 'catalogDb', 'bindingStore': 'bindingStore',
+                  'routeSha256': 'routeSha256', 'attestationSha256': 'attestationSha256',
+                  'vectorProfileId': 'vectorProfileId', 'candidateIncarnation': 'dbIncarnation',
+                  'scope': 'scopeId', 'collections': 'collections'}
+        ledger = {key: identity[value] for key, value in fields.items()}
+        with mock.patch.object(fresh, '_load', return_value=ledger), \
+             mock.patch.object(fresh, 'retire', return_value={'phase': 'retired'}):
+            result = product.retire_drifted_origin(project_root=self.project, state_root=self.state)
+        self.assertEqual(result['cutoverPhase'], 'retired')
+        self.assertEqual(self.record(), bound)
+        self.assertIsNone(initial_build.lookup(self.project))
+
     def sealed_build(self, n=4):
         self.corpus(n)
         self.register()
