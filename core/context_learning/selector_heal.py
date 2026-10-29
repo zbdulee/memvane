@@ -222,7 +222,8 @@ def attest(state, policy):
 def prepare(state, policy):
     """``prepare_laya_inference.py`` in the policy interpreter (it must be ``sys.executable``)."""
     script = Path(__file__).resolve().parent.parent / 'prepare_laya_inference.py'
-    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
+                                            'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
     result = subprocess.run([policy['trainerArgv'][0], '-I', '-B', str(script), str(state),
                              '--max-seconds', str(PREPARE_SECONDS)],

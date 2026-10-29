@@ -650,7 +650,8 @@ def _spawn_restarter(home, events):
     bootstrap = ('import sys;sys.path.insert(0,' + repr(core) + ');'
                  'from context_learning import state_move;'
                  'state_move.restarter(None,sys.argv[1] or None)')
-    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
+                                            'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     import subprocess

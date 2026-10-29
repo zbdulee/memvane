@@ -104,9 +104,13 @@ development execution guard is separate; see
 revision, due time and attempt state in private `runtime-wakes.sqlite3` beside
 the UID-global Laya coordination locks. The root comes from the OS UID home,
 not overridden HOME/CODEX_HOME. A test run (`npm test`, the shared Laya
-fixtures) sets `MEMVANE_TEST_RUNTIME_ROOT` inside the platform temp area, and
-every runtime participant resolves that root instead, so a test never writes
-the user's queue; the variable is ignored outside the temp area. It stores no prompts, bodies, arbitrary argv or
+fixtures) sets `MEMVANE_TEST_RUNTIME_ROOT`, and every runtime participant,
+including the children it spawns with a sanitized environment, resolves that
+root instead, so a test never writes the user's queue. The value must be an
+absolute path strictly inside a fixed platform temp root (`/tmp`, `/var/tmp`,
+the Darwin per-user temp dir; TMPDIR is not trusted); any other value fails
+closed instead of falling back to the user's root, and the development guard
+replaces an unusable inherited value with its own. It stores no prompts, bodies, arbitrary argv or
 credentials. Original content queues, claims and model cursors own actual work.
 
 Selected-route hook wakes (`laya-sync`, `laya-compile`) and local learning
@@ -128,7 +132,9 @@ backed off) it returns at once, releases its lease and spawns no worker
 successor. One detached timer per user (`runtime-wake-timer.lock`, never the
 worker lease) then sleeps until the earliest due time, re-reading the queue at
 least every 15 seconds, and wakes a worker when a row falls due; it exits when
-the queue is empty and hands over to a successor after an hour. Any wake that
+the queue is empty (re-checking the queue after it released its lock, so a
+row backed off meanwhile re-arms a timer) and hands over to a successor after
+an hour. Any wake that
 finds only backed-off rows arms it, so a retry runs on time without another
 hook or a running resident service. A hook, a recall's sync request (which
 pulls its row due) and the monitor below also start a worker once a row is
@@ -145,13 +151,14 @@ needed.** No boot/login service, LaunchAgent, extra credential or security
 permission is used.
 
 A `laya-sync`/`laya-compile` wake whose project directory is missing is
-acknowledged without dispatch when the path is in the platform temp area (a
+acknowledged without dispatch when the path is inside a fixed platform temp root (a
 removed test project). Elsewhere a missing directory may come back (an
-unmounted volume, a re-clone): the wake backs off as `target_missing`, its
-first miss is kept in `runtime-wake-missing.json` beside the queue, and it is
-dropped only after it stayed missing for 24 hours and at least 3 consecutive
-attempts; a run that finds the directory again clears that record. Missing
-retries never count toward the retry cap. A wake whose counted failures reach
+unmounted volume, a re-clone): the wake backs off as `target_missing` without
+counting an attempt. Its missing streak (first observation and count) is kept
+in `runtime-wake-missing.json` beside the queue, and the wake is dropped only
+after at least 3 consecutive missing observations spanning 24 hours from the
+first; any other outcome restarts the streak. Missing retries never count
+toward the retry cap. A wake whose counted failures reach
 `RETRY_CAP_ATTEMPTS` (144, about 12 hours at the 300-second ceiling) is dropped
 instead of retried; the next sync or compile request creates a fresh row. Both
 are recorded as `wake.drop` (`reason` `target_missing` or `retry_cap`) in the

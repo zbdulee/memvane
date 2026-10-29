@@ -35,11 +35,13 @@ IDLE_WAIT_SECS = 5
 RETRY_CAP_ATTEMPTS = 144
 RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
 # A project directory that is missing only proves it is gone once it stayed
-# missing across this long and this many consecutive attempts (an unmounted
-# volume or a checkout being re-cloned comes back). Missing-target retries are
-# outside RETRY_CAP_ATTEMPTS so this window can be reached.
+# missing across this long, from the first missing observation, and over this
+# many consecutive missing observations (an unmounted volume or a checkout
+# being re-cloned comes back). Missing observations are counted apart from the
+# row's attempts, so they neither reach RETRY_CAP_ATTEMPTS nor mix with other
+# failures; any other outcome restarts the count.
 MISSING_DROP_SECS = 86400
-MISSING_DROP_MIN_ATTEMPTS = 3
+MISSING_DROP_MIN_OBSERVATIONS = 3
 DROP_REASONS = frozenset(('target_missing', 'retry_cap'))
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
@@ -192,7 +194,7 @@ def failure_reason(error):
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
-def settle(attempts, *, done, now, error=None, kind=None, missing_since=None):
+def settle(attempts, *, done, now, error=None, kind=None, missing=None):
     """Decide what happens to a claimed wake after one execution.
 
     ack: delete the claimed revision; a newer revision (enqueued while running)
@@ -204,10 +206,11 @@ def settle(attempts, *, done, now, error=None, kind=None, missing_since=None):
     (target gone) and a Laya wake whose counted failures reach
     ``RETRY_CAP_ATTEMPTS`` are dropped; the cap is checked only here, after a
     real attempt, so an explicit re-request still runs once. A ``TargetMissing``
-    failure backs off like any counted failure and is dropped
-    (``target_missing``) only once the target stayed missing since
-    ``missing_since`` for ``MISSING_DROP_SECS`` and ``MISSING_DROP_MIN_ATTEMPTS``
-    consecutive attempts; it never reaches the retry cap.
+    failure does not count an attempt: ``missing`` is ``(first_seen,
+    observations)`` of the consecutive missing streak including this one. It
+    backs off by that streak and is dropped (``target_missing``) only once the
+    streak has ``MISSING_DROP_MIN_OBSERVATIONS`` observations spanning
+    ``MISSING_DROP_SECS`` from the first.
     """
     if done and error is None:
         if isinstance(done, Dropped):
@@ -217,12 +220,12 @@ def settle(attempts, *, done, now, error=None, kind=None, missing_since=None):
         return {'ack': False, 'due': now + PREPARING_RETRY_SECS,
                 'reason': failure_reason(error), 'count': 0}
     if isinstance(error, TargetMissing):
-        if (missing_since is not None and now - missing_since >= MISSING_DROP_SECS
-                and attempts + 1 >= MISSING_DROP_MIN_ATTEMPTS):
-            return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
+        first, seen = missing if missing is not None else (now, 1)
+        if seen >= MISSING_DROP_MIN_OBSERVATIONS and now - first >= MISSING_DROP_SECS:
+            return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 0,
                     'drop': 'target_missing'}
-        return {'ack': False, 'due': now + retry_delay(attempts), 'reason': failure_reason(error),
-                'count': 1}
+        return {'ack': False, 'due': now + retry_delay(max(0, seen - 1)),
+                'reason': failure_reason(error), 'count': 0}
     if kind in RETRY_CAPPED_KINDS and attempts + 1 >= RETRY_CAP_ATTEMPTS:
         return {'ack': True, 'due': now, 'reason': failure_reason(error), 'count': 1,
                 'drop': 'retry_cap'}

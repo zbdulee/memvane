@@ -119,6 +119,36 @@ class GuardChecks(unittest.TestCase):
             self.assertEqual(checkpoint['kind'],'model-test')
             self.assertTrue(checkpoint['settled'])
 
+    def test_test_child_gets_a_private_temp_runtime_root_never_an_inherited_bad_one(self):
+        from types import SimpleNamespace
+        from runtime_lease import in_platform_temp
+        sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
+                'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
+        for inherited in ('relative/root','/usr','/tmp',None):
+            with self.subTest(inherited=inherited), tempfile.TemporaryDirectory() as folder:
+                child=SimpleNamespace(pid=500,poll=lambda:0)
+                args=SimpleNamespace(kind='test',command=['node','--test','one.test.mjs'],
+                    max_seconds=60,sample_seconds=2)
+                env_patch={'MEMVANE_TEST_RUNTIME_ROOT':inherited or ''}
+                with patch.dict(guard.os.environ,env_patch), \
+                     patch.object(guard,'execution_hold',return_value=False), \
+                     patch.object(guard,'system_sample',return_value=sample), \
+                     patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
+                     patch.object(guard.subprocess,'Popen',return_value=child) as launch, \
+                     patch.object(guard.time,'sleep'):
+                    self.assertEqual(guard.run_job(args,Path(folder)),0)
+                root=launch.call_args.kwargs['env']['MEMVANE_TEST_RUNTIME_ROOT']
+                self.assertNotEqual(root,inherited)
+                self.assertTrue(os.path.isabs(root) and in_platform_temp(root),root)
+                # The run's own root is removed once the run settles.
+                self.assertFalse(os.path.exists(root))
+        # A usable inherited root (private dir in the platform temp area) is kept.
+        with tempfile.TemporaryDirectory(dir=guard.trusted_temp_dir()) as keep:
+            os.chmod(keep,0o700)
+            self.assertTrue(guard.usable_test_runtime_root(os.path.realpath(keep)))
+            os.chmod(keep,0o755)
+            self.assertFalse(guard.usable_test_runtime_root(os.path.realpath(keep)))
+
     def test_warning_allows_mock_job_but_refuses_actual_model_before_launch(self):
         from types import SimpleNamespace
         sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',

@@ -61,7 +61,7 @@ YIELD_FILE='runtime-worker-yield.json'
 YIELD_MAX_SECONDS=600
 DROP_DETAIL_FILE='runtime-wake-drops.json'
 DROP_DETAIL_MAX_ROWS=64
-# First time each wake found its project directory missing (TargetMissing).
+# Each wake's consecutive missing-target streak: first observation and count.
 MISSING_FILE='runtime-wake-missing.json'
 TIMER_LOCK='runtime-wake-timer.lock'
 TIMER_CHUNK_SECONDS=15
@@ -233,10 +233,10 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
             except Exception as exc:done=False;error=exc
             runs+=1
             missing=isinstance(error,wake_policy.TargetMissing)
-            since=_missing_since(queue.root,row,wall()) if missing else None
+            streak=_observe_missing(queue.root,row,wall()) if missing else None
             with queue.connect() as db:
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
-                                        missing_since=since)
+                                        missing=streak)
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall())
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if step['ack']:
@@ -285,15 +285,17 @@ def _record_drop(root,row,step,error,now):
             pass
 
 
-def _missing_since(root,row,now):
-    """When this wake first found its target missing (recorded now if new)."""
+def _observe_missing(root,row,now):
+    """(first observation, observations) of this wake's missing streak, this one included."""
     entry=_read_map(root/MISSING_FILE).get(row['id'])
+    first,seen=now,1
     if (isinstance(entry,dict) and entry.get('target')==row['target']
             and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
-            and entry['at']<=now):
-        return entry['at']
-    _record_tail(root/MISSING_FILE,row['id'],{'at':now,'target':row['target']},limit=MAX_WAKES)
-    return now
+            and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=1):
+        first,seen=entry['at'],entry['seen']+1
+    _record_tail(root/MISSING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target']},
+                 limit=MAX_WAKES)
+    return first,seen
 
 
 def _clear_missing(root,key):
@@ -377,6 +379,19 @@ def _arm_timer(queue):
     except OSError:
         return False
     finally:os.close(fd)
+
+
+def _after_timer(queue,outcome):
+    """Re-check after the timer released its lock.
+
+    A worker that backed off a row while the timer was deciding to exit could
+    not arm a successor (the lock was still held); reading the queue again
+    after the release closes that window. A moved root ('gone') is left to
+    the next hook.
+    """
+    if outcome=='gone':return
+    try:_wake(queue)
+    except (OSError,ValueError,sqlite3.Error):pass
 
 
 def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.sleep,
@@ -511,7 +526,7 @@ def main(argv):
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_timer_lease_changed')
         try:outcome=timer(queue)
         finally:os.close(fd)
-        if outcome=='expired':_arm_timer(queue)
+        _after_timer(queue,outcome)
         return 0
     if argv[:1]==['handoff'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)

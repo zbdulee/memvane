@@ -9,39 +9,69 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 
 MAX_FILE = 16 * 1024 * 1024
 
 
 def platform_temp_roots():
-    """Resolved platform temp roots: /tmp, /var/tmp, /var/folders, TMPDIR, Darwin user temp."""
-    roots = {'/tmp', '/var/tmp', '/var/folders'}
-    try:
-        roots.add(tempfile.gettempdir())
-    except (OSError, RuntimeError):
-        pass
-    try:
-        roots.add(os.confstr('CS_DARWIN_USER_TEMP_DIR'))
-    except (AttributeError, ValueError, OSError):
-        pass
+    """Fixed platform temp roots (realpath): /tmp, /var/tmp, the Darwin user temp dir.
+
+    TMPDIR is never trusted here: these roots decide where a test runtime root
+    may live and which missing project is a removed test fixture, so a TMPDIR
+    pointing at a real directory must not widen them.
+    """
+    roots = ['/tmp', '/var/tmp', _darwin_user_temp_dir()]
     resolved = set()
     for root in roots:
         if root:
-            try:
-                resolved.add(Path(root).resolve())
-            except (OSError, RuntimeError):
-                pass
+            real = os.path.realpath(root)
+            if os.path.isdir(real) and real != '/':
+                resolved.add(Path(real))
     return resolved
 
 
+_DARWIN_USER_TEMP = []
+
+
+def _darwin_user_temp_dir():
+    """``confstr(_CS_DARWIN_USER_TEMP_DIR)`` (the per-user /var/folders/../T), or None.
+
+    Python's ``os.confstr`` does not name this key, so libc is asked directly.
+    The answer never depends on TMPDIR.
+    """
+    if not _DARWIN_USER_TEMP:
+        value = None
+        if sys.platform == 'darwin':
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None, use_errno=True)
+                buffer = ctypes.create_string_buffer(1024)
+                size = libc.confstr(65537, buffer, len(buffer))  # _CS_DARWIN_USER_TEMP_DIR
+                if 0 < size <= len(buffer):
+                    value = buffer.value.decode() or None
+            except (OSError, AttributeError, ValueError, UnicodeDecodeError):
+                value = None
+        _DARWIN_USER_TEMP.append(value)
+    return _DARWIN_USER_TEMP[0]
+
+
+def trusted_temp_dir():
+    """The per-user platform temp dir (Darwin) or /tmp: a place inside the roots above."""
+    for candidate in (_darwin_user_temp_dir(), '/tmp'):
+        if candidate and os.path.isdir(os.path.realpath(candidate)):
+            return os.path.realpath(candidate)
+    raise OSError('no_platform_temp_dir')
+
+
 def in_platform_temp(path):
-    """Whether ``path`` (resolved) lies in the platform temp area."""
+    """Whether ``path`` (realpath) lies strictly inside a fixed platform temp root."""
     try:
-        path = Path(path).resolve()
-    except (OSError, RuntimeError, ValueError):
+        real = Path(os.path.realpath(path))
+    except (OSError, ValueError, TypeError):
         return False
-    return any(path.is_relative_to(root) for root in platform_temp_roots())
+    return any(real != root and real.is_relative_to(root) for root in platform_temp_roots())
 
 
 def private_state(state):
