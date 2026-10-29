@@ -7,6 +7,8 @@ source markdown in queue/failure records.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 import argparse
 import fcntl
 import itertools
@@ -47,6 +49,7 @@ MAX_ENGINE_COOLDOWN_SECS = qmd_cooldown.MAX_COOLDOWN_SECS
 # 불가 argv)가 스키마에서 사라진 뒤 남은 유일한 쓰임은 빈 key에 대한 폴백이다 —
 # `entries[""]`가 되면 그 항목이 "모든 엔진"처럼 읽히므로 이름을 붙여 둔다.
 UNATTRIBUTED_KEY = "(unattributed)"
+_EXTRACTOR_BUDGET = ContextVar('wiki_extractor_budget', default=None)
 
 
 def budget_of(compile_cfg: dict) -> dict:
@@ -120,10 +123,17 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
     payload = {
         "timestamp": now_iso(),
         "queue": queue_name,
-        "targetPath": str(target),
+        "targetPath": str(target)[:4096],
         "reason": "max_requeue_exceeded",
         "requeue_count": requeue_count,
     }
+    if queue_name == cp.SOURCE_QUEUE:
+        import laya_wiki_backfill
+        receipt = laya_wiki_backfill.write_discard_receipt(job)
+        if receipt is not None:
+            payload['backfillReceipt'] = receipt
+    # Audit framing is not authoritative. A torn append cannot strand a cohort:
+    # only the separate atomic private receipt may settle frozen source work.
     append_jsonl(ledger_path, payload)
 
 
@@ -940,18 +950,34 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     just a count — to the piggybacked verify pass, because the pass must verify
     *these* cards rather than spend the enlarged budget on the oldest backlog.
     """
+    # Never accept a queue-supplied processed receipt. This field is populated
+    # only from the stable source bytes this invocation actually read.
+    job.pop('_processedContentRevision', None)
+    job.pop('_backfillSkipped', None)
     import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     cpath = candidate_path(root, compile_cfg)
     if selected_route is not None:
         if job.get('selectedRoute') != wiki_selected_laya.route_identity(selected_route):
-            append_jsonl(cpath, bounded_failure('skipped', job,
-                                               'selected_route_identity_changed'))
-            return False, True, []
+            import laya_wiki_backfill
+            rebound = laya_wiki_backfill.rebind_job(selected_route, job)
+            if rebound is None:
+                append_jsonl(cpath, bounded_failure('skipped', job,
+                                                   'selected_route_identity_changed'))
+                return False, True, []
+            if rebound == 'source_changed':
+                job['_backfillSkipped'] = True
+                append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_source_changed'))
+                return True, False, []
     elif 'selectedRoute' in job:
         append_jsonl(cpath, bounded_failure('skipped', job,
                                            'selected_route_unavailable'))
         return False, True, []
+    if job.get('initialBackfill') is not None:
+        import laya_wiki_backfill
+        if laya_wiki_backfill.settled_job(selected_route, job):
+            append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_already_settled'))
+            return True, False, []
     raw_source = job.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     rel = source.get("path")
@@ -989,7 +1015,6 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if job.get('sourceDelete') is True:
-        import re
         import wiki_source_retire
         revision = job.get('contentRevision')
         if (selected_route is None or not isinstance(revision, str)
@@ -1061,6 +1086,12 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         "collection": source.get("collection", ""),
         **revision_snapshot,
     }
+    job['_processedContentRevision'] = source_revision['sha256']
+    if (job.get('initialBackfill') is not None
+            and job.get('contentRevision') != source_revision['sha256']):
+        append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_source_changed'))
+        job['_backfillSkipped'] = True
+        return True, False, []
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
     bounded = decode_source_bounded(source_bytes, max_chars)
     if bounded is None:
@@ -1101,10 +1132,32 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     _default_timeout = qmd_config.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]
     timeout = int(extractor.get("timeout", _default_timeout) or _default_timeout)
     engine = job.get("engine", qmd_config.UNKNOWN_ENGINE)
-    argv = resolve_extractor_argv(compile_cfg, engine)
-    if argv is None:
+    engines = qmd_config.generation_engine_order(engine)
+    prior_attempts = []
+    receipt = job.get('_fallbackAttempts')
+    if len(engines) > 1 and receipt is not None:
+        expected_source = {'path': rel, 'collection': source.get('collection', '')}
+        if (not isinstance(receipt, dict) or set(receipt) !=
+                {'source', 'revision', 'selectedRoute', 'engines'}
+                or receipt['source'] != expected_source
+                or receipt['selectedRoute'] != job.get('selectedRoute')
+                or not isinstance(receipt['revision'], str)
+                or re.fullmatch(r'[a-f0-9]{64}', receipt['revision']) is None
+                or not isinstance(receipt['engines'], list)
+                or any(not isinstance(item, str) or item not in engines for item in receipt['engines'])
+                or len(set(receipt['engines'])) != len(receipt['engines'])
+                or receipt['engines'] != sorted(receipt['engines'], key=engines.index)):
+            append_jsonl(cpath, bounded_failure('skipped', job, 'invalid_fallback_attempt_receipt'))
+            job['_backfillSkipped'] = True
+            return True, False, []
+        if receipt['revision'] == source_revision['sha256']:
+            prior_attempts = list(receipt['engines'])
+        else:
+            job.pop('_fallbackAttempts', None)  # New bytes are a new extraction cycle.
+    available = [(name, resolve_extractor_argv(compile_cfg, name)) for name in engines]
+    if len(engines) == 1 and available[0][1] is None:
         append_jsonl(cpath, bounded_failure("needs_extractor", job, "missing_extractor"))
-        return True, False, []
+        return (False, True, []) if selected_route is not None else (True, False, [])
     if cooldown_active(root):
         append_jsonl(cpath, bounded_failure("needs_extractor", job, "cooldown_active"))
         return False, True, []
@@ -1139,9 +1192,56 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, engine, "generation"),
         }},
     }
-    payload["_qmd"]["reasoningEffort"]["capabilityDeclared"] = argv == _builtin_adapter_argv(engine)
-    extracted, reason, returncode = run_extractor(argv, payload, timeout, root)
-    wiki_selected_laya.recheck(selected_route)
+    extracted, reason, returncode = None, 'missing_extractor', 127
+    attempts = list(prior_attempts)
+    for attempt_engine, attempt_argv in available:
+        if attempt_argv is None or attempt_engine in prior_attempts:
+            continue
+        budget = _EXTRACTOR_BUDGET.get()
+        if budget is not None:
+            if budget['remaining'] <= 0:
+                budget['deferred'] = True
+                if len(engines) > 1:
+                    job['_fallbackAttempts'] = {
+                        'source': {'path': rel, 'collection': source.get('collection', '')},
+                        'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
+                        'engines': attempts,
+                    }
+                append_jsonl(cpath, bounded_failure('deferred', job, 'extractor_budget_deferred'))
+                return False, True, []
+            budget['remaining'] -= 1
+        # Use the actual extraction as the trial. No extra paid health prompt,
+        # no repeated host in this bounded fallback cycle.
+        attempt_payload = {**payload, 'engine': attempt_engine, '_qmd': {'reasoningEffort': {
+            'requested': qmd_config.resolve_reasoning_effort(compile_cfg, attempt_engine, 'generation'),
+            'capabilityDeclared': attempt_argv == _builtin_adapter_argv(attempt_engine),
+        }}}
+        extracted, reason, returncode = run_extractor(attempt_argv, attempt_payload, timeout, root)
+        attempts.append(attempt_engine)
+        if len(engines) > 1 and reason == 'resource_deferred':
+            job['_fallbackAttempts'] = {
+                'source': {'path': rel, 'collection': source.get('collection', '')},
+                'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
+                'engines': attempts[:-1],  # This host deferred; retry it rather than exhaust it.
+            }
+        wiki_selected_laya.recheck(selected_route)
+        freshness, _ = wiki_freshness.compare_revision(src, source_revision)
+        if reason == 'resource_deferred' or freshness != wiki_freshness.FRESH:
+            break
+        if reason is None and (not isinstance(extracted, dict) or
+                               not isinstance(extracted.get('candidates'), list)):
+            reason = 'missing_candidates'
+        if reason is None:
+            engine, argv, payload = attempt_engine, attempt_argv, attempt_payload
+            # The source intent may have been unknown, but card/verify producer
+            # identity is the CLI that actually returned the valid candidates.
+            job['engine'] = engine
+            job.pop('_fallbackAttempts', None)
+            break
+    if len(engines) > 1:
+        append_jsonl(cpath, {**bounded_failure('extractor_attempts', job,
+                     'selected' if reason is None else 'unknown_host_attempts'),
+                     'attemptedEngines': attempts, 'selectedEngine': engine if reason is None else None})
     if reason == "resource_deferred":
         return False, True, []  # retain job; no failure cooldown or provider fallback
     freshness, _ = wiki_freshness.compare_revision(src, source_revision)
@@ -1149,12 +1249,17 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         append_jsonl(cpath, bounded_failure(
             "extractor_failed", job, "source_changed_during_extract"))
         return False, True, []
+    if len(engines) > 1 and reason is not None:
+        append_jsonl(cpath, bounded_failure('skipped', job, 'unknown_host_exhausted'))
+        job['_backfillSkipped'] = True
+        return True, False, []
     if returncode == 127:
         append_jsonl(cpath, bounded_failure("needs_extractor", job, "extractor_unavailable"))
         return False, True, []  # CLI absent: preserve for when it's installed
     if reason:
         append_jsonl(cpath, bounded_failure("extractor_failed", job, reason))
         if reason in ("invalid_extractor_json", "missing_candidates"):
+            job['_backfillSkipped'] = True
             return True, False, []  # permanent: drop
         cooldown_seconds = int(extractor.get("cooldownSeconds", 600) or 600)
         set_cooldown(root, cooldown_seconds)
@@ -1163,6 +1268,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     candidates = extracted.get("candidates") if isinstance(extracted, dict) else None
     if not isinstance(candidates, list):
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "missing_candidates"))
+        job['_backfillSkipped'] = True
         return True, False, []  # permanent: drop
     # **모델 출력 순회에 상한을 둔다.** `candidates` 길이는 extractor(모델)가 정하고 예전에는
     # 어디에도 슬라이스가 없었다. 카드 1장마다 write-time dedup judge(유료)가 붙고 각 카드가
@@ -1438,6 +1544,10 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     recover_pending_refreshes(root, config, queue)
 
     claimed = claim_queue(queue)
+    # Reaping holds the source-queue lock. ACK outside it to preserve discovery
+    # -> enqueue lock order, including the empty-queue/crash-recovery path.
+    import laya_wiki_backfill
+    laya_wiki_backfill.reconcile_discards(selected_route)
     if claimed is None:
         if selected_route is not None:
             _run_verify_pass(root, config, compile_cfg)
@@ -1488,11 +1598,19 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     rows = rows[:max_per_run]
     remaining = list(malformed) + overflow
     processed_count = 0
+    attempt_budget = {'remaining': max_per_run}
     verify_targets: list[str] = []
     try:
         for idx, (raw_line, job) in enumerate(rows):
             try:
-                processed, preserve, queued = process_job(root, config, compile_cfg, job)
+                budget_token = _EXTRACTOR_BUDGET.set(attempt_budget)
+                try:
+                    processed, preserve, queued = process_job(root, config, compile_cfg, job)
+                finally:
+                    _EXTRACTOR_BUDGET.reset(budget_token)
+                if processed and not preserve:
+                    import laya_wiki_backfill
+                    laya_wiki_backfill.settle_job(selected_route, job)
             except Exception:
                 remaining.append(raw_line)
                 remaining.extend(line for line, _ in rows[idx + 1:])
@@ -1502,18 +1620,26 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             verify_targets.extend(queued)
             if preserve:
                 remaining.append(json.dumps(job, ensure_ascii=False)
-                                 if job.get("partialCompile") is True else raw_line)
+                                 if job.get("partialCompile") is True or '_fallbackAttempts' in job
+                                 or job.get('_backfillRebound') is True else raw_line)
     finally:
         requeue_lines(queue, remaining)
         claimed.unlink(missing_ok=True)
         queue.touch(exist_ok=True)
     _run_verify_pass(root, config, compile_cfg, produced_targets=verify_targets)
+    if attempt_budget.get('deferred') and remaining and selected_route is not None:
+        # Productive budget continuation gets a new wake revision. The runtime
+        # owner resets retry accounting on that revision; this is not a failed
+        # extractor attempt and must not exhaust the transient-failure cap.
+        import wiki_selected_laya
+        wiki_selected_laya.request_compile(root, selected_route)
     if args.json:
         print(json.dumps({
             "processed": processed_count,
             "remaining": len(remaining),
             "deferred": len(overflow),
             "verifyQueued": len(verify_targets),
+            **({'budgetDeferred': True} if attempt_budget.get('deferred') else {}),
         }, ensure_ascii=False))
     return 0
 

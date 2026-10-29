@@ -518,7 +518,7 @@ def _after_sync(decision, proof, grants, result):
         return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
                 'generation': result.get('generation')}
     if (outcome['state'] == 'blocked' or outcome.get('reason') == 'pending_over_cap_skipped'
-            or outcome.get('cursorStarted') is True):
+            or outcome.get('cursorStarted') is True or 'initialBackfill' in outcome):
         result = {**result, 'wikiDiscovery': outcome}
     return result
 

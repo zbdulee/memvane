@@ -586,11 +586,13 @@ class V2WorkerChecks(unittest.TestCase):
     def hook_world(self):
         import laya_install_journal
         import laya_local_embed_provider
+        import laya_bundle_upgrade
         from context_learning import seam,live_select
         real_queue=runtime_work.WakeQueue
         payloads=tempfile.TemporaryDirectory(prefix='laya-hook-payload-')
         self.addCleanup(payloads.cleanup)
         self.payloads=Path(payloads.name).resolve();self.queried=[]
+        self.bundle_requests=[]
         env={key:value for key,value in os.environ.items()
              if key not in ('QMD_SANDBOX','QMD_SETUP_GUARD_FIXTURE',worker.QA_BARRIER_ENV)}
         # HOME bounds config's ancestor search for the nested cwd. Dispatch=1
@@ -613,6 +615,8 @@ class V2WorkerChecks(unittest.TestCase):
         with patch.dict(os.environ,env,clear=True),\
                 patch.object(runtime_work,'WakeQueue',lambda root=None:real_queue(self.home)),\
                 patch.object(runtime_work,'wake',side_effect=AssertionError('hook spawned')),\
+                patch.object(laya_bundle_upgrade,'_spawn',
+                             side_effect=lambda project:self.bundle_requests.append(str(project))),\
                 patch.object(seam,'_private_state',return_value=self.home),\
                 patch.object(live_select,'choose',side_effect=choose),\
                 patch.object(laya_install_journal,'verify_selected_route',side_effect=journal),\

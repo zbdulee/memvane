@@ -19,6 +19,7 @@ compile defaults. The worker resolves built-in adapter paths at runtime.
 """
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -27,12 +28,6 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
 
 ENGINES = ("claude", "codex", "hermes")
-REASONING_EFFORT_DEFAULTS = {
-    "generation": "low",
-    "verify": "medium",
-    "semanticDedup": "medium",
-    "engines": {},
-}
 
 
 def plugin_root(explicit: str | None = None) -> Path:
@@ -129,12 +124,9 @@ def full_compile_block(root, engines=ENGINES) -> dict:
         "excludeStatusesFromRecall": ["discarded", "contested"],
         "lowPriorityStatuses": ["generated", "tentative"],
         "maxAutoPageLines": 120,
-        "reasoningEffort": {
-            "generation": REASONING_EFFORT_DEFAULTS["generation"],
-            "verify": REASONING_EFFORT_DEFAULTS["verify"],
-            "semanticDedup": REASONING_EFFORT_DEFAULTS["semanticDedup"],
-            "engines": {},
-        },
+        # Derive policy from the runtime defaults so config emission cannot
+        # pin an obsolete effort or cross-host policy after a default change.
+        "reasoningEffort": copy.deepcopy(compile_defaults()["reasoningEffort"]),
         "extractor": {
             "backends": {},
             "builtins": builtin_engines(engines),
@@ -142,17 +134,5 @@ def full_compile_block(root, engines=ENGINES) -> dict:
             "cooldownSeconds": 600,
         },
         "batch": {"idleSeconds": 90, "maxItems": 5},
-        "verify": {
-            "enabled": True,
-            "timeout": 120,
-            "onFail": "delete",
-            # 사람 검수가 없다는 전제에서 inconclusive도 사장이므로 fail과 같이 삭제한다.
-            # config.py의 verify 기본값과 반드시 동일해야 한다.
-            "onInconclusive": "delete",
-            # 카드를 만든 엔진과 다른 엔진으로 검수한다. `builtins`를 쓰지 않는 이유는
-            # 여기에 목록을 복제하면 사용자가 extractor.builtins를 고친 뒤 검수 후보만
-            # 낡기 때문이다 — 비워 두면 extractor 풀을 그대로 물려받는다.
-            "crossEngine": "prefer",
-            "cooldownSeconds": 600,
-        },
+        "verify": copy.deepcopy(compile_defaults()["verify"]),
     }

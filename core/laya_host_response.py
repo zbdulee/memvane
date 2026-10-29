@@ -1864,7 +1864,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
         import wiki_compile_enqueue
-        outcome = wiki_compile_enqueue.enqueue_payload(payload)
+        outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
         if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
                 or outcome['queued'] < 0):
             _fail('selected_compile_enqueue_failed')
@@ -1924,7 +1924,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             import laya_wiki_discovery
             grant_kind = 'sync' if action == 'file-change-event' else 'session_start'
             try:
-                grant = laya_wiki_discovery.record_grant(decision, grant_kind)
+                grant = laya_wiki_discovery.record_grant(decision, grant_kind, engine=host)
             except Exception:
                 grant_failed = True
         try:

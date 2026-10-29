@@ -224,6 +224,40 @@ class DiscoveryChecks(unittest.TestCase):
         return first, second
 
     # -- end to end --------------------------------------------------------
+    def test_selected_installed_project_starts_existing_md_backfill_once(self):
+        import laya_wiki_backfill
+        self.selected_route(triggers=('session_start_source', 'post_sync_source'))
+        self.run_worker()  # synthetic old cursor predating the feature
+        (self.home / 'install-journal.sqlite').touch()
+        with self.hook_world() as queue:
+            self.session_start()
+            _status, results, failures = self.drain_all(queue)
+            self.assertEqual(failures, [])
+        progress = results[-1]['wikiDiscovery']['initialBackfill']
+        self.assertEqual((progress['total'], progress['dispatched'], progress['settled']), (1, 1, 0))
+        rows = self.source_rows()
+        self.assertEqual(len(rows), 1)
+        stored = laya_wiki_backfill._load(self.decision)
+        self.assertEqual(stored['engine'], 'claude')
+        with self.hook_world():
+            repeated = self.run_worker()
+        self.assertEqual(repeated['wikiDiscovery']['initialBackfill'], progress)
+        self.assertEqual(self.source_rows(), rows)
+
+    def test_unlabelled_grant_keeps_unknown_for_bounded_worker_fallback(self):
+        self.selected_route()
+        self.run_worker()
+        (self.home / 'install-journal.sqlite').touch()
+        (self.alpha / 'one.md').write_text('new raw revision')
+        self.accepted('sync')  # older persisted grant has no actual host
+        with self.hook_world():
+            result = self.run_worker()
+        self.assertEqual(len(self.source_rows()), 1)
+        queue = self.home / '.auto-context/compile/source-queue.jsonl'
+        self.assertEqual(json.loads(queue.read_text().splitlines()[0])['engine'], 'unknown')
+        self.assertEqual(self.state()['pending'], {})
+        self.assertIn('initialBackfill', result.get('wikiDiscovery', {}))
+
     def test_out_of_band_raw_pending_until_accepted_grant(self):
         self.selected_route()
         gone = self.alpha / 'gone.md'
@@ -286,6 +320,9 @@ class DiscoveryChecks(unittest.TestCase):
         self.assertEqual(self.state()['pending'], {})
         self.assertEqual(self.grants(), {'sync': 0, 'session_start': 0})
         self.assertEqual(self.compile_wakes, [str(self.home)])
+        # This harness permits real durable queue writes but owns every child
+        # boundary: a SessionStart move request is recorded, never detached.
+        self.assertEqual(self.bundle_requests, [str(self.home)])
         # Unchanged syncs reuse sealed chunk sets: no second inference.
         self.assertEqual(len(self.embedded), embedded)
 
@@ -945,9 +982,9 @@ class DiscoveryChecks(unittest.TestCase):
         def faults(*plan):
             steps = iter(plan)
 
-            def write(*args):
+            def write(*args, **kwargs):
                 if next(steps) == 'landed':
-                    real(*args)  # the replace landed; the directory fsync failed
+                    real(*args, **kwargs)  # the replace landed; the directory fsync failed
                 raise OSError('synthetic_fsync')
             return write
         # Record landed, its cleanup did not: an id nobody can activate.

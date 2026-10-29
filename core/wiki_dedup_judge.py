@@ -110,8 +110,8 @@ def _int(value, fallback: int) -> int:
 
 
 def cross_engine_mode(compile_cfg: dict) -> str:
-    mode = judge_cfg_of(compile_cfg).get("crossEngine", "prefer")
-    return mode if mode in qmd_config.CROSS_ENGINE_MODES else "prefer"
+    mode = judge_cfg_of(compile_cfg).get("crossEngine", "off")
+    return mode if mode in qmd_config.CROSS_ENGINE_MODES else "off"
 
 
 def require_waived(compile_cfg: dict, attribution: str) -> bool:
@@ -266,6 +266,8 @@ def plan_judge_attempts(
         producing and producing != qmd_config.UNKNOWN_ENGINE
         and wcw.resolve_extractor_argv(compile_cfg, producing) is not None
     )
+    if mode == "off" and not attributable:
+        return [], mode, "producing_engine_unavailable"
     if enforce_require and not attributable:
         # 어느 후보도 "생성 엔진과 다르다"를 증명할 수 없다 → 약속을 지킬 수 없으므로 거부.
         return [], mode, "cross_engine_unavailable"

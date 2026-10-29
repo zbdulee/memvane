@@ -87,6 +87,8 @@ def revision_key(record):
         key += ('force',)
     if record.get('sharedEnqueued') is True:
         key += ('shared',)
+    if isinstance(record.get('initialBackfill'), str):
+        key += ('initial-backfill', record['initialBackfill'])
     return key
 
 
