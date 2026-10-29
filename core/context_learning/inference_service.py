@@ -296,7 +296,7 @@ _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_de
           'replacement_failed', 'load_failed', 'model_family_mismatch',
           'request_changed', 'request_rejected', 'inference_attestation_required',
           'worker_error', 'version_mismatch', 'busy', 'starting', 'permission_denied',
-          'resource_unavailable', 'invalid_prediction'}
+          'resource_unavailable', 'invalid_prediction', 'input_budget_exceeded'}
 
 
 @lru_cache(maxsize=1)
@@ -565,6 +565,10 @@ def _failure(exc):
         return 'inference_attestation_required'
     if str(exc) in ('resident_deadline_expired', 'prediction_cancelled', 'learning_inference_deadline'):
         return 'deadline_expired'
+    # A candidate longer than the model's token budget is refused, never
+    # truncated: a fixed input code, not an unexplained worker failure.
+    if str(exc) in ('model_token_budget_exceeded', 'tokenizer_model_limit_exceeded'):
+        return 'input_budget_exceeded'
     return 'worker_error'
 
 

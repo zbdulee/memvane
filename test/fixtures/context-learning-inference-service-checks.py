@@ -327,6 +327,36 @@ class ServerTests(unittest.TestCase):
             thread.join(2);self.assertFalse(thread.is_alive())
             self.assertFalse((root/service.SOCKET_NAME).exists())
 
+    def test_over_budget_candidate_is_input_budget_not_worker_error(self):
+        # A wiki card longer than the selector's token budget is refused by
+        # the adapter. The hosted worker and the client keep that fixed code.
+        from contextlib import nullcontext
+        from context_learning import resource_coordination
+        class NoCoordinator:
+            def __init__(self,_root):pass
+            def inference(self,*_args):return nullcontext()
+        for message in ('model_token_budget_exceeded','tokenizer_model_limit_exceeded'):
+            with tempfile.TemporaryDirectory(prefix='qmd-b-',dir='/tmp') as temp:
+                root=Path(temp).resolve();root.chmod(0o700);ready=threading.Event()
+                def forward(loaded,request,**kwargs):raise ValueError(message)
+                engine=service.GenerationEngine(load=lambda request:request['generation'][-1],
+                    forward=forward,admission=admit,rss=lambda:100)
+                thread=threading.Thread(target=service._serve,args=(root,),
+                    kwargs={'engine':engine,'validate':fake_validate,'ready':ready},daemon=True)
+                thread.start();self.assertTrue(ready.wait(2))
+                try:
+                    self.assertEqual(exchange(root,envelope())['status'],'input_budget_exceeded')
+                    with patch.object(service,'_make_envelope',side_effect=lambda *a:envelope()), \
+                            patch.object(service,'service_root',return_value=root), \
+                            patch.object(resource_coordination,'Coordinator',NoCoordinator), \
+                            patch.object(service,'_ensure',return_value=None):
+                        with self.assertRaises(service.ServiceFailure) as caught:
+                            service.predict(root,{'trainerArgv':[sys.executable]},{},'0'*64,
+                                            deadline=time.monotonic()+3)
+                    self.assertEqual(str(caught.exception),'resident_service_input_budget_exceeded')
+                finally:shutdown_idle(root);thread.join(2)
+                self.assertFalse(thread.is_alive())
+
     def test_invalid_wire_and_peer_failure_do_not_echo_body(self):
         with tempfile.TemporaryDirectory(prefix='qmd-s-',dir='/tmp') as temp:
             root=Path(temp).resolve();root.chmod(0o700);ready=threading.Event()
