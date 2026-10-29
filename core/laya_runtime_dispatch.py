@@ -135,7 +135,8 @@ def _child_env():
     # the already authorized local runtime, QA ceiling and guard envelope.
     keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
-            'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER')
+            'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER',
+            'MEMVANE_TEST_RUNTIME_ROOT')
     env = {key: os.environ[key] for key in keys if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['QMD_RUNTIME_DISPATCH'] = '1'
@@ -278,6 +279,25 @@ def _event(target, kind, started, *, outcome, reason=None, result=None):
                            epoch=target.get('selectionEpoch'), **common)
     except Exception:
         pass
+
+
+def drop_event(kind, value, *, reason, attempts=None):
+    """Best-effort ``wake.drop`` in the install log of a still-routed project.
+
+    A wake whose project directory is gone has no install log left to reach;
+    the queue-side drop ledger (``runtime-wake-drops.json``) records it.
+    """
+    try:
+        if not Path(value).is_dir():
+            return False
+        import event_log
+        from laya_index_host_route import select_route
+        decision = select_route(str(value), action='update')
+        return event_log.emit('wake.drop', outcome='dropped', reason=reason,
+                              decision=decision, host='worker', session=None,
+                              kind=kind, attempts=attempts)
+    except Exception:
+        return False
 
 
 def run(kind, value, *, owner_fd=None):

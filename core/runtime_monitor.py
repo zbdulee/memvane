@@ -13,6 +13,7 @@ from resource_deferred import ResourceDeferred
 import runtime_work
 
 INTERVAL=5.
+LAYA_KINDS=('laya-sync','laya-compile')
 IDLE_INTERVAL=30.
 
 
@@ -37,7 +38,10 @@ def run(queue,*,coordinator=None,probe=runtime_work.sample,wake=runtime_work.wak
                 else:
                     report=probe();samples+=1
                     ready=controller.check(runtime_work.POLICY,report)
-                    if ready['ready'] and any(row['due']<=wall() for row in rows):
+                    due=[row for row in rows if row['due']<=wall()]
+                    # Laya sync/compile have their own admission in the
+                    # target bundle; only learning-class wakes wait for this.
+                    if due and (ready['ready'] or any(row['kind'] in LAYA_KINDS for row in due)):
                         wake();wakes+=1
             except (OSError,ValueError,sqlite3.Error):pass  # retain canonical work
             wait(interval)

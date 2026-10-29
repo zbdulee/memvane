@@ -315,6 +315,24 @@ class DaemonMonitor(unittest.TestCase):
         self.assertEqual(result['status'],'parent_closed');self.assertEqual(len(wakes),1)
         self.assertEqual(len(q.pending()),1)
 
+    def test_due_laya_wake_is_woken_without_learning_admission(self):
+        module=self.monitor();import runtime_work
+        q=runtime_work.WakeQueue(self.root);q.put('laya-sync','/synthetic/a',now=0)
+        q.put('learning','/synthetic/b',now=0)
+        c=Coordinator(self.root,clock=lambda:self.clock[0],wall=lambda:100+self.clock[0])
+        alive=iter([True,True,False]);wakes=[]
+        def sample():return {**self.report,'ready':False,'observed_at_mono':self.clock[0]}
+        result=module.run(q,coordinator=c,probe=sample,wake=lambda:wakes.append(self.clock[0]),
+            alive=lambda:next(alive),wait=lambda n:self.clock.__setitem__(0,self.clock[0]+n),wall=lambda:self.clock[0])
+        self.assertEqual(result['status'],'parent_closed');self.assertEqual(len(wakes),2)
+        # Learning alone still waits for admission.
+        q2=runtime_work.WakeQueue(self.root);
+        with q2.connect() as db:db.execute("DELETE FROM wakes WHERE kind='laya-sync'")
+        alive=iter([True,False]);wakes.clear()
+        module.run(q2,coordinator=c,probe=sample,wake=lambda:wakes.append(1),
+            alive=lambda:next(alive),wait=lambda n:None,wall=lambda:self.clock[0])
+        self.assertEqual(wakes,[])
+
     def test_lifecycle_pipe_stops_monitor_on_daemon_exit(self):
         module=self.monitor();read,write=os.pipe()
         try:

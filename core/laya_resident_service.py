@@ -332,7 +332,8 @@ def _interpreter(root, python=None):
 def default_spawn(argv, *, pass_fds):
     # The same sanitized, offline, one-thread environment as the learning
     # worker: the service may run the trainer interpreter's inference.
-    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
+                                            'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
     env.update(PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')

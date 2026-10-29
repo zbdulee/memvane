@@ -33,9 +33,40 @@ def _check_root(root, home):
                 raise ServiceFailure('unsafe_root')
 
 
+TEST_ROOT_ENV = 'MEMVANE_TEST_RUNTIME_ROOT'
+
+
+def _test_root(create):
+    """The test-only runtime root, or None.
+
+    ``npm test`` (the development guard) and the shared fixtures export
+    ``MEMVANE_TEST_RUNTIME_ROOT`` so every runtime participant of a test run
+    (wake queue, worker lease, coordinator, monitor) resolves one temp root and
+    never the user's. A value that is set but not an absolute path strictly
+    inside a fixed platform temp root fails closed (``unsafe_test_root``): it
+    never falls back to the user's root, and never redirects a real install.
+    """
+    raw = os.environ.get(TEST_ROOT_ENV)
+    if not raw:
+        return None
+    from runtime_lease import in_platform_temp
+    base = Path(raw)
+    if not base.is_absolute() or not in_platform_temp(base):
+        raise ServiceFailure('unsafe_test_root')
+    base = Path(os.path.realpath(base))
+    root = base / 'laya-inference'
+    if create:
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root.mkdir(mode=0o700, exist_ok=True)
+    return resident._private_state(root)
+
+
 def service_root(*, create=False, home=None):
     # Host HOME/CODEX_HOME overrides must not create a second user service.
     if home is None:
+        test_root = _test_root(create)
+        if test_root is not None:
+            return test_root
         import pwd
         home = pwd.getpwuid(os.getuid()).pw_dir
     home = Path(home).resolve()
@@ -505,7 +536,8 @@ def _ensure_direct(root, python, deadline, *, spawn=subprocess.Popen):
                 pid.unlink()
         finally:
             os.close(lease)
-        env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TMPDIR', 'HOME') if key in os.environ}
+        env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TMPDIR', 'HOME',
+                                                'MEMVANE_TEST_RUNTIME_ROOT') if key in os.environ}
         env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')

@@ -222,7 +222,8 @@ def _spawn(project_root):
                      # HERMES_HOME: the journal v4 host gate must see a Hermes
                      # copy installed under a custom Hermes home.
                      env={**{key: os.environ[key] for key in
-                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'HERMES_HOME')
+                             ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'HERMES_HOME',
+                              'MEMVANE_TEST_RUNTIME_ROOT')
                              if key in os.environ},
                           'PYTHONDONTWRITEBYTECODE': '1'})
 

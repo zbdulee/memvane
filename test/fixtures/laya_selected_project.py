@@ -66,7 +66,13 @@ class SelectedProject(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix=self.TEMP_PREFIX, dir=self.TEMP_DIR)
         self.addCleanup(temp.cleanup)
         self.home = Path(temp.name).resolve()
-        patcher = mock.patch.dict(os.environ, {'HOME': str(self.home)})
+        # QMD_SANDBOX: no fixture path starts runtime workers or writes a
+        # runtime wake (a test that needs the unsandboxed hook path clears it
+        # itself, around a mocked spawn); MEMVANE_TEST_RUNTIME_ROOT keeps the
+        # per-user runtime root inside this temp HOME even then.
+        patcher = mock.patch.dict(os.environ, {
+            'HOME': str(self.home), 'QMD_SANDBOX': '1',
+            'MEMVANE_TEST_RUNTIME_ROOT': str(self.home / 'runtime-root')})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.project = self.home / 'project'

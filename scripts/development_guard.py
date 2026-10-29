@@ -25,6 +25,17 @@ import uuid
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
 from runtime_cpu import MAX_CPU_FRACTION,environment as cpu_environment
+from runtime_lease import in_platform_temp,trusted_temp_dir
+
+
+def usable_test_runtime_root(raw):
+    """An inherited MEMVANE_TEST_RUNTIME_ROOT a test run may keep."""
+    if not raw or not os.path.isabs(raw) or not in_platform_temp(raw):return False
+    try:info=os.lstat(raw)
+    except OSError:return False
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid()
+            and not stat.S_IMODE(info.st_mode)&0o077)
+
 
 PROBE_DEADLINE=None
 
@@ -291,7 +302,7 @@ def run_job(args,root):
         if args.kind=='model-test':state['proofNonce']=secrets.token_hex(24)
         if calibration is not None:state['calibrationRunId']=calibration['runId']
         def save():checkpoint(run,state);put(active,state)
-        save();child=None;tree=None;interrupted=[];calibration_fd=None
+        save();child=None;tree=None;interrupted=[];calibration_fd=None;test_runtime_root=None
         original_calibration=os.environ.get('QMD_CALIBRATION_ENVELOPE')
         began=time.monotonic();PROBE_DEADLINE=began+args.max_seconds
         previous={sig:signal.getsignal(sig) for sig in (signal.SIGINT,signal.SIGTERM)}
@@ -326,6 +337,16 @@ def run_job(args,root):
             observe_log(run,baseline,{},0)
             if reason:raise GuardError(reason)
             environment=cpu_environment()
+            if args.kind in ('test','model-test'):
+                # Every test process resolves the per-user runtime root (wake
+                # queue, worker lease, coordinator) here, never the user's. An
+                # inherited value is kept only when it is a usable private
+                # directory inside a fixed platform temp root; anything else
+                # is replaced by this run's own root.
+                if not usable_test_runtime_root(environment.get('MEMVANE_TEST_RUNTIME_ROOT')):
+                    test_runtime_root=os.path.realpath(tempfile.mkdtemp(
+                        prefix='memvane-test-runtime-',dir=trusted_temp_dir()))
+                    environment['MEMVANE_TEST_RUNTIME_ROOT']=test_runtime_root
             if args.kind=='model-test':
                 environment['QMD_DEVELOPMENT_GUARD_RUN']=str(run)
                 environment['QMD_DEVELOPMENT_GUARD_NONCE']=state['proofNonce']
@@ -360,6 +381,9 @@ def run_job(args,root):
             save();return 75
         finally:
             PROBE_DEADLINE=None
+            if test_runtime_root is not None:
+                import shutil
+                shutil.rmtree(test_runtime_root,ignore_errors=True)
             if calibration_fd is not None:os.close(calibration_fd)
             if original_calibration is None:os.environ.pop('QMD_CALIBRATION_ENVELOPE',None)
             else:os.environ['QMD_CALIBRATION_ENVELOPE']=original_calibration

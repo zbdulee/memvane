@@ -533,6 +533,46 @@ class LearningMoveTests(unittest.TestCase):
                          self.current / 'laya-inference')
         self.assertEqual(state_move.move(self.home)['status'], 'learning_state_switched')
 
+    def test_a_handoff_contender_is_waited_for_and_workers_are_asked_to_yield(self):
+        # A handoff contender holds runtime-worker-handoff.lock only until it
+        # holds the worker lease; the mover waits for it as a kernel waiter
+        # instead of deferring at once, and asks workers to yield meanwhile.
+        handoff = self.inference / 'runtime-worker-handoff.lock'
+        fd = hold(handoff)
+        marker = self.inference / 'runtime-worker-yield.json'
+        seen = []
+
+        def release():
+            seen.append(marker.is_file())
+            if marker.is_file():
+                until = json.loads(marker.read_text())['until']
+                seen.append(time.time() < until <= time.time() + 5)
+                seen.append(oct(marker.stat().st_mode & 0o777))
+            os.close(fd)
+        timer = threading.Timer(.3, release)
+        timer.start()
+        try:
+            started = time.monotonic()
+            result = state_move.move(self.home, wait=3)
+        finally:
+            timer.join()
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+        self.assertGreaterEqual(time.monotonic() - started, .25)
+        self.assertEqual(seen, [True, True, '0o600'])
+        # The request ends with the wait: nothing is left in either tree.
+        self.assertFalse((self.current / 'laya-inference' / 'runtime-worker-yield.json').exists())
+        self.assertEqual(learning_state_base(self.home), self.current)
+
+    def test_a_sleeping_wake_timer_does_not_defer_the_move(self):
+        # The wake queue's timer holds only its own lock while it sleeps
+        # toward the next due wake; it is not a lane.
+        fd = hold(self.inference / 'runtime-wake-timer.lock')
+        try:
+            result = state_move.move(self.home, wait=1)
+        finally:
+            os.close(fd)
+        self.assertEqual(result['status'], 'learning_state_moved', result)
+
     def test_a_busy_lane_defers_before_anything_moves(self):
         fd = os.open(self.inference / 'runtime-worker.lock', os.O_RDWR)
         try:

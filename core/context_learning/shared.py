@@ -1981,7 +1981,8 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("unsafe_shared_log")
         # A whitelist, so a gold-only or test override never reaches the child.
-        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER") if k in os.environ}
+        env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "HOME", "USER",
+                                          "MEMVANE_TEST_RUNTIME_ROOT") if k in os.environ}
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
         entry = Path(__file__).resolve().parents[1] / "context_learning_shared.py"

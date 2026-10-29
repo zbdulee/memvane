@@ -17,9 +17,13 @@ before that point leaves it untouched:
 
 * the runtime wake worker (``runtime-worker.lock``) is the only lane holder
   that keeps re-acquiring its lane and dispatches the sync wakes that start
-  the resident service again; the mover holds ``runtime-worker-handoff.lock``
-  and waits for ``runtime-worker.lock`` as a kernel waiter (the worker's
-  own self-rewake loses to it), bounded by the attempt budget;
+  the resident service again; the mover first asks workers to yield
+  (``runtime-worker-yield.json``: a draining worker starts no further child
+  and none is spawned while it stands), then waits as a kernel waiter for
+  ``runtime-worker-handoff.lock`` (a handoff contender releases it as soon as
+  it holds the lease) and for ``runtime-worker.lock`` (the worker's own
+  self-rewake loses to it), all bounded by the attempt budget; only a child
+  already running when the request is written is waited for;
 * every other lane lock in ``laya-inference`` (provider, compute, trainer,
   inference slots, CPU control, service start) is taken non-blocking, and a
   learning-only inference service is asked to shut down; a busy lane defers;
@@ -62,8 +66,9 @@ CHECKPOINTS = ('active-checkpoint.json', 'experimental-checkpoint.json')
 # A namespace bound by the synthetic release-QA setup journal pins its
 # checkpoint bytes; such an account is not moved automatically.
 SETUP_BINDINGS = 'synthetic-binding-init.json'
-# Bound on the waits of one attempt: the runtime worker's turn (its drain
-# runs at most 60 s), the resident service's drain and the lanes it held.
+# Bound on the waits of one attempt: the runtime worker's turn (after the
+# yield request it finishes at most the child it is running), the resident
+# service's drain and the lanes it held.
 # The rename and checkpoint rebase after them are local filesystem work; the
 # restart of a drained service adds at most RESTART_WAIT_SECONDS.
 BUDGET_SECONDS = 75
@@ -81,6 +86,11 @@ BACKOFF_BASE_SECONDS = 120
 BACKOFF_CAP_SECONDS = 3600
 WORKER = 'runtime-worker.lock'
 HANDOFF = 'runtime-worker-handoff.lock'
+# Read by runtime_work.yield_requested (same name, same {"until": epoch}).
+YIELD = 'runtime-worker-yield.json'
+# The wake queue's timer (runtime_work.TIMER_LOCK) holds no lane: it only
+# wakes a worker, which the yield request and the held worker lease keep out.
+TIMER = 'runtime-wake-timer.lock'
 # Lanes the resident service holds while it hosts learning inference (and a
 # learning-only service of an earlier bundle while it runs): they free only
 # once it stops.
@@ -395,28 +405,52 @@ def _stop_learning_only(inference, home):
     raise LearningMoveDeferred('learning_inference_unknown')
 
 
+def _request_yield(inference, deadline):
+    """Ask runtime workers to step aside until ``deadline`` (best effort)."""
+    from runtime_lease import atomic_json
+    try:
+        atomic_json(inference / YIELD,
+                    {'until': time.time() + max(0.0, deadline - time.monotonic())})
+    except (OSError, ValueError):
+        pass
+
+
+def _clear_yield(inference):
+    try:
+        (inference / YIELD).unlink()
+    except OSError:
+        pass
+
+
 def _quiesce_lanes(stack, inference, deadline, home=None):
     """Every lane but the service's own, or a deferral; the resident is untouched.
 
-    Returns the names held. The runtime worker's handoff lock first (no
-    second worker can line up), then its lease as a kernel waiter, then the
-    other lanes non-blocking.
+    Returns the names held. A yield request first, then the runtime worker's
+    handoff lock (no second worker can line up) and its lease, both as a
+    kernel waiter within the budget, then the other lanes non-blocking.
     """
     held = set()
     if inference is None or not inference.is_dir():
         return held
-    fd = _lock(inference / HANDOFF)
-    if fd is None:
-        raise LearningMoveDeferred('learning_runtime_worker_busy')
-    _held(stack, fd)
-    held.add(HANDOFF)
-    fd = _wait_lock(inference / WORKER, deadline)
-    if fd is None:
-        raise LearningMoveDeferred('learning_runtime_worker_busy')
-    _held(stack, fd)
-    held.add(WORKER)
+    _request_yield(inference, deadline)
+    try:
+        fd = _wait_lock(inference / HANDOFF, deadline)
+        if fd is None:
+            raise LearningMoveDeferred('learning_runtime_worker_busy')
+        _held(stack, fd)
+        held.add(HANDOFF)
+        fd = _wait_lock(inference / WORKER, deadline)
+        if fd is None:
+            raise LearningMoveDeferred('learning_runtime_worker_busy')
+        _held(stack, fd)
+        held.add(WORKER)
+    finally:
+        # Held or deferred, the request ends here: holding the lease already
+        # keeps every worker out, and nothing may follow the directory move.
+        _clear_yield(inference)
     for name in sorted(os.listdir(inference)):
-        if not name.endswith('.lock') or name in held or _service_lane(name):
+        if (not name.endswith('.lock') or name in held or _service_lane(name)
+                or name == TIMER):
             continue
         fd = _lock(inference / name)
         if fd is None:
@@ -470,7 +504,7 @@ def _hold_lanes(stack, inference, held, deadline):
     if inference is None or not inference.is_dir():
         return
     for name in sorted(os.listdir(inference)):
-        if not name.endswith('.lock') or name in held:
+        if not name.endswith('.lock') or name in held or name == TIMER:
             continue
         while True:
             fd = _lock(inference / name)
@@ -616,7 +650,8 @@ def _spawn_restarter(home, events):
     bootstrap = ('import sys;sys.path.insert(0,' + repr(core) + ');'
                  'from context_learning import state_move;'
                  'state_move.restarter(None,sys.argv[1] or None)')
-    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
+                                            'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     import subprocess
