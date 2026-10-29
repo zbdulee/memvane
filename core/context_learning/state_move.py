@@ -52,6 +52,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import time
 
 NAMES = ('live-selection', 'laya-inference')
@@ -61,9 +62,15 @@ CHECKPOINTS = ('active-checkpoint.json', 'experimental-checkpoint.json')
 # A namespace bound by the synthetic release-QA setup journal pins its
 # checkpoint bytes; such an account is not moved automatically.
 SETUP_BINDINGS = 'synthetic-binding-init.json'
-# Wall budget of one attempt: the runtime worker's turn (its drain runs at
-# most 60 s), the resident service's drain and the lanes it held.
+# Bound on the waits of one attempt: the runtime worker's turn (its drain
+# runs at most 60 s), the resident service's drain and the lanes it held.
+# The rename and checkpoint rebase after them are local filesystem work; the
+# restart of a drained service adds at most RESTART_WAIT_SECONDS.
 BUDGET_SECONDS = 75
+# How long the attempt itself waits for a drained service to answer again;
+# past it a detached restarter keeps trying for RESTARTER_SECONDS.
+RESTART_WAIT_SECONDS = 10
+RESTARTER_SECONDS = 900
 # A drain is never started with less of the budget left than this: a drain
 # cannot be taken back, so one that could not finish would cost search
 # without moving anything.
@@ -326,28 +333,69 @@ def _service_lane(name):
     return name in SERVICE_LANES or (name.startswith('cpu-share-') and name.endswith('.lock'))
 
 
-def _stop_learning_only(inference):
-    """Ask a learning-only inference service (not hosted) to shut down.
-
-    It stops only while idle; a busy one defers the move. A hosted service
-    (inside the resident service) is left to the resident drain.
-    """
+def _resident_pid(home):
+    """PID the running resident service reports, or None when none answers."""
     try:
-        from . import inference_service as learning
+        import laya_resident_service as svc
+        root = svc.service_dir(home=home)
+        answer = svc.hello(root) if root is not None else None
+    except Exception:
+        return None
+    pid = answer.get('pid') if isinstance(answer, dict) else None
+    return pid if type(pid) is int and pid > 1 else None
+
+
+def _learning_pid(inference):
+    try:
+        info = (inference / 'service.pid.json').lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_size > 512):
+            return None
+        pid = json.loads((inference / 'service.pid.json').read_text('utf-8')).get('pid')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return pid if type(pid) is int and pid > 1 else None
+
+
+def _stop_learning_only(inference, home):
+    """Settle who serves learning inference before any drain.
+
+    ``absent`` (lease free, nothing answers) and ``hosted`` (the resident service's
+    own, left to its drain) pass. A learning-only service of an earlier bundle
+    is asked to shut down and must answer ``stopped``. Anything else (a socket
+    or lease whose holder does not answer, a malformed answer) is unknown and
+    defers the move before the shared resident service is drained.
+    """
+    from . import inference_service as learning
+    try:
         answer = learning._version(inference, time.monotonic() + .5)
     except Exception:
-        return
-    if not isinstance(answer, dict) or answer.get('hosted') is not False:
-        return
-    try:
-        reply = learning._exchange(inference, {'command': 'shutdown'}, time.monotonic() + .5)
-    except Exception:
-        reply = None
-    if not isinstance(reply, dict) or reply.get('status') != 'stopped':
-        raise LearningMoveDeferred('learning_inference_busy')
+        answer = False  # answered, but not a valid version reply
+    if isinstance(answer, dict) and answer.get('hosted') is True:
+        return 'hosted'
+    if isinstance(answer, dict) and answer.get('hosted') is False:
+        try:
+            reply = learning._exchange(inference, {'command': 'shutdown'},
+                                       time.monotonic() + .5)
+        except Exception:
+            reply = None
+        if not isinstance(reply, dict) or reply.get('status') != 'stopped':
+            raise LearningMoveDeferred('learning_inference_busy')
+        return 'stopped'
+    fd = _lock(inference / learning.LEASE_NAME)
+    if fd is not None:
+        os.close(fd)
+        if answer is None:
+            return 'absent'  # nobody holds the lease; a socket left is stale
+    # A lease or socket without a valid answer: hosted only when the PID it
+    # recorded is the resident service's own.
+    resident = _resident_pid(home)
+    if resident is not None and _learning_pid(inference) == resident:
+        return 'hosted'
+    raise LearningMoveDeferred('learning_inference_unknown')
 
 
-def _quiesce_lanes(stack, inference, deadline):
+def _quiesce_lanes(stack, inference, deadline, home=None):
     """Every lane but the service's own, or a deferral; the resident is untouched.
 
     Returns the names held. The runtime worker's handoff lock first (no
@@ -375,7 +423,7 @@ def _quiesce_lanes(stack, inference, deadline):
             raise LearningMoveDeferred('learning_lane_busy')
         _held(stack, fd)
         held.add(name)
-    _stop_learning_only(inference)
+    _stop_learning_only(inference, home)
     return held
 
 
@@ -492,20 +540,116 @@ def _clear_retry(current):
         pass
 
 
-def _restart_service(home):
-    """Start the drained resident service again; embedding search comes back.
+# Test seams: the resident service spawn handed to ``ensure_service`` (a
+# synthetic home restarts only through it) and how a restarter outlives the
+# attempt (``_spawn_restarter`` by default).
+_service_spawn = None
+_detach = None
 
-    Only for the account's own service (``home`` None) and never in a fixture;
-    tests replace this seam.
-    """
-    if (home is not None or os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or
-            os.environ.get('QMD_SANDBOX')):
-        return None
+
+def _emit(events, outcome, reason=None, **fields):
+    if events is None:
+        return
     try:
-        import laya_resident_service as svc
-        return svc.ensure_service()
+        import event_log
+        event_log.emit('resident.restart', outcome=outcome, reason=reason,
+                       state_root=Path(events), host='worker', **fields)
     except Exception:
-        return None
+        pass
+
+
+def _serving(svc, root):
+    try:
+        answer = svc.hello(root)
+    except Exception:
+        return False
+    return isinstance(answer, dict) and answer.get('status') != 'draining'
+
+
+def _restart_until(home, deadline, *, step=.1, cap=.1):
+    """``ensure_service`` until the service answers (not draining) or ``deadline``.
+
+    A service that closed its control socket but still holds its lease gets
+    no successor from one call (``starting`` without a spawn), so the call is
+    repeated: once the lease is free (or the old one is draining) it elects
+    exactly one successor (``successor.lock``), later calls see it waiting.
+    """
+    import laya_resident_service as svc
+    try:
+        root = svc.service_dir(create=True, home=home)
+        learning_root = None
+        if home is not None:
+            from .inference_service import service_root
+            learning_root = service_root(create=True, home=home)
+    except Exception:
+        return False
+    while True:
+        if _serving(svc, root):
+            return True
+        try:
+            if home is None:
+                svc.ensure_service(spawn=_service_spawn)
+            else:
+                svc.ensure_service(root=root, learning_root=learning_root,
+                                   spawn=_service_spawn)
+        except Exception:
+            pass
+        if _serving(svc, root):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(step, max(0, deadline - time.monotonic())))
+        step = min(cap, step * 2)
+
+
+def restarter(home=None, events=None, seconds=RESTARTER_SECONDS):
+    """Detached: keep electing a successor until the service answers."""
+    started = time.monotonic()
+    done = _restart_until(home, started + seconds, step=1, cap=30)
+    _emit(events, 'restarted' if done else 'failed', None if done else 'restart_timeout',
+          detached=True, ms=(time.monotonic() - started) * 1000)
+    return done
+
+
+def _spawn_restarter(home, events):
+    core = str(Path(__file__).resolve().parents[1])
+    bootstrap = ('import sys;sys.path.insert(0,' + repr(core) + ');'
+                 'from context_learning import state_move;'
+                 'state_move.restarter(None,sys.argv[1] or None)')
+    env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER')
+           if key in os.environ}
+    env['PYTHONDONTWRITEBYTECODE'] = '1'
+    import subprocess
+    subprocess.Popen([sys.executable, '-B', '-c', bootstrap, str(events or '')],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, close_fds=True,
+                     start_new_session=True, env=env, cwd='/')
+
+
+def _restart_service(home, events=None):
+    """Bring the drained resident service back; embedding search returns.
+
+    Waits up to ``RESTART_WAIT_SECONDS`` for it to answer, then leaves a
+    detached restarter. The account's own service (``home`` None) never
+    restarts in a fixture; a synthetic home restarts only through an
+    injected spawn.
+    """
+    if home is None and (os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or
+                         os.environ.get('QMD_SANDBOX')):
+        return 'skipped_fixture'
+    if home is not None and _service_spawn is None:
+        return 'skipped_fixture'
+    started = time.monotonic()
+    if _restart_until(home, started + RESTART_WAIT_SECONDS):
+        _emit(events, 'restarted', ms=(time.monotonic() - started) * 1000)
+        return 'restarted'
+    try:
+        (_detach or _spawn_restarter)(home, events)
+    except Exception as exc:
+        _emit(events, 'failed', type(exc).__name__)
+        return 'failed'
+    _emit(events, 'restarter_started', ms=(time.monotonic() - started) * 1000)
+    return 'restarter_started'
 
 
 def _rebase_checkpoints(selection, old, new):
@@ -542,10 +686,11 @@ def _write_switch(current):
 _step = None
 
 
-def move(home=None, *, wait=None):
+def move(home=None, *, wait=None, events=None):
     """Move the learning state once; returns a status row, raises a deferral.
 
-    ``wait`` bounds the attempt (``BUDGET_SECONDS`` by default). A deferral
+    ``wait`` bounds the attempt's waits (``BUDGET_SECONDS`` by default).
+    ``events`` is the state root whose event log records a restart. A deferral
     records the per-user backoff; while it runs, the next call defers at once
     (``learning_state_move_backoff``) without taking any lock.
     """
@@ -570,6 +715,7 @@ def move(home=None, *, wait=None):
     deadline = time.monotonic() + budget
     reserve = min(DRAIN_RESERVE_SECONDS, budget / 2)
     drained = {'service': False}
+    result = failure = None
     try:
         with ExitStack() as stack:
             fd = _lock(current / LOCK)
@@ -585,9 +731,19 @@ def move(home=None, *, wait=None):
                 raise
             _clear_retry(current)
         return result
+    except BaseException as exc:
+        failure = exc
+        raise
     finally:
         if drained['service']:
-            _restart_service(home)
+            outcome = _restart_service(home, events)
+            if failure is not None:
+                try:
+                    failure.restart = outcome
+                except AttributeError:
+                    pass
+            elif isinstance(result, dict):
+                result['residentRestart'] = outcome
 
 
 def _move_locked(stack, home, legacy, current, deadline, drained, reserve):
@@ -607,7 +763,7 @@ def _move_locked(stack, home, legacy, current, deadline, drained, reserve):
     inference = next((base / 'laya-inference' for base in (legacy, current)
                       if (base / 'laya-inference').is_dir()), None)
     # Everything that can defer the move comes before the drain.
-    held = _quiesce_lanes(stack, inference, deadline)
+    held = _quiesce_lanes(stack, inference, deadline, home)
     for name in NAMES:
         if (legacy / name).is_dir() and os.path.lexists(current / name):
             raise LearningMoveRefused('learning_state_target_exists')
