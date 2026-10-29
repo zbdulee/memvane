@@ -37,3 +37,7 @@ __pycache__/
 .auto-context/*.lock
 .auto-context/.*.lock
 .auto-context/settings.json.pre-minimal-*
+
+# MemVane runtime files
+.memvane/file-changes/
+.memvane/wiki/.memvane-root
