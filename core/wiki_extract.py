@@ -222,7 +222,7 @@ def to_candidate(payload: dict[str, Any], item: dict[str, Any]) -> dict[str, Any
             "suggestedType": suggested_type,
             "confidence": item.get("confidence", "low"),
             "sources": sources,
-            "targetPath": f".auto-context/wiki/{TYPE_DIRS[suggested_type]}/{slugify(title)}.md",
+            "targetPath": f".memvane/wiki/{TYPE_DIRS[suggested_type]}/{slugify(title)}.md",
         }
         if isinstance(item.get("canonicalKey"), str) and item.get("canonicalKey").strip():
             candidate["canonicalKey"] = item.get("canonicalKey").strip()

@@ -5,8 +5,11 @@ import math
 import sys
 from pathlib import Path
 
+import project_dir
 
-CONFIG_DIR_NAME = ".auto-context"
+
+# The project folder: `.memvane/`, read fallback `.auto-context/` (project_dir).
+CONFIG_DIR_NAME = project_dir.CURRENT
 SETTINGS_FILE_NAME = "settings.json"
 
 # ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ DEFAULT_CONFIG = {
     "indexing": None,
     "collectionRoles": {},
     "recallStrategy": "hierarchical",
-    "wikiPath": ".auto-context/wiki",
+    "wikiPath": ".memvane/wiki",
     # qmd 인덱스 자체의 유지보수(전역 인덱스 대상). 프로젝트 설정에 두는 이유는
     # update.sh(SessionStart)가 프로젝트 단위로 돌기 때문이고, `qmd update`/`embed`가
     # 이미 같은 성질(프로젝트 세션이 전역 인덱스를 만진다)이다. 기본 on 근거는
@@ -314,7 +317,7 @@ DEFAULT_REASONING_EFFORT = {
 MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths"})
 MINIMAL_SETTINGS_MODEL = "minimal"
 MINIMAL_RAW_COLLECTION_PATH = "."
-MINIMAL_WIKI_COLLECTION_PATH = ".auto-context/wiki"
+MINIMAL_WIKI_COLLECTION_PATH = ".memvane/wiki"
 MINIMAL_WIKI_SUFFIX = "-wiki"
 # laya_index_host_route.COLLECTION_NAME 상한(64)에서 "-wiki" 접미를 뺀 길이.
 MINIMAL_SLUG_MAX = 64 - len(MINIMAL_WIKI_SUFFIX)
@@ -364,13 +367,14 @@ def minimal_collection_names(name):
     return slug, slug + MINIMAL_WIKI_SUFFIX
 
 
-def expand_minimal_settings(raw):
+def expand_minimal_settings(raw, folder=None):
     """minimal settings를 같은 의미의 legacy 모양 dict로 펼친다. 아니면 raw 그대로 반환.
 
     펼친 결과는 legacy 소비자(resolve_paths, update.sh `--raw`, laya route 검사)가 읽는
-    모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `.auto-context/wiki`가 wiki이고,
+    모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `<folder>/wiki`가 wiki이고,
     검색은 wiki 전용, compile은 host builtin extractor의 auto-wiki, 학습은 켜짐이다.
-    indexing은 settings 파일이 있으면 켜짐이다.
+    indexing은 settings 파일이 있으면 켜짐이다. `folder`는 프로젝트의 활성 폴더
+    이름(`project_dir.active_name`)이고, 생략하면 `.memvane`이다.
     """
     if not is_minimal_settings(raw):
         return raw
@@ -381,7 +385,7 @@ def expand_minimal_settings(raw):
         "indexing": True,
         "collections": [raw_name, wiki_name],
         "collectionPaths": {raw_name: MINIMAL_RAW_COLLECTION_PATH,
-                            wiki_name: MINIMAL_WIKI_COLLECTION_PATH},
+                            wiki_name: _wiki_rel(folder)},
         "collectionRoles": {raw_name: COLLECTION_ROLE_RAW, wiki_name: COLLECTION_ROLE_WIKI},
         "skipPaths": _minimal_skip_paths(raw.get("skipPaths")),
         "recallStrategy": "wikiOnly",
@@ -392,6 +396,12 @@ def expand_minimal_settings(raw):
         },
         "contextLearning": {"capture": True, "autoCycle": True},
     }
+
+
+def _wiki_rel(folder):
+    if folder is None or not project_dir.is_folder_name(folder):
+        return MINIMAL_WIKI_COLLECTION_PATH
+    return folder + "/" + project_dir.WIKI
 
 
 def is_minimal_config(config):
@@ -1090,7 +1100,7 @@ def deprecated_key_notice(input_config):
     if removed:
         parts.append("제거됨(대체 없음, 지우세요): " + ", ".join(removed))
     return (
-        "[qmd] .auto-context/settings.json에 더 이상 읽지 않는 설정 키 %d개가 있습니다 — "
+        "[qmd] .memvane/settings.json에 더 이상 읽지 않는 설정 키 %d개가 있습니다 — "
         "적어 둔 값은 무시됩니다. %s" % (len(records), " / ".join(parts))
     )
 
@@ -1101,13 +1111,35 @@ def invalid_session_start_sync(input_config):
             and not isinstance(input_config["sessionStartSync"], bool))
 
 
-def normalize_config(input_config):
+def normalize_config(input_config, folder=None):
+    """`folder`는 프로젝트의 활성 폴더 이름이다. 주면 minimal 펼침의 wiki 경로와 두 폴더
+    이름 중 하나로 시작하는 `wikiPath`·`collectionPaths` 값이 그 폴더를 따른다. 생략하면
+    minimal 펼침과 `wikiPath` 기본값은 `.memvane`이고 적힌 값은 그대로다."""
     minimal = is_minimal_settings(input_config)
     if minimal:
-        input_config = expand_minimal_settings(input_config)
+        input_config = expand_minimal_settings(input_config, folder)
     config = _normalize_expanded_config(input_config)
     if minimal:
         config["settingsModel"] = MINIMAL_SETTINGS_MODEL
+    return _rebase_folder(config, folder)
+
+
+def _rebase_folder(config, folder):
+    # Without a known project folder explicit values are kept as written.
+    if folder is None or not project_dir.is_folder_name(folder):
+        return config
+
+    def moved(value):
+        if not isinstance(value, str):
+            return value
+        parts = value.split("/")
+        if parts and parts[0] in project_dir.NAMES and parts[0] != folder:
+            return "/".join([folder, *parts[1:]])
+        return value
+    config["wikiPath"] = moved(config.get("wikiPath"))
+    paths = config.get("collectionPaths")
+    if isinstance(paths, dict):
+        config["collectionPaths"] = {key: moved(value) for key, value in paths.items()}
     return config
 
 
@@ -1232,10 +1264,10 @@ def project_identity_root(cwd):
     return path
 
 
-def _candidate_configs(project_dir):
-    return [
-        (project_dir / CONFIG_DIR_NAME / SETTINGS_FILE_NAME, "auto-context-dir", project_dir),
-    ]
+def _candidate_configs(directory):
+    # `.memvane/settings.json` first, then the `.auto-context/` read fallback.
+    return [(path, "auto-context-dir", directory)
+            for path in project_dir.settings_candidates(directory)]
 
 
 def _declared_project_owner(scope):
@@ -1247,8 +1279,8 @@ def _declared_project_owner(scope):
     for parent in scope.parents:
         if parent == home:
             break
-        settings = parent / CONFIG_DIR_NAME / SETTINGS_FILE_NAME
-        if not settings.is_file() or settings.is_symlink():
+        settings = project_dir.settings_path(parent)
+        if settings is None or settings.is_symlink():
             continue
         try:
             raw = json.loads(settings.read_text())
@@ -1307,7 +1339,7 @@ def _find_project_config_unsafe(cwd):
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 parsed = json.load(f)
-            config = normalize_config(parsed)
+            config = normalize_config(parsed, project_dir.active_name(project_root))
             if config.get("indexing") is False:
                 config["collections"] = []
             return {
@@ -1344,7 +1376,8 @@ def _read_json_object(path):
 
 
 def load_project_config(cwd):
-    """Load the effective config from the nearest `.auto-context/settings.json`.
+    """Load the effective config from the nearest `.memvane/settings.json`
+    (read fallback `.auto-context/settings.json`).
     indexing:false means collections=[] (검색/인덱싱 skip). 못 찾으면 빈 설정(collections=[])."""
     return find_project_config(cwd)["config"]
 
@@ -1363,7 +1396,9 @@ def load_project_config_raw(cwd):
     if reason:
         return {}
     if found.get("configFormat") == "auto-context-dir" and is_minimal_settings(parsed):
-        return {**expand_minimal_settings(parsed), "settingsModel": MINIMAL_SETTINGS_MODEL}
+        folder = project_dir.active_name(found.get("projectRoot"))
+        expanded = expand_minimal_settings(parsed, folder)
+        return {**expanded, "settingsModel": MINIMAL_SETTINGS_MODEL}
     return parsed
 
 

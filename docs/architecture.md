@@ -14,7 +14,7 @@ into agent conversations. Every hook action first classifies the event cwd's
 memvane-db route; only a selected route does work. It coordinates:
 
 - host hooks for Claude Code, Codex, and Hermes Agent;
-- per-project memvane-db onboarding from minimal `.auto-context/settings.json`;
+- per-project memvane-db onboarding from minimal `.memvane/settings.json`;
 - the Laya wiki index, its off-hook full-scan sync and the local embedding
   runtime;
 - recall over the last published wiki index generation;
@@ -30,7 +30,7 @@ The main architectural rule is:
 - **Onboarded projects only.** A project is active only when it has a selected
   Laya route, published by the reviewed setup flow. A project without a route
   gets no recall, indexing, compile or learning work; SessionStart shows one
-  onboarding notice line when it has `.auto-context/settings.json`.
+  onboarding notice line when it has `.memvane/settings.json`.
 - **Hooks are quiet.** Hook stdout is reserved for host hook payloads or deliberate
   one-time notices. Background work writes to logs.
 - **Fail closed on a selected route.** A selected route whose proof fails exits 3;
@@ -92,8 +92,8 @@ flowchart TD
     Resident[core/laya_resident_service.py]
     Embed[~/.local/state/memvane/embed-runtime]
     Index[(memvane-db, published generations)]
-    CompileQ[.auto-context/compile/source-queue.jsonl]
-    Wiki[.auto-context/wiki]
+    CompileQ[.memvane/compile/source-queue.jsonl]
+    Wiki[.memvane/wiki]
 
     User --> Claude
     User --> Hermes
@@ -137,7 +137,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | Route state | Behavior |
 |---|---|
 | `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
-| `legacy` (no route) | No work, exit 0. On `update-queued` only, one onboarding notice line for a project with `.auto-context/settings.json` (Codex receives it as SessionStart JSON). |
+| `legacy` (no route) | No work, exit 0. On `update-queued` only, one onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). |
 | `blocked` or lookup failure | exit 3, no fallback |
 
 `worktree` is a linked git worktree of a selected main checkout; search serves
@@ -178,12 +178,15 @@ stdout behavior.
 The project file is:
 
 ```text
-.auto-context/settings.json
+.memvane/settings.json
 ```
+
+A project that only has `.auto-context/` reads `.auto-context/settings.json`
+(see [Project folder](#project-folder)).
 
 Onboarding accepts only the minimal shape `{name, skipPaths}`; any other shape
 refuses as `minimal_settings_required`. `core/config.py` expands it: the project
-root is the raw collection `<slug>` (wiki generation input), `.auto-context/wiki`
+root is the raw collection `<slug>` (wiki generation input), `.memvane/wiki`
 is the wiki collection `<slug>-wiki`, recall is wiki-only, compile runs the
 host builtin extractor in `auto-wiki` mode, and context learning is on. A
 selected route binds the resolved settings identity: editing `skipPaths` keeps
@@ -237,7 +240,7 @@ the old directory).
 
 | Phase | Where | On a crash |
 |---|---|---|
-| prepare | old root, plus `.auto-context/memvane-state-move.json` in the project | intent discarded; recall never changed |
+| prepare | old root, plus `memvane-state-move.json` in the project folder | intent discarded; recall never changed |
 | move | `rename(old, new)` | resumed from the project pointer |
 | switch | compare-and-replace writes, journal CAS, ledger, route, marker | replayed; each write accepts the already-new bytes |
 | verify | marker classification, route selection, read-only journal proof, store counts | resumed |
@@ -311,6 +314,50 @@ account (`~/Library/Application Support/qmd-auto-context/{live-selection,laya-in
 to `.../memvane`, `core/context_learning/state_move.py`) and heals the
 project's prepared selector (`core/context_learning/selector_heal.py`); see
 [continual learning](continual-learning.md#learning-state-location).
+
+### Project folder
+
+A project keeps its settings, wiki cards and per-machine runtime files (route
+record, selection marker, locks, `compile/`, `file-changes/`) in one folder at
+the project root, `.memvane/` (`core/project_dir.py`). A project that only has
+`.auto-context/` is read from there: readers look in `.memvane/` first and fall
+back to `.auto-context/` per file, and every writer uses one active folder
+(`.memvane/` when it exists, else `.auto-context/`, else `.memvane/`). Settings
+path values that start with either folder name follow the active folder.
+
+The bundle upgrade worker (`core/laya_project_dir_move.py`, called from
+`laya_bundle_upgrade.run`) moves each selected project once:
+
+- `rename`: one `rename(2)` of `.auto-context` to `.memvane`; settings, cards
+  and runtime files keep their inodes;
+- `adopt`: git already brought `.memvane/settings.json` and `.memvane/wiki` (a
+  pulled or checked-out rename) while the runtime files stay in
+  `.auto-context/`; each runtime entry is renamed into `.memvane/` and the
+  empty legacy folder is removed.
+
+The intent `project-dir-move-intent.json` in the state root precomputes every
+record, and the pointer `memvane-project-move.json` in the project folder
+resumes a crash. The ledger is fenced (`upgrading`) before the move; a crash
+before the fence discards the intent, after it the move only goes forward. The
+index is rebound, not re-embedded: a clone generation of the published head is
+bound to `<project>/.memvane/wiki` in a new binding store, and the catalog
+keeps its scans while its `binding`/`roots` metadata is rewritten. While the
+move runs, recall waits up to 1.5 s and retries once; search keeps serving.
+
+| Layout (`project_dir.layout`) | Folders | Behavior |
+|---|---|---|
+| `none` | neither | writers create `.memvane/` |
+| `legacy` | `.auto-context/` only | read from there; the worker renames it |
+| `current` | `.memvane/` only | normal |
+| `adopt` | `.memvane/` has the settings, `.auto-context/` only runtime files | the worker moves the runtime files |
+| `split` | `.auto-context/` has the settings, `.memvane/` does not (an older branch checked out over a moved project) | `.memvane/` wins; index and wiki writers hold with `project_dir_split`, also mid-run (their route proof, `verify_selected_route_for_write`, refuses a split layout); recall and the edit gate continue (the untracked `.memvane/wiki/.memvane-root` keeps the bound wiki directory through the checkout); no second index; SessionStart prints a notice |
+| `conflict` | both hold settings or wiki cards (an older branch merged) | `.memvane/` wins, `.auto-context/` is ignored; the notice says to `git mv` leftover cards |
+
+Linked worktrees on either folder name share the main checkout's index. After
+a move, SessionStart names the owner's commit,
+`git add -A .memvane .auto-context`, and prints `.memvane/...` equivalents of
+any `.auto-context` lines in the project's own `.gitignore`; nothing edits user
+files.
 
 ### Bundle Adoption Trust Boundary
 
@@ -417,7 +464,7 @@ hooks/run-hook compile <engine>
 
 It only accepts Markdown files in `raw` or `session` role collections. Any path
 with a hidden segment such as `.agents`, `.claude`, `.codex`, `.github`, or
-`.auto-context` is excluded.
+`.memvane` is excluded.
 
 `core/wiki_compile_worker.py` later reads the source file, gathers wiki
 orientation context, optionally asks the selected memvane-db index for similar wiki pages, runs the
@@ -456,10 +503,10 @@ equivalent persistence-off flag.
 - resolves targets by explicit `targetPath`, then `canonicalKey`, `aliases`,
   `title`, and finally title slug;
 - protects superseded and non-managed pages from silent overwrite;
-- writes generated wiki files under `.auto-context/wiki`;
+- writes generated wiki files under `.memvane/wiki`;
 - writes new or auto-updated cards as `status: generated` by default;
 - enqueues successful generated writes to the auto-verify queue;
-- logs merge-needed or rejected candidates under `.auto-context/compile`.
+- logs merge-needed or rejected candidates under `.memvane/compile`.
 
 Compiler create/update, verifier stamp/delete, and the offline legacy-state
 migration share one project `CARD_WRITE_LOCK`. Each holds it from the card state
@@ -504,7 +551,7 @@ They are intentionally fail-open so wiki maintenance does not break normal agent
 turns. After each wiki lifecycle run, the same child runs the retroactive dedup
 scan (`core/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
-above to `.auto-context/compile/dedup-needed.jsonl` for the `wiki-dedup`
+above to `.memvane/compile/dedup-needed.jsonl` for the `wiki-dedup`
 resolver. It makes no model or paid call.
 
 ## Laya Runtime and Embedding
@@ -780,7 +827,7 @@ file `bundle-auto-upgrade.json` sits beside the log.
 | install event log | `<state root>/events.jsonl` (+ `.1`, `.2`) |
 | wiki lifecycle | `~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
 | wiki dedup scan | `~/.local/state/memvane/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
-| compile ledgers | `.auto-context/compile/` (`candidates.jsonl`, `verify-log.jsonl`, `merge-needed.jsonl`, `verify-deleted.jsonl`, `dedup-deleted.jsonl`, `discard-ledger.jsonl`, queues) |
+| compile ledgers | `.memvane/compile/` (`candidates.jsonl`, `verify-log.jsonl`, `merge-needed.jsonl`, `verify-deleted.jsonl`, `dedup-deleted.jsonl`, `discard-ledger.jsonl`, queues) |
 | context learning jobs | per-user learning state `job-telemetry.jsonl`, `worker.log` |
 
 ## Test Strategy

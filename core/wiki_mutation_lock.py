@@ -19,7 +19,7 @@ _local = threading.local()
 def _project_for_path(path):
     path = Path(path).absolute()
     for parent in (path, *path.parents):
-        if parent.name == 'wiki' and parent.parent.name == '.auto-context':
+        if parent.name == 'wiki' and parent.parent.name in ('.memvane', '.auto-context'):
             return parent.parent.parent
     return None
 

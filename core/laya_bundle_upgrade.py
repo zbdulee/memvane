@@ -84,13 +84,17 @@ NO_BACKOFF = frozenset(('legacy_hermes_copy_present',))
 # A state-root move waits for the same lanes plus the install and route locks.
 MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
-    'lock_busy'))
+    'lock_busy', 'sync_owner_busy', 'initial_build_busy',
+    'project_dir_move_upgrade_pending'))
 # A move a retry cannot clear: the install keeps working where it is.
 MOVE_REFUSALS = frozenset((
     'state_move_cross_device', 'state_move_target_exists',
     'qmd_origin_detach_required', 'state_move_base_unsafe',
     'state_move_not_selected', 'state_move_socket_path_too_long',
-    'state_move_path_invalid'))
+    'state_move_path_invalid', 'project_dir_conflict',
+    'project_dir_move_not_selected', 'project_dir_move_capacity_missing',
+    'project_dir_move_route_unsupported', 'project_dir_move_head_unbound',
+    'project_dir_move_root_changed', 'project_dir_move_both_folders'))
 # Refusals that are a supported resting state: no SessionStart notice. An
 # unselected build moves once it is selected; another volume keeps its place.
 MOVE_SILENT = frozenset(('state_move_cross_device', 'state_move_not_selected',
@@ -370,6 +374,59 @@ def move_notice(project_root, journal_path, *, request_move=True, spawn=None, no
                 'serving from the current location.')
     return (head + '; the move failed (' + reason + ') and a later session '
             'retries. Search keeps serving from the current location.')
+
+
+def project_dir_notice(project_root, journal_path, *, request_move=True, spawn=None,
+                       now=None):
+    """SessionStart lines while the project folder moves to ``.memvane/``.
+
+    Requests the worker for a selected project still on ``.auto-context/``
+    (or one whose rename git brought in). After the move it names what the
+    owner commits and the ``.gitignore`` lines to add. None otherwise.
+    """
+    import laya_project_dir_move as dir_move
+    import project_dir
+    state = Path(journal_path).parent
+    try:
+        pointer = dir_move.read_pointer(project_root)
+    except Exception:
+        pointer = None
+    pending = dir_move.needed(project_root)
+    pending = None if pending == 'tidy' else pending
+    status = read_status(state) if state.is_dir() else None
+    if pointer is None and pending is None:
+        layout_line = dir_move.layout_notice(project_root)
+        if layout_line is not None:
+            return layout_line
+        own = status.get('projectDir') if isinstance(status, dict) else None
+        if (isinstance(own, dict) and own.get('reason') == 'project_dir_move_complete'
+                and project_dir.layout(project_root) == 'current'):
+            return '\n'.join(dir_move.owner_steps(project_root)) or None
+        return None
+    if request_move:
+        try:
+            status = request(project_root, journal_path, 'project_dir_move',
+                             spawn=spawn, now=now)
+        except Exception:
+            pass
+    head = '[memvane] the project folder moves from .auto-context/ to .memvane/'
+    own = status.get('projectDir') if isinstance(status, dict) else None
+    if isinstance(own, dict) and own.get('status') in ('deferred', 'refused', 'failed'):
+        status = own
+    state_name = status.get('status') if isinstance(status, dict) else None
+    reason = status.get('reason') if isinstance(status, dict) else ''
+    reason = reason if isinstance(reason, str) and reason else 'unknown'
+    if pointer is not None or state_name in (None, 'queued', 'running', 'complete',
+                                             'current'):
+        return head + ' in the background; search keeps serving during the move.'
+    if state_name == 'deferred':
+        return (head + '; the move waits (' + reason + ') and a later session retries. '
+                'Search keeps serving from .auto-context/.')
+    if state_name == 'refused':
+        return (head + '; the move needs review (' + reason + '). Search keeps serving '
+                'from .auto-context/.')
+    return (head + '; the move failed (' + reason + ') and a later session retries. '
+            'Search keeps serving from .auto-context/.')
 
 
 def notice_line(state, code):
@@ -842,6 +899,29 @@ def _move_state(project, state, home):
             _sleep(wait)
 
 
+class _DirMoveStopped(Exception):
+    """A folder move that must finish before the bundle step stopped."""
+
+
+def _move_project_dir(project, state):
+    """Finish or start this project's folder move to ``.memvane/``.
+
+    The move result, or None when the project needs none. A busy lane is
+    waited out a few times in-process like the bundle step.
+    """
+    import laya_project_dir_move as dir_move
+    if not (dir_move.intent_present(state) or dir_move.needed(project)):
+        return None
+    for wait in (*BUSY_BACKOFF_SECONDS, None):
+        try:
+            return dir_move.move(project, state)
+        except Exception as exc:
+            if wait is None or _reason(exc) not in MOVE_DEFERRALS:
+                raise
+            _event(state, 'project_dir.move', 'busy_wait', _reason(exc), retry_in=wait)
+            _sleep(wait)
+
+
 def _move_outcome(exc):
     """(status, reason) the status file records for a move that stopped."""
     reason = _reason(exc)
@@ -865,9 +945,11 @@ def _live_state(state, home):
 
 def _project_states(project, home):
     """A move already started comes first; then the route's and the pointer's roots."""
+    import laya_project_dir_move
     import laya_state_move
     found = []
-    for state in (*laya_state_move.pending_roots(project, home), *installs(project)):
+    for state in (*laya_state_move.pending_roots(project, home),
+                  *laya_project_dir_move.pending_roots(project), *installs(project)):
         if state not in found:
             found.append(state)
     return found
@@ -899,10 +981,21 @@ def run(project_root, *, root=None, home=None):
             _event(state, 'bundle.upgrade', 'started', hostLayout=_host(root, home),
                    attempt=attempts, **moves)
             try:
+                import laya_project_dir_move
                 import laya_state_move
                 resumed = None
                 if laya_state_move.intent_present(state):
                     state, resumed = _move_state(project, state, home)
+                dir_moved = None
+                if (laya_project_dir_move.intent_present(state) or
+                        laya_project_dir_move.needed(project) == 'adopt'):
+                    # A move that passed its fence, or a rename git brought in
+                    # (the route is blocked until it is adopted), comes first.
+                    try:
+                        dir_moved = _move_project_dir(project, state)
+                    except Exception as exc:
+                        status, reason = _move_outcome(exc)
+                        raise _DirMoveStopped(status, reason) from exc
                 result = _upgrade_with_backoff(project, state, root, home)
                 result = {**result, **_convert_journal(project, state, root, home)}
                 status = ('current' if result.get('status') == 'current'
@@ -925,8 +1018,36 @@ def run(project_root, *, root=None, home=None):
                         if moved['status'] == 'state_move_complete':
                             status, reason = 'complete', moved['status']
                             result = {**result, 'status': moved['status']}
+                project_dir_status = None
+                if status in ('current', 'complete'):
+                    # The folder move has its own outcome: a move that waits or
+                    # needs review leaves the bundle and state results as they are.
+                    try:
+                        dir_moved = _move_project_dir(project, state) or dir_moved
+                    except Exception as exc:
+                        dir_status, dir_reason = _move_outcome(exc)
+                        project_dir_status = {'status': dir_status, 'reason': dir_reason}
+                        result = {**result, 'projectDirMove': dir_reason}
+                        _event(state, 'project_dir.move', dir_status, dir_reason)
+                    else:
+                        if dir_moved is not None:
+                            _event(state, 'project_dir.move', dir_moved['status'],
+                                   mode=dir_moved.get('mode'))
+                            if dir_moved['status'] == 'project_dir_move_complete':
+                                status, reason = 'complete', dir_moved['status']
+                                result = {**result, 'status': dir_moved['status']}
+                                project_dir_status = {'status': 'complete',
+                                                      'reason': dir_moved['status']}
+                extra = {} if project_dir_status is None else {'projectDir': project_dir_status}
                 _write_status(state, status=status, executingRoot=str(root),
                               attempts=0 if status in ('current', 'complete') else attempts,
+                              reason=reason, **extra)
+            except _DirMoveStopped as exc:
+                status, reason = exc.args
+                result = {'status': status, 'reason': reason, 'projectDirMove': reason}
+                _event(state, 'project_dir.move', status, reason)
+                _write_status(state, status=status, executingRoot=str(root),
+                              attempts=attempts - 1 if status == 'deferred' else attempts,
                               reason=reason)
             except UpgradeRefused as exc:
                 state = _live_state(state, home)

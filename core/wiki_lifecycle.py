@@ -41,7 +41,7 @@ point at another checkout, so it is undecidable instead. Undecidable cards
 (malformed provenance or `sources:`, a source outside the allowed roots, an
 unreadable source, a legacy card with some sources present and some missing)
 are kept and logged. Retirement archives the old bytes
-under `.auto-context/compile/retired-wiki/` before unlinking, removes the
+under `.memvane/compile/retired-wiki/` before unlinking, removes the
 index line, and requests one `laya-sync` wake; the selected memvane-db full scan
 drops absent wiki files from its next generation. A missing source on a card
 that still has live sources is retired only once those survivors are covered;

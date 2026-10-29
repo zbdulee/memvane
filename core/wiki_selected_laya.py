@@ -18,7 +18,7 @@ import source_text
 
 def selected(root: Path):
     from laya_index_host_route import select_route
-    from laya_install_journal import verify_selected_route
+    from laya_install_journal import verify_selected_route_for_write
 
     root = Path(root).resolve()
     decision = select_route(str(root), action='compile')
@@ -26,7 +26,7 @@ def selected(root: Path):
         return None
     if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(root):
         raise ValueError('selected_compile_route_unavailable')
-    proof = verify_selected_route(decision)
+    proof = verify_selected_route_for_write(decision, 'compile')
     if proof.get('productRouteAllowed') is not True:
         raise ValueError('selected_compile_journal_unavailable')
     collections = decision.get('collections')
@@ -40,8 +40,8 @@ def selected(root: Path):
 def recheck(bound):
     if bound is None:
         return
-    from laya_install_journal import verify_selected_route
-    if verify_selected_route(bound[0]) != bound[1]:
+    from laya_install_journal import verify_selected_route_for_write
+    if verify_selected_route_for_write(bound[0], 'compile') != bound[1]:
         raise ValueError('selected_compile_proof_changed')
 
 

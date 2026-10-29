@@ -51,7 +51,9 @@ def _read(path):
 def _source_binding(view, shared_path, private_path):
     from .contracts import digest
     project = Path(view['current_root'])
-    settings = project / '.auto-context/settings.json'
+    import project_dir
+    settings = (project_dir.settings_path(project) or
+                project_dir.folder(project) / project_dir.SETTINGS)
     if settings.is_symlink() or not settings.is_file():
         raise ValueError('project_settings_missing')
     raw = settings.read_bytes()

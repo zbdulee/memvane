@@ -7,7 +7,7 @@ the compile worker all read these values. The embed provider and worker are
 not gated here: they are provider-reviewed artifacts, and the memvane-db index embeds
 only ``.md`` wiki cards.
 
-Wiki cards under ``.auto-context/wiki`` stay ``.md``-only; ``WIKI_TEXT_EXTENSIONS``
+Wiki cards under ``.memvane/wiki`` stay ``.md``-only; ``WIKI_TEXT_EXTENSIONS``
 names that narrower set for wiki-only scans.
 """
 
@@ -44,10 +44,11 @@ def is_wiki_meta_page(path, wiki_root=None) -> bool:
     return len(parts) == 1 and parts[0] in WIKI_META_PAGES
 
 # Exact directory-name match at any depth. Dot-prefixed names are skipped by a
-# separate rule in every walker; `.auto-context`, `.git`, `.hg` and `.svn` stay
-# listed because the enqueue gate also applies this set to collection roots.
+# separate rule in every walker; the MemVane project folders (`.memvane` and
+# the `.auto-context` read fallback), `.git`, `.hg` and `.svn` stay listed
+# because the enqueue gate also applies this set to collection roots.
 DENIED_SOURCE_SEGMENTS = frozenset({
-    '.auto-context', '.git', '.hg', '.svn',
+    '.memvane', '.auto-context', '.git', '.hg', '.svn',
     'node_modules', 'bower_components', 'vendor', 'Pods',
     'venv', 'site-packages', '__pycache__',
     'dist', 'build', 'out', 'target', 'coverage', 'DerivedData',

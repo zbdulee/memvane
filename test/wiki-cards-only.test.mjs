@@ -58,7 +58,8 @@ test('wiki_init creates the wiki and type directories but no root files (default
       try {
         writeFileSync(join(project, '.keep'), '');
         execFileSync('python3', ['core/wiki_init.py', project, preset], { encoding: 'utf8', env: env(home) });
-        const wiki = join(project, '.auto-context', 'wiki');
+        // A new project gets the .memvane/ folder.
+        const wiki = join(project, '.memvane', 'wiki');
         for (const name of ROOT_FILES) {
           assert.equal(existsSync(join(wiki, name)), false, `${preset}: ${name} must not be created`);
         }

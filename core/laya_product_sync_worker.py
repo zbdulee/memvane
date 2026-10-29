@@ -26,7 +26,8 @@ from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexR
                                 _collection_roots, capacity_store_paths)
 from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
 from laya_install_journal import (cas_mark_new_write, inspect_journal,
-                                  preflight_product_candidate, verify_selected_route,
+                                  preflight_product_candidate,
+                                  verify_selected_route_for_write as verify_selected_route,
                                   verify_worker_attestation)
 from laya_local_embed_provider import ReviewedLocalQmdProvider
 from laya_local_embed_service import start_owned_embed_service

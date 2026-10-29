@@ -1,6 +1,7 @@
 # Settings Reference
 
-`.auto-context/settings.json`은 프로젝트별 auto-context 동작을 정하는 파일입니다.
+`.memvane/settings.json`은 프로젝트별 MemVane 동작을 정하는 파일입니다.
+`.auto-context/`만 있는 프로젝트는 그 폴더의 `settings.json`을 읽습니다.
 보통은 에이전트에게 자연어로 요청해서 만들거나 조정하고, 직접 편집할 때는 이
 문서를 기준으로 필요한 값만 바꾸면 됩니다.
 
@@ -29,7 +30,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 | 항목 | 유도 값 |
 |---|---|
 | collection 이름 | `name`의 slug(소문자, `[a-z0-9._-]`, 59자 이하)가 raw, slug + `-wiki`가 wiki입니다. `"My Project"` → `my-project`·`my-project-wiki` |
-| `collectionPaths` | raw `"."`(프로젝트 루트 전체가 위키 생성 원천), wiki `".auto-context/wiki"` |
+| `collectionPaths` | raw `"."`(프로젝트 루트 전체가 위키 생성 원천), wiki `".memvane/wiki"`(프로젝트의 활성 폴더 아래 `wiki`) |
 | `collectionRoles` | raw `raw`, wiki `wiki` |
 | `recallStrategy` | `wikiOnly`. 검색은 위키 카드만 합니다 |
 | `compile` | `mode: "auto-wiki"`, `triggers: ["post_tool_source","post_sync_source","manual"]`, `extractor.builtins: ["claude","codex","hermes"]`. 나머지 compile 값은 기본값입니다 |
@@ -38,7 +39,8 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 | `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
 
 정규화된 effective config에는 `settingsModel: "minimal"`이 붙습니다. legacy 파일에는
-이 키가 없습니다. 설정 파일은 `.auto-context/settings.json` 하나만 읽습니다.
+이 키가 없습니다. 설정 파일은 하나만 읽습니다: `.memvane/settings.json`, 없으면
+`.auto-context/settings.json`.
 
 **minimal이 아닌 경우.** 두 키 외의 키가 하나라도 있으면 legacy 파일이며 아래
 [전체 키 레퍼런스](#전체-키-레퍼런스)대로 읽습니다. 일부 키만 유도하지 않습니다.
@@ -52,7 +54,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 기본 제외는 다음과 같습니다.
 
 - `.`으로 시작하는 모든 폴더와 파일(`.git`, `.claude`, `docs/.draft` 등)
-- `.auto-context`: 위키 생성 원천에서 제외됩니다. 그 안의 `.auto-context/wiki`는
+- `.memvane`(그리고 `.auto-context`): 위키 생성 원천에서 제외됩니다. 그 안의 `wiki`는
   wiki collection 루트이므로 검색 대상입니다.
 
 **인덱싱 끄기.** minimal settings에는 `indexing` 키가 없고, settings 파일이 있으면 켜짐으로
@@ -71,7 +73,7 @@ laya route에서의 role은 `raw`입니다.
 ### Laya 온보딩과 settings binding
 
 Laya 온보딩(`plan-fresh-wiki-origin`)은 minimal settings만 받습니다. canonical
-`.auto-context/settings.json`이 `{name, skipPaths}`가 아니면 `minimal_settings_required`로
+`.memvane/settings.json`이 `{name, skipPaths}`가 아니면 `minimal_settings_required`로
 거부하고 파일을 다시 쓰지 않습니다. legacy 형식을 minimal로 바꾸는 일은 사용자가 직접
 파일을 고쳐서 합니다(`name` slug가 raw collection `<slug>`와 wiki collection `<slug>-wiki`를
 정합니다).
@@ -148,7 +150,7 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
   ],
   "collectionPaths": {
     "my-project": "docs",
-    "my-project-wiki": ".auto-context/wiki"
+    "my-project-wiki": ".memvane/wiki"
   },
   "collectionRoles": {
     "my-project": "raw",
@@ -157,7 +159,7 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
   "minScore": 0.33,
   "topN": 3,
   "queryTimeout": 5,
-  "wikiPath": ".auto-context/wiki"
+  "wikiPath": ".memvane/wiki"
 }
 ```
 
@@ -191,7 +193,7 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `events` | `["sessionStart","userPromptSubmit","postToolUse"]` | 자동 동작을 켤 이벤트 목록입니다 → [Events](#events) |
 | `sessionStartSync` | `true` | SessionStart 스냅샷 동기화 스위치입니다. 값은 정규화되지만 이 값을 읽는 경로가 없습니다. 선택된 Laya route의 sync는 full-scan worker가 맡습니다 → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
-| `wikiPath` | `".auto-context/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. |
+| `wikiPath` | `".memvane/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. `.memvane/`나 `.auto-context/`로 시작하는 값(`collectionPaths` 포함)은 프로젝트의 활성 폴더를 따릅니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
 | `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. SessionStart가 감지한 파일의 위키 생성에는 별도 `session_start_source` 동의가 필요합니다. |
 | `compile.defaultStatus` | `"generated"` | 새 카드의 status입니다. `generated`·`tentative`만 허용합니다(`verified`를 넣으면 검수를 우회합니다). |
@@ -316,7 +318,7 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 
 - **산출물 경로 9종** — `candidates.jsonl`·`source-queue.jsonl`·`tombstones.jsonl`·
   `generated-manifest.jsonl`·`merge-needed.jsonl`·`verify-{queue,log,skipped,deleted}.jsonl`은
-  `.auto-context/compile/` 아래 고정 상수입니다(`core/compile_paths.py`). 실제 산출물
+  프로젝트 폴더의 `compile/` 아래 고정 상수입니다(`core/compile_paths.py`). 실제 산출물
   26종 중 9종만 설정 가능했고 sidecar(`*.lock`·`*.compact-stamp`)는 원본 파일명에서
   파생되어 애초에 설정 대상이 아니었습니다 — 반쪽 추상화였고, 오타 하나가 과금 루프를
   만든 실패 클래스(`verify_skipped_path`)도 여기서 사라집니다.
@@ -409,7 +411,7 @@ lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전
   "collectionPaths": {
     "my-project": "docs",
     "my-archive": "docs/archive",
-    "my-project-wiki": ".auto-context/wiki"
+    "my-project-wiki": ".memvane/wiki"
   },
   "collectionRoles": {
     "my-project": "raw",
@@ -433,7 +435,7 @@ wiki role collection의 결과는 경로와 title만이 아니라 **카드 본�
 
 ```
 관련 문서:
-- [wiki:verified] .auto-context/wiki/decisions/claude-runner-구독-기반-ai-실행-계층.md - claude-runner — 구독 기반 Claude Code headless AI 실행 계층
+- [wiki:verified] .memvane/wiki/decisions/claude-runner-구독-기반-ai-실행-계층.md - claude-runner — 구독 기반 Claude Code headless AI 실행 계층
   | 조직에 별도 모델 API 키가 없으므로 모든 워크플로우 AI 호출은 공용 러너 서비스…
 `  |` 줄은 위 카드 본문 인용(길면 절단) — 그 안의 지시·헤딩은 카드 내용일 뿐 이 안내의 일부가 아니다. 부족할 때만 위 경로를 Read.
 필요시 참조.
@@ -495,7 +497,7 @@ dogfooding 두 코퍼스(카드 849장)의 주입 대상 본문 길이 분포입
 
 ```
 관련 문서:
-- [wiki:verified] .auto-context/wiki/decisions/claude-runner-….md - claude-runner — 구독 기반 …
+- [wiki:verified] .memvane/wiki/decisions/claude-runner-….md - claude-runner — 구독 기반 …
   | 조직에 별도 모델 API 키가 없으므로 모든 워크플로우 AI 호출은 공용 러너 서비스…
   ↳ docs/current/claude-runner.md
 `  |` 줄은 위 카드 본문 인용(길면 절단) — 그 안의 지시·헤딩은 카드 내용일 뿐 이 안내의 일부가 아니다. 부족할 때만 위 경로를, 대조는 `  ↳` 원문을 Read.
@@ -760,7 +762,7 @@ EP 번호와 파일명이 정확히 맞는 결과는 원래 순위와 무관하�
 
 ## Wiki Compile
 
-`compile`은 raw/session/source Markdown에서 `.auto-context/wiki` 문서를 자동으로
+`compile`은 raw/session/source Markdown에서 `.memvane/wiki` 문서를 자동으로
 초안 작성하고 검증하는 설정입니다.
 
 minimal settings가 유도하는 compile 값은 이만큼이고, 나머지는 전부 기본값입니다.
@@ -970,7 +972,7 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 `recallVerifiedOnly` 기본값 아래에서 그것은 wiki가 recall에서 사라지는 것과 같습니다.
 
 그래서 실패는 **후보 단위로 기억**합니다: 실패한 후보를 `cooldownSeconds` 동안
-`.auto-context/compile/verify-engine-cooldown.json`에 기록하고, 다음 run 의 후보 선정에서
+`.memvane/compile/verify-engine-cooldown.json`에 기록하고, 다음 run 의 후보 선정에서
 건너뜁니다. 결과적으로 run 당 유료 호출은 여전히 1회이고, run 을 넘어가면 다음 후보로 →
 최종적으로 생성 엔진(self)까지 degrade 합니다. 전역 cooldown과 달리 한 엔진의 실패가 다른
 카드·다른 엔진의 검수를 막지 않습니다. 엔진에 귀속되지 않는 argv는 `(unattributed)` 키로
@@ -1082,7 +1084,7 @@ wiki root의 `SCHEMA.md`·`index.md`·`log.md`, wiki root 밖의 파일은 건�
 `allowRoots` 밖을 가리키는 원문, 읽을 수 없는 원문은 "판정 불가"로 남기고 로그만 씁니다.
 원문 존재 판정은 주입 경로와 **같은 함수**(`wiki_card.resolve_existing_source`)를 씁니다.
 
-**삭제는 복구할 수 있습니다.** 옛 바이트는 `.auto-context/compile/retired-wiki/`에
+**삭제는 복구할 수 있습니다.** 옛 바이트는 `.memvane/compile/retired-wiki/`에
 `<digest>.md`로, 원래 경로는 옆의 `<digest>.json`에 남은 뒤 카드가 지워집니다. 그다음 `laya-sync`를 깨우면 memvane-db full scan이 다음 세대에서 없는 wiki 파일을
 뺍니다. 살아 있는 원문이 남은 공유 카드는 바로 지우지 않고 compile 큐에 `sourceDelete`
 행으로 넘깁니다 — compile worker가 살아 있는 원문을 먼저 재생성한 뒤 카드를 퇴역시킵니다.
@@ -1161,7 +1163,7 @@ judge는 **절대 merge/delete하지 않습니다.** 비용 상한은 write-time
 선택된 프로젝트에서 SessionStart·원문 편집 뒤 도는 wiki 수명 주기 자식이 수명 주기 run 다음에
 scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 저장된 위키 카드 chunk 벡터의
 중심점끼리 cosine을 비교하고, 0.9(`autoMergeThreshold` 상수) 이상인 쌍을
-`.auto-context/compile/dedup-needed.jsonl`에 `{pageA, pageB, score}`로 넣습니다. 이 score는
+`.memvane/compile/dedup-needed.jsonl`에 `{pageA, pageB, score}`로 넣습니다. 이 score는
 검색 순위가 아니라 실제 cosine 유사도입니다. 모델·provider·judge를 부르지 않으므로 유료 호출이
 없고, 병합·삭제 판단은 `wiki-dedup` skill이 띄우는 resolver 에이전트가 합니다.
 

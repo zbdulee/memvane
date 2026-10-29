@@ -15,6 +15,7 @@ import sqlite3
 import stat
 
 from laya_index_a import LayaIndexA
+import project_dir
 from laya_index_claim_queue import ClaimQueue
 from laya_install_journal import (cas_activate, cas_restore_fresh,
                                   inspect_journal, preflight_product_candidate)
@@ -59,13 +60,22 @@ def _paths(project_root, journal_path):
             not journal.is_absolute() or journal.name != 'install-journal.sqlite' or
             journal.is_symlink() or journal.parent.resolve(strict=True) != journal.parent):
         _fail('fresh_wiki_paths_invalid')
-    auto = project / '.auto-context'
+    marker, route = (project_dir.runtime_file(project, MARKER),
+                     project_dir.runtime_file(project, ROUTE))
+    auto = marker.parent
     if auto.is_symlink() or not auto.is_dir():
         _fail('fresh_wiki_project_unavailable')
     info = journal.parent.stat()
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
         _fail('fresh_wiki_owner_unavailable')
-    return journal.parent / LEDGER, auto / MARKER, auto / ROUTE
+    return journal.parent / LEDGER, marker, auto / ROUTE
+
+
+def project_wiki_roots(project_root):
+    """The wiki roots a selected project may bind: ``.memvane/wiki`` or the
+    not-yet-moved ``.auto-context/wiki``."""
+    return tuple(str(Path(project_root) / name / project_dir.WIKI)
+                 for name in project_dir.NAMES)
 
 
 def _load(path):
@@ -103,7 +113,7 @@ def validate_row(row, path):
         if (len({item['name'] for item in row['collections']}) != 2 or
                 not _canonical_absolute(raw) or
                 raw != row['projectRoot'] or
-                wiki_root != str(Path(raw) / '.auto-context' / 'wiki')):
+                wiki_root not in project_wiki_roots(raw)):
             _fail('fresh_wiki_ledger_invalid')
     except (ValueError, KeyError, TypeError, StopIteration) as exc:
         raise FreshWikiBlocked('fresh_wiki_ledger_invalid') from exc

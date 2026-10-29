@@ -138,7 +138,7 @@ def legacy_hermes_present(home=None):
     """True while a Hermes copy of the earlier plugin id may still run.
 
     That copy reads only v1/v2 routes, so a route this release publishes in
-    the project's ``.auto-context`` makes its edit gate block. An unreadable
+    the project's ``.memvane`` folder makes its edit gate block. An unreadable
     or unprovable Hermes plugin directory counts as present (fail safe).
     """
     import memvane_paths

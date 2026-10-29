@@ -14,7 +14,7 @@
 
 경로 주입 방어는 `ledger()` 하나가 한다. 설정 문자열 검증자(`safe_compile_file`)는
 죽었지만 그것이 막던 **symlink escape**는 그대로 살아 있어야 한다: 상수 이름이라도
-`<root>/.auto-context/compile/candidates.jsonl`이 compile 디렉터리 밖을 가리키는
+`<root>/.memvane/compile/candidates.jsonl`이 compile 디렉터리 밖을 가리키는
 symlink일 수 있고, 그러면 원장 append가 프로젝트 밖 파일을 덮어쓴다.
 
 `wikiPath`는 여전히 사용자 입력이므로 `wiki_compile.safe_managed_dir`이 남는다 —
@@ -27,7 +27,12 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-COMPILE_DIR = ".auto-context/compile"
+import project_dir
+
+# 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트
+# 기준값이고, 프로젝트가 있으면 `compile_rel(root)`가 활성 폴더를 따른다
+# (아직 옮기지 않은 프로젝트는 `.auto-context/compile`).
+COMPILE_DIR = project_dir.CURRENT + "/compile"
 
 # --- 원장/큐 (JSONL) --------------------------------------------------------
 CANDIDATES = "candidates.jsonl"
@@ -54,20 +59,30 @@ DEDUP_JUDGE_ENGINE_COOLDOWN = "dedup-judge-engine-cooldown.json"
 CARD_WRITE_LOCK = ".card-write.lock"
 
 
-def rel(name: str) -> str:
+def compile_rel(root=None) -> str:
+    """프로젝트 루트 기준 compile 디렉터리(`<활성 폴더>/compile`)."""
+    return project_dir.active_name(root) + "/compile"
+
+
+def rel(name: str, root=None) -> str:
     """프로젝트 루트 기준 POSIX 상대 경로(bash·문서·사용자 메시지용)."""
-    return "{}/{}".format(COMPILE_DIR, name)
+    return "{}/{}".format(compile_rel(root), name)
+
+
+def under(root, name: str) -> Path:
+    """`<root>/<활성 폴더>/compile/<name>` (검증 없음: 쓰기 전 `ledger`를 쓴다)."""
+    return Path(root) / compile_rel(root) / name
 
 
 def compile_dir(root, create: bool = False):
-    """`<root>/.auto-context/compile`. root 밖으로 나가면 None.
+    """`<root>/<활성 폴더>/compile`. root 밖으로 나가면 None.
 
-    판정은 `wiki_compile.safe_managed_dir(root, ".auto-context/compile")`과 같다
+    판정은 `wiki_compile.safe_managed_dir(root, compile_rel(root))`과 같다
     (resolve 후 root 포함 + 디렉터리 여부). `create=False`면 존재하지 않아도 경로를
     돌려준다 — 읽기 경로가 디렉터리를 만드는 부작용을 갖지 않게 한다.
     """
     root = Path(root)
-    path = (root / COMPILE_DIR).resolve()
+    path = (root / compile_rel(root)).resolve()
     try:
         path.relative_to(root)
     except ValueError:

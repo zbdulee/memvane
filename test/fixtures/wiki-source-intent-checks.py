@@ -173,7 +173,8 @@ class ProjectFixture(unittest.TestCase):
 
     def source_digest(self):
         files = sorted(p for p in self.project.rglob('*')
-                       if p.is_file() and '.auto-context' not in p.parts)
+                       if p.is_file() and '.auto-context' not in p.parts
+                       and '.memvane' not in p.parts)
         return {str(p.relative_to(self.project)): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in files}
 

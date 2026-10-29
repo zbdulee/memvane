@@ -10,6 +10,7 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
+import project_dir
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_card
@@ -32,9 +33,9 @@ def wiki_root_of(root: Path, config: dict) -> Path | None:
     넘기지 않는다** — wiki는 관리 대상 디렉터리라 프로젝트 밖으로 나갈 수 없다
     (`safe_managed_dir`와 같은 강도).
     """
-    rel = config.get("wikiPath", ".auto-context/wiki")
+    rel = config.get("wikiPath", project_dir.wiki_rel(root))
     if not isinstance(rel, str) or not rel:
-        rel = ".auto-context/wiki"
+        rel = project_dir.wiki_rel(root)
     return qmd_resolve_paths.contained_path(root, rel, [])
 
 

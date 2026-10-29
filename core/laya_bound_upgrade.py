@@ -22,6 +22,7 @@ from pathlib import Path
 import laya_active_upgrade as active
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
+import project_dir
 from laya_ledger_common import _operation_lock
 from laya_install_journal import (PRODUCTION_ATTESTATION, _canon as journal_canon,
                                   _provider_file_identity, _route as checked_route,
@@ -115,7 +116,7 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
             record['identity']['journalPath'] != str(journal_path)):
         _fail('bound_upgrade_not_bound')
     identity = record['identity']
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     row = ledger.load(state / ledger.name)
     if (row['phase'] != 'prepared' or row['journalPath'] != str(journal_path) or
             row['routeSha256'] != identity['routeSha256'] or
@@ -214,7 +215,7 @@ def _switch(intent):
     """Idempotent forward switch; every step accepts its finished form."""
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
     ledger = active._Ledger(intent['origin'])
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     identity = intent['oldRecord']['identity']
     journal_path = Path(identity['journalPath'])
     old_route, new_route = (intent[key].encode('utf-8') for key in ('oldRoute', 'newRoute'))

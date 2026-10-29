@@ -1770,7 +1770,7 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     install, project, scope, journal or store identity keeps the refusal.
     """
     from laya_install_journal import JournalEvidenceError
-    moved = _install_moved(decision)
+    moved = _install_moved(decision) or _project_dir_moved(decision)
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
             (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
             moved):
@@ -1789,14 +1789,14 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
         return None
     try:
         fresh = select_route(target, action='recall')
-        if moved:
-            import laya_state_move
-            fresh = laya_state_move.settle_decision(target, 'recall', fresh, select_route)
+        # A move fences readers for a few writes: the re-read waits it out.
+        if fresh.get('state') == 'blocked':
+            from laya_index_host_route import _settle_moves
+            fresh = _settle_moves(target, 'recall', fresh)
     except Exception:
         return None
     if moved:
-        import laya_state_move
-        if not laya_state_move.relocated_decision(decision, fresh):
+        if not _relocated(decision, fresh):
             return None
     elif _decision_identity(fresh) != identity:
         return None
@@ -1819,6 +1819,15 @@ def _install_moved(decision) -> bool:
         state = Path(decision['journalPath']).parent
         return (laya_state_move.legacy_root(state) and not os.path.lexists(state)
                 and laya_state_move.target_root(state).is_dir())
+    except Exception:
+        return False
+
+
+def _project_dir_moved(decision) -> bool:
+    """The decision's wiki root left ``.auto-context/`` for ``.memvane/`` under this recall."""
+    try:
+        import laya_project_dir_move
+        return laya_project_dir_move.moved_away(decision)
     except Exception:
         return False
 
@@ -1901,7 +1910,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         move_notice = None
         if action in ("update", "update-queued"):
             _request_journal_v4(decision)
-            move_notice = _state_move_notice(decision)
+            move_notice = _move_notices(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
@@ -1945,7 +1954,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
-            return {"status": "queued"}
+            # Hermes has no SessionStart context: the adapter carries the
+            # move/conflict lines into the next turn.
+            return ({"status": "queued", "notice": move_notice} if move_notice
+                    else {"status": "queued"})
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
@@ -1963,6 +1975,26 @@ def _state_move_notice(decision: dict, *, request_move: bool = True):
                                                request_move=request_move)
     except Exception:
         return None
+
+
+def _project_dir_move_notice(decision: dict, *, request_move: bool = True):
+    """SessionStart lines while the project folder moves to ``.memvane/`` and,
+    once it moved, what the owner commits. Never waits."""
+    try:
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.project_dir_notice(decision['projectRoot'],
+                                                      decision['journalPath'],
+                                                      request_move=request_move)
+    except Exception:
+        return None
+
+
+def _move_notices(decision: dict, *, request_move: bool = True):
+    """Both move notices; one worker request per SessionStart (it runs both)."""
+    state = _state_move_notice(decision, request_move=request_move)
+    folder = _project_dir_move_notice(decision,
+                                      request_move=request_move and state is None)
+    return '\n'.join(line for line in (state, folder) if line) or None
 
 
 def _request_journal_v4(decision: dict) -> None:
@@ -2046,7 +2078,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
-        move_notice = _state_move_notice(decision, request_move=False)
+        move_notice = _move_notices(decision, request_move=False)
         if move_notice:
             notice += '\n' + move_notice
         _trace_final('bundle_upgrade_pending')
@@ -2377,18 +2409,18 @@ def _reselect(cwd, action):
     """
     decision = select_route(cwd, action=action)
     if decision.get('state') == 'blocked':
-        try:
-            import laya_state_move
-            decision = laya_state_move.settle_decision(cwd, action, decision, select_route)
-        except Exception:
-            pass
+        from laya_index_host_route import _settle_moves
+        decision = _settle_moves(cwd, action, decision)
     return decision
 
 
 def _relocated(selection, decision):
+    """``decision`` is ``selection`` after a state-root or project folder move."""
     try:
+        import laya_project_dir_move
         import laya_state_move
-        return laya_state_move.relocated_decision(selection, decision)
+        return (laya_state_move.relocated_decision(selection, decision) or
+                laya_project_dir_move.relocated_decision(selection, decision))
     except Exception:
         return False
 

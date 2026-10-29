@@ -18,6 +18,27 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# SessionStart notices (project folder move, folder conflict) per cwd. Hermes
+# has no SessionStart context channel: the next recall turn carries them once.
+_SESSION_NOTICES: Dict[str, str] = {}
+
+
+def _remember_notice(cwd: str, notice: Any) -> None:
+    if isinstance(notice, str) and notice:
+        logger.warning(notice)
+        _SESSION_NOTICES[cwd] = notice
+
+
+def _with_session_notice(cwd: str, answer: Any) -> Any:
+    notice = _SESSION_NOTICES.pop(cwd, None)
+    if not notice:
+        return answer
+    if isinstance(answer, dict) and isinstance(answer.get("context"), str):
+        return {**answer, "context": notice + "\n" + answer["context"]}
+    if answer is None:
+        return {"context": notice}
+    return answer
+
 def _cwd(cwd: Optional[str] = None, **kwargs: Any) -> str:
     candidate = (
         cwd
@@ -140,10 +161,11 @@ def recall_context(
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") not in ("candidate", "worktree"):
                 return {"context": "[memvane] selected route changed; request refused"}
-            return serve_selected("recall", "hermes", decision,
-                                  {"prompt": prompt, "cwd": selected_cwd})
+            return _with_session_notice(selected_cwd, serve_selected(
+                "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))
         if route_state != "legacy":
-            return {"context": "[memvane] selected route unavailable; request refused"}
+            return _with_session_notice(_cwd(cwd, **kwargs), {
+                "context": "[memvane] selected route unavailable; request refused"})
         # Not onboarded: no recall.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("memvane recall hook failed: %s", exc)
@@ -169,12 +191,28 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             from laya_index_host_route import select_route
             from laya_host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
-            serve_selected("update-queued", "hermes",
-                           select_route(selected_cwd, action="update-queued"),
-                           {"hook_event_name": "SessionStart", "cwd": selected_cwd})
+            answer = serve_selected("update-queued", "hermes",
+                                    select_route(selected_cwd, action="update-queued"),
+                                    {"hook_event_name": "SessionStart", "cwd": selected_cwd})
+            if isinstance(answer, dict):
+                _remember_notice(selected_cwd, answer.get("notice"))
             return None
         if route_state != "legacy":
-            logger.warning("[memvane] selected route unavailable; request refused")
+            # A project folder that needs the owner or is moving to .memvane/
+            # requests the upgrade worker here, as the command hooks do.
+            notice = None
+            try:
+                core = Path(__file__).resolve().parent.parent / "core"
+                if str(core) not in sys.path:
+                    sys.path.insert(0, str(core))
+                from laya_index_host_route import project_dir_notice_for
+                notice = project_dir_notice_for(_cwd(cwd, **kwargs))
+            except Exception as exc:  # pragma: no cover - hook isolation
+                logger.debug("memvane project folder notice failed: %s", exc)
+            if notice:
+                _remember_notice(_cwd(cwd, **kwargs), notice)
+            else:
+                logger.warning("[memvane] selected route unavailable; request refused")
         # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("memvane session update failed: %s", exc)

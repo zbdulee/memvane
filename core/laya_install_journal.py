@@ -409,7 +409,8 @@ def _project(route):
 
 
 def _observed_route(row, supplied_raw):
-    route_path = Path(row['project_root']) / '.auto-context' / ROUTE_FILE
+    import project_dir
+    route_path = project_dir.runtime_file(row['project_root'], ROUTE_FILE)
     try:
         if route_path.is_symlink() or not route_path.is_file():
             _fail('route_unavailable')
@@ -989,6 +990,52 @@ def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_rou
     return _cas(journal_path, expected_epoch, relocate)
 
 
+def rebound_project_dir_route(old_route, project_root):
+    """``old_route`` with its wiki root moved from ``.auto-context/wiki`` to
+    ``.memvane/wiki`` and ``settingsSha256`` restated for that identity."""
+    from laya_index_host_route import settings_identity_digest
+    import project_dir
+    project = Path(project_root)
+    legacy = str(project / project_dir.LEGACY / project_dir.WIKI)
+    current = str(project / project_dir.CURRENT / project_dir.WIKI)
+    collections = old_route.get('collections') if isinstance(old_route, dict) else None
+    if (not isinstance(collections, list) or
+            [item.get('sourceRoot') for item in collections
+             if isinstance(item, dict) and item.get('role') == 'wiki'] != [legacy]):
+        _fail('project_dir_route_mismatch')
+    moved = [{**item, 'sourceRoot': current} if item.get('role') == 'wiki' else dict(item)
+             for item in collections]
+    return {**old_route, 'collections': moved,
+            'settingsSha256': settings_identity_digest(project, moved)}
+
+
+def cas_rebind_project_dir(journal_path, expected_epoch, old_route_raw, new_route_raw):
+    """Rebind the selected route after the project folder moved to ``.memvane/``.
+
+    Only the wiki collection's ``sourceRoot`` (``<project>/.auto-context/wiki``
+    to ``<project>/.memvane/wiki``) and the settings identity digest that
+    covers it may differ; bundle identity, project, scope, stores, journal
+    and the provider attestation stay exactly as sealed. ``previous*`` is
+    cleared: no rollback target may name the folder that no longer exists.
+    """
+    def rebind(path, row):
+        if row['state'] not in ('active', 'restored_old') or row['selected'] is None:
+            _fail('journal_not_active')
+        old_route, old_sha = _route(old_route_raw, path)
+        new_route, new_sha = _route(new_route_raw, path)
+        if old_sha != row['selected_route_sha']:
+            _fail('project_dir_route_mismatch')
+        if (new_route != rebound_project_dir_route(old_route, row['project_root']) or
+                _project(new_route) != (row['project_root'], row['project_dev'],
+                                        row['project_ino']) or
+                new_route['scopeId'] != row['scope_id']):
+            _fail('project_dir_route_mismatch')
+        return {'selected_route_sha': new_sha, 'previous': None,
+                'previous_route_sha': None, 'previous_provider_attestation_sha': None,
+                'previous_provider_file_identity': None}
+    return _cas(journal_path, expected_epoch, rebind)
+
+
 def cas_mark_new_write(journal_path, expected_epoch):
     def mark(_path, row):
         if row['state'] != 'active' or row['selected'] is None:
@@ -1030,7 +1077,8 @@ def cas_restore_fresh(journal_path, expected_epoch, expected_new_route_sha):
                 ledger['projectRoot'] != row['project_root'] or
                 ledger['routeSha256'] != expected_new_route_sha):
             _fail('fresh_wiki_restore_ledger_mismatch')
-        auto = Path(row['project_root']) / '.auto-context'
+        import project_dir
+        auto = project_dir.runtime_file(row['project_root'], MARKER).parent
         _check_marker(ledger, auto / MARKER)
         if (auto / ROUTE).exists() or (auto / ROUTE).is_symlink():
             _fail('fresh_wiki_route_still_selected')
@@ -1230,6 +1278,21 @@ def _read_only_proof(path, row, route, proof, full):
 def verify_selected_route(decision):
     """Full selected-route proof, including the currently executing bundle."""
     return _verify_selected_route(decision)
+
+
+def verify_selected_route_for_write(decision, action='update'):
+    """``verify_selected_route`` with the hold only writers see.
+
+    Every index or wiki writer proves its route with this before and while it
+    writes: a project whose ``.memvane/`` lost its settings to an older branch
+    checkout refuses as ``project_dir_split`` even mid-run.
+    """
+    import project_dir
+    if (isinstance(decision, dict) and isinstance(decision.get('projectRoot'), str) and
+            action not in ('recall', 'gate') and
+            project_dir.layout(decision['projectRoot']) == 'split'):
+        _fail('project_dir_split')
+    return verify_selected_route(decision)
 
 
 def verify_selected_route_read_only(decision):

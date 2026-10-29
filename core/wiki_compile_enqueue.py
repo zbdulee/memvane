@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
+import project_dir
 import config as qmd_config
 import posttool
 import wiki_freshness
@@ -32,7 +33,8 @@ DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
 POST_TOOL_TRIGGER = intent.POST_TOOL_TRIGGER
 
 # compile source가 절대 될 수 없는 디렉터리 이름. 원천은 source_text 한 곳이며 raw scan
-# walk와 같은 집합을 쓴다. `.auto-context`는 이 플러그인의 관리 영역(wiki 카드·큐·로그)이라
+# walk와 같은 집합을 쓴다. `.memvane`(읽기 fallback `.auto-context`)은 이 플러그인의 관리
+# 영역(wiki 카드·큐·로그)이라
 # 소스로 승격하면 카드가 자기 자신을 재컴파일해 증식한다. 나머지는 VCS·의존성·빌드 산출물이다.
 DENIED_SOURCE_SEGMENTS = source_text.DENIED_SOURCE_SEGMENTS
 
@@ -226,7 +228,10 @@ def _engine(payload):
 
 
 def _safe_queue_path(project_root, configured_path=None):
-    """`.auto-context/compile/<name>` 아래 큐 파일. 밖을 가리키면 None.
+    """`<활성 폴더>/compile/<name>` 아래 큐 파일. 밖을 가리키면 None.
+
+    `.memvane/compile/...`·`.auto-context/compile/...` 어느 쪽으로 받아도 프로젝트의
+    활성 폴더(`project_dir.active_name`)로 옮겨 연다 — 쓰는 폴더는 하나뿐이다.
 
     `configured_path`는 이제 **설정이 아니라 상수 이름**이다(`compile_paths.rel(...)`) —
     호출부가 verify 큐/ source 큐를 구분해 넘긴다. 검증은 그대로 유지한다: 파일 자체가
@@ -237,8 +242,10 @@ def _safe_queue_path(project_root, configured_path=None):
     rel = Path(configured_path)
     if rel.is_absolute() or ".." in rel.parts:
         return None
-    if len(rel.parts) < 3 or rel.parts[0] != ".auto-context" or rel.parts[1] != "compile":
+    if (len(rel.parts) < 3 or not project_dir.is_folder_name(rel.parts[0])
+            or rel.parts[1] != "compile"):
         return None
+    rel = Path(project_dir.rebase_rel(rel.as_posix(), project_root))
     root = Path(project_root).resolve()
     target = root / rel
     current = root

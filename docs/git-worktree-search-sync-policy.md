@@ -60,7 +60,9 @@ route record와 selection marker는 추적되지 않는 런타임 파일이라 l
 - cwd와 worktree 루트 사이에 route record나 selection marker가 없다.
 - worktree 안 프로젝트가 main 프로젝트와 같은 상대 경로에 있다.
 - main 프로젝트가 정확히 `candidate`로 분류된다.
-- 양쪽 settings가 같은 이름·collection·경로·role·위키 경로를 유도한다.
+- 양쪽 settings가 같은 이름·collection·경로·role·위키 경로를 유도한다. 프로젝트
+  폴더 이름(`.memvane`·`.auto-context`)은 같은 것으로 보므로, 폴더를 옮기기 전
+  브랜치의 worktree도 main checkout의 색인을 공유한다.
 
 `worktree` route의 검색은 main checkout이 마지막으로 게시한 위키 색인을 읽기
 전용으로 쓴다. sync, wiki compile, wiki lifecycle, 학습은 main checkout에서만

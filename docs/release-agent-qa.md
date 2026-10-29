@@ -693,7 +693,7 @@ It is an operator tool only; it never runs QA itself.
 
 - **Location.** It writes only below a caller-provided new or empty directory
   under `/tmp` or the current workspace. It refuses a location inside host or
-  runtime state, and one whose ancestors hold auto-context settings (upward
+  runtime state, and one whose ancestors hold MemVane project settings (upward
   config discovery would contaminate opt-in). Prefer `/tmp`.
 - **Git isolation.** Git runs with fixture-local config, an empty fixture-local
   `core.hooksPath` and the file protocol only. That local config persists, so
@@ -799,10 +799,10 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   1. Install the candidate through the host marketplace. On Codex, review and
      trust the exact hook commands in the official UI (preflight PF-TRUST).
   2. Run RQA-ID-00 for this host.
-  3. Start a fresh session in `project/` (no `.auto-context/`). Expected: no
+  3. Start a fresh session in `project/` (no `.memvane/`). Expected: no
      notice, no hook failure.
   4. As the user, write the minimal settings file
-     `.auto-context/settings.json` with `{"name": "<slug>"}`. Start a fresh
+     `.memvane/settings.json` with `{"name": "<slug>"}`. Start a fresh
      session. Expected: exactly one SessionStart notice line that names the
      project root and the setup skill (Codex receives it as SessionStart JSON
      `additionalContext`). Probe Q-alpha: nothing is injected. Ask
@@ -894,9 +894,9 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Preconditions:** under N-1, before the update in RQA-INST-02:
   1. As the user, add an entry to A's `skipPaths`. Expected: the route stays
      selected (only a changed `name` blocks it as `route_settings_changed`).
-  2. Create a second fixture B and leave it without `.auto-context/`.
+  2. Create a second fixture B and leave it without `.memvane/`.
   3. Record the settings bytes, SHA-256 and canonical JSON for A, the
-     absence of `.auto-context/` in B, and the wiki file hashes for A.
+     absence of `.memvane/` in B, and the wiki file hashes for A.
   4. Record N-1's on-disk format/version markers and representative index,
      wiki and install-journal identities before update. Use actual N-1 output,
      not a hand-written imitation of the old format.
@@ -911,7 +911,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
     by the candidate or migrated through a documented path with no lost
     source identity. Record the before/after format and any
     migration receipt. A fresh install alone cannot satisfy this check.
-  - B stays silent: no notice, nothing is injected, and no `.auto-context/`
+  - B stays silent: no notice, nothing is injected, and no `.memvane/`
     is created.
 - **Evidence:** before/after hashes and diff, B's session transcript.
 - **Timeout:** 20 min.
@@ -1031,7 +1031,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 - **Steps:**
   1. In a fresh session, probe Q-beta, Q-gamma and Q-delta. Expected: S-main.
      Close the session.
-  2. Record a wiki-state listing (`.auto-context/compile`, `.auto-context/wiki`).
+  2. Record a wiki-state listing (`.memvane/compile`, `.memvane/wiki`).
   3. Run `stage upstream-change`, then `stage pull`.
   4. Start a fresh session. Probe Q-beta, Q-gamma and Q-delta at the T_FRESH
      schedule.

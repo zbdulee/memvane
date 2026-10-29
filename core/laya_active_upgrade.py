@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import laya_fresh_wiki_origin as fresh
+import project_dir
 import laya_initial_build as build
 import laya_inactive_upgrade as inactive
 from laya_ledger_common import (QMD_ORIGIN_DETACH_REQUIRED, _operation_lock,
@@ -153,7 +154,7 @@ def _load_intent(state, project):
 
 def _old_state(project, state, journal, ledger=None):
     ledger = ledger or _Ledger('fresh')
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     row = ledger.load(state / ledger.name)
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
         _fail('active_upgrade_not_selected')
@@ -358,7 +359,7 @@ def _switch(intent):
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
     ledger = _intent_ledger(intent)
     journal = state / 'install-journal.sqlite'
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     old_route, new_route = (intent[key].encode('utf-8') for key in
                             ('oldRoute', 'newRoute'))
     old_att, new_att = (intent[key].encode('utf-8') for key in
@@ -434,7 +435,7 @@ def _restore(intent):
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
     ledger = _intent_ledger(intent)
     journal = state / 'install-journal.sqlite'
-    auto = project / '.auto-context'
+    auto = project_dir.folder(project)
     old_route, new_route = (intent[key].encode('utf-8') for key in
                             ('oldRoute', 'newRoute'))
     old_att, new_att = (intent[key].encode('utf-8') for key in
@@ -534,8 +535,9 @@ def finished_intent_receipt(state, project, intent):
                             intent['newLedger']['routeSha256']) or
             journal['state'] not in ('active', 'restored_old') or
             journal['selectedRouteSha256'] != current or
-            ledger.classify(project, project / '.auto-context' / ledger.marker_name,
-                                  project / '.auto-context' / ledger.route_name) != 'candidate'):
+            ledger.classify(project, project_dir.runtime_file(project, ledger.marker_name),
+                                  project_dir.runtime_file(project, ledger.route_name))
+            != 'candidate'):
         _fail('active_upgrade_prior_unsettled')
     # The original old route can be active only after an explicit Laya restore.
     if (current == intent['oldLedger']['routeSha256'] and
