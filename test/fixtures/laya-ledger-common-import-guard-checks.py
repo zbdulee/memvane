@@ -132,7 +132,7 @@ class ImportGuard(unittest.TestCase):
             report(loaded=loaded(), ran=ran, failed=failed)
         ''')
         self.assertEqual(out['failed'], 0)
-        self.assertEqual(out['ran'], 19)
+        self.assertEqual(out['ran'], 23)
         self.assertEqual(out['loaded'], [])
 
     def test_qmd_ledger_probe_and_refusal(self):

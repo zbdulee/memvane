@@ -89,7 +89,7 @@ def validate_row(row, path):
     if (not isinstance(row, dict) or set(row) != FIELDS or
             row['schema'] != SCHEMA or type(row['epoch']) is not int or
             row['epoch'] < 1 or row['phase'] not in PHASES or
-            type(row['vectorRows']) is not int or row['vectorRows'] < 1 or
+            type(row['vectorRows']) is not int or row['vectorRows'] < 0 or
             any(not isinstance(row[key], str) or not row[key] for key in
                 FIELDS - {'epoch', 'phase', 'collections', 'vectorRows',
                           *(field for _, field in FILES)}) or
@@ -234,6 +234,7 @@ def bind(*, project_root, journal_path, route_bytes, sealed, identity):
                 identity['vectorProfileId'] != row['vectorProfileId'] or
                 identity['dbIncarnation'] != row['candidateIncarnation']):
             _fail('fresh_wiki_build_identity_changed')
+        validate_row(row, ledger)
         _proof(row, route_bytes)
         if ledger.exists() or ledger.is_symlink():
             existing = _load(ledger)

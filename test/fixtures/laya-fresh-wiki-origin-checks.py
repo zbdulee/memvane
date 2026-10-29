@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -131,6 +132,47 @@ class FreshWikiChecks(unittest.TestCase):
         self.assertEqual(plan['mode'], 'fresh_wiki_only')
         self.assertNotIn('sourceDb', plan)
         self.assertEqual(plan['collections'], self.collections)
+
+    def test_empty_wiki_can_bind_activate_and_restore(self):
+        self.sealed['vectorRows'] = 0
+        self.assertEqual(self.bind()['vectorRows'], 0)
+        self.assertEqual(fresh.activate(self.project, self.journal, self.route_bytes)['phase'], 'active')
+        self.assertEqual(fresh.restore(self.project, self.journal)['phase'], 'restored')
+
+    def test_negative_and_boolean_vector_counts_are_rejected(self):
+        for count in (-1, True):
+            with self.subTest(count=count):
+                self.sealed['vectorRows'] = count
+                with self.assertRaisesRegex(fresh.FreshWikiBlocked, 'fresh_wiki_ledger_invalid'):
+                    self.bind()
+                self.assertFalse(self.ledger.exists())
+                self.assertFalse(self.marker.exists())
+
+    def test_retire_interrupted_empty_finalization_after_rescan(self):
+        import laya_initial_build as builds
+        self.sealed['vectorRows'] = 0
+        self.bind()
+        identity = {**self.identity, 'stateRoot': str(self.state)}
+        record = {'phase': 'building', 'sealed': None, 'identity': identity}
+        with mock.patch.object(builds, 'owner', return_value=nullcontext(True)), \
+             mock.patch.object(builds, 'read', return_value=record), \
+             mock.patch.object(builds, 'advance') as advance, \
+             mock.patch.object(builds, 'retire_project_pointer', return_value='retired'):
+            result = product.retire_drifted_origin(project_root=self.project, state_root=self.state)
+            self.assertEqual(result['cutoverPhase'], 'retired')
+            advance.assert_called_once_with(record, phase='retired', sealed=None)
+        self.assertFalse(self.marker.exists())
+
+    def test_retire_refuses_another_build_identity(self):
+        import laya_initial_build as builds
+        self.bind()
+        identity = {**self.identity, 'stateRoot': str(self.state), 'scopeId': '9' * 32}
+        record = {'phase': 'building', 'sealed': None, 'identity': identity}
+        with mock.patch.object(builds, 'owner', return_value=nullcontext(True)), \
+             mock.patch.object(builds, 'read', return_value=record):
+            with self.assertRaisesRegex(product.InstallBlocked, 'retirement_identity_mismatch'):
+                product.retire_drifted_origin(project_root=self.project, state_root=self.state)
+        self.assertTrue(self.marker.exists())
 
     def test_plan_requires_minimal_settings(self):
         settings = self.wiki.parent / 'settings.json'
