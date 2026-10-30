@@ -82,7 +82,7 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
                     if item['role'] == 'wiki')
     if str(wiki_root.resolve()) != approved:
         raise ValueError('selected_wiki_root_changed')
-    if (type(top_k) is not int or not 1 <= top_k <= 10 or
+    if (type(top_k) is not int or not 1 <= top_k <= 20 or
             type(cap_chars) is not int or not 1 <= cap_chars <= 12000):
         raise ValueError('selected_wiki_retrieval_budget')
     import wiki_compile_retrieval

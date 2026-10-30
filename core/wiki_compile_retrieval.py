@@ -31,11 +31,15 @@ REFRESH_BYTES = 8 * 1024 * 1024
 MAX_CARD_BYTES = 1024 * 1024
 CANDIDATES = 20
 RETRIEVAL_FLOOR = 0.3  # eligibility for a judge, never a duplicate verdict
+# Compile-only relevance heuristic for hits without meaningful word overlap.
+# This is neither a duplicate probability nor a calibrated semantic guarantee.
+VECTOR_RELEVANCE_MIN_COSINE = 0.55
 QUERY_SECONDS = 10.0
 # The local embedder has a 2,048-token context, including its query prefix.
 # UTF-8 bytes conservatively bound even byte-fallback Korean/emoji tokens.
 # Lexical retrieval and evidence scoring still use the complete source query.
 QUERY_VECTOR_BYTES = 1500
+OVERLAY_SCHEMA = 1  # disposable porter unicode61 FTS, independent of route identity
 _DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -163,6 +167,61 @@ def terms(text: str) -> set[str]:
     return set(re.findall(r'\w+', text.casefold()))
 
 
+def lexical_atoms(text: str) -> list[str]:
+    """Bounded query atoms shared by overlay retrieval and live-body evidence."""
+    from keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
+    from laya_host_response import _fts_atom
+    words = list(dict.fromkeys(strip_ko_suffix(word) for word in
+                               re.findall(r'\w+', text.casefold())))
+    words = [word for word in words if 2 <= len(word) <= 128
+             and word not in EN_STOPWORDS and word not in KO_STOPWORDS]
+    # Keep the index's early terms and spread the rest across a long source,
+    # including its tail, rather than using only alphabetically early terms.
+    if len(words) > 24:
+        words = list(dict.fromkeys(words[:6] +
+                     [words[i * (len(words) - 1) // 17] for i in range(18)]))
+    return [atom for word in words if (atom := _fts_atom(word))]
+
+
+@contextmanager
+def lexical_probe(text: str, deadline: float):
+    """Use the index tokenizer on meaningful current bytes, never metadata.
+
+    One in-memory connection is reused for at most forty candidate bodies.
+    The exact-overlap fast path needs no SQL; this probe preserves Korean
+    suffix normalization and English Porter/prefix hits when vectors are cold.
+    """
+    from laya_index_a import IndexContractError, _qmd_fts_text
+    db = sqlite3.connect(':memory:')
+    try:
+        db.execute("CREATE VIRTUAL TABLE probe USING fts5(body, tokenize='porter unicode61')")
+        db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 500)
+        query = ' OR '.join(lexical_atoms(text))
+
+        def supported(body):
+            if not query:
+                return False
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                db.execute('DELETE FROM probe')
+                db.execute('INSERT INTO probe VALUES (?)',
+                           (_qmd_fts_text(body, deadline=deadline),))
+                return db.execute('SELECT 1 FROM probe WHERE probe MATCH ? LIMIT 1',
+                                  (query,)).fetchone() is not None
+            except sqlite3.OperationalError as exc:
+                if str(exc) != 'interrupted':
+                    raise
+                return None
+            except IndexContractError as exc:
+                if str(exc) != 'fts_deadline_exceeded':
+                    raise
+                return None
+        yield supported
+    finally:
+        db.close()
+
+
 @contextmanager
 def overlay(root: Path, bound):
     """Private SQLite transaction; failed refreshes never publish partial FTS."""
@@ -201,9 +260,20 @@ def overlay(root: Path, bound):
                 db.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)')
                 db.execute('CREATE TABLE IF NOT EXISTS cards (path TEXT PRIMARY KEY, stamp TEXT, sha TEXT)')
                 db.execute('CREATE TABLE IF NOT EXISTS seen (path TEXT PRIMARY KEY)')
-                db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(path UNINDEXED, body)")
                 db.commit()
                 db.execute('BEGIN IMMEDIATE')
+                version = db.execute('PRAGMA user_version').fetchone()[0]
+                if version == 0:
+                    # Only disposable retrieval data changes. DDL and cached
+                    # stamps reset in this transaction so a crash cannot leave
+                    # an empty new FTS paired with apparently indexed cards.
+                    db.execute('DROP TABLE IF EXISTS search')
+                    db.execute("CREATE VIRTUAL TABLE search USING fts5(path UNINDEXED, body, tokenize='porter unicode61')")
+                    for table in ('cards', 'seen', 'state'):
+                        db.execute('DELETE FROM ' + table)
+                    db.execute(f'PRAGMA user_version={OVERLAY_SCHEMA}')
+                elif version != OVERLAY_SCHEMA:
+                    raise ValueError('selected_wiki_overlay_schema_unsupported')
                 yield db
                 wiki_selected_laya.recheck(bound)
                 db.commit()
@@ -296,9 +366,7 @@ def refresh(db, wiki_fd, bound, wiki, deadline):
 
 
 def overlay_paths(db, text, deadline, exclusions, name):
-    from laya_host_response import _fts_atom
-    atoms = [_fts_atom(term) for term in sorted(terms(text))[:24] if len(term) <= 128]
-    atoms = [atom for atom in atoms if atom]
+    atoms = lexical_atoms(text)
     if not atoms:
         return []
     db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 500)
@@ -370,6 +438,7 @@ def selected_search(bound, text):
         try:
             exclusions = load_exclusions(runtime.index, runtime.scope)
             rows = []
+            diagnostics = {}
             if capacity is not None:
                 provider = query_provider(bound)
                 response._provider_ready(text, decision['vectorProfile'], proof['vectorProfile'], provider)
@@ -382,8 +451,10 @@ def selected_search(bound, text):
                 rows, _body_evidence = response._v2_phase(
                     runtime, token, text, decision['vectorProfile'], provider, roots, names,
                     tuple(decision['recallSettings'].get('lexicalPatterns', ())), 0, (),
-                    candidates, eligible)
-            yield ([(row['path'].split('/', 1)[1], row['hash']) for row in rows],
+                    candidates, eligible, diagnostics=diagnostics)
+            yield ([(row['path'].split('/', 1)[1], row['hash'],
+                     diagnostics.get('vectorCosines', {}).get((row['path'], row['hash'])))
+                    for row in rows],
                    exclusions, names[0], 'bound' if capacity else 'overlay_only')
             if load_exclusions(runtime.index, runtime.scope) != exclusions:
                 raise ValueError('selected_wiki_exclusions_changed')
@@ -403,8 +474,9 @@ def matches(root, wiki, text, top_k, cap_chars, bound):
     if not query_terms:
         return []
     deadline = time.monotonic() + QUERY_SECONDS
+    from keywords import EN_STOPWORDS, KO_STOPWORDS
     with selected_search(bound, text) as (published, exclusions, name, mode), \
-            opened_directory(wiki) as wiki_fd:
+            opened_directory(wiki) as wiki_fd, lexical_probe(text, deadline) as supported:
         with overlay(root, bound) as db:
             # Leave time to serve known indexed/overlay candidates even when
             # a very large inventory or cold refresh has more work remaining.
@@ -421,10 +493,14 @@ def matches(root, wiki, text, top_k, cap_chars, bound):
         # the top hit's rank says nothing about whether two cards are duplicates.
         ranks = {}
         evidence = {}
+        vector_evidence = {}
         for rows in (published, local or ()):
-            for rank, (rel, sha) in enumerate(rows, 1):
+            for rank, candidate in enumerate(rows, 1):
+                rel, sha, *cosine = candidate
                 ranks[rel] = ranks.get(rel, 0) + 1 / (60 + rank)
                 evidence.setdefault(rel, set()).add(sha)
+                if cosine and cosine[0] is not None:
+                    vector_evidence[(rel, sha)] = cosine[0]
         result = []
         for rel in sorted(ranks, key=lambda rel: (-ranks[rel], rel))[:2 * CANDIDATES]:
             if time.monotonic() >= deadline:
@@ -437,7 +513,22 @@ def matches(root, wiki, text, top_k, cap_chars, bound):
             if (live is None or live[1] in exclusions[1] or live[1] not in evidence[rel]
                     or not card_sources_allowed(live[0], bound[0]['recallSettings']['skipPaths'])):
                 continue
-            coverage = len(query_terms & terms(meaningful(live[0]))) / len(query_terms)
+            body = meaningful(live[0])
+            shared = query_terms & terms(body)
+            # A long source can legitimately overlap one small existing card:
+            # word coverage is a score, not a requirement to fill a quota.
+            lexical_support = any(len(term) >= 2 and term not in EN_STOPWORDS
+                                  and term not in KO_STOPWORDS for term in shared)
+            if not lexical_support:
+                lexical_support = supported(body)
+                if lexical_support is None:
+                    status['state'] = 'deferred'
+                    status['deadlineReached'] = True
+                    break
+            if (not lexical_support and vector_evidence.get((rel, live[1]), -1.0)
+                    < VECTOR_RELEVANCE_MIN_COSINE):
+                continue
+            coverage = len(shared) / len(query_terms)
             result.append((wiki / rel, max(coverage, RETRIEVAL_FLOOR), live[0][:cap_chars]))
             if len(result) == top_k:
                 break

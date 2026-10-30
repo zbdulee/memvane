@@ -246,8 +246,9 @@ COMPILE_DEFAULT_STATUSES = {"generated", "tentative"}
 # 한다. 넷 모두 설정으로 다시 열지 않는다(`DEPRECATED_REMOVED_KEYS`의 레버 4종).
 DEDUP_SCORE_THRESHOLD = 0.82        # ← semanticDedup.threshold (write-time 레거시 게이트)
 DEDUP_AUTO_MERGE_THRESHOLD = 0.9    # ← semanticDedup.autoMergeThreshold (scan cosine 후보 임계)
-DEDUP_TOP_K = 3                     # ← semanticDedup.topK (유사 카드 retrieval 개수)
+DEDUP_TOP_K = 20                    # 관련 후보의 상한. 유료 judge 호출 예산과 독립이다.
 DEDUP_SIMILAR_PAGE_MAX_CHARS = 12000  # ← semanticDedup.similarPageMaxChars
+DEDUP_GROUNDING_MAX_CHARS = 36000    # 렌더된 기존 카드 문맥 전체(헤더/생략 표식 포함)
 # onFail과 onInconclusive가 공유하는 값 집합. "none"이 유일한 "현행 유지"(카드를
 # generated로 남김) 표현이므로, 기본값을 delete로 올려도 기존 동작을 명시 선택할 수 있다.
 VERIFY_ON_FAIL = {"delete", "contested", "none"}
