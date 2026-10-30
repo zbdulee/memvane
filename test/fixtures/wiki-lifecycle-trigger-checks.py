@@ -9,8 +9,8 @@ the compile worker of the same pass consumes the regeneration row. A rebase
 in progress, a linked worktree and an unselected project change nothing.
 
 Every project, HOME, state dir and wake queue is a temp directory. Only the
-installer proof (`verify_selected_route`, `wiki_selected_laya.selected`) and
-the sealed-bundle hop are stood in for; child entry points run in-process so
+installer proof (`verify_selected_route`, `wiki_selected_laya.selected`), the
+pinned search adapter and sealed-bundle hop are stood in for; child entry points run in-process so
 those stand-ins reach them.
 """
 from __future__ import annotations
@@ -35,6 +35,7 @@ import laya_host_response as response  # noqa: E402
 import laya_install_journal  # noqa: E402
 import runtime_work  # noqa: E402
 import wiki_selected_laya  # noqa: E402
+import wiki_compile_retrieval  # noqa: E402
 import yaml_scalars  # noqa: E402
 
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
@@ -184,10 +185,18 @@ class SelectedLifecycle(unittest.TestCase):
 
     @contextlib.contextmanager
     def selected_runtime(self):
+        @contextlib.contextmanager
+        def no_published_index(*_args):
+            # This lifecycle fixture has no installed DB. The real live-card
+            # overlay still runs; pinned search is covered by its own fixture.
+            yield [], (frozenset(), frozenset()), 'project-wiki', 'bound'
+
         with mock.patch.object(laya_install_journal, 'verify_selected_route',
                                return_value=self.proof), \
                 mock.patch.object(wiki_selected_laya, 'selected', return_value=self.bound), \
                 mock.patch.object(wiki_selected_laya, 'recheck'), \
+                mock.patch.object(wiki_compile_retrieval, 'selected_search',
+                                  no_published_index), \
                 mock.patch.object(runtime_work, 'request', side_effect=self.fake_request), \
                 mock.patch.object(runtime_work, 'hook_wake'), \
                 mock.patch.object(subprocess, 'run', side_effect=self.child):
