@@ -6,14 +6,10 @@ variable alone never authorizes a selected write or a fallback to legacy QMD.
 from __future__ import annotations
 
 from pathlib import Path
-import re
 import json
-import itertools
 import os
 import subprocess
 import sys
-
-import source_text
 
 
 def selected(root: Path):
@@ -77,12 +73,7 @@ def request_sync(root: Path, bound=None):
 
 def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
                  cap_chars: int, *, bound=None):
-    """Bounded local retrieval for compile grounding and judge candidates.
-
-    Retrieval is a hint, not an authority for canonical status. The existing
-    duplicate judge still decides whether a candidate needs review. A bounded
-    read also sees cards created in this worker before the next index publish.
-    """
+    """Index candidates plus live unpublished cards, with bounded body reads."""
     bound = selected(root) if bound is None else bound
     if bound is None:
         raise ValueError('selected_compile_required')
@@ -94,43 +85,11 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
     if (type(top_k) is not int or not 1 <= top_k <= 10 or
             type(cap_chars) is not int or not 1 <= cap_chars <= 12000):
         raise ValueError('selected_wiki_retrieval_budget')
-    terms = set(re.findall(r'\w+', text.casefold()))
-    if not terms:
-        return []
-    files = sorted(itertools.islice(wiki_root.rglob('*.md'), 201))
-    if len(files) > 200:
-        raise ValueError('selected_wiki_retrieval_capacity')
-    matches = []
-    skip_paths = bound[0]['recallSettings']['skipPaths']
-    total_bytes = 0
-    for path in files:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError('selected_wiki_source_unsafe')
-        rel = path.relative_to(wiki_root)
-        # Wiki-root meta pages left by earlier releases are not cards; they must
-        # never ground an extractor prompt or a duplicate judgment.
-        if (any(part.startswith('.') for part in rel.parts)
-                or source_text.is_wiki_meta_page(rel)):
-            continue
-        size = path.stat().st_size
-        total_bytes += size
-        if size > 5_000_000 or total_bytes > 5_000_000:
-            raise ValueError('selected_wiki_source_oversize')
-        body = path.read_text(encoding='utf-8')
-        if skip_paths:
-            # Grounding and duplicate review must not feed a card from an
-            # excluded raw folder to a paid extractor. Mixed-source cards are
-            # withheld as a whole; no file is deleted or rewritten.
-            from laya_source_exclusion import card_sources_allowed
-            if not card_sources_allowed(body, skip_paths):
-                continue
-        words = set(re.findall(r'\w+', body.casefold()))
-        common = len(terms & words)
-        if common:
-            matches.append((path, common / max(1, len(terms)), body[:cap_chars]))
+    import wiki_compile_retrieval
+    matches = wiki_compile_retrieval.matches(root, wiki_root, text, top_k,
+                                             cap_chars, bound)
     recheck(bound)
-    matches.sort(key=lambda row: (-row[1], str(row[0])))
-    return matches[:top_k]
+    return matches
 
 
 def run(project: Path):

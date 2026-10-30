@@ -11,6 +11,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import wiki_selected_laya as selected
+import wiki_compile_retrieval as retrieval
+from contextlib import contextmanager
 
 
 class SelectedWikiChecks(unittest.TestCase):
@@ -31,6 +33,12 @@ class SelectedWikiChecks(unittest.TestCase):
             'recallSettings': {'skipPaths': []},
         }
         self.proof = {'productRouteAllowed': True}
+        @contextmanager
+        def no_published_index(*_args):
+            yield [], (frozenset(), frozenset()), 'wiki', 'bound'
+        self.search = patch.object(retrieval, 'selected_search', no_published_index)
+        self.search.start()
+        self.addCleanup(self.search.stop)
 
     def test_selected_route_requires_installer_proof(self):
         with patch('laya_index_host_route.select_route', return_value=self.decision), \
