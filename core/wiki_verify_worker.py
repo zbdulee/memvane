@@ -454,18 +454,23 @@ def wake_pending_retirement(root: Path) -> None:
 
 def pending_replacement(root: Path, wiki_root: Path, job: dict,
                         live_target: Path) -> tuple[Path, str] | None:
-    """Accept only the compiler's hidden pending path for this exact target/job."""
+    """Accept only the compiler's hidden pending path for this exact target/job.
+
+    ``sourceHash`` is ``wiki_compile.source_hash``: 16 lowercase hex, the same
+    value in the auto marker and the pending filename suffix.
+    ``expectedTargetHash`` is the full SHA-256 of the prior live card bytes.
+    """
     rel = job.get('pendingPath')
     if rel is None:
         return None
     job_hash = job.get('sourceHash')
     expected = job.get('expectedTargetHash')
-    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', job_hash)
+    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{16}', job_hash)
             or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
             or not isinstance(rel, str)):
         raise ValueError('pending_replacement_invalid')
     root = root.resolve()
-    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash[:16])
+    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash)
     if (pending.is_symlink() or pending.relative_to(root).as_posix() != rel
             or pending.parent != live_target.parent
             or not pending.is_relative_to(wiki_root)):
