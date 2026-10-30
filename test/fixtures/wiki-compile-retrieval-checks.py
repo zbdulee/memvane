@@ -87,12 +87,15 @@ class OverlayChecks(unittest.TestCase):
         target.write_text('unrelated garden material', encoding='utf-8')
         self.assertEqual(self.query(), [])
 
-    def test_weak_top_rank_is_judge_candidate_but_not_automatic_duplicate(self):
+    def test_weak_unrelated_top_rank_is_not_a_qualified_candidate(self):
         target = self.card('card.md', 'unrelated garden material')
         self.published = [('card.md', hashlib.sha256(target.read_bytes()).hexdigest())]
-        rows = self.query()
-        self.assertEqual(rows[0][1], retrieval.RETRIEVAL_FLOOR)
-        self.assertLess(rows[0][1], 0.8)
+        self.assertEqual(self.query(), [])
+
+    def test_strong_vector_only_candidate_remains_eligible_for_judge(self):
+        target = self.card('card.md', 'a spacecraft library')
+        self.published = [('card.md', hashlib.sha256(target.read_bytes()).hexdigest(), 0.8)]
+        self.assertEqual(self.query()[0][1], retrieval.RETRIEVAL_FLOOR)
 
     def test_frontmatter_and_boilerplate_do_not_inflate_evidence_score(self):
         target = self.card('card.md', '---\ntitle: starship archive\n---\n'
@@ -100,7 +103,121 @@ class OverlayChecks(unittest.TestCase):
                            '<!-- qmd:auto:start id="main" sourceHash="abc" -->\n'
                            '## Summary\nGarden\n<!-- qmd:auto:end -->\n')
         self.published = [('card.md', hashlib.sha256(target.read_bytes()).hexdigest())]
-        self.assertEqual(self.query()[0][1], retrieval.RETRIEVAL_FLOOR)
+        self.assertEqual(self.query(), [])
+
+    def test_twenty_is_an_upper_bound_and_four_related_cards_are_not_padded(self):
+        related = [self.card(f'related-{i}.md', 'starship archive') for i in range(4)]
+        unrelated = [self.card(f'unrelated-{i}.md', f'garden flowers {i}') for i in range(16)]
+        self.published = [(path.name, hashlib.sha256(path.read_bytes()).hexdigest(), 0.1)
+                          for path in related + unrelated]
+        self.assertEqual({row[0] for row in self.query(top_k=20)}, set(related))
+
+    def test_twenty_related_cards_can_return_and_twenty_one_is_rejected(self):
+        for i in range(24):
+            self.card(f'card-{i}.md', f'starship archive {i}')
+        self.assertEqual(len(self.query(top_k=20)), 20)
+        with self.assertRaisesRegex(ValueError, 'retrieval_budget'):
+            self.query(top_k=21)
+
+    def test_sparse_overlap_in_a_long_source_and_two_character_korean_entity_survive(self):
+        target = self.card('card.md', '검마 관련 기록')
+        long_source = ' '.join(f'unrelated{i}' for i in range(1000)) + ' 검마'
+        self.assertEqual([row[0] for row in self.query(long_source, top_k=20)], [target])
+
+    def test_fresh_unpublished_korean_particle_match_uses_normalized_fts(self):
+        target = self.card('card.md', '검마')
+        self.assertEqual([row[0] for row in self.query('검마는')], [target])
+
+    def test_fresh_unpublished_english_stem_match_uses_porter(self):
+        target = self.card('card.md', 'run')
+        self.assertEqual([row[0] for row in self.query('running')], [target])
+
+    def test_warm_legacy_overlay_rebuilds_atomically_with_porter_tokenizer(self):
+        target = self.card('card.md', 'run')
+        self.query('run')
+        cache = self.root / '.memvane/compile/wiki-retrieval/cards.sqlite'
+        with sqlite3.connect(cache) as db:
+            db.execute('DROP TABLE search')
+            db.execute('CREATE VIRTUAL TABLE search USING fts5(path UNINDEXED, body)')
+            db.execute("INSERT INTO search VALUES ('card.md', 'run')")
+            db.execute('PRAGMA user_version=0')
+            self.assertEqual(db.execute('SELECT count(*) FROM cards').fetchone()[0], 1)
+        self.assertEqual([row[0] for row in self.query('running')], [target])
+        with sqlite3.connect(cache) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], retrieval.OVERLAY_SCHEMA)
+            self.assertIn('porter unicode61', db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='search'").fetchone()[0])
+        self.bound[0]['generation'] = 'g2'
+        self.assertEqual([row[0] for row in self.query('running')], [target])
+        with sqlite3.connect(cache) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], retrieval.OVERLAY_SCHEMA)
+
+    def test_stale_vector_relevance_cannot_qualify_edited_unrelated_content(self):
+        target = self.card('card.md', 'a spacecraft library')
+        self.published = [('card.md', hashlib.sha256(target.read_bytes()).hexdigest(), 0.95)]
+        target.write_text('garden flowers', encoding='utf-8')
+        self.assertEqual(self.query(), [])
+
+    def test_twenty_compact_cards_reach_actual_extractor_payload_and_prompt(self):
+        import config
+        import wiki_compile_worker as worker
+        import wiki_dedup_judge
+        from extractors.lib import build_prompt, render_existing_context_section
+        docs = self.root / 'docs'
+        docs.mkdir()
+        (docs / 'source.md').write_text('starship archive source', encoding='utf-8')
+        for i in range(20):
+            aliases = [f'별칭 {i}', f'quote "{i}"']
+            self.card(f'concepts/card-{i:02}.md', '\n'.join([
+                '---', 'title: ' + json.dumps(f'Card {i}'), f'canonicalKey: card-{i}',
+                'aliases:', *(f'  - {json.dumps(alias)}' for alias in aliases),
+                'sourceRevisions:', '  - SOURCE_REVISION_ONLY', '---',
+                '> Auto-generated by MemVane from conversation/work context.',
+                '<!-- qmd:auto:start id="main" sourceHash="abc" -->', '## Summary',
+                (f'UNIQUE_FACT_{i} starship archive detail. ' * 500), '<!-- qmd:auto:end -->']))
+        self.bound[0]['collections'].append({'name': 'raw', 'role': 'raw', 'sourceRoot': str(docs)})
+        self.bound[0]['collectionRoots'] = {'raw': str(docs), 'wiki': str(self.wiki)}
+        cfg = {'indexing': True, 'collections': ['raw', 'wiki'],
+               'collectionPaths': {'raw': 'docs', 'wiki': '.memvane/wiki'},
+               'collectionRoles': {'raw': 'raw', 'wiki': 'wiki'}, 'wikiPath': '.memvane/wiki',
+               'compile': {'mode': 'guarded', 'triggers': ['manual'], 'maxSourceChars': 12000,
+                           'extractor': {'backends': {'claude': ['fake-extractor']}, 'timeout': 30}}}
+        (self.root / '.memvane/settings.json').write_text(json.dumps(cfg), encoding='utf-8')
+        payloads = []
+        def extractor(_argv, payload, _timeout, _root):
+            payloads.append(payload)
+            return {'candidates': []}, None, 0
+        job = {'trigger': 'manual', 'engine': 'claude', 'cwd': str(self.root),
+               'selectedRoute': selected.route_identity(self.bound),
+               'source': {'kind': 'file', 'path': 'docs/source.md', 'collection': 'raw'}}
+        with patch.object(selected, 'selected', return_value=self.bound), \
+             patch.object(worker, 'selected_compiled_revision_card', return_value=None), \
+             patch.object(worker, 'run_extractor', side_effect=extractor):
+            self.assertEqual(worker.process_job(self.root, cfg, cfg['compile'], job), (True, False, []))
+            duplicate_candidates = worker.wc.query_wiki_candidates(
+                self.root, self.wiki, cfg, {'title': 'starship'}, 'archive', 0.3)
+            self.assertEqual(len(duplicate_candidates), 20)
+        self.assertEqual(len(payloads), 1)
+        pages = payloads[0]['wiki']['similarPages']
+        self.assertEqual(len(pages), 20)
+        self.assertEqual(wiki_dedup_judge.max_pairs_per_compile(cfg['compile']), 1)
+        for page in pages:
+            identity = json.loads(page['content'].split('\n')[0])
+            number = int(identity['canonicalKey'].split('-')[1])
+            self.assertEqual(identity['title'], f'Card {number}')
+            self.assertEqual(identity['aliases'], [f'별칭 {number}', f'quote "{number}"'])
+            self.assertEqual(identity['targetPath'], page['path'])
+            self.assertTrue((self.root / identity['targetPath']).is_file())
+            self.assertIn(f'UNIQUE_FACT_{number}', page['content'])
+            self.assertIn('이하 생략', page['content'])
+            self.assertNotIn('SOURCE_REVISION_ONLY', page['content'])
+            self.assertNotIn('Auto-generated', page['content'])
+            self.assertLessEqual(len(page['content']), config.DEDUP_SIMILAR_PAGE_MAX_CHARS)
+        section = render_existing_context_section(payloads[0]['wiki'])
+        self.assertLessEqual(len(section), config.DEDUP_GROUNDING_MAX_CHARS)
+        prompt = build_prompt(payloads[0])
+        self.assertIn(section, prompt)
+        self.assertEqual(prompt.count('### .memvane/wiki/concepts/card-'), 20)
 
     def test_root_meta_hidden_pending_and_symlink_ancestors_are_withheld(self):
         for name in ('SCHEMA.md', 'index.md', 'log.md', '.hidden.md', '.card.md.pending-abcd'):
@@ -300,10 +417,10 @@ class PinnedChecks(capacity.HostCapacityCase):
                                           'sourceRoot': str(self.raw)}]}
         self.bound = (self.decision, {'vectorProfile': self.route})
 
-    def query(self, text='alpha otter'):
+    def query(self, text='alpha otter', top_k=3):
         with patch.object(retrieval, 'query_provider', return_value=self.provider), \
              patch.object(selected, 'recheck'):
-            return selected.wiki_matches(self.raw.parent, self.raw, text, 3, 100,
+            return selected.wiki_matches(self.raw.parent, self.raw, text, top_k, 100,
                                          bound=self.bound)
 
     def test_real_pinned_lexical_vector_search_and_unpublished_overlay(self):
@@ -322,6 +439,70 @@ class PinnedChecks(capacity.HostCapacityCase):
             raise capacity.response._VectorUnavailable('provider_unavailable')
         self.provider = cold
         self.assertEqual(self.query()[0][0], self.raw / 'a.md')
+
+    def publish_card_a(self, body):
+        target = self.raw / 'a.md'
+        target.write_text(body, encoding='utf-8')
+        self.runtime.catalog.request_scan()
+        for _ in range(1000):
+            result = capacity.sync_step(self.runtime, before_publish=lambda: None,
+                                       require_vector=True, vector_profile_id=self.profile_id)
+            if result['state'] == 'pending' and result['reason'] == 'vector_backlog':
+                while capacity.vc.vector_fill_step(self.runtime, capacity.FillProvider())['state'] == 'pending':
+                    pass
+            elif result['state'] != 'pending':
+                break
+        self.assertEqual(result['state'], 'indexed')
+        return target
+
+    def assert_normalized_pinned_match_without_vectors_or_overlay(self, query, body):
+        target = self.publish_card_a(body)
+        def cold(*_args):
+            raise capacity.response._VectorUnavailable('provider_unavailable')
+        self.provider = cold
+        with patch.object(retrieval, 'query_provider', return_value=cold), \
+             patch.object(selected, 'recheck'), \
+             patch.object(retrieval, 'overlay_paths', return_value=[]):
+            with retrieval.selected_search(self.bound, query) as (rows, _excluded, _name, _mode):
+                self.assertIn(target.name, [row[0] for row in rows],
+                              'the real FTS phase must establish the normalized lexical hit')
+            self.assertEqual([row[0] for row in self.query(query)], [target])
+
+    def test_cold_pinned_korean_particle_match_survives_relevance_gate(self):
+        self.assert_normalized_pinned_match_without_vectors_or_overlay('검마는', '# 기록\n검마\n')
+
+    def test_cold_pinned_english_fts_stem_match_survives_relevance_gate(self):
+        self.assert_normalized_pinned_match_without_vectors_or_overlay('archive', '# Record\narchives\n')
+
+    def test_compile_index_query_never_calls_learning_selector_or_capture(self):
+        with patch.object(capacity.response, '_select_verified_cards', side_effect=AssertionError('learner selection')), \
+             patch.object(capacity.response, '_capture_learning', side_effect=AssertionError('learner capture')), \
+             patch('context_learning.selection_read.select_published', side_effect=AssertionError('learner entry')), \
+             patch('context_learning.live_select.choose', side_effect=AssertionError('learner inference')), \
+             patch.object(retrieval, 'overlay_paths', return_value=[]):
+            self.assertEqual(self.query()[0][0], self.raw / 'a.md')
+
+    def test_twenty_actual_weak_vector_neighbors_do_not_fill_the_result_quota(self):
+        for i in range(18):
+            (self.raw / f'card-{i}.md').write_text(f'Garden flowers {i}', encoding='utf-8')
+        self.runtime.catalog.request_scan()
+        for _ in range(1000):
+            result = capacity.sync_step(self.runtime, before_publish=lambda: None,
+                                       require_vector=True, vector_profile_id=self.profile_id)
+            if result['state'] == 'pending' and result['reason'] == 'vector_backlog':
+                while capacity.vc.vector_fill_step(self.runtime, capacity.FillProvider())['state'] == 'pending':
+                    pass
+            elif result['state'] != 'pending':
+                break
+        self.assertEqual(result['state'], 'indexed')
+        provider = self.provider
+        self.provider = lambda text, profile: {**provider(text, profile), 'vector': [-1.0, 0.0]}
+        with patch.object(retrieval, 'query_provider', return_value=self.provider), \
+             patch.object(selected, 'recheck'):
+            with retrieval.selected_search(self.bound, 'unmentionedxyz') as (rows, _excluded, _name, _mode):
+                self.assertEqual(len(rows), 20)
+                self.assertTrue(all(row[2] == -1.0 for row in rows))
+            self.assertEqual(self.query('unmentionedxyz', top_k=20), [])
 
     def test_error_releases_actual_pin(self):
         released = []

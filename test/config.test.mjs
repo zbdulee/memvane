@@ -694,9 +694,8 @@ test('compile.semanticDedup는 enabled/maxPairsPerScan/candidateMinScore만 정�
   assert.equal(withBadCross.compile.semanticDedup.judge.crossEngine, 'off', '집합 밖 값은 기본값으로');
 });
 
-// 상수화된 4개 레버의 **값 자체**는 예전 기본값과 같아야 한다 — judge 없는 머신의 레거시
-// score 게이트 동작이 이 리팩터로 바뀌면 안 된다. 설정으로 덮을 수 없다는 것도 함께 본다.
-test('dedup score 레버 4개는 상수이고 값은 예전 기본값과 동일하다', () => {
+// 점수 임계는 유지하고 retrieval 상한만 20장으로 넓힌다. 설정으로 덮을 수 없다.
+test('dedup score thresholds stay fixed and retrieval has a 20-card context budget', () => {
   const consts = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     "sys.path.insert(0, 'core')",
@@ -706,9 +705,10 @@ test('dedup score 레버 4개는 상수이고 값은 예전 기본값과 동일�
     '  "autoMerge": c.DEDUP_AUTO_MERGE_THRESHOLD,',
     '  "topK": c.DEDUP_TOP_K,',
     '  "similarPageMaxChars": c.DEDUP_SIMILAR_PAGE_MAX_CHARS,',
+    '  "groundingMaxChars": c.DEDUP_GROUNDING_MAX_CHARS,',
     '}))',
   ].join('\n')], { encoding: 'utf8' }));
-  assert.deepEqual(consts, { threshold: 0.82, autoMerge: 0.9, topK: 3, similarPageMaxChars: 12000 });
+  assert.deepEqual(consts, { threshold: 0.82, autoMerge: 0.9, topK: 20, similarPageMaxChars: 12000, groundingMaxChars: 36000 });
 
   const overridden = loadConfig(JSON.stringify({
     compile: { semanticDedup: { threshold: 0.1, topK: 99, similarPageMaxChars: 1, autoMergeThreshold: 0.1 } },

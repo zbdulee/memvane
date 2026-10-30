@@ -964,6 +964,11 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         lists.append(floor)
     if diagnostics is not None:
         diagnostics['probeOnlyPaths'] = frozenset(probe_seen - candidate_seen)
+        # Optional compile retrieval evidence. Vector rows still hold cosine
+        # DISTANCE here; RRF below replaces score with rank and must not be
+        # interpreted as semantic relevance by that caller.
+        diagnostics['vectorCosines'] = {
+            (row['path'], row['hash']): 1.0 - row['score'] for row in vector_rows}
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
     filtered = [row for row in fused if row['score'] >= min_score and
                 not any(pattern in row['path'] for pattern in skip_paths)]

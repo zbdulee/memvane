@@ -9,5 +9,5 @@ test('compile retrieval uses bounded index candidates and an incremental live ov
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 21 tests/);
+  assert.match(result.stderr, /Ran 34 tests/);
 });

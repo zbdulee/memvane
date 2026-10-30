@@ -324,9 +324,9 @@ def gather_similar_pages(
 ) -> list[dict] | None:
     """Fail-open lookup of the top-K existing wiki pages most similar to `content`.
 
-    Returns full page bodies (capped at cap_chars) for grounding the extractor prompt, or
-    None if semantic dedup is disabled, no wiki collection is configured, the project has
-    no selected Laya route, or nothing matched.
+    Returns compact identity and meaningful summaries under one fair-share
+    rendered context budget. The candidate count is an upper bound; the paid
+    duplicate judge has its own unchanged per-compile budget.
     """
     semantic_cfg = compile_cfg.get("semanticDedup") if isinstance(compile_cfg.get("semanticDedup"), dict) else {}
     if not semantic_cfg.get("enabled", True):
@@ -339,11 +339,57 @@ def gather_similar_pages(
     if selected is not None:
         rows = wiki_selected_laya.wiki_matches(root, wiki_root, content,
                                                top_k, cap_chars, bound=selected)
-        return [{"path": path.relative_to(root).as_posix(),
-                 "score": score, "content": body}
-                for path, score, body in rows] or None
+        return compact_similar_pages(root, rows, cap_chars) or None
     # Only a selected memvane-db index answers similarity.
     return None
+
+
+def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
+    """Keep reuse identities, then share summary space across all related cards.
+
+    Count the actual extractor renderer's headings, paths and score labels in
+    the 36k budget. Frontmatter provenance and generated banners are not prompt
+    evidence. A pathological identity that cannot fit one fair share is omitted
+    rather than consuming every other card's summary allowance.
+    """
+    import wiki_card
+    from extractors.lib import render_existing_context_section
+    cards = []
+    for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
+        text = wiki_card.normalize_newlines(raw)
+        end = text.find('\n---\n', 4) if text.startswith('---\n') else -1
+        if text.startswith('---\n') and end < 0:
+            continue  # the retrieval window contained no meaningful body
+        meta, _ok = wc.parse_frontmatter(text)
+        identity = {
+            'title': str(meta.get('title') or path.stem),
+            'canonicalKey': wc.clean_canonical_key(meta.get('canonicalKey')),
+            'aliases': wc.clean_aliases(meta.get('aliases')),
+            'targetPath': path.relative_to(root).as_posix(),
+        }
+        header = json.dumps(identity, ensure_ascii=False) + '\nSummary:\n'
+        body, _complete = wiki_card.extract_card_body(text, end + 5 if end >= 0 else 0)
+        if not body:
+            continue
+        cards.append(({'path': identity['targetPath'], 'score': score, 'content': ''},
+                      header, body, len(raw) >= cap_chars))
+    marker = wiki_card.SUMMARY_TRUNCATION_MARK
+    # Recalculate after excluding oversized identities; all retained cards get
+    # the same content allowance regardless of retrieval rank or body length.
+    while cards:
+        overhead = len(render_existing_context_section({'similarPages': [c[0] for c in cards]}))
+        share = min(cap_chars, max(0, (qmd_config.DEDUP_GROUNDING_MAX_CHARS - overhead) // len(cards)))
+        fitting = [card for card in cards if len(card[1]) + len(marker) < share]
+        if len(fitting) == len(cards):
+            break
+        cards = fitting
+    result = []
+    for page, header, body, window_cut in cards:
+        available = share - len(header)
+        truncated = window_cut or len(body) > available
+        summary = (body[:available - len(marker)].rstrip() + marker if truncated else body)
+        result.append({**page, 'content': header + summary})
+    return result
 
 
 def bounded_failure(action: str, job: dict, reason: str) -> dict:
