@@ -329,7 +329,7 @@ class MigrationTests(MoveCase):
         tag = 'a' * 16
         job = {'targetPath': '.auto-context/wiki/concepts/otter-ledger.md',
                'pendingPath': '.auto-context/wiki/concepts/.otter-ledger.md.pending-' + tag,
-               'sourceHash': 'a' * 64, 'expectedTargetHash': 'b' * 64, 'ts': '2026-10-01T00:00:00Z'}
+               'sourceHash': tag, 'expectedTargetHash': 'b' * 64, 'ts': '2026-10-01T00:00:00Z'}
         moved = verify.rebased_job(self.project, job)
         self.assertEqual(moved['targetPath'], '.memvane/wiki/concepts/otter-ledger.md')
         live = self.project / moved['targetPath']

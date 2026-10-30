@@ -124,7 +124,7 @@ test('verify pass → status verified + verifiedBy/verifiedAt 패치 + 재인덱
 });
 
 test('pending replacement publishes only after verification and preserves the old card until then', () => {
-  const revision = 'a'.repeat(64);
+  const revision = 'a'.repeat(16);
   const pendingRel = '.auto-context/wiki/concepts/.test-card.md.pending-' + revision.slice(0, 16);
   const old = cardText('verified');
   const verifier = mockVerifier({ verdict: 'pass', claims: [{ claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
@@ -147,8 +147,8 @@ test('pending replacement publishes only after verification and preserves the ol
 });
 
 test('superseded pending replacement is acknowledged without overwriting the newer verified card', () => {
-  const firstHash = 'a'.repeat(64);
-  const secondHash = 'b'.repeat(64);
+  const firstHash = 'a'.repeat(16);
+  const secondHash = 'b'.repeat(16);
   const original = cardText('verified');
   const verifier = mockVerifier({ verdict: 'pass', claims: [
     { claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
@@ -178,7 +178,7 @@ test('superseded pending replacement is acknowledged without overwriting the new
 });
 
 test('failed pending verification leaves the old published card unchanged', () => {
-  const revision = 'b'.repeat(64);
+  const revision = 'b'.repeat(16);
   const pendingRel = '.auto-context/wiki/concepts/.test-card.md.pending-' + revision.slice(0, 16);
   const old = cardText('verified');
   const verifier = mockVerifier({ verdict: 'fail', claims: [{ claim: 'c', supported: false, quote: 'q', sourcePath: 'docs/source.md' }], reasons: ['unsupported'] });
@@ -192,6 +192,97 @@ test('failed pending verification leaves the old published card unchanged', () =
     assert.equal(readFileSync(join(project, CARD_REL), 'utf8'), old);
     assert.equal(existsSync(join(project, pendingRel)), false);
   } finally { removeTemp(project); }
+});
+
+test('actual compiler pending job verifies and publishes its 16-character sourceHash', () => {
+  const verifier = mockVerifier({ verdict: 'pass', claims: [{
+    claim: 'The source documents cite markdown.', supported: true,
+    quote: 'Durable claim: the source documents cite markdown.', sourcePath: 'docs/source.md',
+  }], reasons: [] });
+  const project = setupProject({ cardStatus: 'verified', verify: { crossEngine: 'off' },
+    extractorArgv: ['python3', verifier] });
+  try {
+    const queue = join(project, '.auto-context/compile/verify-queue.jsonl');
+    const initialJob = jsonl(queue)[0];
+    const original = readFileSync(join(project, CARD_REL), 'utf8');
+    writeFileSync(queue, '');
+    const candidate = {
+      trigger: 'manual', engine: 'claude', title: 'Test Card', canonicalKey: 'test-card',
+      summary: 'The source documents cite markdown.', suggestedType: 'concept', confidence: 'high',
+      targetPath: CARD_REL, sources: initialJob.sources, sourceRevisions: initialJob.sourceRevisions,
+    };
+    const script = [
+      'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
+      'sys.path.insert(0,"core")',
+      'import wiki_compile as wc, wiki_selected_laya, laya_host_response, config',
+      'root=Path(sys.argv[1]).resolve(); candidate=json.loads(sys.argv[2])',
+      'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
+      'decision={"projectRoot":str(root),"recallSettings":{"skipPaths":[]},',
+      ' "collections":[{"name":"proj-wiki","role":"wiki","sourceRoot":str(wiki)}],',
+      ' "collectionRoots":{"proj-wiki":str(wiki)}}',
+      'with patch.object(wiki_selected_laya,"selected",return_value=(decision,{})):',
+      ' with patch.object(wiki_selected_laya,"recheck"):',
+      '  with patch.object(laya_host_response,"_verified_wiki_row",return_value=True):',
+      '   wc._compile_locked(root,cfg,cfg["compile"],"auto-wiki",wiki,candidate,False)',
+    ].join('\n');
+    const compileOutput = execFileSync('python3', ['-B', '-c', script, project, JSON.stringify(candidate)], {
+      cwd: process.cwd(), encoding: 'utf8',
+      env: { ...process.env, QMD_DIRTY_QUEUE: join(project, 'dirty-queue') },
+    });
+    const jobs = jsonl(queue);
+    assert.equal(jobs.length, 1, 'use the compiler-produced job without rewriting its hash: ' + compileOutput);
+    const job = jobs[0];
+    assert.match(job.sourceHash, /^[0-9a-f]{16}$/);
+    assert.equal(job.pendingPath, '.auto-context/wiki/concepts/.test-card.md.pending-' + job.sourceHash);
+    assert.equal(job.expectedTargetHash, createHash('sha256').update(original).digest('hex'));
+    assert.equal(readFileSync(join(project, CARD_REL), 'utf8'), original,
+      'compilation must preserve the published card until verification succeeds');
+    assert.match(readFileSync(join(project, job.pendingPath), 'utf8'), /^status: generated$/m);
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    const published = readFileSync(join(project, CARD_REL), 'utf8');
+    assert.match(published, /^status: verified$/m);
+    assert.match(published, new RegExp(`sourceHash="${job.sourceHash}"`));
+    assert.equal(existsSync(join(project, job.pendingPath)), false);
+    assert.equal(readFileSync(queue, 'utf8'), '');
+    assert.equal(jsonl(join(project, '.auto-context/compile/verify-log.jsonl')).at(-1).result, 'verified');
+    const archives = readdirSync(join(project, '.auto-context/compile/retired-wiki'))
+      .filter(name => name.endsWith('.md'));
+    assert.equal(archives.length, 1);
+    assert.equal(readFileSync(join(project, '.auto-context/compile/retired-wiki', archives[0]), 'utf8'), original);
+  } finally { removeTemp(project); }
+});
+
+test('pending replacement rejects malformed hashes and forged paths before verifier calls', () => {
+  const revision = '0123456789abcdef';
+  const pendingRel = '.auto-context/wiki/concepts/.test-card.md.pending-' + revision;
+  const original = cardText('verified');
+  const expected = createHash('sha256').update(original).digest('hex');
+  const invalid = [
+    { sourceHash: null }, { sourceHash: '' }, { sourceHash: 'a'.repeat(15) },
+    { sourceHash: 'a'.repeat(17) }, { sourceHash: 'a'.repeat(64) },
+    { sourceHash: revision.toUpperCase() }, { sourceHash: 'g'.repeat(16) },
+    { expectedTargetHash: 'a'.repeat(16) }, { expectedTargetHash: 'a'.repeat(63) },
+    { expectedTargetHash: 'g'.repeat(64) },
+    { pendingPath: '.auto-context/wiki/concepts/.test-card.md.pending-ffffffffffffffff' },
+    { pendingPath: '../outside.md' },
+  ];
+  for (const overrides of invalid) {
+    const tracker = trackerFile('invalid-pending');
+    const project = setupProject({ cardStatus: 'verified', verify: { crossEngine: 'off' },
+      extractor: { timeout: 30, backends: { claude: mockEngine('claude', tracker, 'pass') } },
+      jobOverrides: { sourceHash: revision, pendingPath: pendingRel,
+        expectedTargetHash: expected, ...overrides } });
+    try {
+      writeFileSync(join(project, pendingRel), cardText('generated').replaceAll(HASH, revision));
+      assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1, JSON.stringify(overrides));
+      assert.equal(readFileSync(join(project, CARD_REL), 'utf8'), original);
+      assert.equal(existsSync(join(project, pendingRel)), true, 'invalid jobs cannot remove private bytes');
+      assert.deepEqual(calls(tracker), []);
+      const log = jsonl(join(project, '.auto-context/compile/verify-log.jsonl')).at(-1);
+      assert.equal(log.result, 'skipped');
+      assert.equal(log.reason, 'pending_replacement_invalid');
+    } finally { removeTemp(project); }
+  }
 });
 
 test('source revision mismatch before load preserves the job without calling a verifier', () => {
