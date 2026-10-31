@@ -141,6 +141,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` or lookup failure | exit 3, no fallback |
+| `upgrading` (recall only) | The selected route is fenced by a bundle upgrade (fresh-wiki ledger `upgrading`). Route selection re-reads it for up to 1.5 s first; still fenced, the hook gives no context and exits 0. A recall the fence interrupts mid-run also exits 0, and so does a route or proof transition error (`selected_route_changed` and similar) within 30 s of a `running` or `complete` worker status; any other error keeps exit 3. Every fenced recall and SessionStart asks the upgrade worker to finish, at most once a minute per install whichever host copy asks. A fence older than 10 minutes, or with a future mtime, is a stopped upgrade: recall answers at once without context (exit 0) and SessionStart names the stop. The worker also finishes an upgrade that stopped after the journal activation but before the fence was released. |
 
 `worktree` is a linked git worktree of a selected main checkout; search serves
 the main checkout's published index read-only, and sync, compile, wiki
@@ -373,6 +374,16 @@ after a host re-extracts a version directory in place, is rewritten only after
 that exact comparison passes. Git runs with replacement objects and grafts
 disabled, so `refs/replace` cannot substitute a tree under an unchanged
 commit id.
+
+An in-place re-extraction leaves every install bound to that root with an
+ownership digest the files no longer have. The bundle upgrade worker
+re-adopts the root for selected, bound and inactive installs alike, through
+each kind's own review and switch. A selected project's SessionStart asks for
+the worker; an unselected build's SessionStart (the build-progress notice)
+asks for it when the bound root is another plugin root or no longer proves.
+A re-adopted inactive build has no old seal to restore to: a failed switch
+stays fenced (`upgrading`) with its intent, and the next run finishes it
+forward.
 
 The exact comparison defends against stale or forged seal metadata and
 accidental drift between the cache and the commit. A process running as the

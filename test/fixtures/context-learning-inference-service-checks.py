@@ -548,6 +548,31 @@ class ServerTests(unittest.TestCase):
                     child.wait(timeout=3)
                     child.stderr.close()
 
+    def test_a_starting_service_never_shows_a_loose_socket_mode(self):
+        # Readiness polling while the service binds: the public socket path
+        # appears only with its final 0600 mode, never as unsafe_socket.
+        with tempfile.TemporaryDirectory(prefix='qmd-s-',dir='/tmp') as temp:
+            root=Path(temp).resolve();root.chmod(0o700);children=[]
+            def spawn(_argv,**kwargs):
+                child=subprocess.Popen([sys.executable,__file__,'--worker',str(root)],
+                    env={**os.environ,'QMD_RECALL_LOG':'','PYTHONDONTWRITEBYTECODE':'1',
+                         'QMD_TEST_SLOW_SOCKET_CHMOD':'1'},
+                    stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                children.append(child);return child
+            try:
+                service._ensure(root,sys.executable,time.monotonic()+5,spawn=spawn)
+                self.assertEqual(len(children),1)
+                self.assertEqual(exchange(root,envelope())['status'],'ok')
+                self.assertEqual(shutdown_idle(root)['status'],'stopped')
+                self.assertEqual(children[0].wait(timeout=3),0)
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        try:shutdown_idle(root)
+                        except Exception:child.terminate()
+                    child.wait(timeout=3)
+                    child.stderr.close()
+
 
 class StaleServiceReplacementTests(unittest.TestCase):
     """A service from another bundle is replaced only while idle."""
@@ -640,6 +665,15 @@ class StaleServiceReplacementTests(unittest.TestCase):
 def fake_worker(root):
     signature=os.environ.get('QMD_TEST_SERVICE_SIGNATURE')
     if signature:service._signature=lambda:signature
+    if os.environ.get('QMD_TEST_SLOW_SOCKET_CHMOD')=='1':
+        # A descheduled service between bind() and chmod(): stretch only
+        # that gap so a polling client is certain to observe it.
+        import stat as stat_mode
+        chmod=os.chmod
+        def slow_chmod(path,mode,*args,**kwargs):
+            if stat_mode.S_ISSOCK(os.lstat(path).st_mode):time.sleep(.5)
+            return chmod(path,mode,*args,**kwargs)
+        os.chmod=slow_chmod
     if os.environ.get('QMD_TEST_SERVICE_NO_SHUTDOWN')=='1':
         read=service.resident._read
         def legacy(conn,**kw):

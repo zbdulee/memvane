@@ -5,6 +5,13 @@ scope and install ID stay in place. A build owner lock excludes its writer;
 the ``upgrading`` phase makes both old and new workers fail closed across a
 crash. Only exact, separately installed and reviewed provider bundles may be
 switched. This never publishes a project route or changes QMD selection.
+
+The new bundle may sit at the pending root itself (the host re-extracted the
+same version in place, so the old ownership seal no longer verifies). The
+adoption proves the bytes against the commit and the switch rebinds the
+journal to the new seal. The old seal no longer exists on disk, so such a
+switch has no restore: a failure stays fenced (``upgrading``) with its intent,
+and the next run finishes it forward.
 """
 from __future__ import annotations
 
@@ -22,7 +29,7 @@ from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   _attestation, _canon as journal_canon,
                                   cas_replace_inactive_candidate,
                                   inspect_journal, preflight_product_candidate)
-from laya_product_bundle import (adopt_host_loaded_plugin,
+from laya_product_bundle import (BundleEvidenceError, adopt_host_loaded_plugin,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA,
                                  validate_production_provider_attestation)
@@ -457,9 +464,16 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if (old_journal['pending'] is None or
                 old_journal['pending']['installId'] != old_identity['installId']):
             _fail('inactive_upgrade_journal_changed')
-        old_proof = inspect_full_plugin_candidate(
-            old_journal['pending']['pluginRoot'] if intent is None else
-            json.loads(intent['oldRoute'])['pluginRoot'])
+        old_root = (old_journal['pending']['pluginRoot'] if intent is None else
+                    json.loads(intent['oldRoute'])['pluginRoot'])
+        same_root = old_root == str(plugin_root)
+        try:
+            old_proof = inspect_full_plugin_candidate(old_root)
+        except BundleEvidenceError:
+            if not same_root:
+                raise
+            # Re-extracted in place: nothing left to restore to.
+            old_proof = {'pluginRoot': old_root}
         if restore:
             if intent is None:
                 _fail('inactive_upgrade_intent_missing')
@@ -490,6 +504,8 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if (intent is None and
                 old_journal['pending']['pluginRoot'] == new_proof['pluginRoot'] and
                 old_journal['pending']['sourceCommit'] == commit_id and
+                old_journal['pending']['ownershipManifestSha256'] ==
+                new_proof['ownershipManifestSha256'] and
                 record['phase'] != 'upgrading'):
             approval = preflight_product_candidate(old_identity['journalPath'])
             if (approval['attestationSha256'] != old_identity['attestationSha256'] or
@@ -508,7 +524,12 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 _fail('inactive_upgrade_journal_changed')
             old_route = _read_private(route_file, 8192)
             old_att = _read_private(state / PRODUCTION_ATTESTATION, 1024 * 1024)
-            approval = preflight_product_candidate(old_identity['journalPath'])
+            # A root re-extracted in place no longer proves its old seal; its
+            # recorded route, attestation and journal row are compared instead.
+            approval = ({'attestationSha256': hashlib.sha256(old_att).hexdigest(),
+                         'pendingRouteSha256': old_journal['pendingRouteSha256']}
+                        if same_root else
+                        preflight_product_candidate(old_identity['journalPath']))
             if (hashlib.sha256(old_route).hexdigest() != old_identity['routeSha256'] or
                     hashlib.sha256(old_att).hexdigest() != old_identity['attestationSha256'] or
                     approval['attestationSha256'] != old_identity['attestationSha256'] or

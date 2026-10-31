@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import time
 
 from laya_index_a import LayaIndexA
 import project_dir
@@ -42,8 +43,153 @@ FIELDS = frozenset(('schema', 'epoch', 'phase', 'projectRoot', 'journalPath',
                     'providerFileIdentitySha256', *(field for _, field in FILES)))
 
 
+# A recall that finds its route fenced by a bundle upgrade (ledger phase
+# ``upgrading``) re-reads the route this long before it answers without
+# context. The fence normally lifts within a few seconds.
+UPGRADE_WAIT_SECONDS = 1.5
+UPGRADE_POLL_SECONDS = 0.025
+UPGRADE_IN_PROGRESS = 'bundle_upgrade_in_progress'
+# A fence older than this (by the ledger's mtime, written when the fence was
+# set) is a stopped upgrade, not one in progress. Recall still answers
+# without context (search never breaks over an update) but stops waiting for
+# it; SessionStart names the stop; recall and SessionStart keep asking the
+# upgrade worker to finish it. A mtime in the future (the clock moved back)
+# counts as stopped, so it never extends the bound.
+UPGRADE_STALE_SECONDS = 600
+UPGRADE_STALLED = 'bundle_upgrade_stalled'
+# A recall whose route changed under it this soon after the upgrade worker
+# last wrote its status raced the upgrade's own route switch.
+UPGRADE_RECENT_SECONDS = 30
+RECOVERY_CODE = 'bundle_upgrade_fenced'
+
 class FreshWikiBlocked(RuntimeError):
     pass
+
+
+def _fence_record(cwd):
+    """The selection marker over ``cwd`` and its ledger, or None; never raises."""
+    try:
+        current = Path(cwd)
+        if not current.is_absolute():
+            return None
+        for directory in (current, *current.parents):
+            marker = project_dir.runtime_file(directory, MARKER)
+            if not os.path.lexists(marker):
+                continue
+            record = _read_json(marker)
+            if (not isinstance(record, dict) or record.get('schema') != MARKER_SCHEMA or
+                    not all(isinstance(record.get(key), str) for key in
+                            ('ledgerPath', 'journalPath', 'projectRoot'))):
+                return None
+            ledger = Path(record['ledgerPath'])
+            row = _read_json(ledger)
+            if not isinstance(row, dict):
+                return None
+            return {'projectRoot': record['projectRoot'],
+                    'journalPath': record['journalPath'],
+                    'stateRoot': str(ledger.parent), 'phase': row.get('phase'),
+                    'changedNs': os.stat(ledger, follow_symlinks=False).st_mtime_ns}
+    except Exception:
+        return None
+    return None
+
+
+def _fence_age(record, now_ns=None):
+    return ((time.time_ns() if now_ns is None else now_ns) - record['changedNs']) / 1e9
+
+
+def _live(record, now_ns=None):
+    return 0 <= _fence_age(record, now_ns) <= UPGRADE_STALE_SECONDS
+
+
+def upgrade_in_progress(cwd, *, now_ns=None) -> bool:
+    """The route over ``cwd`` is fenced by a bundle upgrade set within the bound."""
+    record = _fence_record(cwd)
+    return (record is not None and record['phase'] == 'upgrading' and
+            _live(record, now_ns))
+
+
+def upgrade_stalled(cwd, *, now_ns=None) -> bool:
+    """The fence over ``cwd`` outlived the bound: the upgrade stopped mid-way."""
+    record = _fence_record(cwd)
+    return (record is not None and record['phase'] == 'upgrading' and
+            not _live(record, now_ns))
+
+
+def upgrade_fenced(cwd) -> bool:
+    """Any bundle upgrade fence over ``cwd``, in progress or stopped."""
+    record = _fence_record(cwd)
+    return record is not None and record['phase'] == 'upgrading'
+
+
+def upgrade_window(cwd, *, now_ns=None) -> bool:
+    """An upgrade worker that is switching or switched a bundle just now.
+
+    A recall whose route or proof changed inside this window raced the
+    upgrade's route switch; it answers without context instead of an error.
+    """
+    record = _fence_record(cwd)
+    if record is None:
+        return False
+    try:
+        import laya_bundle_upgrade
+        status = laya_bundle_upgrade.read_status(Path(record['stateRoot']))
+        now = time.time_ns() if now_ns is None else now_ns
+        # Only a worker that is switching or just switched a bundle; a run
+        # that found nothing to do (``current``) is not an upgrade.
+        return (isinstance(status, dict) and status.get('status') in ('running', 'complete')
+                and type(status.get('updatedNs')) is int and
+                0 <= (now - status['updatedNs']) / 1e9 <= UPGRADE_RECENT_SECONDS)
+    except Exception:
+        return False
+
+
+def request_recovery(cwd):
+    """Ask the upgrade worker to finish a fenced upgrade; never waits or raises.
+
+    The worker resumes an interrupted intent. Its status file throttles the
+    request, and a worker still holding the upgrade lock is never doubled.
+    """
+    record = _fence_record(cwd)
+    if record is None or record['phase'] != 'upgrading':
+        return None
+    try:
+        import laya_bundle_upgrade
+        return laya_bundle_upgrade.request(record['projectRoot'], record['journalPath'],
+                                           RECOVERY_CODE)
+    except Exception:
+        return None
+
+
+def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,
+                    sleep=time.sleep):
+    """Re-read a recall route fenced by a bundle upgrade.
+
+    Recall only. A fence within ``UPGRADE_STALE_SECONDS`` waits up to
+    ``UPGRADE_WAIT_SECONDS`` for the upgrade to publish its route; still
+    fenced, it comes back ``blocked`` with ``bundle_upgrade_in_progress``.
+    An older fence comes back at once with ``bundle_upgrade_stalled``. The
+    hook answers both with no context and exit 0, and both ask the upgrade
+    worker to finish.
+    """
+    if (not isinstance(decision, dict) or decision.get('state') != 'blocked' or
+            action != 'recall'):
+        return decision
+    if upgrade_stalled(cwd):
+        request_recovery(cwd)
+        return {**decision, 'reason': UPGRADE_STALLED}
+    if not upgrade_in_progress(cwd):
+        return decision
+    request_recovery(cwd)
+    deadline = clock() + UPGRADE_WAIT_SECONDS
+    while clock() < deadline:
+        sleep(UPGRADE_POLL_SECONDS)
+        again = select(cwd, action=action)
+        if again.get('state') != 'blocked':
+            return again
+        if not upgrade_in_progress(cwd):
+            return again
+    return {**decision, 'reason': UPGRADE_IN_PROGRESS}
 
 
 def _fail(reason):

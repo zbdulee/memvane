@@ -1015,8 +1015,12 @@ class Service:
             _socket_ok(path)
             path.unlink()  # only the lease holder removes a stale socket
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(path))
-        os.chmod(path, 0o600)
+        from laya_local_embed_service import bind_private
+        try:
+            bind_private(server, path)
+        except BaseException:
+            server.close()
+            raise
         server.listen(32)
         server.settimeout(.2)
         self.control, self.control_inode = server, os.lstat(path).st_ino
@@ -1398,7 +1402,8 @@ class Service:
 
     def _adopt(self, project):
         from laya_embed_resident import _owner_identity, _write_state
-        from laya_local_embed_service import _private_parent, _remove_stale_socket
+        from laya_local_embed_service import (_private_parent, _remove_stale_socket,
+                                              bind_private)
         try:
             decision, proof, mode = self.prove(project)
             identity = _owner_identity(decision, proof)
@@ -1460,8 +1465,7 @@ class Service:
             fcntl.flock(service_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             _remove_stale_socket(path)
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(path)
-            os.chmod(path, 0o600)
+            bind_private(listener, path)
             listener.listen(LISTEN_BACKLOG)
             listener.settimeout(.2)
             binding = Binding(project, manifest, identity, mode, owner_fd, service_fd, listener)

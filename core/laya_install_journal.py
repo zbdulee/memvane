@@ -819,9 +819,14 @@ def cas_replace_inactive_candidate(journal_path, expected_epoch,
         if before_sha != row['pending_route_sha']:
             _fail('inactive_candidate_route_changed')
         next_identity = _identity(next_bundle_proof, after, path)
-        replaceable = {'pluginRoot', 'bundleManifestSha256',
+        replaceable = {'schema', 'pluginRoot', 'bundleManifestSha256',
                        'ownershipManifestSha256'}
+        # A switch writes the written schema (v2 -> v3) and its restore puts
+        # the original back (v3 -> v2); any other schema change is not a
+        # bundle replacement.
+        schemas = {before.get('schema'), after.get('schema')}
         if (set(before) != set(after) or
+                (len(schemas) != 1 and schemas != {ROUTE_SCHEMA_V2, ROUTE_SCHEMA_V3}) or
                 any(before[key] != after[key] for key in before.keys() - replaceable)
                 or any(before[key] != row['pending'].get(key) for key in
                        ('pluginRoot', 'installId', 'generation',

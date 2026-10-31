@@ -348,13 +348,70 @@ class SameRootReadoptChecks(WorkerBase):
                 wake.assert_not_called()
                 self.assertEqual(auto.read_status(self.state)['status'], 'refused')
 
-    def test_bound_build_at_the_same_root_keeps_its_bundle(self):
+    def test_bound_and_inactive_builds_at_a_reextracted_root_readopt_it(self):
         import laya_product_bundle as bundle
-        with mock.patch.object(bundle, 'inspect_full_plugin_candidate',
-                               return_value=self.live()):
-            results, calls, _rescan, _wake = self.run_worker('bound', installed='1' * 40)
-        self.assertEqual(results[0]['status'], 'current')
-        self.assertEqual(calls, {})
+        for kind in ('bound', 'inactive'):
+            with self.subTest(kind=kind):
+                with mock.patch.object(bundle, 'inspect_full_plugin_candidate',
+                                       return_value=self.live()), \
+                     mock.patch.object(bundle, 'seal_companion_host_copy') as seal:
+                    results, calls, _rescan, _wake = self.run_worker(kind, installed='1' * 40)
+                seal.assert_not_called()
+                self.assertEqual(results[0]['status'], kind + '_upgrade_complete', results)
+                self.assertEqual(calls[kind]['plugin_root'], str(self.root))
+
+    def test_unselected_build_requests_the_worker_when_its_root_was_reextracted(self):
+        # The hook side (SessionStart of an inactive or bound build) asks for
+        # the worker when the bound root is this root but no longer proves.
+        import laya_initial_build
+        import laya_install_journal
+        import laya_product_bundle as bundle
+        from laya_product_bundle import BundleEvidenceError
+        record = {'phase': 'bound', 'identity': {
+            'journalPath': str(self.state / 'install-journal.sqlite')}}
+        journal = {'selected': None, 'pending': {**self.old_identity,
+                                                 'pluginRoot': str(self.root),
+                                                 'ownershipManifestSha256': '7' * 64}}
+
+        def unsealed(_root):
+            raise BundleEvidenceError('bundle_file_identity_changed')
+        for inspect, expected in ((unsealed, 1),
+                                  (lambda _r: self.live(ownershipManifestSha256='8' * 64), 1),
+                                  (lambda _r: self.live(ownershipManifestSha256='7' * 64), 0)):
+            with self.subTest(expected=expected), \
+                 mock.patch.object(laya_initial_build, 'lookup', return_value=record), \
+                 mock.patch.object(laya_install_journal, 'inspect_journal',
+                                   return_value=journal), \
+                 mock.patch.object(auto, 'executing_root', return_value=self.root), \
+                 mock.patch.object(bundle, 'inspect_full_plugin_candidate',
+                                   side_effect=inspect), \
+                 mock.patch.object(auto, 'request') as request:
+                auto.request_for_project(str(self.project))
+            self.assertEqual(request.call_count, expected)
+
+    def test_session_start_of_an_unselected_build_asks_for_the_worker(self):
+        import laya_index_host_route as host
+        import laya_initial_build
+        payload = self.base / 'session-start.json'
+        payload.write_text(json.dumps({'cwd': str(self.project)}))
+        found = {'configFormat': 'auto-context-dir', 'projectRoot': str(self.project)}
+        with mock.patch.object(host.config, 'find_project_config', return_value=found), \
+             mock.patch.object(laya_initial_build, 'lookup', return_value={'phase': 'bound'}), \
+             mock.patch.object(auto, 'request_for_project') as request:
+            notice = host.onboarding_notice(str(payload), str(self.project))
+        request.assert_called_once_with(str(self.project))
+        self.assertEqual(notice, host.BUILD_NOTICE.format(root=str(self.project)))
+
+    def test_bound_and_inactive_builds_at_an_unchanged_root_stay_current(self):
+        import laya_product_bundle as bundle
+        for kind in ('bound', 'inactive'):
+            with self.subTest(kind=kind):
+                with mock.patch.object(bundle, 'inspect_full_plugin_candidate',
+                                       return_value=self.live(
+                                           ownershipManifestSha256='7' * 64)):
+                    results, calls, _rescan, _wake = self.run_worker(kind, installed='1' * 40)
+                self.assertEqual(results[0]['status'], 'current')
+                self.assertEqual(calls, {})
 
 
 class BusyLaneChecks(WorkerBase):
@@ -530,6 +587,32 @@ class RequestChecks(Base):
              mock.patch.object(auto, '_spawn') as real_spawn:
             self.assertEqual(auto.request('/p', jpath, 'x')['reason'], 'fixture_no_spawn')
         real_spawn.assert_not_called()
+
+
+class FenceRecoveryRequestChecks(Base):
+    def test_fence_recovery_requests_are_floored_across_host_copies(self):
+        # Recalls from the other host's copy see another executing root, so
+        # the status file alone would let each of them spawn a worker.
+        claude = self.claude_root()
+        codex = self.base / 'codex-cache' / 'memvane' / '0.37.0'
+        codex.mkdir(parents=True)
+        jpath = self.state / 'install-journal.sqlite'
+        auto._write_status(self.state, status='running', executingRoot=str(claude),
+                           attempts=1, reason='')
+        spawned = []
+        start = auto._now()
+        with auto._state_lock(self.state) as owned:  # the Claude worker is alive
+            self.assertTrue(owned)
+            for offset, root in ((0, codex), (1, codex), (2, claude), (3, codex)):
+                with mock.patch.object(auto, 'executing_root', return_value=root):
+                    auto.request('/p', jpath, 'bundle_upgrade_fenced',
+                                 spawn=spawned.append, now=start + offset * 10**9)
+        self.assertEqual(spawned, ['/p'])
+        with mock.patch.object(auto, 'executing_root', return_value=codex):
+            later = start + (auto.FENCE_REQUEST_SECONDS + 5) * 10**9
+            auto.request('/p', jpath, 'bundle_upgrade_fenced', spawn=spawned.append,
+                         now=later)
+        self.assertEqual(spawned, ['/p', '/p'])
 
 
 class ReadOnlyProofChecks(Base):

@@ -34,10 +34,11 @@ older than the bound one never downgrades it.
 The same worker converts a v3 install journal to v4
 (``laya_journal_v4``) once every host copy of this plugin reads v4.
 
-A selected install whose bound root is the executing root but whose sealed
-ownership no longer verifies (the host re-extracted the same bundle in place)
-is re-adopted at that root through the same review and switch; the same
-commit with other bytes refuses as ``installed_bundle_content_changed``.
+An install (selected, bound or inactive) whose bound root is the executing
+root but whose sealed ownership no longer verifies (the host re-extracted the
+same bundle in place) is re-adopted at that root through the same review and
+switch; the same commit with other bytes refuses as
+``installed_bundle_content_changed``.
 
 A busy provider/compute lane or install lock is contention, not a failure:
 the worker waits it out a few times, then leaves a ``deferred`` status that a
@@ -253,17 +254,32 @@ SELECTOR_REQUEST = 'selector-heal-request.json'
 SELECTOR_REQUEST_SECONDS = 600
 
 
+# A recall or SessionStart that meets a bundle upgrade fence asks the worker
+# to finish it at most this often per install, from any host's plugin copy
+# (the status file's executing root differs between hosts, so it alone would
+# let every recall from the other host spawn a worker).
+FENCE_RECOVERY_CODE = 'bundle_upgrade_fenced'
+FENCE_REQUEST = 'fence-recovery-request.json'
+FENCE_REQUEST_SECONDS = 60
+
+
 def _selector_request_due(state, now=None):
-    """Record this selector-heal request if the per-install floor has passed.
+    """Record this selector-heal request if the per-install floor has passed."""
+    return _request_floor(state, SELECTOR_REQUEST, SELECTOR_REQUEST_SECONDS, now)
+
+
+def _request_floor(state, name, seconds, now=None):
+    """Record one request named ``name`` if ``seconds`` passed since the last.
 
     The check and the record happen under one non-blocking lock, so two
     concurrent hooks never both pass; a busy lock means another hook is
-    recording a request right now.
+    recording a request right now. The record lives in the install's state
+    root, which every host's copy shares.
     """
     now = _now() if now is None else now
     state = Path(state)
     try:
-        fd = os.open(state / (SELECTOR_REQUEST + '.lock'),
+        fd = os.open(state / (name + '.lock'),
                      os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     except OSError:
         return False
@@ -272,14 +288,14 @@ def _selector_request_due(state, now=None):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return False
-        path = state / SELECTOR_REQUEST
+        path = state / name
         try:
             last = json.loads(path.read_text('utf-8')).get('requestedNs')
         except (OSError, ValueError, AttributeError):
             last = None
-        if type(last) is int and 0 <= now - last < SELECTOR_REQUEST_SECONDS * 10**9:
+        if type(last) is int and 0 <= now - last < seconds * 10**9:
             return False
-        tmp = state / ('.' + SELECTOR_REQUEST + '.' + str(os.getpid()))
+        tmp = state / ('.' + name + '.' + str(os.getpid()))
         with open(tmp, 'w', encoding='utf-8') as out:
             os.fchmod(out.fileno(), 0o600)
             json.dump({'requestedNs': now}, out)
@@ -322,6 +338,9 @@ def request(project_root, journal_path, code='', *, spawn=None, now=None):
     root = str(executing_root())
     if code == SELECTOR_HEAL_CODE and not _selector_request_due(state, now):
         return {'status': 'throttled', 'reason': SELECTOR_HEAL_CODE}
+    if (code == FENCE_RECOVERY_CODE and
+            not _request_floor(state, FENCE_REQUEST, FENCE_REQUEST_SECONDS, now)):
+        return {'status': 'throttled', 'reason': FENCE_RECOVERY_CODE}
     status = read_status(state)
     if (status is not None and status['status'] == 'running' and
             status['executingRoot'] == root and not worker_holds(state)):
@@ -462,17 +481,40 @@ def notice_line(state, code):
 
 
 def request_for_project(project_root):
-    """Legacy-selected project (inactive or bound build): request if drifted."""
+    """Unselected project (inactive or bound build): request if drifted.
+
+    Drifted means bound to another plugin root, or bound to this root while
+    its sealed files no longer prove (re-extracted in place). Never waits;
+    the hook calls it at SessionStart.
+    """
     import laya_initial_build as build
     from laya_install_journal import inspect_journal
     record = build.lookup(str(project_root))
     if record is None or record['phase'] == 'retired':
         return None
-    journal = inspect_journal(record['identity']['journalPath'])
+    journal_path = record['identity']['journalPath']
+    journal = inspect_journal(journal_path)
     identity = journal.get('selected') or journal.get('pending')
-    if not isinstance(identity, dict) or identity.get('pluginRoot') == str(executing_root()):
+    if not isinstance(identity, dict):
         return None
-    return request(str(project_root), record['identity']['journalPath'])
+    root = str(executing_root())
+    if identity.get('pluginRoot') == root:
+        state = Path(journal_path).parent
+        if not _due(read_status(state), root, _now()) or not _reextracted(identity, root):
+            return None
+    return request(str(project_root), journal_path)
+
+
+def _reextracted(identity, root):
+    """The bound root no longer proves the identity's sealed files."""
+    from laya_product_bundle import BundleEvidenceError, inspect_full_plugin_candidate
+    try:
+        live = inspect_full_plugin_candidate(root)
+    except BundleEvidenceError:
+        return True
+    return any(live[key] != identity.get(key) for key in
+               ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256',
+                'vectorProfile'))
 
 
 # --------------------------------------------------------------- source rule
@@ -732,19 +774,17 @@ def _require_pinned_runtime(attestation):
 
 
 def _same_root_readopt(kind, identity, root):
-    """Whether a selected install bound to ``root`` must be re-adopted there.
+    """Whether an install bound to ``root`` must be re-adopted there.
 
     A host can re-extract the same bundle into the same cache directory (new
     inodes and ctimes, same bytes). The journal then pins an ownership digest
     the live files no longer have and every proof fails with
     ``installed_bundle_changed``. Same commit and same content re-adopt
-    through the normal review and switch; same commit with other content
-    refuses. A different commit at this root (a host reusing one version
-    directory) takes the normal upgrade path, whose adoption checks it.
-    Bound and inactive builds keep their bundle here.
+    through the normal review and switch of the install's kind (selected,
+    bound or inactive); same commit with other content refuses. A different
+    commit at this root (a host reusing one version directory) takes the
+    normal upgrade path, whose adoption checks it.
     """
-    if kind != 'active':
-        return False
     from laya_product_bundle import BundleEvidenceError, inspect_full_plugin_candidate
     try:
         live = inspect_full_plugin_candidate(str(root))
@@ -765,6 +805,14 @@ def upgrade_install(project_root, state, root, home=None):
     kind, identity = classify(state)
     if kind == 'retired' or identity is None:
         return {'status': 'current', 'kind': kind}
+    if kind == 'active':
+        # A switch that stopped after its journal activation still fences
+        # the route; its bundle already reads as current here.
+        import laya_active_upgrade
+        finished = laya_active_upgrade.finish_activated(project_root=str(project_root),
+                                                        state_root=str(state))
+        if finished is not None:
+            return {**finished, 'kind': kind}
     same_root = identity['pluginRoot'] == str(root)
     if same_root and not _same_root_readopt(kind, identity, root):
         return {'status': 'current', 'kind': kind}

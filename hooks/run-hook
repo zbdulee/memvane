@@ -85,6 +85,13 @@ case "$_laya_route_state" in
     exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
+  upgrading)
+    # Recall only: a bundle upgrade fences the selected route (in progress,
+    # or stopped and asked to finish). This prompt gets no context; it is
+    # not a refusal.
+    echo '[memvane] bundle upgrade pending; no context for this prompt' >&2
+    exit 0
+    ;;
   blocked)
     if [ "$ACTION" = "update-queued" ]; then
       # A project folder that needs the owner (an older branch checked out

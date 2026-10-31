@@ -785,8 +785,9 @@ def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
 
 
 def _settle_moves(cwd: str, action: str, decision: dict) -> dict:
-    """Wait out a state-root move or a project folder move (``.memvane/``)."""
-    for name in ("laya_state_move", "laya_project_dir_move"):
+    """Wait out a state-root move, a project folder move (``.memvane/``) or,
+    for a recall, a bundle upgrade's fence."""
+    for name in ("laya_state_move", "laya_project_dir_move", "laya_fresh_wiki_origin"):
         if decision.get("state") != "blocked":
             return decision
         try:
@@ -871,6 +872,13 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     except Exception:
         building = False
     if building:
+        # A host plugin update (or an in-place re-extraction of the bound
+        # bundle) moves the inactive or bound build in a detached worker.
+        try:
+            import laya_bundle_upgrade
+            laya_bundle_upgrade.request_for_project(root)
+        except Exception:
+            pass
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
@@ -902,6 +910,13 @@ def onboarding_lines(root: str, session: str | None) -> str:
     return notice + "\n" + ONBOARDING_ANSWER_PREFIX + json.dumps(answer, ensure_ascii=False)
 
 
+UPGRADE_NOTICE = ('[memvane] plugin bundle upgrade in progress; search resumes '
+                  'when it finishes.')
+UPGRADE_STALLED_NOTICE = ('[memvane] plugin bundle upgrade stopped mid-way; a background '
+                          'run is asked to finish it. Until then prompts get no '
+                          'MemVane context.')
+
+
 def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
     """One SessionStart line for a blocked project whose folders need attention.
 
@@ -924,6 +939,15 @@ def project_dir_notice_for(cwd: str) -> str | None:
     """``project_dir_notice`` for an event cwd (Hermes calls it directly)."""
     if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return None
+    try:
+        import laya_fresh_wiki_origin as fresh
+        if fresh.upgrade_in_progress(cwd) or fresh.upgrade_stalled(cwd):
+            # A fenced upgrade (live or stopped) asks the worker to finish it.
+            fresh.request_recovery(cwd)
+            return (UPGRADE_STALLED_NOTICE if fresh.upgrade_stalled(cwd)
+                    else UPGRADE_NOTICE)
+    except Exception:
+        pass
     try:
         import laya_project_dir_move as dir_move
         found = config.find_project_config(cwd)
@@ -959,6 +983,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     else:
         return 2
+    if (args[0] == "classify-hook" and args[1] == "recall" and
+            decision["state"] == "blocked" and
+            decision.get("reason") in ("bundle_upgrade_in_progress",
+                                       "bundle_upgrade_stalled")):
+        # The dispatcher answers this recall without context, not an error.
+        print("upgrading")
+        return 0
     print(decision["state"])
     return 0
 
