@@ -11,6 +11,10 @@ still holds a QMD-origin ledger refuses as ``qmd_origin_detach_required``.
 While the files switch, the marker no longer matches the ledger or journal
 and the selector classifies the project ``blocked``; a crash leaves the intent
 for the next run of this same action to finish.
+
+The new bundle may sit at the bound root itself (the host re-extracted the
+same version in place): only the ownership seal changes, and the adoption
+proves the bytes against the commit before anything switches.
 """
 from __future__ import annotations
 
@@ -145,6 +149,10 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
         old_proof = inspect_full_plugin_candidate(pending['pluginRoot'])
     except BundleEvidenceError:
         old_proof = None  # The superseded host cache may already be gone.
+    if pending['pluginRoot'] == str(plugin_root):
+        # Re-extracted in place: the old seal is gone with the old inodes;
+        # the adoption below proves this root's bytes against the commit.
+        old_proof = None
     if old_proof is not None and any(
             old_proof[key] != pending[key] for key in
             ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256',

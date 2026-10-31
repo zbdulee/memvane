@@ -321,7 +321,7 @@ class WorktreeRecallReadOnly(unittest.TestCase):
             calls.append({'state': served['state'], 'root': served['projectRoot'],
                           'degraded': degraded, 'label': read_only_label,
                           'readOnly': proof.get('readOnlyAllowed')})
-            response._LEARNING_CAPTURE[:] = [('capture', 'would-run')]
+            response._set_learning_capture(('capture', 'would-run'))
             return response.host_payload(host, '[memvane] cards')
 
         def forbidden(*_args, **_kwargs):
@@ -332,9 +332,10 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                 mock.patch.object(response, '_request_stale_sync', forbidden), \
                 mock.patch.object(response, '_start_owner', forbidden), \
                 mock.patch.object(self.selected_fixture.discovery, 'record_grant', forbidden):
-            out = response.serve_selected('recall', 'claude', decision,
-                                          {'prompt': 'q', 'cwd': str(worktree)})
-            self.assertEqual(response._LEARNING_CAPTURE, [])
+            with response.learning_capture() as slot:
+                out = response.serve_selected('recall', 'claude', decision,
+                                              {'prompt': 'q', 'cwd': str(worktree)})
+            self.assertEqual(slot, [])
             context = out['hookSpecificOutput']['additionalContext']
             self.assertTrue(context.startswith('[memvane] read-only from the main checkout '
                                                + str(self.project)), context)

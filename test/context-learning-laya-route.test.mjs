@@ -9,5 +9,5 @@ test('selected Laya route feeds context learning without QMD', () => {
           PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 8 tests/);
+  assert.match(result.stderr, /Ran 9 tests/);
 });

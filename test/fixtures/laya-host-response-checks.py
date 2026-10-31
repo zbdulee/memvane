@@ -1864,7 +1864,7 @@ class ProofRetryChecks(unittest.TestCase):
                 **changes}
 
     def recall(self, *, verify, reselect=None, read_only=None, query=None,
-               provider=None, request=None):
+               provider=None, request=None, incremental=None):
         """Run selected recall through the real proof, view and retry path.
 
         ``query(n)`` runs after the n-th query pinned the current head; a
@@ -1892,6 +1892,8 @@ class ProofRetryChecks(unittest.TestCase):
                 pass
             if query is not None:
                 query(len(calls['query']))
+            if 'wiki/a.md' in (kwargs.get('excluded_paths') or ()):
+                return [], frozenset()  # shadowed by a completed incremental card
             return [row(path='wiki/a.md', generation=head, body=self.BODY,
                         hash=digest)], frozenset()
 
@@ -1921,7 +1923,8 @@ class ProofRetryChecks(unittest.TestCase):
             enter(patch.object(config, 'load_project_config',
                                return_value=dict(self.decision['recallSettings'])))
             enter(patch.object(laya_incremental_docs_query, 'query_incremental',
-                               return_value=([], frozenset(), {}, (), None)))
+                               side_effect=incremental or
+                               (lambda *_a: ([], frozenset(), {}, (), None))))
             enter(patch.object(response, 'query_selected_v2', side_effect=query_v2))
             enter(patch.object(response, '_select_verified_cards',
                                side_effect=lambda _d, _s, _p, rows: (rows, 'ranked', None)))
@@ -1944,6 +1947,36 @@ class ProofRetryChecks(unittest.TestCase):
     def publish_on_first(self, n):
         if n == 1:
             self.publish()
+
+    def test_vector_off_recall_serves_completed_incremental_cards_on_the_pinned_base(self):
+        # No query vector: the completed incremental card (on the pinned base
+        # generation) still serves next to the base generation's rows.
+        from laya_index_a import IndexContractError
+        digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()
+        offered = []
+
+        def incremental(prompt, decision, proof, query_provider):
+            try:
+                query_provider(prompt, decision['vectorProfile'])
+            except response._VectorUnavailable:
+                pass  # what query_incremental itself does
+            fresh = row(path='wiki/a.md', generation='preview-' + 'c' * 32,
+                        body=self.BODY, hash=digest, score=0.9)
+            offered.append(fresh)
+            return [fresh], frozenset(), {}, ('wiki/a.md',), self.head()
+
+        def cold(*_args):
+            raise IndexContractError('provider_unavailable')
+        # No sidecar file here: its membership recheck has its own checks.
+        with patch.object(response, '_selection_view_unchanged', return_value=True):
+            result, calls, _selected, _ro = self.recall(
+                verify=lambda _d: self.proof(3), provider=cold, incremental=incremental)
+        if isinstance(result, Exception):
+            raise result
+        self.assertIn('wiki/a.md', self.served(result))
+        self.assertEqual(len(offered), 1)
+        # The base generation was pinned once, at the incremental base.
+        self.assertEqual(calls['query'], ['generation-7'])
 
     def test_epoch_advance_by_a_sync_publish_still_serves_verified_cards(self):
         # cas_mark_new_write moves only the journal epoch; the pinned head is

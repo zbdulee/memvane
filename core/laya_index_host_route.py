@@ -785,8 +785,9 @@ def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
 
 
 def _settle_moves(cwd: str, action: str, decision: dict) -> dict:
-    """Wait out a state-root move or a project folder move (``.memvane/``)."""
-    for name in ("laya_state_move", "laya_project_dir_move"):
+    """Wait out a state-root move, a project folder move (``.memvane/``) or,
+    for a recall, a bundle upgrade's fence."""
+    for name in ("laya_state_move", "laya_project_dir_move", "laya_fresh_wiki_origin"):
         if decision.get("state") != "blocked":
             return decision
         try:
@@ -871,6 +872,13 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     except Exception:
         building = False
     if building:
+        # A host plugin update (or an in-place re-extraction of the bound
+        # bundle) moves the inactive or bound build in a detached worker.
+        try:
+            import laya_bundle_upgrade
+            laya_bundle_upgrade.request_for_project(root)
+        except Exception:
+            pass
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
@@ -959,6 +967,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     else:
         return 2
+    if (args[0] == "classify-hook" and args[1] == "recall" and
+            decision["state"] == "blocked" and
+            decision.get("reason") == "bundle_upgrade_in_progress"):
+        # The dispatcher answers this recall without context, not an error.
+        print("upgrading")
+        return 0
     print(decision["state"])
     return 0
 

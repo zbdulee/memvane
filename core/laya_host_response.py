@@ -55,13 +55,35 @@ _DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
                                   'deferred_queue_capacity_retained'))
 
 
-# Inputs of one served recall for post-output learning capture (see main).
-_LEARNING_CAPTURE: list = []
+# Inputs of one served recall for post-output learning capture. Only an
+# entry that runs capture after its answer (``main``) opens a slot, bound to
+# its own context; an in-process host (Hermes, possibly concurrent recalls)
+# has none, so its recalls keep nothing behind.
+_LEARNING_CAPTURE: contextvars.ContextVar = contextvars.ContextVar(
+    'memvane_learning_capture', default=None)
 
 
-def _capture_learning(started: float) -> None:
+@contextmanager
+def learning_capture():
+    """Open this context's capture slot; yields the list the recall fills."""
+    slot: list = []
+    token = _LEARNING_CAPTURE.set(slot)
+    try:
+        yield slot
+    finally:
+        _LEARNING_CAPTURE.reset(token)
+
+
+def _set_learning_capture(entry) -> None:
+    """Record (or with None, drop) this recall's capture inputs, if a slot is open."""
+    slot = _LEARNING_CAPTURE.get()
+    if slot is not None:
+        slot[:] = [] if entry is None else [entry]
+
+
+def _capture_learning(slot: list, started: float) -> None:
     """Run learning capture after the response is flushed; never raises."""
-    pending, _LEARNING_CAPTURE[:] = list(_LEARNING_CAPTURE), []
+    pending, slot[:] = list(slot), []
     if not pending:
         return
     try:
@@ -1660,7 +1682,7 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
             if retry is None:
                 raise
             changed = _retry_code(exc)
-        _LEARNING_CAPTURE[:] = []
+        _set_learning_capture(None)
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
                              retry=changed)
         return _serve_selected_once(action, host, retry, payload)
@@ -2140,7 +2162,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
                                  read_only_label='worktree')
         # Learning belongs to the main checkout's own sessions.
-        _LEARNING_CAPTURE[:] = []
+        _set_learning_capture(None)
         key = 'context' if host == 'hermes' else None
         holder = response if key else response.get('hookSpecificOutput', {})
         field = key or 'additionalContext'
@@ -2297,15 +2319,12 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     try:
         if v2:
             from laya_incremental_docs_query import query_incremental
-            try:
-                incremental_rows, incremental_title_only, incremental_locations, \
-                    shadow_paths, base_generation = query_incremental(
-                        prompt, decision, proof, query_provider)
-            except _VectorUnavailable:
-                # No query vector (bundle drift, cold or deferred provider):
-                # serve the sealed base generation alone, lexical lists only.
-                incremental_rows, incremental_title_only = [], frozenset()
-                incremental_locations, shadow_paths, base_generation = {}, (), None
+            # Without a query vector (bundle drift, cold or deferred provider)
+            # completed incremental cards serve from their lexical lists and
+            # keep shadowing the older heads of the base generation.
+            incremental_rows, incremental_title_only, incremental_locations, \
+                shadow_paths, base_generation = query_incremental(
+                    prompt, decision, proof, query_provider)
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
@@ -2387,7 +2406,7 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     chosen = chosen[:answer_limit]
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.
-    _LEARNING_CAPTURE[:] = [(host, decision, payload, settings, rows[:15], chosen)]
+    _set_learning_capture((host, decision, payload, settings, rows[:15], chosen))
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
@@ -2430,6 +2449,19 @@ def _relocated(selection, decision):
         return False
 
 
+_UPGRADE_RECALL_NOTICE = '[memvane] bundle upgrade in progress; no context for this prompt'
+
+
+def _upgrade_fenced(payload, fallback_cwd) -> bool:
+    """The event's project route is fenced by an in-flight bundle upgrade."""
+    cwd = payload.get('cwd') if isinstance(payload, dict) else None
+    try:
+        from laya_fresh_wiki_origin import upgrade_in_progress
+        return upgrade_in_progress(cwd if isinstance(cwd, str) else fallback_cwd)
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 4 and args[0] == "serve-stdin":
@@ -2448,7 +2480,6 @@ def main(argv: list[str] | None = None) -> int:
         pass
     decision = payload = None
     started = time.monotonic()
-    _LEARNING_CAPTURE[:] = []
     try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
@@ -2459,22 +2490,32 @@ def main(argv: list[str] | None = None) -> int:
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         if selection["state"] not in ("candidate", "preview", "worktree"):
+            if (action == "recall" and
+                    selection.get("reason") == "bundle_upgrade_in_progress"):
+                print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
+                return 0
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = _reselect(cwd, action)
         if decision != selection and not _relocated(selection, decision):
             _fail("selected_route_changed")
-        response = (serve_preview(action, host, decision, payload)
-                    if decision['state'] == 'preview' else
-                    serve_selected(action, host, decision, payload))
+        with learning_capture() as capture:
+            response = (serve_preview(action, host, decision, payload)
+                        if decision['state'] == 'preview' else
+                        serve_selected(action, host, decision, payload))
         print(json.dumps(response, ensure_ascii=True, allow_nan=False,
                          separators=(",", ":")), flush=True)
         if action == "recall":
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
-            _capture_learning(started)
+            _capture_learning(capture, started)
         return 0
     except Exception as exc:
+        if action == "recall" and _upgrade_fenced(payload, fallback_cwd):
+            # The route was fenced by a bundle upgrade mid-recall: no context
+            # for this prompt, never an error.
+            print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
+            return 0
         # Hook stderr is intentionally terse. No source body, path, or secrets.
         code = _refusal_code(exc)
         print(f"[memvane] {code}; request refused", file=sys.stderr)
