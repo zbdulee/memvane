@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from context_learning import adapter_binding, selector_heal
 
 
-class RebindTests(unittest.TestCase):
+class Fixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='qmd-heal-rebind-')
         root = Path(self.temp.name).resolve(); root.chmod(0o700)
@@ -47,6 +47,7 @@ class RebindTests(unittest.TestCase):
                 patch.object(selector_heal, '_official', return_value=None):
             return selector_heal.rebind(self.state, home=self.state)
 
+class RebindTests(Fixture):
     def test_identical_official_anchor_of_the_other_host_is_kept(self):
         before = (self.state / selector_heal.POLICY).read_bytes()
         policy, rebound = self.rebind(lambda argv, adapter, **kw: [argv[0], str(adapter), argv[2]])
@@ -70,6 +71,37 @@ class RebindTests(unittest.TestCase):
         with self.assertRaises(selector_heal.HealDeferred):
             self.rebind(late)
         self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)
+
+
+class HealTests(Fixture):
+    def test_kept_other_host_anchor_still_prepares_missing_evidence(self):
+        from context_learning import local_cycle
+        (self.state / 'active-checkpoint.json').write_text('{}')
+        (self.state / 'active-checkpoint.json').chmod(0o600)
+        before = (self.state / selector_heal.POLICY).read_bytes()
+        attested, prepared, admits = [], [], [False, True]
+        class Trainer:
+            # The real trainer accepts only its own sibling adapter module.
+            def __init__(inner, argv, **kwargs):
+                if argv[1] != str(self.codex):
+                    raise ValueError('invalid_verified_laya_command')
+                attested.append(argv)
+            def _prepare(inner, mode, *, cwd): pass
+        home = self.state.parent / 'home'; home.mkdir(mode=0o700)
+        with patch.object(selector_heal, 'running_adapter', return_value=self.codex), \
+                patch.object(adapter_binding, 'inference_argv',
+                             side_effect=lambda argv, adapter, **kw: [argv[0], str(adapter), argv[2]]), \
+                patch.object(selector_heal, 'check_scope', return_value=None), \
+                patch.object(selector_heal, 'admitted', side_effect=lambda *a: admits.pop(0)), \
+                patch.object(selector_heal, 'pressure', return_value=None), \
+                patch.object(selector_heal, 'prepare', side_effect=lambda state, policy: prepared.append(policy)), \
+                patch.object(local_cycle, 'VerifiedLayaTrainer', Trainer), \
+                patch('memvane_paths.state_base', return_value=home):
+            result = selector_heal.heal('/synthetic/project', home=home, state=self.state)
+        self.assertEqual(result, {'status': 'selector_prepared', 'rebound': False})
+        self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)
+        self.assertEqual([argv[1] for argv in attested], [str(self.codex)])
+        self.assertEqual(prepared[0]['trainerArgv'][1], str(self.codex))
 
 
 if __name__ == '__main__':

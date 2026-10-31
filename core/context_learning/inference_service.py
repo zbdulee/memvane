@@ -217,7 +217,14 @@ class GenerationEngine:
                                          already_running=self.active is not None)
         if limits is None:
             raise ServiceFailure('resource_deferred')
-        if not math.isfinite(self.rss()) or self.rss() > job['policy']['maxRssMib']:
+        current = self.rss()
+        if not math.isfinite(current) or current > job['policy']['maxRssMib']:
+            if self.active is not None and self.pending is None:
+                # A loaded model this process can no longer afford is released,
+                # never kept to refuse every later request; the next one reloads.
+                self.active = self.footprint_mib = None
+                import gc
+                gc.collect()
             raise ServiceFailure('resource_deferred')
         replacement = self.active is not None and self.active[0] != job['generation']
         if replacement and self.active[0][:3] != job['family']:
@@ -276,11 +283,15 @@ class GenerationEngine:
                 raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
         except Exception as exc:
             # A first load whose request runs out of time still leaves the
-            # service warm. A later request validates itself and uses the model
-            # only when it names this exact generation. Any other failure, and
-            # every replacement, publishes nothing.
+            # service warm while current RSS stays within policy. A later
+            # request validates itself and uses the model only when it names
+            # this exact generation. Any other failure, and every replacement,
+            # publishes nothing.
             if warm is not None and self.active is None and _failure(exc) == 'deadline_expired':
-                self.active, self.footprint_mib = warm
+                # Scoring may have grown memory since the load-time check.
+                current = self.rss()
+                if math.isfinite(current) and current <= job['policy']['maxRssMib']:
+                    self.active, self.footprint_mib = warm
             raise
         if pending is not None:
             self.active = pending

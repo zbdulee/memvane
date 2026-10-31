@@ -197,6 +197,25 @@ class WarmFirstLoadTests(unittest.TestCase):
         self.assertEqual(self.run_job(job())['head'],'a')
         self.assertEqual(len(self.loads),1)
 
+    def test_expired_first_load_is_dropped_when_memory_grew_or_is_unknown(self):
+        for grown in (2048, float('nan')):
+            self.setUp();rss=[100];self.engine.rss=lambda:rss[0]
+            def late(loaded, request, **kw):
+                rss[0]=grown;raise ValueError('prediction_cancelled')
+            self.engine.forward=late
+            with self.assertRaises(ValueError):self.run_job(job())
+            self.assertIsNone(self.engine.active,'over-budget model retained after expiry')
+
+    def test_active_model_over_rss_is_released_then_reloaded(self):
+        rss=[100];self.engine.rss=lambda:rss[0]
+        self.assertEqual(self.run_job(job())['head'],'a')
+        rss[0]=2048
+        with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):self.run_job(job())
+        self.assertIsNone(self.engine.active,'over-budget model kept loaded')
+        rss[0]=100
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),2)
+
     def test_other_first_load_failures_and_replacements_publish_nothing(self):
         def broken(loaded, request, **kw):raise RuntimeError('synthetic forward failure')
         self.engine.forward=broken

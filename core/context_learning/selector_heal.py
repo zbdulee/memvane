@@ -313,13 +313,19 @@ def heal(project, *, home=None, deadline=None, state=None):
     policy, rebound = rebind(state, home=home, deadline=deadline)
     if admitted(state, policy['trainerArgv']):
         return {'status': 'selector_ready', 'rebound': rebound}
+    # A kept anchor of another host's identical copy stays in the policy; the
+    # attestation runs this host's verified adapter (the trainer accepts only
+    # its own sibling module). Preparation normalizes the anchor itself.
+    argv = policy['trainerArgv']
+    run = (policy if argv[1] == str(running_adapter())
+           else {**policy, 'trainerArgv': [argv[0], str(running_adapter()), argv[2]]})
     lease = _prepare_lease(home)
     try:
-        reason = pressure(policy)
+        reason = pressure(run)
         if reason is not None:
             raise HealDeferred(reason)
-        attest(state, policy)
-        prepare(state, policy)
+        attest(state, run)
+        prepare(state, run)
     finally:
         os.close(lease)
     if not admitted(state, policy['trainerArgv']):
