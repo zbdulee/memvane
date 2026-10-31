@@ -505,6 +505,8 @@ equivalent persistence-off flag.
 - protects superseded and non-managed pages from silent overwrite;
 - writes generated wiki files under `.memvane/wiki`;
 - writes new or auto-updated cards as `status: generated` by default;
+- refuses a card whose body does not fit the local selector budget
+  (`core/wiki_card_budget.py`, below) and reports `split-required`;
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
@@ -553,6 +555,61 @@ scan (`core/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
 above to `.memvane/compile/dedup-needed.jsonl` for the `wiki-dedup`
 resolver. It makes no model or paid call.
+
+#### Card Body Budget
+
+The live local selector scores a (user request, card) pair with its checkpoint's
+legacy input view, `max_len` 1024 tokens, and refuses a longer pair. It reads a
+card through `context_learning.compact_input.derive`: everything after the
+frontmatter (banner, auto-block markers, summary, hand-written sections). The
+title and other frontmatter never enter the pair. `core/wiki_card_budget.py`
+measures a card through the same `derive` call:
+
+| Part | Tokens |
+|---|---|
+| fixed question frame (`[CLS]`, question head, options, separators, `User request:` / `Wiki card body:` labels) | 38 |
+| card body (`BODY_BUDGET`) | 700 |
+| user request room (`QUERY_ROOM`) | 286 |
+
+The body is counted with the selector checkpoint's own `tokenizer/tokenizer.json`
+through the selector runtime's `tokenizers` library when the project's live
+selector is prepared (`method: tokenizer`); otherwise a tokenizer-free estimate
+counts it (`method: estimate`). The estimate weights ASCII digits 1, ASCII letter
+runs ceil(len/4), newlines 1, spaces/tabs 0.5, other ASCII 1, Hangul syllables 1,
+other BMP characters 2 and astral characters 4. On 1765 real card bodies the real
+count is at most 0.921 of the estimate (median 0.76) and no card estimated within
+700 holds more than 578 real tokens; rare Hangul or CJK characters that the
+tokenizer splits into bytes can exceed their weight, and the request room
+absorbs that. Counting request and body apart is one token above the joint
+tokenization the selector performs.
+
+`core/wiki_compile.py` measures the complete file it would write, after lint and
+mode checks and before the paid duplicate judge for a new card, and the composed
+card (with hand-written sections) for an update. A card over the budget is not
+written: the candidate ledger row and stdout carry `split-required` with `size`,
+`budget`, `method` and `reason` (`over_budget`, or `manual_section_over_budget`
+when only a hand-written section overflows). Existing longer cards stay as they
+are; only a rewrite has to fit. Every compile writer reaches this gate: the
+compile worker (source edits, initial wiki backfill, survivor refreshes) and the
+`wiki-compile` skill. The verify worker and source retirement patch frontmatter
+only, and pending replacement publishes a page this gate already measured.
+
+The compile worker states the budget in the extractor prompt (`payload.cardBudget`:
+body 700, summary about 597 after the scaffold). When the writer refuses
+candidates as over budget, the worker re-prompts the same extractor once with a
+`split` request naming them; the replacements are split by topic or category,
+each with its own `canonicalKey` and the sibling keys in `related` (frontmatter
+list, outside the body budget). The re-prompt is one paid extraction counted
+against the run's extractor budget, and its parts count against
+`compile.budget.cardsPerSource`. A card still over the budget, a failed
+re-prompt, or an exhausted run budget leaves those cards unwritten and records
+`card_over_budget` / the extractor reason / `extractor_budget_exhausted` in
+`candidates.jsonl`; the source job is settled, not retried.
+
+`core/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
+the loser stays, the pair is recorded as skipped and the CLI returns
+`kept_separate`. The resolver agent measures with
+`python3 core/wiki_card_budget.py --cwd <project> <keeper> <loser>` before folding.
 
 ## Laya Runtime and Embedding
 
@@ -804,6 +861,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `learning.state`, `learning.prepare` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound` |
+| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (`reason`, `path`, `title`, `size`, `budget`, `method`); `split` / `split_incomplete` / `split_failed` / `split_deferred` (source `path`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

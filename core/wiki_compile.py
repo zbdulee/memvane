@@ -181,6 +181,16 @@ def clean_aliases(value: object) -> list[str]:
     return aliases
 
 
+MAX_RELATED = 20
+
+
+def clean_related(value: object, own_key: str = "") -> list[str]:
+    """Sibling card keys from a split: one line each, never the card's own key."""
+    own = normalize_identity(own_key) if own_key else ""
+    keys = [yaml_scalars.fold_inline(item)[:200] for item in clean_aliases(value)]
+    return [key for key in keys if key and normalize_identity(key) != own][:MAX_RELATED]
+
+
 def clean_canonical_key(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
@@ -888,6 +898,13 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
             lines.append(f"  - {yaml_scalar(alias)}")
     else:
         lines.append("aliases: []")
+    # Sibling cards of a split (wiki_card_budget). Frontmatter only, so the
+    # cross-reference costs nothing in the selector body budget.
+    related = clean_related(candidate.get("related"), canonical_key)
+    if related:
+        lines.append("related:")
+        for key in related:
+            lines.append(f"  - {yaml_scalar(key)}")
     lines.extend([
         f"type: {suggested_type}",
         f"status: {status}",
@@ -987,6 +1004,10 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
             merged.extend(new_by_key["status"])
             replaced.add("status")
             continue
+        if key == "related" and "related" in new_by_key:
+            merged.extend(new_by_key["related"])
+            replaced.add("related")
+            continue
         if key == "sources":
             merged.extend(new_by_key["sources"] if replace_sources else lines)
             if "sourceRevisions" in new_by_key:
@@ -999,6 +1020,8 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
             merged.extend(new_by_key[key])
     if "sourceRevisions" in new_by_key and "sourceRevisions" not in replaced:
         merged.extend(new_by_key["sourceRevisions"])
+    if "related" in new_by_key and "related" not in replaced:
+        merged.extend(new_by_key["related"])
 
     body = old_text[old_match.end():]
     if len(list(AUTO_BLOCK_RE.finditer(body))) != 1:
@@ -1339,6 +1362,42 @@ def judge_new_page_duplicate(
     return None, None, last_info
 
 
+def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
+                   record: dict, candidate_path: Path, card_text: str,
+                   generated_text: str | None = None) -> bool:
+    """Refuse a card whose selector body does not fit ``wiki_card_budget``.
+
+    ``card_text`` is the complete file this compile would write (for an update,
+    the composed card with its hand-written sections). Nothing is written on
+    refusal: the candidate ledger row and stdout carry ``split-required`` so the
+    caller splits the knowledge into several cards. ``generated_text`` is the
+    plugin page alone; when it fits but the composed card does not, the overflow
+    is outside the managed block and splitting the summary cannot fix it.
+    """
+    import wiki_card_budget as budget
+    tokenizer = budget.selector_tokenizer(config, root)
+    measured = budget.measure_card(card_text, tokenizer)
+    if measured["fits"]:
+        return False
+    reason = measured["reason"]
+    if generated_text is not None and generated_text != card_text:
+        if budget.measure_card(generated_text, tokenizer)["fits"]:
+            reason = "manual_section_over_budget"
+    rel = target.relative_to(wiki_root).as_posix()
+    fields = {"size": measured["size"], "budget": measured["budget"],
+              "method": measured["method"]}
+    record["action"] = "split-required"
+    record["lint"] = {"verdict": "needs_split", "findings": [reason]}
+    record["cardBudget"] = {**fields, "reason": reason}
+    append_jsonl(candidate_path, record)
+    budget.emit(root, "over_budget", bound=selected, path=rel, title=record["title"],
+                reason=reason, **fields)
+    print(json.dumps({"action": "split-required", "reason": reason,
+                      "targetPath": record["targetPath"], "title": record["title"],
+                      "canonicalKey": record["canonicalKey"], **fields}, ensure_ascii=False))
+    return True
+
+
 def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1519,6 +1578,14 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         print(json.dumps({"action": "candidate", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 0
 
+    # Card body budget before the paid duplicate judge: a card the local
+    # selector cannot score is never written (wiki_card_budget).
+    if not target.exists() and budget_refused(
+            root, config, selected, wiki_root, target, record, candidate_path,
+            markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
+                          redactions, h)):
+        return 0
+
     if not target.exists():
         # LLM body judgment first: it covers EVERY new page, including
         # explicit-targetPath candidates that the legacy slug-only gate skipped.
@@ -1622,6 +1689,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         status = "generated"
         page = markdown_page(candidate, summary, status, redactions, h)
         action = "updated"
+        # The selector reads the whole refreshed card, hand-written sections
+        # included. An existing long card stays as it is; only this rewrite
+        # is refused.
+        composed = compose_generated_card(old, page)
+        if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
+                          composed if composed is not None else page, page):
+            return 0
     # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
     # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
     # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지

@@ -26,6 +26,7 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades             # bundle upgrade / journal conversion
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki  # one event kind; add --json for raw lines
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.backfill  # finite initial-pass progress
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
    ```
 
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update) or `worktree`.
@@ -35,6 +36,14 @@ For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 outcomes), and `skipped` means the frozen revision changed, vanished or became
 excluded. Neither `settled` nor `complete` proves generated or verified cards.
 Report card creation and verification separately from their own events.
+
+For `wiki.card`, `over_budget` is a card the writer refused because its body
+exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
+`estimate`; `reason` `manual_section_over_budget` when the overflow is a
+hand-written section). `split` / `split_incomplete` / `split_failed` /
+`split_deferred` report the one split re-prompt per source (`requested`,
+`parts`, `written`), and `merge_kept_separate` is a dedup merge refused because
+the keeper is over the budget.
 
 ## Safety
 

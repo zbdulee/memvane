@@ -248,6 +248,10 @@ def to_candidate(payload: dict[str, Any], item: dict[str, Any]) -> dict[str, Any
         aliases = [alias.strip() for alias in item.get("aliases") if isinstance(alias, str) and alias.strip()]
         if aliases:
             candidate["aliases"] = aliases
+    if isinstance(item.get("related"), list):
+        related = [key.strip() for key in item.get("related") if isinstance(key, str) and key.strip()]
+        if related:
+            candidate["related"] = related
     return candidate
 
 

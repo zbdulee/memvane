@@ -304,6 +304,11 @@ wiki compile은 원문 Markdown을 편집하면 `.memvane/wiki`에 정리된 wik
 
 minimal settings로 온보딩한 프로젝트는 wiki compile이 켜진 상태입니다.
 
+새로 만들거나 고쳐 쓰는 문서 카드는 로컬 선택 모델이 한 번에 읽을 수 있는 길이에 맞춥니다.
+요청과 카드를 합쳐 1024토큰이므로 카드 본문은 700토큰까지이고, 넘는 카드는 쓰지 않고 주제별
+카드 여러 장으로 나누어 다시 추출합니다. 나뉜 카드는 frontmatter `related`로 서로를 가리킵니다.
+이미 있는 긴 카드는 나누지 않습니다. 자세한 계산은 [architecture.md](docs/architecture.md#card-body-budget)에 있습니다.
+
 minimal settings로 색인 활성화가 끝난 프로젝트는 다음 세션 시작이나 수동 동기화 때 기존 Markdown의
 첫 위키 생성도 시작합니다. 설정 파일만 있는 미온보딩 프로젝트에서는 실행하지
 않습니다. 첫 이벤트에서 파일과 내용 지문 목록을 한 번 고정하고, 기존 호출 예산에

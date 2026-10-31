@@ -137,6 +137,28 @@ def record_recovery(compile_dir: Path, delete_rel: str, paired_with: str, conten
     return path
 
 
+def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
+    """The keeper's budget measurement when its body is over the card budget, else None."""
+    import wiki_card_budget
+    if not isinstance(keeper_rel, str):
+        return None
+    keeper = (wiki_root / keeper_rel).resolve()
+    try:
+        keeper.relative_to(wiki_root)
+        text = keeper.read_text(encoding="utf-8")
+    except (ValueError, OSError, UnicodeError):
+        return None
+    tokenizer = None
+    try:
+        found = qmd_config.find_project_config(str(root))
+        tokenizer = wiki_card_budget.selector_tokenizer(found["config"], root)
+    except Exception:  # noqa: BLE001 - the estimate is the fallback
+        tokenizer = None
+    measured = wiki_card_budget.measure_card(text, tokenizer)
+    # A page the selector does not read at all (no frontmatter) is not a budget case.
+    return measured if measured["reason"] == "over_budget" else None
+
+
 def pair_missing(wiki_root: Path, entry: dict) -> bool:
     pages = (entry.get('pageA'), entry.get('pageB'))
     if any(not isinstance(page, str) for page in pages):
@@ -192,6 +214,20 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
                     "_syncAfterMutation": laya_bound is not None}
 
         paired_with = page_b if delete_rel == page_a else page_a
+        refused = keeper_over_budget(root, wiki_root, paired_with)
+        if refused is not None:
+            # A keeper the local selector cannot score keeps the pair as two
+            # cards: the loser stays, and the pair is recorded as skipped.
+            recorded = record_skip(root, wiki_root, compile_dir, entry)
+            import wiki_card_budget
+            wiki_card_budget.emit(root, "merge_kept_separate", bound=laya_bound,
+                                  path=paired_with, reason=refused["reason"],
+                                  size=refused["size"], budget=refused["budget"],
+                                  method=refused["method"], kept=delete_rel)
+            return {"action": "kept_separate", "reason": "keeper_over_budget",
+                    "keeper": paired_with, "kept": delete_rel, "recorded": recorded,
+                    "size": refused["size"], "budget": refused["budget"],
+                    "method": refused["method"]}
         content = target.read_text(encoding="utf-8")
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
