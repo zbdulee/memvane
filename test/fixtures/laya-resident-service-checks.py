@@ -421,9 +421,16 @@ class ServiceChecks(Fixture):
                   'state = s.ensure_service(root=sys.argv[2], learning_root=False,\n'
                   '                         spawn=lambda argv, **kw: spawned.append(argv))\n'
                   'print(json.dumps({"state": state, "spawned": len(spawned)}))\n')
-        done = subprocess.run((sys.executable, '-B', '-c', script, str(self.old_core),
-                               str(legacy)), capture_output=True, text=True, check=False,
-                              env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+        for _attempt in range(3):
+            done = subprocess.run((sys.executable, '-B', '-c', script, str(self.old_core),
+                                   str(legacy)), capture_output=True, text=True, check=False,
+                                  env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+            # The 0.40.3 client gives its hello a fixed 0.5 s; on a loaded
+            # host it reports laya_service_busy before the in-process service
+            # answers. That is the old code's deadline, not the state asked
+            # about here: ask again, a bounded number of times.
+            if done.returncode == 0 or 'laya_service_busy' not in done.stderr:
+                break
         self.assertEqual(done.returncode, 0, done.stderr)
         return json.loads(done.stdout)
 
