@@ -26,6 +26,7 @@ DEADLINE_SECONDS = 2.0
 
 class QueryVectorUnavailable(Exception):
     """The provider has no query vector for this prompt; lexical lists serve."""
+    no_query_vector = True
 
 
 def _fail(reason):
@@ -67,8 +68,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     consistent snapshot. A mismatch fails closed; a missing sidecar is a valid
     zero-document initial build only after the caller's pending-install proof.
     """
-    from laya_host_response import (_PROVIDER_RESULT_KEYS, _VectorUnavailable,
-                                    _fts_atom, _v2_body_evidence,
+    from laya_host_response import (_PROVIDER_RESULT_KEYS, _fts_atom,
+                                    _v2_body_evidence,
                                     _verified_wiki_row, _fuse_verified_lists,
                                     _promote_exact_ep)
     from keywords import build_lexical_terms, select_general_terms_explained
@@ -228,9 +229,13 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
             # uses only the already-running installer-attested provider.
             try:
                 supplied = provider(' '.join(prompt.split()), profile)
-            except (QueryVectorUnavailable, _VectorUnavailable):
-                # The preview and the selected recall name "no query vector"
-                # with their own class; either way the lexical lists serve.
+            except Exception as exc:
+                # "No query vector" is marked, not one class: the selected
+                # recall raises its own, and the hook runs that module as
+                # __main__, a second copy with its own classes. Either way
+                # the lexical lists serve.
+                if not getattr(exc, 'no_query_vector', False):
+                    raise
                 supplied = None
             if supplied is None:
                 # No query vector (admission deferred, learning lane

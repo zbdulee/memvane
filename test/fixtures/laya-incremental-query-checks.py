@@ -139,14 +139,21 @@ class IncrementalReadChecks(unittest.TestCase):
             # The selected recall's provider has no query vector (cold,
             # deferred or drifted owner): the completed card still serves
             # from its lexical list and keeps shadowing the old head.
-            from laya_host_response import _VectorUnavailable
-
-            def vector_off(_prompt, _profile):
-                raise _VectorUnavailable('provider_unavailable')
-            rows, _titles, _locations, shadow, base = query_incremental(
-                'unique', self.decision, {'vectorProfile': self.profile}, vector_off)
-            self.assertEqual([row['body'] for row in rows], [new])
-            self.assertEqual((shadow, base), (('wiki/a.md',), 'head'))
+            # The hook runs laya_host_response.py as __main__, a second copy
+            # of the module with its own exception classes; both must count.
+            import importlib.util
+            import laya_host_response
+            spec = importlib.util.spec_from_file_location(
+                'laya_host_response_as_main', CORE / 'laya_host_response.py')
+            as_main = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(as_main)
+            for module in (laya_host_response, as_main):
+                def vector_off(_prompt, _profile, module=module):
+                    raise module._VectorUnavailable('provider_unavailable')
+                rows, _titles, _locations, shadow, base = query_incremental(
+                    'unique', self.decision, {'vectorProfile': self.profile}, vector_off)
+                self.assertEqual([row['body'] for row in rows], [new], module.__name__)
+                self.assertEqual((shadow, base), (('wiki/a.md',), 'head'))
             # A newer file edit has no completed vector set yet. Search keeps
             # the last completed sidecar snapshot, never the unwritten body.
             (self.wiki / 'a.md').write_text('# Third\nnot embedded\n', encoding='utf-8')

@@ -103,6 +103,9 @@ def _fail(code: str):
 
 class _VectorUnavailable(Exception):
     """No query vector for this prompt; serve the published lexical lists."""
+    # ``laya_incremental_docs_query`` recognizes this marker, not the class:
+    # the hook runs this file as __main__, a second copy of every class here.
+    no_query_vector = True
 
 
 class _SealedManifestMismatch(Exception):
@@ -2322,9 +2325,16 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
             # Without a query vector (bundle drift, cold or deferred provider)
             # completed incremental cards serve from their lexical lists and
             # keep shadowing the older heads of the base generation.
-            incremental_rows, incremental_title_only, incremental_locations, \
-                shadow_paths, base_generation = query_incremental(
-                    prompt, decision, proof, query_provider)
+            try:
+                incremental_rows, incremental_title_only, incremental_locations, \
+                    shadow_paths, base_generation = query_incremental(
+                        prompt, decision, proof, query_provider)
+            except _VectorUnavailable:
+                # Defensive: query_incremental serves its lexical lists itself.
+                # Should a vector failure still escape, the base generation
+                # alone answers rather than the whole recall failing.
+                incremental_rows, incremental_title_only = [], frozenset()
+                incremental_locations, shadow_paths, base_generation = {}, (), None
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
