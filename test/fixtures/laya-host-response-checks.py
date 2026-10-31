@@ -311,7 +311,7 @@ class ResponseChecks(unittest.TestCase):
                               return_value={'queued': 1, 'reason': 'queued'}) as enqueue:
                 self.assertEqual(response.serve_selected('compile', 'codex',
                                                          decision, event), {})
-            enqueue.assert_called_once_with(event)
+            enqueue.assert_called_once_with({**event, 'engine': 'codex'})
 
     def test_selected_session_start_wakes_pending_compile_queue(self):
         import compile_paths
@@ -1817,7 +1817,8 @@ class ProofRetryChecks(unittest.TestCase):
                         patch.object(hook_budget, '_deadline', None)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        temp = tempfile.TemporaryDirectory(prefix='laya-proof-retry-', dir='/private/tmp')
+        temp = tempfile.TemporaryDirectory(prefix='laya-proof-retry-',
+                                           dir=str(Path(tempfile.gettempdir()).resolve()))
         self.addCleanup(temp.cleanup)
         db_path = Path(temp.name).resolve() / 'index.sqlite'
         # The real published-view check reads this head/membership store.

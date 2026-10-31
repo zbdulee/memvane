@@ -67,46 +67,19 @@ def compile_max_files():
 
 
 def compile_engine(compile_cfg):
-    """compile 레코드에 남길 engine 라벨.
-
-    worker는 engine으로 extractor adapter를 고르므로(`resolve_extractor_argv`),
-    QMD_ENGINE이 없는 수동 sync에서도 해석 가능한 값을 남겨야 한다 — 아니면 job이
-    `missing_extractor`로 실패한다. builtin adapter가 호출하는 host CLI 바이너리 이름이
-    engine 이름과 같아서(claude/codex/hermes) 설정에 적힌 builtins 순서대로 PATH를 훑는다.
-
-    **`backends`만 설정한 프로젝트도 해석해야 한다.** builtins가 비고 backends에 명시 argv만
-    적은 설정(라이브 service-engineering이 그 형태다)에서 예전에는 `unknown`을 돌려줬고,
-    worker의 `resolve_extractor_argv`는 `backends["unknown"]`을 찾지 못해 그 프로젝트의
-    수동 enqueue가 전부 `missing_extractor`로 죽었다 — QMD_ENGINE을 넣어 주는 hook 경로에서만
-    우연히 살아 있던 분기다. backends 키도 같은 규칙(엔진 이름 == host CLI 이름)으로 훑는다.
-    """
-    extractor = compile_cfg.get("extractor") if isinstance(compile_cfg.get("extractor"), dict) else {}
-    raw_builtins = extractor.get("builtins")
-    builtins = [e for e in raw_builtins if isinstance(e, str)] if isinstance(raw_builtins, list) else []
-    raw_backends = extractor.get("backends") if isinstance(extractor.get("backends"), dict) else {}
-    backends = [e for e in raw_backends if isinstance(e, str)]
+    """Explicit caller host only; installed CLI order is never provenance."""
     env_engine = os.environ.get("QMD_ENGINE")
-    if isinstance(env_engine, str) and (env_engine in builtins or env_engine in backends):
-        return env_engine
-    # builtins를 먼저 본다(기존 우선순위 유지). 그 다음이 명시 backends다.
-    for engine in list(builtins) + [e for e in backends if e not in builtins]:
-        if shutil.which(engine):
-            return engine
-    if builtins:
-        return builtins[0]
-    if backends:
-        return backends[0]
-    return env_engine if isinstance(env_engine, str) and env_engine else qmd_config.UNKNOWN_ENGINE
+    return env_engine if env_engine in ('claude', 'codex', 'hermes', 'gemini') else qmd_config.UNKNOWN_ENGINE
 
 
-def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER):
+def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER, engine=None):
     """변경 파일 중 compile source가 될 수 있는 것만 (컬렉션, 상대경로, 레코드)로 추린다.
 
     per-file 게이팅(source_text 확장자 / raw·session role / dot-prefix / DENIED_SOURCE_SEGMENTS)은
     `wiki_compile_enqueue._source_record`를 그대로 재사용한다. 삭제된 파일은 읽을 소스가
     없으므로 제외한다(카드 정리는 compile 경로의 책임이 아니다).
     """
-    engine = compile_engine(compile_cfg)
+    engine = compile_engine(compile_cfg) if engine is None else engine
     candidates = []
     for name, root, rel in intent.changed_source_paths(changed_files):
         record = _source_record(
@@ -164,7 +137,7 @@ def _stable_revision(path):
 
 
 def enqueue_changed_sources(project_root, config, changed_files,
-                            *, session_start=False):
+                            *, session_start=False, initial_backfill=None, engine=None):
     """sync가 감지한 변경 소스 문서를 compile source-queue에도 넣는다.
 
     git pull·rebase·외부 도구 편집은 PostToolUse 훅을 타지 않아 wiki 카드가 조용히 낡는다.
@@ -174,6 +147,8 @@ def enqueue_changed_sources(project_root, config, changed_files,
     LLM은 호출하지 않는다 — 메타데이터만 append하고 실제 compile은 기존 backend manager
     kick 경로(편집 훅의 kick-wiki-compile, SessionStart의 --flush)가 처리한다.
     """
+    if engine is not None and engine not in ('claude', 'codex', 'hermes', 'gemini', 'unknown'):
+        return intent.enqueue_result('source_host_invalid')
     accepted, trigger = intent.trigger_policy(session_start)
     compile_cfg = compile_gate(config, accepted)
     if compile_cfg is None:
@@ -182,7 +157,13 @@ def enqueue_changed_sources(project_root, config, changed_files,
     if queue_path is None:
         return intent.enqueue_result("queue_path_rejected")
     candidates = compile_candidates(project_root, config, compile_cfg, changed_files,
-        trigger=trigger)
+        trigger=trigger, engine=engine)
+    if initial_backfill is not None:
+        if (not isinstance(initial_backfill, str) or len(initial_backfill) != 32
+                or any(ch not in '0123456789abcdef' for ch in initial_backfill)):
+            raise ValueError('invalid_initial_backfill')
+        for _name, _rel, record in candidates:
+            record['initialBackfill'] = initial_backfill
     if not candidates:
         return intent.enqueue_result("no_sources")
     cap = compile_max_files()
@@ -206,6 +187,10 @@ def enqueue_changed_sources(project_root, config, changed_files,
         import wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
             wiki_selected_laya.selected(Path(project_root)))
+    if initial_backfill is not None:
+        deferred = {tuple(item) for item in plan['result']['deferredFiles']}
+        plan['result']['backfillAccepted'] = [[name, rel] for name, rel, _record in candidates
+                                              if (name, rel) not in deferred]
     return plan["result"]
 
 
@@ -223,8 +208,8 @@ def _is_denied_source_path(rel_path: str) -> bool:
 
 
 def _engine(payload):
-    value = payload.get("engine") or os.environ.get("QMD_ENGINE") or DEFAULT_ENGINE
-    return value if isinstance(value, str) and value.strip() else DEFAULT_ENGINE
+    value = payload.get("engine") or os.environ.get("QMD_ENGINE")
+    return value if value in ('claude', 'codex', 'hermes', 'gemini') else qmd_config.UNKNOWN_ENGINE
 
 
 def _safe_queue_path(project_root, configured_path=None):

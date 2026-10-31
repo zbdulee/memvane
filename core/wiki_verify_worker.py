@@ -3,9 +3,9 @@
 
 wiki_compile.py enqueues freshly written generated cards to verify-queue.jsonl.
 This worker replays each card against its source documents through the same
-host-CLI adapter pool used for extraction (payload {"task": "verify"}), but
-**prefers an engine other than the one that wrote the card** (see
-plan_verify_attempts / compile.verify.crossEngine), then:
+host-CLI adapter pool used for extraction (payload {"task": "verify"}). By default
+it uses the producing host in a separate call; cross-engine review is an explicit
+compile.verify.crossEngine option. It then:
   pass         -> status: verified (+ verifiedBy/verifiedAt/verifiedMode)
   fail         -> compile.verify.onFail: delete card (default) | contested | none
   inconclusive -> compile.verify.onInconclusive: delete (default) | contested | none
@@ -118,14 +118,15 @@ def plan_verify_attempts(
     corpus was 655/688 verified cards self-reviewed by `claude`.
 
     Degrade is deliberate and asymmetric to the config:
-      - "prefer" (default) puts the producing engine LAST instead of dropping it, so a
+      - "prefer" puts the producing engine LAST instead of dropping it, so a
         single-CLI machine still verifies — marked `mode: self`. Requiring a second CLI
         would leave every card `generated`, and `recallVerifiedOnly` (default true)
         would then erase the whole wiki from recall with no human-review path to
         recover. A weaker-but-labelled check beats no wiki.
       - "require" drops it, and fails CLOSED when the producer cannot be attributed.
         Callers preserve the job instead of dropping it.
-      - "off" is the 0.x path: producing engine only.
+      - "off" (default) uses the producing engine only. An unattributable host
+        defers instead of paying another installed CLI.
 
     `cooled` are cooldown keys whose last paid call failed (non-127); they are skipped so
     the NEXT run degrades to the next candidate. This is what keeps "one paid call per
@@ -142,9 +143,9 @@ def plan_verify_attempts(
     named engine, so provenance is always expressible.)
     """
     pool = verify_engine_pool(compile_cfg, vcfg)
-    mode = vcfg.get("crossEngine", "prefer")
+    mode = vcfg.get("crossEngine", "off")
     if mode not in qmd_config.VERIFY_CROSS_ENGINE:
-        mode = "prefer"
+        mode = "off"
     cooled = set(cooled)
 
     # 생성 엔진이 builtin adapter로 카드를 만들었다면 그 adapter로 검수할 수 있어야 한다 —
@@ -156,6 +157,8 @@ def plan_verify_attempts(
         producing and producing != qmd_config.UNKNOWN_ENGINE
         and wcw.resolve_extractor_argv(compile_cfg, producing, builtins=resolve_builtins) is not None
     )
+    if mode == "off" and not producing_attributable:
+        return [], mode, "producing_engine_unavailable"
     if mode == "require" and not producing_attributable:
         # 어느 후보도 "생성 엔진과 다르다"를 증명할 수 없다 → 약속을 지킬 수 없으므로 거부.
         return [], mode, "cross_engine_unavailable"
@@ -451,18 +454,23 @@ def wake_pending_retirement(root: Path) -> None:
 
 def pending_replacement(root: Path, wiki_root: Path, job: dict,
                         live_target: Path) -> tuple[Path, str] | None:
-    """Accept only the compiler's hidden pending path for this exact target/job."""
+    """Accept only the compiler's hidden pending path for this exact target/job.
+
+    ``sourceHash`` is ``wiki_compile.source_hash``: 16 lowercase hex, the same
+    value in the auto marker and the pending filename suffix.
+    ``expectedTargetHash`` is the full SHA-256 of the prior live card bytes.
+    """
     rel = job.get('pendingPath')
     if rel is None:
         return None
     job_hash = job.get('sourceHash')
     expected = job.get('expectedTargetHash')
-    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', job_hash)
+    if (not isinstance(job_hash, str) or not re.fullmatch(r'[0-9a-f]{16}', job_hash)
             or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
             or not isinstance(rel, str)):
         raise ValueError('pending_replacement_invalid')
     root = root.resolve()
-    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash[:16])
+    pending = live_target.with_name('.' + live_target.name + '.pending-' + job_hash)
     if (pending.is_symlink() or pending.relative_to(root).as_posix() != rel
             or pending.parent != live_target.parent
             or not pending.is_relative_to(wiki_root)):

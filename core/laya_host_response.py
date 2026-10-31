@@ -964,6 +964,11 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         lists.append(floor)
     if diagnostics is not None:
         diagnostics['probeOnlyPaths'] = frozenset(probe_seen - candidate_seen)
+        # Optional compile retrieval evidence. Vector rows still hold cosine
+        # DISTANCE here; RRF below replaces score with rank and must not be
+        # interpreted as semantic relevance by that caller.
+        diagnostics['vectorCosines'] = {
+            (row['path'], row['hash']): 1.0 - row['score'] for row in vector_rows}
     fused = _promote_exact_ep(_fuse_verified_lists(lists, max_rows=HYBRID_LIST_LIMIT), prompt)
     filtered = [row for row in fused if row['score'] >= min_score and
                 not any(pattern in row['path'] for pattern in skip_paths)]
@@ -1864,7 +1869,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
         import wiki_compile_enqueue
-        outcome = wiki_compile_enqueue.enqueue_payload(payload)
+        outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
         if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
                 or outcome['queued'] < 0):
             _fail('selected_compile_enqueue_failed')
@@ -1924,7 +1929,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             import laya_wiki_discovery
             grant_kind = 'sync' if action == 'file-change-event' else 'session_start'
             try:
-                grant = laya_wiki_discovery.record_grant(decision, grant_kind)
+                grant = laya_wiki_discovery.record_grant(decision, grant_kind, engine=host)
             except Exception:
                 grant_failed = True
         try:

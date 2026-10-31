@@ -11,8 +11,8 @@ import { removeTemp } from './helpers/temp.mjs';
 // compile.semanticDedup.judge — LLM dedup judge defaults (core/config.py DEFAULTS)
 const JUDGE_DEFAULTS = {
   enabled: true,
-  // 판정 엔진을 신규 후보를 만든 엔진과 분리한다(verify.crossEngine과 같은 값 집합).
-  crossEngine: 'prefer',
+  // 기본은 생성 host의 독립 호출이며 교차 엔진은 명시 선택이다.
+  crossEngine: 'off',
   timeout: 120,
   cooldownSeconds: 600,
   maxCharsPerPage: 6000,
@@ -63,7 +63,7 @@ test('dogfood project pins the wiki extractor reasoning-effort policy', () => {
   const cfg = loadProjectConfig(projectRoot);
   const policy = {
     generation: 'low',
-    verify: 'medium',
+    verify: 'low',
     semanticDedup: 'medium',
     engines: {},
   };
@@ -72,6 +72,20 @@ test('dogfood project pins the wiki extractor reasoning-effort policy', () => {
   assert.deepEqual(Object.keys(settings).sort(), ['name', 'skipPaths']);
   assert.equal(cfg.settingsModel, 'minimal');
   assert.deepEqual(cfg.compile.reasoningEffort, policy);
+  assert.deepEqual(cfg.compile.triggers, ['post_tool_source', 'post_sync_source', 'session_start_source', 'manual']);
+});
+
+test('generation host plan tries unknown hosts once in a fixed order and preserves a known host', () => {
+  const plan = JSON.parse(execFileSync('python3', ['-c', `
+import json,sys; sys.path.insert(0, 'core'); import config
+values = ['unknown', '', None, 'codex', 'claude', 'hermes', 'gemini', 'custom-engine', ' codex ']
+print(json.dumps([config.generation_engine_order(value) for value in values]))
+`], { cwd: process.cwd(), encoding: 'utf8' }));
+  for (const unknown of plan.slice(0, 3)) {
+    assert.deepEqual(unknown, ['codex', 'claude', 'hermes']);
+    assert.equal(new Set(unknown).size, unknown.length);
+  }
+  assert.deepEqual(plan.slice(3), [['codex'], ['claude'], ['hermes'], ['gemini'], ['custom-engine'], ['codex']]);
 });
 
 function migrateLegacyConfig(cwd, env = {}) {
@@ -176,7 +190,7 @@ test('wiki recall 신규 필드는 additive로 normalize 된다', () => {
     sourceScan: { enabled: true, maxCardsPerScan: 300 },
     reasoningEffort: {
       generation: 'low',
-      verify: 'medium',
+      verify: 'low',
       semanticDedup: 'medium',
       engines: {},
     },
@@ -194,7 +208,7 @@ test('wiki recall 신규 필드는 additive로 normalize 된다', () => {
       timeout: 120,
       onFail: 'delete',
       onInconclusive: 'delete',
-      crossEngine: 'prefer',
+      crossEngine: 'off',
       builtins: [],
       cooldownSeconds: 600,
     },
@@ -677,12 +691,11 @@ test('compile.semanticDedup는 enabled/maxPairsPerScan/candidateMinScore만 정�
   const withCross = loadConfig(JSON.stringify({ compile: { semanticDedup: { judge: { crossEngine: 'require' } } } }));
   assert.equal(withCross.compile.semanticDedup.judge.crossEngine, 'require');
   const withBadCross = loadConfig(JSON.stringify({ compile: { semanticDedup: { judge: { crossEngine: 'sometimes' } } } }));
-  assert.equal(withBadCross.compile.semanticDedup.judge.crossEngine, 'prefer', '집합 밖 값은 기본값으로');
+  assert.equal(withBadCross.compile.semanticDedup.judge.crossEngine, 'off', '집합 밖 값은 기본값으로');
 });
 
-// 상수화된 4개 레버의 **값 자체**는 예전 기본값과 같아야 한다 — judge 없는 머신의 레거시
-// score 게이트 동작이 이 리팩터로 바뀌면 안 된다. 설정으로 덮을 수 없다는 것도 함께 본다.
-test('dedup score 레버 4개는 상수이고 값은 예전 기본값과 동일하다', () => {
+// 점수 임계는 유지하고 retrieval 상한만 20장으로 넓힌다. 설정으로 덮을 수 없다.
+test('dedup score thresholds stay fixed and retrieval has a 20-card context budget', () => {
   const consts = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     "sys.path.insert(0, 'core')",
@@ -692,9 +705,10 @@ test('dedup score 레버 4개는 상수이고 값은 예전 기본값과 동일�
     '  "autoMerge": c.DEDUP_AUTO_MERGE_THRESHOLD,',
     '  "topK": c.DEDUP_TOP_K,',
     '  "similarPageMaxChars": c.DEDUP_SIMILAR_PAGE_MAX_CHARS,',
+    '  "groundingMaxChars": c.DEDUP_GROUNDING_MAX_CHARS,',
     '}))',
   ].join('\n')], { encoding: 'utf8' }));
-  assert.deepEqual(consts, { threshold: 0.82, autoMerge: 0.9, topK: 3, similarPageMaxChars: 12000 });
+  assert.deepEqual(consts, { threshold: 0.82, autoMerge: 0.9, topK: 20, similarPageMaxChars: 12000, groundingMaxChars: 36000 });
 
   const overridden = loadConfig(JSON.stringify({
     compile: { semanticDedup: { threshold: 0.1, topK: 99, similarPageMaxChars: 1, autoMergeThreshold: 0.1 } },

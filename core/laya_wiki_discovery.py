@@ -39,6 +39,14 @@ nothing is reset to a fresh baseline. A selected installed route requires its
 pre-activation cursor; losing that cursor blocks discovery. Standalone
 synthetic routes without an installation journal may start at the current raw
 snapshot and report `cursorStarted`, without claiming earlier changes.
+
+Selected installed projects also have an optional initial-backfill document.
+An accepted event freezes an eligible existing-Markdown cohort and its actual
+host (or explicit unknown host policy). That separate finite authority can
+continue capped batches after worker settlement, but never authorizes newer
+revisions or spends an ordinary change grant twice. Its progress counts
+terminal attempts, not generated/verified cards. Grant records retain the
+initiating host beside each id so off-hook work cannot select an ambient CLI.
 """
 from __future__ import annotations
 
@@ -78,6 +86,7 @@ _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
 _STATE_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'collectionRoots',
                          'rawCollections', 'baseGen', 'rawSnapshot', 'pending', 'spentGrants'})
 _GRANT_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'grants', 'provisional'})
+SOURCE_ENGINES = frozenset(('claude', 'codex', 'hermes', 'gemini', 'unknown'))
 
 
 class DiscoveryBlocked(Exception):
@@ -267,7 +276,7 @@ def _read_grants(path, decision, *, heal=False):
     if value is None:
         return empty
     phases = (value.get('grants'), value.get('provisional'))
-    if (set(value) != _GRANT_KEYS or value['schema'] != GRANTS_SCHEMA
+    if (set(value) not in (_GRANT_KEYS, _GRANT_KEYS | {'engines'}) or value['schema'] != GRANTS_SCHEMA
             or (value['scopeId'], value['dbIncarnation']) != (scope, incarnation)
             or any(not isinstance(ids, dict) or set(ids) != set(GRANT_KINDS)
                    or any(not _grant_ids(row, MAX_GRANT_COUNT) for row in ids.values())
@@ -277,7 +286,10 @@ def _read_grants(path, decision, *, heal=False):
         _quarantine(path)
         return empty
     every = [grant for ids in phases for kind in GRANT_KINDS for grant in ids[kind]]
-    if len(set(every)) != len(every):
+    engines = value.get('engines', {})
+    if (len(set(every)) != len(every) or not isinstance(engines, dict)
+            or any(grant not in every or not isinstance(engine, str) or engine not in SOURCE_ENGINES
+                   for grant, engine in engines.items())):
         if not heal:
             raise DiscoveryBlocked('grants_corrupt')
         _quarantine(path)
@@ -285,11 +297,17 @@ def _read_grants(path, decision, *, heal=False):
     return tuple({kind: list(ids[kind]) for kind in GRANT_KINDS} for ids in phases)
 
 
-def _write_grants(path, decision, active, provisional):
+def _write_grants(path, decision, active, provisional, *, engines=None):
     scope, incarnation, _queue, _roots, _raw = _binding(decision)
+    if engines is None:
+        old = _read(path)
+        engines = old.get('engines', {}) if old is not None else {}
+    ids = {grant for phase in (active, provisional) for grants in phase.values() for grant in grants}
+    engines = {grant: engine for grant, engine in engines.items() if grant in ids}
     _write(path, {'schema': GRANTS_SCHEMA, 'scopeId': scope,
                   'dbIncarnation': incarnation, 'grants': active,
-                  'provisional': provisional})
+                  'provisional': provisional,
+                  **({'engines': engines} if engines else {})})
 
 
 def _drop(path, decision, ids, *, provisional=True):
@@ -370,7 +388,7 @@ def lock_path(queue_path):
 
 
 @_across_move
-def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
+def record_grant(decision, kind, *, engine=None, wait=HOOK_LOCK_SECONDS):
     """Hook side: record one host event, provisional; no run may use it yet.
 
     Returns the grant id for activate_grant once every hook check passed.
@@ -379,6 +397,8 @@ def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
     """
     if kind not in GRANT_KINDS:
         raise ValueError('invalid_wiki_grant')
+    if engine is not None and (not isinstance(engine, str) or engine not in SOURCE_ENGINES):
+        raise ValueError('invalid_wiki_grant_engine')
     _state, path, lock = _paths(decision)
     grant = uuid.uuid4().hex
     with _locked(lock, wait):
@@ -386,8 +406,12 @@ def record_grant(decision, kind, *, wait=HOOK_LOCK_SECONDS):
         # Bounded: past the cap the oldest provisional id of this kind goes;
         # its hook then fails to activate it, closed.
         waiting[kind] = (waiting[kind] + [grant])[-MAX_GRANT_COUNT:]
+        prior = _read(path)
+        engines = dict(prior.get('engines', {})) if prior is not None else {}
+        if engine is not None:
+            engines[grant] = engine
         try:
-            _write_grants(path, decision, active, waiting)
+            _write_grants(path, decision, active, waiting, engines=engines)
         except BaseException:
             # The replace may have landed. The caller never learns this id, so
             # it is never activated; removal only frees its slot.
@@ -448,7 +472,9 @@ def observe_grants(decision):
     try:
         _state, grants, _lock = _paths(decision)
         active, waiting = _read_grants(grants, decision)
-        return {'grants': active, 'provisional': waiting}
+        engines = (_read(grants) or {}).get('engines', {})
+        return {'grants': active, 'provisional': waiting,
+                **({'engines': engines} if engines else {})}
     except DiscoveryBlocked as exc:
         return {'grants': None, 'reason': str(exc)}
 
@@ -687,7 +713,7 @@ def drain_after_sync(decision, observed, *, recheck):
         with _locked(lock, WORKER_LOCK_SECONDS):
             try:
                 return _drain_locked(decision, seen_ids, recheck, state_path,
-                                     grants_path, roots, raw)
+                                     grants_path, roots, raw, observed.get('engines', {}))
             except DiscoveryBlocked:
                 # The dispatcher ACKs a blocked run's wake, so the grants it
                 # observed end here too; a later wake must not inherit them.
@@ -703,16 +729,16 @@ def drain_after_sync(decision, observed, *, recheck):
         return _outcome('blocked', str(exc))
 
 
-def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw):
+def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines):
     # Whether this run starts the cursor; a blocked run raises and writes none.
     starting = not os.path.lexists(state_path)
-    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw)
+    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines)
     if starting:
         result['cursorStarted'] = True
     return result
 
 
-def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw):
+def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines):
     recheck()
     state = _read(state_path)
     if state is None and os.path.isfile(decision['journalPath']):
@@ -730,10 +756,28 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
     usable = {kind: [grant for grant in live_ids[kind] if grant in seen_ids]
               for kind in GRANT_KINDS}
     live = [kind for kind in GRANT_KINDS if usable[kind]]
+    recorded_engines = (_read(grants_path) or {}).get('engines', {})
+    engines = {kind: next((recorded_engines[grant] for grant in reversed(usable[kind])
+                          if grant in recorded_engines and
+                          recorded_engines[grant] == seen_engines.get(grant)), 'unknown')
+               for kind in live}
     used = {grant for kind in live for grant in usable[kind]}
     head, base, _base_rows, _head_rows = _read_view(
         decision, state['baseGen'] if state is not None else None)
     snapshot = _raw_snapshot(decision, raw)
+    import laya_wiki_backfill as backfill
+    # Existing synthetic/noninstalled cursors have no backfill contract. Keep
+    # their unchanged/no-pending sync independent of compile configuration.
+    cfg = _project_config(decision) if os.path.isfile(decision['journalPath']) else None
+    initial = backfill.discover(decision, snapshot, cfg, live, engines) if cfg is not None else None
+
+    def report(result, *, dispatch=True):
+        if initial is not None:
+            result['initialBackfill'] = (backfill.dispatch(
+                decision, initial, snapshot, cfg, recheck=recheck)
+                if dispatch else backfill.summary(initial))
+        return result
+
     before = state['pending'] if state is not None else {}
     try:
         if state is None:
@@ -762,25 +806,27 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
         # observed grants with the cursor, as a normal ACK does.
         _write(state_path, _state_doc(decision, head, snapshot, {}, used))
         _drop(grants_path, decision, used, provisional=False)
-        return _outcome('drained', 'pending_over_cap_skipped', generation=head,
-                        pending=0, skipped=overflow)
+        return report(_outcome('drained', 'pending_over_cap_skipped', generation=head,
+                               pending=0, skipped=overflow))
     if (state is None or base != head or pending != before
             or state['rawSnapshot'] != snapshot):
         # Journal first: a crash after this keeps every revision.
         _write(state_path, _state_doc(decision, head, snapshot, pending))
     if not pending:
         _drop(grants_path, decision, used, provisional=False)
-        return _outcome('drained', generation=head, pending=0)
+        return report(_outcome('drained', generation=head, pending=0))
     if not live:
-        return _outcome('pending', 'no_accepted_grant', generation=head,
-                        pending=len(pending))
-    cfg = _project_config(decision)
+        return report(_outcome('pending', 'no_accepted_grant', generation=head,
+                               pending=len(pending)))
+    if cfg is None:
+        cfg = _project_config(decision)
     import wiki_compile_enqueue
     for kind in live:
+        engine = engines[kind]
         recheck()
         result = wiki_compile_enqueue.enqueue_changed_sources(
             decision['projectRoot'], cfg, _changed_files(pending, roots, snapshot),
-            session_start=kind == 'session_start')
+            session_start=kind == 'session_start', **({'engine': engine} if engine else {}))
         if not isinstance(result, dict) or not isinstance(result.get('deferredFiles'), list):
             raise DiscoveryBlocked('enqueue_result_invalid')
         if result.get('reason') == 'compile_disabled':
@@ -794,9 +840,17 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
         # new one even if the removal below fails and the wake is retried.
         _write(state_path, _state_doc(decision, head, snapshot, pending, used))
         _drop(grants_path, decision, used, provisional=False)
-        return _outcome('pending' if pending else 'drained',
-                        'capped' if pending else None, generation=head,
-                        pending=len(pending), queued=result.get('queued', 0))
+        # Source changes keep their original one-enqueue grant cap. A separate
+        # bounded wake may start the frozen initial cohort, never that tail.
+        if initial is not None:
+            progress = backfill.summary(initial)
+            if progress['pending'] and not progress['dispatched']:
+                recheck()
+                import runtime_work
+                runtime_work.request('laya-sync', decision['projectRoot'])
+        return report(_outcome('pending' if pending else 'drained',
+                              'capped' if pending else None, generation=head,
+                              pending=len(pending), queued=result.get('queued', 0)), dispatch=False)
     _drop(grants_path, decision, used, provisional=False)
-    return _outcome('pending', 'compile_trigger_denied', generation=head,
-                    pending=len(pending))
+    return report(_outcome('pending', 'compile_trigger_denied', generation=head,
+                           pending=len(pending)))

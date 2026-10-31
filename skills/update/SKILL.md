@@ -18,10 +18,17 @@ Queue a full-scan sync of the project's selected memvane-db index.
 3. Run the bundled wrapper:
 
    ```bash
-   bash "$ROOT/skills/update/scripts/update.sh" "$PWD"
+   bash "$ROOT/skills/update/scripts/update.sh" "$PWD" codex
    ```
 
 4. Report the wake as queued, not as completed. The durable worker runs it off the hook.
+
+Use the current host CLI name (`codex`, `claude`, `hermes`, or `gemini`) as the
+second argument; the example above is for Codex. The wrapper can also use an
+explicit `MEMVANE_HOST`/`QMD_ENGINE` or a current host session marker. A known
+host never switches to another CLI. If the host is unknown, real extraction
+tries Codex, Claude, then Hermes at most once each and keeps the first successful
+producer for verification; there is no separate paid probe.
 
 ## Safety
 

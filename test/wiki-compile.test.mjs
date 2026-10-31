@@ -164,6 +164,9 @@ test('selected replacement stages a hidden candidate without overwriting the pub
     assert.equal(readFileSync(card, 'utf8'), original);
     const jobs = readJsonl(join(work, '.auto-context/compile/verify-queue.jsonl'));
     assert.ok(jobs.at(-1).pendingPath);
+    assert.match(jobs.at(-1).sourceHash, /^[0-9a-f]{16}$/);
+    assert.equal(jobs.at(-1).pendingPath,
+      '.auto-context/wiki/concepts/.stable-card.md.pending-' + jobs.at(-1).sourceHash);
     assert.equal(jobs.at(-1).expectedTargetHash, createHash('sha256').update(original).digest('hex'));
     assert.match(readFileSync(join(work, jobs.at(-1).pendingPath), 'utf8'), /Replacement fact for review/);
   } finally { removeTemp(work); }

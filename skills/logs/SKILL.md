@@ -25,9 +25,16 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --hours 6     # refusals and failures
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades             # bundle upgrade / journal conversion
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki  # one event kind; add --json for raw lines
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.backfill  # finite initial-pass progress
    ```
 
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update) or `worktree`.
+
+For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
+`settled` means the compile worker finished a terminal attempt (including no-card
+outcomes), and `skipped` means the frozen revision changed, vanished or became
+excluded. Neither `settled` nor `complete` proves generated or verified cards.
+Report card creation and verification separately from their own events.
 
 ## Safety
 
