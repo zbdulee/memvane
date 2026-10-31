@@ -329,11 +329,40 @@ class CompileChecks(unittest.TestCase):
                            'over_budget', 'tokenizer')])
         self.assertGreater(events[0]['size'], 700)
 
-    def test_check_validates_without_writing(self):
+    def snapshot(self):
+        return sorted((str(path.relative_to(self.p.root)), path.is_dir(),
+                       None if path.is_dir() else path.read_bytes())
+                      for path in self.p.root.rglob('*'))
+
+    def test_check_predicts_the_real_outcome_without_side_effects(self):
         bad = self.p.compile(candidate(title='Bad', summary='User: hi\nassistant: hello'), '--check')
         good = self.p.compile(candidate(summary=LONG_SUMMARY), '--check')
-        self.assertEqual((bad['action'], good['action']), ('rejected', 'valid'))
+        guarded = Project(self)
+        settings = guarded.root / '.auto-context' / 'settings.json'
+        cfg = json.loads(settings.read_text())
+        cfg['compile']['mode'] = 'guarded'
+        settings.write_text(json.dumps(cfg))
+        medium = guarded.compile(candidate(confidence='medium'), '--check')
+        real = guarded.compile(candidate(confidence='medium'))
+        self.assertEqual((bad['action'], good['action'], medium['action'], real['action']),
+                         ('rejected', 'written', 'candidate', 'candidate'))
         self.assertEqual((list(self.p.wiki.rglob('*.md')), self.p.ledger('candidates.jsonl')), ([], []))
+
+    def test_check_touches_nothing_and_works_on_a_read_only_project(self):
+        import shutil
+        shutil.rmtree(self.p.wiki)
+        shutil.rmtree(self.p.root / '.auto-context' / 'compile')
+        before = self.snapshot()
+        dirs = [self.p.root, self.p.root / '.auto-context', self.p.root / 'docs']
+        for path in dirs:
+            path.chmod(0o555)
+        try:
+            out = self.p.compile(candidate(), '--check')
+        finally:
+            for path in dirs:
+                path.chmod(0o755)
+        self.assertEqual(out['action'], 'written', out)
+        self.assertEqual(self.snapshot(), before, 'no directory, lock or ledger was created')
 
     def test_the_skill_final_pass_writes_after_its_split(self):
         compact = {'trigger': 'manual', 'sourceRef': 'session:local',
@@ -490,7 +519,35 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual(result[:2], (True, False), 'processed, no partialCompile retry')
         self.assertEqual(self.cards(), ['decisions/budget-whole.md'],
                          'validated first: no part is written, the original keeps every topic')
-        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_part_rejected')
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_not_writable')
+
+    def test_a_split_the_guarded_mode_would_only_hold_as_candidates_writes_the_original(self):
+        parts = [candidate(title='Budget Part One', confidence='medium'),
+                 candidate(title='Budget Part Two', confidence='medium')]
+        result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)], parts])
+        self.assertEqual(result[:2], (True, False))
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md'],
+                         'parts that would end as candidates never replace a written original')
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_not_writable')
+        self.assertFalse(any(r.get('title', '').startswith('Budget Part')
+                             for r in self.p.ledger('candidates.jsonl')),
+                         'the prediction left no ledger row')
+
+    def test_a_part_whose_real_write_differs_from_the_prediction_writes_the_original(self):
+        real = self.w.compile_candidate
+
+        def judge_says_duplicate(root, cand, **kwargs):
+            if cand.get('title') == 'Budget Part Two' and not kwargs.get('check'):
+                return {'action': 'merge-needed', 'matchedPath': 'x'}
+            return real(root, cand, **kwargs)
+        with patch.object(self.w, 'compile_candidate', judge_says_duplicate):
+            result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
+                                   [candidate(title='Budget Part One'),
+                                    candidate(title='Budget Part Two')]])
+        self.assertEqual(result[:2], (True, False))
+        self.assertEqual(self.cards(), ['decisions/budget-part-one.md', 'decisions/budget-whole.md'],
+                         'the topic of the part that was not written survives in the original')
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_not_writable')
 
     def test_split_parts_share_cards_per_source_with_the_first_answer(self):
         settings = self.p.root / '.auto-context' / 'settings.json'

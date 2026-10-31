@@ -1361,23 +1361,26 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
 
     def compile_round(round_candidates: list, extracted_qmd, final_reason: str | None = None,
                       *, check: bool = False, own_rejects: bool = False
-                      ) -> tuple[int, list[dict], int]:
-        """Compile one extractor answer; returns (written, budget refusals, rejected).
+                      ) -> tuple[int, list[dict], list[str]]:
+        """Compile one extractor answer; returns (written, budget refusals, outcomes).
 
-        ``final_reason`` set: the writer writes an over-budget card instead of
-        holding it back (best effort after the one split attempt) and logs why.
-        ``check``: only validate each candidate; nothing is written. ``own_rejects``:
-        the caller handles writer rejections (the split falls back to the original
-        card) instead of the job's ``partialCompile`` retry.
+        ``outcomes`` holds one writer outcome per candidate: ``written`` (created or
+        updated), ``candidate``, ``merge-needed``, ``rejected``, ``split-required``,
+        ... . ``final_reason`` set: the writer writes an over-budget card instead
+        of holding it back (best effort after the one split attempt) and logs why.
+        ``check``: only predict each outcome (``wiki_compile.py --check``); nothing
+        is written. ``own_rejects``: the caller handles writer rejections (the
+        split falls back to the original card) instead of the job's
+        ``partialCompile`` retry.
         """
         nonlocal failed_compile, refresh_complete
-        written = rejected = 0
+        written = 0
         refused: list[dict] = []
+        outcomes: list[str] = []
         for candidate in round_candidates:
             if not isinstance(candidate, dict):
-                if check:
-                    rejected += 1
-                else:
+                outcomes.append("rejected")
+                if not check:
                     refresh_complete = False
                 continue
             original = json.loads(json.dumps(candidate, ensure_ascii=False))
@@ -1435,11 +1438,14 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             wiki_selected_laya.recheck(selected_route)
             if check:
                 result = compile_candidate(root, candidate, check=True)
-                if not isinstance(result, dict) or result.get("action") != "valid":
-                    rejected += 1
+                outcomes.append(result.get("action") if isinstance(result, dict)
+                                and isinstance(result.get("action"), str) else "rejected")
                 continue
             result = (compile_candidate(root, candidate, final_reason=final_reason)
                       if final_reason is not None else compile_candidate(root, candidate))
+            action = result.get("action") if isinstance(result, dict) else None
+            outcomes.append("written" if action in ("created", "updated")
+                            else action if isinstance(action, str) else "rejected")
             if isinstance(result, dict) and result.get("action") == "split-required":
                 # Over the card budget and not written yet: the one split
                 # re-prompt below replaces it, or it is written as it is.
@@ -1448,7 +1454,6 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                                 "_candidate": original})
                 continue
             if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
-                rejected += 1
                 if not own_rejects:
                     failed_compile = True
                     refresh_complete = False
@@ -1476,9 +1481,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                 verify_targets.append(result["targetPath"])
             if result.get("action") in {"created", "updated"}:
                 written += 1
-        return written, refused, rejected
+        return written, refused, outcomes
 
-    _written, refused, _rejected = compile_round(candidates, extracted_qmd)
+    _written, refused, _outcomes = compile_round(candidates, extracted_qmd)
     # Best effort: every refused card ends written. A hand-written section over
     # the budget is not something a smaller summary fixes, so it is written now.
     manual = [card for card in refused if card.get("reason") == "manual_section_over_budget"]
@@ -1511,6 +1516,27 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     return True, False, verify_targets
 
 
+_SPLIT_NEVER_CLEAN = frozenset(('merge-needed', 'rejected', 'conflict'))
+
+
+def _split_expected(compile_round, splittable: list[dict], extracted_qmd) -> str:
+    """The single outcome every split part must reach: the original's own.
+
+    ``--check`` on the originals; the over-budget hold does not run in a check,
+    so this is what the original's final-pass write would reach (``written``, or
+    ``candidate`` in guarded mode below ``high`` confidence).
+    """
+    originals = json.loads(json.dumps([card['_candidate'] for card in splittable],
+                                      ensure_ascii=False))
+    outcomes = compile_round(originals, extracted_qmd, check=True)[2]
+    return outcomes[0] if outcomes and len(set(outcomes)) == 1 else 'written'
+
+
+def _split_clean(outcomes: list[str], expected: str) -> bool:
+    return bool(outcomes) and all(item == expected and item not in _SPLIT_NEVER_CLEAN
+                                  for item in outcomes)
+
+
 def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict],
                        compile_round, extracted_qmd, *, payload: dict, argv: list[str],
                        timeout: int, src: Path, source_revision: dict, selected_route,
@@ -1522,7 +1548,10 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     The split is all or nothing so no content is lost: its parts are written (on
     the final pass, so a part still over the budget is written too and the writer
     logs ``wiki.card over_budget_written``) only when they all fit the slots and
-    all pass the writer's validation. Otherwise, or when the split cannot run
+    the writer predicts for every part the outcome it predicts for the original
+    (``--check``; ``merge-needed``/``rejected``/``conflict`` never qualify). A
+    guarded-mode original that would itself become a ``candidate`` keeps that
+    normal outcome. Otherwise, or when the split cannot run
     (run budget exhausted, no slot left, extractor failure or
     ``resource_deferred``, empty answer), the original cards are written on the
     final pass with that reason. Nothing here is retried: the revision ends
@@ -1559,17 +1588,21 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
             if parts > max_cards:
                 # Writing a subset would drop topics; the original keeps them all.
                 split_reason = 'split_exceeds_slots'
-            elif compile_round(json.loads(json.dumps(candidates, ensure_ascii=False)),
-                               extracted.get('_qmd'), check=True)[2]:
-                split_reason = 'split_part_rejected'
             else:
-                written, _, rejected = compile_round(
-                    candidates, extracted.get('_qmd'), final_reason='split_part_over_budget',
-                    own_rejects=True)
-                if rejected:
-                    # A part failed after validation (a runtime write failure): the
-                    # original is written too, so no topic is lost.
-                    split_reason = 'split_part_rejected'
+                expected = _split_expected(compile_round, splittable, extracted_qmd)
+                predicted = compile_round(json.loads(json.dumps(candidates, ensure_ascii=False)),
+                                          extracted.get('_qmd'), check=True)[2]
+                if not _split_clean(predicted, expected):
+                    split_reason = 'split_not_writable'
+                else:
+                    written, _, actual = compile_round(
+                        candidates, extracted.get('_qmd'),
+                        final_reason='split_part_over_budget', own_rejects=True)
+                    if not _split_clean(actual, expected):
+                        # A part ended otherwise than predicted (judge merge-needed,
+                        # write failure): the original is written too, so no
+                        # topic is lost.
+                        split_reason = 'split_not_writable'
     if split_reason is not None:
         written_original, _, _ = compile_round([card['_candidate'] for card in splittable],
                                                extracted_qmd, final_reason=split_reason)

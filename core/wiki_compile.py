@@ -134,6 +134,18 @@ def project_paths(cwd: str) -> tuple[Path, dict]:
     return Path(found["projectRoot"]).resolve(), found["config"]
 
 
+def existing_managed_dir(root: Path, rel: str) -> Path | None:
+    """``safe_managed_dir`` without creating the directory."""
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if path.exists() and (path.is_symlink() or not path.is_dir()):
+        return None
+    return path
+
+
 def safe_managed_dir(root: Path, rel: str) -> Path | None:
     path = (root / rel).resolve()
     try:
@@ -1416,6 +1428,17 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     return True
 
 
+def _checked(outcome: str, findings=()) -> int:
+    """``--check`` result: the outcome a real compile would reach, nothing written.
+
+    ``written`` (created or updated), ``candidate``, ``merge-needed``,
+    ``rejected``, ``suppressed`` or ``tombstoned``. The paid duplicate judge and
+    selected-route pending-replacement checks do not run in a check.
+    """
+    print(json.dumps({"action": outcome, "findings": list(findings)}, ensure_ascii=False))
+    return 0
+
+
 def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1450,7 +1473,8 @@ def main() -> int:
     # written. Only the compile worker and the wiki-compile skill's second run
     # pass it; a candidate field can never request it.
     parser.add_argument("--budget-final", default=None, metavar="REASON")
-    # Validate only (target, exclusions, lint); writes nothing, logs nothing.
+    # Predict the outcome a real compile would reach (``_checked``); writes,
+    # creates and logs nothing.
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
@@ -1464,6 +1488,14 @@ def main() -> int:
         return 0
     mode = qmd_config.compile_mode(compile_cfg)
     wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
+    if args.check:
+        # Side-effect free: no directory, lock or ledger is created or touched,
+        # so a read-only project can be checked.
+        wiki_root = existing_managed_dir(root, wiki_rel)
+        if wiki_root is None:
+            return _checked("rejected", ["unsafe_managed_path"])
+        return _compile_locked(root, config, compile_cfg, mode, wiki_root, candidate,
+                               args.regenerate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = safe_managed_dir(root, cp.compile_rel(root))
     if wiki_root is None or compile_dir is None:
@@ -1474,7 +1506,7 @@ def main() -> int:
         with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
             return _compile_locked(
                 root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
-                budget_final=args.budget_final, check=args.check)
+                budget_final=args.budget_final)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
@@ -1515,13 +1547,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             return 0
     max_lines = int(compile_cfg.get("maxAutoPageLines", 120) or 120)
     lint = lint_candidate(candidate, target, max_lines)
-    if check:
-        # An ambiguous identity is merge-needed, not a rejection.
-        valid = target_reason.startswith("ambiguous_") or (
-            lint["verdict"] == "clean" and target is not None)
-        print(json.dumps({"action": "valid" if valid else "rejected",
-                          "findings": lint["findings"]}, ensure_ascii=False))
-        return 0
     # 한 줄 라벨이므로 개행·탭을 소스에서 접는다(dump의 이스케이프는 안전망으로 남는다).
     title = yaml_scalars.fold_inline(candidate.get("title") or "Untitled") or "Untitled"
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
@@ -1537,7 +1562,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     # candidates.jsonl is a write-only audit log (every compile attempt appends a
     # row, no reader) -- cap it up front so it can't grow unbounded.
-    trim_jsonl(candidate_path)
+    if not check:
+        trim_jsonl(candidate_path)
 
     record = {
         "ts": now_iso(),
@@ -1560,6 +1586,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         "_qmd": effort_audit(candidate),
     }
 
+    if check and target_reason.startswith("ambiguous_"):
+        return _checked("merge-needed", [target_reason])
+    if check and (lint["verdict"] != "clean" or target is None):
+        return _checked("rejected", lint["findings"])
     if target_reason.startswith("ambiguous_"):
         record["action"] = "merge-needed"
         record["lint"] = {"verdict": "needs_review", "findings": [target_reason]}
@@ -1578,6 +1608,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     tombstones = read_jsonl(tombstone_path)
     if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
+        if check:
+            return _checked("suppressed")
         record["action"] = "suppressed"
         append_jsonl(candidate_path, record)
         print(json.dumps({"action": "suppressed", "targetPath": record["targetPath"]}, ensure_ascii=False))
@@ -1593,6 +1625,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         and not regenerate
         and previous[-1].get("action") != MACHINE_DELETE_ACTION
     ):
+        if check:
+            return _checked("tombstoned")
         tombstone = {**record, "action": "deleted", "status": "deleted", "previousStatus": previous[-1].get("status", "generated")}
         append_jsonl(tombstone_path, tombstone)
         record["action"] = "tombstoned"
@@ -1600,6 +1634,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 0
 
+    if check and (mode == "candidates"
+                  or (mode == "guarded" and candidate.get("confidence") != "high")):
+        return _checked("candidate")
     if mode == "candidates":
         record["action"] = "candidate"
         append_jsonl(candidate_path, record)
@@ -1617,6 +1654,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # final pass (--budget-final) writes it anyway.
     final_reason = (re.sub(r"[^A-Za-z0-9_.:-]", "_", budget_final)[:80] or "final"
                     if isinstance(budget_final, str) else None)
+    if check and not target.exists():
+        # The paid duplicate judge does not run in a check; its merge-needed is
+        # caught after the real write.
+        return _checked("written")
     if not target.exists() and budget_refused(
             root, config, selected, wiki_root, target, record, candidate_path,
             markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
@@ -1685,6 +1726,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         # 조용히 틀린다(2단계 `↳` 원문 경로가 엉뚱한 파일을 가리킨다).
         # identity 조회로 찾은 경로(`target_reason != "explicit"`)는 정의상 일치하므로 통과.
         agrees, mismatch = explicit_target_agrees(target, candidate)
+        if check and not agrees:
+            return _checked("merge-needed", [mismatch])
         if not agrees:
             entry = {
                 "ts": now_iso(),
@@ -1707,6 +1750,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     if target.exists():
         old = target.read_text(encoding="utf-8")
         auto_writable, findings = is_auto_writable_page(target)
+        if check:
+            return _checked("written" if auto_writable and AUTO_BLOCK_RE.search(page)
+                            else "merge-needed", findings)
         if not auto_writable:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": findings}

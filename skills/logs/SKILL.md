@@ -43,7 +43,7 @@ body exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` 
 sections alone overflow). `split` / `split_unavailable` report the one split
 re-prompt per source (`requested`, `parts`, `written`; for `split_unavailable`
 the `reason` the original card was written instead: the split could not run,
-exceeded the free card slots, or had a part the writer rejects). `over_budget_written` is a card written over the budget after
+exceeded the free card slots, or had a part the writer would not write the way it writes the original). `over_budget_written` is a card written over the budget after
 that attempt (best effort; the selector scores it by its leading part).
 `measure_failed` (no selector runtime could count) and `unmeasured` (no selector
 tokenizer on the machine) mark cards written without a size check.
