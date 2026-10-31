@@ -28,6 +28,41 @@ def _private_parent(path):
         raise IndexContractError('provider_socket_invalid')
 
 
+def bind_private(server, path):
+    """Bind ``server`` so ``path`` only ever exists with mode 0600.
+
+    Binds a same-length sibling (``*.sock`` -> ``*.bind``, so a path within
+    the socket length limit stays within it), sets 0600 and renames it onto
+    ``path``. A client polling during startup never sees the umask's mode,
+    which it would refuse as unsafe. The caller holds the path's owner lock
+    and has removed any stale ``path``.
+    """
+    path = os.fspath(path)
+    head, name = os.path.split(path)
+    if not name.endswith('.sock') or len(name) < 6:
+        raise IndexContractError('provider_socket_invalid')
+    temp = os.path.join(head, name[:-5] + '.bind')
+    try:
+        info = os.lstat(temp)
+    except FileNotFoundError:
+        pass
+    else:
+        # An earlier owner stopped between bind and rename.
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+            raise IndexContractError('provider_socket_invalid')
+        os.unlink(temp)
+    server.bind(temp)
+    try:
+        os.chmod(temp, 0o600)
+        os.rename(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
 def _remove_stale_socket(path):
     try:
         info = os.lstat(path)

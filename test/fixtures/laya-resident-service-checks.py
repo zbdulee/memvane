@@ -167,6 +167,31 @@ def embed(manifest, text='hello', kind='query'):
 
 
 class ServiceChecks(Fixture):
+    def test_public_sockets_never_appear_with_a_loose_mode(self):
+        # Clients refuse a socket with group/other bits; one seen between
+        # bind() and chmod() would fail a request instead of waiting.
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        public = (str(self.root / svc.CONTROL), manifest['serviceSocketPath'])
+        loose, real_chmod = [], os.chmod
+
+        def watched(path, mode, *args, **kwargs):
+            for name in public:
+                try:
+                    info = os.lstat(name)
+                except FileNotFoundError:
+                    continue
+                if info.st_mode & 0o077:
+                    loose.append(name)
+            return real_chmod(path, mode, *args, **kwargs)
+        with patch.object(os, 'chmod', watched):
+            self.service()
+            self.wait(lambda: self.ready(manifest), message='project never adopted')
+        self.assertEqual(loose, [])
+        for name in public:
+            self.assertEqual(os.lstat(name).st_mode & 0o777, 0o600)
+        self.assertEqual(len(embed(manifest)), DIM)
+
     def test_one_service_serves_many_projects_concurrently_through_one_worker(self):
         projects = [self.project(name) for name in ('alpha', 'beta', 'gamma')]
         for project, _manifest in projects:

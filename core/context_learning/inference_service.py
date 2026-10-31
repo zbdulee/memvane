@@ -319,6 +319,10 @@ CAPACITY = 8
 SOCKET_NAME = 'service.sock'
 PID_NAME = 'service.pid.json'
 LEASE_NAME = 'service-lease.lock'
+# The lease holder binds here, sets 0600 and renames onto SOCKET_NAME, so the
+# public path never exists with the umask's mode. Same length: a root that
+# fits SOCKET_NAME fits this name.
+BIND_NAME = 'service.bind'
 _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_deferred',
           'replacement_failed', 'load_failed', 'model_family_mismatch',
           'request_changed', 'request_rejected', 'inference_attestation_required',
@@ -904,11 +908,22 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                 pending.task_done()
 
     worker = threading.Thread(target=score, name='laya-inference-score', daemon=True)
+    bind_path = root / BIND_NAME
+    bound = False
     try:
         if path.exists() or path.is_symlink() or pid_path.exists() or pid_path.is_symlink():
             raise ServiceFailure('unsafe_socket')
+        if bind_path.exists() or bind_path.is_symlink():
+            # An earlier owner stopped between bind and rename; only the
+            # lease holder gets here.
+            info = bind_path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise ServiceFailure('unsafe_socket')
+            bind_path.unlink()
         with socket.socket(socket.AF_UNIX) as server:
-            server.bind(str(path));os.chmod(path, 0o600)
+            server.bind(str(bind_path));bound = True
+            os.chmod(bind_path, 0o600)
+            os.rename(bind_path, path);bound = False
             identity = path.lstat()
             fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'w') as target:
@@ -959,6 +974,8 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
         if monitor is not None:monitor.close()
         if worker.is_alive():
             worker.join(timeout=1)
+        if bound:
+            bind_path.unlink(missing_ok=True)
         if identity is not None:
             try:
                 current = path.lstat()
