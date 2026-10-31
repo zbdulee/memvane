@@ -8,7 +8,7 @@
     {
       "name": "memvane",
       "description": "MemVane 자동 컨텍스트 주입 — memvane-db 색인 기반 recall/update/posttool/index/compile hooks + setup/query/update/wiki-compile/wiki-dedup/logs manual skills",
-      "version": "0.43.4",
+      "version": "0.43.6",
       "source": "./",
       "author": {
         "name": "zbdulee"

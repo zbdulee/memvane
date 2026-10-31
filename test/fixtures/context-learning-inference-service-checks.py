@@ -161,6 +161,86 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(self.run_job(job())['head'],'a')
 
 
+class WarmFirstLoadTests(unittest.TestCase):
+    """A first load survives its request's deadline; nothing else changes."""
+    def setUp(self):
+        self.loads=[]
+        def load(request):
+            self.loads.append(request['generation']);return request['generation'][-1]
+        self.engine=service.GenerationEngine(load=load,
+            forward=lambda loaded, request, **kw: {'head': loaded},
+            admission=admit, rss=lambda: 100)
+
+    def run_job(self, request, **kwargs):
+        return self.engine.run(request, cancelled=lambda: False,
+                               revalidate=lambda: request, **kwargs)[0]
+
+    def test_first_load_stays_warm_when_the_request_expires(self):
+        for expiry in (ValueError('prediction_cancelled'), ValueError('resident_deadline_expired')):
+            self.setUp()
+            def late_forward(loaded, request, **kw):raise expiry
+            self.engine.forward=late_forward
+            with self.assertRaises(ValueError):self.run_job(job())
+            self.assertEqual(service._failure(expiry),'deadline_expired')
+            self.engine.forward=lambda loaded, request, **kw: {'head': loaded}
+            self.assertEqual(self.run_job(job())['head'],'a')
+            self.assertEqual(len(self.loads),1,'expired first load was discarded')
+
+    def test_revalidation_out_of_time_keeps_the_first_load_warm(self):
+        from context_learning.adapter_binding import BindingTimeout
+        request=job();calls=[]
+        def late():
+            calls.append(1);raise BindingTimeout('trainer_timeout')
+        with self.assertRaises(BindingTimeout) as caught:
+            self.engine.run(request,cancelled=lambda:False,revalidate=late)
+        self.assertEqual(service._failure(caught.exception),'deadline_expired')
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),1)
+
+    def test_expired_first_load_is_dropped_when_memory_grew_or_is_unknown(self):
+        for grown in (2048, float('nan')):
+            self.setUp();rss=[100];self.engine.rss=lambda:rss[0]
+            def late(loaded, request, **kw):
+                rss[0]=grown;raise ValueError('prediction_cancelled')
+            self.engine.forward=late
+            with self.assertRaises(ValueError):self.run_job(job())
+            self.assertIsNone(self.engine.active,'over-budget model retained after expiry')
+
+    def test_active_model_over_rss_is_released_then_reloaded(self):
+        rss=[100];self.engine.rss=lambda:rss[0]
+        self.assertEqual(self.run_job(job())['head'],'a')
+        rss[0]=2048
+        with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):self.run_job(job())
+        self.assertIsNone(self.engine.active,'over-budget model kept loaded')
+        rss[0]=100
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),2)
+
+    def test_over_rss_model_is_released_even_when_admission_refuses(self):
+        rss=[100];self.engine.rss=lambda:rss[0]
+        self.assertEqual(self.run_job(job())['head'],'a')
+        rss[0]=2048;self.engine.admission=lambda *a,**kw:(None,{'available_mib':512})
+        with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):self.run_job(job())
+        self.assertIsNone(self.engine.active,'over-budget model kept while admission refuses')
+        rss[0]=100;self.engine.admission=admit
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),2)
+
+    def test_other_first_load_failures_and_replacements_publish_nothing(self):
+        def broken(loaded, request, **kw):raise RuntimeError('synthetic forward failure')
+        self.engine.forward=broken
+        with self.assertRaises(RuntimeError):self.run_job(job())
+        self.assertIsNone(self.engine.active)
+        self.engine.forward=lambda loaded, request, **kw: {'head': loaded}
+        self.run_job(job())
+        def late(loaded, request, **kw):raise ValueError('prediction_cancelled')
+        self.engine.forward=late
+        with self.assertRaises(ValueError):self.run_job(job('b'))
+        self.engine.forward=lambda loaded, request, **kw: {'head': loaded}
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),3)
+
+
 class ResponseTests(unittest.TestCase):
     def test_invalid_candidate_response_is_not_a_publishable_generation(self):
         from context_learning import laya_adapter
