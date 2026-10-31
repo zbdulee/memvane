@@ -40,7 +40,8 @@ class WarmTests(unittest.TestCase):
             sent.append((state, policy_, request, sha, deadline - time.monotonic()))
             return {}, {}
         with patch.object(inference_service, '_policy', return_value=(policy, policy)), \
-                patch.object(inference_service, 'predict', side_effect=predict):
+                patch.object(inference_service, 'predict', side_effect=predict), \
+                patch.object(selector_heal, '_service_identity', return_value=[1, 2, 3, 'sig']):
             self.assertEqual(selector_heal.warm('/p', state=self.state), {'status': 'selector_warm'})
         state, used, request, sha, left = sent[0]
         self.assertEqual((state, used, sha), (self.state, policy, self.active['artifact_sha256']))
@@ -55,6 +56,35 @@ class WarmTests(unittest.TestCase):
         (row,) = case['candidates']
         self.assertEqual(set(row), {'id', 'revision_sha256', 'input_text', 'input_kind'})
         self.assertEqual(len(row['revision_sha256']), 64)
+
+    def test_concurrent_and_repeated_warm_ups_send_one_inference_per_generation(self):
+        import threading
+        calls, started, release = [], threading.Event(), threading.Event()
+        policy = {'trainerArgv': [sys.executable, 'adapter', 'model'], 'timeoutSeconds': 30, 'maxRssMib': 4096}
+        def predict(*args, **kwargs):
+            calls.append(1); started.set(); release.wait(5)
+            return {}, {}
+        service = [[11, 2, 3, 'sig']]
+        results = []
+        with patch.object(inference_service, '_policy', return_value=(policy, policy)), \
+                patch.object(inference_service, 'predict', side_effect=predict), \
+                patch.object(selector_heal, '_service_identity', side_effect=lambda: service[0], create=True):
+            # Two workers (two hosts' SessionStart) at once: one inference.
+            first = threading.Thread(target=lambda: results.append(selector_heal.warm('/p', state=self.state)))
+            first.start(); self.assertTrue(started.wait(5))
+            results.append(selector_heal.warm('/p', state=self.state))
+            release.set(); first.join(5)
+            self.assertEqual(sorted(r['status'] for r in results), ['selector_warm', 'selector_warm_busy'])
+            self.assertEqual(len(calls), 1)
+            # Later runs for the same generation in the same service: none.
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm_current')
+            self.assertEqual(len(calls), 1)
+            # A restarted service, or a new checkpoint, is warmed again.
+            service[0] = [12, 2, 4, 'sig']
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm')
+            private(self.state / 'active-checkpoint.json', {**self.active, 'artifact_sha256': '1' * 64})
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm')
+            self.assertEqual(len(calls), 3)
 
     def test_upkeep_warms_only_after_a_ready_or_prepared_heal(self):
         import laya_bundle_upgrade as upgrade

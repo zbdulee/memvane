@@ -336,6 +336,36 @@ def heal(project, *, home=None, deadline=None, state=None):
 
 
 WARM_SECONDS = 30
+WARM_LOCK = 'selector-warm.lock'
+WARM_MARKER = 'selector-warm.json'
+
+
+def _service_identity():
+    """The running hosted service (PID and socket inode, code signature), or None."""
+    from .inference_service import PID_NAME, _signature, service_root
+    from .dataset import read_private_json
+    try:
+        row = read_private_json(service_root() / PID_NAME)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(row, dict):
+        return None
+    return [row.get('pid'), row.get('socket_dev'), row.get('socket_ino'), _signature()]
+
+
+def _warm_key(state):
+    """What one warm-up covers: this generation in this running service."""
+    from .contracts import digest
+    from .dataset import read_private_json
+    from .store import canonical
+    from .inference_identity import BINDING
+    active = read_private_json(state / 'active-checkpoint.json')
+    try:
+        binding = read_private_json(state / BINDING)
+    except (OSError, ValueError, TypeError):
+        binding = None
+    return digest(canonical([active.get('artifact_sha256'), active.get('model_input_view'),
+                             binding, _service_identity()]))
 
 
 def warm(project, *, home=None, state=None):
@@ -345,25 +375,54 @@ def warm(project, *, home=None, state=None):
     hosted worker runs its full identity validation and loads the model, so
     the next recall is not the cold one. It adds no check and skips none; a
     request that runs out of time still leaves a first load warm.
+
+    Coalesced per namespace across workers and hosts: a warm-up already
+    running holds ``selector-warm.lock`` (taken non-blocking, so another
+    worker skips with ``selector_warm_busy``), and ``selector-warm.json``
+    records the generation and the running service it covered, so the same
+    pair is not warmed twice (``selector_warm_current``). A restarted service
+    or a new checkpoint, receipt or code is a new pair.
     """
+    import fcntl
+    from runtime_lease import atomic_json
     from .contracts import digest
     from .dataset import read_private_json
     from .inference_service import _policy, predict
     from .store import canonical
     state = Path(state) if state is not None else namespace(project, home)
-    deadline = time.monotonic() + WARM_SECONDS
-    _, policy = _policy(state, 'active-checkpoint.json', deadline=deadline)
-    active = read_private_json(state / 'active-checkpoint.json')
-    case = {'request_id': 'selector-warm', 'prompt': 'Which synthetic marker is warm?',
-            'candidates': [{'id': 'synthetic/warm', 'revision_sha256': '0' * 64,
-                            'input_text': 'The synthetic warm-up marker is WARM-1.',
-                            'input_kind': 'full_compact_wiki_body'}]}
-    case['input_sha256'] = digest(canonical(case))
-    request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
-    if active.get('model_input_view') is not None:
-        request['model_input_view'] = active['model_input_view']
-    predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
-    return {'status': 'selector_warm'}
+    fd = os.open(state / WARM_LOCK, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise HealRefused('selector_warm_lock_unsafe')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'status': 'selector_warm_busy'}
+        try:
+            done = read_private_json(state / WARM_MARKER)
+        except (OSError, ValueError, TypeError):
+            done = None
+        if isinstance(done, dict) and done.get('key') == _warm_key(state):
+            return {'status': 'selector_warm_current'}
+        deadline = time.monotonic() + WARM_SECONDS
+        _, policy = _policy(state, 'active-checkpoint.json', deadline=deadline)
+        active = read_private_json(state / 'active-checkpoint.json')
+        case = {'request_id': 'selector-warm', 'prompt': 'Which synthetic marker is warm?',
+                'candidates': [{'id': 'synthetic/warm', 'revision_sha256': '0' * 64,
+                                'input_text': 'The synthetic warm-up marker is WARM-1.',
+                                'input_kind': 'full_compact_wiki_body'}]}
+        case['input_sha256'] = digest(canonical(case))
+        request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
+        if active.get('model_input_view') is not None:
+            request['model_input_view'] = active['model_input_view']
+        predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
+        # Keyed after the request: it may have started (or replaced) the service.
+        atomic_json(state / WARM_MARKER, {'schema': 'memvane-selector-warm-v1',
+                                          'key': _warm_key(state), 'at': time.time()})
+        return {'status': 'selector_warm'}
+    finally:
+        os.close(fd)
 
 
 def selector_projects(home=None):
