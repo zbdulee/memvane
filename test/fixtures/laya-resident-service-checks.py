@@ -663,6 +663,37 @@ class ServiceBoundsChecks(Fixture):
         self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
         self.assertEqual(len(self.loads), 1)
 
+    def test_read_only_install_without_a_worker_is_reported_once(self):
+        # A newer service holding an older bundle's install read-only never
+        # starts its worker; that wait used to be silent for days.
+        drifted, drifted_manifest = self.project('alpha')
+        self.modes[drifted] = 'read_only'
+        svc.register(drifted, root=self.root)
+        events = []
+        with patch.object(svc, '_event',
+                          side_effect=lambda targets, event, outcome, reason=None, **f:
+                          events.append((event, outcome, reason, list(targets)))):
+            service = self.service()
+            self.wait(lambda: events, message='read-only wait never reported')
+            for _ in range(5):
+                service.retry.pop(drifted, None)
+                service.tick()
+            waiting = [e for e in events if e[1] == 'waiting']
+            self.assertEqual(len(waiting), 1)
+            event, outcome, reason, targets = waiting[0]
+            self.assertEqual((event, outcome, reason), ('resident.adopt', 'waiting',
+                                                         'read_only_no_worker'))
+            self.assertEqual(len(targets), 1)
+            # Once adopted, a later wait is a new episode and reported again.
+            selected, selected_manifest = self.project('beta')
+            svc.register(selected, root=self.root)
+            service.retry.pop(drifted, None)
+            self.wait(lambda: self.ready(selected_manifest))
+            service.retry.pop(drifted, None)
+            self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
+            self.assertNotIn(drifted, service.waiting)
+        self.assertEqual(len(self.loads), 1)
+
     def test_every_new_worker_start_attests_first(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)

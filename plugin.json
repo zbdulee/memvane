@@ -1,6 +1,6 @@
 {
   "name": "memvane",
-  "version": "0.43.9",
+  "version": "0.43.11",
   "description": "MemVane 자동 컨텍스트 주입 — memvane-db 색인 기반 recall/update/posttool/index/compile hooks + setup/query/update/wiki-compile/wiki-dedup/logs manual skills",
   "author": {
     "name": "zbdulee",

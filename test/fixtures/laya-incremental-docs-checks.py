@@ -351,6 +351,33 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(self.provider.calls, ['wiki/a.md'])
         self.assertEqual(len(self.rows()), 1)
 
+    def test_pending_fill_of_cached_members_crosses_no_write_fence(self):
+        self.write('z.md', '# Z\nfirst ready\n')
+        for name in ('a', 'b'):
+            (self.wiki / name).mkdir()
+            (self.wiki / name / 'x.md').write_text('# X\n' + name + '\n', encoding='utf-8')
+
+        def pending_fill():
+            self.runtime.catalog.request_scan()
+            self.assertEqual(self.runtime.catalog.step(max_files=2)['status'], 'pending')
+            fences = []
+            out = capacity.pending_vector_fill_step(
+                self.runtime, self.provider, before_write=lambda: fences.append(1),
+                on_document_complete=self.publish)
+            for _ in range(20):
+                if self.runtime.catalog.step(max_files=10)['status'] == 'complete':
+                    break
+            else:
+                self.fail('scan did not complete')
+            return out, fences
+        first, fences = pending_fill()
+        self.assertEqual((first['embedded'], fences), (1, [1]))
+        # The next scan offers the same, now cached, member again: nothing
+        # is written to the candidate, so the selected fence is not crossed.
+        again, fences = pending_fill()
+        self.assertEqual((again['embedded'], again['cached'], fences), (0, 1, []))
+        self.assertEqual(self.provider.calls, ['wiki/z.md'])
+
     def test_upgraded_candidate_backfills_old_vectors_without_model(self):
         self.write('a.md', '# A\nalpha\n')
         self.write('b.md', '# B\nbeta\n')
@@ -487,6 +514,61 @@ class IncrementalDocsTests(unittest.TestCase):
         self.assertEqual(incremental.retire_missing_documents(
             self.runtime, self.identity, before_write=lambda: None), 1)
         self.assertEqual(self.rows(), [])
+
+    def test_publish_needed_skips_identical_and_unverified_without_writes(self):
+        body = self.verified_card('reader fact')
+        self.write('card.md', body)
+        self.snapshot()
+
+        def publish(snapshot, path, sha, title, text, profile_id):
+            incremental.publish_document(self.runtime, self.identity, snapshot, path,
+                                         sha, title, text, profile_id,
+                                         require_verified=True)
+        reader = incremental.PublishedReader(self.identity)
+        self.addCleanup(reader.close)
+        sha = hashlib.sha256(body.encode('utf-8')).hexdigest()
+        title = qmd_title(body)
+        # No sidecar yet: a verified card needs its first publication.
+        self.assertTrue(incremental.publish_needed(
+            reader, 'wiki/card.md', sha, title, body, self.profile,
+            identity=self.identity, require_verified=True))
+        capacity.vector_fill_step(self.runtime, self.provider, on_document_complete=publish)
+        self.assertEqual(self.rows(), [('wiki/card.md', sha, 1)])
+        sidecar = self.state / incremental.FILE
+        before = (sidecar.stat().st_mtime_ns, sidecar.stat().st_size)
+        # The exact published row needs nothing; any field change does.
+        self.assertFalse(incremental.publish_needed(
+            reader, 'wiki/card.md', sha, title, body, self.profile,
+            identity=self.identity, require_verified=True))
+        for args in (('wiki/card.md', 'e' * 64, title), ('wiki/card.md', sha, 'Other'),
+                     ('wiki/other.md', sha, title)):
+            self.assertTrue(incremental.publish_needed(
+                reader, *args, body, self.profile, identity=self.identity,
+                require_verified=True), args)
+        self.assertTrue(incremental.publish_needed(
+            reader, 'wiki/card.md', sha, title, body, 'a' * 64,
+            identity=self.identity, require_verified=True))
+        # A generated (unverified) body publishes nothing when verification
+        # is required, so it needs no proof or fence either.
+        draft = body.replace('status: verified', 'status: generated')
+        self.assertFalse(incremental.publish_needed(
+            reader, 'wiki/draft.md', 'd' * 64, 'Draft', draft, self.profile,
+            identity=self.identity, require_verified=True))
+        self.assertTrue(incremental.publish_needed(
+            reader, 'wiki/draft.md', 'd' * 64, 'Draft', draft, self.profile,
+            identity=self.identity, require_verified=False))
+        self.assertEqual((sidecar.stat().st_mtime_ns, sidecar.stat().st_size), before)
+        # A sidecar bound to another identity is never read as this one's.
+        other = incremental.PublishedReader({**self.identity, 'installId': 'b' * 32})
+        self.addCleanup(other.close)
+        self.assertTrue(incremental.publish_needed(
+            other, 'wiki/card.md', sha, title, body, self.profile,
+            identity=self.identity, require_verified=True))
+
+
+def qmd_title(body):
+    from laya_index_vector import qmd_markdown_title
+    return qmd_markdown_title(body, 'wiki/card.md')
 
 
 if __name__ == '__main__':

@@ -341,16 +341,6 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                 return answer('pending', 'source_changed', cursor=cursor, path=path)
             out['bytes'] += size
             title = qmd_markdown_title(body, path)
-            if not profile_registered:
-                # Registration itself may write the candidate database. For a
-                # selected project, cross the existing first-write fence now.
-                if before_write is not None:
-                    before_write()
-                if vectors.register_profile(profile['model_id'],
-                                            profile['embedding_fingerprint'],
-                                            profile['dimension']) != profile_id:
-                    raise IndexContractError('vector_profile_mismatch')
-                profile_registered = True
             try:
                 chunks = vectors.cached_chunk_set(sha, title, profile_id)
             except IndexContractError as exc:
@@ -363,6 +353,17 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                 if refused:
                     return answer('blocked', 'vector_member_rejected',
                                   cursor=cursor, path=path, detail=refused)
+                if not profile_registered:
+                    # Registration may write the candidate database. For a
+                    # selected project, cross the first-write fence before
+                    # it; a page of cached members writes nothing here.
+                    if before_write is not None:
+                        before_write()
+                    if vectors.register_profile(profile['model_id'],
+                                                profile['embedding_fingerprint'],
+                                                profile['dimension']) != profile_id:
+                        raise IndexContractError('vector_profile_mismatch')
+                    profile_registered = True
                 try:
                     chunks = provider.embed_document_chunks(body, path=path)
                 except IndexContractError as exc:

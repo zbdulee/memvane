@@ -1,6 +1,6 @@
 {
   "name": "memvane",
-  "version": "0.43.9",
+  "version": "0.43.11",
   "private": true,
   "type": "module",
   "engines": {
