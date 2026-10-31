@@ -213,18 +213,19 @@ class GenerationEngine:
             if time.monotonic()>=self.pending[4]:self.pending=None
             elif self.active is None or self.active[0]!=job['generation']:
                 raise ServiceFailure('replacement_deferred')
-        limits, report = self.admission(job['policy']['maxRssMib'],
-                                         already_running=self.active is not None)
-        if limits is None:
-            raise ServiceFailure('resource_deferred')
         current = self.rss()
         if not math.isfinite(current) or current > job['policy']['maxRssMib']:
             if self.active is not None and self.pending is None:
-                # A loaded model this process can no longer afford is released,
-                # never kept to refuse every later request; the next one reloads.
+                # A loaded model this process can no longer afford is released
+                # (before system admission can refuse the request), never kept
+                # to refuse every later request; the next one reloads.
                 self.active = self.footprint_mib = None
                 import gc
                 gc.collect()
+            raise ServiceFailure('resource_deferred')
+        limits, report = self.admission(job['policy']['maxRssMib'],
+                                         already_running=self.active is not None)
+        if limits is None:
             raise ServiceFailure('resource_deferred')
         replacement = self.active is not None and self.active[0] != job['generation']
         if replacement and self.active[0][:3] != job['family']:

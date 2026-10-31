@@ -216,6 +216,16 @@ class WarmFirstLoadTests(unittest.TestCase):
         self.assertEqual(self.run_job(job())['head'],'a')
         self.assertEqual(len(self.loads),2)
 
+    def test_over_rss_model_is_released_even_when_admission_refuses(self):
+        rss=[100];self.engine.rss=lambda:rss[0]
+        self.assertEqual(self.run_job(job())['head'],'a')
+        rss[0]=2048;self.engine.admission=lambda *a,**kw:(None,{'available_mib':512})
+        with self.assertRaisesRegex(service.ServiceFailure,'resource_deferred'):self.run_job(job())
+        self.assertIsNone(self.engine.active,'over-budget model kept while admission refuses')
+        rss[0]=100;self.engine.admission=admit
+        self.assertEqual(self.run_job(job())['head'],'a')
+        self.assertEqual(len(self.loads),2)
+
     def test_other_first_load_failures_and_replacements_publish_nothing(self):
         def broken(loaded, request, **kw):raise RuntimeError('synthetic forward failure')
         self.engine.forward=broken
