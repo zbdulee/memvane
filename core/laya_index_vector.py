@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import functools
 import math
+import operator
 import re
 import sqlite3
 import struct
@@ -90,16 +92,42 @@ def _blob(vector, dimension):
         values = struct.unpack('<' + 'f' * dimension, blob)
     except (OverflowError, struct.error) as exc:
         raise IndexContractError('invalid_vector') from exc
-    if not all(math.isfinite(v) for v in values) or math.fsum(v * v for v in values) <= 0:
+    total = _sum_squares(values)
+    if not math.isfinite(total) or total <= 0:
         raise IndexContractError('invalid_vector')
     return blob, values
+
+
+@functools.lru_cache(maxsize=8)
+def _vector_struct(dimension):
+    return struct.Struct('<' + 'f' * dimension)
+
+
+def _sum_squares(values):
+    """Exactly rounded sum of squares; inf or nan when any value is not finite.
+
+    ``math.fsum`` is exact and order independent, so summing the same products
+    through C-level ``map`` equals the per-element generator form bit for bit.
+    A non-finite value makes the sum non-finite (a float32 square cannot
+    overflow a double sum), so one pass replaces the separate finiteness scan.
+    """
+    try:
+        return math.fsum(map(operator.mul, values, values))
+    except (OverflowError, ValueError):
+        return math.inf
+
+
+def _dot(left, right):
+    """Exactly rounded dot product of equal-length vectors (see ``_sum_squares``)."""
+    return math.fsum(map(operator.mul, left, right))
 
 
 def _unpack(blob, dimension):
     if not isinstance(blob, bytes) or len(blob) != dimension * 4:
         raise IndexContractError('vector_blob_invalid')
-    values = struct.unpack('<' + 'f' * dimension, blob)
-    if not all(math.isfinite(v) for v in values) or math.fsum(v * v for v in values) <= 0:
+    values = _vector_struct(dimension).unpack(blob)
+    total = _sum_squares(values)
+    if not math.isfinite(total) or total <= 0:
         raise IndexContractError('vector_blob_invalid')
     return values
 
@@ -533,7 +561,7 @@ class LayaVectorIndex:
         shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
         query_blob, query = _blob(query_vector, dimension)
         del query_blob
-        qnorm = math.sqrt(math.fsum(v * v for v in query))
+        qnorm = math.sqrt(_sum_squares(query))
         deadline = None if deadline_seconds is None else time.monotonic() + deadline_seconds
         db = self.index.db
         # The seal proof is never skipped; it shares the query deadline. The
@@ -603,8 +631,8 @@ class LayaVectorIndex:
                     finish_path()
                     current_path, current = path, None
                 values = _unpack(blob, dimension)
-                norm = math.sqrt(math.fsum(v * v for v in values))
-                similarity = math.fsum(a * b for a, b in zip(query, values)) / (qnorm * norm)
+                norm = math.sqrt(_sum_squares(values))
+                similarity = _dot(query, values) / (qnorm * norm)
                 distance = 1.0 - min(1.0, max(-1.0, similarity))
                 if current is None or (distance, seq) < (current['score'], current['seq']):
                     current = {'generation': gen, 'scope': scope, 'path': path,
