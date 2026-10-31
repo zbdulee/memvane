@@ -514,7 +514,7 @@ class ActiveUpgradeTests(UpgradeCase):
             code = fn(list(args))
         return code, out.getvalue(), err.getvalue()
 
-    def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_is_refused(self):
+    def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_stays_quiet(self):
         import laya_bundle_upgrade
         import laya_host_response as response
         import laya_index_host_route as host
@@ -536,22 +536,59 @@ class ActiveUpgradeTests(UpgradeCase):
                                       'bundle_upgrade_fenced')])
             # SessionStart names the fence and asks for the worker too.
             notice = host.project_dir_notice_for(project)
-            self.assertIn('bundle upgrade', notice or '')
+            self.assertIn('bundle upgrade in progress', notice or '')
             self.assertEqual(len(asked), 2)
-            # A fence older than the bound is no longer an upgrade in
-            # progress: the recall is refused (visible) and still asks.
-            old = time.time() - fresh.UPGRADE_STALE_SECONDS - 60
-            os.utime(self.ledger, (old, old))
-            decision = host.select_route_settled(project, action='recall')
-            self.assertEqual((decision['state'], decision['reason']),
-                             ('blocked', 'bundle_upgrade_stalled'))
-            self.assertEqual(self.run_main(host.main, 'classify-hook', 'recall',
-                                           str(payload), project)[:2], (0, 'blocked\n'))
-            self.assertEqual(self.run_main(response.main, 'serve-hook', 'recall', 'claude',
-                                           str(payload), project)[0], 3)
-            self.assertGreaterEqual(len(asked), 4)
+            # A fence older than the bound is a stopped upgrade. Search never
+            # breaks over an update: recall still answers without context and
+            # exit 0, SessionStart names the stop, and both keep asking.
+            for age in (-(fresh.UPGRADE_STALE_SECONDS + 60), 3600):
+                # A future mtime (clock moved back) never extends the bound.
+                stamp = time.time() + age
+                os.utime(self.ledger, (stamp, stamp))
+                decision = host.select_route_settled(project, action='recall')
+                self.assertEqual((decision['state'], decision['reason']),
+                                 ('blocked', 'bundle_upgrade_stalled'))
+                self.assertEqual(self.run_main(host.main, 'classify-hook', 'recall',
+                                               str(payload), project)[:2],
+                                 (0, 'upgrading\n'))
+                code, out, err = self.run_main(response.main, 'serve-hook', 'recall',
+                                               'claude', str(payload), project)
+                self.assertEqual((code, out), (0, ''))
+                self.assertIn('stopped', err)
+                self.assertIn('stopped mid-way', host.project_dir_notice_for(project) or '')
+            self.assertGreaterEqual(len(asked), 6)
         # The worker the recall asked for finishes the interrupted upgrade.
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertEqual(self.selection(), 'candidate')
+
+    def test_worker_releases_a_fence_left_after_the_journal_switched(self):
+        # The worker stopped after cas_activate and before the ledger left
+        # ``upgrading``: the journal already binds the new bundle. The real
+        # worker entry finishes the switch instead of reporting ``current``.
+        import laya_bundle_upgrade as auto
+        import laya_product_bundle
+        self.bound()
+        self.activate()
+        original = active._Ledger.change
+
+        def stop(ledger, path, epoch, before, after):
+            if (before, after) == ('upgrading', 'active'):
+                raise Kill()
+            return original(ledger, path, epoch, before, after)
+        with mock.patch.object(active._Ledger, 'change', stop):
+            with self.assertRaises(Kill):
+                self.run_upgrade(active)
+        self.assertEqual(self.row()['phase'], 'upgrading')
+        self.assertEqual(self.fj.state, 'active')
+        self.assertEqual(self.fj.selected['pluginRoot'], self.new_root)
+        self.assertEqual(self.selection(), 'blocked')
+        with self.patches(active), \
+             mock.patch.object(laya_product_bundle, 'inspect_full_plugin_candidate',
+                               side_effect=self.inspect_bundle):
+            result = auto.upgrade_install(self.project, self.state, self.new_root,
+                                          home=self.home)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        self.assertEqual(self.row()['phase'], 'active')
         self.assertEqual(self.selection(), 'candidate')
 
     def test_recall_racing_a_finishing_upgrade_exits_zero(self):
@@ -582,6 +619,13 @@ class ActiveUpgradeTests(UpgradeCase):
             # Other actions keep the refusal.
             self.assertEqual(self.run_main(response.main, 'serve-hook', 'gate', 'claude',
                                            str(payload), project)[0], 3)
+            # Inside the window only a route or proof transition is swallowed;
+            # any other refusal stays an error.
+            unrelated = response.HostResponseError('selected_recall_settings_changed')
+            with mock.patch.object(response, 'select_route', return_value=classified), \
+                 mock.patch.object(response, 'serve_selected', side_effect=unrelated):
+                self.assertEqual(self.run_main(response.main, 'serve-hook', 'recall',
+                                               'claude', str(payload), project)[0], 3)
 
     def test_recall_during_the_upgrade_fence_never_exits_nonzero(self):
         import io

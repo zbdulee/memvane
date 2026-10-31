@@ -2459,17 +2459,38 @@ def _relocated(selection, decision):
         return False
 
 
-_UPGRADE_RECALL_NOTICE = '[memvane] bundle upgrade in progress; no context for this prompt'
+_UPGRADE_NOTICES = {
+    'bundle_upgrade_in_progress':
+        '[memvane] bundle upgrade in progress; no context for this prompt',
+    'bundle_upgrade_stalled':
+        '[memvane] bundle upgrade stopped mid-way and is being finished; '
+        'no context for this prompt'}
+# Refusals a recall meets when an upgrade switches the route under it.
+_UPGRADE_TRANSITION_CODES = frozenset((
+    'selected_route_changed', 'selected_route_unavailable', 'selected_proof_changed',
+    'incremental_base_changed', 'host_route_unverified', 'host_decision_changed'))
 
 
-def _upgrade_window(payload, fallback_cwd) -> bool:
-    """The event's project is inside a bundle upgrade (fence or route switch)."""
+def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
+    """The notice for a recall a bundle upgrade interrupted, or None.
+
+    A fenced route (in progress or stopped) answers any failure without
+    context. Right after a worker switched the bundle, only a route or proof
+    transition does; any other refusal stays an error.
+    """
     cwd = payload.get('cwd') if isinstance(payload, dict) else None
+    cwd = cwd if isinstance(cwd, str) else fallback_cwd
     try:
-        from laya_fresh_wiki_origin import upgrade_window
-        return upgrade_window(cwd if isinstance(cwd, str) else fallback_cwd)
+        import laya_fresh_wiki_origin as fresh
+        if fresh.upgrade_fenced(cwd):
+            fresh.request_recovery(cwd)
+            return _UPGRADE_NOTICES['bundle_upgrade_stalled' if fresh.upgrade_stalled(cwd)
+                                    else 'bundle_upgrade_in_progress']
+        if code in _UPGRADE_TRANSITION_CODES and fresh.upgrade_window(cwd):
+            return _UPGRADE_NOTICES['bundle_upgrade_in_progress']
     except Exception:
-        return False
+        return None
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2500,9 +2521,8 @@ def main(argv: list[str] | None = None) -> int:
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         if selection["state"] not in ("candidate", "preview", "worktree"):
-            if (action == "recall" and
-                    selection.get("reason") == "bundle_upgrade_in_progress"):
-                print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
+            if action == "recall" and selection.get("reason") in _UPGRADE_NOTICES:
+                print(_UPGRADE_NOTICES[selection["reason"]], file=sys.stderr)
                 return 0
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
@@ -2524,10 +2544,12 @@ def main(argv: list[str] | None = None) -> int:
         code = _refusal_code(exc)
         # A recall that a bundle upgrade's fence or route switch interrupted
         # answers without context, never with an error.
-        upgrading = action == "recall" and _upgrade_window(payload, fallback_cwd)
+        notice = (_upgrade_recall_notice(payload, fallback_cwd, code)
+                  if action == "recall" else None)
+        upgrading = notice is not None
         # Hook stderr is intentionally terse. No source body, path, or secrets.
-        print(_UPGRADE_RECALL_NOTICE if upgrading else
-              f"[memvane] {code}; request refused", file=sys.stderr)
+        print(notice if upgrading else f"[memvane] {code}; request refused",
+              file=sys.stderr)
         if not getattr(exc, '_memvane_event_logged', False) and decision is not None:
             # Refused before the traced call (route changed under the hook):
             # still one line, so a refusal never reads as "the hook did not run".

@@ -589,6 +589,32 @@ class RequestChecks(Base):
         real_spawn.assert_not_called()
 
 
+class FenceRecoveryRequestChecks(Base):
+    def test_fence_recovery_requests_are_floored_across_host_copies(self):
+        # Recalls from the other host's copy see another executing root, so
+        # the status file alone would let each of them spawn a worker.
+        claude = self.claude_root()
+        codex = self.base / 'codex-cache' / 'memvane' / '0.37.0'
+        codex.mkdir(parents=True)
+        jpath = self.state / 'install-journal.sqlite'
+        auto._write_status(self.state, status='running', executingRoot=str(claude),
+                           attempts=1, reason='')
+        spawned = []
+        start = auto._now()
+        with auto._state_lock(self.state) as owned:  # the Claude worker is alive
+            self.assertTrue(owned)
+            for offset, root in ((0, codex), (1, codex), (2, claude), (3, codex)):
+                with mock.patch.object(auto, 'executing_root', return_value=root):
+                    auto.request('/p', jpath, 'bundle_upgrade_fenced',
+                                 spawn=spawned.append, now=start + offset * 10**9)
+        self.assertEqual(spawned, ['/p'])
+        with mock.patch.object(auto, 'executing_root', return_value=codex):
+            later = start + (auto.FENCE_REQUEST_SECONDS + 5) * 10**9
+            auto.request('/p', jpath, 'bundle_upgrade_fenced', spawn=spawned.append,
+                         now=later)
+        self.assertEqual(spawned, ['/p', '/p'])
+
+
 class ReadOnlyProofChecks(Base):
     def row(self, att_sha):
         selected = {'pluginRoot': '/old', 'installId': '4' * 32, 'generation': 'g-' + '9' * 32,

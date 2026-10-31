@@ -254,17 +254,32 @@ SELECTOR_REQUEST = 'selector-heal-request.json'
 SELECTOR_REQUEST_SECONDS = 600
 
 
+# A recall or SessionStart that meets a bundle upgrade fence asks the worker
+# to finish it at most this often per install, from any host's plugin copy
+# (the status file's executing root differs between hosts, so it alone would
+# let every recall from the other host spawn a worker).
+FENCE_RECOVERY_CODE = 'bundle_upgrade_fenced'
+FENCE_REQUEST = 'fence-recovery-request.json'
+FENCE_REQUEST_SECONDS = 60
+
+
 def _selector_request_due(state, now=None):
-    """Record this selector-heal request if the per-install floor has passed.
+    """Record this selector-heal request if the per-install floor has passed."""
+    return _request_floor(state, SELECTOR_REQUEST, SELECTOR_REQUEST_SECONDS, now)
+
+
+def _request_floor(state, name, seconds, now=None):
+    """Record one request named ``name`` if ``seconds`` passed since the last.
 
     The check and the record happen under one non-blocking lock, so two
     concurrent hooks never both pass; a busy lock means another hook is
-    recording a request right now.
+    recording a request right now. The record lives in the install's state
+    root, which every host's copy shares.
     """
     now = _now() if now is None else now
     state = Path(state)
     try:
-        fd = os.open(state / (SELECTOR_REQUEST + '.lock'),
+        fd = os.open(state / (name + '.lock'),
                      os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     except OSError:
         return False
@@ -273,14 +288,14 @@ def _selector_request_due(state, now=None):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return False
-        path = state / SELECTOR_REQUEST
+        path = state / name
         try:
             last = json.loads(path.read_text('utf-8')).get('requestedNs')
         except (OSError, ValueError, AttributeError):
             last = None
-        if type(last) is int and 0 <= now - last < SELECTOR_REQUEST_SECONDS * 10**9:
+        if type(last) is int and 0 <= now - last < seconds * 10**9:
             return False
-        tmp = state / ('.' + SELECTOR_REQUEST + '.' + str(os.getpid()))
+        tmp = state / ('.' + name + '.' + str(os.getpid()))
         with open(tmp, 'w', encoding='utf-8') as out:
             os.fchmod(out.fileno(), 0o600)
             json.dump({'requestedNs': now}, out)
@@ -323,6 +338,9 @@ def request(project_root, journal_path, code='', *, spawn=None, now=None):
     root = str(executing_root())
     if code == SELECTOR_HEAL_CODE and not _selector_request_due(state, now):
         return {'status': 'throttled', 'reason': SELECTOR_HEAL_CODE}
+    if (code == FENCE_RECOVERY_CODE and
+            not _request_floor(state, FENCE_REQUEST, FENCE_REQUEST_SECONDS, now)):
+        return {'status': 'throttled', 'reason': FENCE_RECOVERY_CODE}
     status = read_status(state)
     if (status is not None and status['status'] == 'running' and
             status['executingRoot'] == root and not worker_holds(state)):
@@ -787,6 +805,14 @@ def upgrade_install(project_root, state, root, home=None):
     kind, identity = classify(state)
     if kind == 'retired' or identity is None:
         return {'status': 'current', 'kind': kind}
+    if kind == 'active':
+        # A switch that stopped after its journal activation still fences
+        # the route; its bundle already reads as current here.
+        import laya_active_upgrade
+        finished = laya_active_upgrade.finish_activated(project_root=str(project_root),
+                                                        state_root=str(state))
+        if finished is not None:
+            return {**finished, 'kind': kind}
     same_root = identity['pluginRoot'] == str(root)
     if same_root and not _same_root_readopt(kind, identity, root):
         return {'status': 'current', 'kind': kind}

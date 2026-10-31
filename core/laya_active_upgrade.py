@@ -564,6 +564,40 @@ def _reextracted(intent, plugin_root):
     return live['ownershipManifestSha256'] != intent['newProof']['ownershipManifestSha256']
 
 
+def finish_activated(*, project_root, state_root):
+    """Finish an upgrade that stopped after its journal switched; None otherwise.
+
+    A worker can stop after ``cas_activate`` and before the ledger leaves
+    ``upgrading``: the journal already selects the new route and bundle, so
+    there is nothing left to review, and a later worker sees that bundle as
+    current. This re-proves the intent's new bundle and backup and runs the
+    rest of the switch (each step accepts its finished form), which releases
+    the fence. Any other state returns None and changes nothing.
+    """
+    raw = Path(state_root)
+    if not (raw / INTENT).exists() or not (raw / fresh.LEDGER).exists():
+        return None  # nothing was ever fenced here: no locks, no proofs
+    state = _private_parent(state_root)
+    ledger = _origin(state)
+    if ledger.load(state / ledger.name)['phase'] != 'upgrading':
+        return None
+    project = Path(project_root).resolve(strict=True)
+    journal = state / 'install-journal.sqlite'
+    _ledger_path, marker, _route = ledger.paths(project, journal)
+    with _install_lock(state), _operation_lock(marker), _locked_provider():
+        intent = _load_intent(state, project)
+        if intent is None or _intent_ledger(intent).origin != ledger.origin:
+            return None
+        row = ledger.load(state / ledger.name)
+        current = inspect_journal(journal)
+        if (row != intent['newLedger'] or row['phase'] != 'upgrading' or
+                current['state'] != 'active' or
+                current['selectedRouteSha256'] != intent['newLedger']['routeSha256']):
+            return None
+        _backup_proof(intent)
+        return _switch(intent)
+
+
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             accepted_provider_sha256, model_path, dimension, restore=False):
     """Resume one exact sealed upgrade; a failed step leaves a blocked route."""

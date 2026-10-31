@@ -86,9 +86,10 @@ case "$_laya_route_state" in
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
   upgrading)
-    # Recall only: a bundle upgrade fences the selected route for a few
-    # seconds. This prompt gets no context; it is not a refusal.
-    echo '[memvane] bundle upgrade in progress; no context for this prompt' >&2
+    # Recall only: a bundle upgrade fences the selected route (in progress,
+    # or stopped and asked to finish). This prompt gets no context; it is
+    # not a refusal.
+    echo '[memvane] bundle upgrade pending; no context for this prompt' >&2
     exit 0
     ;;
   blocked)

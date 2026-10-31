@@ -50,9 +50,11 @@ UPGRADE_WAIT_SECONDS = 1.5
 UPGRADE_POLL_SECONDS = 0.025
 UPGRADE_IN_PROGRESS = 'bundle_upgrade_in_progress'
 # A fence older than this (by the ledger's mtime, written when the fence was
-# set) is a stopped upgrade, not one in progress: recall is refused again so
-# the stop is visible, and every recall and SessionStart keeps asking the
-# upgrade worker to finish it.
+# set) is a stopped upgrade, not one in progress. Recall still answers
+# without context (search never breaks over an update) but stops waiting for
+# it; SessionStart names the stop; recall and SessionStart keep asking the
+# upgrade worker to finish it. A mtime in the future (the clock moved back)
+# counts as stopped, so it never extends the bound.
 UPGRADE_STALE_SECONDS = 600
 UPGRADE_STALLED = 'bundle_upgrade_stalled'
 # A recall whose route changed under it this soon after the upgrade worker
@@ -96,28 +98,36 @@ def _fence_age(record, now_ns=None):
     return ((time.time_ns() if now_ns is None else now_ns) - record['changedNs']) / 1e9
 
 
+def _live(record, now_ns=None):
+    return 0 <= _fence_age(record, now_ns) <= UPGRADE_STALE_SECONDS
+
+
 def upgrade_in_progress(cwd, *, now_ns=None) -> bool:
     """The route over ``cwd`` is fenced by a bundle upgrade set within the bound."""
     record = _fence_record(cwd)
     return (record is not None and record['phase'] == 'upgrading' and
-            _fence_age(record, now_ns) <= UPGRADE_STALE_SECONDS)
+            _live(record, now_ns))
 
 
 def upgrade_stalled(cwd, *, now_ns=None) -> bool:
     """The fence over ``cwd`` outlived the bound: the upgrade stopped mid-way."""
     record = _fence_record(cwd)
     return (record is not None and record['phase'] == 'upgrading' and
-            _fence_age(record, now_ns) > UPGRADE_STALE_SECONDS)
+            not _live(record, now_ns))
+
+
+def upgrade_fenced(cwd) -> bool:
+    """Any bundle upgrade fence over ``cwd``, in progress or stopped."""
+    record = _fence_record(cwd)
+    return record is not None and record['phase'] == 'upgrading'
 
 
 def upgrade_window(cwd, *, now_ns=None) -> bool:
-    """A fence in progress, or an upgrade worker that wrote its status just now.
+    """An upgrade worker that is switching or switched a bundle just now.
 
-    A recall failing inside this window raced the upgrade (its fence or its
-    route switch); it answers without context instead of an error.
+    A recall whose route or proof changed inside this window raced the
+    upgrade's route switch; it answers without context instead of an error.
     """
-    if upgrade_in_progress(cwd, now_ns=now_ns):
-        return True
     record = _fence_record(cwd)
     if record is None:
         return False
@@ -157,9 +167,9 @@ def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,
 
     Recall only. A fence within ``UPGRADE_STALE_SECONDS`` waits up to
     ``UPGRADE_WAIT_SECONDS`` for the upgrade to publish its route; still
-    fenced, it comes back ``blocked`` with ``bundle_upgrade_in_progress``,
-    which the hook answers with no context. An older fence comes back with
-    ``bundle_upgrade_stalled`` and stays a refusal. Both ask the upgrade
+    fenced, it comes back ``blocked`` with ``bundle_upgrade_in_progress``.
+    An older fence comes back at once with ``bundle_upgrade_stalled``. The
+    hook answers both with no context and exit 0, and both ask the upgrade
     worker to finish.
     """
     if (not isinstance(decision, dict) or decision.get('state') != 'blocked' or

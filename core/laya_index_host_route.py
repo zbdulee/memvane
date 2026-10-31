@@ -913,7 +913,8 @@ def onboarding_lines(root: str, session: str | None) -> str:
 UPGRADE_NOTICE = ('[memvane] plugin bundle upgrade in progress; search resumes '
                   'when it finishes.')
 UPGRADE_STALLED_NOTICE = ('[memvane] plugin bundle upgrade stopped mid-way; a background '
-                          'run is asked to finish it. Search is unavailable until then.')
+                          'run is asked to finish it. Until then prompts get no '
+                          'MemVane context.')
 
 
 def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
@@ -984,7 +985,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if (args[0] == "classify-hook" and args[1] == "recall" and
             decision["state"] == "blocked" and
-            decision.get("reason") == "bundle_upgrade_in_progress"):
+            decision.get("reason") in ("bundle_upgrade_in_progress",
+                                       "bundle_upgrade_stalled")):
         # The dispatcher answers this recall without context, not an error.
         print("upgrading")
         return 0
