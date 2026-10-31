@@ -179,10 +179,54 @@ def _protocol_compatible(path):
     return None
 
 
-def _admission(max_rss_mib, *, already_running, probe=None):
+# A first model load is admitted on its measured footprint, not on the policy's
+# RSS ceiling (maxRssMib still bounds a running service). The estimate is the
+# peak RSS growth that inference preparation recorded for this model and view,
+# with a 1.5x margin and a floor; without a record it is DEFAULT_PEAK_MIB.
+FOOTPRINT_NAME = 'laya-load-footprint.json'
+FOOTPRINT_SCHEMA = 'memvane-load-footprint-v1'
+DEFAULT_PEAK_MIB = 1536
+MIN_PEAK_MIB = 1024
+LOAD_RESERVE_MIB = 768
+
+
+def estimated_peak_mib(recorded=None):
+    """The first-load peak estimate from a recorded growth, never below the floor."""
+    if type(recorded) not in (int, float) or not math.isfinite(recorded) or recorded <= 0:
+        return DEFAULT_PEAK_MIB
+    return max(MIN_PEAK_MIB, math.ceil(recorded * 1.5))
+
+
+def load_footprint(state, model_dir, view):
+    """The recorded peak growth (MiB) for this model and view in ``state``, or None."""
+    from .dataset import read_private_json
+    try:
+        row = read_private_json(Path(state) / FOOTPRINT_NAME)
+    except (OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(row, dict) or row.get('schema') != FOOTPRINT_SCHEMA
+            or row.get('modelDir') != str(model_dir) or row.get('view') != view
+            or type(row.get('peakMib')) not in (int, float)
+            or not math.isfinite(row['peakMib']) or not 0 < row['peakMib'] <= 65536):
+        return None
+    return row['peakMib']
+
+
+def record_footprint(state, model_dir, view, peak_mib):
+    """Persist one measured first-load peak growth for later admissions."""
+    from runtime_lease import atomic_json
+    if type(peak_mib) not in (int, float) or not math.isfinite(peak_mib) or peak_mib <= 0:
+        return
+    atomic_json(Path(state) / FOOTPRINT_NAME, {
+        'schema': FOOTPRINT_SCHEMA, 'modelDir': str(model_dir), 'view': view,
+        'peakMib': math.ceil(peak_mib), 'recordedAt': time.time()})
+
+
+def _admission(max_rss_mib, *, already_running, probe=None, peak_mib=None):
     from .shared import resource_report
+    first_load = estimated_peak_mib(peak_mib) + LOAD_RESERVE_MIB
     policy = {'maxLoadPerCpu': 1.5,
-              'minAvailableMib': 768 if already_running else max(2048, max_rss_mib)}
+              'minAvailableMib': 768 if already_running else first_load}
     report = (probe or resource_report)(policy, detailed=True)
     pressure = report.get('memory_pressure')
     free_percent = pressure.get('system_free_percent') if isinstance(pressure, dict) else None

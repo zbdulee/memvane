@@ -293,10 +293,18 @@ def _prepare_lease(home):
     return fd
 
 
-def pressure(policy):
-    """None when memory admits one model load, else the deferral reason."""
-    from .resident import _admission
-    limits, _report = _admission(policy['maxRssMib'], already_running=False)
+def pressure(policy, state=None):
+    """None when memory admits one model load, else the deferral reason.
+
+    The load is admitted on the footprint that preparation recorded for this
+    model and view in ``state`` (a conservative default without a record).
+    """
+    from .resident import _admission, load_footprint
+    try:
+        peak = load_footprint(state, policy['trainerArgv'][2], _view(state)) if state is not None else None
+    except (OSError, ValueError, KeyError, TypeError):
+        peak = None
+    limits, _report = _admission(policy['maxRssMib'], already_running=False, peak_mib=peak)
     return None if limits is not None else 'learning_prepare_memory_pressure'
 
 
@@ -323,7 +331,7 @@ def heal(project, *, home=None, deadline=None, state=None):
            else {**policy, 'trainerArgv': [argv[0], str(running_adapter()), argv[2]]})
     lease = _prepare_lease(home)
     try:
-        reason = pressure(run)
+        reason = pressure(run, state)
         if reason is not None:
             raise HealDeferred(reason)
         attest(state, run)
