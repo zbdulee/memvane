@@ -189,11 +189,32 @@ _FIT_STEPS = 16
 
 
 def _title_end(body):
-    """Codepoints of the leading heading line a scored prefix must keep whole."""
-    if not body.startswith('#'):
-        return 1
-    end = body.find('\n')
+    """Codepoints a scored prefix must keep: through the first heading line.
+
+    Leading whitespace and blank lines (a compact body keeps the blank line
+    after its frontmatter) are skipped to find that heading. A body that does
+    not open with a heading keeps at least its first visible character.
+    """
+    start = len(body) - len(body.lstrip())
+    if not body.startswith('#', start):
+        return start + 1
+    end = body.find('\n', start)
     return len(body) if end < 0 else end
+
+
+def _body_token_ends(tok, body):
+    """Codepoint end offset of each body token; fails closed when unusable."""
+    try:
+        spans = tok(body, add_special_tokens=False, return_offsets_mapping=True)['offset_mapping']
+        ends = [span[1] for span in spans]
+    except (KeyError, TypeError, IndexError):
+        raise ValueError('model_token_budget_exceeded') from None
+    previous = 0
+    for end in ends:
+        if type(end) is not int or not previous <= end <= len(body):
+            raise ValueError('model_token_budget_exceeded')
+        previous = end
+    return ends
 
 
 def _fitting(prompt, body, tok, cfg, question, *, cancelled=None):
@@ -220,8 +241,7 @@ def _fitting(prompt, body, tok, cfg, question, *, cancelled=None):
         head_max_len=cfg.get('head_max_len', 192), state_ids=[])
     room = min(cfg['max_len'], tok.model_max_length) - len(skeleton)
     lead = 'User request:\n'+prompt+'\nWiki card body:\n'
-    ends = [end for _, end in tok(body, add_special_tokens=False,
-                                  return_offsets_mapping=True)['offset_mapping']]
+    ends = _body_token_ends(tok, body)
     minimum = _title_end(body)
     count = min(len(ends), room - len(tok(lead, add_special_tokens=False)['input_ids']))
     for _ in range(_FIT_STEPS):

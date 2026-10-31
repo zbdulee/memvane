@@ -59,9 +59,11 @@ sequence is split) sized from the token room left beside the request; the
 whole state is then re-tokenized and, while still too long, the cut steps back
 by the measured excess (at most 16 checks). The same input always keeps the
 same prefix; it is budget-sized, not a proven longest prefix, because a
-tokenizer may merge across the cut. The prefix keeps the card's whole leading
-heading line: a request that leaves no room for it fails closed
-(`input_budget_exceeded`), like a request that is over budget by itself.
+tokenizer may merge across the cut. The prefix keeps the card's whole first
+heading line, found after any leading blank lines (a compact body keeps the
+blank line after its frontmatter): a request that leaves no room for it fails
+closed (`input_budget_exceeded`), like a request that is over budget by
+itself. Missing or malformed tokenizer offsets also fail closed.
 Fifteen 16 KiB cards pair in about 0.07 s with the 1024-token checkpoint. For
 selection, a body over 16 KiB is first cut to its leading 16 KiB on a
 codepoint boundary. The inference receipt records the pairing in its `checks`

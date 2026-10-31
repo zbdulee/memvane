@@ -204,6 +204,45 @@ class PredictionPairingTests(unittest.TestCase):
             short = adapter._pair(prompt, card('x', '# 짧은\n' + '본문 ' * 400), TOK, CFG, fit_body=True)
         self.assertTrue(short['truncated'])
 
+    def test_heading_after_leading_blank_lines_is_kept_whole(self):
+        title = '# ' + '긴제목' * 20
+        rest = '\n' + '본문 ' * 400
+        source = '---\ntitle: 긴 제목\n---\n\n' + title + rest
+        derived = compact_input.derive_for_selection(
+            source, hashlib.sha256(source.encode()).hexdigest())['body_text']
+        self.assertTrue(derived.startswith('\n'))
+        with patch.dict(sys.modules, _stub_laya()):
+            skeleton, _ = sys.modules['laya.common'].build_sequence(
+                TOK, '', adapter.QUESTION, max_len=CFG['max_len'],
+                head_max_len=CFG['head_max_len'], state_ids=[])
+        lead = len('User request:\n' + '\nWiki card body:\n')
+        room = CFG['max_len'] - len(skeleton) - lead
+        for body in ('\n' + title + rest, '\n\n' + title + rest, ' \n\t\n' + title + rest, derived):
+            # Room for the heading: it is kept whole after the blank lines.
+            item = self.pairs([case(bodies=(body,))])[0]
+            self.assertIn(title, kept_body(item))
+            # Room for only part of it: the pair fails closed.
+            prompt = '질' * (room - 10)
+            with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
+                self.pairs([case(prompt=prompt, bodies=(body,))])
+
+    def test_unusable_token_offsets_fail_closed(self):
+        class Broken(CodepointTokenizer):
+            def __init__(self, mapping): self.mapping = mapping
+            def __call__(self, text, return_offsets_mapping=False, **kwargs):
+                result = super().__call__(text, **kwargs)
+                if return_offsets_mapping:
+                    mapping = self.mapping(text)
+                    if mapping is not KeyError: result['offset_mapping'] = mapping
+                return result
+        for mapping in (lambda text: None, lambda text: KeyError,
+                        lambda text: [(0, None)] * len(text),
+                        lambda text: [(i, len(text) - i) for i in range(len(text))],
+                        lambda text: [(0, len(text) + 5)] * len(text)):
+            with patch.dict(sys.modules, _stub_laya()):
+                with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
+                    adapter._pair(PROMPT, card('x', LONG_BODY), Broken(mapping), CFG, fit_body=True)
+
     def test_cancellation_is_checked_while_fitting(self):
         with patch.dict(sys.modules, _stub_laya()):
             with self.assertRaisesRegex(ValueError, 'prediction_cancelled'):
