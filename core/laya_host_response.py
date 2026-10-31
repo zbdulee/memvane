@@ -2297,15 +2297,12 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     try:
         if v2:
             from laya_incremental_docs_query import query_incremental
-            try:
-                incremental_rows, incremental_title_only, incremental_locations, \
-                    shadow_paths, base_generation = query_incremental(
-                        prompt, decision, proof, query_provider)
-            except _VectorUnavailable:
-                # No query vector (bundle drift, cold or deferred provider):
-                # serve the sealed base generation alone, lexical lists only.
-                incremental_rows, incremental_title_only = [], frozenset()
-                incremental_locations, shadow_paths, base_generation = {}, (), None
+            # Without a query vector (bundle drift, cold or deferred provider)
+            # completed incremental cards serve from their lexical lists and
+            # keep shadowing the older heads of the base generation.
+            incremental_rows, incremental_title_only, incremental_locations, \
+                shadow_paths, base_generation = query_incremental(
+                    prompt, decision, proof, query_provider)
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],

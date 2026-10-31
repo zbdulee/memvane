@@ -136,6 +136,17 @@ class IncrementalReadChecks(unittest.TestCase):
                 {'vectorProfile': self.profile}, self.fixture_provider)
             self.assertEqual([row['path'] for row in vector_rows], ['wiki/a.md'])
             self.assertEqual(vector_titles, frozenset({'wiki/a.md'}))
+            # The selected recall's provider has no query vector (cold,
+            # deferred or drifted owner): the completed card still serves
+            # from its lexical list and keeps shadowing the old head.
+            from laya_host_response import _VectorUnavailable
+
+            def vector_off(_prompt, _profile):
+                raise _VectorUnavailable('provider_unavailable')
+            rows, _titles, _locations, shadow, base = query_incremental(
+                'unique', self.decision, {'vectorProfile': self.profile}, vector_off)
+            self.assertEqual([row['body'] for row in rows], [new])
+            self.assertEqual((shadow, base), (('wiki/a.md',), 'head'))
             # A newer file edit has no completed vector set yet. Search keeps
             # the last completed sidecar snapshot, never the unwritten body.
             (self.wiki / 'a.md').write_text('# Third\nnot embedded\n', encoding='utf-8')
