@@ -1134,6 +1134,19 @@ def _learning_upkeep(project, home, state):
     except Exception as exc:
         out['selector'] = _reason(exc)
         _learning_event(state, 'learning.prepare', 'failed', _reason(exc))
+        return out
+    # A ready selector is loaded in the resident service now, so the first
+    # recall after a release or a service restart is not the cold one.
+    started = time.monotonic()
+    try:
+        warmed = selector_heal.warm(project, home=home)
+        out['selectorWarm'] = warmed['status']
+        _learning_event(state, 'learning.warm', warmed['status'],
+                        ms=(time.monotonic() - started) * 1000)
+    except Exception as exc:
+        out['selectorWarm'] = _reason(exc)
+        _learning_event(state, 'learning.warm', 'failed', _reason(exc),
+                        ms=(time.monotonic() - started) * 1000)
     return out
 
 

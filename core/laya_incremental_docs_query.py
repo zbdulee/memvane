@@ -254,7 +254,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                         or any(type(value) not in (float, int) or not math.isfinite(value)
                                for value in query)):
                     _fail('preview_query_vector_invalid')
-                query_norm = math.sqrt(math.fsum(value * value for value in query))
+                from laya_index_vector import _dot, _sum_squares
+                query_norm = math.sqrt(_sum_squares(query))
                 if query_norm <= 0:
                     _fail('preview_query_vector_invalid')
                 best = []
@@ -271,10 +272,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                     if chunks is None or len(chunks) != chunks_count:
                         _fail('preview_vector_incomplete')
                     sealed[path] = doc
-                    distance = min(1 - math.fsum(a * b for a, b in
-                                   zip(query, chunk['vector'])) / (
-                                   query_norm * math.sqrt(math.fsum(v * v for v in
-                                                                    chunk['vector'])))
+                    distance = min(1 - _dot(query, chunk['vector']) / (
+                                   query_norm * math.sqrt(_sum_squares(chunk['vector'])))
                                    for chunk in chunks)
                     best.append((distance, path))
                 best.sort(key=lambda item: (item[0], item[1]))
