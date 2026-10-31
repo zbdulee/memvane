@@ -334,20 +334,16 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(answers[-1]['initialBuild'], 'sealed')
         self.assertIn('wiki/zz-big.md', self.members(self.record()['sealed']['generation']))
 
-    def test_member_over_the_provider_text_limit_blocks_visibly(self):
-        # Remaining gap: the reviewed provider embeds one document per
-        # request, capped at 5,000,000 UTF-8 bytes. Hashing such a file is a
-        # bounded single-file step; embedding it is not possible yet.
+    def test_member_over_the_provider_text_limit_is_quarantined_and_the_build_finishes(self):
+        # The reviewed provider embeds one document per request, capped at
+        # 5,000,000 UTF-8 bytes. Such a member is quarantined (its content
+        # hash excluded) instead of blocking the whole build.
         self.corpus(1)
         self.write('wiki/huge.md', '# Huge\n' + 'x' * (vc.PROVIDER_MAX_TEXT_BYTES + 1))
         self.register()
-        answers = self.until_settled()
-        self.assertEqual((answers[-1]['state'], answers[-1]['reason'], answers[-1]['path']),
-                         ('blocked', 'vector_member_rejected', 'wiki/huge.md'))
-        record = self.record()
-        self.assertEqual(record['phase'], 'blocked')
-        self.assertEqual(record['blocked']['path'], 'wiki/huge.md')
-        self.assertIsNone(self.head())
+        self.until_settled()
+        self.assertNotEqual(self.record()['phase'], 'blocked')
+        self.assertIsNotNone(self.head())
         self.assertNotIn('wiki/huge.md', FakeProvider.calls)
 
     def test_pressure_defers_before_model_start_and_resumes(self):

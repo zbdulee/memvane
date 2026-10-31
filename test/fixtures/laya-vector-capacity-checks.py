@@ -342,16 +342,35 @@ class ReviewFixTests(VectorFillCase):
         self.assertEqual((answer['state'], answer['reason']), ('complete', None))
         self.assertTrue(vc.fill_complete(runtime, self.profile_id))
 
-    def test_member_the_provider_would_refuse_blocks_without_a_model_call(self):
+    def excluded_hashes(self, runtime):
+        return {value for _scope, kind, value in runtime.index.list_exclusions(SCOPE)
+                if kind == 'hash'}
+
+    def sha(self, text):
+        import hashlib
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def test_member_the_provider_would_refuse_is_quarantined_without_a_model_call(self):
         self.write('a.md', '# A\nfine\n')
         self.write('b.md', '')
+        self.write('c.md', '# C\nalso fine\n')
         runtime = self.runtime()
         self.scan_to_complete(runtime)
-        answer = self.fill(runtime)[-1]
-        self.assertEqual((answer['state'], answer['reason'], answer['path']),
-                         ('blocked', 'vector_member_rejected', 'plans/b.md'))
-        self.assertEqual(self.provider.calls, ['plans/a.md'])
-        self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+        members = []
+        answer = self.fill(runtime, on_member=lambda **kw: members.append(kw))[-1]
+        # One bad card costs that card, not the fill.
+        self.assertEqual((answer['state'], answer['reason']), ('complete', None))
+        self.assertEqual(self.provider.calls, ['plans/a.md', 'plans/c.md'])
+        self.assertTrue(vc.fill_complete(runtime, self.profile_id))
+        self.assertEqual(self.excluded_hashes(runtime), {self.sha('')})
+        self.assertEqual([(m['path'], m['outcome'], m['reason']) for m in members],
+                         [('plans/b.md', 'quarantined', 'provider_text_invalid')])
+        # The generation is sealed and published without it.
+        self.assertEqual(self.sync(runtime)['state'], 'indexed')
+        head = self.head(runtime)
+        served = [row[0] for row in runtime.index.db.execute(
+            'SELECT path FROM membership WHERE gen=? AND eligible=1 ORDER BY path', (head,))]
+        self.assertEqual(served, ['plans/a.md', 'plans/c.md'])
 
     def test_transient_provider_error_is_raised_not_blamed_on_a_member(self):
         self.corpus(1)
@@ -364,30 +383,133 @@ class ReviewFixTests(VectorFillCase):
         with self.assertRaisesRegex(IndexContractError, 'provider_unavailable'):
             vc.vector_fill_step(runtime, self.provider)
 
-    def test_request_the_worker_would_drop_is_refused_before_the_model(self):
+    def test_request_the_worker_would_drop_is_quarantined_before_the_model(self):
         # Under the raw 5 MB cap, but JSON escaping (each newline -> \\n)
         # pushes the request line past the worker's 5,100,000-byte cap.
-        self.write('big.md', '# Big\n' + '\n' * 2_700_000)
+        body = '# Big\n' + '\n' * 2_700_000
+        self.write('big.md', body)
         runtime = self.runtime()
         self.scan_to_complete(runtime)
-        answer = vc.vector_fill_step(runtime, self.provider, max_bytes=10_000_000)
-        self.assertEqual((answer['state'], answer['reason'], answer['detail']),
-                         ('blocked', 'vector_member_rejected', 'provider_request_too_large'))
+        members = []
+        answer = vc.vector_fill_step(runtime, self.provider, max_bytes=10_000_000,
+                                     on_member=lambda **kw: members.append(kw))
+        self.assertEqual(answer['state'], 'complete')
+        self.assertEqual([(m['outcome'], m['reason']) for m in members],
+                         [('quarantined', 'provider_request_too_large')])
         self.assertEqual(self.provider.calls, [])
+        self.assertEqual(self.excluded_hashes(runtime), {self.sha(body)})
 
-    def test_named_worker_refusal_blocks_the_member(self):
+    def test_named_worker_refusal_quarantines_the_member(self):
+        self.corpus(2)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        real = self.provider.embed_document_chunks
+
+        def refuse(body, path):
+            if path == 'plans/f0.md':
+                raise IndexContractError('provider_member_refused')
+            return real(body, path)
+        self.provider.embed_document_chunks = refuse
+        answer = vc.vector_fill_step(runtime, self.provider)
+        self.assertEqual(answer['state'], 'complete')
+        self.assertEqual(self.excluded_hashes(runtime), {self.sha('# F0\nbody 0\n')})
+        self.assertTrue(vc.fill_complete(runtime, self.profile_id))
+
+    def invalid_for(self, bad_path, *, probe_ok=True):
+        real = self.provider.embed_document_chunks
+
+        def embed(body, path):
+            if path == bad_path or (path == vc.PROBE_PATH and not probe_ok):
+                raise IndexContractError('provider_result_invalid')
+            return real(body, path)
+        self.provider.embed_document_chunks = embed
+
+    def test_member_that_keeps_failing_while_the_provider_works_is_quarantined(self):
+        # The SE incident: one card the provider rejects on every try used to
+        # defer the whole fill (and every member after it) forever.
+        self.corpus(3)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        self.invalid_for('plans/f1.md')
+        members = []
+        ledger = Path(str(runtime.index.path) + vc.QUARANTINE_SUFFIX)
+        for strike in range(1, vc.QUARANTINE_STRIKES):
+            answer = vc.vector_fill_step(runtime, self.provider,
+                                         on_member=lambda **kw: members.append(kw))
+            self.assertEqual((answer['state'], answer['reason'], answer['path'],
+                              answer['strikes']),
+                             ('deferred', 'provider_result_invalid', 'plans/f1.md', strike))
+            self.assertEqual(self.excluded_hashes(runtime), set())
+        self.assertEqual(oct(ledger.stat().st_mode & 0o777), '0o600')
+        answer = vc.vector_fill_step(runtime, self.provider,
+                                     on_member=lambda **kw: members.append(kw))
+        self.assertEqual(answer['state'], 'complete')
+        self.assertEqual(self.excluded_hashes(runtime), {self.sha('# F1\nbody 1\n')})
+        self.assertEqual([(m['outcome'], m['strikes']) for m in members],
+                         [('strike', 1), ('strike', 2), ('quarantined', 3)])
+        self.assertEqual(self.sync(runtime)['state'], 'indexed')
+        # Only real members were embedded; the control document never is.
+        self.assertNotIn(vc.PROBE_PATH, [row[0] for row in runtime.index.db.execute(
+            'SELECT path FROM membership')])
+
+    def test_failure_while_the_provider_itself_fails_is_never_a_strike(self):
         self.corpus(1)
         runtime = self.runtime()
         self.scan_to_complete(runtime)
+        self.invalid_for('plans/f0.md', probe_ok=False)
+        members = []
+        for _ in range(vc.QUARANTINE_STRIKES + 2):
+            answer = vc.vector_fill_step(runtime, self.provider,
+                                         on_member=lambda **kw: members.append(kw))
+            self.assertEqual((answer['state'], answer['reason']),
+                             ('deferred', 'provider_result_invalid'))
+            self.assertNotIn('strikes', answer)
+        self.assertEqual(self.excluded_hashes(runtime), set())
+        self.assertFalse(Path(str(runtime.index.path) + vc.QUARANTINE_SUFFIX).exists())
+        self.assertEqual({m['outcome'] for m in members}, {'transient'})
 
-        def refuse(body, path):
-            raise IndexContractError('provider_member_refused')
-        self.provider.embed_document_chunks = refuse
-        answer = vc.vector_fill_step(runtime, self.provider)
-        self.assertEqual((answer['state'], answer['reason'], answer['path'], answer['detail']),
-                         ('blocked', 'vector_member_rejected', 'plans/f0.md',
-                          'provider_member_refused'))
-        self.assertFalse(vc.fill_complete(runtime, self.profile_id))
+    def test_a_struck_member_that_later_embeds_loses_its_strikes(self):
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        real = self.provider.embed_document_chunks
+        self.invalid_for('plans/f0.md')
+        vc.vector_fill_step(runtime, self.provider)
+        ledger = Path(str(runtime.index.path) + vc.QUARANTINE_SUFFIX)
+        self.assertIn(self.sha('# F0\nbody 0\n'), vc._read_private_json(str(ledger)))
+        self.provider.embed_document_chunks = real
+        self.assertEqual(vc.vector_fill_step(runtime, self.provider)['state'], 'complete')
+        self.assertEqual(vc._read_private_json(str(ledger)), {})
+
+    def test_quarantine_crosses_the_write_fence_before_the_exclusion(self):
+        self.write('b.md', '')
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        order = []
+        real = runtime.index.exclude
+
+        def exclude(*a, **k):
+            order.append('exclude'); return real(*a, **k)
+        with mock.patch.object(runtime.index, 'exclude', exclude):
+            vc.vector_fill_step(runtime, self.provider,
+                                before_write=lambda: order.append('fence'))
+        self.assertEqual(order, ['fence', 'exclude'])
+
+    def test_pending_fill_quarantines_and_moves_on(self):
+        self.write('a.md', '')
+        self.write('z.md', '# Z\nfine\n')
+        (self.plans / 'd').mkdir()
+        self.write('d/later.md', '# Later\nnot scanned yet\n')
+        runtime = self.runtime()
+        runtime.catalog.request_scan()
+        published = []
+        while runtime.catalog.step(max_files=2)['status'] == 'pending':
+            out = vc.pending_vector_fill_step(
+                runtime, self.provider, before_write=lambda: None,
+                on_document_complete=lambda *a: published.append(a[1]))
+            self.assertNotIn(out['state'], ('blocked', 'deferred'), out)
+        self.assertEqual(self.excluded_hashes(runtime), {self.sha('')})
+        self.assertEqual((self.provider.calls, published), (['plans/z.md'], ['plans/z.md']))
 
     def test_empty_worker_answer_defers_with_the_path(self):
         self.corpus(1)

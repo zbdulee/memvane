@@ -70,6 +70,131 @@ def _provider_refuses(text, path):
         return 'provider_request_too_large'
     return None
 _PAGE = 64
+# A member the provider keeps failing on, while a tiny control document still
+# embeds, is a member defect (not an outage). After this many such wakes its
+# content hash is quarantined through the index's hash exclusion, so the rest
+# of the corpus is filled and sealed without it. Deterministic member verdicts
+# (empty or oversized body, a named worker refusal, no or too many chunks)
+# are quarantined at once. Editing the card gives it a new hash and a new try.
+QUARANTINE_STRIKES = 3
+QUARANTINE_SUFFIX = '.vector-quarantine.json'
+QUARANTINE_MAX_ENTRIES = 256
+PROBE_PATH = 'memvane-probe/control.md'
+PROBE_BODY = '# MemVane control\n\nA short control document.\n'
+
+
+class _Quarantine:
+    """Per-step member verdicts and the private strike/quarantine ledger.
+
+    The ledger (``<index>.vector-quarantine.json``, 0600) is the strike count
+    between wakes and the record of which exclusions were made automatically.
+    """
+
+    def __init__(self, runtime, provider, fence, on_member):
+        self.runtime = runtime
+        self.provider = provider
+        self.fence = fence
+        self.on_member = on_member
+        self.path = str(runtime.index.path) + QUARANTINE_SUFFIX
+        self._rows = None
+
+    def _load(self):
+        if self._rows is None:
+            self._rows = _read_private_json(self.path)
+        return self._rows
+
+    def _save(self):
+        rows = self._load()
+        keep = sorted(rows.items(), key=lambda item: item[1].get('at', 0)
+                      if isinstance(item[1], dict) else 0)[-QUARANTINE_MAX_ENTRIES:]
+        self._rows = dict(keep)
+        _write_private_json(self.path, self._rows)
+
+    def _notify(self, path, sha, outcome, reason, strikes):
+        if self.on_member is not None:
+            try:
+                self.on_member(path=path, sha=sha, outcome=outcome, reason=reason,
+                               strikes=strikes)
+            except Exception:
+                pass  # a log line never decides the fill
+
+    def succeeded(self, sha):
+        rows = self._load()
+        if sha in rows and not rows[sha].get('excluded'):
+            rows.pop(sha)
+            self._save()
+
+    def _member_specific(self):
+        """True when a control document embeds: the provider itself is up."""
+        try:
+            rows = self.provider.embed_document_chunks(PROBE_BODY, path=PROBE_PATH)
+        except IndexContractError:
+            return False
+        return isinstance(rows, list) and bool(rows)
+
+    def judge(self, path, sha, reason, *, deterministic):
+        """'quarantined', or 'strike'/'transient' (the caller defers)."""
+        import time
+        if not deterministic and not self._member_specific():
+            self._notify(path, sha, 'transient', reason, None)
+            return 'transient'
+        rows = self._load()
+        prior = rows.get(sha) if isinstance(rows.get(sha), dict) else {}
+        strikes = (QUARANTINE_STRIKES if deterministic
+                   else int(prior.get('strikes', 0) or 0) + 1)
+        rows[sha] = {'path': path, 'reason': reason, 'strikes': strikes,
+                     'at': time.time(), 'excluded': False}
+        if strikes < QUARANTINE_STRIKES:
+            self._save()
+            self._notify(path, sha, 'strike', reason, strikes)
+            return 'strike'
+        # The exclusion is a candidate write: cross the selected fence first.
+        if self.fence is not None:
+            self.fence()
+        self._save()  # the strike survives even if the exclusion fails
+        self.runtime.index.exclude(self.runtime.scope, hash_=sha)
+        rows[sha]['excluded'] = True
+        self._save()
+        self._notify(path, sha, 'quarantined', reason, strikes)
+        return 'quarantined'
+
+
+def _read_private_json(path):
+    import os
+    import stat
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    except OSError:
+        return {}
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 1 << 20):
+            return {}
+        with os.fdopen(os.dup(fd), 'rb') as source:
+            value = json.loads(source.read())
+    except (OSError, ValueError):
+        return {}
+    finally:
+        os.close(fd)
+    return value if isinstance(value, dict) else {}
+
+
+def _write_private_json(path, value):
+    import os
+    import tempfile
+    directory = os.path.dirname(path)
+    fd, temporary = tempfile.mkstemp(prefix='.vector-quarantine-', dir=directory)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as target:
+            json.dump(value, target, ensure_ascii=False, separators=(',', ':'))
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
 
 
 def provider_profile_id(provider: Any) -> str:
@@ -97,7 +222,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                      max_bytes: int = DEFAULT_FILL_BYTES,
                      should_yield: Optional[Callable[[], bool]] = None,
                      on_document_complete: Optional[Callable[..., None]] = None,
-                     before_write: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
+                     before_write: Optional[Callable[[], None]] = None,
+                     on_member: Optional[Callable[..., None]] = None) -> Dict[str, Any]:
     """Embed at most ``max_files`` uncached members; one body in memory at a time.
 
     ``before_write`` (a selected project's journal fence) runs once, before
@@ -117,20 +243,24 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     * ``blocked``/``vector_budget_exceeded``: the snapshot has more chunk rows
       than the installed generation seal can hold (``generation_row_limit``;
       no check when the seal reports no bound); nothing is staged.
-      ``blocked``/``vector_member_rejected``: a member the provider would
-      refuse (empty or over ``PROVIDER_MAX_TEXT_BYTES``), decided without
-      loading a model, one it returned no chunks for, or one whose chunk set
-      exceeds ``document_row_limit`` (``chunk_set_too_large``).
       ``blocked``/``vector_cache_damaged``: a cached chunk set fails its own
-      seal; it is not repaired here. All three repeat until the source (or
-      the cache) changes. Other provider errors (service unavailable,
-      admission refused) are raised, never reported as a member problem.
-    * ``blocked``/``vector_member_rejected`` (``provider_member_refused``):
-      the worker refused the document on content alone (over 1,024 chunks,
-      a chunk over the context).
+      seal; it is not repaired here. Both repeat until the source (or the
+      cache) changes. Other provider errors (service unavailable, admission
+      refused) are raised, never reported as a member problem.
+    * A member verdict never stops the fill. A member the provider would
+      refuse (empty or over ``PROVIDER_MAX_TEXT_BYTES``, decided without
+      loading a model), a named worker refusal (``provider_member_refused``),
+      no chunks, or a chunk set over ``document_row_limit`` is quarantined
+      at once; the fill continues with the next member.
     * ``deferred``/``provider_result_invalid`` with ``path``: the worker
-      answered nothing usable (busy, or an older worker that does not name
-      its refusals). Not a member verdict; retried next wake.
+      answered nothing usable. If a control document still embeds, the
+      member gets a strike (``strikes``); its ``QUARANTINE_STRIKES``-th
+      strike quarantines it and the fill continues. Otherwise (the provider
+      itself is failing) it is retried next wake without a strike.
+
+    Quarantine excludes the content hash through ``LayaIndexA.exclude`` after
+    ``before_write``, records it in ``<index>.vector-quarantine.json`` and
+    calls ``on_member(path=, sha=, outcome=, reason=, strikes=)``.
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
@@ -142,7 +272,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             or type(max_bytes) is not int or max_bytes < 1
             or (should_yield is not None and not callable(should_yield))
             or (on_document_complete is not None and not callable(on_document_complete))
-            or (before_write is not None and not callable(before_write))):
+            or (before_write is not None and not callable(before_write))
+            or (on_member is not None and not callable(on_member))):
         raise TypeError('invalid_vector_fill_step')
     catalog = getattr(runtime, 'catalog', None)
     if catalog is None:
@@ -177,6 +308,7 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                                     profile['dimension']) != profile_id:
             raise IndexContractError('vector_profile_mismatch')
         writable = True
+    verdicts = _Quarantine(runtime, provider, prepare_write, on_member)
     exclusions = load_exclusions(runtime.index, runtime.scope)
     cursor = progress['cursor']
     rows_total = progress['rows']
@@ -242,31 +374,38 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 continue
             if out['embedded'] >= max_files or (should_yield and should_yield()):
                 return record(False) or answer('pending', 'vector_backlog', cursor=cursor)
-            refused = _provider_refuses(text, path)
-            if refused:
-                return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path, detail=refused)
-            try:
-                rows = provider.embed_document_chunks(text, path=path)
-            except IndexContractError as exc:
-                if str(exc) == 'provider_member_refused':
-                    return record(False) or answer('blocked', 'vector_member_rejected',
-                                                   cursor=cursor, path=path,
-                                                   detail='provider_member_refused')
-                if str(exc) != 'provider_result_invalid':
-                    raise
-                # Busy, or an older worker that sends refusals bare: not a
-                # member verdict, but never pathless. Retried next wake.
-                return record(False) or answer('deferred', 'provider_result_invalid',
-                                               cursor=cursor, path=path)
-            if not isinstance(rows, list) or not rows:
-                return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path, detail='no_chunks')
-            if len(rows) > member_limit:
+            rejected = _provider_refuses(text, path)
+            rows = None
+            if not rejected:
+                try:
+                    rows = provider.embed_document_chunks(text, path=path)
+                except IndexContractError as exc:
+                    if str(exc) == 'provider_member_refused':
+                        rejected = 'provider_member_refused'
+                    elif str(exc) != 'provider_result_invalid':
+                        raise
+                    else:
+                        verdict = verdicts.judge(path, sha, 'provider_result_invalid',
+                                                 deterministic=False)
+                        if verdict != 'quarantined':
+                            # Busy or failing provider, or a strike: never pathless.
+                            return record(False) or answer(
+                                'deferred', 'provider_result_invalid', cursor=cursor,
+                                path=path, **({'strikes': verdicts._load()[sha]['strikes']}
+                                              if verdict == 'strike' else {}))
+                        rejected = 'quarantined'
+            if rejected is None and (not isinstance(rows, list) or not rows):
+                rejected = 'no_chunks'
+            if rejected is None and len(rows) > member_limit:
                 # Stored, it would read back as a damaged cache; say what it is.
-                return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path,
-                                               detail='chunk_set_too_large')
+                rejected = 'chunk_set_too_large'
+            if rejected is not None:
+                if rejected != 'quarantined':
+                    verdicts.judge(path, sha, rejected, deterministic=True)
+                exclusions = load_exclusions(runtime.index, runtime.scope)
+                cursor = path
+                continue
+            verdicts.succeeded(sha)
             prepare_write()
             # Chunk rows reference their content row; stage reuses it.
             runtime.index.ensure_content(sha, text)
@@ -291,7 +430,8 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                              max_bytes: int = DEFAULT_FILL_BYTES,
                              should_yield: Optional[Callable[[], bool]] = None,
                              before_write: Optional[Callable[[], None]] = None,
-                             on_document_complete: Callable[..., None]) -> Dict[str, Any]:
+                             on_document_complete: Callable[..., None],
+                             on_member: Optional[Callable[..., None]] = None) -> Dict[str, Any]:
     """Publish fully embedded members of an unfinished catalog scan.
 
     This feed never seals a generation or treats an empty page as scan
@@ -304,7 +444,8 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
             type(max_bytes) is not int or max_bytes < 1 or
             (should_yield is not None and not callable(should_yield)) or
             (before_write is not None and not callable(before_write)) or
-            not callable(on_document_complete)):
+            not callable(on_document_complete) or
+            (on_member is not None and not callable(on_member))):
         raise TypeError('invalid_pending_vector_fill_step')
     catalog = getattr(runtime, 'catalog', None)
     if catalog is None:
@@ -315,6 +456,7 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
     profile_registered = False
     exclusions = load_exclusions(runtime.index, runtime.scope)
     out = {'embedded': 0, 'cached': 0, 'bytes': 0}
+    verdicts = _Quarantine(runtime, provider, before_write, on_member)
 
     def answer(state, reason, **extra):
         return {'state': state, 'reason': reason, 'profile_id': profile_id,
@@ -366,11 +508,10 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                     raise
                 return answer('blocked', 'vector_cache_damaged',
                               cursor=cursor, path=path, detail=str(exc))
+            rejected = None
             if chunks is None:
-                refused = _provider_refuses(body, path)
-                if refused:
-                    return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path, detail=refused)
+                rejected = _provider_refuses(body, path)
+            if chunks is None and not rejected:
                 if not profile_registered:
                     # Registration may write the candidate database. For a
                     # selected project, cross the first-write fence before
@@ -385,26 +526,40 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                 try:
                     chunks = provider.embed_document_chunks(body, path=path)
                 except IndexContractError as exc:
+                    chunks = None
                     if str(exc) == 'provider_member_refused':
-                        return answer('blocked', 'vector_member_rejected',
-                                      cursor=cursor, path=path,
-                                      detail='provider_member_refused')
-                    if str(exc) != 'provider_result_invalid':
+                        rejected = 'provider_member_refused'
+                    elif str(exc) != 'provider_result_invalid':
                         raise
-                    return answer('deferred', 'provider_result_invalid',
-                                  cursor=cursor, path=path)
-                if not isinstance(chunks, list) or not chunks:
-                    return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path, detail='no_chunks')
-                if len(chunks) > member_limit:
-                    return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path,
-                                  detail='chunk_set_too_large')
-                runtime.index.ensure_content(sha, body)
-                vectors.insert_chunk_set(sha, title, profile_id, chunks)
-                out['embedded'] += 1
-            else:
+                    else:
+                        verdict = verdicts.judge(path, sha, 'provider_result_invalid',
+                                                 deterministic=False)
+                        if verdict != 'quarantined':
+                            return answer('deferred', 'provider_result_invalid',
+                                          cursor=cursor, path=path,
+                                          **({'strikes': verdicts._load()[sha]['strikes']}
+                                             if verdict == 'strike' else {}))
+                        rejected = 'quarantined'
+                if rejected is None and (not isinstance(chunks, list) or not chunks):
+                    rejected = 'no_chunks'
+                if rejected is None and len(chunks) > member_limit:
+                    rejected = 'chunk_set_too_large'
+                if rejected is None:
+                    verdicts.succeeded(sha)
+                    runtime.index.ensure_content(sha, body)
+                    vectors.insert_chunk_set(sha, title, profile_id, chunks)
+                    out['embedded'] += 1
+            elif chunks is not None:
                 out['cached'] += 1
+            if rejected is not None:
+                if rejected != 'quarantined':
+                    verdicts.judge(path, sha, rejected, deterministic=True)
+                exclusions = load_exclusions(runtime.index, runtime.scope)
+                stopped = record(ordinal)
+                if stopped:
+                    return stopped
+                cursor = ordinal
+                continue
             # If this callback or its sidecar transaction fails, replay the
             # complete chunk set on the next wake; do not advance the cursor.
             on_document_complete(proof, path, sha, title, body, profile_id)
