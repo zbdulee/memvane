@@ -84,6 +84,12 @@ development execution guard is separate; see
   fill each cross that fence once, before their first candidate write
   (profile, content or chunk rows), so `newWriteSeen` is durable before any
   vector commit; a step over cached members only does not cross it.
+- `chunkDocumentByTokens` returns chunks in source position order. A
+  re-split first-pass chunk can end after the next overlapping chunk starts,
+  and the reviewed provider accepts only strictly increasing positions; an
+  already ordered document is unchanged. A sync deferred by the vector fill
+  logs the member it stopped at as `path` on its `wake.sync` event (the
+  fixed-code `detail` cannot carry a non-ASCII path).
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
