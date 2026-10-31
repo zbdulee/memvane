@@ -1141,6 +1141,27 @@ print(json.dumps(result))'''
              mock.patch.object(inactive_upgrade, '_verify_backup'):
             return auto.upgrade_install(self.project, self.install, root, home=self.root)
 
+    def test_inactive_candidate_cas_rewrites_v2_to_v3_and_restores_back(self):
+        # A bundle switch writes the route with the written schema (v3); its
+        # restore puts the original v2 route back. No other schema moves.
+        root, first = self.pending_on_host_root()
+        old_raw = (self.install / 'reviewed-route.json').read_bytes()
+        old_route = json.loads(old_raw)
+        self.assertEqual(old_route['schema'], host.SCHEMA_V2)
+        new_raw = bundle._canonical({**old_route, 'schema': host.SCHEMA_V3})
+        epoch = journal.inspect_journal(self.journal_path)['epoch']
+        moved = journal.cas_replace_inactive_candidate(self.journal_path, epoch, old_raw,
+                                                       first, new_raw)
+        self.assertEqual(moved['pendingRouteSha256'], hashlib.sha256(new_raw).hexdigest())
+        back = journal.cas_replace_inactive_candidate(self.journal_path, moved['epoch'],
+                                                      new_raw, first, old_raw)
+        self.assertEqual(back['pendingRouteSha256'], hashlib.sha256(old_raw).hexdigest())
+        legacy = bundle._canonical({**old_route, 'schema': host.SCHEMA})
+        with self.assertRaisesRegex(journal.JournalEvidenceError,
+                                    'inactive_candidate_identity_mismatch|route'):
+            journal.cas_replace_inactive_candidate(self.journal_path, back['epoch'],
+                                                   old_raw, first, legacy)
+
     def test_inactive_build_on_a_reextracted_root_is_readopted(self):
         root, first = self.pending_on_host_root()
         self.assertEqual(journal.preflight_product_candidate(
