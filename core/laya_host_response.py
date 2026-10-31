@@ -521,8 +521,8 @@ def _request_selector_heal(decision, reason):
     Never waits; the worker request is throttled per install.
     """
     try:
-        from context_learning.selector_heal import HEALABLE
-        if reason not in HEALABLE:
+        from context_learning.selector_heal import HEALABLE, WARMABLE
+        if reason not in HEALABLE and reason not in WARMABLE:
             return
         import laya_bundle_upgrade
         laya_bundle_upgrade.request(decision['projectRoot'], decision['journalPath'],
