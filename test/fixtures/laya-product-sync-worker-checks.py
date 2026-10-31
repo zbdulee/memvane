@@ -1012,19 +1012,22 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual(first['state'],'indexed')
         marks=list(self.marks)
         real_step=worker.sync_step
-        proofs=[]
+        proofs=[];rounds=[]
         real_proof=self.proof
         def counted():
             proofs.append(1);return real_proof()
-        with patch.object(worker,'sync_step',
-                          side_effect=lambda *a,**k:real_step(*a,max_files=1,**k)), \
+        def one_file_step(*a,**k):
+            rounds.append(1);return real_step(*a,max_files=1,**k)
+        with patch.object(worker,'sync_step',side_effect=one_file_step), \
              patch.object(self,'proof',side_effect=counted):
             second,started=self.run_capacity()
         self.assertEqual((second['state'],second['generation']),('unchanged',first['generation']))
         self.assertEqual(started,0)
         self.assertEqual(self.marks,marks)  # unchanged members cross no journal fence
-        # Round boundaries re-prove the route; unchanged members do not.
-        self.assertLessEqual(len(proofs),2*worker.MAX_CAPACITY_ROUNDS//8)
+        # Only round boundaries (plus the wake's own entry and exit checks)
+        # re-prove the route; the unchanged members in each round do not.
+        self.assertGreater(len(rounds),3)
+        self.assertLessEqual(len(proofs),len(rounds)+3)
 
 
 if __name__=='__main__':unittest.main()
