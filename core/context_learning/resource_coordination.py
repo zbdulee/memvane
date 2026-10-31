@@ -21,6 +21,9 @@ SLOTS=64
 MAX_OBSERVATION_AGE=2
 RECOVERY_SECONDS=5
 RECOVERY_MAX_GAP=7
+# Admissible but above the calm load threshold: a longer continuous window
+# still recovers, so a steadily busy machine never latches paused forever.
+RECOVERY_BUSY_SECONDS=60
 _COMPUTE_OWNER=ContextVar('qmd_compute_owner',default=None)
 _INFERENCE_OWNER=ContextVar('qmd_inference_owner',default=None)
 _STARTUP_OWNER=ContextVar('qmd_startup_owner',default=None)
@@ -169,19 +172,23 @@ class Coordinator:
         if not result['ready']:
             save(paused);return result
         if not state['paused']:return result
-        # Different recovery thresholds prevent threshold-edge restart flapping.
-        if report['load_per_cpu']>policy.get('maxLoadPerCpu',1)*.65:
-            save(paused);return {**result,'ready':False,'reason':'resource_recovery_hysteresis'}
+        # Different recovery thresholds prevent threshold-edge restart flapping:
+        # a calm machine (load at most 0.65 of the limit) recovers after
+        # RECOVERY_SECONDS; an admissible but busier one only after
+        # RECOVERY_BUSY_SECONDS of the same continuous observation.
+        calm=report['load_per_cpu']<=policy.get('maxLoadPerCpu',1)*.65
         since,wall_since,last=state.get('stable_since'),state.get('wall_since'),state.get('last_observed')
         valid=all(type(x) in (int,float) and math.isfinite(x) for x in (since,wall_since,last))
         now,wall=self.clock(),self.wall()
         observed=report['observed_at_mono']
         if (not valid or now<since or observed<last or observed-last>RECOVERY_MAX_GAP
                 or abs((wall-wall_since)-(now-since))>2):
-            save({'paused':True,'stable_since':observed,'wall_since':wall-(now-observed),'last_observed':observed})
+            save({'paused':True,'stable_since':observed,'wall_since':wall-(now-observed),
+                  'last_observed':observed,'busy':not calm})
             return {**result,'ready':False,'reason':'resource_recovery_hysteresis'}
-        if observed-since<RECOVERY_SECONDS:
-            save({**state,'last_observed':observed})
+        busy=state.get('busy') is True or not calm
+        if observed-since<(RECOVERY_BUSY_SECONDS if busy else RECOVERY_SECONDS):
+            save({**state,'last_observed':observed,'busy':busy})
             return {**result,'ready':False,'reason':'resource_recovery_hysteresis'}
         save({'paused':False});return result
 

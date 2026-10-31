@@ -1209,6 +1209,39 @@ def hung_load_service(base, child_record, phase=''):
     service.run()
 
 
+class DeferredStartChecks(unittest.TestCase):
+    """A resource-deferred embed start never re-hashes the runtime."""
+    def test_admission_is_checked_before_the_full_attestation(self):
+        with tempfile.TemporaryDirectory(prefix='lrs-defer-', dir='/tmp') as temp:
+            base = Path(temp).resolve(); base.chmod(0o700)
+            root = base / 'svc'; root.mkdir(mode=0o700)
+            runtime = base / 'state' / 'runtime'; runtime.mkdir(parents=True, mode=0o700)
+            runtime.parent.chmod(0o700)
+            manifest = manifest_for(runtime / 'laya-embed.sock')
+            decision = {'projectRoot': str(base / 'p')}
+            attests, starts, admitted = [], [], [False]
+            def start_worker(_manifest, admit):
+                starts.append(1)
+                return object() if admit() else (_ for _ in ()).throw(
+                    ResourceDeferred('provider_admission_deferred'))
+            service = svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                                  prove=lambda _p: (decision, {'providerManifest': manifest}, 'selected'),
+                                  attest=lambda *_a: attests.append(1), start_worker=start_worker,
+                                  admit=lambda: admitted[0], retire=lambda *_a: None, tick=.05)
+            worker = svc.Worker('key', str(root / 'w.sock'))
+            for _ in range(3):
+                worker.loading, worker.retry_at = True, 0.0
+                service._load_attested(str(base / 'p'), decision, {'providerManifest': manifest},
+                                       'selected', manifest, worker, 'seal')
+                self.assertEqual(worker.state, 'resource_deferred')
+            self.assertEqual((attests, starts), ([], []), 'deferred retries re-attested')
+            admitted[0] = True
+            worker.loading, worker.retry_at = True, 0.0
+            service._load_attested(str(base / 'p'), decision, {'providerManifest': manifest},
+                                   'selected', manifest, worker, 'seal')
+            self.assertEqual((len(attests), len(starts), worker.state), (1, 1, 'ready'))
+
+
 class ProofChecks(unittest.TestCase):
     def test_drifted_bundle_is_served_by_read_only_proof(self):
         import laya_install_journal as journal

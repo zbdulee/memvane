@@ -297,7 +297,13 @@ check (the target bundle admits its own work), learning/auto wakes wait for it;
 with an empty queue it waits30seconds and performs no OS pressure probe or worker
 spawn. Observations occur before the nonblocking coordination check. Healthy
 recovery requires the task/reserve budget, load below65% of its configured
-threshold and five observed stable seconds, then wakes the
+threshold and five observed stable seconds; a machine that stays admissible
+(under the configured threshold) but above that65% recovers after sixty
+continuous observed seconds instead (`RECOVERY_BUSY_SECONDS`), so a steadily
+busy host never stays paused. A refusal or an observation gap over seven
+seconds restarts either window. The resident service checks this admission
+before it re-attests a deferred embedding start, so a paused retry does not
+re-hash the runtime every few seconds. Recovery then wakes the
 existing bounded60-second/eight-dispatch worker. Queue capacity, revision ACK,
 claim leases and five-to300-second backoff are unchanged. It does not launch a
 teacher, create new training examples, broaden grants or scan arbitrary projects.
