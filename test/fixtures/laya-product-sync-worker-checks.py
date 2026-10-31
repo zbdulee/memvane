@@ -807,8 +807,7 @@ class CapacityWorkerChecks(unittest.TestCase):
             if answer['state']=='indexed':
                 before_publish();before_publish()  # two publishes, one fence
             return answer
-        def fill(_runtime,_provider,*,should_yield,on_document_complete=None,before_write=None,
-                 on_member=None):
+        def fill(_runtime,_provider,*,should_yield,on_document_complete=None,before_write=None):
             seen['fills']+=1;return next(fill_answers)
         def runtime(**kwargs):
             seen['runtime']=kwargs
@@ -1053,40 +1052,6 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertTrue(writes)
         # Every vector write of this wake follows its journal fence.
         self.assertEqual([name for name,fenced in writes if fenced<1],[])
-
-
-    def test_one_card_the_provider_keeps_rejecting_is_named_then_quarantined(self):
-        # SE: one card's chunks came back out of position order on every try,
-        # and every later card waited behind it. The card is named in the log,
-        # struck while a control document still embeds, then quarantined.
-        import event_log
-        import laya_vector_capacity
-        self.stores()
-        (self.beta/'bad.md').write_text('rejected card',encoding='utf-8')
-        base=self.provider_class()
-        class Rejecting(base):
-            def embed_document_chunks(self,body,path,**kw):
-                if path=='beta/bad.md':
-                    raise IndexContractError('provider_result_invalid')
-                return super().embed_document_chunks(body,path)
-        events=[]
-        def emit(name,**fields):
-            if name=='vector.member':events.append((fields['outcome'],fields['path'],fields['strikes']))
-            return True
-        results=[]
-        with patch.object(self,'provider_class',return_value=Rejecting), \
-             patch.object(event_log,'emit',side_effect=emit):
-            for _ in range(laya_vector_capacity.QUARANTINE_STRIKES):
-                results.append(self.run_capacity()[0])
-        self.assertEqual([r['state'] for r in results],['deferred','deferred','indexed'])
-        self.assertEqual(results[0]['path'],'beta/bad.md')
-        self.assertEqual(events,[('strike','beta/bad.md',1),('strike','beta/bad.md',2),
-                                 ('quarantined','beta/bad.md',3)])
-        with closing(LayaIndexA(self.index_path)) as index:
-            served=[row[0] for row in index.db.execute(
-                'SELECT path FROM membership WHERE gen=? AND eligible=1 ORDER BY path',
-                (results[-1]['generation'],))]
-        self.assertEqual(served,['beta/two.md'])  # the rest is indexed without it
 
 
 if __name__=='__main__':unittest.main()

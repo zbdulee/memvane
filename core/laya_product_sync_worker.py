@@ -652,7 +652,6 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
 
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
-                                        on_member=_member_event(decision),
                                         on_document_complete=publish_complete,
                                         before_head_publish=preserve_previous,
                                         retire_missing=(
@@ -667,22 +666,9 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     return _checked(result), state['proof']
 
 
-def _member_event(decision):
-    """``vector.member`` events naming a member the fill could not embed.
-
-    ``strike`` and ``quarantined`` follow ``laya_vector_capacity._Quarantine``;
-    ``transient`` is a failure while the provider itself was failing.
-    """
-    def emit(*, path, sha, outcome, reason, strikes):
-        import event_log
-        event_log.emit('vector.member', outcome=outcome, reason=reason, decision=decision,
-                       host='worker', session=None, path=path, hash=sha, strikes=strikes)
-    return emit
-
-
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                    on_document_complete=None, before_head_publish=None,
-                   retire_missing=None, on_member=None):
+                   retire_missing=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -713,8 +699,7 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,
                                                before_write=before_publish,
-                                               on_document_complete=on_document_complete,
-                                               on_member=on_member)
+                                               on_document_complete=on_document_complete)
             if partial['state'] in ('blocked', 'deferred'):
                 return {key: partial[key] for key in ('state', 'reason', 'path', 'detail')
                         if key in partial}
@@ -725,7 +710,7 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
                                     on_document_complete=on_document_complete,
-                                    before_write=before_publish, on_member=on_member)
+                                    before_write=before_publish)
             if fill['state'] in ('deferred', 'blocked'):
                 return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result

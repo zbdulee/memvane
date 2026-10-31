@@ -84,16 +84,12 @@ development execution guard is separate; see
   fill each cross that fence once, before their first candidate write
   (profile, content or chunk rows), so `newWriteSeen` is durable before any
   vector commit; a step over cached members only does not cross it.
-- A member the vector fill cannot embed never stops the fill. A deterministic
-  member verdict (empty or oversized body, a named worker refusal, no or too
-  many chunks) quarantines the member at once. A `provider_result_invalid`
-  answer counts a strike only when a small control document still embeds;
-  the third strike quarantines it. Quarantine excludes the content hash
-  (`LayaIndexA.exclude`, after the write fence), records it in the private
-  `<index>.vector-quarantine.json`, and logs `vector.member quarantined` with
-  the card path; strikes and failures while the provider itself fails log
-  `vector.member strike` / `transient`. A quarantined hash is served by
-  neither vector nor lexical recall; editing the card gives it a new hash.
+- `chunkDocumentByTokens` returns chunks in source position order. A
+  re-split first-pass chunk can end after the next overlapping chunk starts,
+  and the reviewed provider accepts only strictly increasing positions; an
+  already ordered document is unchanged. A sync deferred by the vector fill
+  logs the member it stopped at as `path` on its `wake.sync` event (the
+  fixed-code `detail` cannot carry a non-ASCII path).
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.

@@ -194,5 +194,8 @@ export async function chunkDocumentByTokens(content, tokenizer, strategy = 'rege
       await visit(text.slice(part.pos, part.pos + part.text.length), pos + part.pos, depth + 1);
   }
   for (const part of firstPass) await visit(part.text, part.pos, 0);
-  return results;
+  // A re-split first-pass chunk can end after the next (overlapping) chunk
+  // starts. Emit in source order: the chunks and their text are unchanged,
+  // and an already ordered document comes back byte-identical.
+  return results.sort((a, b) => a.pos - b.pos);
 }

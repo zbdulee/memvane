@@ -247,6 +247,16 @@ def _code(value):
             if isinstance(value, str) and value else None)
 
 
+def _member_path(value):
+    """A collection-relative Markdown member path from a child result, else None."""
+    if (not isinstance(value, str) or not value.endswith('.md') or len(value) > 512
+            or value.startswith('/') or '\\' in value
+            or any(part in ('', '.', '..') for part in value.split('/'))
+            or any(ord(ch) < 32 for ch in value)):
+        return None
+    return value
+
+
 def _deferred_detail(result):
     """Fixed-code why of a not-done target result, for the failure record."""
     parts = ['deferred', _code(result.get('state')) or 'unlabeled',
@@ -271,7 +281,7 @@ def _event(target, kind, started, *, outcome, reason=None, result=None):
                        ms=event_log.elapsed_ms(started), bundle=target.get('sourceCommit'),
                        generation=result.get('generation'),
                        previousGeneration=target.get('generation'),
-                       detail=result.get('detail'), **common)
+                       detail=result.get('detail'), path=result.get('path'), **common)
         if result.get('state') == 'indexed':
             event_log.emit('index.publish', outcome='published',
                            generation=result.get('generation'),
@@ -331,7 +341,8 @@ def run(kind, value, *, owner_fd=None):
     except DispatchFailure as exc:
         # Only a deferral's detail is fixed codes; a child's stderr tail never is.
         _event(target, kind, started, outcome='failed', reason=exc.code,
-               result={'detail': getattr(exc, 'detail', None)}
+               result={'detail': getattr(exc, 'detail', None),
+                       'path': getattr(exc, 'member_path', None)}
                if exc.code in ('target_deferred', 'target_preparing') else None)
         raise
     except Exception as exc:
@@ -376,8 +387,12 @@ def _run_target(kind, value, target, owner_fd):
             # The target just started (or is still loading) its detached
             # embedding owner. Waiting on that owner is not a failed attempt.
             raise DispatchFailure('target_preparing', commit, bundle_sha)
-        raise DispatchFailure('target_deferred', commit, bundle_sha,
-                              detail=_deferred_detail(result))
+        failure = DispatchFailure('target_deferred', commit, bundle_sha,
+                                  detail=_deferred_detail(result))
+        # The fixed-code detail cannot carry a (non-ASCII) card path; the
+        # install log names the member the fill stopped at separately.
+        failure.member_path = _member_path(result.get('path'))
+        raise failure
     current = resolve(kind, value)
     if (current['terminal'] or any(current[field] != target[field]
                                    for field in STABLE_TARGET_FIELDS)):
