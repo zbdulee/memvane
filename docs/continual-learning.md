@@ -46,12 +46,21 @@ uses the complete compact body when available; the explicit `inspect-labels`
 review view exposes that same pinned body to a local reviewer. Long original novel manuscripts
 are still unsupported; they need a separate full-source contract. The Laya
 0.3.20 adapter tokenizes the exact prompt and full compact body, checks both
-option markers and the complete state token IDs, and rejects a case if the
-model's configured sequence budget cannot hold it. The multilingual
+option markers and the complete state token IDs, and rejects a training case
+if the model's configured sequence budget cannot hold it. The multilingual
 checkpoint declares `max_len=1024` even though its tokenizer advertises 8192;
 the adapter uses the **model's 1024-token budget**. Thus 16 KiB is a storage
-ceiling, not a guarantee that every body fits Laya. There is no silent
-truncation. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
+ceiling, not a guarantee that every body fits Laya. Training input is never
+truncated. Prediction (live selection and held-out evaluation) keeps every
+candidate under the versioned pairing `leading-body-prefix-v1`: the whole user
+request plus the longest leading codepoint prefix of the card body (its title
+first) that fits the budget, found by re-tokenizing the whole state, so the
+same input always keeps the same prefix. A request that does not fit beside one
+body character still fails closed (`input_budget_exceeded`). For selection, a
+body over 16 KiB is first cut to its leading 16 KiB on a codepoint boundary.
+The inference receipt records the pairing in its `checks`
+(`prediction_leading_body_prefix_v1`); a receipt without it fails admission
+and the selector heal prepares it again. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
 candidate pin, not this verified 0.3.20 integration.
 
 ## One local cycle

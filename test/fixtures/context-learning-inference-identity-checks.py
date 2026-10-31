@@ -120,8 +120,12 @@ class IdentityChecks(unittest.TestCase):
             def _prediction_proof(inner):
                 if expired[0]:raise ValueError('trainer_inference_attestation_required')
                 return self.proof
-        def forward(*args,**kw):
+        def forward(loaded,job,**kw):
             forwards.append('synthetic');self.assertFalse(kw['cancelled']())
+            # The adapter reports the over-budget synthetic card it truncated.
+            ids=[row['id'] for row in job['request']['cases'][0]['candidates']]
+            self.assertEqual(ids,['synthetic/cobalt','synthetic/overflow'])
+            kw['timing']['truncated_pairs']=1
             expired[0]=True
         before=(self.state/identity.RECEIPT).read_bytes()
         with patch.object(local_cycle,'VerifiedLayaTrainer',Trainer), \
@@ -136,6 +140,22 @@ class IdentityChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'trainer_inference_attestation_required'):
                 identity.prepare(self.state,self.argv)
         self.assertEqual(forwards,['synthetic'])
+        self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
+    def test_prepare_requires_the_versioned_truncation_to_run(self):
+        from context_learning import inference_service as service, local_cycle
+        class Trainer:
+            def __init__(inner,*args,**kw):pass
+            def validate_prediction(inner,**kw):return self.receipt['verified']
+            def _prediction_proof(inner):return self.proof
+        before=(self.state/identity.RECEIPT).read_bytes()
+        with patch.object(local_cycle,'VerifiedLayaTrainer',Trainer), \
+             patch.object(service,'_policy',return_value=(self.policy,self.policy)), \
+             patch.object(service,'_load',return_value=object()), \
+             patch.object(service,'_forward',side_effect=lambda *a,**kw:kw['timing'].update(truncated_pairs=0)), \
+             patch.object(service,'_rss_mib',return_value=100), \
+             patch.object(service.resident,'_admission',return_value=({},{})):
+            with self.assertRaisesRegex(ValueError,'inference_prepare_truncation_not_exercised'):
+                identity.prepare(self.state,self.argv)
         self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
     def test_prepare_load_deadline_and_rss_guard(self):
         from context_learning import inference_service as service,local_cycle

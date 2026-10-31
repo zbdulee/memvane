@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import time
 
-from .compact_input import derive
+from .compact_input import derive_for_selection
 from .contracts import digest
 from .dataset import read_private_json
 from .local_cycle import VerifiedLayaTrainer, _safe_file
@@ -103,7 +103,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                     or row['id'] in seen):
                 return None, 'invalid_pool', {}
             seen.add(row['id'])
-            compact = derive(row['source_text'], row['revision_sha256'])
+            compact = derive_for_selection(row['source_text'], row['revision_sha256'])
             candidates.append({'id': row['id'], 'revision_sha256': row['revision_sha256'],
                                'input_text': compact['body_text'],
                                'input_kind': compact['input_kind']})

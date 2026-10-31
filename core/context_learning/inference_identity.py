@@ -23,7 +23,10 @@ RECEIPT = 'laya-inference-proof.json'
 BINDING = 'laya-inference-binding.json'
 MANIFEST = 'laya-inference-manifest.json'
 SCHEMA = 'qmd-laya-inference-proof-v1'
-CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping']
+# The last entry versions the prediction pairing (laya_adapter.PREDICTION_PAIRING):
+# a receipt prepared before it fails admission and is prepared again.
+CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping',
+          'prediction_leading_body_prefix_v1']
 
 
 def file_sha(path):
@@ -310,7 +313,10 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
                ('live-selector.json','active-checkpoint.json','laya-synthetic-attestation.json')]
     case = {'request_id':'inference-prepare-synthetic','prompt':'What is the synthetic Cobalt beacon marker?',
             'candidates':[{'id':'synthetic/cobalt','revision_sha256':'0'*64,
-                'input_text':'The imaginary Cobalt beacon marker is COBALT-271.', 'input_kind':'full_compact_wiki_body'}]}
+                'input_text':'The imaginary Cobalt beacon marker is COBALT-271.', 'input_kind':'full_compact_wiki_body'},
+                # Far over any model budget: proves the versioned leading-prefix pairing.
+                {'id':'synthetic/overflow','revision_sha256':'1'*64,
+                'input_text':'# Synthetic overflow\n' + 'synthetic overflow ' * 700, 'input_kind':'full_compact_wiki_body'}]}
     case['input_sha256'] = _sha(case)
     request = {'schema_version':1,'artifact_path':str(artifact),'cases':[case]}
     if 'model_input_view' in active: request['model_input_view'] = view
@@ -323,7 +329,10 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     if time.monotonic() >= deadline or _rss_mib() > max_rss_mib:
         raise ValueError('inference_prepare_resource_deferred')
     _module_scope(runtime_roots())
-    _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
+    timing = {}
+    _forward(loaded, job, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
+    if timing.get('truncated_pairs') != 1:
+        raise ValueError('inference_prepare_truncation_not_exercised')
     trainer._prediction_proof()  # Expiry/revocation during preparation is not renewed.
     if (time.monotonic() >= deadline or _rss_mib() > max_rss_mib or snapshot(roots) != _stamps(before) or code_identity() != code_before
             or device_identity() != device_before or anchors != [read_private_json(state/name) for name in
