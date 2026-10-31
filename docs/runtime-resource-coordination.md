@@ -70,6 +70,18 @@ development execution guard is separate; see
   attempt count. A sync result deferred by `laya_service_preparing` is
   recorded as
   `target_preparing`: retried after 15 seconds and not counted as an attempt.
+  A preparing streak that lasts 5 minutes (`PREPARING_STALL_SECS`) retries at
+  the 300-second cap instead, is never dropped, and is logged once as
+  `wake.sync failed target_preparing_stalled` (streak in the private
+  `runtime-wake-preparing.json`). The service logs `resident.adopt waiting
+  read_only_no_worker` once when a drifted installation has no worker to
+  attach to.
+- On the capacity path every sync wake rescans, so the pending fill offers
+  each cached member again. A member whose sidecar row is already identical,
+  or an unverified card, skips the route proof, the journal write fence and the
+  sidecar transaction (`laya_incremental_docs.publish_needed` over one
+  read-only `PublishedReader` per wake); profile registration crosses the fence
+  only before an embedding is written.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.

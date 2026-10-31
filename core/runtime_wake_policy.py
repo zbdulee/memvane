@@ -59,6 +59,11 @@ DISPATCH_REASONS = frozenset((
 # re-verifies the full sealed bundle, so it does not poll at the base delay.
 UNCOUNTED_DISPATCH_REASONS = frozenset(('target_preparing',))
 PREPARING_RETRY_SECS = 15
+# An owner that is still not ready after this long is not loading; something
+# refuses to adopt the install (a newer service holding it read-only, for
+# example). The wake keeps waiting without counting, but at the capped backoff,
+# and the streak is reported once (``runtime_work`` keeps its first sighting).
+PREPARING_STALL_SECS = 300
 
 
 class DispatchFailure(ValueError):
@@ -194,7 +199,8 @@ def failure_reason(error):
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 
-def settle(attempts, *, done, now, error=None, kind=None, missing=None):
+def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparing=None,
+           reported=False):
     """Decide what happens to a claimed wake after one execution.
 
     ack: delete the claimed revision; a newer revision (enqueued while running)
@@ -211,14 +217,23 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None):
     backs off by that streak and is dropped (``target_missing``) only once the
     streak has ``MISSING_DROP_MIN_OBSERVATIONS`` observations spanning
     ``MISSING_DROP_SECS`` from the first.
+    ``preparing`` is ``(first_seen, observations)`` of the consecutive
+    preparing streak. Once it spans ``PREPARING_STALL_SECS`` the wait retries
+    at ``RETRY_MAX_SECS`` and, unless ``reported``, the step carries
+    ``stalled`` so the caller reports the streak once. It is never dropped.
     """
     if done and error is None:
         if isinstance(done, Dropped):
             return {'ack': True, 'due': now, 'reason': None, 'count': 0, 'drop': done.reason}
         return {'ack': True, 'due': now, 'reason': None, 'count': 0}
     if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
-        return {'ack': False, 'due': now + PREPARING_RETRY_SECS,
+        step = {'ack': False, 'due': now + PREPARING_RETRY_SECS,
                 'reason': failure_reason(error), 'count': 0}
+        if preparing is not None and now - preparing[0] >= PREPARING_STALL_SECS:
+            step['due'] = now + RETRY_MAX_SECS
+            if not reported:
+                step['stalled'] = True
+        return step
     if isinstance(error, TargetMissing):
         first, seen = missing if missing is not None else (now, 1)
         if seen >= MISSING_DROP_MIN_OBSERVATIONS and now - first >= MISSING_DROP_SECS:

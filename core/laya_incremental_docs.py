@@ -58,10 +58,14 @@ def _open(state_root):
     return db
 
 
+def _expected_meta(identity):
+    return (SCHEMA, identity['installId'], identity['scopeId'],
+            identity['dbIncarnation'], identity['vectorProfileId'],
+            identity['candidateDb'], identity['projectRoot'])
+
+
 def _setup(db, identity):
-    expected = (SCHEMA, identity['installId'], identity['scopeId'],
-                identity['dbIncarnation'], identity['vectorProfileId'],
-                identity['candidateDb'], identity['projectRoot'])
+    expected = _expected_meta(identity)
     db.execute('BEGIN IMMEDIATE')
     try:
         db.execute('''CREATE TABLE IF NOT EXISTS meta(
@@ -95,6 +99,95 @@ def _setup(db, identity):
     except BaseException:
         db.rollback()
         raise
+
+
+def _verified(identity, path, body):
+    from laya_host_response import _verified_wiki_row
+    decision = {
+        'projectRoot': identity['projectRoot'],
+        'collections': identity['collections'],
+        'collectionRoots': {item['name']: item['sourceRoot']
+                            for item in identity['collections']},
+    }
+    return _verified_wiki_row({'path': path, 'body': body}, decision,
+                              current_source=False)
+
+
+class PublishedReader:
+    """Read-only view of one identity's completed sidecar rows.
+
+    A selected sync opens it once per wake. It never creates, migrates or
+    writes the sidecar. An absent or unsafe file, another identity's sidecar
+    or an unreadable row all answer "not published", so the caller falls
+    back to the full ``publish_document`` path.
+    """
+
+    def __init__(self, identity):
+        self.identity = identity
+        self._db = None
+        self._refused = False
+
+    def _connect(self):
+        if self._db is not None or self._refused:
+            return self._db
+        try:
+            path = _private_state(self.identity['stateRoot']) / FILE
+            info = path.lstat()
+        except FileNotFoundError:
+            return None  # the first publication of this wake may create it
+        except (OSError, IndexContractError, KeyError, TypeError):
+            self._refused = True
+            return None
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            self._refused = True
+            return None
+        db = None
+        try:
+            db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+                                 isolation_level=None, timeout=2)
+            db.execute('PRAGMA trusted_schema=OFF')
+            if db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(self.identity)]:
+                raise IndexContractError('incremental_identity_changed')
+        except (sqlite3.Error, IndexContractError, KeyError, TypeError):
+            if db is not None:
+                db.close()
+            self._refused = True
+            return None
+        self._db = db
+        return db
+
+    def published(self, path, source_hash, title, profile_id):
+        """True only for the exact completed row (hash, title and profile)."""
+        db = self._connect()
+        if db is None:
+            return False
+        try:
+            row = db.execute('SELECT hash,title,profile_id FROM docs WHERE path=?',
+                             (path,)).fetchone()
+        except sqlite3.Error:
+            return False
+        return row == (source_hash, title, profile_id)
+
+    def close(self):
+        if self._db is not None:
+            self._db.close()
+            self._db = None
+
+
+def publish_needed(reader, path, source_hash, title, body, profile_id, *,
+                   identity, require_verified):
+    """Whether ``publish_document`` could write anything for this member.
+
+    An identical published row is a replay (``already_published``) and an
+    unverified card under ``require_verified`` is never written, so neither
+    needs the caller's route proof, journal fence or a sidecar transaction.
+    """
+    if reader is not None and reader.published(path, source_hash, title, profile_id):
+        return False
+    if require_verified and not _verified(identity, path, body):
+        return False
+    return True
 
 
 def publish_document(runtime, identity, snapshot, path, source_hash,
@@ -140,20 +233,11 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
         _fail('incremental_vector_incomplete')
     if isinstance(snapshot, PendingMemberProof):
         catalog.require_pending_member(snapshot, path, source_hash)
-    if require_verified:
+    if require_verified and not _verified(identity, path, body):
         # A rewritten auto card is generated until the verifier stamps it.
         # Keep the last completed sidecar row searchable across that interval;
         # replacing it here would shadow the old head with an unusable draft.
-        from laya_host_response import _verified_wiki_row
-        decision = {
-            'projectRoot': identity['projectRoot'],
-            'collections': identity['collections'],
-            'collectionRoots': {item['name']: item['sourceRoot']
-                                for item in identity['collections']},
-        }
-        if not _verified_wiki_row({'path': path, 'body': body}, decision,
-                                  current_source=False):
-            return {'status': 'unverified'}
+        return {'status': 'unverified'}
     db = _open(identity['stateRoot'])
     try:
         _setup(db, identity)

@@ -1002,5 +1002,32 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual(self.members(third['generation']),
                          ['beta/two.md'])
 
+    def test_noop_wake_over_a_multi_step_scan_crosses_no_fence(self):
+        # A corpus larger than one scan step keeps the wake's scan pending
+        # for several rounds, so the pending fill sees every cached member.
+        self.stores()
+        for n in range(4):
+            (self.beta/('note-%d.md'%n)).write_text('note %d'%n,encoding='utf-8')
+        first,_started=self.run_capacity()
+        self.assertEqual(first['state'],'indexed')
+        marks=list(self.marks)
+        real_step=worker.sync_step
+        proofs=[];rounds=[]
+        real_proof=self.proof
+        def counted():
+            proofs.append(1);return real_proof()
+        def one_file_step(*a,**k):
+            rounds.append(1);return real_step(*a,max_files=1,**k)
+        with patch.object(worker,'sync_step',side_effect=one_file_step), \
+             patch.object(self,'proof',side_effect=counted):
+            second,started=self.run_capacity()
+        self.assertEqual((second['state'],second['generation']),('unchanged',first['generation']))
+        self.assertEqual(started,0)
+        self.assertEqual(self.marks,marks)  # unchanged members cross no journal fence
+        # Only round boundaries (plus the wake's own entry and exit checks)
+        # re-prove the route; the unchanged members in each round do not.
+        self.assertGreater(len(rounds),3)
+        self.assertLessEqual(len(proofs),len(rounds)+3)
+
 
 if __name__=='__main__':unittest.main()

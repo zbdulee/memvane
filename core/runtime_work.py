@@ -63,6 +63,8 @@ DROP_DETAIL_FILE='runtime-wake-drops.json'
 DROP_DETAIL_MAX_ROWS=64
 # Each wake's consecutive missing-target streak: first observation and count.
 MISSING_FILE='runtime-wake-missing.json'
+# Each wake's consecutive target_preparing streak and whether it was reported.
+PREPARING_FILE='runtime-wake-preparing.json'
 TIMER_LOCK='runtime-wake-timer.lock'
 TIMER_CHUNK_SECONDS=15
 TIMER_MIN_SLEEP_SECONDS=.5
@@ -234,11 +236,17 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
             runs+=1
             missing=isinstance(error,wake_policy.TargetMissing)
             streak=_observe_missing(queue.root,row,wall()) if missing else None
+            preparing=(isinstance(error,wake_policy.DispatchFailure)
+                       and error.code in wake_policy.UNCOUNTED_DISPATCH_REASONS)
+            waiting=_observe_preparing(queue.root,row,wall()) if preparing else None
             with queue.connect() as db:
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
-                                        missing=streak)
+                                        missing=streak,preparing=waiting and waiting[:2],
+                                        reported=bool(waiting and waiting[2]))
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall())
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
+                if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
+                if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall())
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
@@ -298,8 +306,35 @@ def _observe_missing(root,row,now):
     return first,seen
 
 
-def _clear_missing(root,key):
-    path=root/MISSING_FILE
+def _observe_preparing(root,row,now):
+    """(first observation, observations, reported) of this wake's preparing streak."""
+    entry=_read_map(root/PREPARING_FILE).get(row['id'])
+    first,seen,reported=now,1,False
+    if (isinstance(entry,dict) and entry.get('target')==row['target']
+            and type(entry.get('at')) in (int,float) and math.isfinite(entry['at'])
+            and entry['at']<=now and type(entry.get('seen')) is int and entry['seen']>=1):
+        first,seen,reported=entry['at'],entry['seen']+1,entry.get('reported') is True
+    _record_tail(root/PREPARING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target'],
+                 'reported':reported},limit=MAX_WAKES)
+    return first,seen,reported
+
+
+def _record_stall(root,row,waiting,step,now):
+    """Report one preparing streak that outlived ``PREPARING_STALL_SECS``, once."""
+    first,seen,_reported=waiting
+    _record_tail(root/PREPARING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target'],
+                 'reported':True},limit=MAX_WAKES)
+    if row['kind'] in ('laya-sync','laya-compile'):
+        try:
+            from laya_runtime_dispatch import stall_event
+            stall_event(row['kind'],row['target'],since=first,observations=seen,
+                        retry_in=round(step['due']-now))
+        except Exception:
+            pass
+
+
+def _clear_missing(root,key,name=MISSING_FILE):
+    path=root/name
     if not path.exists():return
     rows=_read_map(path)
     if key in rows:
