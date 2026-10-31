@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
@@ -36,10 +36,11 @@ test('a project without a selected route gets one SessionStart onboarding line a
   try {
     const claude = hook('update-queued', 'claude', home, project);
     assert.equal(claude.status, 0, claude.stderr);
+    // One short notice line, then one JSON line with the answer commands.
     const lines = claude.stdout.trim().split('\n');
-    assert.equal(lines.length, 1, claude.stdout);
+    assert.equal(lines.length, 2, claude.stdout);
     assert.match(lines[0], /setup skill로 온보딩/);
-    assert.ok(lines[0].includes(project));
+    assert.equal(JSON.parse(lines[1].replace(/^\[memvane\] onboarding-answer /, '')).projectRoot, realpathSync(project));
 
     const codex = hook('update-queued', 'codex', home, project);
     assert.equal(codex.status, 0, codex.stderr);
