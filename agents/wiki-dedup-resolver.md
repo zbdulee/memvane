@@ -47,8 +47,8 @@ short summary at the end (step 5).
       the keeper or `combined` is over `budget`, the merged keeper would not fit: keep those pages
       separate (`--action skip`). After folding, run it on the keeper alone; if it no longer fits,
       restore the keeper's previous text and skip. The CLI refuses a merge into an over-budget
-      keeper anyway (`kept_separate`, the page you named stays). `method: unavailable` (no
-      selector tokenizer on this machine) prints null sizes; consolidate as usual then.
+      keeper anyway (`kept_separate`, the page you named stays). `method: unavailable` or `measure_failed` (no
+      selector tokenizer, or none could count) prints null sizes; consolidate as usual then.
       List every fact present in each page you will delete that is absent from the keeper, fold
       ALL of them into the keeper with your Edit tool first, and re-read the keeper to confirm
       every listed fact is now present. Only after the keeper holds everything do you start

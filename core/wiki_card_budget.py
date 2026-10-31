@@ -27,7 +27,7 @@ then every other live selector of this user's learning state (same checkpoint
 family), so counting works wherever the learning runtime and a selector model
 exist. A candidate whose runtime fails (import error, corrupt file, timeout)
 yields to the next; when every candidate fails the result is
-``measure_failed`` and the card is not written (the caller retries later).
+``measure_failed`` and the card is written without a size check (best effort).
 
 Only a machine with no selector tokenizer at all writes cards unmeasured
 (``method: unavailable``, ``fits`` true), and the caller logs it: no local

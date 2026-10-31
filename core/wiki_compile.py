@@ -1364,51 +1364,49 @@ def judge_new_page_duplicate(
 
 def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
                    record: dict, candidate_path: Path, card_text: str,
-                   floor_text: str | None = None) -> bool:
-    """Refuse a card whose selector body does not fit ``wiki_card_budget``.
+                   floor_text: str | None = None, final_reason: str | None = None) -> bool:
+    """Whether to hold back a card whose selector body exceeds ``wiki_card_budget``.
 
-    ``card_text`` is the complete file this compile would write (for an update,
-    the composed card with its hand-written sections). Nothing is written on
-    refusal: the candidate ledger row and stdout carry ``split-required`` so the
-    caller splits the knowledge into several cards. ``floor_text`` is the same
-    card with an empty summary; when even that does not fit, the hand-written
-    sections alone exceed the budget and no split of the summary can fix it
-    (``manual_section_over_budget``). With no selector tokenizer on the machine
-    the card is written and a ``wiki.card`` ``unmeasured`` event records it.
-    When every selector runtime fails to count, nothing is written and stdout
-    carries ``measure-failed`` (transient: the worker retries it later).
+    Best effort: new and updated cards target the budget, and an over-budget card
+    is held back once so its caller can split it. ``card_text`` is the complete
+    file this compile would write (for an update, the composed card with its
+    hand-written sections). Held back, nothing is written: the candidate ledger
+    row and stdout carry ``split-required``. ``floor_text`` is the same card with
+    an empty summary; when even that does not fit, the hand-written sections alone
+    exceed the budget (``manual_section_over_budget``).
+
+    ``final_reason`` (the compile worker's ``budgetFinal`` pass after its one split
+    attempt) writes an over-budget card anyway and logs ``wiki.card
+    over_budget_written``; the selector scores such a card by its leading part.
+    A card no selector runtime can count is written with ``measure_failed``, and
+    with no selector tokenizer on the machine with ``unmeasured``.
     """
     import wiki_card_budget as budget
     tokenizer = budget.selector_tokenizers(config, root)
     measured = budget.measure_card(card_text, tokenizer)
     rel = target.relative_to(wiki_root).as_posix()
-    if measured["reason"] == "measure_failed":
-        record["action"] = "measure-failed"
-        record["cardBudget"] = {"budget": measured["budget"], "method": measured["method"],
-                                "reason": "measure_failed"}
-        append_jsonl(candidate_path, record)
-        budget.emit(root, "measure_failed", bound=selected, path=rel, title=record["title"],
-                    reason="measure_failed", budget=measured["budget"], method=measured["method"],
-                    runtimes=len(tokenizer))
-        print(json.dumps({"action": "measure-failed", "reason": "measure_failed",
-                          "targetPath": record["targetPath"], "title": record["title"],
-                          "canonicalKey": record["canonicalKey"]}, ensure_ascii=False))
-        return True
+    fields = {"size": measured["size"], "budget": measured["budget"],
+              "method": measured["method"]}
+    if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
+        record["cardBudget"] = {**fields, "reason": measured["reason"]}
+        budget.emit(root, "measure_failed" if measured["reason"] == "measure_failed"
+                    else "unmeasured", bound=selected, path=rel, title=record["title"],
+                    reason=measured["reason"], runtimes=len(tokenizer), **fields)
+        return False
     if measured["fits"]:
-        if measured["method"] == budget.METHOD_UNAVAILABLE:
-            budget.emit(root, "unmeasured", bound=selected, path=rel, title=record["title"],
-                        reason=measured["reason"], budget=measured["budget"],
-                        method=measured["method"])
         return False
     reason = measured["reason"]
     if floor_text is not None and floor_text != card_text:
         if budget.measure_card(floor_text, tokenizer)["reason"] == "over_budget":
             reason = "manual_section_over_budget"
-    fields = {"size": measured["size"], "budget": measured["budget"],
-              "method": measured["method"]}
+    record["cardBudget"] = {**fields, "reason": reason}
+    if final_reason is not None:
+        record["cardBudget"]["written"] = final_reason
+        budget.emit(root, "over_budget_written", bound=selected, path=rel,
+                    title=record["title"], reason=final_reason, overflow=reason, **fields)
+        return False
     record["action"] = "split-required"
     record["lint"] = {"verdict": "needs_split", "findings": [reason]}
-    record["cardBudget"] = {**fields, "reason": reason}
     append_jsonl(candidate_path, record)
     budget.emit(root, "over_budget", bound=selected, path=rel, title=record["title"],
                 reason=reason, **fields)
@@ -1600,10 +1598,12 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     # Card body budget before the paid duplicate judge: a card the local
     # selector cannot score is never written (wiki_card_budget).
+    final_reason = (str(candidate.get("budgetFinalReason") or "split_attempted")[:80]
+                    if candidate.get("budgetFinal") is True else None)
     if not target.exists() and budget_refused(
             root, config, selected, wiki_root, target, record, candidate_path,
             markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
-                          redactions, h)):
+                          redactions, h), final_reason=final_reason):
         return 0
 
     if not target.exists():
@@ -1710,12 +1710,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         page = markdown_page(candidate, summary, status, redactions, h)
         action = "updated"
         # The selector reads the whole refreshed card, hand-written sections
-        # included. A long card is never split retroactively; only this
-        # rewrite has to fit.
+        # included. A long card is not split retroactively; its rewrite
+        # targets the budget like a new card (best effort).
         composed = compose_generated_card(old, page)
         floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
         if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
-                          composed if composed is not None else page, floor):
+                          composed if composed is not None else page, floor,
+                          final_reason=final_reason):
             return 0
     # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
     # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도

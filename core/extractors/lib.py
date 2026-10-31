@@ -114,7 +114,7 @@ VERBATIM RULES (critical — these cards are keyword-searched, so identifiers AR
 
 CARD BUDGET (the local selection model reads a user request and one card body together, at most {model_max_tokens} tokens):
 - A card body holds at most {body_tokens} tokens. The plugin's banner and markers take part of it; the summary gets about {summary_tokens} tokens, roughly {summary_ko_chars} Korean characters or {summary_en_words} English words (every digit is one token).
-- A card over the budget is not written. When the knowledge does not fit one card, split it by topic or category into several self-contained candidates, each with its own canonicalKey, and list the sibling candidates' canonicalKeys in `related`.
+- Keep each card within the budget. When the knowledge does not fit one card, split it by topic or category into several self-contained candidates, each with its own canonicalKey, and list the sibling candidates' canonicalKeys in `related`.
 - Never truncate a sentence, drop an identifier, or cut meaning to fit; split instead.
 
 CARD RULES (bundled with the plugin):
@@ -184,7 +184,7 @@ CARD B CONTENT:
 
 _SPLIT_TEMPLATE = """
 
-SPLIT REQUEST: your previous answer for this source produced cards over the CARD BUDGET, and they were not written:
+SPLIT REQUEST: your previous answer for this source produced cards over the CARD BUDGET:
 {cards}
 Output ONLY replacement candidates for these cards. Split each one by topic or category into several self-contained candidates that each fit the CARD BUDGET, give each its own canonicalKey, list the sibling candidates' canonicalKeys in `related`, and keep every fact and identifier from the source. Do not repeat cards that were not listed."""
 

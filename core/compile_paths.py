@@ -49,8 +49,6 @@ DEDUP_NEEDED = "dedup-needed.jsonl"
 DEDUP_SKIPPED = "dedup-skipped.jsonl"
 DEDUP_DELETED = "dedup-deleted.jsonl"
 DISCARD_LEDGER = "discard-ledger.jsonl"
-BUDGET_REFUSED = "budget-refused.jsonl"
-BUDGET_STASH = "budget-stash.json"
 
 # --- 커서·식힘·로그 ---------------------------------------------------------
 COMPILE_COOLDOWN = "cooldown"

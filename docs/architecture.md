@@ -583,76 +583,55 @@ every other live selector under the user's learning state
 (`<learning state>/live-selection/*/live-selector.json`, the same checkpoint
 family), so counting works wherever the learning runtime and a selector model
 exist. A candidate whose runtime fails (import error, corrupt file, timeout)
-yields to the next. When every candidate fails the card is not written
-(`measure-failed`, `wiki.card` `measure_failed`) and the worker keeps it for a
-later run (below). A body `derive` refuses as oversized (over 16 KiB) is over the
-budget without counting (`method: derive_limit`).
+yields to the next. A body `derive` refuses as oversized (over 16 KiB) is over the
+budget without counting (`method: derive_limit`). A per-character estimate is
+never used for a decision: byte-fallback characters (rare Hangul syllables, rare
+CJK) cost the tokenizer up to one token per UTF-8 byte. The estimate only sizes
+the summary room the extractor prompt states.
 
-Only a machine with no selector tokenizer at all writes cards unmeasured
-(`method: unavailable`, `wiki.card` `unmeasured`): no local selector exists there
-to protect, a provable tokenizer-free bound (UTF-8 bytes per non-ASCII
-character) overcounts real Korean text about threefold and would force a paid
-split on most cards, and a selector added later scores an over-length card by its
+The budget is best effort. New and updated cards target it, the extractor gets
+one split attempt per source revision, and every revision ends with written
+cards; a card still over the budget is written and the selector scores it by its
 leading part (truncated at scoring).
-A per-character estimate is never a gate: byte-fallback characters (rare Hangul
-syllables, rare CJK) cost the tokenizer up to one token per UTF-8 byte. The
-estimate only sizes the summary room the extractor prompt states.
 
 `core/wiki_compile.py` measures the complete file it would write, after lint and
 mode checks and before the paid duplicate judge for a new card, and the composed
-card (with hand-written sections) for an update. A card over the budget is not
-written: the candidate ledger row and stdout carry `split-required` with `size`,
-`budget`, `method` and `reason`. The reason is `manual_section_over_budget` only
-when the hand-written sections with an empty summary already exceed the budget;
-any other overflow is `over_budget`, which a smaller summary can fix. Longer
-cards are not split retroactively; their normal updates (which then have to
-fit), verify stamps and retirement apply as before. Every compile writer reaches
-this gate: the compile worker (source edits, initial wiki backfill, survivor
-refreshes) and the `wiki-compile` skill. The verify worker and source retirement
-patch frontmatter only, and pending replacement publishes a page this gate
-already measured.
+card (with hand-written sections) for an update. An over-budget card is held back
+once: nothing is written, and the candidate ledger row and stdout carry
+`split-required` with `size`, `budget`, `method` and `reason`. The reason is
+`manual_section_over_budget` when the hand-written sections with an empty summary
+already exceed the budget, otherwise `over_budget`. The compile worker then
+compiles the card again with the worker-owned `budgetFinal` flag (a model value
+is discarded), and the writer writes it, logging `wiki.card`
+`over_budget_written` (`reason` = why it is final, `overflow`, `size`, `budget`,
+`method`). A card no selector runtime can count is written with `wiki.card`
+`measure_failed`, and on a machine with no selector tokenizer at all with
+`unmeasured`. Longer cards are not split retroactively; their updates follow the
+same best-effort rule, and verify stamps and retirement apply as before. The
+`wiki-compile` skill reaches the same gate without `budgetFinal`: its caller
+splits and runs again. The verify worker and source retirement patch
+frontmatter only, and pending replacement publishes a page this gate already
+measured.
 
 The compile worker states the budget in the extractor prompt (`payload.cardBudget`:
-body 700, summary about 597 after the scaffold). When the writer refuses
-candidates as `over_budget`, the worker re-prompts the same extractor once with a
-`split` request naming them; the replacements are split by topic or category,
-each with its own `canonicalKey` and the sibling keys in `related` (frontmatter
-list, outside the body budget). The re-prompt is one paid extraction counted
-against the run's extractor budget. `compile.budget.cardsPerSource` covers both
-answers: the split gets only the slots the first answer did not use, and parts
-beyond them are dropped and counted (`droppedParts`), never silently.
-
-Per-revision budget state lives in two correctness files under the compile
-directory, keyed by source path, collection and content SHA-256
-(`core/wiki_budget_ledger.py`). Neither is trimmed like an audit log: every write
-rewrites the file atomically, keeping the latest row per source and dropping only
-rows whose source file is gone or now holds other bytes.
-
-- `budget-refused.jsonl` makes a revision terminal: a card still over the budget
-  after the split, parts dropped at the card cap, a split part the writer
-  rejects (`split_card_rejected`), a failed re-prompt, resumes exhausted, or a
-  hand-written section over the budget. The worker logs `wiki.card`
-  `budget_refused` and, before any extractor spawn, skips a job matching such a
-  row (`budget_refused_revision`). The pending refresh stays unresolved on
-  purpose (recall keeps treating the source's previous card as stale), so the
-  pending recovery re-enqueues the source on every run at no extraction cost. A
-  source edit (new SHA-256) or `forceRecompile` compiles the source again.
-- `budget-stash.json` holds the extractor's unfinished candidates when the split
-  or the measurement could not run: the run's extractor budget was exhausted
-  (`split_skipped`), the re-prompt returned `resource_deferred`, or no selector
-  runtime could count (`measure_failed`). The job is kept, not settled (an
-  initial backfill revision stays open), and the next run resumes those
-  candidates without paying for the extraction again (`wiki.card`
-  `budget_stashed`). After `MAX_RESUME_ATTEMPTS` (3) resumes the revision becomes
-  terminal (`resume_exhausted`).
-
-Before any paid extractor call the worker checks that both files are writable.
-When they are not, or a terminal write fails after the call, it makes no further
-paid call for the source: the job is kept with `_budgetStoreRetries` (and the
-pending terminal row as `_budgetTerminal`, written by the next run without
-extracting) for at most 3 runs, then settled, and `wiki.card`
-`budget_store_unwritable` / `budget_store_failed` records each attempt. Every
-later job for the source meets the same writability check first.
+body 700, summary about 597 after the scaffold). A card held back as
+`manual_section_over_budget` is written at once (no split can fix it). For
+`over_budget` cards the worker re-prompts the same extractor once with a `split`
+request naming them; the replacements are split by topic or category, each with
+its own `canonicalKey` and the sibling keys in `related` (frontmatter list,
+outside the body budget). The re-prompt is one paid extraction counted against
+the run's extractor budget, so a revision costs at most two extractor calls.
+`compile.budget.cardsPerSource` covers both answers: the split gets only the
+slots the first answer did not use, and parts beyond them are dropped and counted
+(`droppedParts`, `droppedTitles`); the original card is replaced by the parts
+that were written. Every part is compiled with `budgetFinal`, so a part still
+over the budget is written too. When the split cannot run (run extractor budget
+exhausted, no slot left, an extractor failure or `resource_deferred`, an empty
+answer) the original cards are written as they are with that reason. A part the
+writer rejects is an ordinary writer outcome (the job keeps its `partialCompile`
+retry). The worker logs `wiki.card` `split` or `split_unavailable` (`requested`,
+`parts`, `written`, `dropped`, `reason`). The source revision then ends written,
+so its pending refresh resolves and the backfill settles on real cards.
 
 `core/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
 the loser stays, the pair is recorded as skipped and the CLI returns
@@ -909,7 +888,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `learning.state`, `learning.prepare` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound` |
-| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (`reason`, `path`, `title`, `size`, `budget`, `method`); `unmeasured` (no selector tokenizer, `method: unavailable`); `measure_failed` (every selector runtime failed, `runtimes`); `split` / `split_incomplete` / `split_failed` / `split_skipped` (source `path`, `requested`, `parts`, `written`, `dropped`); `budget_refused` (source `path`, `split` outcome, `sha` prefix, `cards`); `budget_stashed` (source `path`, `reason`, `cards`, `attempts`); `budget_store_unwritable` / `budget_store_failed` (source `path`, `retries`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
+| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`, `dropped`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

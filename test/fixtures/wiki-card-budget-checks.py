@@ -304,6 +304,26 @@ class CompileChecks(unittest.TestCase):
         self.assertEqual([(e['event'], e['outcome'], e['method']) for e in bare.events(state)],
                          [('wiki.card', 'unmeasured', 'unavailable')])
 
+    def test_the_final_pass_writes_an_over_budget_card_and_logs_it(self):
+        import wiki_compile as wc
+        out = self.p.compile(candidate(summary=LONG_SUMMARY, budgetFinal=True,
+                                       budgetFinalReason='split_part_over_budget'))
+        self.assertEqual(out['action'], 'created', out)
+        state = self.p.state_root()
+        bound = ({'journalPath': str(state / 'install-journal.sqlite')}, {})
+        record = {'title': 'Big Card', 'targetPath': 'x', 'canonicalKey': 'big'}
+        refused = wc.budget_refused(self.p.root, {}, bound, self.p.wiki,
+                                    self.p.wiki / 'concepts' / 'big.md', record,
+                                    self.p.base / 'c.jsonl', card_text(LONG_SUMMARY),
+                                    final_reason='split_part_over_budget')
+        self.assertFalse(refused)
+        events = self.p.events(state)
+        self.assertEqual([(e['event'], e['outcome'], e['reason'], e['overflow'], e['method'])
+                          for e in events],
+                         [('wiki.card', 'over_budget_written', 'split_part_over_budget',
+                           'over_budget', 'tokenizer')])
+        self.assertGreater(events[0]['size'], 700)
+
     def test_refusal_logs_a_wiki_card_event_for_a_selected_install(self):
         import wiki_compile as wc
         state = self.p.state_root()
@@ -350,7 +370,10 @@ class WorkerChecks(unittest.TestCase):
 
         def run_extractor(_argv, payload, _timeout, _root):
             self.payloads.append(payload)
-            return {'candidates': answers[len(self.payloads) - 1 - start]}, None, 0
+            answer = answers[len(self.payloads) - 1 - start]
+            if isinstance(answer, str):
+                return None, answer, 75  # e.g. resource_deferred
+            return {'candidates': answer}, None, 0
         token = self.w._EXTRACTOR_BUDGET.set(
             None if budget_left is None else {'remaining': budget_left})
         try:
@@ -385,116 +408,63 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual((calls[0].kwargs['requested'], calls[0].kwargs['parts'],
                           calls[0].kwargs['written']), (1, 2, 2))
 
-    def test_still_over_budget_after_the_split_writes_nothing(self):
+    def written_budget(self, title):
+        rows = [r for r in self.p.ledger('candidates.jsonl')
+                if r.get('title') == title and r.get('action') in ('created', 'updated')]
+        return rows[-1].get('cardBudget') if rows else None
+
+    def test_still_over_budget_after_the_split_is_written_and_logged(self):
         result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
                                [candidate(title='Budget Still Big', summary=LONG_SUMMARY)]])
-        self.assertEqual(result[:2], (True, False), 'one re-prompt, then the job is settled')
-        self.assertEqual(len(self.payloads), 2)
-        self.assertEqual(self.cards(), [])
-        failures = [r for r in self.p.ledger('candidates.jsonl') if r.get('reason') == 'card_over_budget']
-        self.assertEqual(failures[-1]['splitTitles'], ['Budget Still Big'])
-
-    def stash(self):
-        path = self.p.root / '.auto-context' / 'compile' / 'budget-stash.json'
-        return json.loads(path.read_text()) if path.exists() else []
-
-    def test_an_exhausted_run_budget_stashes_and_the_next_run_resumes_the_split(self):
-        big = candidate(title='Budget Whole', summary=LONG_SUMMARY)
-        result = self.run_job([[big]], budget_left=1)
-        self.assertEqual(result[:2], (False, True), 'not settled: the split has not run yet')
-        self.assertEqual(len(self.payloads), 1, 'no paid re-prompt past the run budget')
-        self.assertEqual((self.cards(), self.p.ledger('budget-refused.jsonl')), ([], []))
-        self.assertEqual([(r['reason'], [c['title'] for c in r['candidates']]) for r in self.stash()],
-                         [('extractor_budget_exhausted', ['Budget Whole'])])
-        parts = [candidate(title='Budget Part One'), candidate(title='Budget Part Two')]
-        result = self.run_job([parts])
         self.assertEqual(result[:2], (True, False))
-        self.assertEqual(len(self.payloads), 2, 'the resume pays only for the split')
-        self.assertIn('split', self.payloads[1])
-        self.assertEqual(self.cards(), ['decisions/budget-part-one.md',
-                                        'decisions/budget-part-two.md'])
-        self.assertEqual(self.stash(), [])
+        self.assertEqual(len(self.payloads), 2, 'one extraction and one split, no more')
+        self.assertEqual(self.cards(), ['decisions/budget-still-big.md'],
+                         'the split part is written; the original is replaced by it')
+        written = self.written_budget('Budget Still Big')
+        self.assertEqual((written['written'], written['reason'], written['method']),
+                         ('split_part_over_budget', 'over_budget', 'tokenizer'))
+        self.assertGreater(written['size'], 700)
 
-    def test_resumes_are_bounded_then_terminal(self):
+    def test_a_split_that_cannot_run_writes_the_original(self):
         big = candidate(title='Budget Whole', summary=LONG_SUMMARY)
-        self.run_job([[big]], budget_left=1)
-        for attempt in (1, 2, 3):
-            self.assertEqual(self.run_job([], budget_left=0)[:2], (False, True))
-            self.assertEqual(self.stash()[0]['attempts'], attempt)
-        self.assertEqual(self.run_job([], budget_left=0)[:2], (True, False))
-        self.assertEqual(len(self.payloads), 1, 'only the first extraction was paid')
-        self.assertEqual([r['outcome'] for r in self.p.ledger('budget-refused.jsonl')],
-                         ['resume_exhausted'])
-        self.assertEqual(self.stash(), [])
+        with patch.object(budget, 'emit', wraps=budget.emit) as emit:
+            result = self.run_job([[big]], budget_left=1)
+        self.assertEqual(result[:2], (True, False))
+        self.assertEqual(len(self.payloads), 1, 'no paid re-prompt past the run budget')
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md'])
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'extractor_budget_exhausted')
+        calls = [c for c in emit.call_args_list if c.args[1] == 'split_unavailable']
+        self.assertEqual([c.kwargs['reason'] for c in calls], ['extractor_budget_exhausted'])
 
-    def test_a_card_no_runtime_can_measure_waits_without_terminal_state(self):
+    def test_a_deferred_split_re_prompt_writes_the_original(self):
+        result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
+                               'resource_deferred'])
+        self.assertEqual(result[:2], (True, False))
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md'])
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'resource_deferred')
+
+    def test_a_card_no_runtime_can_measure_is_written(self):
         for pair in budget.selector_tokenizers({}, self.p.root):
             Path(pair[0]).write_text('#!/bin/sh\nexit 3\n')
-        result = self.run_job([[candidate()]])
-        self.assertEqual(result[:2], (False, True))
-        self.assertEqual(self.cards(), [])
-        self.assertEqual(self.p.ledger('budget-refused.jsonl'), [])
-        self.assertEqual([r['reason'] for r in self.stash()], ['measure_failed'])
-        self.assertTrue(any(r.get('action') == 'measure-failed'
-                            for r in self.p.ledger('candidates.jsonl')))
+        result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)]])
+        self.assertEqual(result[:2], (True, False))
+        self.assertEqual(len(self.payloads), 1, 'nothing to split without a size')
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md'])
+        self.assertEqual(self.written_budget('Budget Whole')['reason'], 'measure_failed')
 
-    def test_a_rejected_split_part_makes_the_revision_terminal(self):
+    def test_a_model_cannot_claim_the_final_pass(self):
+        big = candidate(title='Budget Whole', summary=LONG_SUMMARY, budgetFinal=True,
+                        budgetFinalReason='model')
+        self.run_job([[big], [candidate(title='Budget Part One')]])
+        self.assertEqual(len(self.payloads), 2, 'the writer still held it back for a split')
+        self.assertEqual(self.cards(), ['decisions/budget-part-one.md'])
+
+    def test_a_rejected_split_part_is_an_ordinary_writer_outcome(self):
         rejected = candidate(title='Budget Part Bad', summary='User: hi\nassistant: hello')
         result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
                                [candidate(title='Budget Part Good'), rejected]])
-        self.assertEqual(result[:2], (True, False))
-        self.assertEqual([(r['outcome'], r['reason']) for r in self.p.ledger('budget-refused.jsonl')],
-                         [('split_incomplete', 'split_card_rejected')])
-        self.payloads.clear()
-        self.assertEqual(self.run_job([])[:2], (True, False))
-        self.assertEqual(self.payloads, [], 'no re-extraction of the refused revision')
-
-    def test_an_unwritable_budget_store_blocks_paid_calls_with_bounded_retries(self):
-        (self.p.root / '.auto-context' / 'compile' / 'budget-refused.jsonl').mkdir()
-        job = dict(self.job)
-        with patch.object(budget, 'emit', wraps=budget.emit) as emit:
-            for retry in (1, 2):
-                self.assertEqual(self.run_job([], job=job)[:2], (False, True))
-                self.assertEqual(job['_budgetStoreRetries'], retry)
-            self.assertEqual(self.run_job([], job=job)[:2], (True, False))
-        self.assertEqual(self.payloads, [], 'no extractor call while the store is broken')
-        self.assertEqual([c.args[1] for c in emit.call_args_list], ['budget_store_unwritable'] * 3)
-
-    def test_a_failed_terminal_write_is_retried_without_extracting(self):
-        import wiki_budget_ledger
-        job = dict(self.job)
-        answers = [[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
-                   [candidate(title='Budget Still Big', summary=LONG_SUMMARY)]]
-        with patch.object(wiki_budget_ledger, 'record_refused', return_value=False):
-            self.assertEqual(self.run_job(answers, job=job)[:2], (False, True))
-        self.assertEqual(job['_budgetTerminal']['outcome'], 'split_incomplete')
-        self.assertEqual(len(self.payloads), 2)
-        self.assertEqual(self.run_job([], job=job)[:2], (True, False))
-        self.assertEqual(len(self.payloads), 2, 'the retry records without paying again')
-        self.assertEqual([r['outcome'] for r in self.p.ledger('budget-refused.jsonl')],
-                         ['split_incomplete'])
-
-    def test_the_terminal_ledger_keeps_live_revisions_however_large_it_grows(self):
-        import hashlib
-        ledger = self.p.root / '.auto-context' / 'compile' / 'budget-refused.jsonl'
-        sha = hashlib.sha256((self.p.root / 'docs' / 'source.md').read_bytes()).hexdigest()
-        live = {'path': 'docs/source.md', 'collection': 'proj-docs', 'sha256': sha,
-                'outcome': 'split_incomplete', 'reason': 'card_over_budget', 'titles': []}
-        stale = [{'path': f'docs/gone-{i}.md', 'collection': 'proj-docs', 'sha256': '0' * 64,
-                  'outcome': 'split_incomplete', 'reason': 'card_over_budget',
-                  'titles': ['x' * 60]} for i in range(3000)]
-        ledger.write_text(''.join(json.dumps(r) + '\n' for r in [live] + stale))
-        self.assertGreater(ledger.stat().st_size, 256 * 1024)
-        (self.p.root / 'docs' / 'other.md').write_text('# Other\n\nAnother source.\n')
-        other = {**self.job, 'source': {**self.job['source'], 'path': 'docs/other.md'}}
-        self.run_job([[candidate(title='Other Whole', summary=LONG_SUMMARY)],
-                      [candidate(title='Other Still Big', summary=LONG_SUMMARY)]], job=other)
-        rows = self.p.ledger('budget-refused.jsonl')
-        self.assertEqual(sorted(r['path'] for r in rows), ['docs/other.md', 'docs/source.md'],
-                         'live rows stay, rows of missing sources go')
-        self.payloads.clear()
-        self.assertEqual(self.run_job([])[:2], (True, False))
-        self.assertEqual(self.payloads, [], 'the live terminal key survived the rewrite')
+        self.assertEqual(result[:2], (False, True), 'kept for retry like any rejected card')
+        self.assertEqual(self.cards(), ['decisions/budget-part-good.md'])
 
     def test_split_parts_share_cards_per_source_with_the_first_answer(self):
         settings = self.p.root / '.auto-context' / 'settings.json'
@@ -511,24 +481,9 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual(self.cards(), ['decisions/budget-part-one.md', 'decisions/small-one.md',
                                         'decisions/small-two.md'],
                          'the split gets only the one slot the first answer left')
-        row = [r for r in self.p.ledger('candidates.jsonl')
-               if r.get('reason') == 'cards_per_source_cap' and 'droppedParts' in r][-1]
-        self.assertEqual((row['droppedParts'], row['splitTitles']),
+        row = [r for r in self.p.ledger('candidates.jsonl') if 'droppedParts' in r][-1]
+        self.assertEqual((row['droppedParts'], row['droppedTitles']),
                          (2, ['Budget Part Two', 'Budget Part Three']))
-        refused = self.p.ledger('budget-refused.jsonl')
-        self.assertEqual([(r['path'], r['outcome'], r['reason']) for r in refused],
-                         [('docs/source.md', 'split_incomplete', 'cards_per_source_cap')])
-
-    def test_a_refused_revision_is_never_extracted_again(self):
-        self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
-                      [candidate(title='Budget Still Big', summary=LONG_SUMMARY)]])
-        self.assertEqual(len(self.payloads), 2)
-        self.payloads.clear()
-        self.assertEqual(self.run_job([])[:2], (True, False))
-        self.assertEqual(self.payloads, [], 'same revision: no paid extraction')
-        (self.p.root / 'docs' / 'source.md').write_text('# Source\n\nEdited.\n')
-        self.run_job([[candidate()]])
-        self.assertEqual(len(self.payloads), 1, 'a source edit reopens the revision')
 
     def test_within_budget_candidates_need_no_re_prompt(self):
         self.run_job([[candidate()]])
@@ -537,9 +492,9 @@ class WorkerChecks(unittest.TestCase):
 
 
 class WorkerRunChecks(unittest.TestCase):
-    """Real worker runs: pending refresh recovery must not re-bill a refused revision."""
+    """Real worker runs: a revision costs at most two extractor calls, then settles."""
 
-    def test_pending_recovery_makes_zero_extractor_calls_on_the_second_run(self):
+    def test_a_second_run_on_the_same_revision_makes_zero_extractor_calls(self):
         p = Project(self)
         calls = p.base / 'extractor-calls'
         extractor = p.base / 'extract.py'
@@ -554,8 +509,7 @@ class WorkerRunChecks(unittest.TestCase):
             'backends': {'claude': [sys.executable, str(extractor)]}, 'timeout': 30})
         settings.write_text(json.dumps(cfg))
         import wiki_freshness
-        pending = wiki_freshness.record_pending_refresh(p.root, 'docs/source.md', 'claude')
-        self.assertIsNotNone(pending)
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(p.root, 'docs/source.md', 'claude'))
 
         def run():
             proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_compile_worker.py'),
@@ -565,14 +519,11 @@ class WorkerRunChecks(unittest.TestCase):
             return calls.read_text() if calls.exists() else ''
 
         self.assertEqual(run(), 'xx', 'first run: one extraction plus one split re-prompt')
-        self.assertEqual([r['outcome'] for r in p.ledger('budget-refused.jsonl')],
-                         ['split_incomplete'])
-        self.assertTrue(wiki_freshness.unresolved_pending_refreshes(p.root),
-                        'the source stays pending so recall keeps treating it as stale')
-        self.assertEqual(run(), 'xx', 'second run: recovery re-enqueues, zero extractor calls')
-        self.assertTrue(any(r.get('reason') == 'budget_refused_revision'
-                            for r in p.ledger('candidates.jsonl')))
-        self.assertEqual(list(p.wiki.rglob('*.md')), [])
+        self.assertEqual(sorted(x.name for x in p.wiki.rglob('*.md')), ['budget-whole.md'],
+                         'the split part, still over the budget, is written')
+        self.assertEqual(wiki_freshness.unresolved_pending_refreshes(p.root), [],
+                         'the revision ends written, so its pending refresh resolves')
+        self.assertEqual(run(), 'xx', 'second run: zero extractor calls')
 
 
 class DedupChecks(unittest.TestCase):

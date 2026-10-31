@@ -37,22 +37,17 @@ outcomes), and `skipped` means the frozen revision changed, vanished or became
 excluded. Neither `settled` nor `complete` proves generated or verified cards.
 Report card creation and verification separately from their own events.
 
-For `wiki.card`, `over_budget` is a card the writer refused because its body
-exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
-`estimate`; `reason` `manual_section_over_budget` when the overflow is a
-hand-written section). `split` / `split_incomplete` / `split_failed` /
-`split_skipped` report the one split re-prompt per source (`requested`,
-`parts`, `written`, `dropped`). `split_skipped` (no run budget left), a
-`resource_deferred` re-prompt and `measure_failed` (no selector runtime could
-count) are transient: `budget_stashed` follows and the next run resumes without
-re-extracting, up to 3 times. Other non-`split` outcomes are terminal for that
-source revision: `budget_refused` follows, those cards stay unwritten, and the
-worker does not extract that revision again until the source changes.
-`budget_store_unwritable` / `budget_store_failed` mean the budget ledgers could
-not be written; no paid call runs for that source meanwhile. `unmeasured` means
-no selector tokenizer exists on the machine at all, so the card was written
-without a budget check. `merge_kept_separate` is a dedup merge refused because
-the keeper is over the budget.
+For `wiki.card`, `over_budget` is a card the writer held back once because its
+body exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
+`derive_limit`; `reason` `manual_section_over_budget` when the hand-written
+sections alone overflow). `split` / `split_unavailable` report the one split
+re-prompt per source (`requested`, `parts`, `written`, `dropped`, `reason` when
+it could not run). `over_budget_written` is a card written over the budget after
+that attempt (best effort; the selector scores it by its leading part).
+`measure_failed` (no selector runtime could count) and `unmeasured` (no selector
+tokenizer on the machine) mark cards written without a size check.
+`merge_kept_separate` is a dedup merge refused because the keeper is over the
+budget.
 
 ## Safety
 

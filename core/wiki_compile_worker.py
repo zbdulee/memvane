@@ -35,7 +35,6 @@ from collection_match import select_collections
 from wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
 import wiki_compile as wc
-import wiki_budget_ledger as budget_ledger
 import wiki_card_budget
 import wiki_freshness
 import yaml_scalars
@@ -1153,52 +1152,6 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     if verify_suppression_hash(root, compile_cfg, rel) == wc.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
-    # Card budget state of this revision (wiki_budget_ledger), all BEFORE any
-    # extractor spawn. (a) A terminal record whose write failed last run is
-    # retried without extracting again.
-    pending_terminal = job.pop('_budgetTerminal', None)
-    if (isinstance(pending_terminal, dict)
-            and pending_terminal.get('sha256') == source_revision['sha256']):
-        if budget_ledger.record_refused(root, source_revision, pending_terminal):
-            budget_ledger.save_stash(root, source_revision, None)
-            job.pop('_budgetStoreRetries', None)
-            append_jsonl(cpath, bounded_failure("skipped", job, "budget_refused_recorded"))
-            return True, False, []
-        job['_budgetTerminal'] = pending_terminal
-        return _budget_store_failed(root, job, cpath, selected_route, rel,
-                                    'budget_store_failed')
-    # (b) This exact revision already ended with a card over the selector budget
-    # after its one split attempt. Re-extracting would pay again for the same
-    # refusal. A source edit (new sha256) or forceRecompile compiles it again.
-    if (job.get('forceRecompile') is not True
-            and budget_ledger.find_refused(root, source_revision) is not None):
-        append_jsonl(cpath, bounded_failure("skipped", job, "budget_refused_revision"))
-        return True, False, []
-    # (c) The terminal ledger and the stash must be writable before paying for
-    # an extraction whose outcome they would have to hold.
-    if not budget_ledger.writable(root):
-        return _budget_store_failed(root, job, cpath, selected_route, rel,
-                                    'budget_store_unwritable')
-    # (d) An earlier run left cards waiting for their split or measurement: resume
-    # them without extracting again, at most MAX_RESUME_ATTEMPTS times.
-    stash = (None if job.get('forceRecompile') is True
-             else budget_ledger.load_stash(root, source_revision))
-    if stash is not None:
-        stash = {**stash, 'attempts': int(stash.get('attempts') or 0) + 1}
-        if stash['attempts'] > budget_ledger.MAX_RESUME_ATTEMPTS:
-            row = {'ts': now_iso(), 'outcome': 'resume_exhausted',
-                   'reason': stash.get('reason') or 'resume_attempts_exhausted',
-                   'titles': [str(c.get('title') or '')[:120] for c in stash['candidates']
-                              if isinstance(c, dict)][:20]}
-            if not _record_budget_refused(root, job, source_revision, selected_route, row):
-                return _budget_store_failed(root, job, cpath, selected_route, rel,
-                                            'budget_store_failed')
-            budget_ledger.save_stash(root, source_revision, None)
-            append_jsonl(cpath, bounded_failure("skipped", job, "budget_resume_exhausted"))
-            return True, False, []
-        if not budget_ledger.save_stash(root, source_revision, stash):
-            return _budget_store_failed(root, job, cpath, selected_route, rel,
-                                        'budget_store_failed')
     # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
     # card already proves this exact revision, whichever trigger or replayed claim
     # brought the job back. Legacy QMD keeps its existing path.
@@ -1206,7 +1159,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     # is exactly the case where a trusted sibling does not prove the revision
     # finished, so it is never skipped here.
     if (selected_route is not None and job.get("partialCompile") is not True
-            and job.get('forceRecompile') is not True and stash is None):
+            and job.get('forceRecompile') is not True):
         proof_card = selected_compiled_revision_card(
             root, selected_route, source_revision, content_only=True)
         if proof_card is not None:
@@ -1288,67 +1241,53 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, engine, "generation"),
         }},
     }
-    if stash is not None:
-        engine = stash.get('engine') if isinstance(stash.get('engine'), str) else engine
-        argv = resolve_extractor_argv(compile_cfg, engine)
-        if argv is None:
-            append_jsonl(cpath, bounded_failure("needs_extractor", job, "missing_extractor"))
-            return False, True, []
-        payload = {**payload, 'engine': engine, '_qmd': {'reasoningEffort': {
-            'requested': qmd_config.resolve_reasoning_effort(compile_cfg, engine, 'generation'),
-            'capabilityDeclared': argv == _builtin_adapter_argv(engine),
+    extracted, reason, returncode = None, 'missing_extractor', 127
+    attempts = list(prior_attempts)
+    for attempt_engine, attempt_argv in available:
+        if attempt_argv is None or attempt_engine in prior_attempts:
+            continue
+        budget = _EXTRACTOR_BUDGET.get()
+        if budget is not None:
+            if budget['remaining'] <= 0:
+                budget['deferred'] = True
+                if len(engines) > 1:
+                    job['_fallbackAttempts'] = {
+                        'source': {'path': rel, 'collection': source.get('collection', '')},
+                        'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
+                        'engines': attempts,
+                    }
+                append_jsonl(cpath, bounded_failure('deferred', job, 'extractor_budget_deferred'))
+                return False, True, []
+            budget['remaining'] -= 1
+        # Use the actual extraction as the trial. No extra paid health prompt,
+        # no repeated host in this bounded fallback cycle.
+        attempt_payload = {**payload, 'engine': attempt_engine, '_qmd': {'reasoningEffort': {
+            'requested': qmd_config.resolve_reasoning_effort(compile_cfg, attempt_engine, 'generation'),
+            'capabilityDeclared': attempt_argv == _builtin_adapter_argv(attempt_engine),
         }}}
-        extracted, reason, returncode = {'candidates': stash['candidates'],
-                                         '_qmd': stash.get('qmd')}, None, 0
-        attempts = []
-    else:
-        extracted, reason, returncode = None, 'missing_extractor', 127
-        attempts = list(prior_attempts)
-        for attempt_engine, attempt_argv in available:
-            if attempt_argv is None or attempt_engine in prior_attempts:
-                continue
-            budget = _EXTRACTOR_BUDGET.get()
-            if budget is not None:
-                if budget['remaining'] <= 0:
-                    budget['deferred'] = True
-                    if len(engines) > 1:
-                        job['_fallbackAttempts'] = {
-                            'source': {'path': rel, 'collection': source.get('collection', '')},
-                            'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
-                            'engines': attempts,
-                        }
-                    append_jsonl(cpath, bounded_failure('deferred', job, 'extractor_budget_deferred'))
-                    return False, True, []
-                budget['remaining'] -= 1
-            # Use the actual extraction as the trial. No extra paid health prompt,
-            # no repeated host in this bounded fallback cycle.
-            attempt_payload = {**payload, 'engine': attempt_engine, '_qmd': {'reasoningEffort': {
-                'requested': qmd_config.resolve_reasoning_effort(compile_cfg, attempt_engine, 'generation'),
-                'capabilityDeclared': attempt_argv == _builtin_adapter_argv(attempt_engine),
-            }}}
-            extracted, reason, returncode = run_extractor(attempt_argv, attempt_payload, timeout, root)
-            attempts.append(attempt_engine)
-            if len(engines) > 1 and reason == 'resource_deferred':
-                job['_fallbackAttempts'] = {
-                    'source': {'path': rel, 'collection': source.get('collection', '')},
-                    'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
-                    'engines': attempts[:-1],  # This host deferred; retry it rather than exhaust it.
-                }
-            wiki_selected_laya.recheck(selected_route)
-            freshness, _ = wiki_freshness.compare_revision(src, source_revision)
-            if reason == 'resource_deferred' or freshness != wiki_freshness.FRESH:
-                break
-            if reason is None and (not isinstance(extracted, dict) or
-                                   not isinstance(extracted.get('candidates'), list)):
-                reason = 'missing_candidates'
-            if reason is None:
-                engine, argv, payload = attempt_engine, attempt_argv, attempt_payload
-                # The source intent may have been unknown, but card/verify producer
-                # identity is the CLI that actually returned the valid candidates.
-                job['engine'] = engine
-                job.pop('_fallbackAttempts', None)
-                break
-    if len(engines) > 1 and stash is None:
+        extracted, reason, returncode = run_extractor(attempt_argv, attempt_payload, timeout, root)
+        attempts.append(attempt_engine)
+        if len(engines) > 1 and reason == 'resource_deferred':
+            job['_fallbackAttempts'] = {
+                'source': {'path': rel, 'collection': source.get('collection', '')},
+                'revision': source_revision['sha256'], 'selectedRoute': job.get('selectedRoute'),
+                'engines': attempts[:-1],  # This host deferred; retry it rather than exhaust it.
+            }
+        wiki_selected_laya.recheck(selected_route)
+        freshness, _ = wiki_freshness.compare_revision(src, source_revision)
+        if reason == 'resource_deferred' or freshness != wiki_freshness.FRESH:
+            break
+        if reason is None and (not isinstance(extracted, dict) or
+                               not isinstance(extracted.get('candidates'), list)):
+            reason = 'missing_candidates'
+        if reason is None:
+            engine, argv, payload = attempt_engine, attempt_argv, attempt_payload
+            # The source intent may have been unknown, but card/verify producer
+            # identity is the CLI that actually returned the valid candidates.
+            job['engine'] = engine
+            job.pop('_fallbackAttempts', None)
+            break
+    if len(engines) > 1:
         append_jsonl(cpath, {**bounded_failure('extractor_attempts', job,
                      'selected' if reason is None else 'unknown_host_attempts'),
                      'attemptedEngines': attempts, 'selectedEngine': engine if reason is None else None})
@@ -1408,18 +1347,29 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     refresh_complete = bool(candidates)
     extracted_qmd = extracted.get("_qmd") if isinstance(extracted, dict) else None
     verify_targets: list[str] = []
-    split_needed: list[dict] = []
-    measure_pending: list[dict] = []
 
-    def compile_round(round_candidates: list, extracted_qmd) -> tuple[int, int]:
-        """Compile one extractor answer; returns (cards written, cards rejected)."""
+    def compile_round(round_candidates: list, extracted_qmd,
+                      final_reason: str | None = None) -> tuple[int, list[dict]]:
+        """Compile one extractor answer; returns (cards written, budget refusals).
+
+        ``final_reason`` set: the writer writes an over-budget card instead of
+        refusing it (best effort after the one split attempt) and logs why.
+        """
         nonlocal failed_compile, refresh_complete
-        written = rejected = 0
+        written = 0
+        refused: list[dict] = []
         for candidate in round_candidates:
             if not isinstance(candidate, dict):
                 refresh_complete = False
                 continue
             original = json.loads(json.dumps(candidate, ensure_ascii=False))
+            # Worker-owned, never model-supplied: whether the writer may write a
+            # card over the selector budget.
+            candidate.pop("budgetFinal", None)
+            candidate.pop("budgetFinalReason", None)
+            if final_reason is not None:
+                candidate["budgetFinal"] = True
+                candidate["budgetFinalReason"] = final_reason
             # **검증 근거의 권위는 큐가 갖는다.** `candidate["sources"]`는 extractor(모델)
             # 출력이고, verifier(`wiki_verify_worker.load_sources`)는 목록 **앞에서**
             # `MAX_SOURCES`(3)개만 읽는다. 모델 목록을 앞에 두고 실제 소스를 뒤에 붙이던
@@ -1470,22 +1420,15 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             wiki_selected_laya.recheck(selected_route)
             result = compile_candidate(root, candidate)
             if isinstance(result, dict) and result.get("action") == "split-required":
-                # Over the card budget: nothing was written. One re-prompt
-                # below asks the extractor to split it by topic.
-                split_needed.append({**{key: result.get(key) for key in
-                                        ("title", "canonicalKey", "size", "reason")},
-                                     "_candidate": original})
-                continue
-            if isinstance(result, dict) and result.get("action") == "measure-failed":
-                # No selector runtime could count it: nothing was written. The
-                # card waits in the stash for a later run (not terminal).
-                measure_pending.append(original)
-                refresh_complete = False
+                # Over the card budget and not written yet: the one split
+                # re-prompt below replaces it, or it is written as it is.
+                refused.append({**{key: result.get(key) for key in
+                                   ("title", "canonicalKey", "size", "reason")},
+                                "_candidate": original})
                 continue
             if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
                 failed_compile = True
                 refresh_complete = False
-                rejected += 1
                 continue
             if result.get("action") not in {"created", "updated"}:
                 refresh_complete = False
@@ -1510,82 +1453,26 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                 verify_targets.append(result["targetPath"])
             if result.get("action") in {"created", "updated"}:
                 written += 1
-        return written, rejected
+        return written, refused
 
-    compile_round(candidates, extracted_qmd)
-    used_before = int(stash.get('usedSlots') or 0) if stash is not None else 0
-    splittable = [card for card in split_needed
-                  if card.get("reason") in ("over_budget", "selector_input_invalid")]
-    unsplittable = [card for card in split_needed if card not in splittable]
-    # Slots of cardsPerSource the cards that reached the writer consumed.
-    used_slots = used_before + len(candidates) - len(split_needed) - len(measure_pending)
-    terminal = None
-    transient: list[dict] = list(measure_pending)
-    transient_reason = 'measure_failed' if measure_pending else None
-    if unsplittable:
-        # The hand-written sections alone exceed the budget; a smaller
-        # summary cannot fix it.
-        refresh_complete = False
-        terminal = {'outcome': 'manual_section_over_budget',
-                    'reason': 'manual_section_over_budget', 'cards': unsplittable}
+    _written, refused = compile_round(candidates, extracted_qmd)
+    # Best effort: every refused card ends written. A hand-written section over
+    # the budget is not something a smaller summary fixes, so it is written now.
+    manual = [card for card in refused if card.get("reason") == "manual_section_over_budget"]
+    splittable = [card for card in refused if card not in manual]
+    if manual:
+        compile_round([card["_candidate"] for card in manual], extracted_qmd,
+                      final_reason="manual_section_over_budget")
     if splittable:
         # cardsPerSource covers both answers: the split gets only the slots
         # the first answer did not use for cards that reached the writer.
-        measure_pending.clear()
-        outcome, split_reason, unwritten, consumed = _split_over_budget(
-            root, job, cpath, splittable, split_needed, compile_round,
-            payload=payload, argv=argv, timeout=timeout, src=src,
-            source_revision=source_revision, selected_route=selected_route,
-            rel=rel, max_cards=max(0, max_cards - used_slots))
-        used_slots += consumed - len(measure_pending)
-        transient.extend(measure_pending)
-        if measure_pending:
-            transient_reason = transient_reason or 'measure_failed'
-        if outcome in TRANSIENT_SPLIT_OUTCOMES or split_reason == 'resource_deferred':
-            # The split did not run: keep the refused cards for a later run.
-            transient.extend(card['_candidate'] for card in splittable)
-            transient_reason = split_reason
-            refresh_complete = False
-        elif outcome != "split":
-            refresh_complete = False
-            terminal = terminal or {'outcome': outcome, 'reason': split_reason,
-                                    'cards': unwritten}
-    if terminal is not None:
-        row = {'ts': now_iso(), 'outcome': terminal['outcome'], 'reason': terminal['reason'],
-               'titles': [str(card.get('title') or '')[:120] for card in terminal['cards']][:20]}
-        if not _record_budget_refused(root, job, source_revision, selected_route, row):
-            job['_budgetTerminal'] = {**row, 'sha256': source_revision['sha256']}
-            return (*_budget_store_failed(root, job, cpath, selected_route, rel,
-                                          'budget_store_failed')[:2], verify_targets)
-        budget_ledger.save_stash(root, source_revision, None)
-        # The revision is terminal: a partialCompile retry would only meet the
-        # terminal guard, so the job settles here.
-        return True, False, verify_targets
-    if transient:
-        entry = {'ts': now_iso(), 'candidates': transient, 'usedSlots': used_slots,
-                 'attempts': int(stash.get('attempts') or 0) if stash is not None else 0,
-                 'engine': engine, 'qmd': extracted_qmd, 'reason': transient_reason}
-        if not budget_ledger.save_stash(root, source_revision, entry):
-            row = {'ts': now_iso(), 'outcome': 'stash_failed', 'reason': transient_reason,
-                   'titles': [str(c.get('title') or '')[:120] for c in transient][:20]}
-            if not _record_budget_refused(root, job, source_revision, selected_route, row):
-                job['_budgetTerminal'] = {**row, 'sha256': source_revision['sha256']}
-            return (*_budget_store_failed(root, job, cpath, selected_route, rel,
-                                          'budget_store_failed')[:2], verify_targets)
-        wiki_card_budget.emit(root, 'budget_stashed', bound=selected_route, path=rel,
-                              reason=transient_reason, cards=len(transient),
-                              attempts=entry['attempts'])
-        append_jsonl(cpath, {**bounded_failure("deferred", job, transient_reason or 'budget_stash'),
-                             "stashedTitles": [str(c.get('title') or '')[:120]
-                                               for c in transient][:20]})
-        budget = _EXTRACTOR_BUDGET.get()
-        if budget is not None and transient_reason == 'extractor_budget_exhausted':
-            budget['deferred'] = True  # ask for a new wake to resume
-        # Not settled: the backfill keeps this revision open until it ends
-        # written or terminal.
-        return False, True, verify_targets
-    if stash is not None:
-        budget_ledger.save_stash(root, source_revision, None)
+        used = len(candidates) - len(splittable)
+        if not _split_over_budget(
+                root, job, cpath, splittable, compile_round, extracted_qmd,
+                payload=payload, argv=argv, timeout=timeout, src=src,
+                source_revision=source_revision, selected_route=selected_route,
+                rel=rel, max_cards=max(0, max_cards - used)):
+            return False, True, verify_targets
     if failed_compile:
         append_jsonl(cpath, bounded_failure("compile_failed", job, "writer_rejected"))
         # Kept for retry with a marker: a card from this run may get verified
@@ -1602,31 +1489,28 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
 
 
 def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict],
-                       split_needed: list[dict], compile_round, *, payload: dict,
-                       argv: list[str], timeout: int, src: Path, source_revision: dict,
-                       selected_route, rel: str, max_cards: int) -> tuple[str, str | None, list, int]:
-    """Re-prompt the extractor once to split cards the writer refused as over budget.
+                       compile_round, extracted_qmd, *, payload: dict, argv: list[str],
+                       timeout: int, src: Path, source_revision: dict, selected_route,
+                       rel: str, max_cards: int) -> bool:
+    """One split re-prompt for cards the writer refused as over budget; best effort.
 
-    Returns ``(outcome, reason, unwritten cards, slots consumed)``; ``outcome`` is
-    ``split`` when every refused card was replaced by written cards. A split part
-    the writer rejects makes it ``split_incomplete`` (``split_card_rejected``). The split pass is one more
-    paid extraction and counts against the run's extractor budget. ``max_cards``
-    is what ``cardsPerSource`` leaves after the first answer; parts beyond it are
-    dropped and counted, never silently, and the outcome is ``split_incomplete``.
-    A card still over the budget after the split stays unwritten (never
-    truncated). ``split_skipped`` (no run budget left) and a ``resource_deferred``
-    re-prompt are transient: the caller stashes the cards for a later run. Every
-    other outcome but ``split`` is terminal for this source revision.
+    At most one more paid extraction, counted against the run's extractor budget,
+    with only the ``cardsPerSource`` slots the first answer left (``max_cards``).
+    Every part that comes back is written, even one still over the budget (the
+    writer logs ``wiki.card over_budget_written``); parts past the slots are
+    dropped and counted. When the split cannot run (run budget exhausted, no slot
+    left, extractor failure or ``resource_deferred``, empty answer) the refused
+    cards are written as they are. Returns False only when the source changed
+    during the re-prompt; the caller keeps the job for the new revision.
     """
     import wiki_selected_laya
-    written = parts = dropped = consumed = 0
-    outcome, split_reason = 'split', None
+    written = parts = dropped = 0
+    split_reason = None
     budget = _EXTRACTOR_BUDGET.get()
-    unwritten = list(splittable)
     if budget is not None and budget['remaining'] <= 0:
-        outcome, split_reason = 'split_skipped', 'extractor_budget_exhausted'
+        split_reason = 'extractor_budget_exhausted'
     elif max_cards <= 0:
-        outcome, split_reason = 'split_incomplete', 'cards_per_source_cap'
+        split_reason = 'cards_per_source_cap'
     else:
         if budget is not None:
             budget['remaining'] -= 1
@@ -1635,85 +1519,35 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
         extracted, split_reason, _ = run_extractor(argv, split_payload, timeout, root)
         wiki_selected_laya.recheck(selected_route)
         freshness, _ = wiki_freshness.compare_revision(src, source_revision)
-        candidates = extracted.get('candidates') if isinstance(extracted, dict) else None
         if freshness != wiki_freshness.FRESH:
-            split_reason = 'source_changed_during_extract'
-        elif split_reason is None and not isinstance(candidates, list):
+            append_jsonl(cpath, bounded_failure(
+                'extractor_failed', job, 'source_changed_during_extract'))
+            return False
+        candidates = extracted.get('candidates') if isinstance(extracted, dict) else None
+        if split_reason is None and not isinstance(candidates, list):
             split_reason = 'missing_candidates'
+        elif split_reason is None and not candidates:
+            split_reason = 'split_empty'
         if split_reason is None:
             parts = len(candidates)
             dropped = max(0, parts - max_cards)
-            kept = candidates[:max_cards]
-            split_needed.clear()
-            written, rejected = compile_round(kept, extracted.get('_qmd'))
-            consumed = len(kept)
-            unwritten = list(split_needed) + [
-                {'title': item.get('title')} for item in candidates[max_cards:]
-                if isinstance(item, dict)]
-            if split_needed or not candidates:
-                outcome, split_reason = 'split_incomplete', 'card_over_budget'
-            elif rejected:
-                outcome, split_reason = 'split_incomplete', 'split_card_rejected'
-            elif dropped:
-                outcome, split_reason = 'split_incomplete', 'cards_per_source_cap'
-            else:
-                unwritten = []
-        else:
-            outcome = 'split_failed'
-    if outcome != 'split':
-        append_jsonl(cpath, {**bounded_failure('skipped', job, split_reason),
-                             'splitTitles': [str(card.get('title') or '')[:120]
-                                             for card in unwritten][:20],
-                             'droppedParts': dropped})
-    unwritten = [{k: v for k, v in card.items() if k != '_candidate'} for card in unwritten]
-    wiki_card_budget.emit(root, outcome, bound=selected_route, path=rel,
-                          reason=None if outcome == 'split' else split_reason,
+            written, _ = compile_round(candidates[:max_cards], extracted.get('_qmd'),
+                                       final_reason='split_part_over_budget')
+            if dropped:
+                append_jsonl(cpath, {**bounded_failure('skipped', job, 'cards_per_source_cap'),
+                                     'droppedParts': dropped,
+                                     'droppedTitles': [str(item.get('title') or '')[:120]
+                                                       for item in candidates[max_cards:]
+                                                       if isinstance(item, dict)][:20]})
+    if split_reason is not None:
+        # The split did not run: the refused cards are written as they are.
+        written, _ = compile_round([card['_candidate'] for card in splittable], extracted_qmd,
+                                   final_reason=split_reason)
+    wiki_card_budget.emit(root, 'split' if split_reason is None else 'split_unavailable',
+                          bound=selected_route, path=rel, reason=split_reason,
                           requested=len(splittable), parts=parts, written=written,
                           dropped=dropped)
-    return outcome, split_reason, unwritten, consumed
-
-
-TRANSIENT_SPLIT_OUTCOMES = frozenset(('split_skipped',))
-MAX_BUDGET_STORE_RETRIES = 3
-
-
-def _record_budget_refused(root: Path, job: dict, source_revision: dict, selected_route,
-                           row: dict) -> bool:
-    """Make an over-budget source revision terminal: it is never re-extracted.
-
-    Without this, the unresolved pending refresh (kept so recall still treats
-    the source's old card as stale) is re-enqueued by every worker run and each
-    run pays for the extraction and the split again. False when the ledger
-    could not be written; the caller keeps the row on the job and retries.
-    """
-    ok = budget_ledger.record_refused(root, source_revision, row)
-    if ok:
-        wiki_card_budget.emit(root, 'budget_refused', bound=selected_route,
-                              path=str(source_revision.get('path') or ''), reason=row.get('reason'),
-                              split=row.get('outcome'),
-                              sha=str(source_revision.get('sha256') or '')[:16],
-                              cards=len(row.get('titles') or []))
-    return ok
-
-
-def _budget_store_failed(root: Path, job: dict, cpath: Path, selected_route, rel: str,
-                         reason: str) -> tuple[bool, bool, list]:
-    """The budget ledgers cannot be written: no paid call, bounded job retries.
-
-    The job is kept (not settled) up to ``MAX_BUDGET_STORE_RETRIES`` runs, then
-    settled. Every later run of the same source meets the writability check
-    again before any extractor spawn, so no path pays while the store is broken.
-    """
-    retries = int(job.get('_budgetStoreRetries') or 0) + 1
-    wiki_card_budget.emit(root, reason, bound=selected_route, path=rel, reason=reason,
-                          retries=retries)
-    append_jsonl(cpath, {**bounded_failure('deferred', job, reason), 'retries': retries})
-    if retries >= MAX_BUDGET_STORE_RETRIES:
-        job.pop('_budgetStoreRetries', None)
-        job.pop('_budgetTerminal', None)
-        return True, False, []
-    job['_budgetStoreRetries'] = retries
-    return False, True, []
+    return True
 
 
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
@@ -1946,9 +1780,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             if preserve:
                 remaining.append(json.dumps(job, ensure_ascii=False)
                                  if job.get("partialCompile") is True or '_fallbackAttempts' in job
-                                 or job.get('_backfillRebound') is True
-                                 or '_budgetStoreRetries' in job or '_budgetTerminal' in job
-                                 else raw_line)
+                                 or job.get('_backfillRebound') is True else raw_line)
     finally:
         requeue_lines(queue, remaining)
         claimed.unlink(missing_ok=True)
