@@ -2,7 +2,9 @@
 """Deterministic, explicit front door for memvane-db index setup and maintenance.
 
 No host installation event calls this file. Status and plan actions are read
-only; every action that writes requires its explicit approval flag.
+only; every action that writes index, runtime or learning state requires its
+explicit approval flag. The ``onboarding-*`` actions record only the user's
+answer to the SessionStart onboarding notice.
 """
 from __future__ import annotations
 
@@ -73,7 +75,9 @@ def main(argv=None):
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin','retire-index-origin',
                                           'abandon-index-build','abandon-inactive-index-build',
-                                          'seal-host-copy'))
+                                          'seal-host-copy',
+                                          'onboarding-skip', 'onboarding-never',
+                                          'onboarding-resume', 'onboarding-status'))
     parser.add_argument('--project')
     parser.add_argument('--learning-choice',choices=('preserve','local-auto-apply','local-staged','off'),default='preserve')
     parser.add_argument('--learning-namespace')
@@ -100,6 +104,7 @@ def main(argv=None):
     parser.add_argument('--approve-legacy-cleanup', action='store_true')
     parser.add_argument('--include-user-qmd-data', action='store_true')
     parser.add_argument('--wake-revision', type=int)
+    parser.add_argument('--session')
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
             'plan-legacy-cleanup', 'apply-legacy-cleanup', 'index-runtime-status',
@@ -107,7 +112,19 @@ def main(argv=None):
             'move-state-roots'):
         parser.error('--project is required for ' + args.action)
     try:
-        if args.action == 'state-root-status':
+        if args.action.startswith('onboarding-'):
+            # The user's answer to the SessionStart onboarding notice. It
+            # hides or shows that notice only; it never selects a route.
+            import onboarding_choice as choice
+            if args.action == 'onboarding-skip':
+                result = choice.skip(args.project, args.session)
+            elif args.action == 'onboarding-never':
+                result = choice.never(args.project)
+            elif args.action == 'onboarding-resume':
+                result = choice.resume(args.project)
+            else:
+                result = choice.status(args.project)
+        elif args.action == 'state-root-status':
             # Read only: installs and shared trees still under ~/.local/state/laya.
             import laya_state_move
             result = laya_state_move.status()

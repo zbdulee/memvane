@@ -60,6 +60,10 @@ secret, credential, API key, authorization, cookie) are dropped from every line.
 
 - Keep a project inactive by not onboarding it. A memvane-db index selection can be
   withdrawn on request until the selected index takes its first write.
+- Decline the SessionStart onboarding notice for a project, or skip it for one
+  session. The answer is kept per project under
+  `~/.local/state/memvane/onboarding/`, outside the repository, and never
+  turns indexing, wiki generation or learning on.
 - Add sensitive folders to `skipPaths` so they are excluded from new wiki
   generation; existing cards from those sources are hidden from search.
 - Do not include credentials, private keys, or secrets in issue reports, logs,

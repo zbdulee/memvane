@@ -32,6 +32,6 @@ producer for verification; there is no separate paid probe.
 
 ## Safety
 
-- The wrapper acts only for a selected MemVane route. A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- The wrapper acts only for a selected MemVane route. A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill (an explicit onboarding request there also re-enables a declined SessionStart notice).
 - A selected route whose proof fails exits 3; report the reason.
 - Preserve empty output as a valid graceful no-op state.
