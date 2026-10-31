@@ -1523,27 +1523,39 @@ class Service:
 
     def _load_attested(self, project, decision, proof, mode, manifest, worker, seal):
         from laya_embed_resident import _MAX_FAILURES, _write_state
-        try:
-            # Every new model process starts only after this installation's
-            # full attestation (model, worker, native closure, runtime files)
-            # proves again; the frozen provider's own check hashes five files.
-            self.attest(decision, proof, mode)
-        except Exception:
-            # This installation's evidence failed, not the shared worker.
-            with self.lock:
-                worker.loading = False
-            with suppress(Exception):
-                _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
-            self._later(project, 60)
-            return
-        self.attested.add(seal)
-        with self.lock:
-            if self.draining.is_set():
-                # The drain began during attestation: never start a model.
-                worker.loading = False
-                return
         reason = None
+        handle = None
         try:
+            # Cheap resource admission first: a deferred start retries every
+            # few seconds and must not re-hash the whole runtime each time.
+            admitted = self.admit()
+        except Exception:
+            admitted = False
+        if not admitted:
+            reason = 'resource_deferred'
+        if reason is None:
+            try:
+                # Every new model process starts only after this installation's
+                # full attestation (model, worker, native closure, runtime files)
+                # proves again; the frozen provider's own check hashes five files.
+                self.attest(decision, proof, mode)
+            except Exception:
+                # This installation's evidence failed, not the shared worker.
+                with self.lock:
+                    worker.loading = False
+                with suppress(Exception):
+                    _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
+                self._later(project, 60)
+                return
+            self.attested.add(seal)
+            with self.lock:
+                if self.draining.is_set():
+                    # The drain began during attestation: never start a model.
+                    worker.loading = False
+                    return
+        try:
+            if reason is not None:
+                raise _deferred('laya_service_resource_deferred')
             handle = self.start_worker(dict(manifest, serviceSocketPath=worker.socket_path),
                                        self.admit)
         except Exception as exc:
