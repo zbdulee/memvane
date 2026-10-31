@@ -178,6 +178,22 @@ def rebind(state, *, home=None, deadline=None):
     policy = _policy(state)
     adapter = running_adapter()
     argv = policy['trainerArgv']
+    if argv[1] != str(adapter) and os.path.lexists(argv[1]):
+        # Another host's installed copy of the same adapter (Claude and Codex
+        # caches) already admits predictions: rewriting the anchor would only
+        # invalidate the prepared evidence that the other host's worker then
+        # rewrites back. Keep it; a missing or different anchor is rebound.
+        from .adapter_binding import BindingTimeout, attested_adapter, inference_argv
+        try:
+            inference_argv(argv, adapter, deadline=deadline,
+                           attested_adapter_sha256=attested_adapter(state))
+        except BindingTimeout:
+            raise HealDeferred('adapter_binding_timeout') from None
+        except ValueError:
+            pass
+        else:
+            check_scope(state, policy, home=home)
+            return policy, False
     if argv[1] != str(adapter):
         from .learning_profile import present
         if present(state):

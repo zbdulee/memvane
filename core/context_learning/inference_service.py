@@ -224,49 +224,64 @@ class GenerationEngine:
             raise ServiceFailure('model_family_mismatch')
         timing = {}
         pending = None
-        if self.active is None or replacement:
-            before = self.rss()
-            if replacement:
-                overlap = self.footprint_mib
-                available = report.get('available_mib')
-                if (overlap is None or type(available) not in (int, float)
-                        or not math.isfinite(available) or available < overlap + 768
-                        or before + overlap > job['policy']['maxRssMib']):
-                    raise ServiceFailure('replacement_deferred')
-            started = time.perf_counter()
-            try:
-                candidate = self.load(job)
-            except Exception as exc:
-                raise ServiceFailure('replacement_failed' if replacement else 'load_failed') from exc
-            timing['model_load_seconds'] = round(time.perf_counter() - started, 6)
+        warm = None
+        try:
+            if self.active is None or replacement:
+                before = self.rss()
+                if replacement:
+                    overlap = self.footprint_mib
+                    available = report.get('available_mib')
+                    if (overlap is None or type(available) not in (int, float)
+                            or not math.isfinite(available) or available < overlap + 768
+                            or before + overlap > job['policy']['maxRssMib']):
+                        raise ServiceFailure('replacement_deferred')
+                started = time.perf_counter()
+                try:
+                    candidate = self.load(job)
+                except Exception as exc:
+                    raise ServiceFailure('replacement_failed' if replacement else 'load_failed') from exc
+                timing['model_load_seconds'] = round(time.perf_counter() - started, 6)
+                if not replacement:
+                    loaded_rss = self.rss()
+                    if math.isfinite(loaded_rss) and loaded_rss <= job['policy']['maxRssMib']:
+                        warm = ((job['generation'], candidate),
+                                max(256, math.ceil(max(0, loaded_rss-before) * 1.5)))
+                check()
+                fresh = revalidate()
+                if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
+                        or fresh['policy'] != job['policy']):
+                    raise ServiceFailure('request_changed')
+                check()
+                after = self.rss()
+                if not math.isfinite(after) or after > job['policy']['maxRssMib']:
+                    raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
+                footprint = max(256, math.ceil(max(0, after-before) * 1.5))
+                pending = (job['generation'], candidate)
+                footprint = max(self.footprint_mib or 0, footprint)
+            else:
+                timing['model_load_seconds'] = 0.0
+                if self.rss() > job['policy']['maxRssMib']:
+                    raise ServiceFailure('resource_deferred')
+            check()
+            loaded = pending[1] if pending is not None else self.active[1]
+            result = self.forward(loaded, job, limits=limits, timing=timing,
+                                  cancelled=lambda: cancelled() or time.monotonic() >= job['deadline'])
             check()
             fresh = revalidate()
             if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
                     or fresh['policy'] != job['policy']):
                 raise ServiceFailure('request_changed')
             check()
-            after = self.rss()
-            if not math.isfinite(after) or after > job['policy']['maxRssMib']:
+            if not math.isfinite(self.rss()) or self.rss() > job['policy']['maxRssMib']:
                 raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
-            footprint = max(256, math.ceil(max(0, after-before) * 1.5))
-            pending = (job['generation'], candidate)
-            footprint = max(self.footprint_mib or 0, footprint)
-        else:
-            timing['model_load_seconds'] = 0.0
-            if self.rss() > job['policy']['maxRssMib']:
-                raise ServiceFailure('resource_deferred')
-        check()
-        loaded = pending[1] if pending is not None else self.active[1]
-        result = self.forward(loaded, job, limits=limits, timing=timing,
-                              cancelled=lambda: cancelled() or time.monotonic() >= job['deadline'])
-        check()
-        fresh = revalidate()
-        if (fresh['generation'] != job['generation'] or fresh['namespace'] != job['namespace']
-                or fresh['policy'] != job['policy']):
-            raise ServiceFailure('request_changed')
-        check()
-        if not math.isfinite(self.rss()) or self.rss() > job['policy']['maxRssMib']:
-            raise ServiceFailure('replacement_deferred' if replacement else 'resource_deferred')
+        except Exception as exc:
+            # A first load whose request runs out of time still leaves the
+            # service warm. A later request validates itself and uses the model
+            # only when it names this exact generation. Any other failure, and
+            # every replacement, publishes nothing.
+            if warm is not None and self.active is None and _failure(exc) == 'deadline_expired':
+                self.active, self.footprint_mib = warm
+            raise
         if pending is not None:
             self.active = pending
             self.footprint_mib = footprint
@@ -563,7 +578,9 @@ def _failure(exc):
         return exc.code
     if str(exc) == 'trainer_inference_attestation_required' or str(exc).startswith('inference_identity_'):
         return 'inference_attestation_required'
-    if str(exc) in ('resident_deadline_expired', 'prediction_cancelled', 'learning_inference_deadline'):
+    # 'trainer_timeout': adapter binding found no time left while revalidating.
+    if str(exc) in ('resident_deadline_expired', 'prediction_cancelled', 'learning_inference_deadline',
+                    'trainer_timeout'):
         return 'deadline_expired'
     # A candidate longer than the model's token budget is refused, never
     # truncated: a fixed input code, not an unexplained worker failure.
