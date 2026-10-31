@@ -6,7 +6,11 @@ or decline it for the project; an explicit onboarding request turns it back on.
 
 The answer lives outside the repository, in the per-user state base::
 
-    ~/.local/state/memvane/onboarding/<sha256(resolved project root)>.json
+    ~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json
+
+The canonical root is the resolved path with the file system's own spelling
+(``F_GETPATH`` on macOS), so case aliases such as ``/users`` and ``/Users``
+share one record. A session skip expires after ``SKIP_RETENTION_MS``.
 
 No install state root exists before onboarding (the install ID is minted by
 setup), and a file in the project would be committed and silence teammates.
@@ -23,22 +27,53 @@ from pathlib import Path
 import re
 import stat
 import sys
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None
 import tempfile
 
 sys.dont_write_bytecode = True
+
+import time
 
 import config
 import memvane_paths
 
 SCHEMA = 'memvane-onboarding-choice-v1'
 MAX_BYTES = 16384
-MAX_SESSIONS = 16
+MAX_SESSIONS = 512
+SKIP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 # Same shape event_log accepts; the id is also quoted into the notice command.
 _SESSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 
 
 def choice_dir(home=None) -> Path:
     return memvane_paths.state_base(home) / 'onboarding'
+
+
+def canonical(path) -> Path:
+    """``path`` resolved, in the file system's spelling where it differs."""
+    resolved = Path(path).resolve()
+    getpath = getattr(fcntl, 'F_GETPATH', None) if fcntl is not None else None
+    if getpath is not None:
+        try:
+            fd = os.open(resolved, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        except OSError:
+            return Path(os.path.normcase(str(resolved)))
+        try:
+            # MAXPATHLEN on macOS; fcntl caps the buffer at 1024 bytes.
+            raw = fcntl.fcntl(fd, getpath, bytes(1024))
+        except (OSError, ValueError):
+            raw = None
+        finally:
+            os.close(fd)
+        if raw:
+            spelled = os.fsdecode(raw.split(b'\0', 1)[0])
+            if spelled and os.path.isabs(spelled):
+                return Path(spelled)
+    return Path(os.path.normcase(str(resolved)))
 
 
 def project_root(cwd) -> Path | None:
@@ -48,11 +83,11 @@ def project_root(cwd) -> Path | None:
     found = config.find_project_config(cwd)
     if found.get('configFormat') != 'auto-context-dir':
         return None
-    return Path(found.get('projectRoot') or cwd).resolve()
+    return canonical(found.get('projectRoot') or cwd)
 
 
 def record_path(root, home=None) -> Path:
-    key = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()
+    key = hashlib.sha256(str(canonical(root)).encode()).hexdigest()
     return choice_dir(home) / (key + '.json')
 
 
@@ -77,9 +112,23 @@ def _read(path: Path, root: Path) -> dict | None:
             value.get('projectRoot') != str(root) or
             not isinstance(value.get('never'), bool) or
             not isinstance(value.get('skippedSessions'), list) or
-            not all(valid_session(item) for item in value['skippedSessions'])):
+            not all(_valid_skip(item) for item in value['skippedSessions'])):
         raise ValueError('onboarding_choice_unreadable')
     return value
+
+
+def _valid_skip(item) -> bool:
+    return (isinstance(item, dict) and set(item) == {'session', 'at'} and
+            valid_session(item['session']) is not None and
+            type(item['at']) is int and item['at'] >= 0)
+
+
+def _now_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+def _live_skips(value: dict, now: int) -> list:
+    return [item for item in value['skippedSessions'] if now - item['at'] <= SKIP_RETENTION_MS]
 
 
 def suppressed(root, session=None, home=None) -> bool:
@@ -88,14 +137,17 @@ def suppressed(root, session=None, home=None) -> bool:
     Fails open: any read or shape fault keeps the notice.
     """
     try:
-        root = Path(root).resolve()
+        root = canonical(root)
         value = _read(record_path(root, home), root)
     except Exception:
         return False
     if value is None:
         return False
+    if value['never']:
+        return True
     session = valid_session(session)
-    return value['never'] or (session is not None and session in value['skippedSessions'])
+    return session is not None and any(
+        item['session'] == session for item in _live_skips(value, _now_ms()))
 
 
 def _private_dir(home=None) -> Path:
@@ -159,8 +211,9 @@ def skip(project, session, home=None) -> dict:
         raise ValueError('onboarding_skip_session_required')
     root = _require_root(project)
     value = _current(root, home)
-    sessions = [item for item in value['skippedSessions'] if item != session]
-    value['skippedSessions'] = (sessions + [session])[-MAX_SESSIONS:]
+    now = _now_ms()
+    kept = [item for item in _live_skips(value, now) if item['session'] != session]
+    value['skippedSessions'] = (kept + [{'session': session, 'at': now}])[-MAX_SESSIONS:]
     _write(root, value, home)
     return _result('onboarding_notice_skipped', root, home, session=session, changes=1)
 

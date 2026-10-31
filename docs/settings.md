@@ -60,7 +60,8 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 **인덱싱 끄기.** minimal settings에는 `indexing` 키가 없고, settings 파일이 있으면 켜짐으로
 해석합니다. 실제 색인·검색·compile·학습은 선택된 Laya route가 있는 프로젝트에서만 돕니다.
 route가 없는 프로젝트는 아무 작업도 받지 않고, settings 파일이 있으면 SessionStart에서
-setup skill로 온보딩하라는 안내 한 줄만 받습니다.
+setup skill로 온보딩하라는 짧은 안내 한 줄(에이전트용 거절 명령 한 줄 포함)만 받습니다.
+사용자가 이번 세션만 건너뛰거나 다시 묻지 않기를 고르면 그 안내도 나오지 않습니다.
 
 **선택된 memvane-db route.** route record는 settings 파일 바이트가 아니라 해석된 settings
 identity를 묶습니다(아래 "route의 settings binding"). minimal settings로 선택된 route는

@@ -830,13 +830,14 @@ def select_hook_route(action: str, payload_file: str, fallback_cwd: str) -> dict
         return _decision("blocked", str(exc) or "invalid_hook_payload")
 
 
-ONBOARDING_NOTICE = ('[memvane] {root}: MemVane 색인이 선택되지 않아 recall·색인·compile이 '
-                     '꺼져 있습니다. setup skill로 온보딩하세요.')
-# The user's answer, recorded by the agent; the session id is the payload's.
-ONBOARDING_DECLINE = (' 거절하면 `{cmd} onboarding-<skip|never> --project {qroot} --session {session}`'
-                      '(skip=이번 세션만, never=이 프로젝트에서 다시 묻지 않기).')
-ONBOARDING_DECLINE_NO_SESSION = (' 거절하면 `{cmd} onboarding-never --project {qroot}`'
-                                 '(이 프로젝트에서 다시 묻지 않기).')
+# Onboarding notices stay in Korean like the setup wrappers' notices. The
+# first line is for the user and names no path; the second carries the exact
+# answer commands as JSON so any path survives (quotes, backticks, newlines).
+ONBOARDING_NOTICE = ('[memvane] 이 프로젝트는 아직 MemVane 온보딩 전입니다. setup skill로 '
+                     '온보딩하거나, 이번 세션만 건너뛰기·다시 묻지 않기를 원하면 말해 주세요.')
+ONBOARDING_NOTICE_NO_SESSION = ('[memvane] 이 프로젝트는 아직 MemVane 온보딩 전입니다. setup '
+                                'skill로 온보딩하거나, 다시 묻지 않기를 원하면 말해 주세요.')
+ONBOARDING_ANSWER_PREFIX = '[memvane] onboarding-answer '
 BUILD_NOTICE = ('[memvane] {root}: 초기 MemVane 색인을 준비 중입니다. '
                 '빌드가 끝나면 setup skill로 활성화하세요.')
 
@@ -880,11 +881,25 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     except Exception:
         # A fault in the recorded answer shows the notice, never hides it.
         session = None
-    entry = Path(__file__).resolve().parent / "setup_entry.py"
-    cmd = "python3 -B " + shlex.quote(str(entry))
-    decline = ONBOARDING_DECLINE if session else ONBOARDING_DECLINE_NO_SESSION
-    return (ONBOARDING_NOTICE.format(root=root) +
-            decline.format(cmd=cmd, qroot=shlex.quote(str(root)), session=session))
+    return onboarding_lines(str(root), session)
+
+
+def onboarding_lines(root: str, session: str | None) -> str:
+    """The user notice line plus the agent's answer commands as one JSON line."""
+    entry = str(Path(__file__).resolve().parent / "setup_entry.py")
+    base = ["python3", "-B", entry]
+
+    def command(*args):
+        argv = [*base, *args]
+        return {"argv": argv, "shell": shlex.join(argv)}
+
+    answer = {"projectRoot": root,
+              "use": "run the matching command only when the user declines onboarding"}
+    if session:
+        answer["skip"] = command("onboarding-skip", "--project", root, "--session", session)
+    answer["never"] = command("onboarding-never", "--project", root)
+    notice = ONBOARDING_NOTICE if session else ONBOARDING_NOTICE_NO_SESSION
+    return notice + "\n" + ONBOARDING_ANSWER_PREFIX + json.dumps(answer, ensure_ascii=False)
 
 
 def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:

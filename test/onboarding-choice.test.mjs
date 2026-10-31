@@ -50,6 +50,16 @@ function choice(home, action, project, ...extra) {
   return { ...result, body };
 }
 
+const AGENT_PREFIX = '[memvane] onboarding-answer ';
+
+// Line 1 is the short notice for the user; line 2 carries the exact commands as JSON.
+function noticeParts(stdout) {
+  const lines = stdout.split('\n').filter(Boolean);
+  assert.equal(lines.length, 2, stdout);
+  assert.ok(lines[1].startsWith(AGENT_PREFIX), stdout);
+  return { notice: lines[0], answer: JSON.parse(lines[1].slice(AGENT_PREFIX.length)) };
+}
+
 function choiceFile(home, project) {
   const key = createHash('sha256').update(realpathSync(project)).digest('hex');
   return join(home, '.local', 'state', 'memvane', 'onboarding', `${key}.json`);
@@ -82,12 +92,17 @@ test('"skip" silences only the session that asked for it', () => {
   const home = makeHome();
   try {
     const project = makeProject(home, 'alpha');
-    const line = sessionStart(home, project, 'sess-1');
-    // The notice names the session so the agent can record "skip this time".
-    assert.match(line, /onboarding-<skip\|never> --project /);
-    assert.match(line, /skip=이번 세션만, never=이 프로젝트에서 다시 묻지 않기/);
-    assert.ok(line.includes('sess-1'), line);
-    assert.ok(line.split('\n').filter(Boolean).length === 1, line);
+    const { notice, answer } = noticeParts(sessionStart(home, project, 'sess-1'));
+    // The user line is short and names no path; the agent line names the session.
+    assert.match(notice, /setup skill로 온보딩/);
+    assert.match(notice, /이번 세션만 건너뛰기/);
+    assert.match(notice, /다시 묻지 않기/);
+    assert.ok(!notice.includes(project) && !notice.includes('`'), notice);
+    assert.ok(notice.length <= 120, notice);
+    assert.equal(answer.projectRoot, project);
+    assert.deepEqual(answer.skip.argv.slice(-4), ['--project', project, '--session', 'sess-1']);
+    assert.ok(answer.skip.argv.includes('onboarding-skip'));
+    assert.ok(answer.never.argv.includes('onboarding-never'));
 
     const skip = choice(home, 'onboarding-skip', project, '--session', 'sess-1');
     assert.equal(skip.status, 0, skip.stdout + skip.stderr);
@@ -106,10 +121,11 @@ test('"skip" needs a session id and never turns into "never"', () => {
   const home = makeHome();
   try {
     const project = makeProject(home, 'alpha');
-    const line = sessionStart(home, project, undefined);
-    assert.match(line, /setup skill로 온보딩/);
-    assert.match(line, /onboarding-never --project /);
-    assert.doesNotMatch(line, /skip/);
+    const { notice, answer } = noticeParts(sessionStart(home, project, undefined));
+    assert.match(notice, /setup skill로 온보딩/);
+    assert.doesNotMatch(notice, /건너뛰기/);
+    assert.equal(answer.skip, undefined);
+    assert.ok(answer.never.argv.includes('onboarding-never'));
     const skip = choice(home, 'onboarding-skip', project);
     assert.equal(skip.status, 1);
     assert.equal(skip.body.reason, 'onboarding_skip_session_required');
@@ -229,18 +245,77 @@ test('a recorded "never" choice under the state root silences SessionStart', () 
   }
 });
 
-test('the command the notice names records the answer as written, even with spaces in the path', () => {
+test('the commands the notice names work for paths with spaces, quotes, backticks and newlines', () => {
   const home = makeHome();
   try {
-    const project = makeProject(home, "my project's");
-    const line = sessionStart(home, project, 'sess-1');
-    const command = line.match(/`([^`]+)`/)[1];
-    for (const [answer, session, expected] of [['skip', 'sess-1', ''], ['never', 'sess-2', '']]) {
-      const run = spawnSync('bash', ['-c', command.replace('<skip|never>', answer)],
-        { encoding: 'utf8', env: env(home) });
-      assert.equal(run.status, 0, run.stdout + run.stderr);
-      assert.equal(sessionStart(home, project, session), expected);
+    for (const [index, name] of ["my project's", 'tick`s `x`', 'line\nbreak', 'fence\n```\nend'].entries()) {
+      const project = makeProject(home, name);
+      const session = `sess-${index}`;
+      const { notice, answer } = noticeParts(sessionStart(home, project, session));
+      assert.ok(!notice.includes(project), notice);
+      assert.equal(answer.projectRoot, project);
+      // The argv form runs as is; the shell form is the same command for a shell.
+      const skip = spawnSync(answer.skip.argv[0], answer.skip.argv.slice(1), { encoding: 'utf8', env: env(home) });
+      assert.equal(skip.status, 0, skip.stdout + skip.stderr);
+      assert.equal(sessionStart(home, project, session), '');
+      const never = spawnSync('bash', ['-c', answer.never.shell], { encoding: 'utf8', env: env(home) });
+      assert.equal(never.status, 0, never.stdout + never.stderr);
+      assert.equal(sessionStart(home, project, 'other-session'), '');
     }
+  } finally {
+    removeTemp(home);
+  }
+});
+
+test('a choice recorded under a case alias of the project path applies to the project', () => {
+  const home = makeHome();
+  try {
+    const project = makeProject(home, 'alpha');
+    const alias = project.replace(/alpha$/, 'ALPHA');
+    if (!existsSync(join(alias, '.memvane', 'settings.json'))) return; // case-sensitive file system
+    assert.equal(choice(home, 'onboarding-never', alias).status, 0);
+    assert.equal(sessionStart(home, project, 'sess-1'), '');
+    assert.equal(sessionStart(home, alias, 'sess-1'), '');
+    assert.equal(choice(home, 'onboarding-resume', project).body.changesApplied, 1);
+    assert.equal(choice(home, 'onboarding-skip', project, '--session', 'sess-2').status, 0);
+    assert.equal(sessionStart(home, alias, 'sess-2'), '');
+    assert.equal(readdirSync(join(home, '.local', 'state', 'memvane', 'onboarding')).length, 1);
+  } finally {
+    removeTemp(home);
+  }
+});
+
+test('a skipped session stays skipped after many later skips', () => {
+  const home = makeHome();
+  try {
+    const project = makeProject(home, 'alpha');
+    for (let index = 0; index < 40; index += 1) {
+      assert.equal(choice(home, 'onboarding-skip', project, '--session', `sess-${index}`).status, 0);
+    }
+    assert.equal(sessionStart(home, project, 'sess-0'), '');
+    assert.equal(sessionStart(home, project, 'sess-39'), '');
+    assert.match(sessionStart(home, project, 'sess-40'), /setup skill로 온보딩/);
+  } finally {
+    removeTemp(home);
+  }
+});
+
+test('a skip older than the retention window shows the notice again and is pruned', () => {
+  const home = makeHome();
+  try {
+    const project = makeProject(home, 'alpha');
+    const file = choiceFile(home, project);
+    mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 });
+    const day = 24 * 60 * 60 * 1000;
+    writeFileSync(file, JSON.stringify({ schema: 'memvane-onboarding-choice-v1',
+      projectRoot: realpathSync(project), never: false,
+      skippedSessions: [{ session: 'old', at: Date.now() - 31 * day },
+        { session: 'recent', at: Date.now() - 29 * day }] }), { mode: 0o600 });
+    assert.match(sessionStart(home, project, 'old'), /setup skill로 온보딩/);
+    assert.equal(sessionStart(home, project, 'recent'), '');
+    assert.equal(choice(home, 'onboarding-skip', project, '--session', 'new').status, 0);
+    const kept = JSON.parse(readFileSync(file, 'utf8')).skippedSessions.map((row) => row.session);
+    assert.deepEqual(kept.sort(), ['new', 'recent']);
   } finally {
     removeTemp(home);
   }
