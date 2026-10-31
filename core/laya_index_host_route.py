@@ -23,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import sys
 import unicodedata
@@ -831,6 +832,11 @@ def select_hook_route(action: str, payload_file: str, fallback_cwd: str) -> dict
 
 ONBOARDING_NOTICE = ('[memvane] {root}: MemVane 색인이 선택되지 않아 recall·색인·compile이 '
                      '꺼져 있습니다. setup skill로 온보딩하세요.')
+# The user's answer, recorded by the agent; the session id is the payload's.
+ONBOARDING_DECLINE = (' 거절하면 `{cmd} onboarding-<skip|never> --project {qroot} --session {session}`'
+                      '(skip=이번 세션만, never=이 프로젝트에서 다시 묻지 않기).')
+ONBOARDING_DECLINE_NO_SESSION = (' 거절하면 `{cmd} onboarding-never --project {qroot}`'
+                                 '(이 프로젝트에서 다시 묻지 않기).')
 BUILD_NOTICE = ('[memvane] {root}: 초기 MemVane 색인을 준비 중입니다. '
                 '빌드가 끝나면 setup skill로 활성화하세요.')
 
@@ -843,10 +849,13 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     is not opted in and stays silent.
     """
     cwd = fallback_cwd
+    session = None
     try:
         payload = json.loads(_read_regular(Path(payload_file), MAX_HOOK_BYTES).decode("utf-8"))
         if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
             cwd = payload["cwd"]
+        if isinstance(payload, dict):
+            session = payload.get("session_id") or payload.get("sessionId")
     except (OSError, ValueError, TypeError, UnicodeError):
         pass
     if not Path(cwd).is_absolute():
@@ -860,7 +869,22 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
         building = lookup(Path(root)) is not None
     except Exception:
         building = False
-    return (BUILD_NOTICE if building else ONBOARDING_NOTICE).format(root=root)
+    if building:
+        # A build the user started is progress, not a question.
+        return BUILD_NOTICE.format(root=root)
+    try:
+        import onboarding_choice
+        session = onboarding_choice.valid_session(session)
+        if onboarding_choice.suppressed(root, session):
+            return None
+    except Exception:
+        # A fault in the recorded answer shows the notice, never hides it.
+        session = None
+    entry = Path(__file__).resolve().parent / "setup_entry.py"
+    cmd = "python3 -B " + shlex.quote(str(entry))
+    decline = ONBOARDING_DECLINE if session else ONBOARDING_DECLINE_NO_SESSION
+    return (ONBOARDING_NOTICE.format(root=root) +
+            decline.format(cmd=cmd, qroot=shlex.quote(str(root)), session=session))
 
 
 def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:

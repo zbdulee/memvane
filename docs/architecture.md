@@ -30,7 +30,8 @@ The main architectural rule is:
 - **Onboarded projects only.** A project is active only when it has a selected
   Laya route, published by the reviewed setup flow. A project without a route
   gets no recall, indexing, compile or learning work; SessionStart shows one
-  onboarding notice line when it has `.memvane/settings.json`.
+  onboarding notice line when it has `.memvane/settings.json`, unless the user
+  skipped it for that session or declined it for that project.
 - **Hooks are quiet.** Hook stdout is reserved for host hook payloads or deliberate
   one-time notices. Background work writes to logs.
 - **Fail closed on a selected route.** A selected route whose proof fails exits 3;
@@ -137,7 +138,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | Route state | Behavior |
 |---|---|
 | `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
-| `legacy` (no route) | No work, exit 0. On `update-queued` only, one onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). |
+| `legacy` (no route) | No work, exit 0. On `update-queued` only, one onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). The line names the `setup_entry.py onboarding-skip|onboarding-never` command with the payload's session id; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(project root)>.json`) hides it. |
 | `blocked` or lookup failure | exit 3, no fallback |
 
 `worktree` is a linked git worktree of a selected main checkout; search serves

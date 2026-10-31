@@ -11,6 +11,10 @@ Install this host plugin through its marketplace before using this skill. Plugin
 
 A project without a selected MemVane route gets no recall, indexing, compile or learning work. Its SessionStart shows one notice line when it has `.memvane/settings.json`; this skill is the onboarding path the notice names.
 
+## Onboarding notice answers
+
+When the user declines the notice, record the answer with the command the notice names: `onboarding-skip --session <id>` hides it for that host session only (the id comes from the notice; without one only `onboarding-never` is offered), and `onboarding-never` hides it in every later session of that project. `onboarding-status` shows the answer. The answer is kept per project under `~/.local/state/memvane/onboarding/`, outside the repository, so it never affects another project or a teammate. It only hides the notice; it never selects a route or starts indexing, wiki generation or learning. When the user explicitly asks to onboard a project, run `onboarding-resume --project "$PROJECT_ROOT"` first so the notice comes back if this onboarding is not completed.
+
 ## Minimal settings
 
 Onboarding reads only minimal settings: `.memvane/settings.json` with `{name, skipPaths}` (a project that only has `.auto-context/` reads `.auto-context/settings.json`). Any other shape refuses as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.

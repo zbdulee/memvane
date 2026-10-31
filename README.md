@@ -28,7 +28,9 @@ minimal `.memvane/settings.json` (`{name, skipPaths}`; a project that only has
 `.auto-context/` is read from there), shows reviewed plans, and applies only on
 explicit request. Projects that are not onboarded get no indexing, recall,
 compile or learning work; their SessionStart shows one onboarding notice line
-when they have `.memvane/settings.json`.
+when they have `.memvane/settings.json`. The user can skip that notice for the
+current session or decline it for the project; an explicit onboarding request
+turns it back on.
 The local embedding runtime uses Node 22, 24 or 26 and a prebuilt native
 package for Apple Silicon macOS (arm64).
 

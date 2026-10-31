@@ -25,6 +25,6 @@ Run a manual MemVane recall query for the current project.
 
 ## Safety
 
-- The wrapper answers only for a selected MemVane route (or a linked git worktree of a selected main checkout, read-only). A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill.
+- The wrapper answers only for a selected MemVane route (or a linked git worktree of a selected main checkout, read-only). A project that is not onboarded exits 1 with an onboarding notice; point the user to the setup skill (an explicit onboarding request there also re-enables a declined SessionStart notice).
 - A selected route whose proof fails exits 3; report the reason and do not search another way.
 - Preserve empty output as a valid no-result state.
