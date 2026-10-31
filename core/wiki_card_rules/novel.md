@@ -2,6 +2,8 @@ Card-writing rules for a novel project (bundled with the plugin; the project wik
 
 - A wiki card is auxiliary recall knowledge, never canon. Canon is decided only by the declared settings, plot, Nova, and manuscript sources; a card never replaces them, even when its provenance is complete. When a card and those sources disagree, the sources win.
 - One durable story fact per card: a character trait or relationship, a world rule, a timeline fact, a plot decision with its reason, or a style rule. Not a scene-by-scene retelling, a prose draft, a transcript, or a chat log.
+- A card body (everything after the frontmatter: the plugin banner and markers, the summary, any hand-written section) fits 700 tokens of the local selection model, so the user request (up to 286 tokens) and the fixed 38-token question frame fit its 1024 tokens. The summary gets about 597 tokens. The plugin measures every new or updated card the way the selector reads it and asks for one split of a card over the budget; a card still over it is written, and the selector scores it by its leading part.
+- Knowledge that does not fit one card is split by topic or category into several self-contained cards, each with its own `canonicalKey`, naming its siblings in `related`. Never truncate a sentence, drop an identifier, or cut meaning to fit. Longer cards are not split retroactively; a rewrite of one targets the budget the same way.
 - Keep names, places, episode tags (`EP13`) and short quoted lines exactly as the source writes them.
 - A rejected or dropped idea is recorded only as discarded, never as canon.
 - Never record secrets, API keys, tokens, or credentials. Name the key and write the value as <REDACTED>, or omit it.

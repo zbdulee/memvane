@@ -75,16 +75,19 @@ ALLOWED_TYPES = tuple(TYPE_GUIDE)
 # Matches wiki_compile.py's compile.maxAutoPageLines default; the prompt states the
 # budget so the model does not write a summary the lint would reject outright.
 DEFAULT_MAX_LINES = 120
+# Matches core/wiki_card_budget.prompt_budget(); the worker sends the live values
+# as payload.cardBudget and a test pins the two together.
+DEFAULT_CARD_BUDGET = {"modelMaxTokens": 1024, "bodyTokens": 700, "summaryTokens": 597}
 
 _PROMPT_TEMPLATE = """You convert one source document into durable wiki candidates.
 
 Output RULES (strict):
 - Output ONLY a single JSON object: {{"candidates": [ ... ]}}. No prose, no code fence.
-- Each candidate: {{"title": str, "summary": str, "suggestedType": one of {types}, "confidence": "low"|"medium"|"high", "canonicalKey": optional str, "aliases": optional str[], "targetPath": optional str}}.
+- Each candidate: {{"title": str, "summary": str, "suggestedType": one of {types}, "confidence": "low"|"medium"|"high", "canonicalKey": optional str, "aliases": optional str[], "targetPath": optional str, "related": optional str[]}}.
 - Treat title as a display name only. Prefer a stable English kebab-case or snake_case canonicalKey that can survive title changes.
 - aliases should include Korean title variants and common alternate names when they exist.
 - If the source overlaps an existing wiki entry, reuse that entry's canonicalKey and targetPath instead of creating a new concept.
-- Do not split into multiple candidates unless the source contains clearly independent durable concepts. If uncertain, emit one candidate or none.
+- One durable fact per candidate. Emit several candidates only when the source holds clearly independent durable facts, or when one topic does not fit the CARD BUDGET below. If uncertain, emit one candidate or none.
 - summary is a durable conclusion (a decision, rule, concept, or entity fact). NOT a transcript, NOT step-by-step dialog, NOT a scene-by-scene retelling.
 - If nothing durable is worth saving, output {{"candidates": []}}.
 - Do NOT use any tools. Do NOT read or write files. Answer directly.
@@ -105,14 +108,19 @@ VERBATIM RULES (critical — these cards are keyword-searched, so identifiers AR
   - names of people, places, entities and short quoted lines — reproduce the wording exactly
 - Prefer keeping an identifier over being brief. A longer summary that carries the identifiers is strictly better than a shorter abstract one; never drop an identifier to save space.
 - Do NOT invent identifiers. Copy only what literally appears in the source.
-- Length: use as many lines as the identifiers require, up to {max_lines} lines (longer summaries are rejected). There is no reward for brevity.
+- Length: use as many lines as the identifiers require, up to {max_lines} lines and within the CARD BUDGET below (longer summaries are rejected). There is no reward for brevity.
 - Never include secrets, API keys, tokens, or credentials — this OUTRANKS the verbatim rules. Name the key but write the value as <REDACTED>, or omit it entirely.
 - If SOURCE FILE below is marked truncated, summarize only what is shown and never assert that something is absent from the document.
+
+CARD BUDGET (the local selection model reads a user request and one card body together, at most {model_max_tokens} tokens):
+- A card body holds at most {body_tokens} tokens. The plugin's banner and markers take part of it; the summary gets about {summary_tokens} tokens, roughly {summary_ko_chars} Korean characters or {summary_en_words} English words (every digit is one token).
+- Keep each card within the budget. When the knowledge does not fit one card, split it by topic or category into several self-contained candidates, each with its own canonicalKey, and list the sibling candidates' canonicalKeys in `related`.
+- Never truncate a sentence, drop an identifier, or cut meaning to fit; split instead.
 
 CARD RULES (bundled with the plugin):
 {schema}
 
-{existing_context_section}
+{existing_context_section}{split_section}
 
 SOURCE FILE: {path}{truncated_note}
 SOURCE CONTENT:
@@ -174,6 +182,12 @@ CARD B CONTENT:
 {content_b}
 """
 
+_SPLIT_TEMPLATE = """
+
+SPLIT REQUEST: your previous answer for this source produced cards over the CARD BUDGET:
+{cards}
+Output ONLY replacement candidates for these cards. Split each one by topic or category into several self-contained candidates that each fit the CARD BUDGET, give each its own canonicalKey, list the sibling candidates' canonicalKeys in `related`, and keep every fact and identifier from the source. Do not repeat cards that were not listed."""
+
 _SIMILAR_PAGES_TEMPLATE = """TOP MATCHING EXISTING WIKI PAGES (reuse canonicalKey/targetPath below if this source overlaps one):
 
 {pages}"""
@@ -193,6 +207,38 @@ def render_existing_context_section(wiki: dict) -> str:
             return _SIMILAR_PAGES_TEMPLATE.format(pages="\n\n".join(blocks))
     # The card catalog is the selected memvane-db index; no match means no section.
     return ""
+
+
+def card_budget(value: object) -> dict:
+    """Prompt budget fields from ``payload.cardBudget`` (core/wiki_card_budget.prompt_budget)."""
+    budget = dict(DEFAULT_CARD_BUDGET)
+    if isinstance(value, dict):
+        for key in budget:
+            item = value.get(key)
+            if type(item) is int and 0 < item <= 65536:
+                budget[key] = item
+    summary = min(budget["summaryTokens"], budget["bodyTokens"])
+    return {"model_max_tokens": budget["modelMaxTokens"], "body_tokens": budget["bodyTokens"],
+            "summary_tokens": summary, "summary_ko_chars": summary * 3 // 4,
+            "summary_en_words": summary * 10 // 17}
+
+
+def render_split_section(value: object) -> str:
+    """The re-prompt for candidates the writer refused as over the card budget."""
+    if not isinstance(value, dict) or not isinstance(value.get("cards"), list):
+        return ""
+    lines = []
+    for card in value["cards"][:20]:
+        if not isinstance(card, dict):
+            continue
+        title = " ".join(str(card.get("title") or "").split())[:200]
+        key = " ".join(str(card.get("canonicalKey") or "").split())[:120]
+        size = card.get("size")
+        lines.append(f"- {title}" + (f" (canonicalKey: {key})" if key else "")
+                     + (f": body {size} tokens" if type(size) is int else ""))
+    if not lines:
+        return ""
+    return _SPLIT_TEMPLATE.format(cards="\n".join(lines))
 
 
 def read_payload() -> dict:
@@ -228,6 +274,8 @@ def build_prompt(payload: dict) -> str:
         truncated_note=" (truncated: true — only the beginning of the file is shown)" if source.get("truncated") else "",
         content=str(source.get("content", "")),
         max_lines=coerce_max_lines(payload.get("maxLines")),
+        split_section=render_split_section(payload.get("split")),
+        **card_budget(payload.get("cardBudget")),
     )
 
 

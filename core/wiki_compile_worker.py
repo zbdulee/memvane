@@ -35,6 +35,7 @@ from collection_match import select_collections
 from wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
 import wiki_compile as wc
+import wiki_card_budget
 import wiki_freshness
 import yaml_scalars
 
@@ -900,9 +901,20 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     return parsed, None, 0
 
 
-def compile_candidate(root: Path, candidate: dict) -> dict | None:
+def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None = None,
+                      check: bool = False) -> dict | None:
+    """Run the writer for one candidate.
+
+    ``final_reason``: the trusted final pass of the card budget (``--budget-final``).
+    ``check``: validate only (``--check``); nothing is written.
+    """
+    argv = [sys.executable, str(Path(__file__).parent / "wiki_compile.py"), "--cwd", str(root)]
+    if final_reason is not None:
+        argv += ["--budget-final", final_reason]
+    if check:
+        argv.append("--check")
     proc = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / "wiki_compile.py"), "--cwd", str(root)],
+        argv,
         input=json.dumps(candidate, ensure_ascii=False),
         text=True,
         capture_output=True,
@@ -1234,6 +1246,8 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         # Prompt states the same line budget the lint enforces, so a verbatim-heavy
         # summary does not overshoot into too_many_lines.
         "maxLines": int(compile_cfg.get("maxAutoPageLines", 120) or 120),
+        # The selector body budget the writer enforces (wiki_card_budget).
+        "cardBudget": wiki_card_budget.prompt_budget(),
         "_qmd": {"reasoningEffort": {
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, engine, "generation"),
         }},
@@ -1344,84 +1358,149 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     refresh_complete = bool(candidates)
     extracted_qmd = extracted.get("_qmd") if isinstance(extracted, dict) else None
     verify_targets: list[str] = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            refresh_complete = False
-            continue
-        # **검증 근거의 권위는 큐가 갖는다.** `candidate["sources"]`는 extractor(모델)
-        # 출력이고, verifier(`wiki_verify_worker.load_sources`)는 목록 **앞에서**
-        # `MAX_SOURCES`(3)개만 읽는다. 모델 목록을 앞에 두고 실제 소스를 뒤에 붙이던
-        # 동안에는 모델이 decoy 3개를 내면 카드가 실제 원문 없이 검증되고
-        # `verified`(= `recallVerifiedOnly` 기본값에서 인용 가능한 캐논)가 됐다
-        # (재현: decoy `d1,d2,d3` + 실제 `real.md` → verifier가 읽은 것은 d1·d2·d3,
-        # 실제 소스 미포함). `engine`/`trigger`를 setdefault → 대입으로 바꾼 것과 같은
-        # 결이다 — 사실은 큐가 정하고 모델은 의견만 낸다.
-        #
-        # 같은 경로를 가리키는 모델 항목은 버린다(`collection`만 다른 중복도 포함).
-        # 예전의 `file_source not in sources`는 dict 완전 일치라 `collection`이 다른
-        # 중복을 남겨 같은 파일을 두 번 읽게 했다.
-        file_source = {"kind": "file", "path": rel, "collection": source.get("collection", "")}
-        raw_sources = candidate.get("sources")
-        model_sources = raw_sources if isinstance(raw_sources, list) else []
-        if job.get('forceRecompile') is True:
-            # A deleted source can survive in the model's similar-page hints.
-            # The survivor refresh is proved against this live source only;
-            # never carry an obsolete model-suggested source into its card.
-            model_sources = []
-        candidate["sources"] = [file_source] + [
-            item for item in model_sources if not is_same_file_source(item, rel)
-        ]
-        # 순서만으로도 밀려나지 않지만 그 보장이 **목록 순서**라는 암묵 계약에 걸려 있으면
-        # 다음 편집에서 조용히 깨진다. 실제 소스를 별도 필드로 못박아 verifier가
-        # `MAX_SOURCES`와 무관하게 반드시 읽게 한다(wiki_compile이 verify 잡으로 전달).
-        candidate["authoritativeSources"] = [dict(file_source)]
-        # Trusted provenance is worker-owned.  Never accept model-provided
-        # revisions: the extractor only saw the bounded source body, while this
-        # record was captured from the complete file before the extractor ran.
-        candidate["sourceRevisions"] = [dict(source_revision)]
-        if bound_pending is not None:
-            candidate["sourceRefreshEventId"] = bound_pending["eventId"]
-        # **모델 출력을 신뢰 판정에 쓰지 않는다.** candidate는 extractor(모델) 출력이므로
-        # setdefault면 모델이 낸 값이 이긴다 — `engine`이 그렇게 위조되면 자기검증이
-        # `verifiedMode: cross-engine`으로 승격된다(생성 엔진은 job이 정하는 사실이고 모델의
-        # 의견이 아니다). 2단계에서 `triggers` raw 방출로 모델이 `status: verified`를 위조할
-        # 수 있었던 것과 같은 클래스다. trigger도 큐 잡이 SSOT다.
-        candidate["trigger"] = job.get("trigger", "post_tool_source")
-        candidate["engine"] = job.get("engine", "")
-        candidate["_qmd"] = {
-            "reasoningEffort": qmd_config.reasoning_effort_audit(
-                extracted_qmd.get("reasoningEffort") if isinstance(extracted_qmd, dict) else {},
-                payload["_qmd"]["reasoningEffort"].get("requested"),
-                capability_declared=payload["_qmd"]["reasoningEffort"].get("capabilityDeclared") is True,
-            )
-        }
-        wiki_selected_laya.recheck(selected_route)
-        result = compile_candidate(root, candidate)
-        if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
-            failed_compile = True
-            refresh_complete = False
-            continue
-        if result.get("action") not in {"created", "updated"}:
-            refresh_complete = False
-        returned_revisions = result.get("sourceRevisions")
-        if (
-            not isinstance(returned_revisions, list)
-            or len(returned_revisions) != 1
-            or not wiki_freshness.same_revision(returned_revisions[0], source_revision)
-        ):
-            refresh_complete = False
-        if (
-            bound_pending is not None
-            and result.get("sourceRefreshEventId") != bound_pending.get("eventId")
-        ):
-            refresh_complete = False
-        # wiki_compile은 verify 큐에 실제로 넣었을 때만 이 플래그를 준다(generated 카드 +
-        # verify.enabled + 안전한 큐 경로). 카드 수를 세거나 큐 파일 줄 수를 재는 대신
-        # 쓰는 쪽의 사실을 그대로 받는다 — 판정 조건을 여기 복제하면 어긋난다.
-        # 경로까지 받는 이유: verify 예산을 늘린 목적이 "그 run의 카드를 그 run이 검수한다"
-        # 이므로 어느 카드인지 알아야 한다(개수만으로는 FIFO가 backlog를 먼저 먹는다).
-        if result.get("verifyQueued") is True and isinstance(result.get("targetPath"), str):
-            verify_targets.append(result["targetPath"])
+
+    def compile_round(round_candidates: list, extracted_qmd, final_reason: str | None = None,
+                      *, check: bool = False, own_rejects: bool = False
+                      ) -> tuple[int, list[dict], list[str]]:
+        """Compile one extractor answer; returns (written, budget refusals, outcomes).
+
+        ``outcomes`` holds one writer outcome per candidate: ``written`` (created or
+        updated), ``candidate``, ``merge-needed``, ``rejected``, ``split-required``,
+        ... . ``final_reason`` set: the writer writes an over-budget card instead
+        of holding it back (best effort after the one split attempt) and logs why.
+        ``check``: only predict each outcome (``wiki_compile.py --check``); nothing
+        is written. ``own_rejects``: the caller handles writer rejections (the
+        split falls back to the original card) instead of the job's
+        ``partialCompile`` retry.
+        """
+        nonlocal failed_compile, refresh_complete
+        written = 0
+        refused: list[dict] = []
+        outcomes: list[str] = []
+        for candidate in round_candidates:
+            if not isinstance(candidate, dict):
+                outcomes.append("rejected")
+                if not check:
+                    refresh_complete = False
+                continue
+            original = json.loads(json.dumps(candidate, ensure_ascii=False))
+            # The final pass is a worker-owned CLI flag; a candidate field never
+            # requests it. Drop look-alike model fields from the card record.
+            candidate.pop("budgetFinal", None)
+            candidate.pop("budgetFinalReason", None)
+            # **검증 근거의 권위는 큐가 갖는다.** `candidate["sources"]`는 extractor(모델)
+            # 출력이고, verifier(`wiki_verify_worker.load_sources`)는 목록 **앞에서**
+            # `MAX_SOURCES`(3)개만 읽는다. 모델 목록을 앞에 두고 실제 소스를 뒤에 붙이던
+            # 동안에는 모델이 decoy 3개를 내면 카드가 실제 원문 없이 검증되고
+            # `verified`(= `recallVerifiedOnly` 기본값에서 인용 가능한 캐논)가 됐다
+            # (재현: decoy `d1,d2,d3` + 실제 `real.md` → verifier가 읽은 것은 d1·d2·d3,
+            # 실제 소스 미포함). `engine`/`trigger`를 setdefault → 대입으로 바꾼 것과 같은
+            # 결이다 — 사실은 큐가 정하고 모델은 의견만 낸다.
+            #
+            # 같은 경로를 가리키는 모델 항목은 버린다(`collection`만 다른 중복도 포함).
+            # 예전의 `file_source not in sources`는 dict 완전 일치라 `collection`이 다른
+            # 중복을 남겨 같은 파일을 두 번 읽게 했다.
+            file_source = {"kind": "file", "path": rel, "collection": source.get("collection", "")}
+            raw_sources = candidate.get("sources")
+            model_sources = raw_sources if isinstance(raw_sources, list) else []
+            if job.get('forceRecompile') is True:
+                # A deleted source can survive in the model's similar-page hints.
+                # The survivor refresh is proved against this live source only;
+                # never carry an obsolete model-suggested source into its card.
+                model_sources = []
+            candidate["sources"] = [file_source] + [
+                item for item in model_sources if not is_same_file_source(item, rel)
+            ]
+            # 순서만으로도 밀려나지 않지만 그 보장이 **목록 순서**라는 암묵 계약에 걸려 있으면
+            # 다음 편집에서 조용히 깨진다. 실제 소스를 별도 필드로 못박아 verifier가
+            # `MAX_SOURCES`와 무관하게 반드시 읽게 한다(wiki_compile이 verify 잡으로 전달).
+            candidate["authoritativeSources"] = [dict(file_source)]
+            # Trusted provenance is worker-owned.  Never accept model-provided
+            # revisions: the extractor only saw the bounded source body, while this
+            # record was captured from the complete file before the extractor ran.
+            candidate["sourceRevisions"] = [dict(source_revision)]
+            if bound_pending is not None:
+                candidate["sourceRefreshEventId"] = bound_pending["eventId"]
+            # **모델 출력을 신뢰 판정에 쓰지 않는다.** candidate는 extractor(모델) 출력이므로
+            # setdefault면 모델이 낸 값이 이긴다 — `engine`이 그렇게 위조되면 자기검증이
+            # `verifiedMode: cross-engine`으로 승격된다(생성 엔진은 job이 정하는 사실이고 모델의
+            # 의견이 아니다). 2단계에서 `triggers` raw 방출로 모델이 `status: verified`를 위조할
+            # 수 있었던 것과 같은 클래스다. trigger도 큐 잡이 SSOT다.
+            candidate["trigger"] = job.get("trigger", "post_tool_source")
+            candidate["engine"] = job.get("engine", "")
+            candidate["_qmd"] = {
+                "reasoningEffort": qmd_config.reasoning_effort_audit(
+                    extracted_qmd.get("reasoningEffort") if isinstance(extracted_qmd, dict) else {},
+                    payload["_qmd"]["reasoningEffort"].get("requested"),
+                    capability_declared=payload["_qmd"]["reasoningEffort"].get("capabilityDeclared") is True,
+                )
+            }
+            wiki_selected_laya.recheck(selected_route)
+            if check:
+                result = compile_candidate(root, candidate, check=True)
+                outcomes.append(result.get("action") if isinstance(result, dict)
+                                and isinstance(result.get("action"), str) else "rejected")
+                continue
+            result = (compile_candidate(root, candidate, final_reason=final_reason)
+                      if final_reason is not None else compile_candidate(root, candidate))
+            action = result.get("action") if isinstance(result, dict) else None
+            outcomes.append("written" if action in ("created", "updated")
+                            else action if isinstance(action, str) else "rejected")
+            if isinstance(result, dict) and result.get("action") == "split-required":
+                # Over the card budget and not written yet: the one split
+                # re-prompt below replaces it, or it is written as it is.
+                refused.append({**{key: result.get(key) for key in
+                                   ("title", "canonicalKey", "size", "reason")},
+                                "_candidate": original})
+                continue
+            if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
+                if not own_rejects:
+                    failed_compile = True
+                    refresh_complete = False
+                continue
+            if result.get("action") not in {"created", "updated"}:
+                refresh_complete = False
+            returned_revisions = result.get("sourceRevisions")
+            if (
+                not isinstance(returned_revisions, list)
+                or len(returned_revisions) != 1
+                or not wiki_freshness.same_revision(returned_revisions[0], source_revision)
+            ):
+                refresh_complete = False
+            if (
+                bound_pending is not None
+                and result.get("sourceRefreshEventId") != bound_pending.get("eventId")
+            ):
+                refresh_complete = False
+            # wiki_compile은 verify 큐에 실제로 넣었을 때만 이 플래그를 준다(generated 카드 +
+            # verify.enabled + 안전한 큐 경로). 카드 수를 세거나 큐 파일 줄 수를 재는 대신
+            # 쓰는 쪽의 사실을 그대로 받는다 — 판정 조건을 여기 복제하면 어긋난다.
+            # 경로까지 받는 이유: verify 예산을 늘린 목적이 "그 run의 카드를 그 run이 검수한다"
+            # 이므로 어느 카드인지 알아야 한다(개수만으로는 FIFO가 backlog를 먼저 먹는다).
+            if result.get("verifyQueued") is True and isinstance(result.get("targetPath"), str):
+                verify_targets.append(result["targetPath"])
+            if result.get("action") in {"created", "updated"}:
+                written += 1
+        return written, refused, outcomes
+
+    _written, refused, _outcomes = compile_round(candidates, extracted_qmd)
+    # Best effort: every refused card ends written. A hand-written section over
+    # the budget is not something a smaller summary fixes, so it is written now.
+    manual = [card for card in refused if card.get("reason") == "manual_section_over_budget"]
+    splittable = [card for card in refused if card not in manual]
+    if manual:
+        compile_round([card["_candidate"] for card in manual], extracted_qmd,
+                      final_reason="manual_section_over_budget")
+    if splittable:
+        # cardsPerSource covers both answers: the split gets only the slots
+        # the first answer did not use for cards that reached the writer.
+        used = len(candidates) - len(splittable)
+        if not _split_over_budget(
+                root, job, cpath, splittable, compile_round, extracted_qmd,
+                payload=payload, argv=argv, timeout=timeout, src=src,
+                source_revision=source_revision, selected_route=selected_route,
+                rel=rel, max_cards=max(0, max_cards - used)):
+            return False, True, verify_targets
     if failed_compile:
         append_jsonl(cpath, bounded_failure("compile_failed", job, "writer_rejected"))
         # Kept for retry with a marker: a card from this run may get verified
@@ -1435,6 +1514,107 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         ):
             return True, True, verify_targets
     return True, False, verify_targets
+
+
+_SPLIT_NEVER_CLEAN = frozenset(('merge-needed', 'rejected', 'conflict'))
+
+
+def _split_expected(compile_round, splittable: list[dict], extracted_qmd) -> str:
+    """The single outcome every split part must reach: the original's own.
+
+    ``--check`` on the originals; the over-budget hold does not run in a check,
+    so this is what the original's final-pass write would reach (``written``, or
+    ``candidate`` in guarded mode below ``high`` confidence).
+    """
+    originals = json.loads(json.dumps([card['_candidate'] for card in splittable],
+                                      ensure_ascii=False))
+    outcomes = compile_round(originals, extracted_qmd, check=True)[2]
+    return outcomes[0] if outcomes and len(set(outcomes)) == 1 else 'written'
+
+
+def _split_clean(outcomes: list[str], expected: str) -> bool:
+    return bool(outcomes) and all(item == expected and item not in _SPLIT_NEVER_CLEAN
+                                  for item in outcomes)
+
+
+def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict],
+                       compile_round, extracted_qmd, *, payload: dict, argv: list[str],
+                       timeout: int, src: Path, source_revision: dict, selected_route,
+                       rel: str, max_cards: int) -> bool:
+    """One split re-prompt for cards the writer held back as over budget; best effort.
+
+    At most one more paid extraction, counted against the run's extractor budget,
+    with only the ``cardsPerSource`` slots the first answer left (``max_cards``).
+    The split is all or nothing so no content is lost: its parts are written (on
+    the final pass, so a part still over the budget is written too and the writer
+    logs ``wiki.card over_budget_written``) only when they all fit the slots and
+    the writer predicts for every part the outcome it predicts for the original
+    (``--check``; ``merge-needed``/``rejected``/``conflict`` never qualify). A
+    guarded-mode original that would itself become a ``candidate`` keeps that
+    normal outcome. Otherwise, or when the split cannot run
+    (run budget exhausted, no slot left, extractor failure or
+    ``resource_deferred``, empty answer), the original cards are written on the
+    final pass with that reason. Nothing here is retried: the revision ends
+    written. Returns False only when the source changed during the re-prompt; the
+    caller keeps the job for the new revision.
+    """
+    import wiki_selected_laya
+    written = parts = 0
+    split_reason = None
+    budget = _EXTRACTOR_BUDGET.get()
+    if budget is not None and budget['remaining'] <= 0:
+        split_reason = 'extractor_budget_exhausted'
+    elif max_cards <= 0:
+        split_reason = 'cards_per_source_cap'
+    else:
+        if budget is not None:
+            budget['remaining'] -= 1
+        split_payload = {**payload, 'split': {'cards': [
+            {k: v for k, v in card.items() if k != '_candidate'} for card in splittable[:20]]}}
+        extracted, split_reason, _ = run_extractor(argv, split_payload, timeout, root)
+        wiki_selected_laya.recheck(selected_route)
+        freshness, _ = wiki_freshness.compare_revision(src, source_revision)
+        if freshness != wiki_freshness.FRESH:
+            append_jsonl(cpath, bounded_failure(
+                'extractor_failed', job, 'source_changed_during_extract'))
+            return False
+        candidates = extracted.get('candidates') if isinstance(extracted, dict) else None
+        if split_reason is None and not isinstance(candidates, list):
+            split_reason = 'missing_candidates'
+        elif split_reason is None and not candidates:
+            split_reason = 'split_empty'
+        if split_reason is None:
+            parts = len(candidates)
+            if parts > max_cards:
+                # Writing a subset would drop topics; the original keeps them all.
+                split_reason = 'split_exceeds_slots'
+            else:
+                expected = _split_expected(compile_round, splittable, extracted_qmd)
+                predicted = compile_round(json.loads(json.dumps(candidates, ensure_ascii=False)),
+                                          extracted.get('_qmd'), check=True)[2]
+                if not _split_clean(predicted, expected):
+                    split_reason = 'split_not_writable'
+                else:
+                    written, _, actual = compile_round(
+                        candidates, extracted.get('_qmd'),
+                        final_reason='split_part_over_budget', own_rejects=True)
+                    if not _split_clean(actual, expected):
+                        # A part ended otherwise than predicted (judge merge-needed,
+                        # write failure): the original is written too, so no
+                        # topic is lost.
+                        split_reason = 'split_not_writable'
+    if split_reason is not None:
+        written_original, _, _ = compile_round([card['_candidate'] for card in splittable],
+                                               extracted_qmd, final_reason=split_reason)
+        written += written_original
+        append_jsonl(cpath, {**bounded_failure('skipped', job, split_reason),
+                             'splitParts': parts,
+                             'writtenOriginals': [str(card.get('title') or '')[:120]
+                                                  for card in splittable][:20]})
+    wiki_card_budget.emit(root, 'split' if split_reason is None else 'split_unavailable',
+                          bound=selected_route, path=rel, reason=split_reason,
+                          requested=len(splittable), parts=parts, written=written)
+    return True
 
 
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:

@@ -507,6 +507,8 @@ equivalent persistence-off flag.
 - protects superseded and non-managed pages from silent overwrite;
 - writes generated wiki files under `.memvane/wiki`;
 - writes new or auto-updated cards as `status: generated` by default;
+- refuses a card whose body does not fit the local selector budget
+  (`core/wiki_card_budget.py`, below) and reports `split-required`;
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
@@ -555,6 +557,102 @@ scan (`core/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
 above to `.memvane/compile/dedup-needed.jsonl` for the `wiki-dedup`
 resolver. It makes no model or paid call.
+
+#### Card Body Budget
+
+The live local selector scores a (user request, card) pair with its checkpoint's
+legacy input view, `max_len` 1024 tokens. It reads a card through
+`context_learning.compact_input`: everything after the frontmatter (banner,
+auto-block markers, summary, hand-written sections). The title and other
+frontmatter never enter the pair. A longer pair does not fit the model whole.
+`core/wiki_card_budget.py` measures the complete, untruncated body that `derive`
+returns, so a card the compiler writes is scored whole:
+
+| Part | Tokens |
+|---|---|
+| fixed question frame (`[CLS]`, question head, options, separators, `User request:` / `Wiki card body:` labels) | 38 |
+| card body (`BODY_BUDGET`) | 700 |
+| user request room (`QUERY_ROOM`) | 286 |
+
+The request room is a reserve, not a guarantee: a selector request may be up to
+2000 characters. Counting request and body apart is one token above the joint
+tokenization the selector performs.
+
+Measurement is exact. The body is counted with a selector checkpoint's
+`tokenizer/tokenizer.json` through that selector runtime's `tokenizers` library
+(`method: tokenizer`). Candidates are the project's own live selector first, then
+every other live selector under the user's learning state
+(`<learning state>/live-selection/*/live-selector.json`, the same checkpoint
+family), so counting works wherever the learning runtime and a selector model
+exist. A candidate whose runtime fails (import error, corrupt file, timeout)
+yields to the next. A body `derive` refuses as oversized (over 16 KiB) is over the
+budget without counting (`method: derive_limit`). A per-character estimate is
+never used for a decision: byte-fallback characters (rare Hangul syllables, rare
+CJK) cost the tokenizer up to one token per UTF-8 byte. The estimate only sizes
+the summary room the extractor prompt states.
+
+The budget is best effort. New and updated cards target it, the extractor gets
+one split attempt per compile of a source revision, and the attempt never loses
+content: when the split cannot be written whole, the original card is written
+(except when the writer itself fails on I/O or its lock, which keeps the
+existing `partialCompile` retry).
+A card still over the budget is written and the selector scores it by its leading
+part (truncated at scoring).
+
+`core/wiki_compile.py` measures the complete file it would write, after lint and
+mode checks and before the paid duplicate judge for a new card, and the composed
+card (with hand-written sections) for an update. An over-budget card is held back
+once: nothing is written, and the candidate ledger row and stdout carry
+`split-required` with `size`, `budget`, `method` and `reason`. The reason is
+`manual_section_over_budget` when the hand-written sections with an empty summary
+already exceed the budget, otherwise `over_budget`. The caller's trusted final
+pass, the `--budget-final REASON` flag (a candidate field never requests it),
+writes the card anyway and logs `wiki.card` `over_budget_written` (`reason` = why
+it is final, `overflow`, `size`, `budget`, `method`). A card no selector runtime
+can count is written with `wiki.card` `measure_failed`, and on a machine with no
+selector tokenizer at all with `unmeasured`. `--check` predicts the outcome a real
+compile would reach (`written`, `candidate`, `merge-needed`, `rejected`,
+`suppressed`, `tombstoned`) with no side effect at all: no directory, lock or
+ledger is created or touched, so a read-only project can be checked. The paid
+duplicate judge and the selected-route pending-replacement checks do not run in a
+check. Longer cards are not split
+retroactively; their updates follow the same best-effort rule, and verify stamps
+and retirement apply as before. The `wiki-compile` skill makes the split itself
+and then runs once more with `--budget-final` (its wrapper's only pass-through
+flag). The verify worker and source retirement patch frontmatter only, and
+pending replacement publishes a page this gate already measured.
+
+The compile worker states the budget in the extractor prompt (`payload.cardBudget`:
+body 700, summary about 597 after the scaffold). A card held back as
+`manual_section_over_budget` is written at once on the final pass (no split can
+fix it). For `over_budget` cards the worker re-prompts the same extractor once
+with a `split` request naming them; the replacements are split by topic or
+category, each with its own `canonicalKey` and the sibling keys in `related`
+(frontmatter list, outside the body budget). The re-prompt is one paid
+extraction counted against the run's extractor budget. The split is all or
+nothing: its parts are written on the final pass only when they fit the
+`compile.budget.cardsPerSource` slots the first answer left and `--check`
+predicts for every part the outcome it predicts for the original (`written`;
+`merge-needed`, `rejected` and `conflict` never qualify, and a guarded-mode part
+below `high` confidence that would only become a `candidate` does not match). A
+part still over the budget is then written too. Otherwise the original cards are
+written on the final pass with the reason (`split_exceeds_slots`,
+`split_not_writable`, or, when the split cannot run, `extractor_budget_exhausted`,
+`cards_per_source_cap`, the extractor failure such as `resource_deferred`,
+`missing_candidates`, `split_empty`). A part whose real write ends otherwise than
+predicted (the duplicate judge's `merge-needed`, a write failure) also writes the
+original. The worker logs `wiki.card` `split` or `split_unavailable`
+(`requested`, `parts`, `written`, `reason`), and the budget path itself is never
+retried: one compile costs at most two extractor calls and ends with the cards
+stored, so its pending refresh resolves and an initial backfill revision settles
+on real cards, except when the writer itself fails on I/O or its lock, which
+keeps the existing `partialCompile` retry (and re-extracts on the next run, as
+for any card write).
+
+`core/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
+the loser stays, the pair is recorded as skipped and the CLI returns
+`kept_separate`. The resolver agent measures with
+`python3 core/wiki_card_budget.py --cwd <project> <keeper> <loser>` before folding.
 
 ## Laya Runtime and Embedding
 
@@ -806,6 +904,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `learning.state`, `learning.prepare` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound` |
+| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

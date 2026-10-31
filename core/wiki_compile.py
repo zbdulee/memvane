@@ -134,6 +134,18 @@ def project_paths(cwd: str) -> tuple[Path, dict]:
     return Path(found["projectRoot"]).resolve(), found["config"]
 
 
+def existing_managed_dir(root: Path, rel: str) -> Path | None:
+    """``safe_managed_dir`` without creating the directory."""
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if path.exists() and (path.is_symlink() or not path.is_dir()):
+        return None
+    return path
+
+
 def safe_managed_dir(root: Path, rel: str) -> Path | None:
     path = (root / rel).resolve()
     try:
@@ -179,6 +191,16 @@ def clean_aliases(value: object) -> list[str]:
         seen.add(norm)
         aliases.append(alias)
     return aliases
+
+
+MAX_RELATED = 20
+
+
+def clean_related(value: object, own_key: str = "") -> list[str]:
+    """Sibling card keys from a split: one line each, never the card's own key."""
+    own = normalize_identity(own_key) if own_key else ""
+    keys = [yaml_scalars.fold_inline(item)[:200] for item in clean_aliases(value)]
+    return [key for key in keys if key and normalize_identity(key) != own][:MAX_RELATED]
 
 
 def clean_canonical_key(value: object) -> str:
@@ -888,6 +910,13 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
             lines.append(f"  - {yaml_scalar(alias)}")
     else:
         lines.append("aliases: []")
+    # Sibling cards of a split (wiki_card_budget). Frontmatter only, so the
+    # cross-reference costs nothing in the selector body budget.
+    related = clean_related(candidate.get("related"), canonical_key)
+    if related:
+        lines.append("related:")
+        for key in related:
+            lines.append(f"  - {yaml_scalar(key)}")
     lines.extend([
         f"type: {suggested_type}",
         f"status: {status}",
@@ -987,6 +1016,10 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
             merged.extend(new_by_key["status"])
             replaced.add("status")
             continue
+        if key == "related" and "related" in new_by_key:
+            merged.extend(new_by_key["related"])
+            replaced.add("related")
+            continue
         if key == "sources":
             merged.extend(new_by_key["sources"] if replace_sources else lines)
             if "sourceRevisions" in new_by_key:
@@ -999,6 +1032,8 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
             merged.extend(new_by_key[key])
     if "sourceRevisions" in new_by_key and "sourceRevisions" not in replaced:
         merged.extend(new_by_key["sourceRevisions"])
+    if "related" in new_by_key and "related" not in replaced:
+        merged.extend(new_by_key["related"])
 
     body = old_text[old_match.end():]
     if len(list(AUTO_BLOCK_RE.finditer(body))) != 1:
@@ -1339,6 +1374,71 @@ def judge_new_page_duplicate(
     return None, None, last_info
 
 
+def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
+                   record: dict, candidate_path: Path, card_text: str,
+                   floor_text: str | None = None, final_reason: str | None = None) -> bool:
+    """Whether to hold back a card whose selector body exceeds ``wiki_card_budget``.
+
+    Best effort: new and updated cards target the budget, and an over-budget card
+    is held back once so its caller can split it. ``card_text`` is the complete
+    file this compile would write (for an update, the composed card with its
+    hand-written sections). Held back, nothing is written: the candidate ledger
+    row and stdout carry ``split-required``. ``floor_text`` is the same card with
+    an empty summary; when even that does not fit, the hand-written sections alone
+    exceed the budget (``manual_section_over_budget``).
+
+    ``final_reason`` (the caller's ``--budget-final`` pass after its one split
+    attempt) writes an over-budget card anyway and logs ``wiki.card
+    over_budget_written``; the selector scores such a card by its leading part.
+    A card no selector runtime can count is written with ``measure_failed``, and
+    with no selector tokenizer on the machine with ``unmeasured``.
+    """
+    import wiki_card_budget as budget
+    tokenizer = budget.selector_tokenizers(config, root)
+    measured = budget.measure_card(card_text, tokenizer)
+    rel = target.relative_to(wiki_root).as_posix()
+    fields = {"size": measured["size"], "budget": measured["budget"],
+              "method": measured["method"]}
+    if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
+        record["cardBudget"] = {**fields, "reason": measured["reason"]}
+        budget.emit(root, "measure_failed" if measured["reason"] == "measure_failed"
+                    else "unmeasured", bound=selected, path=rel, title=record["title"],
+                    reason=measured["reason"], runtimes=len(tokenizer), **fields)
+        return False
+    if measured["fits"]:
+        return False
+    reason = measured["reason"]
+    if floor_text is not None and floor_text != card_text:
+        if budget.measure_card(floor_text, tokenizer)["reason"] == "over_budget":
+            reason = "manual_section_over_budget"
+    record["cardBudget"] = {**fields, "reason": reason}
+    if final_reason is not None:
+        record["cardBudget"]["written"] = final_reason
+        budget.emit(root, "over_budget_written", bound=selected, path=rel,
+                    title=record["title"], reason=final_reason, overflow=reason, **fields)
+        return False
+    record["action"] = "split-required"
+    record["lint"] = {"verdict": "needs_split", "findings": [reason]}
+    append_jsonl(candidate_path, record)
+    budget.emit(root, "over_budget", bound=selected, path=rel, title=record["title"],
+                reason=reason, **fields)
+    print(json.dumps({"action": "split-required", "reason": reason,
+                      "targetPath": record["targetPath"], "title": record["title"],
+                      "canonicalKey": record["canonicalKey"], **fields}, ensure_ascii=False))
+    return True
+
+
+def _checked(outcome: str, findings=()) -> int:
+    """``--check`` result: the outcome a real compile would reach, nothing written.
+
+    ``written`` (created or updated), ``candidate``, ``merge-needed``,
+    ``rejected``, ``suppressed`` or ``tombstoned``. The paid duplicate judge and
+    selected-route pending-replacement checks do not run in a check.
+    """
+    print(json.dumps({"action": outcome, "findings": list(findings)}, ensure_ascii=False))
+    return 0
+
+
 def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1368,6 +1468,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--regenerate", action="store_true")
+    # The trusted final pass of the card body budget (wiki_card_budget): the
+    # caller already made its one split attempt, so an over-budget card is
+    # written. Only the compile worker and the wiki-compile skill's second run
+    # pass it; a candidate field can never request it.
+    parser.add_argument("--budget-final", default=None, metavar="REASON")
+    # Predict the outcome a real compile would reach (``_checked``); writes,
+    # creates and logs nothing.
+    parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
     if os.environ.get("QMD_SANDBOX"):
@@ -1380,6 +1488,14 @@ def main() -> int:
         return 0
     mode = qmd_config.compile_mode(compile_cfg)
     wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
+    if args.check:
+        # Side-effect free: no directory, lock or ledger is created or touched,
+        # so a read-only project can be checked.
+        wiki_root = existing_managed_dir(root, wiki_rel)
+        if wiki_root is None:
+            return _checked("rejected", ["unsafe_managed_path"])
+        return _compile_locked(root, config, compile_cfg, mode, wiki_root, candidate,
+                               args.regenerate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = safe_managed_dir(root, cp.compile_rel(root))
     if wiki_root is None or compile_dir is None:
@@ -1389,14 +1505,16 @@ def main() -> int:
     try:
         with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
             return _compile_locked(
-                root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate)
+                root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
+                budget_final=args.budget_final)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
 
 
 def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
-                    wiki_root: Path, candidate: dict, regenerate: bool) -> int:
+                    wiki_root: Path, candidate: dict, regenerate: bool, *,
+                    budget_final: str | None = None, check: bool = False) -> int:
     import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
@@ -1444,7 +1562,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     # candidates.jsonl is a write-only audit log (every compile attempt appends a
     # row, no reader) -- cap it up front so it can't grow unbounded.
-    trim_jsonl(candidate_path)
+    if not check:
+        trim_jsonl(candidate_path)
 
     record = {
         "ts": now_iso(),
@@ -1467,6 +1586,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         "_qmd": effort_audit(candidate),
     }
 
+    if check and target_reason.startswith("ambiguous_"):
+        return _checked("merge-needed", [target_reason])
+    if check and (lint["verdict"] != "clean" or target is None):
+        return _checked("rejected", lint["findings"])
     if target_reason.startswith("ambiguous_"):
         record["action"] = "merge-needed"
         record["lint"] = {"verdict": "needs_review", "findings": [target_reason]}
@@ -1485,6 +1608,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
 
     tombstones = read_jsonl(tombstone_path)
     if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
+        if check:
+            return _checked("suppressed")
         record["action"] = "suppressed"
         append_jsonl(candidate_path, record)
         print(json.dumps({"action": "suppressed", "targetPath": record["targetPath"]}, ensure_ascii=False))
@@ -1500,6 +1625,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         and not regenerate
         and previous[-1].get("action") != MACHINE_DELETE_ACTION
     ):
+        if check:
+            return _checked("tombstoned")
         tombstone = {**record, "action": "deleted", "status": "deleted", "previousStatus": previous[-1].get("status", "generated")}
         append_jsonl(tombstone_path, tombstone)
         record["action"] = "tombstoned"
@@ -1507,6 +1634,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 0
 
+    if check and (mode == "candidates"
+                  or (mode == "guarded" and candidate.get("confidence") != "high")):
+        return _checked("candidate")
     if mode == "candidates":
         record["action"] = "candidate"
         append_jsonl(candidate_path, record)
@@ -1517,6 +1647,21 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         record["action"] = "candidate"
         append_jsonl(candidate_path, record)
         print(json.dumps({"action": "candidate", "targetPath": record["targetPath"]}, ensure_ascii=False))
+        return 0
+
+    # Card body budget before the paid duplicate judge (wiki_card_budget): an
+    # over-budget card is held back once for a split; the caller's trusted
+    # final pass (--budget-final) writes it anyway.
+    final_reason = (re.sub(r"[^A-Za-z0-9_.:-]", "_", budget_final)[:80] or "final"
+                    if isinstance(budget_final, str) else None)
+    if check and not target.exists():
+        # The paid duplicate judge does not run in a check; its merge-needed is
+        # caught after the real write.
+        return _checked("written")
+    if not target.exists() and budget_refused(
+            root, config, selected, wiki_root, target, record, candidate_path,
+            markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
+                          redactions, h), final_reason=final_reason):
         return 0
 
     if not target.exists():
@@ -1581,6 +1726,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         # 조용히 틀린다(2단계 `↳` 원문 경로가 엉뚱한 파일을 가리킨다).
         # identity 조회로 찾은 경로(`target_reason != "explicit"`)는 정의상 일치하므로 통과.
         agrees, mismatch = explicit_target_agrees(target, candidate)
+        if check and not agrees:
+            return _checked("merge-needed", [mismatch])
         if not agrees:
             entry = {
                 "ts": now_iso(),
@@ -1603,6 +1750,9 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     if target.exists():
         old = target.read_text(encoding="utf-8")
         auto_writable, findings = is_auto_writable_page(target)
+        if check:
+            return _checked("written" if auto_writable and AUTO_BLOCK_RE.search(page)
+                            else "merge-needed", findings)
         if not auto_writable:
             record["action"] = "merge-needed"
             record["lint"] = {"verdict": "needs_review", "findings": findings}
@@ -1622,6 +1772,15 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         status = "generated"
         page = markdown_page(candidate, summary, status, redactions, h)
         action = "updated"
+        # The selector reads the whole refreshed card, hand-written sections
+        # included. A long card is not split retroactively; its rewrite
+        # targets the budget like a new card (best effort).
+        composed = compose_generated_card(old, page)
+        floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
+        if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
+                          composed if composed is not None else page, floor,
+                          final_reason=final_reason):
+            return 0
     # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
     # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
     # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지

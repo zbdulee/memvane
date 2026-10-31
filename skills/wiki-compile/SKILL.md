@@ -31,7 +31,8 @@ Create or queue generated wiki markdown from a compact durable conclusion.
    }' | bash "$ROOT/skills/wiki-compile/scripts/wiki-compile.sh" "$PWD"
    ```
 
-4. Report the action from stdout (`created`, `candidate`, `rejected`, `tombstoned`, etc.) and the generated path when present.
+4. Report the action from stdout (`created`, `candidate`, `rejected`, `tombstoned`, `split-required`, etc.) and the generated path when present.
+5. `split-required` means the card body is over the local selector budget (`size` > `budget` 700 tokens) and nothing was written yet. Make the one split attempt: split the conclusion by topic or category into several candidates (`{"candidates":[...]}`), each with its own `canonicalKey` and the sibling keys in `related`, never dropping facts or identifiers. Then run step 3 once more with the final-pass flag, `... | bash "$ROOT/skills/wiki-compile/scripts/wiki-compile.sh" "$PWD" --budget-final`: every candidate is written, and one still over the budget is logged as `over_budget_written` (the selector scores it by its leading part). For `reason: manual_section_over_budget` (the existing card's hand-written sections alone exceed the budget) skip the split and run the same candidate again with `--budget-final`.
 
 ## Input contract
 
@@ -53,7 +54,7 @@ Supported compact shape:
 }
 ```
 
-Also supported: `{"candidates":[...]}` with the same compact fields.
+Also supported: `{"candidates":[...]}` with the same compact fields, plus an optional `related` list naming sibling cards' `canonicalKey`s.
 
 ## Safety
 

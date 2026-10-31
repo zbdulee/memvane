@@ -42,7 +42,14 @@ short summary at the end (step 5).
       stay separate — their entries get `--action skip` in step 4.
    b. Pick ONE final keeper for the pages being consolidated (normally the most complete page).
       Never pick a per-pair keeper that a later pair in the same cluster would itself delete.
-   c. List every fact present in each page you will delete that is absent from the keeper, fold
+   c. Before folding, measure the cluster against the local selector card budget:
+      `python3 "$ROOT/core/wiki_card_budget.py" --cwd <cwd> <keeper> <page to delete>...`. When
+      the keeper or `combined` is over `budget`, the merged keeper would not fit: keep those pages
+      separate (`--action skip`). After folding, run it on the keeper alone; if it no longer fits,
+      restore the keeper's previous text and skip. The CLI refuses a merge into an over-budget
+      keeper anyway (`kept_separate`, the page you named stays). `method: unavailable` or `measure_failed` (no
+      selector tokenizer, or none could count) prints null sizes; consolidate as usual then.
+      List every fact present in each page you will delete that is absent from the keeper, fold
       ALL of them into the keeper with your Edit tool first, and re-read the keeper to confirm
       every listed fact is now present. Only after the keeper holds everything do you start
       deleting. PLACEMENT IS LOAD-BEARING: folded facts go in their own `## …` section BELOW the
@@ -92,7 +99,8 @@ short summary at the end (step 5).
       usually combines genuinely different specific facts, not just repeated ones. Fold each fact
       into the keeper with your Edit tool first — below `<!-- qmd:auto:end -->`, per step 3.c's
       placement rule, which applies to single-pair entries exactly as it does to clusters — and
-      re-read the keeper to confirm every listed fact is now present. Only then proceed. (For a
+      re-read the keeper to confirm every listed fact is now present. Apply step 3.c's budget
+      check before and after the fold. Only then proceed. (For a
       pair whose cluster you already folded in step 3.c, do not re-fold — go straight to 4.d.)
    d. Run: `python3 "$ROOT/core/wiki_dedup_resolve.py" --cwd <cwd> --index <n> --action merge
       --delete <wiki-root-relative path of the page being deleted>`

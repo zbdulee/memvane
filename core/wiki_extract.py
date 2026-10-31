@@ -248,14 +248,21 @@ def to_candidate(payload: dict[str, Any], item: dict[str, Any]) -> dict[str, Any
         aliases = [alias.strip() for alias in item.get("aliases") if isinstance(alias, str) and alias.strip()]
         if aliases:
             candidate["aliases"] = aliases
+    if isinstance(item.get("related"), list):
+        related = [key.strip() for key in item.get("related") if isinstance(key, str) and key.strip()]
+        if related:
+            candidate["related"] = related
     return candidate
 
 
-def run_compile(cwd: str, candidate: dict[str, Any], regenerate: bool = False) -> str:
+def run_compile(cwd: str, candidate: dict[str, Any], regenerate: bool = False,
+                budget_final: bool = False) -> str:
     script = Path(__file__).resolve().with_name("wiki_compile.py")
     argv = [sys.executable, str(script), "--cwd", cwd]
     if regenerate:
         argv.append("--regenerate")
+    if budget_final:
+        argv += ["--budget-final", "manual_final_pass"]
     proc = subprocess.run(
         argv,
         input=json.dumps(candidate, ensure_ascii=False),
@@ -271,6 +278,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Extract compact durable wiki candidates and compile them.")
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--regenerate", action="store_true")
+    # The skill's second run after its one split: an over-budget card is written
+    # (wiki_card_budget best effort) instead of returning split-required again.
+    parser.add_argument("--budget-final", action="store_true")
     args = parser.parse_args()
 
     if os.environ.get("QMD_SANDBOX"):
@@ -285,7 +295,8 @@ def main() -> int:
         # 모델/caller 가 후보를 만든 **뒤에** 컴파일러가 provenance 를 소유한다(순서가 곧
         # 보장이다 — 자동 경로의 `wiki_compile_worker` 대입과 같은 자리).
         attach_compiler_provenance(args.cwd, candidate)
-        out = run_compile(args.cwd, candidate, regenerate=args.regenerate)
+        out = run_compile(args.cwd, candidate, regenerate=args.regenerate,
+                          budget_final=args.budget_final)
         if out:
             outputs.append(out)
     if outputs:
