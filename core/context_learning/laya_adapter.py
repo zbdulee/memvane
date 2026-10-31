@@ -26,6 +26,10 @@ EDIT_INPUT_VIEW = 'tool-edit-8192-choice-v1'
 EDIT_INPUT_TOKENS = 8192
 LEGACY_INPUT_VIEW = 'checkpoint-config-v1'
 POLICY = 'binary-needed-p-ge-0.5-top3-v1'
+# Prediction keeps every candidate: an over-budget card body is cut to a
+# budget-sized leading prefix that keeps its heading line (``_fitting``).
+# Training pairs are never truncated.
+PREDICTION_PAIRING = 'leading-body-prefix-v1'
 MAX_INPUT_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 QUESTION = {'t': 'noul', 'ins': 'Is this wiki card needed to answer the user request?',
@@ -157,8 +161,141 @@ def _load(model_dir, *, head_artifact=None, input_view=LEGACY_INPUT_VIEW):
     return model, tok, cfg
 
 
-def _pair(prompt, candidate, tok, cfg):
-    from laya.common import build_sequence, render_options, QTYPES
+def _sequence(prompt, body, tok, cfg, question):
+    """The untruncated model input for one pair; raises when it does not fit."""
+    from laya.common import build_sequence
+    state = 'User request:\n'+prompt+'\nWiki card body:\n'+body
+    state_ids = tok(state, add_special_tokens=False)['input_ids']
+    ids, markers = build_sequence(tok, state, question,
+        max_len=cfg['max_len'], head_max_len=cfg.get('head_max_len', 192),
+        state_ids=state_ids)
+    instruction_ids=tok(question['t']+' question: '+question['ins'],
+        add_special_tokens=False)['input_ids']
+    if (ids[1:1+len(instruction_ids)]!=instruction_ids or
+        len(markers) != 2 or any(ids[position]!=tok.mask_token_id for position in markers) or
+        len(ids) < len(state_ids)+1 or
+        ids[-len(state_ids)-1:-1] != state_ids or
+        len(ids) > cfg['max_len']):
+        raise ValueError('model_token_budget_exceeded')
+    if tok.model_max_length < len(ids):
+        raise ValueError('tokenizer_model_limit_exceeded')
+    return ids, markers
+
+
+_BUDGET_ERRORS = ('model_token_budget_exceeded', 'tokenizer_model_limit_exceeded')
+
+
+_FIT_STEPS = 16
+
+
+def _title_end(body):
+    """Codepoints a scored prefix must keep: through the first heading line.
+
+    Leading whitespace and blank lines (a compact body keeps the blank line
+    after its frontmatter) are skipped to find that heading. A body that does
+    not open with a heading keeps at least its first visible character.
+    """
+    start = len(body) - len(body.lstrip())
+    if not body.startswith('#', start):
+        return start + 1
+    end = body.find('\n', start)
+    return len(body) if end < 0 else end
+
+
+def _body_token_ends(tok, body):
+    """Codepoint end offset of each body token; fails closed when unusable."""
+    try:
+        spans = tok(body, add_special_tokens=False, return_offsets_mapping=True)['offset_mapping']
+        ends = [span[1] for span in spans]
+    except (KeyError, TypeError, IndexError):
+        raise ValueError('model_token_budget_exceeded') from None
+    previous = 0
+    for end in ends:
+        if type(end) is not int or not previous <= end <= len(body):
+            raise ValueError('model_token_budget_exceeded')
+        previous = end
+    return ends
+
+
+def _fitting(prompt, body, tok, cfg, question, *, cancelled=None):
+    """(ids, markers, kept codepoints) for a leading body prefix that fits.
+
+    The body is tokenized once with offsets; the cut lands on a body-token
+    end offset (a codepoint index, so no UTF-8 sequence is split) sized from
+    the state token room left beside the request. The whole state is then
+    re-tokenized and checked; while it is still too long the cut steps back by
+    the measured excess (at most ``_FIT_STEPS`` checks). The same input always
+    keeps the same prefix. This is a budget-sized prefix, not a proven longest
+    one: a tokenizer may merge across the cut. The prefix keeps the whole
+    leading heading line; a request that leaves no room for it fails closed
+    with its budget error, like an over-budget request.
+    """
+    from laya.common import build_sequence
+    try:
+        return (*_sequence(prompt, body, tok, cfg, question), len(body))
+    except ValueError as exc:
+        if str(exc) not in _BUDGET_ERRORS: raise
+    if not getattr(tok, 'is_fast', False):
+        raise ValueError('model_token_budget_exceeded')
+    skeleton, _ = build_sequence(tok, '', question, max_len=cfg['max_len'],
+        head_max_len=cfg.get('head_max_len', 192), state_ids=[])
+    room = min(cfg['max_len'], tok.model_max_length) - len(skeleton)
+    lead = 'User request:\n'+prompt+'\nWiki card body:\n'
+    ends = _body_token_ends(tok, body)
+    minimum = _title_end(body)
+    count = min(len(ends), room - len(tok(lead, add_special_tokens=False)['input_ids']))
+    for _ in range(_FIT_STEPS):
+        if cancelled is not None and cancelled():
+            raise ValueError('prediction_cancelled')
+        if count < 1 or ends[count-1] < minimum:
+            break
+        cut = ends[count-1]
+        used = len(tok(lead + body[:cut], add_special_tokens=False)['input_ids'])
+        if used <= room:
+            return (*_sequence(prompt, body[:cut], tok, cfg, question), cut)
+        count -= max(1, used - room)
+    raise ValueError('model_token_budget_exceeded')
+
+
+def truncation_probe(loaded):
+    """A synthetic case whose single card must be cut under this model budget.
+
+    Sized from the loaded model's own budget (1024 or 8192 tokens): the
+    request fills all but a small room, the card's heading fits that room and
+    its body does not. Prepared inference evidence scores it to prove the
+    versioned prediction pairing on this exact tokenizer and budget.
+    """
+    from laya.common import build_sequence
+    _, tok, cfg = loaded
+    question = (EDIT_QUESTION if cfg.get('model_input_view') == EDIT_INPUT_VIEW
+                else QUESTION)
+    skeleton, _ = build_sequence(tok, '', question, max_len=cfg['max_len'],
+        head_max_len=cfg.get('head_max_len', 192), state_ids=[])
+    room = min(cfg['max_len'], tok.model_max_length) - len(skeleton)
+    def tokens(text):
+        return len(tok(text, add_special_tokens=False)['input_ids'])
+    unit = 'synthetic request marker '
+    prompt = unit * max(1, (room - 192) * 64 // tokens(unit * 64))
+    while tokens(prompt) > room - 128 and len(prompt) > len(unit):
+        prompt = prompt[:-len(unit)]
+    filler = 'synthetic overflow body '
+    body = '# Synthetic overflow\n' + filler * (512 * 64 // tokens(filler * 64) + 1)
+    case = {'request_id': 'inference-prepare-truncation', 'prompt': prompt.strip(),
+            'candidates': [{'id': 'synthetic/overflow', 'revision_sha256': '1'*64,
+                            'input_text': body, 'input_kind': 'full_compact_wiki_body'}]}
+    case['input_sha256'] = hashlib.sha256(json.dumps(case, sort_keys=True,
+        separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    return case
+
+
+def _pair(prompt, candidate, tok, cfg, *, fit_body=False, cancelled=None):
+    """One tokenized pair. Training input is never truncated (``fit_body`` off).
+
+    Prediction (``fit_body``) follows ``PREDICTION_PAIRING``: the whole user
+    request and a budget-sized leading prefix of the card body that keeps its
+    whole heading line (see ``_fitting``).
+    """
+    from laya.common import render_options, QTYPES
 
     body = candidate.get('input_text')
     if (not isinstance(prompt, str) or not prompt.strip() or
@@ -174,21 +311,12 @@ def _pair(prompt, candidate, tok, cfg):
     for option in render_options(question):
         if len(tok(' '+option, add_special_tokens=False)['input_ids']) > 48:
             raise ValueError('option_token_truncation')
-    state_ids = tok(state, add_special_tokens=False)['input_ids']
-    ids, markers = build_sequence(tok, state, question,
-        max_len=cfg['max_len'], head_max_len=cfg.get('head_max_len', 192),
-        state_ids=state_ids)
-    instruction_ids=tok(question['t']+' question: '+question['ins'],
-        add_special_tokens=False)['input_ids']
-    if (ids[1:1+len(instruction_ids)]!=instruction_ids or
-        len(markers) != 2 or any(ids[position]!=tok.mask_token_id for position in markers) or
-        len(ids) < len(state_ids)+1 or
-        ids[-len(state_ids)-1:-1] != state_ids or
-        len(ids) > cfg['max_len']):
-        raise ValueError('model_token_budget_exceeded')
-    if tok.model_max_length < len(ids):
-        raise ValueError('tokenizer_model_limit_exceeded')
-    return {'ids':ids, 'markers':markers, 'qtype':QTYPES[question['t']]}
+    if not fit_body:
+        ids, markers = _sequence(prompt, body, tok, cfg, question)
+        return {'ids':ids, 'markers':markers, 'qtype':QTYPES[question['t']]}
+    ids, markers, kept = _fitting(prompt, body, tok, cfg, question, cancelled=cancelled)
+    return {'ids':ids, 'markers':markers, 'qtype':QTYPES[question['t']],
+            'truncated': kept < len(body)}
 
 
 def _pairs(cases, tok, cfg, *, with_gold, cancelled=None):
@@ -212,7 +340,8 @@ def _pairs(cases, tok, cfg, *, with_gold, cancelled=None):
         for candidate in candidates:
             if cancelled is not None and cancelled():
                 raise ValueError('prediction_cancelled')
-            item = _pair(case.get('prompt'), candidate, tok, cfg)
+            item = _pair(case.get('prompt'), candidate, tok, cfg, fit_body=not with_gold,
+                         cancelled=cancelled)
             item.update(request_id=case['request_id'], candidate_id=candidate['id'])
             if with_gold: item['gold_label'] = int(candidate['id'] in selected)
             result.append(item)
@@ -511,6 +640,8 @@ def predict_loaded(model, tok, cfg, request, *, max_batch_size=4,
     finally:
         if timing is not None:
             timing['tokenize_seconds'] = round(time.perf_counter() - began, 6)
+    if timing is not None:
+        timing['truncated_pairs'] = sum(1 for item in items if item.get('truncated'))
     if cancelled is not None and cancelled():
         raise ValueError('prediction_cancelled')
     by_request = {}

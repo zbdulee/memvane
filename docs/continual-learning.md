@@ -46,12 +46,31 @@ uses the complete compact body when available; the explicit `inspect-labels`
 review view exposes that same pinned body to a local reviewer. Long original novel manuscripts
 are still unsupported; they need a separate full-source contract. The Laya
 0.3.20 adapter tokenizes the exact prompt and full compact body, checks both
-option markers and the complete state token IDs, and rejects a case if the
-model's configured sequence budget cannot hold it. The multilingual
+option markers and the complete state token IDs, and rejects a training case
+if the model's configured sequence budget cannot hold it. The multilingual
 checkpoint declares `max_len=1024` even though its tokenizer advertises 8192;
 the adapter uses the **model's 1024-token budget**. Thus 16 KiB is a storage
-ceiling, not a guarantee that every body fits Laya. There is no silent
-truncation. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
+ceiling, not a guarantee that every body fits Laya. Training input is never
+truncated. Prediction (live selection and held-out evaluation) keeps every
+candidate under the versioned pairing `leading-body-prefix-v1`: the whole user
+request plus a leading prefix of the card body. The body is tokenized once
+with offsets and cut at a body-token end (a codepoint index, so no UTF-8
+sequence is split) sized from the token room left beside the request; the
+whole state is then re-tokenized and, while still too long, the cut steps back
+by the measured excess (at most 16 checks). The same input always keeps the
+same prefix; it is budget-sized, not a proven longest prefix, because a
+tokenizer may merge across the cut. The prefix keeps the card's whole first
+heading line, found after any leading blank lines (a compact body keeps the
+blank line after its frontmatter): a request that leaves no room for it fails
+closed (`input_budget_exceeded`), like a request that is over budget by
+itself. Missing or malformed tokenizer offsets also fail closed.
+Fifteen 16 KiB cards pair in about 0.07 s with the 1024-token checkpoint. For
+selection, a body over 16 KiB is first cut to its leading 16 KiB on a
+codepoint boundary. The inference receipt records the pairing in its `checks`
+(`prediction_leading_body_prefix_v1`); a receipt without it fails admission
+and the selector heal prepares it again. Preparation proves the pairing on the
+model's own budget (1024 or 8192 tokens) with a synthetic case whose request
+fills all but a small room and whose card must be cut. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
 candidate pin, not this verified 0.3.20 integration.
 
 ## One local cycle
