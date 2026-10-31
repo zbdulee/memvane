@@ -604,7 +604,8 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                 publish_complete = None
                 preserve_previous = None
                 if 'collections' in decision:
-                    from laya_incremental_docs import (publish_document,
+                    from laya_incremental_docs import (PublishedReader, publish_document,
+                                                       publish_needed,
                                                        preserve_previous_head,
                                                        retire_missing_documents)
                     incremental_identity = {
@@ -618,7 +619,19 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                         'vectorProfileId': decision['vectorProfile']['profileId'],
                     }
 
+                    published = PublishedReader(incremental_identity)
+                    stack.callback(published.close)
+
                     def publish_complete(snapshot, path, sha, title, body, profile_id):
+                        # Every wake rescans, so the pending fill offers each
+                        # cached member again. A member that would write
+                        # nothing (identical row, or an unverified card) skips
+                        # the route proof, the journal fence and the sidecar
+                        # transaction; the full scan still covers its bytes.
+                        if not publish_needed(published, path, sha, title, body,
+                                              profile_id, identity=incremental_identity,
+                                              require_verified=True):
+                            return
                         if not proof_ok():
                             raise IndexContractError('selected_proof_changed')
                         # This is a durable searchable write, even if the full
@@ -696,7 +709,8 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
-                                    on_document_complete=on_document_complete)
+                                    on_document_complete=on_document_complete,
+                                    before_write=before_publish)
             if fill['state'] in ('deferred', 'blocked'):
                 return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result
@@ -995,7 +1009,8 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
-                                    on_document_complete=on_document_complete)
+                                    on_document_complete=on_document_complete,
+                                    before_write=before_publish)
             result = {**result, 'fill': {key: fill[key] for key in
                                          ('state', 'reason', 'embedded', 'cached', 'bytes',
                                           'cursor', 'path', 'detail', 'rows') if key in fill}}

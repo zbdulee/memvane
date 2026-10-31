@@ -645,6 +645,57 @@ runtime._handoff_worker(queue,fd)
         self.drain(self.failing('target_deferred'), wall=2000)
         self.assertEqual(self.rows()[0]['attempts'], 4)
 
+    def test_preparing_that_never_ends_backs_off_and_is_reported_once(self):
+        # A service that never adopts the install (a newer bundle in read-only
+        # mode) used to be polled every 15 s for days without any report.
+        stall = policy.PREPARING_STALL_SECS
+        preparing = policy.DispatchFailure('target_preparing', 'a' * 40, 'c' * 64)
+        early = policy.settle(0, done=False, error=preparing, now=100, kind='laya-sync',
+                              preparing=(100 - stall + 1, 20))
+        self.assertEqual((early['ack'], early['count'], early['due'], early.get('stalled')),
+                         (False, 0, 100 + policy.PREPARING_RETRY_SECS, None))
+        first = policy.settle(0, done=False, error=preparing, now=100, kind='laya-sync',
+                              preparing=(100 - stall, 21))
+        self.assertEqual((first['ack'], first['count'], first['due'], first['stalled']),
+                         (False, 0, 100 + policy.RETRY_MAX_SECS, True))
+        # Already reported for this streak: still backed off, not reported
+        # again, and never dropped however long it lasts.
+        later = policy.settle(policy.RETRY_CAP_ATTEMPTS * 3, done=False, error=preparing,
+                              now=100 + 86400 * 3, kind='laya-sync',
+                              preparing=(100 - stall, 500), reported=True)
+        self.assertEqual((later['ack'], later['count'], later['due'], later.get('stalled')),
+                         (False, 0, 100 + 86400 * 3 + policy.RETRY_MAX_SECS, None))
+
+    def test_preparing_streak_is_tracked_reported_once_and_cleared(self):
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+        import laya_runtime_dispatch
+        reports = []
+
+        def streak():
+            return runtime._read_map(self.root / runtime.PREPARING_FILE)
+        with patch.object(laya_runtime_dispatch, 'stall_event',
+                          side_effect=lambda kind, target, **kw: reports.append((kind, target, kw))):
+            wall = 1000
+            delays = []
+            while wall < 1000 + policy.PREPARING_STALL_SECS + 3 * policy.RETRY_MAX_SECS:
+                self.drain(self.failing('target_preparing'), wall=wall)
+                row, = self.rows()
+                self.assertEqual(row['attempts'], 0)
+                delays.append(row['due'] - wall)
+                wall = row['due']
+            entry, = streak().values()
+            self.assertEqual(entry['at'], 1000)
+            # 15 s polls until the stall, then the capped backoff; one report.
+            self.assertEqual(set(delays), {policy.PREPARING_RETRY_SECS, policy.RETRY_MAX_SECS})
+            self.assertEqual(delays[-1], policy.RETRY_MAX_SECS)
+            self.assertEqual(len(reports), 1)
+            kind, target, fields = reports[0]
+            self.assertEqual((kind, target, fields['since']), ('laya-sync', '/synthetic/a', 1000))
+            # Any other outcome ends the streak.
+            self.drain(self.failing('target_child_failed'), wall=wall)
+            self.assertEqual(streak(), {})
+        self.assertEqual(self.rows()[0]['attempts'], 1)
+
     def test_query_wake_pulls_a_backed_off_due_forward_without_resetting(self):
         self.queue.put('laya-sync', '/synthetic/a', now=0)
         for wall in range(1000, 8000, 1000):

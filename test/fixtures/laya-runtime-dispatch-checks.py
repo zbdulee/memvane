@@ -278,6 +278,29 @@ class DispatchBoundary(unittest.TestCase):
         self.assertFalse(marker.exists(), 'a nested child outlived its owned process group')
 
 
+class StallEvent(unittest.TestCase):
+    def test_stalled_preparing_streak_is_logged_once_as_a_failure(self):
+        import event_log
+        import laya_index_host_route
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary).resolve()
+            decision = {'state': 'candidate', 'projectRoot': str(project)}
+            emitted = []
+            with patch.object(laya_index_host_route, 'select_route', return_value=decision), \
+                 patch.object(event_log, 'emit',
+                              side_effect=lambda *a, **k: emitted.append((a, k)) or True):
+                self.assertTrue(dispatch.stall_event('laya-sync', str(project), since=0,
+                                                     observations=21, retry_in=300))
+            (name,), fields = emitted[0]
+            self.assertEqual((name, fields['outcome'], fields['reason'], fields['decision']),
+                             ('wake.sync', 'failed', 'target_preparing_stalled', decision))
+            self.assertEqual((fields['since'], fields['observations'], fields['retryIn']),
+                             ('1970-01-01T00:00:00Z', 21, 300))
+            # A project that is gone has no install log to reach.
+            self.assertFalse(dispatch.stall_event('laya-sync', str(project / 'gone'), since=0,
+                                                  observations=1, retry_in=300))
+
+
 class SealedChildSubprocess(unittest.TestCase):
     """Two disposable exact-commit bundles, executed by the real bootstrap."""
 

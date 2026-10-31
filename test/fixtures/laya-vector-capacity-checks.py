@@ -121,6 +121,37 @@ class VectorFillCase(unittest.TestCase):
 
 
 class VectorFillTests(VectorFillCase):
+    def test_fill_fences_once_before_its_first_write_and_never_when_cached(self):
+        self.corpus(2)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+        order = []
+        import laya_index_vector
+        real_register = laya_index_vector.LayaVectorIndex.register_profile
+        real_insert = laya_index_vector.LayaVectorIndex.insert_chunk_set
+
+        def register(vectors, *a, **k):
+            order.append('profile'); return real_register(vectors, *a, **k)
+
+        def insert(vectors, *a, **k):
+            order.append('chunks'); return real_insert(vectors, *a, **k)
+        with mock.patch.object(laya_index_vector.LayaVectorIndex, 'register_profile', register), \
+             mock.patch.object(laya_index_vector.LayaVectorIndex, 'insert_chunk_set', insert):
+            done = self.fill(runtime, before_write=lambda: order.append('fence'))
+        self.assertEqual(done[-1]['state'], 'complete')
+        self.assertEqual(order[0], 'fence')
+        self.assertEqual(order.count('fence'), len(done))  # once per step that writes
+        # A fresh snapshot whose members are all cached writes nothing.
+        self.assertEqual(self.sync(runtime)['state'], 'indexed')
+        self.write('f2.md', '# F0\nbody 0\n')  # bytes already cached under f0
+        runtime.catalog.request_scan()
+        gated = self.scan_to_complete(runtime)
+        self.assertEqual((gated['state'], gated.get('reason')), ('pending', 'vector_backlog'))
+        fences = []
+        again = vc.vector_fill_step(runtime, self.provider,
+                                    before_write=lambda: fences.append(1))
+        self.assertEqual((again['embedded'], fences), (0, []))
+
     def test_backlog_gates_capture_until_fill_completes(self):
         self.corpus(3)
         runtime = self.runtime()

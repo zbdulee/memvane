@@ -798,7 +798,7 @@ def prepare(state,policy):
     calls['prepare']+=1;prepared.append(1)
 selector_heal.attest=attest;selector_heal.prepare=prepare
 selector_heal.admitted=lambda state,argv:bool(prepared) or mode=='ready'
-selector_heal.pressure=lambda policy:'learning_prepare_memory_pressure' if mode=='pressure' else None
+selector_heal.pressure=lambda policy,state=None:'learning_prepare_memory_pressure' if mode=='pressure' else None
 text='---\ntitle: Synthetic\nstatus: verified\n---\nSynthetic complete body.\n'
 def choose():
     return live_select.choose(state,'Synthetic request',[{'id':'wiki/synthetic.md',
