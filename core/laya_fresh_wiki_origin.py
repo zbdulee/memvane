@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import time
 
 from laya_index_a import LayaIndexA
 import project_dir
@@ -42,8 +43,64 @@ FIELDS = frozenset(('schema', 'epoch', 'phase', 'projectRoot', 'journalPath',
                     'providerFileIdentitySha256', *(field for _, field in FILES)))
 
 
+# A recall that finds its route fenced by a bundle upgrade (ledger phase
+# ``upgrading``) re-reads the route this long before it answers without
+# context. The fence normally lifts within a few seconds.
+UPGRADE_WAIT_SECONDS = 1.5
+UPGRADE_POLL_SECONDS = 0.025
+UPGRADE_IN_PROGRESS = 'bundle_upgrade_in_progress'
+
+
 class FreshWikiBlocked(RuntimeError):
     pass
+
+
+def upgrade_in_progress(cwd) -> bool:
+    """Whether the selection marker over ``cwd`` names a ledger in ``upgrading``.
+
+    Read only and never raises: any doubt answers False, so the caller keeps
+    its ordinary refusal.
+    """
+    try:
+        current = Path(cwd)
+        if not current.is_absolute():
+            return False
+        for directory in (current, *current.parents):
+            marker = project_dir.runtime_file(directory, MARKER)
+            if not os.path.lexists(marker):
+                continue
+            record = _read_json(marker)
+            if (not isinstance(record, dict) or record.get('schema') != MARKER_SCHEMA or
+                    not isinstance(record.get('ledgerPath'), str)):
+                return False
+            row = _read_json(Path(record['ledgerPath']))
+            return isinstance(row, dict) and row.get('phase') == 'upgrading'
+    except Exception:
+        return False
+    return False
+
+
+def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,
+                    sleep=time.sleep):
+    """Re-read a recall route fenced by an in-flight bundle upgrade.
+
+    Recall only. Waits up to ``UPGRADE_WAIT_SECONDS`` for the upgrade to
+    publish its route; a route still fenced comes back ``blocked`` with the
+    reason ``bundle_upgrade_in_progress``, which the hook answers with no
+    context instead of an error.
+    """
+    if (not isinstance(decision, dict) or decision.get('state') != 'blocked' or
+            action != 'recall' or not upgrade_in_progress(cwd)):
+        return decision
+    deadline = clock() + UPGRADE_WAIT_SECONDS
+    while clock() < deadline:
+        sleep(UPGRADE_POLL_SECONDS)
+        again = select(cwd, action=action)
+        if again.get('state') != 'blocked':
+            return again
+        if not upgrade_in_progress(cwd):
+            return again
+    return {**decision, 'reason': UPGRADE_IN_PROGRESS}
 
 
 def _fail(reason):

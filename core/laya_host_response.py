@@ -2449,6 +2449,19 @@ def _relocated(selection, decision):
         return False
 
 
+_UPGRADE_RECALL_NOTICE = '[memvane] bundle upgrade in progress; no context for this prompt'
+
+
+def _upgrade_fenced(payload, fallback_cwd) -> bool:
+    """The event's project route is fenced by an in-flight bundle upgrade."""
+    cwd = payload.get('cwd') if isinstance(payload, dict) else None
+    try:
+        from laya_fresh_wiki_origin import upgrade_in_progress
+        return upgrade_in_progress(cwd if isinstance(cwd, str) else fallback_cwd)
+    except Exception:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 4 and args[0] == "serve-stdin":
@@ -2477,6 +2490,10 @@ def main(argv: list[str] | None = None) -> int:
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         if selection["state"] not in ("candidate", "preview", "worktree"):
+            if (action == "recall" and
+                    selection.get("reason") == "bundle_upgrade_in_progress"):
+                print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
+                return 0
             _fail("selected_route_unavailable")
         cwd = payload.get("cwd", fallback_cwd)
         decision = _reselect(cwd, action)
@@ -2494,6 +2511,11 @@ def main(argv: list[str] | None = None) -> int:
             _capture_learning(capture, started)
         return 0
     except Exception as exc:
+        if action == "recall" and _upgrade_fenced(payload, fallback_cwd):
+            # The route was fenced by a bundle upgrade mid-recall: no context
+            # for this prompt, never an error.
+            print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
+            return 0
         # Hook stderr is intentionally terse. No source body, path, or secrets.
         code = _refusal_code(exc)
         print(f"[memvane] {code}; request refused", file=sys.stderr)
