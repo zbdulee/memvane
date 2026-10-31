@@ -389,6 +389,28 @@ class BoundUpgradeTests(UpgradeCase):
         self.assertEqual(self.activate()['phase'], 'active')
         self.assertEqual(self.selection(), 'candidate')
 
+    def test_bound_build_reextracted_in_place_readopts_its_root(self):
+        self.bound()
+        self.assertEqual(self.run_upgrade(bound_upgrade)['status'], 'bound_upgrade_complete')
+        before = self.row()
+        # The host re-extracts the bound bundle at the same root: same bytes,
+        # new inodes, so another ownership digest than the journal pins.
+        live = {**self.new, 'ownershipManifestSha256': _sha(b'reextracted')}
+        self.bundles[self.new_root] = live
+        REEXTRACTED.add(self.new_root)
+        result = self.run_upgrade(bound_upgrade)
+        self.assertEqual(result['status'], 'bound_upgrade_complete', result)
+        after = self.row()
+        self.assertEqual(after['phase'], 'prepared')
+        self.assertTrue(self.unchanged_fields(before, after, bound_upgrade.LEDGER_CHANGES))
+        route = json.loads((self.state / 'reviewed-route.json').read_bytes())
+        self.assertEqual((route['pluginRoot'], route['ownershipManifestSha256']),
+                         (self.new_root, live['ownershipManifestSha256']))
+        self.assertEqual(self.fj.pending['ownershipManifestSha256'],
+                         live['ownershipManifestSha256'])
+        self.assertEqual(self.selection(), 'legacy')
+        self.kept()
+
     def test_interrupted_bound_switch_is_blocked_then_resumes(self):
         self.bound()
         real = bound_upgrade.inactive._atomic_expected

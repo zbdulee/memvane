@@ -1075,6 +1075,98 @@ print(json.dumps(result))'''
         self.assertNotEqual(proof['bundleManifestSha256'], first['bundleManifestSha256'])
         self.assert_selected_proves(root, commit2)
 
+    def pending_on_host_root(self):
+        """A real unselected initial build: journal, attestation, route, record."""
+        import laya_initial_build as initial_build
+        root, first = self.host_root()
+        wiki = self.auto / 'wiki'
+        wiki.mkdir()
+        route = self.route(first, 'g-' + '4' * 32)
+        route.pop('collectionName')
+        route.pop('sourceRoot')
+        route['schema'] = host.SCHEMA_V2
+        route['collections'] = [
+            {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.project)},
+            {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(wiki)}]
+        route['settingsSha256'] = host.settings_identity_digest(
+            self.project, route['collections'])
+        raw = bundle._canonical(route)
+        created = journal.create_journal(self.journal_path, first, raw,
+                                         user_qmd_roots=[self.user_qmd])
+        self.assertEqual(created['state'], 'candidate_ready')
+        receipt = journal.stage_production_attestation(
+            self.journal_path, first, self.provider_manifest(first), self.closure)
+        route_file = self.install / 'reviewed-route.json'
+        route_file.write_bytes(raw)
+        route_file.chmod(0o600)
+        identity = {'projectRoot': str(self.project), 'stateRoot': str(self.install),
+                    'installId': '3' * 32, 'scopeId': '6' * 32,
+                    'collections': route['collections'],
+                    'candidateDb': str(self.install / 'laya-build.sqlite'),
+                    'queueDb': str(self.install / 'claims.sqlite'),
+                    'catalogDb': str(self.install / 'catalog.sqlite'),
+                    'bindingStore': str(self.install / 'bindings.sqlite'),
+                    'dbIncarnation': self.incarnation,
+                    'journalPath': str(self.journal_path), 'routeFile': str(route_file),
+                    'routeSha256': hashlib.sha256(raw).hexdigest(),
+                    'attestationSha256': receipt['attestationSha256'],
+                    'vectorProfileId': self.vector_profile['profileId'],
+                    'originMode': 'fresh_wiki_only', 'proposalSha256': 'e' * 64,
+                    'providerProposalSha256': 'f' * 64}
+        initial_build.create_or_verify(identity)
+        return root, first
+
+    def inactive_bundle_upgrade(self, root, commit):
+        """``upgrade_install`` on the inactive build; real adoption and journal CAS."""
+        import laya_bundle_upgrade as auto
+        import laya_embed_runtime
+        counts = {'vectorChunkSets': 0, 'vectorChunks': 0, 'publishedDocuments': 0}
+        reviewed = {'proposalSha256': 'b' * 64, 'reviewedProvider': {
+            'vectorProfile': self.vector_profile,
+            'providerManifest': self.provider_manifest({'pluginRoot': str(root)}),
+            'dependencyClosure': self.closure}}
+        backup = self.root / 'inactive-backup'
+        with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
+             mock.patch.object(auto, 'installed_commit', return_value=commit), \
+             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_mark_sealed_for_rescan'), \
+             mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
+                               new=lambda _path: 'f' * 64), \
+             mock.patch.object(product_install, 'review_local_provider',
+                               return_value=reviewed), \
+             mock.patch.object(product_install, '_request_build_wake',
+                               return_value={'status': 'queued'}), \
+             mock.patch.object(inactive_upgrade, '_store_counts', return_value=counts), \
+             mock.patch.object(inactive_upgrade, '_backup', return_value=backup), \
+             mock.patch.object(inactive_upgrade, '_verify_backup'):
+            return auto.upgrade_install(self.project, self.install, root, home=self.root)
+
+    def test_inactive_build_on_a_reextracted_root_is_readopted(self):
+        root, first = self.pending_on_host_root()
+        self.assertEqual(journal.preflight_product_candidate(
+            self.journal_path)['pendingRouteSha256'],
+            journal.inspect_journal(self.journal_path)['pendingRouteSha256'])
+        self.reextract(root)
+        with self.assertRaisesRegex(Exception, 'bundle_file_identity_changed'):
+            journal.preflight_product_candidate(self.journal_path)
+        result = self.inactive_bundle_upgrade(root, self.commit1)
+        self.assertEqual(result['status'], 'inactive_upgrade_complete', result)
+        resealed = bundle.inspect_full_plugin_candidate(root)
+        self.assertEqual(resealed['bundleManifestSha256'], first['bundleManifestSha256'])
+        pending = journal.inspect_journal(self.journal_path)['pending']
+        self.assertEqual(pending['pluginRoot'], str(root))
+        self.assertEqual(pending['ownershipManifestSha256'],
+                         resealed['ownershipManifestSha256'])
+        import laya_embed_runtime
+        # The re-attestation pins the synthetic runtime digest it compared.
+        with mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
+                               new=lambda _path: 'f' * 64):
+            approval = journal.preflight_product_candidate(self.journal_path)
+        self.assertEqual(approval['pendingRouteSha256'],
+                         journal.inspect_journal(self.journal_path)['pendingRouteSha256'])
+        # A second run finds nothing left to re-adopt.
+        self.assertEqual(self.inactive_bundle_upgrade(root, self.commit1)['status'], 'current')
+
     def test_two_processes_contest_one_journal_epoch(self):
         self.initial()
         second, _route, raw = self.stage_v2_source()

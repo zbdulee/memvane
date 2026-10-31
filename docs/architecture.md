@@ -374,6 +374,16 @@ that exact comparison passes. Git runs with replacement objects and grafts
 disabled, so `refs/replace` cannot substitute a tree under an unchanged
 commit id.
 
+An in-place re-extraction leaves every install bound to that root with an
+ownership digest the files no longer have. The bundle upgrade worker
+re-adopts the root for selected, bound and inactive installs alike, through
+each kind's own review and switch. A selected project's SessionStart asks for
+the worker; an unselected build's SessionStart (the build-progress notice)
+asks for it when the bound root is another plugin root or no longer proves.
+A re-adopted inactive build has no old seal to restore to: a failed switch
+stays fenced (`upgrading`) with its intent, and the next run finishes it
+forward.
+
 The exact comparison defends against stale or forged seal metadata and
 accidental drift between the cache and the commit. A process running as the
 same UID that can write the marketplace clone or the plugin cache is outside

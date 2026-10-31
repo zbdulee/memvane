@@ -871,6 +871,13 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     except Exception:
         building = False
     if building:
+        # A host plugin update (or an in-place re-extraction of the bound
+        # bundle) moves the inactive or bound build in a detached worker.
+        try:
+            import laya_bundle_upgrade
+            laya_bundle_upgrade.request_for_project(root)
+        except Exception:
+            pass
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
