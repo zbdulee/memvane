@@ -241,8 +241,9 @@ class Checks(unittest.TestCase):
         (self.laya.private / digest(str(self.laya.project)) /
          'active-checkpoint.json').write_text('{}')
         with self.laya.route(), patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
-            result = self.serve(chosen=[pool[2]['path']])
-            status = laya_learning.capture_recall(*response._LEARNING_CAPTURE[0])
+            with response.learning_capture() as slot:
+                result = self.serve(chosen=[pool[2]['path']])
+            status = laya_learning.capture_recall(*slot[0])
             fingerprint = corpus.snapshot(self.laya.project, self.laya.settings)['fingerprint']
         self.assertIn('wiki/card02.md', result['hookSpecificOutput']['additionalContext'])
         self.assertEqual(status, 'stored')
@@ -265,8 +266,9 @@ class Checks(unittest.TestCase):
         pool = self.laya.rows()
         (self.laya.private / digest(str(self.laya.project))).mkdir(mode=0o700)
         with self.laya.route(), patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
-            result = self.serve(chosen=[pool[2]['path']])
-            status = laya_learning.capture_recall(*response._LEARNING_CAPTURE[0])
+            with response.learning_capture() as slot:
+                result = self.serve(chosen=[pool[2]['path']])
+            status = laya_learning.capture_recall(*slot[0])
         context = result['hookSpecificOutput']['additionalContext']
         for path in [row['path'] for row in pool[:3]]:
             self.assertIn(path, context)
@@ -278,6 +280,26 @@ class Checks(unittest.TestCase):
         self.assertEqual(sample['sampling']['baseline_selected_ids'],
                          [row['path'] for row in pool[:3]])
 
+    def test_capture_slot_is_per_call_and_absent_for_in_process_hosts(self):
+        # Hermes calls serve_selected in-process (possibly concurrently) and
+        # never runs capture: its recalls keep nothing behind. Each entry
+        # that does capture owns its own slot.
+        pool = self.laya.rows()
+        (self.laya.private / digest(str(self.laya.project))).mkdir(mode=0o700)
+        (self.laya.private / digest(str(self.laya.project)) /
+         'active-checkpoint.json').write_text('{}')
+        with self.laya.route(), patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1'}):
+            self.serve(chosen=[pool[2]['path']])
+            self.assertIsNone(response._LEARNING_CAPTURE.get())
+            with response.learning_capture() as outer:
+                self.serve(chosen=[pool[2]['path']])
+                with response.learning_capture() as inner:
+                    self.serve(chosen=[pool[1]['path']])
+                self.assertIs(response._LEARNING_CAPTURE.get(), outer)
+            self.assertIsNone(response._LEARNING_CAPTURE.get())
+        self.assertEqual([row['path'] for row in outer[0][5]], ['wiki/card02.md'])
+        self.assertEqual([row['path'] for row in inner[0][5]], ['wiki/card01.md'])
+
     def test_capture_runs_after_flush_and_never_changes_hook_output(self):
         decision = dict(self.laya.decision)
         events = []
@@ -287,7 +309,7 @@ class Checks(unittest.TestCase):
                                          'additionalContext': 'ctx'}}
 
         def serve(*_args):
-            response._LEARNING_CAPTURE[:] = [('codex', decision, {}, {}, [], [])]
+            response._set_learning_capture(('codex', decision, {}, {}, [], []))
             return answer
 
         def capture(*_args, **_kwargs):
@@ -306,7 +328,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(json.loads(stdout.getvalue()), answer)
         # The answer was already written when capture started.
         self.assertEqual(json.loads(events[0][1]), answer)
-        self.assertEqual(response._LEARNING_CAPTURE, [])
+        self.assertIsNone(response._LEARNING_CAPTURE.get())
         # A non-recall action never captures.
         events.clear()
         with patch.object(response, 'select_hook_route', return_value=decision), \

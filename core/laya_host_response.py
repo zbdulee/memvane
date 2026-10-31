@@ -55,13 +55,35 @@ _DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
                                   'deferred_queue_capacity_retained'))
 
 
-# Inputs of one served recall for post-output learning capture (see main).
-_LEARNING_CAPTURE: list = []
+# Inputs of one served recall for post-output learning capture. Only an
+# entry that runs capture after its answer (``main``) opens a slot, bound to
+# its own context; an in-process host (Hermes, possibly concurrent recalls)
+# has none, so its recalls keep nothing behind.
+_LEARNING_CAPTURE: contextvars.ContextVar = contextvars.ContextVar(
+    'memvane_learning_capture', default=None)
 
 
-def _capture_learning(started: float) -> None:
+@contextmanager
+def learning_capture():
+    """Open this context's capture slot; yields the list the recall fills."""
+    slot: list = []
+    token = _LEARNING_CAPTURE.set(slot)
+    try:
+        yield slot
+    finally:
+        _LEARNING_CAPTURE.reset(token)
+
+
+def _set_learning_capture(entry) -> None:
+    """Record (or with None, drop) this recall's capture inputs, if a slot is open."""
+    slot = _LEARNING_CAPTURE.get()
+    if slot is not None:
+        slot[:] = [] if entry is None else [entry]
+
+
+def _capture_learning(slot: list, started: float) -> None:
     """Run learning capture after the response is flushed; never raises."""
-    pending, _LEARNING_CAPTURE[:] = list(_LEARNING_CAPTURE), []
+    pending, slot[:] = list(slot), []
     if not pending:
         return
     try:
@@ -1660,7 +1682,7 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
             if retry is None:
                 raise
             changed = _retry_code(exc)
-        _LEARNING_CAPTURE[:] = []
+        _set_learning_capture(None)
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
                              retry=changed)
         return _serve_selected_once(action, host, retry, payload)
@@ -2140,7 +2162,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
                                  read_only_label='worktree')
         # Learning belongs to the main checkout's own sessions.
-        _LEARNING_CAPTURE[:] = []
+        _set_learning_capture(None)
         key = 'context' if host == 'hermes' else None
         holder = response if key else response.get('hookSpecificOutput', {})
         field = key or 'additionalContext'
@@ -2384,7 +2406,7 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     chosen = chosen[:answer_limit]
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.
-    _LEARNING_CAPTURE[:] = [(host, decision, payload, settings, rows[:15], chosen)]
+    _set_learning_capture((host, decision, payload, settings, rows[:15], chosen))
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
@@ -2445,7 +2467,6 @@ def main(argv: list[str] | None = None) -> int:
         pass
     decision = payload = None
     started = time.monotonic()
-    _LEARNING_CAPTURE[:] = []
     try:
         if payload_file is None:
             body = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
@@ -2461,15 +2482,16 @@ def main(argv: list[str] | None = None) -> int:
         decision = _reselect(cwd, action)
         if decision != selection and not _relocated(selection, decision):
             _fail("selected_route_changed")
-        response = (serve_preview(action, host, decision, payload)
-                    if decision['state'] == 'preview' else
-                    serve_selected(action, host, decision, payload))
+        with learning_capture() as capture:
+            response = (serve_preview(action, host, decision, payload)
+                        if decision['state'] == 'preview' else
+                        serve_selected(action, host, decision, payload))
         print(json.dumps(response, ensure_ascii=True, allow_nan=False,
                          separators=(",", ":")), flush=True)
         if action == "recall":
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
-            _capture_learning(started)
+            _capture_learning(capture, started)
         return 0
     except Exception as exc:
         # Hook stderr is intentionally terse. No source body, path, or secrets.
