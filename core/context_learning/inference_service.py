@@ -224,7 +224,8 @@ class GenerationEngine:
                 gc.collect()
             raise ServiceFailure('resource_deferred')
         limits, report = self.admission(job['policy']['maxRssMib'],
-                                         already_running=self.active is not None)
+                                         already_running=self.active is not None,
+                                         peak_mib=job.get('peak_mib'))
         if limits is None:
             raise ServiceFailure('resource_deferred')
         replacement = self.active is not None and self.active[0] != job['generation']
@@ -738,7 +739,8 @@ def _validate_request(envelope):
     return {'namespace': scope, 'family': family,
             'generation': (*family, envelope['artifact_sha256']), 'policy': policy,
             'model_dir': argv[2], 'request': request, 'deadline': deadline,
-            'identity_timing': identity_timing}
+            'identity_timing': identity_timing,
+            'peak_mib': resident.load_footprint(state, argv[2], view)}
 
 
 def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json'):

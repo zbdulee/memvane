@@ -319,11 +319,14 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     if 'model_input_view' in active: request['model_input_view'] = view
     job = {'request':request, 'model_dir':argv[2],
            'family':(verified['runtime_identity_sha256'],verified['base_model_sha256'],view)}
-    limits, _ = resident._admission(max_rss_mib, already_running=False)
-    if limits is None or _rss_mib() > max_rss_mib or time.monotonic() >= deadline:
+    limits, _ = resident._admission(max_rss_mib, already_running=False,
+                                    peak_mib=resident.load_footprint(state, argv[2], view))
+    unloaded = _rss_mib()
+    if limits is None or unloaded > max_rss_mib or time.monotonic() >= deadline:
         raise ValueError('inference_prepare_resource_deferred')
     loaded = _load(job)
-    if time.monotonic() >= deadline or _rss_mib() > max_rss_mib:
+    peak = _rss_mib()
+    if time.monotonic() >= deadline or peak > max_rss_mib:
         raise ValueError('inference_prepare_resource_deferred')
     _module_scope(runtime_roots())
     _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
@@ -334,6 +337,9 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     _forward(loaded, probe, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
     if timing.get('truncated_pairs') != 1:
         raise ValueError('inference_prepare_truncation_not_exercised')
+    # Measured growth of this load and its scoring: the next first-load
+    # admission for this model and view uses it instead of the RSS ceiling.
+    peak = max(peak, _rss_mib())
     trainer._prediction_proof()  # Expiry/revocation during preparation is not renewed.
     if (time.monotonic() >= deadline or _rss_mib() > max_rss_mib or snapshot(roots) != _stamps(before) or code_identity() != code_before
             or device_identity() != device_before or anchors != [read_private_json(state/name) for name in
@@ -349,4 +355,10 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
             raise ValueError('inference_identity_changed')
         if trainer._prediction_proof() != anchors[2] or time.monotonic() >= deadline:
             raise ValueError('inference_identity_changed')
-    return _record(state, argv, view=view, verified=verified, manifest=before, before_publish=before_publish)
+    receipt = _record(state, argv, view=view, verified=verified, manifest=before,
+                      before_publish=before_publish)
+    try:
+        resident.record_footprint(state, argv[2], view, peak - unloaded)
+    except (OSError, ValueError):
+        pass  # A missing record only keeps the conservative default estimate.
+    return receipt
