@@ -38,6 +38,8 @@ PREPARE_SECONDS = 120
 # Reasons a recall reports that this heal can clear.
 HEALABLE = frozenset(('adapter_anchor_missing', 'unsupported_adapter',
                       'inference_attestation_required'))
+# Reasons a cold resident service reports; a worker run warms the selector.
+WARMABLE = frozenset(('resident_service_deadline_expired', 'resident_service_starting'))
 
 
 class HealRefused(RuntimeError):
@@ -331,6 +333,37 @@ def heal(project, *, home=None, deadline=None, state=None):
     if not admitted(state, policy['trainerArgv']):
         raise HealRefused('inference_prepare_unverified')
     return {'status': 'selector_prepared', 'rebound': rebound}
+
+
+WARM_SECONDS = 30
+
+
+def warm(project, *, home=None, state=None):
+    """Validate and load the prepared selector in the resident service now.
+
+    One synthetic selection request through the ordinary service path: the
+    hosted worker runs its full identity validation and loads the model, so
+    the next recall is not the cold one. It adds no check and skips none; a
+    request that runs out of time still leaves a first load warm.
+    """
+    from .contracts import digest
+    from .dataset import read_private_json
+    from .inference_service import _policy, predict
+    from .store import canonical
+    state = Path(state) if state is not None else namespace(project, home)
+    deadline = time.monotonic() + WARM_SECONDS
+    _, policy = _policy(state, 'active-checkpoint.json', deadline=deadline)
+    active = read_private_json(state / 'active-checkpoint.json')
+    case = {'request_id': 'selector-warm', 'prompt': 'Which synthetic marker is warm?',
+            'candidates': [{'id': 'synthetic/warm', 'revision_sha256': '0' * 64,
+                            'input_text': 'The synthetic warm-up marker is WARM-1.',
+                            'input_kind': 'full_compact_wiki_body'}]}
+    case['input_sha256'] = digest(canonical(case))
+    request = {'schema_version': 1, 'artifact_path': active['artifact_path'], 'cases': [case]}
+    if active.get('model_input_view') is not None:
+        request['model_input_view'] = active['model_input_view']
+    predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
+    return {'status': 'selector_warm'}
 
 
 def selector_projects(home=None):
