@@ -967,6 +967,8 @@ class Service:
         self.workers = {}
         self.bindings = {}
         self.retry = {}
+        # Why an installation is not adopted yet, reported once per episode.
+        self.waiting = {}
         self.inflight = 0
         self.inflight_done = threading.Condition(self.lock)
         self.draining = threading.Event()
@@ -1376,6 +1378,24 @@ class Service:
         with self.lock:
             self.retry[project] = time.monotonic() + seconds
 
+    def _report_waiting(self, project, decision, reason):
+        """One ``resident.adopt waiting`` event per installation and reason.
+
+        Sync wakes only see ``preparing`` while the service declines to start
+        a worker; this names the cause in the installation's own log.
+        """
+        with self.lock:
+            if self.waiting.get(project) == reason:
+                return
+            self.waiting[project] = reason
+        targets = []
+        with suppress(Exception):
+            import event_log
+            state_root = event_log.state_root_for_decision(decision)
+            if state_root is not None:
+                targets.append((state_root, event_log.install_of(decision)))
+        _event(targets, 'resident.adopt', 'waiting', reason)
+
     def _adopt(self, project):
         from laya_embed_resident import _owner_identity, _write_state
         from laya_local_embed_service import _private_parent, _remove_stale_socket
@@ -1405,6 +1425,7 @@ class Service:
                 # A drifted bundle only attaches to a worker that a full proof
                 # started. Changed native or JS files also read as bundle
                 # drift, so a read-only proof never starts a model process.
+                self._report_waiting(project, decision, 'read_only_no_worker')
                 self._later(project, 5)
                 return
             self._load(project, decision, proof, mode, manifest, key, seal)
@@ -1464,6 +1485,7 @@ class Service:
                 return
             self.bindings[project] = binding
             self.retry.pop(project, None)
+            self.waiting.pop(project, None)
         if binding.events is not None:
             _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
                    attested=attested)

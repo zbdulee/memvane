@@ -300,6 +300,27 @@ def drop_event(kind, value, *, reason, attempts=None):
         return False
 
 
+def stall_event(kind, value, *, since, observations, retry_in):
+    """Best-effort report of a ``target_preparing`` streak that outlived the stall bound.
+
+    Logged once per streak as a failure (``target_preparing_stalled``), so the
+    log summary and errors view show an owner that never became ready.
+    """
+    try:
+        if not Path(value).is_dir():
+            return False
+        import event_log
+        from laya_index_host_route import select_route
+        decision = select_route(str(value), action='update')
+        return event_log.emit('wake.' + kind.removeprefix('laya-'), outcome='failed',
+                              reason='target_preparing_stalled', decision=decision,
+                              host='worker', session=None,
+                              since=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(since)),
+                              observations=observations, retryIn=retry_in)
+    except Exception:
+        return False
+
+
 def run(kind, value, *, owner_fd=None):
     target = resolve(kind, value)
     if target['terminal']:
