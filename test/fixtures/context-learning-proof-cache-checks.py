@@ -222,6 +222,19 @@ def host_checks(root, state):
                 env=inference_service._make_envelope(state,request,artifact_sha,time.monotonic()+4,'active-checkpoint.json')
                 inference_service._validate_request(env)
                 inference_service._validate_request(env)
+                # A receipt prepared before the versioned prediction pairing
+                # (leading body prefix) is refused, never accepted as current.
+                assert identity.CHECKS[-1]=='prediction_'+laya_adapter.PREDICTION_PAIRING.replace('-','_')
+                current=json.loads((state/identity.RECEIPT).read_text())
+                for stale in (identity.CHECKS[:-1],['read_only_load','synthetic_forward','fixed_selection_mapping']):
+                    older={**current,'checks':list(stale)}
+                    private(state/identity.RECEIPT,older)
+                    private(state/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':identity._sha(older)})
+                    reject(env,'inference_identity_changed')
+                    choose('inference_attestation_required',no_probe=True)
+                private(state/identity.RECEIPT,current)
+                private(state/identity.BINDING,{'schema':identity.SCHEMA,'receipt_sha256':identity._sha(current)})
+                inference_service._validate_request(env)
                 original_library=library.read_bytes();library.write_bytes(original_library+b'changed')
                 reject(env,'inference_identity_changed')
                 library.write_bytes(original_library)
