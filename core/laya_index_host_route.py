@@ -910,6 +910,12 @@ def onboarding_lines(root: str, session: str | None) -> str:
     return notice + "\n" + ONBOARDING_ANSWER_PREFIX + json.dumps(answer, ensure_ascii=False)
 
 
+UPGRADE_NOTICE = ('[memvane] plugin bundle upgrade in progress; search resumes '
+                  'when it finishes.')
+UPGRADE_STALLED_NOTICE = ('[memvane] plugin bundle upgrade stopped mid-way; a background '
+                          'run is asked to finish it. Search is unavailable until then.')
+
+
 def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
     """One SessionStart line for a blocked project whose folders need attention.
 
@@ -932,6 +938,15 @@ def project_dir_notice_for(cwd: str) -> str | None:
     """``project_dir_notice`` for an event cwd (Hermes calls it directly)."""
     if not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return None
+    try:
+        import laya_fresh_wiki_origin as fresh
+        if fresh.upgrade_in_progress(cwd) or fresh.upgrade_stalled(cwd):
+            # A fenced upgrade (live or stopped) asks the worker to finish it.
+            fresh.request_recovery(cwd)
+            return (UPGRADE_STALLED_NOTICE if fresh.upgrade_stalled(cwd)
+                    else UPGRADE_NOTICE)
+    except Exception:
+        pass
     try:
         import laya_project_dir_move as dir_move
         found = config.find_project_config(cwd)

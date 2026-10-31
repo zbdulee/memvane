@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import runpy
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -488,6 +489,99 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertEqual(self.selection(), 'blocked')
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
         self.assertEqual(self.selection(), 'candidate')
+
+    def fence(self):
+        """Interrupt an active upgrade after its fence: ledger ``upgrading``."""
+        self.bound()
+        self.activate()
+        real = active.inactive._atomic_expected
+
+        def interrupted(path, old, new):
+            if Path(path).name == fresh.ROUTE:
+                raise Kill()
+            return real(path, old, new)
+        with mock.patch.object(active.inactive, '_atomic_expected', interrupted):
+            with self.assertRaises(Kill):
+                self.run_upgrade(active)
+        self.assertEqual(self.row()['phase'], 'upgrading')
+
+    @staticmethod
+    def run_main(fn, *args):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = fn(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_is_refused(self):
+        import laya_bundle_upgrade
+        import laya_host_response as response
+        import laya_index_host_route as host
+        self.fence()
+        project = str(self.project)
+        payload = self.state.parent / 'recall-payload.json'
+        payload.write_text(json.dumps({'cwd': project, 'prompt': 'wiki body',
+                                       'hook_event_name': 'UserPromptSubmit'}))
+        asked = []
+        request = mock.patch.object(laya_bundle_upgrade, 'request',
+                                    side_effect=lambda *a, **_k: asked.append(a) or
+                                    {'status': 'queued'})
+        with request, mock.patch.object(fresh, 'UPGRADE_WAIT_SECONDS', .05, create=True):
+            # A live fence: no context, exit 0, and the upgrade worker is asked
+            # to finish (it resumes an interrupted intent).
+            decision = host.select_route_settled(project, action='recall')
+            self.assertEqual(decision['reason'], 'bundle_upgrade_in_progress')
+            self.assertEqual(asked, [(project, str(self.journal_path),
+                                      'bundle_upgrade_fenced')])
+            # SessionStart names the fence and asks for the worker too.
+            notice = host.project_dir_notice_for(project)
+            self.assertIn('bundle upgrade', notice or '')
+            self.assertEqual(len(asked), 2)
+            # A fence older than the bound is no longer an upgrade in
+            # progress: the recall is refused (visible) and still asks.
+            old = time.time() - fresh.UPGRADE_STALE_SECONDS - 60
+            os.utime(self.ledger, (old, old))
+            decision = host.select_route_settled(project, action='recall')
+            self.assertEqual((decision['state'], decision['reason']),
+                             ('blocked', 'bundle_upgrade_stalled'))
+            self.assertEqual(self.run_main(host.main, 'classify-hook', 'recall',
+                                           str(payload), project)[:2], (0, 'blocked\n'))
+            self.assertEqual(self.run_main(response.main, 'serve-hook', 'recall', 'claude',
+                                           str(payload), project)[0], 3)
+            self.assertGreaterEqual(len(asked), 4)
+        # The worker the recall asked for finishes the interrupted upgrade.
+        self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertEqual(self.selection(), 'candidate')
+
+    def test_recall_racing_a_finishing_upgrade_exits_zero(self):
+        # The hook classified the route before the upgrade published; core
+        # re-selects after it. Within the upgrade window that is not an error.
+        import laya_bundle_upgrade
+        import laya_host_response as response
+        self.bound()
+        self.activate()
+        project = str(self.project)
+        payload = self.state.parent / 'recall-payload.json'
+        payload.write_text(json.dumps({'cwd': project, 'prompt': 'wiki body',
+                                       'hook_event_name': 'UserPromptSubmit'}))
+        classified = {'state': 'candidate', 'reason': 'before_upgrade'}
+        with mock.patch.object(response, 'select_hook_route', return_value=classified), \
+             mock.patch.object(response, 'select_route',
+                               return_value={'state': 'candidate', 'reason': 'after'}):
+            refused = self.run_main(response.main, 'serve-hook', 'recall', 'claude',
+                                    str(payload), project)
+            self.assertEqual(refused[0], 3)  # no upgrade: a changed route is refused
+            laya_bundle_upgrade._write_status(self.state, status='complete',
+                                              executingRoot=self.new_root, attempts=1,
+                                              reason='active_upgrade_complete')
+            code, out, err = self.run_main(response.main, 'serve-hook', 'recall', 'claude',
+                                           str(payload), project)
+            self.assertEqual((code, out), (0, ''))
+            self.assertIn('bundle upgrade', err)
+            # Other actions keep the refusal.
+            self.assertEqual(self.run_main(response.main, 'serve-hook', 'gate', 'claude',
+                                           str(payload), project)[0], 3)
 
     def test_recall_during_the_upgrade_fence_never_exits_nonzero(self):
         import io

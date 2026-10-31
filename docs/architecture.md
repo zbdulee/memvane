@@ -141,7 +141,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` or lookup failure | exit 3, no fallback |
-| `upgrading` (recall only) | The selected route is fenced by a bundle upgrade (fresh-wiki ledger `upgrading`). Route selection re-reads it for up to 1.5 s first; still fenced, the hook gives no context and exits 0. A recall the fence interrupts mid-run also exits 0. |
+| `upgrading` (recall only) | The selected route is fenced by a bundle upgrade (fresh-wiki ledger `upgrading`). Route selection re-reads it for up to 1.5 s first; still fenced, the hook gives no context and exits 0. A recall that the fence or the upgrade's route switch (within 30 s of a `running` or `complete` worker status) interrupts mid-run also exits 0. Every fenced recall and SessionStart asks the upgrade worker to finish; a fence older than 10 minutes (ledger mtime) is a stopped upgrade: recall is refused again (exit 3) and SessionStart names it. |
 
 `worktree` is a linked git worktree of a selected main checkout; search serves
 the main checkout's published index read-only, and sync, compile, wiki

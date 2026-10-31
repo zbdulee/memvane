@@ -2462,12 +2462,12 @@ def _relocated(selection, decision):
 _UPGRADE_RECALL_NOTICE = '[memvane] bundle upgrade in progress; no context for this prompt'
 
 
-def _upgrade_fenced(payload, fallback_cwd) -> bool:
-    """The event's project route is fenced by an in-flight bundle upgrade."""
+def _upgrade_window(payload, fallback_cwd) -> bool:
+    """The event's project is inside a bundle upgrade (fence or route switch)."""
     cwd = payload.get('cwd') if isinstance(payload, dict) else None
     try:
-        from laya_fresh_wiki_origin import upgrade_in_progress
-        return upgrade_in_progress(cwd if isinstance(cwd, str) else fallback_cwd)
+        from laya_fresh_wiki_origin import upgrade_window
+        return upgrade_window(cwd if isinstance(cwd, str) else fallback_cwd)
     except Exception:
         return False
 
@@ -2521,21 +2521,20 @@ def main(argv: list[str] | None = None) -> int:
             _capture_learning(capture, started)
         return 0
     except Exception as exc:
-        if action == "recall" and _upgrade_fenced(payload, fallback_cwd):
-            # The route was fenced by a bundle upgrade mid-recall: no context
-            # for this prompt, never an error.
-            print(_UPGRADE_RECALL_NOTICE, file=sys.stderr)
-            return 0
-        # Hook stderr is intentionally terse. No source body, path, or secrets.
         code = _refusal_code(exc)
-        print(f"[memvane] {code}; request refused", file=sys.stderr)
+        # A recall that a bundle upgrade's fence or route switch interrupted
+        # answers without context, never with an error.
+        upgrading = action == "recall" and _upgrade_window(payload, fallback_cwd)
+        # Hook stderr is intentionally terse. No source body, path, or secrets.
+        print(_UPGRADE_RECALL_NOTICE if upgrading else
+              f"[memvane] {code}; request refused", file=sys.stderr)
         if not getattr(exc, '_memvane_event_logged', False) and decision is not None:
             # Refused before the traced call (route changed under the hook):
             # still one line, so a refusal never reads as "the hook did not run".
             event_log.emit(action, outcome='refused', reason=code,
                            ms=event_log.elapsed_ms(started), decision=decision, host=host,
                            session=event_log.session_id(payload))
-        return 3
+        return 0 if upgrading else 3
 
 
 if __name__ == "__main__":
