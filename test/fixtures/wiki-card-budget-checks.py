@@ -207,6 +207,10 @@ class CompileChecks(unittest.TestCase):
         text = (self.p.root / out['targetPath']).read_text()
         self.assertIn('related:\n  - "part-two"\n', text)
         self.assertNotIn('- "part-one"', text, "a card never relates to its own key")
+        import wiki_compile as wc
+        meta, ok = wc.parse_frontmatter(text)
+        self.assertTrue(ok, 'a related block never fail-closes verify or dedup parsing')
+        self.assertEqual(meta.get('related'), ['part-two'])
 
     def test_update_over_budget_leaves_the_existing_card_untouched(self):
         out = self.p.compile(candidate())

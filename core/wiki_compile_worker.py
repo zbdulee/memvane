@@ -1486,7 +1486,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     outcome, split_reason = 'split', None
     budget = _EXTRACTOR_BUDGET.get()
     if budget is not None and budget['remaining'] <= 0:
-        outcome, split_reason = 'split_deferred', 'extractor_budget_exhausted'
+        outcome, split_reason = 'split_skipped', 'extractor_budget_exhausted'
     else:
         if budget is not None:
             budget['remaining'] -= 1

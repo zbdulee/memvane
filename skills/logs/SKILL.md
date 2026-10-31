@@ -41,9 +41,11 @@ For `wiki.card`, `over_budget` is a card the writer refused because its body
 exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
 `estimate`; `reason` `manual_section_over_budget` when the overflow is a
 hand-written section). `split` / `split_incomplete` / `split_failed` /
-`split_deferred` report the one split re-prompt per source (`requested`,
-`parts`, `written`), and `merge_kept_separate` is a dedup merge refused because
-the keeper is over the budget.
+`split_skipped` report the one split re-prompt per source (`requested`,
+`parts`, `written`; `split_skipped` means the run's extractor budget left no
+re-prompt). Every outcome other than `split` is terminal: those cards stay
+unwritten and the source job is settled. `merge_kept_separate` is a dedup merge
+refused because the keeper is over the budget.
 
 ## Safety
 
