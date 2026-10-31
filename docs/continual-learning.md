@@ -53,14 +53,22 @@ the adapter uses the **model's 1024-token budget**. Thus 16 KiB is a storage
 ceiling, not a guarantee that every body fits Laya. Training input is never
 truncated. Prediction (live selection and held-out evaluation) keeps every
 candidate under the versioned pairing `leading-body-prefix-v1`: the whole user
-request plus the longest leading codepoint prefix of the card body (its title
-first) that fits the budget, found by re-tokenizing the whole state, so the
-same input always keeps the same prefix. A request that does not fit beside one
-body character still fails closed (`input_budget_exceeded`). For selection, a
-body over 16 KiB is first cut to its leading 16 KiB on a codepoint boundary.
-The inference receipt records the pairing in its `checks`
+request plus a leading prefix of the card body. The body is tokenized once
+with offsets and cut at a body-token end (a codepoint index, so no UTF-8
+sequence is split) sized from the token room left beside the request; the
+whole state is then re-tokenized and, while still too long, the cut steps back
+by the measured excess (at most 16 checks). The same input always keeps the
+same prefix; it is budget-sized, not a proven longest prefix, because a
+tokenizer may merge across the cut. The prefix keeps the card's whole leading
+heading line: a request that leaves no room for it fails closed
+(`input_budget_exceeded`), like a request that is over budget by itself.
+Fifteen 16 KiB cards pair in about 0.07 s with the 1024-token checkpoint. For
+selection, a body over 16 KiB is first cut to its leading 16 KiB on a
+codepoint boundary. The inference receipt records the pairing in its `checks`
 (`prediction_leading_body_prefix_v1`); a receipt without it fails admission
-and the selector heal prepares it again. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
+and the selector heal prepares it again. Preparation proves the pairing on the
+model's own budget (1024 or 8192 tokens) with a synthetic case whose request
+fills all but a small room and whose card must be cut. `laya_raw.py` is a separate raw-data adapter with an assumed 0.3.23
 candidate pin, not this verified 0.3.20 integration.
 
 ## One local cycle

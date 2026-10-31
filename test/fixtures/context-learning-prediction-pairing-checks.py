@@ -22,14 +22,44 @@ class CodepointTokenizer:
     mask_token = '[MASK]'
     mask_token_id, cls_token_id, sep_token_id, pad_token_id = MASK, CLS, SEP, PAD
     model_max_length = 8192
+    is_fast = True
 
-    def __call__(self, text, add_special_tokens=False, truncation=False, max_length=None):
-        ids = [ord(char) + 16 for char in text]
-        return {'input_ids': ids[:max_length] if truncation else ids}
+    def spans(self, text):
+        return [(i, i + 1) for i in range(len(text))]
+
+    def __call__(self, text, add_special_tokens=False, truncation=False, max_length=None,
+                 return_offsets_mapping=False):
+        spans = self.spans(text)
+        if truncation: spans = spans[:max_length]
+        result = {'input_ids': [self.token(text[a:b]) for a, b in spans]}
+        if return_offsets_mapping: result['offset_mapping'] = spans
+        return result
+
+    @staticmethod
+    def token(piece):
+        return ord(piece) + 16 if len(piece) == 1 else 0x110000 + hash(piece) % 1000
 
     @staticmethod
     def decode(ids):
         return ''.join(chr(value - 16) for value in ids)
+
+
+class MergingTokenizer(CodepointTokenizer):
+    """Whole vocabulary words are one token; any partial word is one per char.
+
+    Token count is not monotonic in the character prefix: ``synthetic`` costs
+    one token where ``syntheti`` costs eight, like a real BPE merge.
+    """
+    LONG_WORD = 'm' * 300
+    VOCAB = (LONG_WORD, 'synthetic', 'overflow', 'marker')
+
+    def spans(self, text):
+        spans, i = [], 0
+        while i < len(text):
+            word = next((w for w in self.VOCAB if text.startswith(w, i)), None)
+            step = len(word) if word else 1
+            spans.append((i, i + step)); i += step
+        return spans
 
 
 def _stub_laya():
@@ -133,6 +163,64 @@ class PredictionPairingTests(unittest.TestCase):
     def test_request_that_cannot_fit_still_fails_closed(self):
         with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
             self.pairs([case(prompt='질문 ' * 200)])
+
+    def test_merging_tokenizer_keeps_a_budget_sized_token_boundary_prefix(self):
+        # One 300-character word is a single token; any part of it costs one
+        # token per character. A codepoint-prefix probe inside the word looks
+        # over budget although the whole word fits: the cut must still take
+        # the whole word and fill the room after it.
+        tok = MergingTokenizer()
+        word = tok.LONG_WORD
+        body = '# Merge card\n' + 'z ' * 20 + word + ' z' * 500
+        with patch.dict(sys.modules, _stub_laya()):
+            item = adapter._pairs([case(bodies=(body,))], tok, CFG, with_gold=False)[0]
+            skeleton, _ = sys.modules['laya.common'].build_sequence(
+                tok, '', adapter.QUESTION, max_len=CFG['max_len'],
+                head_max_len=CFG['head_max_len'], state_ids=[])
+        room = CFG['max_len'] - len(skeleton)
+        state_tokens = len(item['ids']) - len(skeleton)
+        self.assertTrue(item['truncated'])
+        self.assertIn(tok.token(word), item['ids'])
+        self.assertLessEqual(state_tokens, room)
+        self.assertGreaterEqual(state_tokens, room - 1)
+
+    def test_heading_line_is_kept_whole_or_the_pair_fails_closed(self):
+        title = '# ' + '긴제목' * 20 + '\n'
+        body = title + '본문 ' * 400
+        # Room for the request and the heading: the heading is kept whole.
+        item = self.pairs([case(bodies=(body,))])[0]
+        self.assertTrue(kept_body(item).startswith(title.rstrip('\n')))
+        # A request that leaves room for only part of the heading fails closed.
+        with patch.dict(sys.modules, _stub_laya()):
+            skeleton, _ = sys.modules['laya.common'].build_sequence(
+                TOK, '', adapter.QUESTION, max_len=CFG['max_len'],
+                head_max_len=CFG['head_max_len'], state_ids=[])
+        lead = len('User request:\n' + '\nWiki card body:\n')
+        prompt = '질' * (CFG['max_len'] - len(skeleton) - lead - 10)
+        self.assertLess(10, len(title) - 1)
+        with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
+            self.pairs([case(prompt=prompt, bodies=(body,))])
+        with patch.dict(sys.modules, _stub_laya()):
+            short = adapter._pair(prompt, card('x', '# 짧은\n' + '본문 ' * 400), TOK, CFG, fit_body=True)
+        self.assertTrue(short['truncated'])
+
+    def test_cancellation_is_checked_while_fitting(self):
+        with patch.dict(sys.modules, _stub_laya()):
+            with self.assertRaisesRegex(ValueError, 'prediction_cancelled'):
+                adapter._pair(PROMPT, card('x', LONG_BODY), TOK, CFG, fit_body=True,
+                              cancelled=lambda: True)
+
+    def test_truncation_probe_overflows_both_supported_budgets(self):
+        for max_len, head in ((1024, 256), (8192, 256)):
+            cfg = {'max_len': max_len, 'head_max_len': head}
+            with patch.dict(sys.modules, _stub_laya()):
+                probe = adapter.truncation_probe((None, TOK, cfg))
+                items = adapter._pairs([probe], TOK, cfg, with_gold=False)
+                with self.assertRaisesRegex(ValueError, 'model_token_budget_exceeded'):
+                    adapter._pairs([{**probe, 'selected_ids': []}], TOK, cfg, with_gold=True)
+            self.assertEqual([item['truncated'] for item in items], [True], max_len)
+            self.assertLessEqual(len(items[0]['ids']), max_len)
+            self.assertLessEqual(len(probe['candidates'][0]['input_text'].encode()), adapter.MAX_INPUT_BYTES)
 
     def test_content_checks_run_on_the_whole_body(self):
         with self.assertRaisesRegex(ValueError, 'mask_token_in_source'):

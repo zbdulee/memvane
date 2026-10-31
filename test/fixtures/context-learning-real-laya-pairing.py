@@ -41,7 +41,26 @@ result = adapter.predict_loaded(model, tok, cfg, {'schema_version': 1, 'artifact
 again = adapter.predict_loaded(model, tok, cfg, {'schema_version': 1, 'artifact_path': '',
                                                  'cases': [case]})
 items = adapter._pairs([case], tok, cfg, with_gold=False)
-print(json.dumps({'max_len': cfg['max_len'], 'long_card_tokens': [
+# Worst recall pool: fifteen cards at the 16 KiB selection cap.
+import time
+heavy = []
+for i in range(15):
+    body, unit = '# 카드 %d 전원 설계\n' % i, '%d번 측정: synthetic motor driver 전류로 전압이 떨어진다. ' % i
+    while len((body + unit).encode()) <= adapter.MAX_INPUT_BYTES: body += unit
+    heavy.append({'id': 'w/%02d.md' % i, 'revision_sha256': '0' * 64, 'input_text': body,
+                  'input_kind': 'full_compact_wiki_body'})
+started = time.perf_counter()
+adapter._pairs([{'request_id': 'heavy', 'prompt': prompt, 'candidates': heavy}], tok, cfg, with_gold=False)
+heavy_seconds = time.perf_counter() - started
+# The prepare probe overflows both supported budgets (1024 and 8192 tokens).
+probes = {}
+for view in (adapter.LEGACY_INPUT_VIEW, adapter.EDIT_INPUT_VIEW):
+    loaded = (model, tok, cfg) if view == adapter.LEGACY_INPUT_VIEW else adapter._load(
+        os.environ['QMD_LAYA_MODEL'], input_view=view)
+    probe = adapter.truncation_probe(loaded)
+    fitted = adapter._pairs([probe], loaded[1], loaded[2], with_gold=False)
+    probes[str(loaded[2]['max_len'])] = [item['truncated'] for item in fitted]
+print(json.dumps({'heavy_pairing_seconds': round(heavy_seconds, 3), 'probes': probes,'max_len': cfg['max_len'], 'long_card_tokens': [
                       len(tok(body, add_special_tokens=False)['input_ids']) for body in long_cards],
                   'strict_budget_refused': budget_refused,
                   'pairs': timing['pairs'], 'truncated_pairs': timing['truncated_pairs'],

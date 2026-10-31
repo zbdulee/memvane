@@ -313,10 +313,7 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
                ('live-selector.json','active-checkpoint.json','laya-synthetic-attestation.json')]
     case = {'request_id':'inference-prepare-synthetic','prompt':'What is the synthetic Cobalt beacon marker?',
             'candidates':[{'id':'synthetic/cobalt','revision_sha256':'0'*64,
-                'input_text':'The imaginary Cobalt beacon marker is COBALT-271.', 'input_kind':'full_compact_wiki_body'},
-                # Far over any model budget: proves the versioned leading-prefix pairing.
-                {'id':'synthetic/overflow','revision_sha256':'1'*64,
-                'input_text':'# Synthetic overflow\n' + 'synthetic overflow ' * 700, 'input_kind':'full_compact_wiki_body'}]}
+                'input_text':'The imaginary Cobalt beacon marker is COBALT-271.', 'input_kind':'full_compact_wiki_body'}]}
     case['input_sha256'] = _sha(case)
     request = {'schema_version':1,'artifact_path':str(artifact),'cases':[case]}
     if 'model_input_view' in active: request['model_input_view'] = view
@@ -329,8 +326,12 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     if time.monotonic() >= deadline or _rss_mib() > max_rss_mib:
         raise ValueError('inference_prepare_resource_deferred')
     _module_scope(runtime_roots())
+    _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
+    # The versioned prediction pairing, proven on this model's own budget.
+    from .laya_adapter import truncation_probe
+    probe = {**job, 'request': {**request, 'cases': [truncation_probe(loaded)]}}
     timing = {}
-    _forward(loaded, job, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
+    _forward(loaded, probe, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)
     if timing.get('truncated_pairs') != 1:
         raise ValueError('inference_prepare_truncation_not_exercised')
     trainer._prediction_proof()  # Expiry/revocation during preparation is not renewed.

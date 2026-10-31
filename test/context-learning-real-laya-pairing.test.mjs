@@ -17,4 +17,6 @@ test('opt-in existing Laya runtime: over-budget cards are scored from their lead
     assert.ok(report.max_pair_tokens <= report.max_len);
     assert.ok(Array.isArray(report.selected_ids) && report.selected_ids.length <= 3);
     assert.equal(report.deterministic, true);
+    assert.deepEqual(report.probes, {'1024': [true], '8192': [true]});
+    assert.ok(report.heavy_pairing_seconds < 1, `pairing 15x16KiB took ${report.heavy_pairing_seconds}s`);
   });
