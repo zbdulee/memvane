@@ -80,8 +80,10 @@ development execution guard is separate; see
   each cached member again. A member whose sidecar row is already identical,
   or an unverified card, skips the route proof, the journal write fence and the
   sidecar transaction (`laya_incremental_docs.publish_needed` over one
-  read-only `PublishedReader` per wake); profile registration crosses the fence
-  only before an embedding is written.
+  read-only `PublishedReader` per wake). The pending and the ordinary vector
+  fill each cross that fence once, before their first candidate write
+  (profile, content or chunk rows), so `newWriteSeen` is durable before any
+  vector commit; a step over cached members only does not cross it.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.

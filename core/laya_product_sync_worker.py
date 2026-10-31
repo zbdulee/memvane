@@ -709,7 +709,8 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
-                                    on_document_complete=on_document_complete)
+                                    on_document_complete=on_document_complete,
+                                    before_write=before_publish)
             if fill['state'] in ('deferred', 'blocked'):
                 return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
     return result
@@ -1008,7 +1009,8 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
             return result
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
-                                    on_document_complete=on_document_complete)
+                                    on_document_complete=on_document_complete,
+                                    before_write=before_publish)
             result = {**result, 'fill': {key: fill[key] for key in
                                          ('state', 'reason', 'embedded', 'cached', 'bytes',
                                           'cursor', 'path', 'detail', 'rows') if key in fill}}

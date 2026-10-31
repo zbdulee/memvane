@@ -96,8 +96,14 @@ def fill_complete(runtime: Any, profile_id: str) -> bool:
 def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FILL_FILES,
                      max_bytes: int = DEFAULT_FILL_BYTES,
                      should_yield: Optional[Callable[[], bool]] = None,
-                     on_document_complete: Optional[Callable[..., None]] = None) -> Dict[str, Any]:
+                     on_document_complete: Optional[Callable[..., None]] = None,
+                     before_write: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
     """Embed at most ``max_files`` uncached members; one body in memory at a time.
+
+    ``before_write`` (a selected project's journal fence) runs once, before
+    the first candidate write of the step (profile registration, content or
+    chunk rows). A step over cached members only writes nothing there and
+    does not call it.
 
     Answers:
 
@@ -135,7 +141,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     if (type(max_files) is not int or max_files < 1
             or type(max_bytes) is not int or max_bytes < 1
             or (should_yield is not None and not callable(should_yield))
-            or (on_document_complete is not None and not callable(on_document_complete))):
+            or (on_document_complete is not None and not callable(on_document_complete))
+            or (before_write is not None and not callable(before_write))):
         raise TypeError('invalid_vector_fill_step')
     catalog = getattr(runtime, 'catalog', None)
     if catalog is None:
@@ -157,9 +164,19 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     if progress['done']:
         return answer('complete')
     vectors = LayaVectorIndex(runtime.index)
-    if vectors.register_profile(profile['model_id'], profile['embedding_fingerprint'],
-                                profile['dimension']) != profile_id:
-        raise IndexContractError('vector_profile_mismatch')
+    writable = False
+
+    def prepare_write():
+        # Fence first, then the profile row: both precede any content/chunk row.
+        nonlocal writable
+        if writable:
+            return
+        if before_write is not None:
+            before_write()
+        if vectors.register_profile(profile['model_id'], profile['embedding_fingerprint'],
+                                    profile['dimension']) != profile_id:
+            raise IndexContractError('vector_profile_mismatch')
+        writable = True
     exclusions = load_exclusions(runtime.index, runtime.scope)
     cursor = progress['cursor']
     rows_total = progress['rows']
@@ -250,6 +267,7 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                 return record(False) or answer('blocked', 'vector_member_rejected',
                                                cursor=cursor, path=path,
                                                detail='chunk_set_too_large')
+            prepare_write()
             # Chunk rows reference their content row; stage reuses it.
             runtime.index.ensure_content(sha, text)
             vectors.insert_chunk_set(sha, title, profile_id, rows)
