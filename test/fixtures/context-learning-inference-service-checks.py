@@ -241,6 +241,30 @@ class WarmFirstLoadTests(unittest.TestCase):
         self.assertEqual(len(self.loads),3)
 
 
+class BundleSignatureTests(unittest.TestCase):
+    """A hosted service of an earlier bundle must read as another service."""
+    def signature(self, core):
+        return subprocess.run([sys.executable, '-I', '-B', '-c',
+            'import sys;sys.path.insert(0,sys.argv[1]);'
+            'from context_learning import inference_service as s;print(s._signature())', str(core)],
+            capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+
+    def test_host_code_change_outside_the_package_changes_the_signature(self):
+        import shutil
+        source = Path(service.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='qmd-sig-') as temp:
+            copies = []
+            for name in ('claude', 'codex', 'next'):
+                core = Path(temp) / name / 'core'
+                shutil.copytree(source, core, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                copies.append(core)
+            host = sorted(p.name for p in copies[2].glob('*.py'))[0]
+            (copies[2] / host).write_text((copies[2] / host).read_text() + '\n# next release\n')
+            claude, codex, nxt = (self.signature(core) for core in copies)
+        self.assertEqual(claude, codex, 'two host caches of one release must agree')
+        self.assertNotEqual(claude, nxt, 'a host-code-only release kept the old service signature')
+
+
 class ResponseTests(unittest.TestCase):
     def test_invalid_candidate_response_is_not_a_publishable_generation(self):
         from context_learning import laya_adapter

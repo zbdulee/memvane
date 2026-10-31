@@ -328,9 +328,19 @@ _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_de
 
 @lru_cache(maxsize=1)
 def _signature():
+    """The executing bundle's code, not only this package.
+
+    The hosted service binds its own adapter to the bundle installed when it
+    started. A release that changes only host code (``core/*.py``) must still
+    read as a different service, so the next request replaces it instead of
+    keeping an earlier bundle that no longer binds. The file set matches the
+    resident service's bundle digest; two host caches of one release agree.
+    """
+    core = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob('*.py')):
-        digest.update(path.name.encode())
+    for path in sorted([*core.glob('*.py'), *core.glob('*.mjs'),
+                        *core.glob('context_learning/*.py')]):
+        digest.update(path.relative_to(core).as_posix().encode() + b'\0')
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
