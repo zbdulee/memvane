@@ -576,19 +576,24 @@ The request room is a reserve, not a guarantee: a selector request may be up to
 2000 characters. Counting request and body apart is one token above the joint
 tokenization the selector performs.
 
-Measurement is exact or absent. The body is counted with a selector checkpoint's
+Measurement is exact. The body is counted with a selector checkpoint's
 `tokenizer/tokenizer.json` through that selector runtime's `tokenizers` library
-(`method: tokenizer`). The project's own live selector comes first; a project
-without one uses the first usable live selector under the user's learning state
+(`method: tokenizer`). Candidates are the project's own live selector first, then
+every other live selector under the user's learning state
 (`<learning state>/live-selection/*/live-selector.json`, the same checkpoint
 family), so counting works wherever the learning runtime and a selector model
-exist. A body `derive` refuses as oversized (over 16 KiB) is over the budget
-without counting (`method: derive_limit`). With no selector tokenizer on the
-machine the card is written unmeasured (`method: unavailable`) and a `wiki.card`
-`unmeasured` event records it: no local selector exists there to protect, a
-provable tokenizer-free bound (UTF-8 bytes per non-ASCII character) overcounts
-real Korean text about threefold and would force a paid split on most cards, and
-the selector scores an over-length card by its leading part rather than failing.
+exist. A candidate whose runtime fails (import error, corrupt file, timeout)
+yields to the next. When every candidate fails the card is not written
+(`measure-failed`, `wiki.card` `measure_failed`) and the worker keeps it for a
+later run (below). A body `derive` refuses as oversized (over 16 KiB) is over the
+budget without counting (`method: derive_limit`).
+
+Only a machine with no selector tokenizer at all writes cards unmeasured
+(`method: unavailable`, `wiki.card` `unmeasured`): no local selector exists there
+to protect, a provable tokenizer-free bound (UTF-8 bytes per non-ASCII
+character) overcounts real Korean text about threefold and would force a paid
+split on most cards, and a selector added later scores an over-length card by its
+leading part (truncated at scoring).
 A per-character estimate is never a gate: byte-fallback characters (rare Hangul
 syllables, rare CJK) cost the tokenizer up to one token per UTF-8 byte. The
 estimate only sizes the summary room the extractor prompt states.
@@ -617,17 +622,37 @@ against the run's extractor budget. `compile.budget.cardsPerSource` covers both
 answers: the split gets only the slots the first answer did not use, and parts
 beyond them are dropped and counted (`droppedParts`), never silently.
 
-A source revision that ends with an unwritten card is terminal: a card still over
-the budget after the split, parts dropped at the card cap, a failed re-prompt, an
-exhausted run budget, or a hand-written section over the budget. The worker
-appends `{path, collection, sha256, outcome, reason, titles}` to
-`.memvane/compile/budget-refused.jsonl` and logs `wiki.card` `budget_refused`.
-Before any extractor spawn the worker skips a job whose source path, collection
-and content SHA-256 match such a row (`budget_refused_revision`), so the pending
-refresh recovery, which re-enqueues the still-unresolved source on every run,
-costs no extraction. The pending refresh stays unresolved on purpose: recall
-keeps treating the source's previous card as stale. A source edit (new SHA-256)
-or `forceRecompile` compiles the source again.
+Per-revision budget state lives in two correctness files under the compile
+directory, keyed by source path, collection and content SHA-256
+(`core/wiki_budget_ledger.py`). Neither is trimmed like an audit log: every write
+rewrites the file atomically, keeping the latest row per source and dropping only
+rows whose source file is gone or now holds other bytes.
+
+- `budget-refused.jsonl` makes a revision terminal: a card still over the budget
+  after the split, parts dropped at the card cap, a split part the writer
+  rejects (`split_card_rejected`), a failed re-prompt, resumes exhausted, or a
+  hand-written section over the budget. The worker logs `wiki.card`
+  `budget_refused` and, before any extractor spawn, skips a job matching such a
+  row (`budget_refused_revision`). The pending refresh stays unresolved on
+  purpose (recall keeps treating the source's previous card as stale), so the
+  pending recovery re-enqueues the source on every run at no extraction cost. A
+  source edit (new SHA-256) or `forceRecompile` compiles the source again.
+- `budget-stash.json` holds the extractor's unfinished candidates when the split
+  or the measurement could not run: the run's extractor budget was exhausted
+  (`split_skipped`), the re-prompt returned `resource_deferred`, or no selector
+  runtime could count (`measure_failed`). The job is kept, not settled (an
+  initial backfill revision stays open), and the next run resumes those
+  candidates without paying for the extraction again (`wiki.card`
+  `budget_stashed`). After `MAX_RESUME_ATTEMPTS` (3) resumes the revision becomes
+  terminal (`resume_exhausted`).
+
+Before any paid extractor call the worker checks that both files are writable.
+When they are not, or a terminal write fails after the call, it makes no further
+paid call for the source: the job is kept with `_budgetStoreRetries` (and the
+pending terminal row as `_budgetTerminal`, written by the next run without
+extracting) for at most 3 runs, then settled, and `wiki.card`
+`budget_store_unwritable` / `budget_store_failed` records each attempt. Every
+later job for the source meets the same writability check first.
 
 `core/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
 the loser stays, the pair is recorded as skipped and the CLI returns
@@ -884,7 +909,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `learning.state`, `learning.prepare` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound` |
-| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (`reason`, `path`, `title`, `size`, `budget`, `method`); `unmeasured` (no selector tokenizer, `method: unavailable`); `split` / `split_incomplete` / `split_failed` / `split_skipped` (source `path`, `requested`, `parts`, `written`, `dropped`); `budget_refused` (source `path`, `split` outcome, `sha` prefix, `cards`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
+| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (`reason`, `path`, `title`, `size`, `budget`, `method`); `unmeasured` (no selector tokenizer, `method: unavailable`); `measure_failed` (every selector runtime failed, `runtimes`); `split` / `split_incomplete` / `split_failed` / `split_skipped` (source `path`, `requested`, `parts`, `written`, `dropped`); `budget_refused` (source `path`, `split` outcome, `sha` prefix, `cards`); `budget_stashed` (source `path`, `reason`, `cards`, `attempts`); `budget_store_unwritable` / `budget_store_failed` (source `path`, `retries`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,

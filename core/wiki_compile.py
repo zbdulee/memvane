@@ -1373,13 +1373,27 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     caller splits the knowledge into several cards. ``floor_text`` is the same
     card with an empty summary; when even that does not fit, the hand-written
     sections alone exceed the budget and no split of the summary can fix it
-    (``manual_section_over_budget``). Without a selector tokenizer the card is
-    written and a ``wiki.card`` ``unmeasured`` event records it.
+    (``manual_section_over_budget``). With no selector tokenizer on the machine
+    the card is written and a ``wiki.card`` ``unmeasured`` event records it.
+    When every selector runtime fails to count, nothing is written and stdout
+    carries ``measure-failed`` (transient: the worker retries it later).
     """
     import wiki_card_budget as budget
-    tokenizer = budget.selector_tokenizer(config, root)
+    tokenizer = budget.selector_tokenizers(config, root)
     measured = budget.measure_card(card_text, tokenizer)
     rel = target.relative_to(wiki_root).as_posix()
+    if measured["reason"] == "measure_failed":
+        record["action"] = "measure-failed"
+        record["cardBudget"] = {"budget": measured["budget"], "method": measured["method"],
+                                "reason": "measure_failed"}
+        append_jsonl(candidate_path, record)
+        budget.emit(root, "measure_failed", bound=selected, path=rel, title=record["title"],
+                    reason="measure_failed", budget=measured["budget"], method=measured["method"],
+                    runtimes=len(tokenizer))
+        print(json.dumps({"action": "measure-failed", "reason": "measure_failed",
+                          "targetPath": record["targetPath"], "title": record["title"],
+                          "canonicalKey": record["canonicalKey"]}, ensure_ascii=False))
+        return True
     if measured["fits"]:
         if measured["method"] == budget.METHOD_UNAVAILABLE:
             budget.emit(root, "unmeasured", bound=selected, path=rel, title=record["title"],
@@ -1388,7 +1402,7 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
         return False
     reason = measured["reason"]
     if floor_text is not None and floor_text != card_text:
-        if not budget.measure_card(floor_text, tokenizer)["fits"]:
+        if budget.measure_card(floor_text, tokenizer)["reason"] == "over_budget":
             reason = "manual_section_over_budget"
     fields = {"size": measured["size"], "budget": measured["budget"],
               "method": measured["method"]}

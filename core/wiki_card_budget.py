@@ -20,17 +20,21 @@ Budget arithmetic (mmBERT tokenizer of the live selector, measured):
   is left for the user request. Card titles live in the frontmatter and never
   enter the pair.
 
-Measurement is exact or absent. The selector runtime's own ``tokenizers``
-library counts the body with a selector checkpoint's ``tokenizer/tokenizer.json``
-(``method: tokenizer``). The project's own live selector comes first; a project
-without one uses any other live selector of this user's learning state (same
-checkpoint family), so counting works wherever the learning runtime and a
-selector model exist. With no selector tokenizer on the machine at all the card
-is written unmeasured (``method: unavailable``, ``fits`` true) and the caller
-logs it: no local selector exists there to protect, a provable tokenizer-free
-bound (UTF-8 bytes per non-ASCII character) overcounts real Korean text about
-threefold and would force a paid split on most cards, and the selector scores
-an over-length card by its leading part rather than failing.
+Measurement is exact. The selector runtime's own ``tokenizers`` library counts
+the body with a selector checkpoint's ``tokenizer/tokenizer.json``
+(``method: tokenizer``). Candidates are the project's own live selector first,
+then every other live selector of this user's learning state (same checkpoint
+family), so counting works wherever the learning runtime and a selector model
+exist. A candidate whose runtime fails (import error, corrupt file, timeout)
+yields to the next; when every candidate fails the result is
+``measure_failed`` and the card is not written (the caller retries later).
+
+Only a machine with no selector tokenizer at all writes cards unmeasured
+(``method: unavailable``, ``fits`` true), and the caller logs it: no local
+selector exists there to protect, a provable tokenizer-free bound (UTF-8 bytes
+per non-ASCII character) overcounts real Korean text about threefold and would
+force a paid split on most cards, and a selector added later scores an
+over-length card by its leading part.
 
 ``estimate`` is only prompt guidance (the summary room the extractor is told),
 never a gate: per character class, ASCII digit 1, ASCII letter run
@@ -60,6 +64,7 @@ QUERY_ROOM = MODEL_MAX_LEN - PAIR_OVERHEAD - BODY_BUDGET
 
 METHOD_TOKENIZER = 'tokenizer'
 METHOD_UNAVAILABLE = 'unavailable'
+METHOD_FAILED = 'measure_failed'
 METHOD_DERIVE_LIMIT = 'derive_limit'
 MAX_SELECTOR_STATES = 64
 EXACT_TIMEOUT_SECONDS = 20
@@ -145,39 +150,48 @@ def _policy_tokenizer(state) -> tuple[str, str] | None:
     return str(python), str(tokenizer)
 
 
-def selector_tokenizer(config: dict, project_root) -> tuple[str, str] | None:
-    """(runtime python, tokenizer.json) of a live selector, or None.
+def selector_tokenizers(config: dict, project_root) -> list[tuple[str, str]]:
+    """Every usable (runtime python, tokenizer.json) of a live selector, in order.
 
     Read only. A live selector policy names the runtime interpreter and the
     checkpoint directory (``trainerArgv`` = python, adapter, model dir). The
-    project's own selector wins; otherwise the first usable selector under the
-    user's ``live-selection`` state (sorted, at most ``MAX_SELECTOR_STATES``).
+    project's own selector comes first, then the user's other selectors under
+    ``live-selection`` (sorted, at most ``MAX_SELECTOR_STATES``). Usable means the
+    files exist; whether the runtime works is decided by counting.
     """
+    found: list[tuple[str, str]] = []
+
+    def add(state):
+        try:
+            if Path(state).is_symlink() or not Path(state).is_dir():
+                return
+            pair = _policy_tokenizer(state)
+        except Exception:  # noqa: BLE001
+            return
+        if pair is not None and pair not in found:
+            found.append(pair)
+
     try:
         state = _selection_state(config, Path(project_root).resolve())
         if state is not None:
-            found = _policy_tokenizer(state)
-            if found is not None:
-                return found
-    except Exception:  # noqa: BLE001 - fall through to the user's other selectors
+            add(state)
+    except Exception:  # noqa: BLE001 - the user's other selectors still count
         pass
     try:
         from context_learning.runtime_setup import learning_state_base
         parent = learning_state_base() / 'live-selection'
-        if parent.is_symlink() or not parent.is_dir():
-            return None
-        for state in sorted(parent.iterdir())[:MAX_SELECTOR_STATES]:
-            try:
-                if state.is_symlink() or not state.is_dir():
-                    continue
-                found = _policy_tokenizer(state)
-            except Exception:  # noqa: BLE001
-                continue
-            if found is not None:
-                return found
+        if not parent.is_symlink() and parent.is_dir():
+            for state in sorted(parent.iterdir())[:MAX_SELECTOR_STATES]:
+                add(state)
     except Exception:  # noqa: BLE001
-        return None
-    return None
+        pass
+    return found
+
+
+def selector_tokenizer(config: dict, project_root) -> tuple[str, str] | None:
+    """The first usable selector tokenizer, or None."""
+    found = selector_tokenizers(config, project_root)
+    return found[0] if found else None
 
 
 def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int] | None:
@@ -200,21 +214,37 @@ def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int
     return counts
 
 
-def measure_bodies(bodies: list[str], tokenizer: tuple[str, str] | None = None
-                   ) -> tuple[list[int] | None, str]:
-    counts = count_exact(bodies, tokenizer)
-    if counts is not None:
-        return counts, METHOD_TOKENIZER
-    return None, METHOD_UNAVAILABLE
+def _candidates(tokenizers) -> list[tuple[str, str]]:
+    if tokenizers is None:
+        return []
+    if isinstance(tokenizers, tuple):
+        return [tokenizers]
+    return list(tokenizers)
 
 
-def measure_card(card_text: str, tokenizer: tuple[str, str] | None = None) -> dict:
+def measure_bodies(bodies: list[str], tokenizers=None) -> tuple[list[int] | None, str]:
+    """Exact counts from the first selector runtime that answers.
+
+    ``tokenizers`` is one ``(python, tokenizer.json)`` pair or a list of them.
+    Returns ``(None, 'unavailable')`` with no candidate and
+    ``(None, 'measure_failed')`` when every candidate failed.
+    """
+    candidates = _candidates(tokenizers)
+    for tokenizer in candidates:
+        counts = count_exact(bodies, tokenizer)
+        if counts is not None:
+            return counts, METHOD_TOKENIZER
+    return None, (METHOD_FAILED if candidates else METHOD_UNAVAILABLE)
+
+
+def measure_card(card_text: str, tokenizer=None) -> dict:
     """``{fits, size, budget, method, reason}`` for a complete card file text.
 
     ``size`` counts the derived body only. ``reason`` is ``over_budget`` (also
     for a body ``derive`` refuses as oversized), ``selector_input_invalid`` (no
-    frontmatter or an empty body; not a card the selector reads) or, with
-    ``fits`` true, ``tokenizer_unavailable``.
+    frontmatter or an empty body; not a card the selector reads),
+    ``measure_failed`` (every selector runtime failed) or, with ``fits`` true,
+    ``tokenizer_unavailable`` (no selector tokenizer on the machine).
     """
     body = derived_body(card_text)
     if body is None:
@@ -228,8 +258,9 @@ def measure_card(card_text: str, tokenizer: tuple[str, str] | None = None) -> di
                 'method': METHOD_UNAVAILABLE, 'reason': 'selector_input_invalid'}
     counts, method = measure_bodies([body], tokenizer)
     if counts is None:
-        return {'fits': True, 'size': None, 'budget': BODY_BUDGET, 'method': method,
-                'reason': 'tokenizer_unavailable'}
+        unavailable = method == METHOD_UNAVAILABLE
+        return {'fits': unavailable, 'size': None, 'budget': BODY_BUDGET, 'method': method,
+                'reason': 'tokenizer_unavailable' if unavailable else 'measure_failed'}
     fits = counts[0] <= BODY_BUDGET
     return {'fits': fits, 'size': counts[0], 'budget': BODY_BUDGET, 'method': method,
             'reason': None if fits else 'over_budget'}
@@ -283,13 +314,14 @@ def main(argv=None) -> int:
     parser.add_argument('cards', nargs='+',
                         help='card files; with two or more, "combined" measures the first '
                              "card's body followed by every other card's body. Without a "
-                             'selector tokenizer, sizes and fits are null (method unavailable).')
+                             'selector tokenizer, sizes and fits are null (method unavailable '
+                             'or measure_failed).')
     args = parser.parse_args(argv)
     tokenizer = None
     try:
         import config as qmd_config
         found = qmd_config.find_project_config(args.cwd)
-        tokenizer = selector_tokenizer(found['config'], Path(found['projectRoot']))
+        tokenizer = selector_tokenizers(found['config'], Path(found['projectRoot']))
     except Exception:  # noqa: BLE001
         tokenizer = None
     texts = [Path(card).read_text(encoding='utf-8') for card in args.cards]

@@ -151,12 +151,13 @@ def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     tokenizer = None
     try:
         found = qmd_config.find_project_config(str(root))
-        tokenizer = wiki_card_budget.selector_tokenizer(found["config"], root)
+        tokenizer = wiki_card_budget.selector_tokenizers(found["config"], root)
     except Exception:  # noqa: BLE001 - the estimate is the fallback
         tokenizer = None
     measured = wiki_card_budget.measure_card(text, tokenizer)
     # A page the selector does not read at all (no frontmatter) is not a budget case.
-    return measured if measured["reason"] == "over_budget" else None
+    # A failed measurement refuses the merge for now; the pair stays queued.
+    return measured if measured["reason"] in ("over_budget", "measure_failed") else None
 
 
 def pair_missing(wiki_root: Path, entry: dict) -> bool:
@@ -215,6 +216,9 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
 
         paired_with = page_b if delete_rel == page_a else page_a
         refused = keeper_over_budget(root, wiki_root, paired_with)
+        if refused is not None and refused["reason"] == "measure_failed":
+            return {"action": "rejected", "reason": "keeper_measure_failed",
+                    "keeper": paired_with}
         if refused is not None:
             # A keeper the local selector cannot score keeps the pair as two
             # cards: the loser stays, and the pair is recorded as skipped.
