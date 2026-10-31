@@ -137,6 +137,32 @@ class DispatchBoundary(unittest.TestCase):
             self.assertEqual(failure_reason(caught.exception),
                              'dispatch:target_deferred:' + 'a' * 40 + ':' + 'c' * 64)
 
+    def test_deferred_fill_names_its_member_in_the_install_log(self):
+        # The fixed-code detail mangles a non-ASCII card path, so the wake
+        # event carries the member path separately.
+        root = self.bundles[0]
+        card = 'service-engineering-wiki/entities/리드라우팅-카드.md'
+        events = []
+        for path, expected in ((card, card), ('/abs/x.md', None), ('../x.md', None)):
+            events.clear()
+            stdout = json.dumps({'state': 'deferred', 'reason': 'provider_result_invalid',
+                                 'path': path}, ensure_ascii=False).encode()
+            with self.subTest(path=path), \
+                 patch('laya_index_host_route.select_route', return_value=self.route()), \
+                 patch('laya_install_journal.verify_dispatch_target',
+                       return_value=self.proof(root)), \
+                 patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
+                     returncode=0, stdout=stdout)), \
+                 patch('event_log.state_root_of', return_value=self.base), \
+                 patch('event_log.emit', side_effect=lambda name, **f: events.append((name, f))):
+                with self.assertRaises(DispatchFailure) as caught:
+                    dispatch.run('laya-sync', self.project)
+                self.assertEqual(caught.exception.detail,
+                                 'deferred:deferred:provider_result_invalid')
+                (name, fields), = events
+                self.assertEqual((name, fields['reason'], fields.get('path')),
+                                 ('wake.sync', 'target_deferred', expected))
+
     def test_preparing_owner_result_is_an_uncounted_wait(self):
         root = self.bundles[0]
         for stdout, code in ((b'{"reason":"laya_service_preparing","state":"deferred"}',

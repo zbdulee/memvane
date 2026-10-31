@@ -82,3 +82,18 @@ test('unsupported AST strategy and malformed tokenizer fail closed', async () =>
   await assert.rejects(chunkDocumentByTokens(null, syntheticTokenizer),
                        {code: 'invalid_content'});
 });
+
+test('token chunks come back in strictly increasing source position', async () => {
+  // A first-pass chunk over the token budget is split again; its last part
+  // can start after the next (overlapping) first-pass chunk. The reviewed
+  // provider accepts only strictly increasing positions, so out-of-order
+  // output made such a document fail on every try.
+  const body = Array.from({length: 40}, (_, i) =>
+    `Paragraph ${i}. ` + 'word '.repeat(120) + '\n\n').join('');
+  const chunks = await chunkDocumentByTokens(body, syntheticTokenizer);
+  assert.ok(chunks.length > 1);
+  for (let i = 1; i < chunks.length; i += 1)
+    assert.ok(chunks[i].pos > chunks[i - 1].pos, `pos ${chunks[i].pos} after ${chunks[i - 1].pos}`);
+  for (const chunk of chunks)
+    assert.equal(body.slice(chunk.pos, chunk.pos + chunk.text.length), chunk.text);
+});
