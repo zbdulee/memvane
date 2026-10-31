@@ -1152,6 +1152,14 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     if verify_suppression_hash(root, compile_cfg, rel) == wc.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
+    # Cost guard, also BEFORE any extractor spawn: this exact source revision
+    # already ended with a card over the selector budget after its one split
+    # attempt. Re-extracting would pay again for the same refusal. A source edit
+    # (new sha256) or forceRecompile compiles it again.
+    if (job.get('forceRecompile') is not True
+            and budget_refused_revision(root, source_revision) is not None):
+        append_jsonl(cpath, bounded_failure("skipped", job, "budget_refused_revision"))
+        return True, False, []
     # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
     # card already proves this exact revision, whichever trigger or replayed claim
     # brought the job back. Legacy QMD keeps its existing path.
@@ -1444,17 +1452,27 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     compile_round(candidates, extracted_qmd)
     splittable = [card for card in split_needed
                   if card.get("reason") in ("over_budget", "selector_input_invalid")]
-    if len(splittable) != len(split_needed):
-        # The overflow sits in a hand-written section outside the managed
-        # block; a smaller summary cannot fix it.
+    unsplittable = [card for card in split_needed if card not in splittable]
+    terminal = None
+    if unsplittable:
+        # The hand-written sections alone exceed the budget; a smaller
+        # summary cannot fix it.
         refresh_complete = False
+        terminal = ("manual_section_over_budget", "manual_section_over_budget", unsplittable)
     if splittable:
-        replaced = _split_over_budget(
+        # cardsPerSource covers both answers: the split gets only the slots
+        # the first answer did not use for cards that reached the writer.
+        remaining_cards = max(0, max_cards - (len(candidates) - len(split_needed)))
+        outcome, split_reason, unwritten = _split_over_budget(
             root, job, cpath, splittable, split_needed, compile_round,
             payload=payload, argv=argv, timeout=timeout, src=src,
             source_revision=source_revision, selected_route=selected_route,
-            rel=rel, max_cards=max_cards)
-        refresh_complete = refresh_complete and replaced
+            rel=rel, max_cards=remaining_cards)
+        if outcome != "split":
+            refresh_complete = False
+            terminal = terminal or (outcome, split_reason, unwritten)
+    if terminal is not None:
+        _record_budget_refused(root, job, source_revision, selected_route, *terminal)
     if failed_compile:
         append_jsonl(cpath, bounded_failure("compile_failed", job, "writer_rejected"))
         # Kept for retry with a marker: a card from this run may get verified
@@ -1473,20 +1491,27 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
 def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict],
                        split_needed: list[dict], compile_round, *, payload: dict,
                        argv: list[str], timeout: int, src: Path, source_revision: dict,
-                       selected_route, rel: str, max_cards: int) -> bool:
+                       selected_route, rel: str, max_cards: int) -> tuple[str, str | None, list]:
     """Re-prompt the extractor once to split cards the writer refused as over budget.
 
-    Returns whether every refused card was replaced by written cards. The split
-    pass is one more paid extraction and counts against the run's extractor
-    budget; split parts count against ``cardsPerSource``. A card still over the
-    budget after the split stays unwritten (never truncated).
+    Returns ``(outcome, reason, unwritten cards)``; ``outcome`` is ``split`` when
+    every refused card was replaced by written cards. The split pass is one more
+    paid extraction and counts against the run's extractor budget. ``max_cards``
+    is what ``cardsPerSource`` leaves after the first answer; parts beyond it are
+    dropped and counted, never silently, and the outcome is ``split_incomplete``.
+    A card still over the budget after the split stays unwritten (never
+    truncated). Every outcome other than ``split`` is terminal for this source
+    revision (``_record_budget_refused``).
     """
     import wiki_selected_laya
-    written = parts = 0
+    written = parts = dropped = 0
     outcome, split_reason = 'split', None
     budget = _EXTRACTOR_BUDGET.get()
+    unwritten = list(splittable)
     if budget is not None and budget['remaining'] <= 0:
         outcome, split_reason = 'split_skipped', 'extractor_budget_exhausted'
+    elif max_cards <= 0:
+        outcome, split_reason = 'split_incomplete', 'cards_per_source_cap'
     else:
         if budget is not None:
             budget['remaining'] -= 1
@@ -1500,22 +1525,78 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
         elif split_reason is None and not isinstance(candidates, list):
             split_reason = 'missing_candidates'
         if split_reason is None:
-            candidates = candidates[:max_cards]
             parts = len(candidates)
+            dropped = max(0, parts - max_cards)
+            kept = candidates[:max_cards]
             split_needed.clear()
-            written = compile_round(candidates, extracted.get('_qmd'))
+            written = compile_round(kept, extracted.get('_qmd'))
+            unwritten = list(split_needed) + [
+                {'title': item.get('title')} for item in candidates[max_cards:]
+                if isinstance(item, dict)]
             if split_needed or not candidates:
                 outcome, split_reason = 'split_incomplete', 'card_over_budget'
+            elif dropped:
+                outcome, split_reason = 'split_incomplete', 'cards_per_source_cap'
+            else:
+                unwritten = []
         else:
             outcome = 'split_failed'
     if outcome != 'split':
         append_jsonl(cpath, {**bounded_failure('skipped', job, split_reason),
                              'splitTitles': [str(card.get('title') or '')[:120]
-                                             for card in (split_needed or splittable)][:20]})
+                                             for card in unwritten][:20],
+                             'droppedParts': dropped})
     wiki_card_budget.emit(root, outcome, bound=selected_route, path=rel,
                           reason=None if outcome == 'split' else split_reason,
-                          requested=len(splittable), parts=parts, written=written)
-    return outcome == 'split'
+                          requested=len(splittable), parts=parts, written=written,
+                          dropped=dropped)
+    return outcome, split_reason, unwritten
+
+
+def _budget_refused_path(root: Path) -> Path | None:
+    return cp.ledger(root, cp.BUDGET_REFUSED)
+
+
+def budget_refused_revision(root: Path, source_revision: dict) -> dict | None:
+    """The terminal budget record for this exact source revision, or None.
+
+    Keyed by source ``path`` + ``collection`` + content ``sha256``: a changed
+    source is a new revision and compiles again; ``forceRecompile`` bypasses it.
+    """
+    path = _budget_refused_path(root)
+    if path is None:
+        return None
+    key = (source_revision.get('path'), source_revision.get('collection'),
+           source_revision.get('sha256'))
+    for row in reversed(wc.read_jsonl(path)):
+        if (row.get('path'), row.get('collection'), row.get('sha256')) == key:
+            return row
+    return None
+
+
+def _record_budget_refused(root: Path, job: dict, source_revision: dict, selected_route,
+                           outcome: str, reason: str | None, unwritten: list) -> None:
+    """Make an over-budget source revision terminal: it is never re-extracted.
+
+    Without this, the unresolved pending refresh (kept so recall still treats
+    the source's old card as stale) is re-enqueued by every worker run and each
+    run pays for the extraction and the split again.
+    """
+    path = _budget_refused_path(root)
+    row = {'ts': now_iso(), 'path': source_revision.get('path'),
+           'collection': source_revision.get('collection'),
+           'sha256': source_revision.get('sha256'), 'outcome': outcome, 'reason': reason,
+           'titles': [str(card.get('title') or '')[:120] for card in unwritten][:20]}
+    if path is not None:
+        try:
+            wc.append_jsonl(path, row)
+            wc.trim_jsonl(path)
+        except OSError:
+            pass
+    wiki_card_budget.emit(root, 'budget_refused', bound=selected_route,
+                          path=str(source_revision.get('path') or ''), reason=reason,
+                          split=outcome, sha=str(source_revision.get('sha256') or '')[:16],
+                          cards=len(unwritten))
 
 
 def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:

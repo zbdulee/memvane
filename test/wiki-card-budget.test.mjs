@@ -8,5 +8,5 @@ test('wiki cards fit the local selector body budget: measure, compile gate, spli
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 19 tests/);
+  assert.match(result.stderr, /Ran 25 tests/);
 });

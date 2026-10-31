@@ -42,10 +42,13 @@ exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
 `estimate`; `reason` `manual_section_over_budget` when the overflow is a
 hand-written section). `split` / `split_incomplete` / `split_failed` /
 `split_skipped` report the one split re-prompt per source (`requested`,
-`parts`, `written`; `split_skipped` means the run's extractor budget left no
-re-prompt). Every outcome other than `split` is terminal: those cards stay
-unwritten and the source job is settled. `merge_kept_separate` is a dedup merge
-refused because the keeper is over the budget.
+`parts`, `written`, `dropped`; `split_skipped` means the run's extractor budget
+left no re-prompt). Every outcome other than `split` is terminal for that source
+revision: `budget_refused` follows, those cards stay unwritten, and the worker
+does not extract that revision again until the source changes. `unmeasured`
+means no selector tokenizer exists on the machine, so the card was written
+without a budget check. `merge_kept_separate` is a dedup merge refused because
+the keeper is over the budget.
 
 ## Safety
 

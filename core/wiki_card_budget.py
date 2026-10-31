@@ -3,11 +3,11 @@
 
 The live selector scores a (user request, card) pair with the legacy input
 view of its checkpoint: ``max_len`` 1024 tokens. It reads a card through
-``context_learning.compact_input.derive``, the whole file after the
-frontmatter (banner, auto-block markers, summary and any hand-written
-section), and ``laya_adapter._pair`` refuses a pair longer than ``max_len``
-(``model_token_budget_exceeded``). This module measures a card through the
-same ``derive`` call, so a card the compiler writes fits the selector.
+``context_learning.compact_input``: the whole file after the frontmatter
+(banner, auto-block markers, summary and any hand-written section). A pair
+longer than ``max_len`` does not fit the model whole. This module measures the
+complete, untruncated body that ``derive`` returns, so a card the compiler
+writes is scored whole; measuring a cut prefix would hide the overflow.
 
 Budget arithmetic (mmBERT tokenizer of the live selector, measured):
 
@@ -20,17 +20,25 @@ Budget arithmetic (mmBERT tokenizer of the live selector, measured):
   is left for the user request. Card titles live in the frontmatter and never
   enter the pair.
 
-Measurement. When the project's selector is prepared, the selector runtime's
-own ``tokenizers`` library counts the body with the selector checkpoint's
-``tokenizer/tokenizer.json`` (``method: tokenizer``). Otherwise the
-tokenizer-free ``estimate`` counts it (``method: estimate``): per character
-class, ASCII digit 1, ASCII letter run ceil(len / 4), newline 1, space or tab
-0.5, other ASCII punctuation 1, Hangul syllable 1, other BMP character 2,
-character outside the BMP 4. On 1765 real wiki card bodies the real token
-count is at most 0.921 of the estimate (median 0.76), and no card estimated
-within 700 holds more than 578 real tokens. Rare Hangul syllables and CJK
-characters that the tokenizer splits into bytes can exceed their weight; the
-query room absorbs that.
+Measurement is exact or absent. The selector runtime's own ``tokenizers``
+library counts the body with a selector checkpoint's ``tokenizer/tokenizer.json``
+(``method: tokenizer``). The project's own live selector comes first; a project
+without one uses any other live selector of this user's learning state (same
+checkpoint family), so counting works wherever the learning runtime and a
+selector model exist. With no selector tokenizer on the machine at all the card
+is written unmeasured (``method: unavailable``, ``fits`` true) and the caller
+logs it: no local selector exists there to protect, a provable tokenizer-free
+bound (UTF-8 bytes per non-ASCII character) overcounts real Korean text about
+threefold and would force a paid split on most cards, and the selector scores
+an over-length card by its leading part rather than failing.
+
+``estimate`` is only prompt guidance (the summary room the extractor is told),
+never a gate: per character class, ASCII digit 1, ASCII letter run
+ceil(len / 4), newline 1, space or tab 0.5, other ASCII 1, Hangul syllable 1,
+other BMP character 2, character outside the BMP 4.
+
+A body ``derive`` refuses as oversized (over 16 KiB) is over the budget without
+counting (``method: derive_limit``).
 """
 from __future__ import annotations
 
@@ -51,7 +59,9 @@ BODY_BUDGET = 700
 QUERY_ROOM = MODEL_MAX_LEN - PAIR_OVERHEAD - BODY_BUDGET
 
 METHOD_TOKENIZER = 'tokenizer'
-METHOD_ESTIMATE = 'estimate'
+METHOD_UNAVAILABLE = 'unavailable'
+METHOD_DERIVE_LIMIT = 'derive_limit'
+MAX_SELECTOR_STATES = 64
 EXACT_TIMEOUT_SECONDS = 20
 
 _CLASS_RE = re.compile(
@@ -67,7 +77,7 @@ _EXACT_SCRIPT = (
 
 
 def estimate(text: str) -> int:
-    """Tokenizer-free upper estimate of the selector token count of ``text``."""
+    """Tokenizer-free guidance estimate of ``text``; never used as a gate."""
     total = 0.0
     for match in _CLASS_RE.finditer(text):
         group = match.group(0)
@@ -119,31 +129,55 @@ def _selection_state(config: dict, project_root: Path):
     return _private_state(config, Path(project_root), create=False)
 
 
-def selector_tokenizer(config: dict, project_root) -> tuple[str, str] | None:
-    """(runtime python, tokenizer.json) of the prepared live selector, or None.
+def _policy_tokenizer(state) -> tuple[str, str] | None:
+    from context_learning.dataset import read_private_json
+    policy = read_private_json(Path(state) / 'live-selector.json')
+    argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
+    if (policy.get('schema') != 'qmd-live-selector-v1' or not isinstance(argv, list)
+            or len(argv) != 3 or not all(isinstance(item, str) and Path(item).is_absolute()
+                                         for item in argv)):
+        return None
+    python = Path(argv[0])
+    tokenizer = Path(argv[2]) / 'tokenizer' / 'tokenizer.json'
+    if (not os.access(python, os.X_OK) or tokenizer.is_symlink()
+            or not tokenizer.is_file()):
+        return None
+    return str(python), str(tokenizer)
 
-    Read only. The live selector policy names the runtime interpreter and the
-    checkpoint directory (``trainerArgv`` = python, adapter, model dir).
+
+def selector_tokenizer(config: dict, project_root) -> tuple[str, str] | None:
+    """(runtime python, tokenizer.json) of a live selector, or None.
+
+    Read only. A live selector policy names the runtime interpreter and the
+    checkpoint directory (``trainerArgv`` = python, adapter, model dir). The
+    project's own selector wins; otherwise the first usable selector under the
+    user's ``live-selection`` state (sorted, at most ``MAX_SELECTOR_STATES``).
     """
     try:
-        from context_learning.dataset import read_private_json
         state = _selection_state(config, Path(project_root).resolve())
-        if state is None:
+        if state is not None:
+            found = _policy_tokenizer(state)
+            if found is not None:
+                return found
+    except Exception:  # noqa: BLE001 - fall through to the user's other selectors
+        pass
+    try:
+        from context_learning.runtime_setup import learning_state_base
+        parent = learning_state_base() / 'live-selection'
+        if parent.is_symlink() or not parent.is_dir():
             return None
-        policy = read_private_json(Path(state) / 'live-selector.json')
-        argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
-        if (policy.get('schema') != 'qmd-live-selector-v1' or not isinstance(argv, list)
-                or len(argv) != 3 or not all(isinstance(item, str) and Path(item).is_absolute()
-                                             for item in argv)):
-            return None
-        python = Path(argv[0])
-        tokenizer = Path(argv[2]) / 'tokenizer' / 'tokenizer.json'
-        if (not os.access(python, os.X_OK) or tokenizer.is_symlink()
-                or not tokenizer.is_file()):
-            return None
-        return str(python), str(tokenizer)
-    except Exception:  # noqa: BLE001 - the estimate is the fallback
+        for state in sorted(parent.iterdir())[:MAX_SELECTOR_STATES]:
+            try:
+                if state.is_symlink() or not state.is_dir():
+                    continue
+                found = _policy_tokenizer(state)
+            except Exception:  # noqa: BLE001
+                continue
+            if found is not None:
+                return found
+    except Exception:  # noqa: BLE001
         return None
+    return None
 
 
 def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int] | None:
@@ -166,37 +200,40 @@ def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int
     return counts
 
 
-def measure_bodies(bodies: list[str], tokenizer: tuple[str, str] | None = None) -> tuple[list[int], str]:
+def measure_bodies(bodies: list[str], tokenizer: tuple[str, str] | None = None
+                   ) -> tuple[list[int] | None, str]:
     counts = count_exact(bodies, tokenizer)
     if counts is not None:
         return counts, METHOD_TOKENIZER
-    return [estimate(body) for body in bodies], METHOD_ESTIMATE
+    return None, METHOD_UNAVAILABLE
 
 
 def measure_card(card_text: str, tokenizer: tuple[str, str] | None = None) -> dict:
     """``{fits, size, budget, method, reason}`` for a complete card file text.
 
-    ``size`` counts the derived body only; ``reason`` is ``over_budget`` (also
-    for a body ``derive`` refuses as oversized) or ``selector_input_invalid``
-    (no frontmatter or an empty body) when it does not fit.
+    ``size`` counts the derived body only. ``reason`` is ``over_budget`` (also
+    for a body ``derive`` refuses as oversized), ``selector_input_invalid`` (no
+    frontmatter or an empty body; not a card the selector reads) or, with
+    ``fits`` true, ``tokenizer_unavailable``.
     """
     body = derived_body(card_text)
     if body is None:
-        # ``derive`` refuses an oversized body outright; that is still a card
-        # over the budget. Anything else (no frontmatter, empty body) is not a
-        # card the selector reads at all.
         import yaml_scalars
         match = yaml_scalars.FRONTMATTER_RE.match(card_text) if isinstance(card_text, str) else None
         rest = card_text[match.end():] if match else ''
         if rest.strip() and '\x00' not in rest:
-            return {'fits': False, 'size': estimate(rest), 'budget': BODY_BUDGET,
-                    'method': METHOD_ESTIMATE, 'reason': 'over_budget'}
+            return {'fits': False, 'size': None, 'budget': BODY_BUDGET,
+                    'method': METHOD_DERIVE_LIMIT, 'reason': 'over_budget'}
         return {'fits': False, 'size': None, 'budget': BODY_BUDGET,
-                'method': METHOD_ESTIMATE, 'reason': 'selector_input_invalid'}
-    (size,), method = measure_bodies([body], tokenizer)
-    fits = size <= BODY_BUDGET
-    return {'fits': fits, 'size': size, 'budget': BODY_BUDGET, 'method': method,
+                'method': METHOD_UNAVAILABLE, 'reason': 'selector_input_invalid'}
+    counts, method = measure_bodies([body], tokenizer)
+    if counts is None:
+        return {'fits': True, 'size': None, 'budget': BODY_BUDGET, 'method': method,
+                'reason': 'tokenizer_unavailable'}
+    fits = counts[0] <= BODY_BUDGET
+    return {'fits': fits, 'size': counts[0], 'budget': BODY_BUDGET, 'method': method,
             'reason': None if fits else 'over_budget'}
+
 
 
 def summary_budget() -> int:
@@ -245,7 +282,8 @@ def main(argv=None) -> int:
     parser.add_argument('--cwd', default=os.getcwd())
     parser.add_argument('cards', nargs='+',
                         help='card files; with two or more, "combined" measures the first '
-                             "card's body followed by every other card's body")
+                             "card's body followed by every other card's body. Without a "
+                             'selector tokenizer, sizes and fits are null (method unavailable).')
     args = parser.parse_args(argv)
     tokenizer = None
     try:
@@ -262,17 +300,20 @@ def main(argv=None) -> int:
                                     tokenizer)
     cards = []
     position = 0
-    for card, body in zip(args.cards, bodies):
+    for card, text, body in zip(args.cards, texts, bodies):
         if body is None:
-            cards.append({'path': card, 'size': None, 'fits': False,
-                          'reason': 'selector_input_invalid'})
+            measured = measure_card(text)
+            cards.append({'path': card, 'size': None, 'fits': measured['fits'],
+                          'reason': measured['reason']})
             continue
-        size = counts[position]
+        size = counts[position] if counts is not None else None
         position += 1
-        cards.append({'path': card, 'size': size, 'fits': size <= BODY_BUDGET})
+        cards.append({'path': card, 'size': size,
+                      'fits': None if size is None else size <= BODY_BUDGET})
     out = {'budget': BODY_BUDGET, 'method': method, 'cards': cards}
     if combined_body:
-        out['combined'] = {'size': counts[-1], 'fits': counts[-1] <= BODY_BUDGET}
+        size = counts[-1] if counts is not None else None
+        out['combined'] = {'size': size, 'fits': None if size is None else size <= BODY_BUDGET}
     print(json.dumps(out, ensure_ascii=False))
     return 0
 

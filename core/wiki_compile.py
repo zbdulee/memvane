@@ -1364,26 +1364,32 @@ def judge_new_page_duplicate(
 
 def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
                    record: dict, candidate_path: Path, card_text: str,
-                   generated_text: str | None = None) -> bool:
+                   floor_text: str | None = None) -> bool:
     """Refuse a card whose selector body does not fit ``wiki_card_budget``.
 
     ``card_text`` is the complete file this compile would write (for an update,
     the composed card with its hand-written sections). Nothing is written on
     refusal: the candidate ledger row and stdout carry ``split-required`` so the
-    caller splits the knowledge into several cards. ``generated_text`` is the
-    plugin page alone; when it fits but the composed card does not, the overflow
-    is outside the managed block and splitting the summary cannot fix it.
+    caller splits the knowledge into several cards. ``floor_text`` is the same
+    card with an empty summary; when even that does not fit, the hand-written
+    sections alone exceed the budget and no split of the summary can fix it
+    (``manual_section_over_budget``). Without a selector tokenizer the card is
+    written and a ``wiki.card`` ``unmeasured`` event records it.
     """
     import wiki_card_budget as budget
     tokenizer = budget.selector_tokenizer(config, root)
     measured = budget.measure_card(card_text, tokenizer)
+    rel = target.relative_to(wiki_root).as_posix()
     if measured["fits"]:
+        if measured["method"] == budget.METHOD_UNAVAILABLE:
+            budget.emit(root, "unmeasured", bound=selected, path=rel, title=record["title"],
+                        reason=measured["reason"], budget=measured["budget"],
+                        method=measured["method"])
         return False
     reason = measured["reason"]
-    if generated_text is not None and generated_text != card_text:
-        if budget.measure_card(generated_text, tokenizer)["fits"]:
+    if floor_text is not None and floor_text != card_text:
+        if not budget.measure_card(floor_text, tokenizer)["fits"]:
             reason = "manual_section_over_budget"
-    rel = target.relative_to(wiki_root).as_posix()
     fields = {"size": measured["size"], "budget": measured["budget"],
               "method": measured["method"]}
     record["action"] = "split-required"
@@ -1690,11 +1696,12 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         page = markdown_page(candidate, summary, status, redactions, h)
         action = "updated"
         # The selector reads the whole refreshed card, hand-written sections
-        # included. An existing long card stays as it is; only this rewrite
-        # is refused.
+        # included. A long card is never split retroactively; only this
+        # rewrite has to fit.
         composed = compose_generated_card(old, page)
+        floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
         if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
-                          composed if composed is not None else page, page):
+                          composed if composed is not None else page, floor):
             return 0
     # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
     # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
