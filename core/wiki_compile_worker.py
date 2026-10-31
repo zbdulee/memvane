@@ -901,9 +901,20 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     return parsed, None, 0
 
 
-def compile_candidate(root: Path, candidate: dict) -> dict | None:
+def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None = None,
+                      check: bool = False) -> dict | None:
+    """Run the writer for one candidate.
+
+    ``final_reason``: the trusted final pass of the card budget (``--budget-final``).
+    ``check``: validate only (``--check``); nothing is written.
+    """
+    argv = [sys.executable, str(Path(__file__).parent / "wiki_compile.py"), "--cwd", str(root)]
+    if final_reason is not None:
+        argv += ["--budget-final", final_reason]
+    if check:
+        argv.append("--check")
     proc = subprocess.run(
-        [sys.executable, str(Path(__file__).parent / "wiki_compile.py"), "--cwd", str(root)],
+        argv,
         input=json.dumps(candidate, ensure_ascii=False),
         text=True,
         capture_output=True,
@@ -1348,28 +1359,32 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
     extracted_qmd = extracted.get("_qmd") if isinstance(extracted, dict) else None
     verify_targets: list[str] = []
 
-    def compile_round(round_candidates: list, extracted_qmd,
-                      final_reason: str | None = None) -> tuple[int, list[dict]]:
-        """Compile one extractor answer; returns (cards written, budget refusals).
+    def compile_round(round_candidates: list, extracted_qmd, final_reason: str | None = None,
+                      *, check: bool = False, own_rejects: bool = False
+                      ) -> tuple[int, list[dict], int]:
+        """Compile one extractor answer; returns (written, budget refusals, rejected).
 
         ``final_reason`` set: the writer writes an over-budget card instead of
-        refusing it (best effort after the one split attempt) and logs why.
+        holding it back (best effort after the one split attempt) and logs why.
+        ``check``: only validate each candidate; nothing is written. ``own_rejects``:
+        the caller handles writer rejections (the split falls back to the original
+        card) instead of the job's ``partialCompile`` retry.
         """
         nonlocal failed_compile, refresh_complete
-        written = 0
+        written = rejected = 0
         refused: list[dict] = []
         for candidate in round_candidates:
             if not isinstance(candidate, dict):
-                refresh_complete = False
+                if check:
+                    rejected += 1
+                else:
+                    refresh_complete = False
                 continue
             original = json.loads(json.dumps(candidate, ensure_ascii=False))
-            # Worker-owned, never model-supplied: whether the writer may write a
-            # card over the selector budget.
+            # The final pass is a worker-owned CLI flag; a candidate field never
+            # requests it. Drop look-alike model fields from the card record.
             candidate.pop("budgetFinal", None)
             candidate.pop("budgetFinalReason", None)
-            if final_reason is not None:
-                candidate["budgetFinal"] = True
-                candidate["budgetFinalReason"] = final_reason
             # **검증 근거의 권위는 큐가 갖는다.** `candidate["sources"]`는 extractor(모델)
             # 출력이고, verifier(`wiki_verify_worker.load_sources`)는 목록 **앞에서**
             # `MAX_SOURCES`(3)개만 읽는다. 모델 목록을 앞에 두고 실제 소스를 뒤에 붙이던
@@ -1418,7 +1433,13 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                 )
             }
             wiki_selected_laya.recheck(selected_route)
-            result = compile_candidate(root, candidate)
+            if check:
+                result = compile_candidate(root, candidate, check=True)
+                if not isinstance(result, dict) or result.get("action") != "valid":
+                    rejected += 1
+                continue
+            result = (compile_candidate(root, candidate, final_reason=final_reason)
+                      if final_reason is not None else compile_candidate(root, candidate))
             if isinstance(result, dict) and result.get("action") == "split-required":
                 # Over the card budget and not written yet: the one split
                 # re-prompt below replaces it, or it is written as it is.
@@ -1427,8 +1448,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                                 "_candidate": original})
                 continue
             if not isinstance(result, dict) or result.get("action") in {"rejected", "conflict"}:
-                failed_compile = True
-                refresh_complete = False
+                rejected += 1
+                if not own_rejects:
+                    failed_compile = True
+                    refresh_complete = False
                 continue
             if result.get("action") not in {"created", "updated"}:
                 refresh_complete = False
@@ -1453,9 +1476,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
                 verify_targets.append(result["targetPath"])
             if result.get("action") in {"created", "updated"}:
                 written += 1
-        return written, refused
+        return written, refused, rejected
 
-    _written, refused = compile_round(candidates, extracted_qmd)
+    _written, refused, _rejected = compile_round(candidates, extracted_qmd)
     # Best effort: every refused card ends written. A hand-written section over
     # the budget is not something a smaller summary fixes, so it is written now.
     manual = [card for card in refused if card.get("reason") == "manual_section_over_budget"]
@@ -1492,19 +1515,22 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
                        compile_round, extracted_qmd, *, payload: dict, argv: list[str],
                        timeout: int, src: Path, source_revision: dict, selected_route,
                        rel: str, max_cards: int) -> bool:
-    """One split re-prompt for cards the writer refused as over budget; best effort.
+    """One split re-prompt for cards the writer held back as over budget; best effort.
 
     At most one more paid extraction, counted against the run's extractor budget,
     with only the ``cardsPerSource`` slots the first answer left (``max_cards``).
-    Every part that comes back is written, even one still over the budget (the
-    writer logs ``wiki.card over_budget_written``); parts past the slots are
-    dropped and counted. When the split cannot run (run budget exhausted, no slot
-    left, extractor failure or ``resource_deferred``, empty answer) the refused
-    cards are written as they are. Returns False only when the source changed
-    during the re-prompt; the caller keeps the job for the new revision.
+    The split is all or nothing so no content is lost: its parts are written (on
+    the final pass, so a part still over the budget is written too and the writer
+    logs ``wiki.card over_budget_written``) only when they all fit the slots and
+    all pass the writer's validation. Otherwise, or when the split cannot run
+    (run budget exhausted, no slot left, extractor failure or
+    ``resource_deferred``, empty answer), the original cards are written on the
+    final pass with that reason. Nothing here is retried: the revision ends
+    written. Returns False only when the source changed during the re-prompt; the
+    caller keeps the job for the new revision.
     """
     import wiki_selected_laya
-    written = parts = dropped = 0
+    written = parts = 0
     split_reason = None
     budget = _EXTRACTOR_BUDGET.get()
     if budget is not None and budget['remaining'] <= 0:
@@ -1530,23 +1556,31 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
             split_reason = 'split_empty'
         if split_reason is None:
             parts = len(candidates)
-            dropped = max(0, parts - max_cards)
-            written, _ = compile_round(candidates[:max_cards], extracted.get('_qmd'),
-                                       final_reason='split_part_over_budget')
-            if dropped:
-                append_jsonl(cpath, {**bounded_failure('skipped', job, 'cards_per_source_cap'),
-                                     'droppedParts': dropped,
-                                     'droppedTitles': [str(item.get('title') or '')[:120]
-                                                       for item in candidates[max_cards:]
-                                                       if isinstance(item, dict)][:20]})
+            if parts > max_cards:
+                # Writing a subset would drop topics; the original keeps them all.
+                split_reason = 'split_exceeds_slots'
+            elif compile_round(json.loads(json.dumps(candidates, ensure_ascii=False)),
+                               extracted.get('_qmd'), check=True)[2]:
+                split_reason = 'split_part_rejected'
+            else:
+                written, _, rejected = compile_round(
+                    candidates, extracted.get('_qmd'), final_reason='split_part_over_budget',
+                    own_rejects=True)
+                if rejected:
+                    # A part failed after validation (a runtime write failure): the
+                    # original is written too, so no topic is lost.
+                    split_reason = 'split_part_rejected'
     if split_reason is not None:
-        # The split did not run: the refused cards are written as they are.
-        written, _ = compile_round([card['_candidate'] for card in splittable], extracted_qmd,
-                                   final_reason=split_reason)
+        written_original, _, _ = compile_round([card['_candidate'] for card in splittable],
+                                               extracted_qmd, final_reason=split_reason)
+        written += written_original
+        append_jsonl(cpath, {**bounded_failure('skipped', job, split_reason),
+                             'splitParts': parts,
+                             'writtenOriginals': [str(card.get('title') or '')[:120]
+                                                  for card in splittable][:20]})
     wiki_card_budget.emit(root, 'split' if split_reason is None else 'split_unavailable',
                           bound=selected_route, path=rel, reason=split_reason,
-                          requested=len(splittable), parts=parts, written=written,
-                          dropped=dropped)
+                          requested=len(splittable), parts=parts, written=written)
     return True
 
 

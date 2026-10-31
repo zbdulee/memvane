@@ -152,7 +152,7 @@ def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     try:
         found = qmd_config.find_project_config(str(root))
         tokenizer = wiki_card_budget.selector_tokenizers(found["config"], root)
-    except Exception:  # noqa: BLE001 - the estimate is the fallback
+    except Exception:  # noqa: BLE001 - no tokenizer: measure_card reports unavailable
         tokenizer = None
     measured = wiki_card_budget.measure_card(text, tokenizer)
     # A page the selector does not read at all (no frontmatter) or one no runtime

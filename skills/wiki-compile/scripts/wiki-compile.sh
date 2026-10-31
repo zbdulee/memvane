@@ -18,4 +18,12 @@ if [ -z "${QMD_SANDBOX:-}" ]; then
   esac
 fi
 
-python3 "$PLUGIN_ROOT/core/wiki_extract.py" --cwd "$TARGET_CWD"
+shift || true
+EXTRA=()
+for arg in "$@"; do
+  case "$arg" in
+    --budget-final) EXTRA+=("--budget-final") ;;  # the only pass-through flag
+    *) echo "[memvane] unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+python3 "$PLUGIN_ROOT/core/wiki_extract.py" --cwd "$TARGET_CWD" ${EXTRA[@]+"${EXTRA[@]}"}

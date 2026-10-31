@@ -41,8 +41,9 @@ For `wiki.card`, `over_budget` is a card the writer held back once because its
 body exceeds the local selector budget (`size` / `budget`, `method` `tokenizer` or
 `derive_limit`; `reason` `manual_section_over_budget` when the hand-written
 sections alone overflow). `split` / `split_unavailable` report the one split
-re-prompt per source (`requested`, `parts`, `written`, `dropped`, `reason` when
-it could not run). `over_budget_written` is a card written over the budget after
+re-prompt per source (`requested`, `parts`, `written`; for `split_unavailable`
+the `reason` the original card was written instead: the split could not run,
+exceeded the free card slots, or had a part the writer rejects). `over_budget_written` is a card written over the budget after
 that attempt (best effort; the selector scores it by its leading part).
 `measure_failed` (no selector runtime could count) and `unmeasured` (no selector
 tokenizer on the machine) mark cards written without a size check.

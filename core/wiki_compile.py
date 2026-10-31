@@ -1375,7 +1375,7 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     an empty summary; when even that does not fit, the hand-written sections alone
     exceed the budget (``manual_section_over_budget``).
 
-    ``final_reason`` (the compile worker's ``budgetFinal`` pass after its one split
+    ``final_reason`` (the caller's ``--budget-final`` pass after its one split
     attempt) writes an over-budget card anyway and logs ``wiki.card
     over_budget_written``; the selector scores such a card by its leading part.
     A card no selector runtime can count is written with ``measure_failed``, and
@@ -1445,6 +1445,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--regenerate", action="store_true")
+    # The trusted final pass of the card body budget (wiki_card_budget): the
+    # caller already made its one split attempt, so an over-budget card is
+    # written. Only the compile worker and the wiki-compile skill's second run
+    # pass it; a candidate field can never request it.
+    parser.add_argument("--budget-final", default=None, metavar="REASON")
+    # Validate only (target, exclusions, lint); writes nothing, logs nothing.
+    parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
     if os.environ.get("QMD_SANDBOX"):
@@ -1466,14 +1473,16 @@ def main() -> int:
     try:
         with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
             return _compile_locked(
-                root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate)
+                root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
+                budget_final=args.budget_final, check=args.check)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
 
 
 def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
-                    wiki_root: Path, candidate: dict, regenerate: bool) -> int:
+                    wiki_root: Path, candidate: dict, regenerate: bool, *,
+                    budget_final: str | None = None, check: bool = False) -> int:
     import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
@@ -1506,6 +1515,13 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             return 0
     max_lines = int(compile_cfg.get("maxAutoPageLines", 120) or 120)
     lint = lint_candidate(candidate, target, max_lines)
+    if check:
+        # An ambiguous identity is merge-needed, not a rejection.
+        valid = target_reason.startswith("ambiguous_") or (
+            lint["verdict"] == "clean" and target is not None)
+        print(json.dumps({"action": "valid" if valid else "rejected",
+                          "findings": lint["findings"]}, ensure_ascii=False))
+        return 0
     # 한 줄 라벨이므로 개행·탭을 소스에서 접는다(dump의 이스케이프는 안전망으로 남는다).
     title = yaml_scalars.fold_inline(candidate.get("title") or "Untitled") or "Untitled"
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
@@ -1596,10 +1612,11 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         print(json.dumps({"action": "candidate", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 0
 
-    # Card body budget before the paid duplicate judge: a card the local
-    # selector cannot score is never written (wiki_card_budget).
-    final_reason = (str(candidate.get("budgetFinalReason") or "split_attempted")[:80]
-                    if candidate.get("budgetFinal") is True else None)
+    # Card body budget before the paid duplicate judge (wiki_card_budget): an
+    # over-budget card is held back once for a split; the caller's trusted
+    # final pass (--budget-final) writes it anyway.
+    final_reason = (re.sub(r"[^A-Za-z0-9_.:-]", "_", budget_final)[:80] or "final"
+                    if isinstance(budget_final, str) else None)
     if not target.exists() and budget_refused(
             root, config, selected, wiki_root, target, record, candidate_path,
             markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),

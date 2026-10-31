@@ -110,9 +110,9 @@ class Project:
         self.base = base
         self.tokenizer = install_selector(self.home) if selector else None
 
-    def compile(self, candidate):
+    def compile(self, candidate, *flags):
         proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_compile.py'),
-                               '--cwd', str(self.root)], input=json.dumps(candidate),
+                               '--cwd', str(self.root), *flags], input=json.dumps(candidate),
                               text=True, capture_output=True, env=self.env, cwd=str(REPO))
         lines = proc.stdout.strip().splitlines()
         return json.loads(lines[-1]) if lines else {'returncode': proc.returncode,
@@ -306,9 +306,14 @@ class CompileChecks(unittest.TestCase):
 
     def test_the_final_pass_writes_an_over_budget_card_and_logs_it(self):
         import wiki_compile as wc
-        out = self.p.compile(candidate(summary=LONG_SUMMARY, budgetFinal=True,
-                                       budgetFinalReason='split_part_over_budget'))
+        claimed = self.p.compile(candidate(summary=LONG_SUMMARY, budgetFinal=True,
+                                           budgetFinalReason='split_part_over_budget'))
+        self.assertEqual(claimed['action'], 'split-required', 'a candidate field never claims it')
+        out = self.p.compile(candidate(summary=LONG_SUMMARY), '--budget-final',
+                             'split_part_over_budget')
         self.assertEqual(out['action'], 'created', out)
+        row = [r for r in self.p.ledger('candidates.jsonl') if r.get('action') == 'created'][-1]
+        self.assertEqual(row['cardBudget']['written'], 'split_part_over_budget')
         state = self.p.state_root()
         bound = ({'journalPath': str(state / 'install-journal.sqlite')}, {})
         record = {'title': 'Big Card', 'targetPath': 'x', 'canonicalKey': 'big'}
@@ -323,6 +328,25 @@ class CompileChecks(unittest.TestCase):
                          [('wiki.card', 'over_budget_written', 'split_part_over_budget',
                            'over_budget', 'tokenizer')])
         self.assertGreater(events[0]['size'], 700)
+
+    def test_check_validates_without_writing(self):
+        bad = self.p.compile(candidate(title='Bad', summary='User: hi\nassistant: hello'), '--check')
+        good = self.p.compile(candidate(summary=LONG_SUMMARY), '--check')
+        self.assertEqual((bad['action'], good['action']), ('rejected', 'valid'))
+        self.assertEqual((list(self.p.wiki.rglob('*.md')), self.p.ledger('candidates.jsonl')), ([], []))
+
+    def test_the_skill_final_pass_writes_after_its_split(self):
+        compact = {'trigger': 'manual', 'sourceRef': 'session:local',
+                   'durable': {'title': 'Manual Big', 'summary': LONG_SUMMARY,
+                               'type': 'decision', 'confidence': 'high'}}
+
+        def run(*flags):
+            proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_extract.py'),
+                                   '--cwd', str(self.p.root), *flags], input=json.dumps(compact),
+                                  text=True, capture_output=True, env=self.p.env, cwd=str(REPO))
+            return json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(run()['action'], 'split-required')
+        self.assertEqual(run('--budget-final')['action'], 'created')
 
     def test_refusal_logs_a_wiki_card_event_for_a_selected_install(self):
         import wiki_compile as wc
@@ -459,14 +483,30 @@ class WorkerChecks(unittest.TestCase):
         self.assertEqual(len(self.payloads), 2, 'the writer still held it back for a split')
         self.assertEqual(self.cards(), ['decisions/budget-part-one.md'])
 
-    def test_a_rejected_split_part_is_an_ordinary_writer_outcome(self):
+    def test_a_rejected_split_part_writes_the_original_instead(self):
         rejected = candidate(title='Budget Part Bad', summary='User: hi\nassistant: hello')
         result = self.run_job([[candidate(title='Budget Whole', summary=LONG_SUMMARY)],
                                [candidate(title='Budget Part Good'), rejected]])
-        self.assertEqual(result[:2], (False, True), 'kept for retry like any rejected card')
-        self.assertEqual(self.cards(), ['decisions/budget-part-good.md'])
+        self.assertEqual(result[:2], (True, False), 'processed, no partialCompile retry')
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md'],
+                         'validated first: no part is written, the original keeps every topic')
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_part_rejected')
 
     def test_split_parts_share_cards_per_source_with_the_first_answer(self):
+        settings = self.p.root / '.auto-context' / 'settings.json'
+        cfg = json.loads(settings.read_text())
+        cfg['compile']['budget'] = {'cardsPerSource': 4}
+        settings.write_text(json.dumps(cfg))
+        import config
+        self.config = config.find_project_config(str(self.p.root))['config']
+        first = [candidate(title='Small One'), candidate(title='Small Two'),
+                 candidate(title='Budget Whole', summary=LONG_SUMMARY)]
+        self.run_job([first, [candidate(title='Budget Part One'), candidate(title='Budget Part Two')]])
+        self.assertEqual(self.cards(), ['decisions/budget-part-one.md', 'decisions/budget-part-two.md',
+                                        'decisions/small-one.md', 'decisions/small-two.md'],
+                         'the split fits the two slots the first answer left')
+
+    def test_a_split_beyond_the_free_slots_writes_the_original(self):
         settings = self.p.root / '.auto-context' / 'settings.json'
         cfg = json.loads(settings.read_text())
         cfg['compile']['budget'] = {'cardsPerSource': 3}
@@ -478,12 +518,10 @@ class WorkerChecks(unittest.TestCase):
         parts = [candidate(title=f'Budget Part {n}') for n in ('One', 'Two', 'Three')]
         result = self.run_job([first, parts])
         self.assertEqual(result[:2], (True, False))
-        self.assertEqual(self.cards(), ['decisions/budget-part-one.md', 'decisions/small-one.md',
+        self.assertEqual(self.cards(), ['decisions/budget-whole.md', 'decisions/small-one.md',
                                         'decisions/small-two.md'],
-                         'the split gets only the one slot the first answer left')
-        row = [r for r in self.p.ledger('candidates.jsonl') if 'droppedParts' in r][-1]
-        self.assertEqual((row['droppedParts'], row['droppedTitles']),
-                         (2, ['Budget Part Two', 'Budget Part Three']))
+                         'no subset of the split: the original keeps every topic')
+        self.assertEqual(self.written_budget('Budget Whole')['written'], 'split_exceeds_slots')
 
     def test_within_budget_candidates_need_no_re_prompt(self):
         self.run_job([[candidate()]])
@@ -494,15 +532,18 @@ class WorkerChecks(unittest.TestCase):
 class WorkerRunChecks(unittest.TestCase):
     """Real worker runs: a revision costs at most two extractor calls, then settles."""
 
-    def test_a_second_run_on_the_same_revision_makes_zero_extractor_calls(self):
+    def run_twice(self, answers):
         p = Project(self)
         calls = p.base / 'extractor-calls'
         extractor = p.base / 'extract.py'
         extractor.write_text(
-            'import json, sys\n'
-            f'open({str(calls)!r}, "a").write("x")\n'
+            'import json, os, sys\n'
+            f'calls = {str(calls)!r}\n'
+            'n = len(open(calls).read()) if os.path.exists(calls) else 0\n'
+            'open(calls, "a").write("x")\n'
             'json.loads(sys.stdin.read())\n'
-            f'print(json.dumps({{"candidates": [{json.dumps(candidate(title="Budget Whole", summary=LONG_SUMMARY))}]}}))\n')
+            f'answers = {json.dumps(answers)!r}\n'
+            'print(json.dumps({"candidates": json.loads(answers)[min(n, 1)]}))\n')
         settings = p.root / '.auto-context' / 'settings.json'
         cfg = json.loads(settings.read_text())
         cfg['compile'].update(mode='guarded', extractor={
@@ -519,11 +560,21 @@ class WorkerRunChecks(unittest.TestCase):
             return calls.read_text() if calls.exists() else ''
 
         self.assertEqual(run(), 'xx', 'first run: one extraction plus one split re-prompt')
-        self.assertEqual(sorted(x.name for x in p.wiki.rglob('*.md')), ['budget-whole.md'],
-                         'the split part, still over the budget, is written')
         self.assertEqual(wiki_freshness.unresolved_pending_refreshes(p.root), [],
                          'the revision ends written, so its pending refresh resolves')
+        self.assertEqual(p.ledger('source-queue.jsonl'), [], 'nothing is kept for a retry')
         self.assertEqual(run(), 'xx', 'second run: zero extractor calls')
+        return sorted(x.name for x in p.wiki.rglob('*.md'))
+
+    def test_a_still_over_budget_split_settles_in_one_run(self):
+        big = candidate(title='Budget Whole', summary=LONG_SUMMARY)
+        self.assertEqual(self.run_twice([[big], [big]]), ['budget-whole.md'])
+
+    def test_a_rejected_split_part_settles_in_one_run(self):
+        big = candidate(title='Budget Whole', summary=LONG_SUMMARY)
+        bad = candidate(title='Budget Part Bad', summary='User: hi\nassistant: hello')
+        self.assertEqual(self.run_twice([[big], [candidate(title='Budget Part Good'), bad]]),
+                         ['budget-whole.md'])
 
 
 class DedupChecks(unittest.TestCase):
