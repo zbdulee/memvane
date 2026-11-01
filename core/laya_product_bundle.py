@@ -7,6 +7,7 @@ packaging time, not inferred from a caller-supplied revision string.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -398,7 +399,8 @@ def _read(path, limit):
         finally:
             os.close(fd)
     except OSError as exc:
-        raise BundleEvidenceError('bundle_file_unavailable') from exc
+        raise BundleEvidenceError('bundle_file_unavailable',
+                                  {'path': str(path), 'errno': exc.errno}) from exc
 
 
 def _json(path):
@@ -642,6 +644,61 @@ def _exec_matches(mode, committed_mode):
     return not mode & 0o111
 
 
+class _CommitSource:
+    """Exact committed bytes, including unmaterialized skip-worktree blobs.
+
+    A sparse checkout is only a source of Git objects; reading it never
+    expands the checkout. Materialized files must still prove their bytes
+    and executable mode, even when their index entry says skip-worktree.
+    """
+
+    def __init__(self, source, commit_id):
+        self.root = Path(source)
+        if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
+                _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
+            _fail('source_commit_mismatch')
+        self.paths = _plugin_paths(source, commit_id)
+        self.object_format = _git(source, 'rev-parse', '--show-object-format').decode().strip()
+        try:
+            self.sparse = {row[2:].decode('utf-8') for row in
+                           _git(source, 'ls-files', '-t', '-z').split(b'\0')
+                           if row.startswith(b'S ')}
+        except UnicodeError as exc:
+            raise BundleEvidenceError('invalid_commit_path') from exc
+
+    def read(self, name):
+        committed = self.paths[name]
+        parent = self.root
+        for part in Path(name).parts[:-1]:
+            parent /= part
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                break  # An absent sparse subtree has no materialized parents.
+            except OSError as exc:
+                raise BundleEvidenceError('bundle_file_unavailable',
+                                          {'path': str(parent), 'errno': exc.errno}) from exc
+            if not stat.S_ISDIR(info.st_mode):
+                _fail('unsafe_source_parent')
+        try:
+            raw, info = _read(self.root / name, MAX_FILE)
+        except BundleEvidenceError as exc:
+            if (str(exc) != 'bundle_file_unavailable' or
+                    (exc.detail or {}).get('errno') != errno.ENOENT or
+                    name not in self.sparse):
+                raise
+            size = int(_git(self.root, 'cat-file', '-s', committed['oid']))
+            if size > MAX_FILE:
+                _fail('unsafe_bundle_file')
+            raw = _git(self.root, 'cat-file', 'blob', committed['oid'])
+        else:
+            if not _exec_matches(info['mode'], committed['mode']):
+                _fail('source_not_exact_commit')
+        if _git_blob_oid(raw, self.object_format) != committed['oid']:
+            _fail('source_not_exact_commit')
+        return raw
+
+
 def _exact_commit_entries(source, installed, commit_id):
     """Live identity of every installed file, each proven against ``commit_id``.
 
@@ -649,11 +706,8 @@ def _exact_commit_entries(source, installed, commit_id):
     to its committed object id and match the source bytes and exec mode.
     Existing ``.laya-product`` metadata is never evidence here.
     """
-    if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
-            _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
-        _fail('source_commit_mismatch')
-    selected = _plugin_paths(source, commit_id)
-    object_format = _git(source, 'rev-parse', '--show-object-format').decode().strip()
+    committed_source = _CommitSource(source, commit_id)
+    selected = committed_source.paths
     actual = set()
     for directory, dirs, files in os.walk(installed, followlinks=False):
         current = Path(directory)
@@ -678,11 +732,8 @@ def _exact_commit_entries(source, installed, commit_id):
                'truncated': len(unexpected) > 5 or len(missing) > 5})
     entries = {}
     for name, committed in selected.items():
-        source_raw, source_info = _read(source / name, MAX_FILE)
+        source_raw = committed_source.read(name)
         installed_raw, installed_info = _read(installed / name, MAX_FILE)
-        if (not _exec_matches(source_info['mode'], committed['mode']) or
-                _git_blob_oid(source_raw, object_format) != committed['oid']):
-            _fail('source_not_exact_commit')
         if (installed_info['dev'] != installed.stat().st_dev or
                 not _exec_matches(installed_info['mode'], committed['mode']) or
                 installed_info['mode'] & 0o022 or
