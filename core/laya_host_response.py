@@ -2335,12 +2335,13 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
                 # alone answers rather than the whole recall failing.
                 incremental_rows, incremental_title_only = [], frozenset()
                 incremental_locations, shadow_paths, base_generation = {}, (), None
+        from laya_index_vector import seal_reuse
         with LayaIndexRuntime(source_root=source_root,
                               scope=decision["scopeId"], db_path=decision["dbPath"],
                               queue_path=decision["queuePath"],
                               db_incarnation=decision["dbIncarnation"],
                               wiki_only=v2 and not isinstance(source_root, str),
-                              **stores) as runtime:
+                              **stores) as runtime, seal_reuse():
             if v2:
                 rows, title_only = query_selected_v2(
                     runtime, prompt, decision["vectorProfile"],

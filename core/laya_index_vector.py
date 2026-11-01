@@ -5,9 +5,13 @@ loads a model, and the hashes here prove row consistency, not model provenance.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import functools
+import os
+from pathlib import Path
 import math
 import operator
 import re
@@ -308,6 +312,55 @@ def verify_generation_seal(index, gen, *, deadline=None):
             'rows_digest': saved_digest, 'rows_count': saved_count}
 
 
+_SEAL_REUSE = ContextVar('laya_seal_reuse', default=None)
+
+
+@contextmanager
+def seal_reuse():
+    """Within this block (one recall), reuse a seal proof on an unchanged DB.
+
+    The vector query proves the same generation's seal twice per recall (the
+    pin's profile, then the exact search). The second proof is reused only
+    when the generation and the database files' identity (main and WAL: device,
+    inode, size, mtime_ns) are unchanged; anything else proves again. Nothing
+    outlives the block or crosses processes.
+    """
+    token = _SEAL_REUSE.set({})
+    try:
+        yield
+    finally:
+        _SEAL_REUSE.reset(token)
+
+
+def _database_identity(index):
+    path = Path(index.path)
+    identity = []
+    for file in (path, Path(str(path) + '-wal')):
+        try:
+            info = os.stat(file)
+        except FileNotFoundError:
+            identity.append(None)
+            continue
+        identity.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
+    return str(path.resolve()), tuple(identity)
+
+
+def _query_seal(index, gen, *, deadline=None):
+    """``verify_generation_seal`` for a query, reused only inside ``seal_reuse``."""
+    cache = _SEAL_REUSE.get()
+    if cache is None:
+        return verify_generation_seal(index, gen, deadline=deadline)
+    before = _database_identity(index)
+    key = (gen, before)
+    if key in cache:
+        return dict(cache[key])
+    result = verify_generation_seal(index, gen, deadline=deadline)
+    # A write between the identity read and the proof's snapshot: not reused.
+    if _database_identity(index) == before:
+        cache[key] = dict(result)
+    return result
+
+
 class LayaVectorIndex:
     def __init__(self, index):
         self.index = index
@@ -534,7 +587,7 @@ class LayaVectorIndex:
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
-            profile = verify_generation_seal(self.index, gen)
+            profile = _query_seal(self.index, gen)
             if profile['scope'] != scope:
                 raise IndexContractError('vector_seal_invalid')
             db.commit()
@@ -591,7 +644,7 @@ class LayaVectorIndex:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
             _check_deadline(deadline)
-            profile = verify_generation_seal(self.index, gen, deadline=deadline)
+            profile = _query_seal(self.index, gen, deadline=deadline)
             if profile['scope'] != scope or profile['profile_id'] != profile_id:
                 raise IndexContractError('vector_profile_mismatch')
             _check_deadline(deadline)

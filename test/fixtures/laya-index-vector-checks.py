@@ -85,6 +85,47 @@ class VectorChecks(unittest.TestCase):
         self.assertEqual([r['path'] for r in rows], [f'a-{i:03}.md' for i in range(5)])
         self.assertTrue(all(r['generation'] == 'alpha-0' and r['scope'] == 'alpha' for r in rows))
 
+    def recall_pair(self, pin):
+        """One recall's vector leg: the pin's profile, then the exact search."""
+        self.vectors.profile_for_pin(pin)
+        return self.query(pin)
+
+    def counted(self):
+        calls = []
+        real = laya_index_vector.verify_generation_seal
+        def count(*args, **kwargs):
+            calls.append(args[1]); return real(*args, **kwargs)
+        return calls, mock.patch.object(laya_index_vector, 'verify_generation_seal', side_effect=count)
+
+    def test_one_recall_proves_a_generation_seal_once(self):
+        body = '# sealed once'
+        pin = self.seal_publish('g1', 'alpha', [('a.md', body, True)], 'c1',
+                                vectors={body: (1.0, 0.0)})
+        calls, patched = self.counted()
+        with patched:
+            self.recall_pair(pin)
+            self.assertEqual(calls, ['g1', 'g1'], 'outside a recall every use proves the seal')
+            calls.clear()
+            with laya_index_vector.seal_reuse():
+                rows = self.recall_pair(pin)
+            self.assertEqual(calls, ['g1'], 'one recall proved the same generation twice')
+            self.assertEqual([row['path'] for row in rows], ['a.md'])
+            calls.clear()
+            self.recall_pair(pin)  # nothing outlives the recall
+            self.assertEqual(calls, ['g1', 'g1'])
+
+    def test_a_changed_database_between_uses_proves_again(self):
+        body = '# sealed twice'
+        pin = self.seal_publish('g1', 'alpha', [('a.md', body, True)], 'c1',
+                                vectors={body: (1.0, 0.0)})
+        calls, patched = self.counted()
+        with patched, laya_index_vector.seal_reuse():
+            self.vectors.profile_for_pin(pin)
+            # Any write changes the database files' identity (WAL size/mtime).
+            self.stage('g2', 'beta', [('b.md', '# other', True)])
+            self.query(pin)
+        self.assertEqual(calls, ['g1', 'g1'], 'a changed database reused the earlier proof')
+
     def test_generation_size_is_not_a_query_or_seal_admission_cap(self):
         docs = [(f'doc-{i}.md', f'body {i}', True) for i in range(3)]
         self.stage('g0', 'alpha', docs)
