@@ -281,7 +281,8 @@ def _event(target, kind, started, *, outcome, reason=None, result=None):
                        ms=event_log.elapsed_ms(started), bundle=target.get('sourceCommit'),
                        generation=result.get('generation'),
                        previousGeneration=target.get('generation'),
-                       detail=result.get('detail'), path=result.get('path'), **common)
+                       detail=result.get('detail'), path=result.get('path'),
+                       cause=result.get('cause'), **common)
         if result.get('state') == 'indexed':
             event_log.emit('index.publish', outcome='published',
                            generation=result.get('generation'),
@@ -342,7 +343,8 @@ def run(kind, value, *, owner_fd=None):
         # Only a deferral's detail is fixed codes; a child's stderr tail never is.
         _event(target, kind, started, outcome='failed', reason=exc.code,
                result={'detail': getattr(exc, 'detail', None),
-                       'path': getattr(exc, 'member_path', None)}
+                       'path': getattr(exc, 'member_path', None),
+                       'cause': getattr(exc, 'member_cause', None)}
                if exc.code in ('target_deferred', 'target_preparing') else None)
         raise
     except Exception as exc:
@@ -392,6 +394,8 @@ def _run_target(kind, value, target, owner_fd):
         # The fixed-code detail cannot carry a (non-ASCII) card path; the
         # install log names the member the fill stopped at separately.
         failure.member_path = _member_path(result.get('path'))
+        failure.member_cause = (_code(result.get('cause'))
+                                if failure.member_path is not None else None)
         raise failure
     current = resolve(kind, value)
     if (current['terminal'] or any(current[field] != target[field]

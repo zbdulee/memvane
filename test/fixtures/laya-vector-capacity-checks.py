@@ -389,6 +389,95 @@ class ReviewFixTests(VectorFillCase):
                           'provider_member_refused'))
         self.assertFalse(vc.fill_complete(runtime, self.profile_id))
 
+    def test_result_rules_name_the_first_broken_rule(self):
+        def answer(chunks, ok=True):
+            return {'ok': ok, 'result': {'chunks': chunks}}
+        good = {'seq': 0, 'pos': 0, 'vector': [0.5, 0.5]}
+        cases = [
+            ('not json', 'unreadable_answer'),
+            ({'ok': False, 'result': None}, 'worker_failure'),
+            ({'ok': True, 'result': {}}, 'result_invalid'),
+            (answer([]), 'chunk_count_invalid'),
+            (answer([{'seq': 0, 'pos': 0}]), 'chunk_shape_invalid'),
+            (answer([{**good, 'seq': 1}]), 'chunk_seq_invalid'),
+            (answer([good, {'seq': 1, 'pos': 0, 'vector': [0.1, 0.2]}]),
+             'chunk_pos_not_increasing'),
+            (answer([{**good, 'vector': [0.1]}]), 'dimension_mismatch'),
+            (answer([{**good, 'vector': [0.1, float('nan')]}]), 'non_finite_vector'),
+            (answer([good]), 'unknown'),
+        ]
+        for envelope, code in cases:
+            self.assertEqual(vc.result_rule_code(envelope, 2), code, envelope)
+
+    def test_diagnosis_observes_the_refused_answer_without_storing_it(self):
+        import json
+        import types
+        module = types.ModuleType('fake_reviewed_provider')
+        module.json = json
+        reply = {'text': ''}
+
+        class Reviewed:
+            def embed_document_chunks(self, body, path):
+                envelope = module.json.loads(reply['text'])
+                last = -1
+                for chunk in envelope['result']['chunks']:
+                    if chunk['pos'] <= last:
+                        raise IndexContractError('provider_result_invalid')
+                    last = chunk['pos']
+                return envelope['result']['chunks']
+        Reviewed.__module__ = 'fake_reviewed_provider'
+        sys.modules['fake_reviewed_provider'] = module
+        self.addCleanup(sys.modules.pop, 'fake_reviewed_provider', None)
+        provider = Reviewed()
+        reply['text'] = json.dumps({'ok': True, 'result': {'chunks': [
+            {'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]},
+            {'seq': 1, 'pos': 9, 'vector': [1.0, 0.0]},
+            {'seq': 2, 'pos': 5, 'vector': [1.0, 0.0]}]}})
+        call = lambda: provider.embed_document_chunks('body', 'a.md')
+        self.assertEqual(vc.diagnose_provider_result(provider, call, 2),
+                         'chunk_pos_not_increasing')
+        self.assertIs(module.json, json)  # the provider module is restored
+        reply['text'] = json.dumps({'ok': True, 'result': {'chunks': [
+            {'seq': 0, 'pos': 0, 'vector': [1.0, 0.0]}]}})
+        self.assertEqual(vc.diagnose_provider_result(provider, call, 2), 'not_reproduced')
+
+        def silent():
+            module.json.loads('')
+        self.assertEqual(vc.diagnose_provider_result(provider, silent, 2), 'unknown')
+
+        def empty():
+            try:
+                module.json.loads('')
+            except ValueError as exc:
+                raise IndexContractError('provider_result_invalid') from exc
+        self.assertEqual(vc.diagnose_provider_result(provider, empty, 2), 'empty_answer')
+        self.assertIs(module.json, json)
+
+    def test_refused_member_answer_carries_hash_and_diagnosed_cause(self):
+        import hashlib
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def silent(body, path):
+            raise IndexContractError('provider_result_invalid')
+        self.provider.embed_document_chunks = silent
+        seen = []
+        answer = vc.vector_fill_step(
+            runtime, self.provider,
+            diagnose=lambda body, path, sha: seen.append((path, sha)) or 'chunk_pos_not_increasing')
+        sha = hashlib.sha256(b'# F0\nbody 0\n').hexdigest()
+        self.assertEqual((answer['path'], answer['hash'], answer['cause']),
+                         ('plans/f0.md', sha, 'chunk_pos_not_increasing'))
+        self.assertEqual(seen, [('plans/f0.md', sha)])
+        # Without a diagnosis hook, or when it fails, the cause is unknown.
+        self.assertEqual(vc.vector_fill_step(runtime, self.provider)['cause'], 'unknown')
+
+        def broken(*_a):
+            raise RuntimeError('diagnosis must never fail the fill')
+        self.assertEqual(vc.vector_fill_step(runtime, self.provider, diagnose=broken)['cause'],
+                         'unknown')
+
     def test_empty_worker_answer_defers_with_the_path(self):
         self.corpus(1)
         runtime = self.runtime()

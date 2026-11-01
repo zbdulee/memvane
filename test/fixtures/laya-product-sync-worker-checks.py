@@ -807,7 +807,8 @@ class CapacityWorkerChecks(unittest.TestCase):
             if answer['state']=='indexed':
                 before_publish();before_publish()  # two publishes, one fence
             return answer
-        def fill(_runtime,_provider,*,should_yield,on_document_complete=None,before_write=None):
+        def fill(_runtime,_provider,*,should_yield,on_document_complete=None,before_write=None,
+                 diagnose=None):
             seen['fills']+=1;return next(fill_answers)
         def runtime(**kwargs):
             seen['runtime']=kwargs
@@ -1052,6 +1053,52 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertTrue(writes)
         # Every vector write of this wake follows its journal fence.
         self.assertEqual([name for name,fenced in writes if fenced<1],[])
+
+
+    def test_stuck_member_is_diagnosed_once_counted_and_noticed(self):
+        # SE: one card's chunk positions went backwards; every wake stopped
+        # there and nothing said which card or why.
+        import event_log
+        import laya_vector_block
+        self.stores()
+        (self.beta/'bad.md').write_text('rejected card',encoding='utf-8')
+        base=self.provider_class()
+        calls=[]
+        broken=json.dumps({'ok':True,'result':{'chunks':[
+            {'seq':0,'pos':0,'vector':[1.0,0.0]},{'seq':1,'pos':4,'vector':[1.0,0.0]},
+            {'seq':2,'pos':2,'vector':[1.0,0.0]}]}})
+        class Rejecting(base):
+            def embed_document_chunks(self,body,path,**kw):
+                if path=='beta/bad.md':
+                    calls.append(path)
+                    json.loads(broken)  # what the reviewed provider decodes
+                    raise IndexContractError('provider_result_invalid')
+                return super().embed_document_chunks(body,path)
+        events=[]
+        def emit(name,**fields):
+            if name=='vector.member':
+                events.append((fields['outcome'],fields['path'],fields['cause'],fields['wakes']))
+            return True
+        results=[]
+        with patch.object(self,'provider_class',return_value=Rejecting), \
+             patch.object(event_log,'emit',side_effect=emit):
+            for _ in range(laya_vector_block.NOTICE_WAKES):
+                results.append(self.run_capacity()[0])
+        self.assertEqual({(r['state'],r['reason'],r['path'],r['cause']) for r in results},
+                         {('deferred','provider_result_invalid','beta/bad.md',
+                           'chunk_pos_not_increasing')})
+        # One extra embedding diagnoses the streak; later wakes reuse it.
+        self.assertEqual(len(calls),laya_vector_block.NOTICE_WAKES+1)
+        self.assertEqual([e[3] for e in events],[1,2,3])
+        line=laya_vector_block.notice(self.decision,'session-1')
+        self.assertIn('beta/bad.md',line)
+        self.assertIn('청크 위치 역행',line)
+        self.assertIsNone(laya_vector_block.notice(self.decision,'session-1'))
+        # The card is fixed: the next sync completes and the notice is gone.
+        (self.beta/'bad.md').unlink()
+        with patch.object(event_log,'emit',return_value=True):
+            self.assertIn(self.run_capacity()[0]['state'],('indexed','unchanged'))
+        self.assertIsNone(laya_vector_block.notice(self.decision,'session-2'))
 
 
 if __name__=='__main__':unittest.main()
