@@ -563,6 +563,15 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
+  A same-version service started from a cache the installations' journals do
+  not approve (the other host's copy of one release) proves them only as
+  bundle drift: it attaches read-only and starts no model worker, so it
+  reports `readOnlyOnly` while no worker runs or loads and an installation
+  waits `read_only_no_worker`. A hook or wake whose own code proves that
+  installation `selected` (or `preview`) then asks it to drain
+  (`read_only_handover`; refused while any worker runs) and starts the
+  successor from its own cache. A caller that would itself attach read-only
+  never asks, so the two hosts' caches do not alternate.
 - An installation still owned by a per-project resident of an earlier bundle
   is adopted after the shared worker is ready: the service signals only the
   one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux
