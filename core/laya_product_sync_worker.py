@@ -693,19 +693,32 @@ def _observe_member_block(decision, result):
 def _member_diagnosis(decision, provider):
     """``diagnose(body, path, sha)`` for the fill: a short cause code.
 
-    A cause already diagnosed for the same member and hash in this streak is
-    reused, so a stuck member is embedded once more per streak, not per wake.
+    The diagnosis repeats the refused embedding once in a separate process
+    (``laya_vector_diagnose``), within this wake's admission and with the
+    same request timeout. The attempt is recorded before the wake ends,
+    whatever it found, so a streak embeds its member for diagnosis at most
+    once; later wakes reuse the recorded cause.
     """
     def diagnose(body, path, sha):
         import laya_vector_block
-        from laya_vector_capacity import diagnose_provider_result
-        known = laya_vector_block.known_cause(laya_vector_block.state_root(decision),
-                                              path, sha)
+        import laya_vector_diagnose
+        root = laya_vector_block.state_root(decision)
+        known = laya_vector_block.diagnosis_of(root, path, sha)
         if known is not None:
             return known
-        return diagnose_provider_result(provider,
-                                        lambda: _embed_with_budget(provider, body, path),
-                                        provider.profile['dimension'])
+        try:
+            # Record the attempt first: a crash mid-diagnosis must not repeat it.
+            laya_vector_block.mark_diagnosed(root, path, sha, 'unknown')
+        except Exception:
+            return 'unknown'
+        cause = laya_vector_diagnose.diagnose(
+            provider.manifest, body, path,
+            timeout=270 if _large_initial_document(body) else 120)
+        try:
+            laya_vector_block.mark_diagnosed(root, path, sha, cause)
+        except Exception:
+            pass
+        return cause
     return diagnose
 
 

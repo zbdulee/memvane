@@ -52,8 +52,55 @@ class BlockStreakTests(unittest.TestCase):
         self.stuck(100)
         row = self.stuck(101, cause='unknown')
         self.assertEqual(row['cause'], 'chunk_pos_not_increasing')
-        self.assertEqual(block.known_cause(self.state, CARD, 'a' * 64), 'chunk_pos_not_increasing')
-        self.assertIsNone(block.known_cause(self.state, CARD, 'c' * 64))
+
+    def test_a_diagnosis_attempt_is_kept_whatever_it_found(self):
+        # An attempt that names nothing is still an attempt: the streak must
+        # not embed the member again on every wake.
+        self.assertIsNone(block.diagnosis_of(self.state, CARD, 'a' * 64))
+        block.mark_diagnosed(self.state, CARD, 'a' * 64, 'unknown', now=100)
+        self.assertEqual(block.diagnosis_of(self.state, CARD, 'a' * 64), 'unknown')
+        row = self.stuck(101, cause='unknown')
+        self.assertEqual((row['wakes'], row['diagnosed']), (1, True))
+        self.assertEqual(block.diagnosis_of(self.state, CARD, 'a' * 64), 'unknown')
+        block.mark_diagnosed(self.state, CARD, 'a' * 64, 'zero_norm_vector')
+        self.assertEqual(block.diagnosis_of(self.state, CARD, 'a' * 64), 'zero_norm_vector')
+        self.assertIsNone(block.diagnosis_of(self.state, CARD, 'c' * 64))
+
+    def test_a_notice_cannot_restore_a_streak_a_completed_sync_cleared(self):
+        import threading
+        import time as clock
+        for now in (100, 101, 102):
+            self.stuck(now)
+        real_read = block.read
+        cleared = []
+
+        def slow_read(root):
+            row = real_read(root)
+            # The worker completes a sync while SessionStart holds its row.
+            worker = threading.Thread(target=lambda: cleared.append(
+                block.observe(self.state, {'state': 'indexed'})))
+            worker.start()
+            clock.sleep(0.3)
+            slow_read.worker = worker
+            return row
+        block.read = slow_read
+        try:
+            line = block.notice(self.decision, 's1', now=103)
+        finally:
+            block.read = real_read
+        slow_read.worker.join(10)
+        self.assertIsNotNone(line)
+        self.assertEqual(cleared, [None])
+        self.assertIsNone(block.read(self.state))  # not resurrected by the notice
+
+    def test_notice_sessions_expire_by_time(self):
+        for now in (100, 101, 102):
+            self.stuck(now)
+        self.assertIsNotNone(block.notice(self.decision, 's1', now=200))
+        self.assertIsNone(block.notice(self.decision, 's1', now=300))
+        later = 200 + block.SESSION_RETENTION_SECONDS
+        self.assertIsNotNone(block.notice(self.decision, 's1', now=later))
+        self.assertEqual(set(block.read(self.state)['noticed']), {'s1'})
 
     def test_rejected_member_uses_its_detail_as_the_cause(self):
         row = block.observe(self.state, {'state': 'blocked', 'reason': 'vector_member_rejected',

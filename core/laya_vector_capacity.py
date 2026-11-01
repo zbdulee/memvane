@@ -71,7 +71,6 @@ def _provider_refuses(text, path):
     return None
 _PAGE = 64
 CAUSE_UNKNOWN = 'unknown'
-MAX_PROVIDER_CHUNKS = 1024
 
 
 def _diagnosed(diagnose, body, path, sha):
@@ -83,91 +82,6 @@ def _diagnosed(diagnose, body, path, sha):
     except Exception:
         return CAUSE_UNKNOWN
     return code if isinstance(code, str) and code else CAUSE_UNKNOWN
-
-
-def result_rule_code(envelope, dimension):
-    """First rule a decoded provider answer breaks, as a short code.
-
-    The same rules the reviewed provider applies to a ``document_chunks``
-    answer, re-checked by the caller so a refusal can be named. ``unknown``
-    when every rule passes (the provider's verdict was not reproduced).
-    """
-    import math
-    if not isinstance(envelope, dict):
-        return 'unreadable_answer'
-    if envelope.get('ok') is not True:
-        return 'worker_failure'
-    response = envelope.get('result')
-    if not isinstance(response, dict) or not isinstance(response.get('chunks'), list):
-        return 'result_invalid'
-    chunks = response['chunks']
-    if not 1 <= len(chunks) <= MAX_PROVIDER_CHUNKS:
-        return 'chunk_count_invalid'
-    last_pos = -1
-    for seq, chunk in enumerate(chunks):
-        if (not isinstance(chunk, dict) or set(chunk) != {'seq', 'pos', 'vector'}
-                or type(chunk['pos']) is not int):
-            return 'chunk_shape_invalid'
-        if type(chunk['seq']) is not int or chunk['seq'] != seq:
-            return 'chunk_seq_invalid'
-        if chunk['pos'] <= last_pos:
-            return 'chunk_pos_not_increasing'
-        vector = chunk['vector']
-        if not isinstance(vector, list) or len(vector) != dimension:
-            return 'dimension_mismatch'
-        if any(type(value) not in (int, float) or not math.isfinite(value)
-               for value in vector):
-            return 'non_finite_vector'
-        last_pos = chunk['pos']
-    return CAUSE_UNKNOWN
-
-
-def diagnose_provider_result(provider, call, dimension):
-    """Repeat one refused embedding and name the rule its answer breaks.
-
-    The reviewed provider raises ``provider_result_invalid`` without the
-    answer. Its module file stays untouched: for this one call the caller
-    observes the JSON its ``json.loads`` decodes, then applies
-    ``result_rule_code``. The repeated result is never stored. Codes:
-    ``empty_answer``/``unreadable_answer`` (nothing decodable came back),
-    a ``result_rule_code`` code, ``not_reproduced`` (the repeat succeeded),
-    another provider error code, or ``unknown``.
-    """
-    import sys
-    module = sys.modules.get(type(provider).__module__)
-    real = getattr(module, 'json', None)
-    if module is None or not callable(getattr(real, 'loads', None)):
-        return CAUSE_UNKNOWN
-    seen = []
-
-    class Observed:
-        def __getattr__(self, name):
-            return getattr(real, name)
-
-        def loads(self, value, *args, **kwargs):
-            seen.append(('raw', value))
-            decoded = real.loads(value, *args, **kwargs)
-            seen.append(('decoded', decoded))
-            return decoded
-    module.json = Observed()
-    try:
-        try:
-            call()
-        except IndexContractError as exc:
-            code = str(exc)
-        except Exception:
-            return CAUSE_UNKNOWN
-        else:
-            return 'not_reproduced'
-    finally:
-        module.json = real
-    if code != 'provider_result_invalid':
-        return code if code else CAUSE_UNKNOWN
-    decoded = [value for kind, value in seen if kind == 'decoded']
-    if not decoded:
-        raw = [value for kind, value in seen if kind == 'raw']
-        return 'empty_answer' if not raw or not raw[-1].strip() else 'unreadable_answer'
-    return result_rule_code(decoded[-1], dimension)
 
 
 def provider_profile_id(provider: Any) -> str:
@@ -230,7 +144,7 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     * ``deferred``/``provider_result_invalid`` with ``path``: the worker
       answered nothing usable (busy, or an older worker that does not name
       its refusals). Not a member verdict; retried next wake. ``cause`` is
-      ``diagnose(body, path, sha)`` (``result_rule_code``), else ``unknown``.
+      ``diagnose(body, path, sha)`` (``laya_vector_diagnose``), else ``unknown``.
 
     Every member answer (``blocked`` and ``provider_result_invalid``) also
     carries the member's content ``hash``.

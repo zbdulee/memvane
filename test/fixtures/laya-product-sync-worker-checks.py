@@ -1055,30 +1055,23 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         self.assertEqual([name for name,fenced in writes if fenced<1],[])
 
 
-    def test_stuck_member_is_diagnosed_once_counted_and_noticed(self):
-        # SE: one card's chunk positions went backwards; every wake stopped
-        # there and nothing said which card or why.
+    def stuck_member_wakes(self,cause):
         import event_log
         import laya_vector_block
+        import laya_vector_diagnose
         self.stores()
         (self.beta/'bad.md').write_text('rejected card',encoding='utf-8')
         base=self.provider_class()
-        calls=[]
-        broken=json.dumps({'ok':True,'result':{'chunks':[
-            {'seq':0,'pos':0,'vector':[1.0,0.0]},{'seq':1,'pos':4,'vector':[1.0,0.0]},
-            {'seq':2,'pos':2,'vector':[1.0,0.0]}]}})
-        import types
-        reviewed=types.ModuleType('fake_reviewed_provider_module');reviewed.json=json
-        sys.modules[reviewed.__name__]=reviewed
-        self.addCleanup(sys.modules.pop,reviewed.__name__,None)
+        embeds=[];diagnoses=[]
         class Rejecting(base):
             def embed_document_chunks(self,body,path,**kw):
                 if path=='beta/bad.md':
-                    calls.append(path)
-                    reviewed.json.loads(broken)  # what the reviewed provider decodes
+                    embeds.append(path)
                     raise IndexContractError('provider_result_invalid')
                 return super().embed_document_chunks(body,path)
-        Rejecting.__module__=reviewed.__name__
+        def diagnose(manifest,body,path,*,timeout):
+            diagnoses.append((path,timeout))
+            return cause
         events=[]
         def emit(name,**fields):
             if name=='vector.member':
@@ -1086,14 +1079,25 @@ class V2CapacityWorkerChecks(unittest.TestCase):
             return True
         results=[]
         with patch.object(self,'provider_class',return_value=Rejecting), \
+             patch.object(laya_vector_diagnose,'diagnose',side_effect=diagnose), \
              patch.object(event_log,'emit',side_effect=emit):
             for _ in range(laya_vector_block.NOTICE_WAKES):
                 results.append(self.run_capacity()[0])
+        return results,embeds,diagnoses,events
+
+    def test_stuck_member_is_diagnosed_once_counted_and_noticed(self):
+        # SE: one card's chunk positions went backwards; every wake stopped
+        # there and nothing said which card or why.
+        import event_log
+        import laya_vector_block
+        results,embeds,diagnoses,events=self.stuck_member_wakes('chunk_pos_not_increasing')
         self.assertEqual({(r['state'],r['reason'],r['path'],r['cause']) for r in results},
                          {('deferred','provider_result_invalid','beta/bad.md',
                            'chunk_pos_not_increasing')})
-        # One extra embedding diagnoses the streak; later wakes reuse it.
-        self.assertEqual(len(calls),laya_vector_block.NOTICE_WAKES+1)
+        # One diagnosis (in its own process) per streak, the fill's own
+        # embedding once per wake.
+        self.assertEqual(diagnoses,[('beta/bad.md',120)])
+        self.assertEqual(len(embeds),laya_vector_block.NOTICE_WAKES)
         self.assertEqual([e[3] for e in events],[1,2,3])
         line=laya_vector_block.notice(self.decision,'session-1')
         self.assertIn('beta/bad.md',line)
@@ -1105,5 +1109,9 @@ class V2CapacityWorkerChecks(unittest.TestCase):
             self.assertIn(self.run_capacity()[0]['state'],('indexed','unchanged'))
         self.assertIsNone(laya_vector_block.notice(self.decision,'session-2'))
 
+    def test_an_inconclusive_diagnosis_is_not_repeated_every_wake(self):
+        results,embeds,diagnoses,events=self.stuck_member_wakes('unknown')
+        self.assertEqual(len(diagnoses),1)
+        self.assertEqual({r['cause'] for r in results},{'unknown'})
 
 if __name__=='__main__':unittest.main()
