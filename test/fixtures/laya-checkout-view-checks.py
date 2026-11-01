@@ -639,18 +639,36 @@ class GitEnvironmentAndBudget(CheckoutCase):
         repository, worktree = self.bind(self.root)
         capture = self.cap(self.root, repository, worktree)
         queried = self.base / 'old-git-queried'
-        body = ('case "$*" in *--version*) printf "git version 2.31.0\\n"; exit 0;; esac\n'
-                'printf called >> ' + shlex.quote(str(queried)) + '\n'
-                'exec ' + shlex.quote(REAL_GIT) + ' "$@"\n')
-        # Version semantics get a finite three-second command allowance;
-        # expiry/slow-child behavior has its own explicit deadline tests.
-        with self.fake_git(body), mock.patch.object(view, 'GIT_SECONDS', 3.0):
-            self.refused(view.register_repository, str(self.root), reason='git_version_unsupported')
-            self.refused(view.register_worktree, str(self.root), repository,
-                         reason='git_version_unsupported')
-            self.refused(self.cap, self.root, repository, worktree, reason='git_version_unsupported')
-            self.no_match(capture, repository, worktree)
+        unsupported = ('2.31.0', '2.39.0', '2.39.3', '2.40.1', '2.41.0',
+                       '2.42.1', '2.43.3', '2.44.0', '2.45.0', '2.39', '3.0.0')
+        for version in unsupported:
+            with self.subTest(version=version):
+                body = ('case "$*" in *--version*) printf "git version ' + version
+                        + '\\n"; exit 0;; esac\n'
+                        'printf called >> ' + shlex.quote(str(queried)) + '\n'
+                        'exec ' + shlex.quote(REAL_GIT) + ' "$@"\n')
+                # Version semantics get a finite command allowance; expiry
+                # and slow-child behavior have separate deadline tests.
+                with self.fake_git(body), mock.patch.object(view, 'GIT_SECONDS', 3.0):
+                    self.refused(view.register_repository, str(self.root), reason='git_version_unsupported')
+                    self.refused(view.register_worktree, str(self.root), repository,
+                                 reason='git_version_unsupported')
+                    self.refused(self.cap, self.root, repository, worktree,
+                                 reason='git_version_unsupported')
+                    self.no_match(capture, repository, worktree)
         self.assertFalse(queried.exists(), 'unsupported Git must not query repository objects')
+
+    def test_confirmed_patch_versions_allow_capture(self):
+        repository, worktree = self.bind(self.root)
+        baseline = self.cap(self.root, repository, worktree)
+        supported = ('2.39.4', '2.39.5 (Apple Git-154)', '2.40.2', '2.41.1',
+                     '2.42.2', '2.43.4', '2.44.1', '2.45.1', '2.46.0', '2.50.0')
+        for version in supported:
+            with self.subTest(version=version):
+                body = ('case "$*" in *--version*) printf "git version ' + version
+                        + '\\n"; exit 0;; esac\nexec ' + shlex.quote(REAL_GIT) + ' "$@"\n')
+                with self.fake_git(body), mock.patch.object(view, 'GIT_SECONDS', 3.0):
+                    self.assertEqual(self.cap(self.root, repository, worktree), baseline)
 
     def test_inherited_git_overrides_and_config_are_ignored(self):
         other = self.repo('other')

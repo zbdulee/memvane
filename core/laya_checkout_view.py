@@ -27,7 +27,9 @@ MAX_GIT_BYTES = 32768
 MAX_INDEX_BYTES = 16 * 1024 * 1024
 MAX_MARKER_BYTES = 65536
 CAPTURE_ATTEMPTS = 2
-MIN_GIT_VERSION = (2, 39)
+# Confirmed maintenance backports; 2.39.0 and other unpatched minors ignore
+# GIT_NO_LAZY_FETCH. The upstream feature is present from the 2.46 series.
+NO_LAZY_FETCH_PATCHES = {39: 4, 40: 2, 41: 1, 42: 2, 43: 4, 44: 1, 45: 1}
 REPOSITORY_SCHEMA = 'memvane-checkout-repository-v1'
 WORKTREE_SCHEMA = 'memvane-checkout-worktree-v1'
 CAPTURE_SCHEMA = 'memvane-checkout-capture-v1'
@@ -369,11 +371,15 @@ def _facts(project_root, deadline):
         return {'project': project, 'checkout': project, 'gitDir': None,
                 'commonGitDir': None, 'projectRelative': '.', 'gitObjectFormat': None,
                 'branchKey': 'non-git', 'headOid': None, 'index': None, 'operations': []}
-    # This floor supports GIT_NO_LAZY_FETCH. Unknown/older Git must stop
-    # before repository/object queries, never silently ignore that fence.
+    # Verify the patched release family before repository/object queries,
+    # never silently ignore the lazy-fetch fence on an unpatched Git.
     _, version = _git(['--version'], root, deadline)
-    parsed = re.match(r'^git version ([0-9]{1,3})\.([0-9]{1,3})(?:\.|\s|$)', version)
-    if parsed is None or tuple(map(int, parsed.groups())) < MIN_GIT_VERSION:
+    parsed = re.match(r'^git version ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?=$|[ .])', version)
+    if parsed is None:
+        _fail('git_version_unsupported')
+    major, minor, patch = map(int, parsed.groups())
+    required = NO_LAZY_FETCH_PATCHES.get(minor)
+    if major != 2 or not (minor >= 46 or (required is not None and patch >= required)):
         _fail('git_version_unsupported')
     _, raw = _git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir',
                    '--git-common-dir', '--show-object-format=storage',

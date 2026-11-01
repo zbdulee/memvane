@@ -14,8 +14,20 @@ view identity를 계산한다. 현재 hook·route·index·journal은 이 API를 
 | `capture_matches(capture, repository, worktree, deadline=None)` | 현재 상태를 다시 관측해 기존 capture와 같으면 `True`, 변경·불명·잘못된 입력이면 `False` |
 
 `deadline`은 keyword-only 인자이며 `time.monotonic()` 기준 절대 시각이다.
-Git 프로젝트의 이 API는 Git 2.39 이상을 지원한다. 이전·불명 버전은 저장소 객체
-조회 전에 `git_version_unsupported`로 거절한다. non-Git capture는 Git을 실행하지 않는다.
+Git 프로젝트의 이 API는 자동 fetch 차단을 지원하는 다음 Git 2.x 계열을 사용한다.
+패치가 누락되거나 확인되지 않은 버전은 저장소 객체 조회 전에
+`git_version_unsupported`로 거절한다. non-Git capture는 Git을 실행하지 않는다.
+
+| 계열 | 최소 지원 버전 |
+| --- | --- |
+| 2.39 | [2.39.4](https://raw.githubusercontent.com/git/git/v2.39.4/promisor-remote.c) |
+| 2.40 | [2.40.2](https://raw.githubusercontent.com/git/git/v2.40.2/promisor-remote.c) |
+| 2.41 | [2.41.1](https://raw.githubusercontent.com/git/git/v2.41.1/promisor-remote.c) |
+| 2.42 | [2.42.2](https://raw.githubusercontent.com/git/git/v2.42.2/promisor-remote.c) |
+| 2.43 | [2.43.4](https://raw.githubusercontent.com/git/git/v2.43.4/promisor-remote.c) |
+| 2.44 | [2.44.1](https://raw.githubusercontent.com/git/git/v2.44.1/promisor-remote.c) |
+| 2.45 | [2.45.1](https://raw.githubusercontent.com/git/git/v2.45.1/promisor-remote.c) |
+| 2.46 이상 2.x | [2.46.0](https://raw.githubusercontent.com/git/git/v2.46.0/promisor-remote.c) |
 기본 capture 예산은 3초, 명시 deadline의 최대 예산은 10초, 개별 Git 호출은 1초다.
 stdout·stderr 합계는 32 KiB, index는 16 MiB, operation 파일은 64 KiB로 제한한다.
 실패는 `CheckoutUnavailable`의 `reason`으로 구분한다. 등록 API를 다시 호출하면
