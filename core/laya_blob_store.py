@@ -152,6 +152,8 @@ def _observation(project_root, repository, worktree):
             v.fail('wiki_settings_missing')
         raw, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
         raw_config = json.loads(raw.decode('utf8'), object_pairs_hook=routes._pairs)
+        if not isinstance(raw_config, dict):
+            v.fail('wiki_binding_invalid')
         policy_config = config.normalize_config(config.expand_minimal_settings(raw_config, project_dir.CURRENT),
                                                 project_dir.CURRENT)
         policy_digest = v.digest('memvane-candidate-policy-v1', policy_config)

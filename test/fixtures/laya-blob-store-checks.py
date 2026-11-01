@@ -471,5 +471,31 @@ class BlobStoreChecks(BlobStoreCase):
         self.assertEqual(store.ingest_card(wid, 'cards/a.md'), sha256(CARD))
 
 
+    def test_24_non_object_settings_refuse_with_bounded_api_error(self):
+        store, repository, wid = self.create()
+        record = view.register_worktree(str(self.root), repository)
+        settings = self.root / '.memvane/settings.json'
+        original, before = settings.read_bytes(), store.counts()
+        for index, value in enumerate((None, [], 'SECRET malformed', 17, True)):
+            settings.write_text(json.dumps(value), encoding='utf8')
+            calls = [
+                ('create', lambda: self.Store.create(
+                    str(self.state / f'invalid-{index}.db'), project_root=str(self.root),
+                    repository=repository, worktree=record, scope_id=self.scope)),
+                ('register_worktree', lambda: store.register_worktree(str(self.root), record)),
+                ('ingest_card', lambda: store.ingest_card(wid, 'cards/a.md')),
+            ]
+            try:
+                for name, call in calls:
+                    with self.subTest(value_type=type(value).__name__, method=name):
+                        error = self.refused(call)
+                        self.assertEqual(error.reason, 'wiki_binding_invalid')
+                        self.assertNotIn('SECRET', str(error))
+                self.assertFalse((self.state / f'invalid-{index}.db').exists())
+            finally:
+                settings.write_bytes(original)
+            self.assertEqual(store.counts(), before)
+
+
 if __name__ == '__main__':
     unittest.main()
