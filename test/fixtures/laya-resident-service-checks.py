@@ -447,6 +447,21 @@ class ServiceChecks(Fixture):
         self.assertTrue(old.acquire(wait=5))
         old.start()
         self.wait(lambda: self.ready(manifest))
+        # The client below asks *during* drain. Keep one synthetic request
+        # pending until its reply, independent of archive/import scheduling.
+        # A start()-only fixture does not run run()'s automatic socket close.
+        pending = [True]
+        with old.inflight_done:
+            old.inflight += 1
+
+        def release_request():
+            with old.inflight_done:
+                if pending[0]:
+                    pending[0] = False
+                    old.inflight -= 1
+                    old.inflight_done.notify_all()
+
+        self.addCleanup(release_request)
         inherited = []
 
         def spawn(argv, *, pass_fds):  # the child keeps its copies of the locks
@@ -462,7 +477,12 @@ class ServiceChecks(Fixture):
                                      str(self.root)])
         self.assertEqual(len(fds), 2)
         # A 0.40.3 client asks during the drain: its own code elects no successor.
-        self.assertEqual(self.old_client(legacy), {'state': 'replacing', 'spawned': 0})
+        try:
+            self.assertFalse(old.stopped.is_set())
+            self.assertEqual(self.old_client(legacy), {'state': 'replacing', 'spawned': 0})
+            self.assertFalse(old.stopped.is_set())
+        finally:
+            release_request()
         new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
                           prove=self.prove, attest=lambda *_a: None,
                           start_worker=self.start_worker, admit=lambda: True,
