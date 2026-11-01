@@ -538,10 +538,41 @@ def request_adopt(project, *, root=None, spawn=None):
         # A service-side problem never fails a query or a sync: the owner
         # state still says preparing and lexical results are served.
         raise _deferred('laya_service_unavailable') from exc
+    if state in ('ready', 'starting'):
+        with suppress(Exception):
+            if _handover_read_only(project, root=root, spawn=spawn):
+                return 'replacing'
     if state == 'ready':
         with suppress(Exception):
             exchange(root, {'command': 'adopt', 'project': str(project)})
     return state
+
+
+def _handover_read_only(project, *, root, spawn=None, prove=None):
+    """Replace a same-release service that can only attach read-only proofs.
+
+    A service started from a cache the installations' journals do not approve
+    (the other host's copy of one release) proves each installation as bundle
+    drift, never starts a model worker, and equal versions never drain each
+    other. A caller whose own code proves this project ``selected`` (or
+    ``preview``) asks it to hand over and starts the successor; a caller that
+    would itself only read-only attach does nothing, so hosts never alternate.
+    """
+    answer = hello(root)
+    if not isinstance(answer, dict) or answer.get('readOnlyOnly') is not True:
+        return False
+    try:
+        _decision, _proof, mode = (prove or default_prove)(project)
+    except Exception:
+        return False
+    if mode not in ('selected', 'preview'):
+        return False
+    reply = exchange(root, {'command': 'drain', 'reason': 'read_only_handover',
+                            'protocols': list(PROTOCOLS), 'bundle': bundle_identity()})
+    if not isinstance(reply, dict) or reply.get('status') not in ('draining', 'stopped'):
+        return False
+    _spawn(root, spawn=spawn)
+    return True
 
 
 # ----------------------------------------------------------- legacy residents
@@ -1139,6 +1170,11 @@ class Service:
             os.close(self.lease)
             self.lease = None
 
+    def _read_only_only(self):
+        """Under ``self.lock``: no worker runs or loads, and an install waits read-only."""
+        return (not any(w.alive() or w.loading for w in self.workers.values())
+                and 'read_only_no_worker' in self.waiting.values())
+
     def status(self):
         with self.lock:
             return {'status': ('draining' if self.draining.is_set() else
@@ -1147,7 +1183,7 @@ class Service:
                     'protocol': PROTOCOL, 'protocols': list(PROTOCOLS),
                     'bundle': self.bundle, 'python': sys.executable, 'pid': os.getpid(),
                     'projects': len(self.bindings), 'workers': len(self.workers),
-                    'inflight': self.inflight}
+                    'inflight': self.inflight, 'readOnlyOnly': self._read_only_only()}
 
     # -------------------------------------------------------------- control
     def _control_loop(self):
@@ -1178,6 +1214,17 @@ class Service:
                     self.retry.pop(project, None)
             return {**self.status(), 'accepted': True}
         if command == 'drain':
+            if row.get('reason') == 'read_only_handover':
+                # Same release from the approved cache: only a service that
+                # cannot start any worker (read-only proofs) hands over.
+                with self.lock:
+                    stuck = self._read_only_only()
+                bundle = row.get('bundle') or {}
+                if (stuck and isinstance(bundle, dict)
+                        and bundle.get('version') == self.bundle.get('version')):
+                    self.begin_drain()
+                    return {'status': 'draining'}
+                return {'status': 'refused', 'reason': 'not_read_only', 'bundle': self.bundle}
             if row.get('reason') == 'learning_state_move':
                 # The learning state moves once: every lane holder drains so
                 # the old and new locations are never used together.

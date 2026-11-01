@@ -1274,6 +1274,63 @@ class DeferredStartChecks(unittest.TestCase):
             self.assertEqual((len(attests), len(starts), worker.state), (1, 1, 'ready'))
 
 
+class ReadOnlyHandoverChecks(unittest.TestCase):
+    """A same-release service that can only attach read-only hands over."""
+    def service(self, base):
+        root = base / 'svc'; root.mkdir(mode=0o700)
+        return svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                           prove=lambda _p: None, attest=lambda *_a: None,
+                           start_worker=lambda *_a: None, admit=lambda: True,
+                           retire=lambda *_a: None, tick=.05)
+
+    def test_only_a_read_only_service_accepts_a_same_release_handover(self):
+        with tempfile.TemporaryDirectory(prefix='lrs-ho-', dir='/tmp') as temp:
+            base = Path(temp).resolve(); base.chmod(0o700)
+            service = self.service(base)
+            drains = []
+            service.begin_drain = lambda: drains.append(1)
+            ask = {'command': 'drain', 'reason': 'read_only_handover',
+                   'bundle': {'version': '1.0.0', 'digest': 'a'}}
+            self.assertFalse(service.status()['readOnlyOnly'])
+            self.assertEqual(service._command(ask)['status'], 'refused')
+            service.waiting['/p'] = 'read_only_no_worker'
+            self.assertTrue(service.status()['readOnlyOnly'])
+            self.assertEqual(service._command({**ask, 'bundle': {'version': '0.9.0'}})['status'],
+                             'refused')
+            self.assertEqual(service._command(ask)['status'], 'draining')
+            self.assertEqual(drains, [1])
+            # A worker running (or loading) for any installation: no handover.
+            worker = svc.Worker('key', str(base / 'w.sock')); worker.loading = True
+            service.workers['key'] = worker
+            self.assertFalse(service.status()['readOnlyOnly'])
+            self.assertEqual(service._command(ask)['status'], 'refused')
+
+    def test_only_a_caller_that_proves_selected_takes_over(self):
+        with tempfile.TemporaryDirectory(prefix='lrs-ho-', dir='/tmp') as temp:
+            base = Path(temp).resolve(); base.chmod(0o700)
+            root = base / 'svc'; root.mkdir(mode=0o700)
+            sent, spawned = [], []
+            def exchange(_root, row, **_kw):
+                sent.append(row)
+                if row['command'] == 'hello':
+                    return {'status': 'starting', 'readOnlyOnly': True,
+                            'protocols': list(svc.PROTOCOLS), 'bundle': svc.bundle_identity()}
+                if row['command'] == 'drain':
+                    return {'status': 'draining'}
+                return {'status': 'ready'}
+            for mode, expected in (('read_only', 'starting'), ('selected', 'replacing')):
+                sent.clear(); spawned.clear()
+                with patch.object(svc, 'exchange', side_effect=exchange), \
+                        patch.object(svc, 'ensure_service', return_value='starting'), \
+                        patch.object(svc, 'default_prove', return_value=({}, {}, mode)), \
+                        patch.object(svc, '_spawn', side_effect=lambda *a, **k: spawned.append(1)):
+                    state = svc.request_adopt(str(base / 'p'), root=root)
+                self.assertEqual(state, expected, mode)
+                drains = [row for row in sent if row['command'] == 'drain']
+                self.assertEqual(len(drains), 1 if mode == 'selected' else 0, mode)
+                self.assertEqual(spawned, [1] if mode == 'selected' else [], mode)
+
+
 class ProofChecks(unittest.TestCase):
     def test_drifted_bundle_is_served_by_read_only_proof(self):
         import laya_install_journal as journal
