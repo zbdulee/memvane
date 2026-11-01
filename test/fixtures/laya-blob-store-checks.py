@@ -422,6 +422,54 @@ class BlobStoreChecks(BlobStoreCase):
                 finally:
                     db.rollback()
 
+    def pair_for_policy(self, name):
+        main, linked = self.project(name), self.home / 'projects' / (name + '-linked')
+        for args in [('init', '-q'), ('add', '-A'), ('commit', '-q', '-m', 'fixture'),
+                     ('worktree', 'add', '-q', '-b', 'side', str(linked))]:
+            self.git(main, *args)
+        store, repository, _ = self.create(main)
+        return store, repository, linked
+
+    def test_19_different_worktree_skip_policy_is_not_combined(self):
+        store, repository, linked = self.pair_for_policy('different-policy')
+        (linked / '.memvane/settings.json').write_text(
+            json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+        record = view.register_worktree(str(linked), repository)
+        before = store.counts()
+        self.refused(store.register_worktree, str(linked), record)
+        self.assertEqual(store.counts(), before)
+
+    def test_20_same_semantic_policy_can_use_different_json_spelling(self):
+        store, repository, linked = self.pair_for_policy('same-policy')
+        (linked / '.memvane/settings.json').write_text(
+            '{ "skipPaths": [], "name": "blobfixture" }\n', encoding='utf8')
+        record = view.register_worktree(str(linked), repository)
+        self.assertEqual(store.register_worktree(str(linked), record), record['worktreeId'])
+
+    def test_21_invalid_database_path_has_bounded_api_error(self):
+        repository, worktree = self.bind()
+        for path in (None, True, 123, object()):
+            for method, kwargs in [(self.Store.create, dict(project_root=str(self.root), worktree=worktree)),
+                                   (self.Store.open, {})]:
+                with self.subTest(path_type=type(path).__name__, method=method.__name__):
+                    self.refused(method, path, repository=repository, scope_id=self.scope, **kwargs)
+
+    def test_22_open_handle_rejects_changed_store_incarnation(self):
+        store, _, _ = self.create()
+        with sqlite3.connect(self.db) as db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='store_meta_update'").fetchone()[0]
+            db.execute('DROP TRIGGER store_meta_update')
+            db.execute('UPDATE store_meta SET incarnation=?', (uuid.uuid4().hex,))
+            db.execute(trigger); db.commit()
+        self.refused(store.counts)
+
+    def test_23_legacy_folder_spelling_has_same_settings_policy(self):
+        store, repository, linked = self.pair_for_policy('legacy-policy')
+        os.rename(linked / '.memvane', linked / '.auto-context')
+        record = view.register_worktree(str(linked), repository)
+        wid = store.register_worktree(str(linked), record)
+        self.assertEqual(store.ingest_card(wid, 'cards/a.md'), sha256(CARD))
+
 
 if __name__ == '__main__':
     unittest.main()

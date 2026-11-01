@@ -56,9 +56,9 @@
 
 **Interfaces:** `put_fingerprint(spec) -> fingerprint_id`, `fingerprint(id)`, `put_attestation(spec) -> trust_digest`, `attestation(id)`, `verify()`. `attestation_sources` gives each attestation its own ordered fingerprint/span references. Generation `card_sources` belongs to later PRs.
 
-- [ ] RED cases: same blob with distinct source attestations, source SHA changes do not rewrite old provenance, legacy_unbound retained as such, rebound must reference same-blob prior trust and match all path/SHA/spans/policy, unknown/mismatch rebound refusal, spans bounds and raw/transcript receipt fields rejected, SQL no-REPLACE/immutability/FK/schema tamper checks.
-- [ ] Implement metadata-only fingerprints and allowlisted versioned receipts. Source observations are caller-owned evidence claims; this candidate API does not read original source bodies or authorize deletion, compilation or trust. Locator bounds are metadata checks, not verified quotations. Rebound is a new immutable commitment, never automatic operational trust.
-- [ ] Add developer API/current-state docs and explicit limitations, keep README user interface unchanged. Preserve original git-blob design decisions.
-- [ ] Run focused related suites, then full suite once final source is fixed. Confirm protected3 diff empty and all7 versions match.
+- [x] RED cases: same blob with distinct source attestations, source SHA changes do not rewrite old provenance, legacy_unbound retained as such, rebound must reference same-blob prior trust and match all path/SHA/spans/policy, unknown/mismatch rebound refusal, spans bounds and raw/transcript receipt fields rejected, SQL no-REPLACE/immutability/FK/schema tamper checks.
+- [x] Implement metadata-only fingerprints and allowlisted versioned receipts. Source observations are caller-owned evidence claims; this candidate API does not read original source bodies or authorize deletion, compilation or trust. Locator bounds are metadata checks, not verified quotations. Rebound is a new immutable commitment, never automatic operational trust.
+- [x] Add developer API/current-state docs and explicit limitations, keep README user interface unchanged. Preserve original git-blob design decisions.
+- [x] Run focused related suites, then full suite once final source is fixed. Confirm protected3 diff empty and all7 versions match.
 - [ ] Commit/push/PR, independent detached Codex Astra high read-only review; reproduce/fix findings by TDD and narrow re-review as original handoff requires. Merge commit, install both hosts first, Claude9 upgrade, Codex9 companion seal, full proof18/recall18/selected/process/cache checks and CI22/24/26.
 - [ ] Write final REPORT and PROGRESS-CODEX evidence and limitations. Complete this goal after PR2 only; no PR3.

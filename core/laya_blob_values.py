@@ -232,3 +232,76 @@ def markdown_title(body, blob_sha):
         if second is not None:
             return second.group(1).strip(_JS_WS)
     return title
+
+
+FINGERPRINT_FIELDS = frozenset(('worktree_id', 'branch_key', 'path', 'source_sha',
+    'byte_length', 'head_oid', 'tracked_state', 'binding_state', 'scan_id', 'observed_ns'))
+
+
+def fingerprint(spec, object_format):
+    exact(spec, FINGERPRINT_FIELDS)
+    identifier(spec['worktree_id'], UUID); identifier(spec['scan_id'], UUID)
+    relative(spec['path']); identifier(spec['source_sha'])
+    integer(spec['byte_length']); integer(spec['observed_ns'])
+    if spec['tracked_state'] not in ('tracked', 'untracked', 'unknown') or spec['binding_state'] not in ('observed', 'legacy_unbound'):
+        fail('source_state_invalid')
+    branch, head = spec['branch_key'], spec['head_oid']
+    if not isinstance(branch, str) or not branch or len(branch.encode('utf8', errors='replace')) > 4096:
+        fail('source_branch_invalid')
+    if object_format is None:
+        if branch != 'non-git' or head is not None:
+            fail('source_branch_invalid')
+    else:
+        length = 40 if object_format == 'sha1' else 64
+        if head is not None and (not isinstance(head, str) or re.fullmatch('[0-9a-f]{' + str(length) + '}', head) is None):
+            fail('source_head_invalid')
+        if branch.startswith('detached:'):
+            if head is None or branch != 'detached:' + head:
+                fail('source_branch_invalid')
+        elif branch.startswith('refs/heads/'):
+            tail = branch[len('refs/heads/'):]
+            if (not tail or '..' in tail or '@{' in tail or tail.endswith(('.', '/'))
+                    or any(ord(c) < 33 or c in '\x7f~^:?*[\\' for c in tail)
+                    or any(not p or p.startswith('.') or p.endswith('.lock') for p in tail.split('/'))):
+                fail('source_branch_invalid')
+        else:
+            fail('source_branch_invalid')
+    return json.loads(canonical(spec))
+
+
+def attestation(spec):
+    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
+    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
+    kind = spec['verification_kind']
+    if kind not in ('compiled', 'rebound', 'legacy_verified'):
+        fail('verification_kind_invalid')
+    receipt = spec['receipt']
+    exact(receipt, ('schema', 'verdict', 'result_digest', 'prior_trust'))
+    if receipt['schema'] != 'memvane-card-evidence-v1' or receipt['verdict'] != 'verified':
+        fail('receipt_invalid')
+    identifier(receipt['result_digest'])
+    if kind == 'rebound':
+        identifier(receipt['prior_trust'])
+    elif receipt['prior_trust'] is not None:
+        fail('receipt_prior_invalid')
+    sources = spec['sources']
+    if not isinstance(sources, list) or len(sources) > 64 or (kind == 'rebound' and not sources):
+        fail('attestation_sources_invalid')
+    seen = set()
+    for source in sources:
+        exact(source, ('fingerprint_id', 'spans'))
+        identifier(source['fingerprint_id'])
+        if source['fingerprint_id'] in seen:
+            fail('duplicate_source_fingerprint')
+        seen.add(source['fingerprint_id'])
+        spans = source['spans']
+        if not isinstance(spans, list) or len(spans) > 256:
+            fail('source_spans_invalid')
+        end = 0
+        for span in spans:
+            exact(span, ('start', 'end'))
+            start, stop = integer(span['start']), integer(span['end'])
+            if start < end or stop <= start:
+                fail('source_spans_invalid')
+            end = stop
+    return json.loads(canonical(spec))

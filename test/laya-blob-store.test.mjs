@@ -15,7 +15,7 @@ test('immutable blob candidate admits only bound wiki cards', () => {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 18 tests/);
+    assert.match(result.stderr, /Ran 23 tests/);
   } finally {
     removeTemp(home);
   }
