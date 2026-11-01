@@ -50,6 +50,7 @@ generation read-only (``laya_install_journal.verify_selected_route_read_only``).
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import fcntl
 import json
 import os
@@ -73,15 +74,15 @@ DEADLINE_SECONDS = 1800
 DEFER_RETRY_SECONDS = 120
 # In-worker waits before a busy lane is left to a later session.
 BUSY_BACKOFF_SECONDS = (5, 15, 45)
-# Lane or lock contention: the same request succeeds once the holder is done,
-# so it is deferred and retried and never counts as a failed attempt.
+# Contention or an incomplete host extraction is retried without spending
+# an attempt once the lane or the host's bundle files are available.
 DEFERRALS = frozenset((
     'learning_compute_busy', 'learning_inference_deadline',
     'initial_build_busy', 'active_upgrade_resident_busy',
     'journal_v4_install_busy', 'embed_runtime_busy',
-    'legacy_hermes_copy_present'))
-# Deferrals an in-process wait cannot clear (an uninstall the owner does).
-NO_BACKOFF = frozenset(('legacy_hermes_copy_present',))
+    'legacy_hermes_copy_present', 'bundle_file_missing'))
+# These deferrals wait for a host change instead of holding a worker open.
+NO_BACKOFF = frozenset(('legacy_hermes_copy_present', 'bundle_file_missing'))
 # A state-root move waits for the same lanes plus the install and route locks.
 MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
@@ -464,6 +465,10 @@ def notice_line(state, code):
                 'setup skill to upgrade or rebuild the memvane-db index.')
     if status == 'complete':
         return (head + 'index upgrade finished; the next session uses it.')
+    if status == 'deferred' and reason == 'bundle_file_missing':
+        return (head + 'index upgrade waits for host cache files (bundle_file_missing); '
+                'ask the logs skill for the file details. Search serves the last '
+                'published index read-only and a later session retries shortly.')
     if status == 'deferred' and reason == 'legacy_hermes_copy_present':
         import memvane_paths
         return (head + 'index upgrade waits while the Hermes plugin ' +
@@ -891,6 +896,35 @@ def _reason(exc):
         else type(exc).__name__
 
 
+def _bundle_failure(exc, root):
+    """Keep file diagnostics; only missing installed files defer extraction."""
+    from laya_product_bundle import BundleEvidenceError
+    reason = _reason(exc)
+    if not isinstance(exc, BundleEvidenceError):
+        return reason, {}
+    detail = exc.detail
+    if (reason == 'installed_file_set_not_exact_commit' and
+            isinstance(detail, dict) and detail.get('missing') and
+            not detail.get('unexpected')):
+        path = Path(root) / detail['missing'][0]
+        try:
+            path.lstat()
+        except OSError as unavailable:
+            detail = {'path': str(path), 'errno': unavailable.errno}
+        else:
+            # A directory (or a concurrent extraction) is not evidence of ENOENT.
+            return reason, {}
+    elif reason != 'bundle_file_unavailable':
+        return reason, {}
+    if (not isinstance(detail, dict) or set(detail) != {'path', 'errno'} or
+            not isinstance(detail['path'], str) or type(detail['errno']) is not int):
+        return reason, {}
+    if (detail['errno'] == errno.ENOENT and
+            Path(detail['path']).is_relative_to(Path(root))):
+        reason = 'bundle_file_missing'
+    return reason, {'file': detail}
+
+
 _sleep = time.sleep
 
 
@@ -1105,23 +1139,24 @@ def run(project_root, *, root=None, home=None):
                               attempts=attempts, reason=str(exc))
             except Exception as exc:
                 state = _live_state(state, home)
-                reason = _reason(exc)
+                reason, extra = _bundle_failure(exc, root)
                 if reason in DEFERRALS:
-                    # Keep the prior attempt count: contention is not a failure.
-                    result = {'status': 'deferred', 'reason': reason}
+                    # A busy lane or incomplete extraction spends no attempt.
+                    result = {'status': 'deferred', 'reason': reason, **extra}
                     _write_status(state, status='deferred', executingRoot=str(root),
-                                  attempts=attempts - 1, reason=reason)
+                                  attempts=attempts - 1, reason=reason, **extra)
                 else:
-                    result = {'status': 'failed', 'reason': reason}
+                    result = {'status': 'failed', 'reason': reason, **extra}
                     _write_status(state,
                                   status='refused' if reason in REFUSALS else 'failed',
                                   executingRoot=str(root), attempts=attempts,
-                                  reason=reason)
+                                  reason=reason, **extra)
             _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
-                   ms=(time.monotonic() - started) * 1000, kind=result.get('kind'), **moves)
+                   ms=(time.monotonic() - started) * 1000, kind=result.get('kind'),
+                   **({'file': result['file']} if 'file' in result else {}), **moves)
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
-                if key in ('status', 'reason', 'kind')}})
+                if key in ('status', 'reason', 'kind', 'file')}})
     _collect_shared(home)
     events = next((Path(row['stateRoot']) for row in results
                    if Path(row['stateRoot']).is_dir()), None)

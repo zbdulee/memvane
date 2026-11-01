@@ -281,7 +281,7 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     from laya_index_vector import profile_identity
     from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
-    from laya_product_bundle import (_git, _git_blob_oid, _read, COMMIT,
+    from laya_product_bundle import (_git, _CommitSource, _read, COMMIT,
                                      MAX_FILE, _canonical)
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
@@ -302,14 +302,14 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or
             _git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source)):
         _fail('provider_review_commit_changed')
-    object_format = _git(source, 'rev-parse', '--show-object-format').decode().strip()
+    provider_files = ('core/laya_local_embed_provider.py',
+                      'core/laya_local_embed_worker.mjs')
+    committed_source = _CommitSource(source, commit_id, required_paths=provider_files)
     artifacts = {}
-    for name in ('core/laya_local_embed_provider.py',
-                 'core/laya_local_embed_worker.mjs'):
-        original, _ = _read(source / name, MAX_FILE)
+    for name in provider_files:
+        original = committed_source.read(name)
         installed, _ = _read(root / name, MAX_FILE)
-        committed = _git(source, 'rev-parse', f'{commit_id}:{name}').decode().strip()
-        if original != installed or _git_blob_oid(original, object_format) != committed:
+        if original != installed:
             _fail('provider_review_installed_blob_changed')
         artifacts[name] = hashlib.sha256(installed).hexdigest()
     try:
