@@ -90,6 +90,21 @@ development execution guard is separate; see
   already ordered document is unchanged. A sync deferred by the vector fill
   logs the member it stopped at as `path` on its `wake.sync` event (the
   fixed-code `detail` cannot carry a non-ASCII path).
+- A vector fill that ends on one member (`provider_result_invalid` or
+  `vector_member_rejected`) is a streak in `<state root>/vector-fill-block.json`
+  (`laya_vector_block`): path, content hash, cause, whether it was diagnosed
+  and wake count, logged as `vector.member blocked`. A completed sync clears
+  it; another member or a changed hash starts a new one. Every
+  read-modify-write holds `flock` on `vector-fill-block.lock` (SessionStart
+  waits at most 0.5 s). The cause of `provider_result_invalid` comes from
+  repeating that embedding once per streak in a separate `python3 -B`
+  process (`laya_vector_diagnose`) that observes the answer the provider
+  decodes and applies the provider's own rules, `_blob` included
+  (`chunk_pos_not_increasing`, `dimension_mismatch`, `zero_norm_vector`, …;
+  `unknown` when none fails). The attempt is recorded whatever it finds.
+  After 3 wakes or 30 minutes SessionStart shows one Korean line naming the
+  card and cause, once per session (sessions kept 30 days). Recall does not
+  read the streak.
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.

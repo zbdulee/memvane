@@ -389,6 +389,31 @@ class ReviewFixTests(VectorFillCase):
                           'provider_member_refused'))
         self.assertFalse(vc.fill_complete(runtime, self.profile_id))
 
+    def test_refused_member_answer_carries_hash_and_diagnosed_cause(self):
+        import hashlib
+        self.corpus(1)
+        runtime = self.runtime()
+        self.scan_to_complete(runtime)
+
+        def silent(body, path):
+            raise IndexContractError('provider_result_invalid')
+        self.provider.embed_document_chunks = silent
+        seen = []
+        answer = vc.vector_fill_step(
+            runtime, self.provider,
+            diagnose=lambda body, path, sha: seen.append((path, sha)) or 'chunk_pos_not_increasing')
+        sha = hashlib.sha256(b'# F0\nbody 0\n').hexdigest()
+        self.assertEqual((answer['path'], answer['hash'], answer['cause']),
+                         ('plans/f0.md', sha, 'chunk_pos_not_increasing'))
+        self.assertEqual(seen, [('plans/f0.md', sha)])
+        # Without a diagnosis hook, or when it fails, the cause is unknown.
+        self.assertEqual(vc.vector_fill_step(runtime, self.provider)['cause'], 'unknown')
+
+        def broken(*_a):
+            raise RuntimeError('diagnosis must never fail the fill')
+        self.assertEqual(vc.vector_fill_step(runtime, self.provider, diagnose=broken)['cause'],
+                         'unknown')
+
     def test_empty_worker_answer_defers_with_the_path(self):
         self.corpus(1)
         runtime = self.runtime()

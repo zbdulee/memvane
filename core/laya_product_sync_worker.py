@@ -422,6 +422,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     if capacity is not None:
         result, proof = _run_capacity(decision, proof, source_root, capacity, provider,
                                       controller, observed, start_service)
+        _observe_member_block(decision, result)
         return _after_sync(decision, proof, grants, result)
     try:
         with controller.activity('provider', EMBED_POLICY, observed):
@@ -652,6 +653,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
 
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
+                                        diagnose=_member_diagnosis(decision, provider),
                                         on_document_complete=publish_complete,
                                         before_head_publish=preserve_previous,
                                         retire_missing=(
@@ -666,9 +668,63 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     return _checked(result), state['proof']
 
 
+def _observe_member_block(decision, result):
+    """Track a fill stuck on one member and log it; never fails the sync.
+
+    ``laya_vector_block`` keeps the streak for the SessionStart notice; each
+    wake that ends on a member verdict also logs ``vector.member blocked``
+    with the card path, hash, cause code and the streak's wake count.
+    """
+    try:
+        import laya_vector_block
+        row = laya_vector_block.observe(laya_vector_block.state_root(decision), result)
+        if (row is None or not isinstance(result, dict)
+                or result.get('reason') not in laya_vector_block.MEMBER_REASONS):
+            return
+        import event_log
+        event_log.emit('vector.member', outcome='blocked', reason=result.get('reason'),
+                       decision=decision, host='worker', session=None,
+                       path=row['path'], hash=row['hash'], cause=row.get('cause'),
+                       wakes=row['wakes'])
+    except Exception:
+        pass
+
+
+def _member_diagnosis(decision, provider):
+    """``diagnose(body, path, sha)`` for the fill: a short cause code.
+
+    The diagnosis repeats the refused embedding once in a separate process
+    (``laya_vector_diagnose``), within this wake's admission and with the
+    same request timeout. The attempt is recorded before the wake ends,
+    whatever it found, so a streak embeds its member for diagnosis at most
+    once; later wakes reuse the recorded cause.
+    """
+    def diagnose(body, path, sha):
+        import laya_vector_block
+        import laya_vector_diagnose
+        root = laya_vector_block.state_root(decision)
+        known = laya_vector_block.diagnosis_of(root, path, sha)
+        if known is not None:
+            return known
+        try:
+            # Record the attempt first: a crash mid-diagnosis must not repeat it.
+            laya_vector_block.mark_diagnosed(root, path, sha, 'unknown')
+        except Exception:
+            return 'unknown'
+        cause = laya_vector_diagnose.diagnose(
+            provider.manifest, body, path,
+            timeout=270 if _large_initial_document(body) else 120)
+        try:
+            laya_vector_block.mark_diagnosed(root, path, sha, cause)
+        except Exception:
+            pass
+        return cause
+    return diagnose
+
+
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                    on_document_complete=None, before_head_publish=None,
-                   retire_missing=None):
+                   retire_missing=None, diagnose=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -699,9 +755,11 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,
                                                before_write=before_publish,
-                                               on_document_complete=on_document_complete)
+                                               on_document_complete=on_document_complete,
+                                               diagnose=diagnose)
             if partial['state'] in ('blocked', 'deferred'):
-                return {key: partial[key] for key in ('state', 'reason', 'path', 'detail')
+                return {key: partial[key] for key in
+                        ('state', 'reason', 'path', 'detail', 'hash', 'cause')
                         if key in partial}
         if result['state'] != 'pending':
             if (retire_missing is not None and result['state'] in ('indexed', 'unchanged')):
@@ -710,9 +768,10 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
         if result.get('reason') == 'vector_backlog':
             fill = vector_fill_step(runtime, provider, should_yield=should_yield,
                                     on_document_complete=on_document_complete,
-                                    before_write=before_publish)
+                                    before_write=before_publish, diagnose=diagnose)
             if fill['state'] in ('deferred', 'blocked'):
-                return {key: fill[key] for key in ('state', 'reason', 'path') if key in fill}
+                return {key: fill[key] for key in
+                        ('state', 'reason', 'path', 'detail', 'hash', 'cause') if key in fill}
     return result
 
 

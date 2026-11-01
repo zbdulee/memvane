@@ -1981,6 +1981,11 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action in ("index", "file-change-event"):
             return {}
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
+        if action == "update-queued":
+            block_notice = _vector_block_notice(decision, payload)
+            if block_notice:
+                move_notice = (move_notice + "\n" + block_notice if move_notice
+                               else block_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
@@ -2015,6 +2020,19 @@ def _project_dir_move_notice(decision: dict, *, request_move: bool = True):
         return laya_bundle_upgrade.project_dir_notice(decision['projectRoot'],
                                                       decision['journalPath'],
                                                       request_move=request_move)
+    except Exception:
+        return None
+
+
+def _vector_block_notice(decision: dict, payload: dict):
+    """One SessionStart line while the vector fill is stuck on one card.
+
+    Reads the sync worker's streak file only; never waits, never fails the hook.
+    """
+    try:
+        import event_log
+        import laya_vector_block
+        return laya_vector_block.notice(decision, event_log.session_id(payload))
     except Exception:
         return None
 

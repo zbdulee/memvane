@@ -146,7 +146,9 @@ class DispatchBoundary(unittest.TestCase):
         for path, expected in ((card, card), ('/abs/x.md', None), ('../x.md', None)):
             events.clear()
             stdout = json.dumps({'state': 'deferred', 'reason': 'provider_result_invalid',
-                                 'path': path}, ensure_ascii=False).encode()
+                                 'path': path, 'hash': 'a' * 64,
+                                 'cause': 'chunk_pos_not_increasing'},
+                                ensure_ascii=False).encode()
             with self.subTest(path=path), \
                  patch('laya_index_host_route.select_route', return_value=self.route()), \
                  patch('laya_install_journal.verify_dispatch_target',
@@ -162,6 +164,9 @@ class DispatchBoundary(unittest.TestCase):
                 (name, fields), = events
                 self.assertEqual((name, fields['reason'], fields.get('path')),
                                  ('wake.sync', 'target_deferred', expected))
+                # The diagnosed cause travels with a valid member path only.
+                self.assertEqual(fields.get('cause'),
+                                 'chunk_pos_not_increasing' if expected else None)
 
     def test_preparing_owner_result_is_an_uncounted_wait(self):
         root = self.bundles[0]

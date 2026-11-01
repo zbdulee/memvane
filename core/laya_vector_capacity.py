@@ -70,6 +70,18 @@ def _provider_refuses(text, path):
         return 'provider_request_too_large'
     return None
 _PAGE = 64
+CAUSE_UNKNOWN = 'unknown'
+
+
+def _diagnosed(diagnose, body, path, sha):
+    """A short cause code for a provider_result_invalid member; never raises."""
+    if diagnose is None:
+        return CAUSE_UNKNOWN
+    try:
+        code = diagnose(body, path, sha)
+    except Exception:
+        return CAUSE_UNKNOWN
+    return code if isinstance(code, str) and code else CAUSE_UNKNOWN
 
 
 def provider_profile_id(provider: Any) -> str:
@@ -97,7 +109,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
                      max_bytes: int = DEFAULT_FILL_BYTES,
                      should_yield: Optional[Callable[[], bool]] = None,
                      on_document_complete: Optional[Callable[..., None]] = None,
-                     before_write: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
+                     before_write: Optional[Callable[[], None]] = None,
+                     diagnose: Optional[Callable[..., str]] = None) -> Dict[str, Any]:
     """Embed at most ``max_files`` uncached members; one body in memory at a time.
 
     ``before_write`` (a selected project's journal fence) runs once, before
@@ -130,7 +143,11 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
       a chunk over the context).
     * ``deferred``/``provider_result_invalid`` with ``path``: the worker
       answered nothing usable (busy, or an older worker that does not name
-      its refusals). Not a member verdict; retried next wake.
+      its refusals). Not a member verdict; retried next wake. ``cause`` is
+      ``diagnose(body, path, sha)`` (``laya_vector_diagnose``), else ``unknown``.
+
+    Every member answer (``blocked`` and ``provider_result_invalid``) also
+    carries the member's content ``hash``.
 
     ``max_bytes`` bounds bytes read in one step, but one member is always
     read so a file larger than the budget cannot stall the fill.
@@ -245,27 +262,29 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
             refused = _provider_refuses(text, path)
             if refused:
                 return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path, detail=refused)
+                                               cursor=cursor, path=path, hash=sha, detail=refused)
             try:
                 rows = provider.embed_document_chunks(text, path=path)
             except IndexContractError as exc:
                 if str(exc) == 'provider_member_refused':
                     return record(False) or answer('blocked', 'vector_member_rejected',
-                                                   cursor=cursor, path=path,
+                                                   cursor=cursor, path=path, hash=sha,
                                                    detail='provider_member_refused')
                 if str(exc) != 'provider_result_invalid':
                     raise
                 # Busy, or an older worker that sends refusals bare: not a
                 # member verdict, but never pathless. Retried next wake.
                 return record(False) or answer('deferred', 'provider_result_invalid',
-                                               cursor=cursor, path=path)
+                                               cursor=cursor, path=path, hash=sha,
+                                               cause=_diagnosed(diagnose, text, path, sha))
             if not isinstance(rows, list) or not rows:
                 return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path, detail='no_chunks')
+                                               cursor=cursor, path=path, hash=sha,
+                                               detail='no_chunks')
             if len(rows) > member_limit:
                 # Stored, it would read back as a damaged cache; say what it is.
                 return record(False) or answer('blocked', 'vector_member_rejected',
-                                               cursor=cursor, path=path,
+                                               cursor=cursor, path=path, hash=sha,
                                                detail='chunk_set_too_large')
             prepare_write()
             # Chunk rows reference their content row; stage reuses it.
@@ -291,7 +310,8 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                              max_bytes: int = DEFAULT_FILL_BYTES,
                              should_yield: Optional[Callable[[], bool]] = None,
                              before_write: Optional[Callable[[], None]] = None,
-                             on_document_complete: Callable[..., None]) -> Dict[str, Any]:
+                             on_document_complete: Callable[..., None],
+                             diagnose: Optional[Callable[..., str]] = None) -> Dict[str, Any]:
     """Publish fully embedded members of an unfinished catalog scan.
 
     This feed never seals a generation or treats an empty page as scan
@@ -370,7 +390,7 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                 refused = _provider_refuses(body, path)
                 if refused:
                     return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path, detail=refused)
+                                  cursor=cursor, path=path, hash=sha, detail=refused)
                 if not profile_registered:
                     # Registration may write the candidate database. For a
                     # selected project, cross the first-write fence before
@@ -387,18 +407,19 @@ def pending_vector_fill_step(runtime: Any, provider: Any, *,
                 except IndexContractError as exc:
                     if str(exc) == 'provider_member_refused':
                         return answer('blocked', 'vector_member_rejected',
-                                      cursor=cursor, path=path,
+                                      cursor=cursor, path=path, hash=sha,
                                       detail='provider_member_refused')
                     if str(exc) != 'provider_result_invalid':
                         raise
                     return answer('deferred', 'provider_result_invalid',
-                                  cursor=cursor, path=path)
+                                  cursor=cursor, path=path, hash=sha,
+                                  cause=_diagnosed(diagnose, body, path, sha))
                 if not isinstance(chunks, list) or not chunks:
                     return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path, detail='no_chunks')
+                                  cursor=cursor, path=path, hash=sha, detail='no_chunks')
                 if len(chunks) > member_limit:
                     return answer('blocked', 'vector_member_rejected',
-                                  cursor=cursor, path=path,
+                                  cursor=cursor, path=path, hash=sha,
                                   detail='chunk_set_too_large')
                 runtime.index.ensure_content(sha, body)
                 vectors.insert_chunk_set(sha, title, profile_id, chunks)
