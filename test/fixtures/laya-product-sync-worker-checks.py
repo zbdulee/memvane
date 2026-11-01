@@ -1067,13 +1067,18 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         broken=json.dumps({'ok':True,'result':{'chunks':[
             {'seq':0,'pos':0,'vector':[1.0,0.0]},{'seq':1,'pos':4,'vector':[1.0,0.0]},
             {'seq':2,'pos':2,'vector':[1.0,0.0]}]}})
+        import types
+        reviewed=types.ModuleType('fake_reviewed_provider_module');reviewed.json=json
+        sys.modules[reviewed.__name__]=reviewed
+        self.addCleanup(sys.modules.pop,reviewed.__name__,None)
         class Rejecting(base):
             def embed_document_chunks(self,body,path,**kw):
                 if path=='beta/bad.md':
                     calls.append(path)
-                    json.loads(broken)  # what the reviewed provider decodes
+                    reviewed.json.loads(broken)  # what the reviewed provider decodes
                     raise IndexContractError('provider_result_invalid')
                 return super().embed_document_chunks(body,path)
+        Rejecting.__module__=reviewed.__name__
         events=[]
         def emit(name,**fields):
             if name=='vector.member':
