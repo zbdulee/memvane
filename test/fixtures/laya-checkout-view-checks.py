@@ -10,6 +10,7 @@ for failure and budget cases.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -255,13 +256,15 @@ class CaptureShape(CheckoutCase):
     def test_tampered_capture_never_matches(self):
         repository, worktree = self.bind(self.root)
         capture = self.cap(self.root, repository, worktree)
+        numeric = json.loads(json.dumps(capture))
+        numeric['evidence']['project']['dev'] = float(numeric['evidence']['project']['dev'])
         variants = [dict(capture, viewId='v' + capture['viewId']),
                     dict(capture, branchKey='refs/heads/other'),
                     dict(capture, headOid='0' * 40), dict(capture, headOid=None),
                     dict(capture, checkoutDigest=flip(capture['checkoutDigest'])),
                     dict(capture, worktreeId='b' * 32), dict(capture, repoId='c' * 32),
                     dict(capture, evidence={}), dict(capture, gitObjectFormat='sha256'),
-                    {k: v for k, v in capture.items() if k != 'viewId'}, None, 'capture']
+                    {k: v for k, v in capture.items() if k != 'viewId'}, None, 'capture', numeric]
         for bad in variants:
             with self.subTest(capture=bad):
                 self.no_match(bad, repository, worktree)
@@ -320,9 +323,12 @@ class RefStates(CheckoutCase):
         head = self.commit(root, 'a.txt', 'one\n')
         repository, worktree = self.bind(root)
         self.assertIn('sha256', list(leaves(repository)))
-        capture = self.cap(root, repository, worktree)
-        self.assertEqual((capture['gitObjectFormat'], capture['headOid'], len(head)),
-                         ('sha256', head, 64))
+        for version in (2, 3, 4):
+            self.git(root, 'update-index', '--index-version=' + str(version))
+            capture = self.cap(root, repository, worktree)
+            self.assertEqual((capture['gitObjectFormat'], capture['headOid'], len(head)),
+                             ('sha256', head, 64))
+            self.assertIs(view.capture_matches(capture, repository, worktree), True)
 
     def test_non_git_project_has_single_non_git_view(self):
         plain = self.base / 'plain'
@@ -517,16 +523,97 @@ class IndexAndOperations(CheckoutCase):
 
     def test_split_index_is_refused_or_fully_tracked(self):
         self.git(self.root, 'update-index', '--split-index')
-        self.assertTrue(list((self.root / '.git').glob('sharedindex.*')))
+        shared = list((self.root / '.git').glob('sharedindex.*'))
+        self.assertTrue(shared)
+        for path in shared:
+            os.utime(path, (1, 1))
+        before = [(path.stat().st_mtime_ns, path.stat().st_ctime_ns) for path in shared]
         try:
             repository, worktree = self.bind(self.root)
             capture = self.cap(self.root, repository, worktree)
         except view.CheckoutUnavailable as exc:
             self.assertEqual(exc.reason, 'split_index_unsupported')
+            self.assertEqual([(path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+                              for path in shared], before, 'a refusal must not freshen shared index')
             return
+        self.assertEqual([(path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+                          for path in shared], before)
         (self.root / 'b.txt').write_text('staged\n')
         self.git(self.root, 'add', '--', 'b.txt')
         self.no_match(capture, repository, worktree)
+
+    def test_index_limit_precedes_any_git_index_loader(self):
+        repository, worktree = self.bind(self.root)
+        with (self.root / '.git/index').open('ab') as stream:
+            stream.truncate(view.MAX_INDEX_BYTES + 1)
+        calls = []
+
+        class Spy(subprocess.Popen):
+            def __init__(self, args, *rest, **kwargs):
+                calls.append(list(args))
+                super().__init__(args, *rest, **kwargs)
+        with mock.patch.object(subprocess, 'Popen', Spy):
+            self.refused(self.cap, self.root, repository, worktree)
+        self.assertFalse(any('--shared-index-path' in argv for argv in calls), calls)
+
+    def test_regular_index_formats_remain_read_only(self):
+        self.commit(self.root, 'link-note.txt', 'ordinary name containing link\n')
+        long = 'm' * 150
+        (self.root / long).mkdir()
+        self.commit(self.root, long + '/a.txt', 'long prefix\n')
+        self.commit(self.root, 'z.txt', 'requires a multi-byte v4 removal count\n')
+        repository, worktree = self.bind(self.root)
+        for version in (2, 3, 4):
+            with self.subTest(version=version):
+                self.git(self.root, 'update-index', '--index-version=' + str(version))
+                if version == 3:
+                    self.git(self.root, 'update-index', '--skip-worktree', 'a.txt')
+                index = self.root / '.git/index'
+                before = (index.read_bytes(), index.stat().st_mtime_ns, index.stat().st_ctime_ns)
+                capture = self.cap(self.root, repository, worktree)
+                self.assertIs(view.capture_matches(capture, repository, worktree), True)
+                self.assertEqual((index.read_bytes(), index.stat().st_mtime_ns,
+                                  index.stat().st_ctime_ns), before)
+                self.git(self.root, 'update-index', '--no-skip-worktree', 'a.txt')
+
+    def test_corrupt_index_is_refused_without_git_loading_it(self):
+        repository, worktree = self.bind(self.root)
+        index = self.root / '.git/index'
+        original = index.read_bytes()
+        variants = (b'', b'NOPE' + original[4:],
+                    original[:4] + (5).to_bytes(4, 'big') + original[8:],
+                    original[:8] + b'\xff' * 4 + original[12:], original[:-1],
+                    original[:-1] + bytes([original[-1] ^ 1]))
+        try:
+            for number, data in enumerate(variants):
+                with self.subTest(corruption=number):
+                    index.write_bytes(data)
+                    self.refused(self.cap, self.root, repository, worktree)
+        finally:
+            index.write_bytes(original)
+
+    def test_v4_index_rejects_invalid_prefix_and_name_lengths(self):
+        self.git(self.root, 'update-index', '--index-version=4')
+        repository, worktree = self.bind(self.root)
+        index = self.root / '.git/index'
+        original = index.read_bytes()
+        self.assertEqual(int.from_bytes(original[4:8], 'big'), 4)
+        flags_at = 12 + 40 + 20
+        flags = int.from_bytes(original[flags_at:flags_at + 2], 'big')
+        prefix_at = flags_at + 2 + (2 if flags & 0x4000 else 0)
+        self.assertEqual(original[prefix_at], 0)
+        prefix = bytearray(original)
+        prefix[prefix_at] = 1  # first entry cannot remove bytes from an empty previous name
+        length = bytearray(original)
+        length[flags_at:flags_at + 2] = ((flags & ~0xFFF) | 6).to_bytes(2, 'big')
+        try:
+            for number, data in enumerate((prefix, length)):
+                with self.subTest(corruption=number):
+                    data[-20:] = hashlib.sha1(data[:-20]).digest()
+                    index.write_bytes(data)
+                    self.refused(self.cap, self.root, repository, worktree)
+        finally:
+            index.write_bytes(original)
 
     @unittest.skipIf(os.geteuid() == 0, 'root ignores file permissions')
     def test_unreadable_or_symlinked_index_fails_closed(self):
@@ -548,6 +635,23 @@ class IndexAndOperations(CheckoutCase):
 
 
 class GitEnvironmentAndBudget(CheckoutCase):
+    def test_old_git_is_refused_before_repository_queries(self):
+        repository, worktree = self.bind(self.root)
+        capture = self.cap(self.root, repository, worktree)
+        queried = self.base / 'old-git-queried'
+        body = ('case "$*" in *--version*) printf "git version 2.31.0\\n"; exit 0;; esac\n'
+                'printf called >> ' + shlex.quote(str(queried)) + '\n'
+                'exec ' + shlex.quote(REAL_GIT) + ' "$@"\n')
+        # Version semantics get a finite three-second command allowance;
+        # expiry/slow-child behavior has its own explicit deadline tests.
+        with self.fake_git(body), mock.patch.object(view, 'GIT_SECONDS', 3.0):
+            self.refused(view.register_repository, str(self.root), reason='git_version_unsupported')
+            self.refused(view.register_worktree, str(self.root), repository,
+                         reason='git_version_unsupported')
+            self.refused(self.cap, self.root, repository, worktree, reason='git_version_unsupported')
+            self.no_match(capture, repository, worktree)
+        self.assertFalse(queried.exists(), 'unsupported Git must not query repository objects')
+
     def test_inherited_git_overrides_and_config_are_ignored(self):
         other = self.repo('other')
         self.commit(other, 'b.txt', 'other\n')
@@ -564,7 +668,7 @@ class GitEnvironmentAndBudget(CheckoutCase):
                  'GIT_CONFIG_KEY_0': 'core.bare', 'GIT_CONFIG_VALUE_0': 'true',
                  'GIT_CONFIG_GLOBAL': str(hostile), 'GIT_CONFIG_SYSTEM': str(hostile),
                  'GIT_CONFIG': str(hostile), 'HOME': str(fake_home),
-                 'XDG_CONFIG_HOME': str(fake_home)}
+                 'XDG_CONFIG_HOME': str(fake_home), 'GIT_NO_LAZY_FETCH': '0'}
         calls = []
 
         class Spy(subprocess.Popen):
@@ -593,6 +697,29 @@ class GitEnvironmentAndBudget(CheckoutCase):
                 self.assertTrue(env.get('GIT_OPTIONAL_LOCKS') == '0'
                                 or '--no-optional-locks' in argv)
                 self.assertEqual(env.get('GIT_TERMINAL_PROMPT'), '0')
+                self.assertEqual(env.get('GIT_NO_LAZY_FETCH'), '1')
+
+    def test_missing_promisor_head_never_starts_a_transport_or_writes(self):
+        repository, worktree = self.bind(self.root)
+        self.git(self.root, 'config', 'remote.captureprobe.url', 'checkoutprobe::unused')
+        self.git(self.root, 'config', 'remote.captureprobe.promisor', 'true')
+        self.git(self.root, 'config', 'protocol.checkoutprobe.allow', 'always')
+        (self.root / '.git/refs/heads/main').write_text('f' * 40 + '\n')
+        bindir = self.base / 'transport'
+        bindir.mkdir()
+        probe = self.base / 'transport-started'
+        helper = bindir / 'git-remote-checkoutprobe'
+        helper.write_text('#!/bin/sh\nprintf called >> ' + shlex.quote(str(probe)) + '\nexit 1\n')
+        helper.chmod(0o755)
+        def state():
+            return {str(path): (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    for path in (self.root / '.git').rglob('*')
+                    for info in (path.lstat(),)}
+        before = state()
+        with mock.patch.dict(os.environ, {'PATH': str(bindir) + os.pathsep + os.environ['PATH']}):
+            self.refused(self.cap, self.root, repository, worktree)
+        self.assertFalse(probe.exists(), 'missing objects must not start an automatic fetch')
+        self.assertEqual(state(), before, 'missing objects must not write repository metadata')
 
     def test_expired_or_slow_git_deadline_refuses_and_leaves_no_process(self):
         repository, worktree = self.bind(self.root)

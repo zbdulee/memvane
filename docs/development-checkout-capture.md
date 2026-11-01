@@ -14,6 +14,8 @@ view identity를 계산한다. 현재 hook·route·index·journal은 이 API를 
 | `capture_matches(capture, repository, worktree, deadline=None)` | 현재 상태를 다시 관측해 기존 capture와 같으면 `True`, 변경·불명·잘못된 입력이면 `False` |
 
 `deadline`은 keyword-only 인자이며 `time.monotonic()` 기준 절대 시각이다.
+Git 프로젝트의 이 API는 Git 2.39 이상을 지원한다. 이전·불명 버전은 저장소 객체
+조회 전에 `git_version_unsupported`로 거절한다. non-Git capture는 Git을 실행하지 않는다.
 기본 capture 예산은 3초, 명시 deadline의 최대 예산은 10초, 개별 Git 호출은 1초다.
 stdout·stderr 합계는 32 KiB, index는 16 MiB, operation 파일은 64 KiB로 제한한다.
 실패는 `CheckoutUnavailable`의 `reason`으로 구분한다. 등록 API를 다시 호출하면
@@ -38,13 +40,20 @@ UUID와 digest는 정체성 값이며 설치·검색·쓰기 권한을 부여하
 - 전체 Git 관측 전후를 대조한다. ref·HEAD·index·operation·경로 identity가 도중에
   바뀌면 유한 예산 안에서 재시도하거나 거절한다.
 - Git 환경변수 오염을 제거하고 global/system config·선택적 index 잠금·prompt를
-  비활성화한다. 명령·출력·index 읽기에는 유한 시간·바이트 상한이 있다.
+  비활성화한다. `GIT_NO_LAZY_FETCH=1`로 누락 객체의 자동 fetch를 차단한다.
+  명령·출력·index 읽기에는 유한 시간·바이트 상한이 있다.
+- primary index를 먼저 상한 안에서 직접 읽어 v2·v3·v4 framing과 checksum을 확인한다.
+  Git index 로더를 호출하지 않으므로 split index를 거절할 때 shared index의 mtime을
+  갱신하지 않는다. `capture_matches`는 evidence 타입과 입력 digest도 검증한다.
 
 capture는 원문 본문을 읽지 않는다. HEAD와 index가 같아도 unstaged 파일 bytes는
 다를 수 있으므로, 실제 데이터 게시에는 별도 source scan manifest가 필요하다.
 이 API만으로 현재 원문·카드 내용이나 삭제 조건을 증명할 수 없다.
 split index의 shared 내용까지 증명할 수 없으면 `split_index_unsupported`로 거절한다.
 새 저장소 schema·reader endpoint·view 검색 선택은 별도 계약이다.
+
+자동 fetch 차단 변수는 [Git 2.39.5의 promisor 구현](https://raw.githubusercontent.com/git/git/v2.39.5/promisor-remote.c)을 따른다.
+index framing은 [Git index format](https://git-scm.com/docs/index-format)을 따른다.
 
 검증은 `test/laya-checkout-view.test.mjs`와 임시 Git fixture를 사용한다.
 기존 호스트 route 회귀는 `test/laya-index-host-route.test.mjs`로 확인한다.

@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import selectors
 import stat
+import struct
 import subprocess
 import time
 import uuid
@@ -26,6 +27,7 @@ MAX_GIT_BYTES = 32768
 MAX_INDEX_BYTES = 16 * 1024 * 1024
 MAX_MARKER_BYTES = 65536
 CAPTURE_ATTEMPTS = 2
+MIN_GIT_VERSION = (2, 39)
 REPOSITORY_SCHEMA = 'memvane-checkout-repository-v1'
 WORKTREE_SCHEMA = 'memvane-checkout-worktree-v1'
 CAPTURE_SCHEMA = 'memvane-checkout-capture-v1'
@@ -88,7 +90,8 @@ def _env():
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
     env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
                GIT_CONFIG_NOSYSTEM='1', GIT_OPTIONAL_LOCKS='0',
-               GIT_TERMINAL_PROMPT='0', GIT_LITERAL_PATHSPECS='1', LC_ALL='C')
+               GIT_TERMINAL_PROMPT='0', GIT_LITERAL_PATHSPECS='1',
+               GIT_NO_LAZY_FETCH='1', LC_ALL='C')
     return env
 
 
@@ -178,7 +181,7 @@ def _dotgit(root):
     return None
 
 
-def _file(path, limit, deadline):
+def _file(path, limit, deadline, *, collect=False):
     _remaining(deadline)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -190,7 +193,7 @@ def _file(path, limit, deadline):
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
             _fail('git_metadata_limit')
-        digest, count = hashlib.sha256(), 0
+        digest, count, parts = hashlib.sha256(), 0, []
         while True:
             _remaining(deadline)
             block = os.read(fd, min(65536, limit + 1 - count))
@@ -200,18 +203,110 @@ def _file(path, limit, deadline):
             if count > limit:
                 _fail('git_metadata_limit')
             digest.update(block)
+            if collect:
+                parts.append(block)
         after, current = os.fstat(fd), path.lstat()
         identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
                                  item.st_mtime_ns, item.st_ctime_ns)
         if identity(before) != identity(after) or identity(after) != identity(current):
             _fail('checkout_changed')
-        return {'path': str(path), 'dev': after.st_dev, 'ino': after.st_ino,
-                'size': count, 'mtimeNs': after.st_mtime_ns,
-                'ctimeNs': after.st_ctime_ns, 'sha256': digest.hexdigest()}
+        row = {'path': str(path), 'dev': after.st_dev, 'ino': after.st_ino,
+               'size': count, 'mtimeNs': after.st_mtime_ns,
+               'ctimeNs': after.st_ctime_ns, 'sha256': digest.hexdigest()}
+        return (row, b''.join(parts)) if collect else row
     except OSError as exc:
         raise CheckoutUnavailable('git_metadata_unavailable') from exc
     finally:
         os.close(fd)
+
+
+def _index(path, object_format, deadline):
+    """Frame the bounded primary index without Git loading/freshening it.
+
+    Index v2/v3/v4 framing follows git-scm.com/docs/index-format. No shared
+    index is opened: a ``link`` extension refuses before any Git index reader.
+    This validates framing/checksum, not the semantics of optional caches.
+    """
+    observed = _file(path, MAX_INDEX_BYTES, deadline, collect=True)
+    if observed is None:
+        return None
+    row, data = observed
+    oid_bytes = 20 if object_format == 'sha1' else 32
+    end = len(data) - oid_bytes
+    if end < 12 or data[:4] != b'DIRC':
+        _fail('invalid_git_index')
+    version, count = struct.unpack_from('>II', data, 4)
+    fixed = 40 + oid_bytes + 2
+    if version not in (2, 3, 4) or count > (end - 12) // (fixed + 1):
+        _fail('invalid_git_index')
+    offset, empty_names, previous_length = 12, False, 0
+    for _ in range(count):
+        _remaining(deadline)
+        start = offset
+        if offset + fixed > end:
+            _fail('invalid_git_index')
+        flags = int.from_bytes(data[offset + fixed - 2:offset + fixed], 'big')
+        offset += fixed
+        if flags & 0x4000:
+            if version == 2 or offset + 2 > end:
+                _fail('invalid_git_index')
+            extended = int.from_bytes(data[offset:offset + 2], 'big')
+            if extended & ~0x6000:
+                _fail('invalid_git_index')
+            offset += 2
+        if version == 4:
+            # Decode only the removal count; no path bytes need to expand.
+            remove = 0
+            for number in range(10):
+                if offset >= end:
+                    _fail('invalid_git_index')
+                octet = data[offset]
+                offset += 1
+                remove = (octet & 0x7F if number == 0
+                          else ((remove + 1) << 7) + (octet & 0x7F))
+                if not octet & 0x80:
+                    break
+            else:
+                _fail('invalid_git_index')
+            if remove > previous_length:
+                _fail('invalid_git_index')
+        name_end = data.find(b'\0', offset, end)
+        if name_end < 0:
+            _fail('invalid_git_index')
+        length = name_end - offset
+        if version == 4:
+            length += previous_length - remove
+            previous_length = length
+        if length > MAX_INDEX_BYTES or flags & 0xFFF != min(length, 0xFFF):
+            _fail('invalid_git_index')
+        empty_names = empty_names or length == 0
+        offset = name_end + 1
+        if version != 4:
+            offset = start + ((offset - start + 7) // 8) * 8
+            if offset > end or any(data[name_end:offset]):
+                _fail('invalid_git_index')
+    while offset < end:
+        _remaining(deadline)
+        if offset + 8 > end:
+            _fail('invalid_git_index')
+        signature = data[offset:offset + 4]
+        size = int.from_bytes(data[offset + 4:offset + 8], 'big')
+        offset += 8
+        if offset + size > end:
+            _fail('invalid_git_index')
+        if signature == b'link':
+            _fail('split_index_unsupported')
+        if not (65 <= signature[0] <= 90) and signature != b'sdir':
+            _fail('unsupported_index_extension')
+        offset += size
+    # Git's index.skipHash can deliberately write an all-zero checksum. The
+    # capture's own SHA-256 still binds every byte of that index image.
+    checksum = data[end:]
+    if empty_names or (any(checksum) and
+                       hashlib.new(object_format, memoryview(data)[:end]).digest() != checksum):
+        _fail('invalid_git_index')
+    _remaining(deadline)
+    return row
 
 
 def _ref(root, object_format, deadline):
@@ -274,6 +369,12 @@ def _facts(project_root, deadline):
         return {'project': project, 'checkout': project, 'gitDir': None,
                 'commonGitDir': None, 'projectRelative': '.', 'gitObjectFormat': None,
                 'branchKey': 'non-git', 'headOid': None, 'index': None, 'operations': []}
+    # This floor supports GIT_NO_LAZY_FETCH. Unknown/older Git must stop
+    # before repository/object queries, never silently ignore that fence.
+    _, version = _git(['--version'], root, deadline)
+    parsed = re.match(r'^git version ([0-9]{1,3})\.([0-9]{1,3})(?:\.|\s|$)', version)
+    if parsed is None or tuple(map(int, parsed.groups())) < MIN_GIT_VERSION:
+        _fail('git_version_unsupported')
     _, raw = _git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir',
                    '--git-common-dir', '--show-object-format=storage',
                    '--is-bare-repository', '--is-inside-work-tree'], root, deadline)
@@ -288,11 +389,8 @@ def _facts(project_root, deadline):
         relative = root.relative_to(top).as_posix()
     except ValueError as exc:
         raise CheckoutUnavailable('invalid_git_checkout') from exc
+    index = _index(git_dir / 'index', fields[3], deadline)
     branch, head = _ref(root, fields[3], deadline)
-    _, shared = _git(['rev-parse', '--path-format=absolute', '--shared-index-path'], root, deadline)
-    if shared:
-        _fail('split_index_unsupported')
-    index = _file(git_dir / 'index', MAX_INDEX_BYTES, deadline)
     operations = _operations(git_dir, common_dir, deadline)
     if _ref(root, fields[3], deadline) != (branch, head):
         _fail('checkout_changed')
@@ -318,8 +416,9 @@ def _stable(root, deadline):
 
 
 def _identity(value):
-    return (isinstance(value, dict) and set(value) == {'path', 'dev', 'ino'}
-            and isinstance(value['path'], str) and Path(value['path']).is_absolute()
+    return (isinstance(value, dict) and len(value) == 3 and set(value) == {'path', 'dev', 'ino'}
+            and isinstance(value['path'], str) and len(value['path']) <= 4096
+            and Path(value['path']).is_absolute()
             and not any(ch in value['path'] for ch in '\x00\n\r')
             and type(value['dev']) is int and value['dev'] >= 0
             and type(value['ino']) is int and value['ino'] > 0)
@@ -335,7 +434,8 @@ def _repository_fields(facts):
 
 
 def _repository(value, facts):
-    if (not isinstance(value, dict) or set(value) != REPOSITORY_FIELDS
+    if (not isinstance(value, dict) or len(value) != len(REPOSITORY_FIELDS)
+            or set(value) != REPOSITORY_FIELDS
             or value['schema'] != REPOSITORY_SCHEMA or not isinstance(value['repoId'], str)
             or not ID.fullmatch(value['repoId'])
             or not isinstance(value['projectRelative'], str)
@@ -350,7 +450,8 @@ def _repository(value, facts):
 
 
 def _worktree(value, repository, facts):
-    if (not isinstance(value, dict) or set(value) != WORKTREE_FIELDS
+    if (not isinstance(value, dict) or len(value) != len(WORKTREE_FIELDS)
+            or set(value) != WORKTREE_FIELDS
             or value['schema'] != WORKTREE_SCHEMA or not isinstance(value['worktreeId'], str)
             or not ID.fullmatch(value['worktreeId']) or not isinstance(value['repoId'], str)
             or not isinstance(value['repositoryDigest'], str)
@@ -361,6 +462,55 @@ def _worktree(value, repository, facts):
     if (value['repoId'] != repository['repoId'] or value['repositoryDigest'] != _digest(repository)
             or any(value[key] != facts[key] for key in ('project', 'checkout', 'gitDir'))):
         _fail('worktree_binding_changed')
+
+
+def _metadata_shape(value, *, directory=False):
+    fields = {'path', 'dev', 'ino', 'mtimeNs', 'ctimeNs'}
+    if not directory:
+        fields |= {'size', 'sha256'}
+    return (isinstance(value, dict) and len(value) == len(fields) and set(value) == fields
+            and _identity({key: value[key] for key in ('path', 'dev', 'ino')})
+            and all(type(value[key]) is int for key in ('mtimeNs', 'ctimeNs'))
+            and (directory or (type(value['size']) is int and 0 <= value['size'] <= MAX_INDEX_BYTES
+                 and isinstance(value['sha256'], str) and SHA.fullmatch(value['sha256']))))
+
+
+def _capture_shape(value):
+    if (not isinstance(value, dict) or len(value) != len(CAPTURE_FIELDS)
+            or set(value) != CAPTURE_FIELDS or value['schema'] != CAPTURE_SCHEMA
+            or not all(isinstance(value[key], str) and ID.fullmatch(value[key])
+                       for key in ('repoId', 'worktreeId'))
+            or not all(isinstance(value[key], str) and SHA.fullmatch(value[key])
+                       for key in ('viewId', 'checkoutDigest'))):
+        return False
+    facts = value['evidence']
+    fields = {'project', 'checkout', 'gitDir', 'commonGitDir', 'projectRelative',
+              'gitObjectFormat', 'branchKey', 'headOid', 'index', 'operations'}
+    if (not isinstance(facts, dict) or len(facts) != len(fields) or set(facts) != fields
+            or not all(_identity(facts[key]) for key in ('project', 'checkout'))
+            or not all(facts[key] is None or _identity(facts[key])
+                       for key in ('gitDir', 'commonGitDir'))
+            or not isinstance(facts['projectRelative'], str)
+            or not 0 < len(facts['projectRelative']) <= 4096
+            or facts['gitObjectFormat'] not in (None, 'sha1', 'sha256')
+            or not isinstance(facts['branchKey'], str)
+            or not 0 < len(facts['branchKey']) <= MAX_GIT_BYTES
+            or (facts['headOid'] is not None and (not isinstance(facts['headOid'], str)
+                or not re.fullmatch('[0-9a-f]{' + ('64' if facts['gitObjectFormat'] == 'sha256'
+                                                 else '40') + '}', facts['headOid'])))
+            or (facts['index'] is not None and not _metadata_shape(facts['index']))
+            or not isinstance(facts['operations'], list)
+            or len(facts['operations']) > len(MARKERS) + 1):
+        return False
+    for operation in facts['operations']:
+        if (not isinstance(operation, dict) or len(operation) > 8
+                or operation.get('kind') not in ('file', 'directory')
+                or not _metadata_shape({key: item for key, item in operation.items() if key != 'kind'},
+                                       directory=operation['kind'] == 'directory')):
+            return False
+    return (value['projectRoot'] == facts['project']['path']
+            and all(value[key] == facts[key] for key in ('branchKey', 'headOid', 'gitObjectFormat'))
+            and value['viewId'] == _digest([value['repoId'], value['worktreeId'], facts['branchKey']]))
 
 
 def register_repository(project_root, *, deadline=None):
@@ -390,8 +540,9 @@ def capture_view(project_root, repository, worktree, *, deadline=None):
 
 def capture_matches(capture, repository, worktree, *, deadline=None):
     try:
-        if (not isinstance(capture, dict) or set(capture) != CAPTURE_FIELDS
-                or capture['schema'] != CAPTURE_SCHEMA):
+        if (not _capture_shape(capture)
+                or _digest({key: value for key, value in capture.items()
+                            if key != 'checkoutDigest'}) != capture['checkoutDigest']):
             return False
         return capture_view(capture['projectRoot'], repository, worktree,
                             deadline=deadline) == capture
