@@ -302,10 +302,11 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or
             _git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source)):
         _fail('provider_review_commit_changed')
-    committed_source = _CommitSource(source, commit_id)
+    provider_files = ('core/laya_local_embed_provider.py',
+                      'core/laya_local_embed_worker.mjs')
+    committed_source = _CommitSource(source, commit_id, required_paths=provider_files)
     artifacts = {}
-    for name in ('core/laya_local_embed_provider.py',
-                 'core/laya_local_embed_worker.mjs'):
+    for name in provider_files:
         original = committed_source.read(name)
         installed, _ = _read(root / name, MAX_FILE)
         if original != installed:

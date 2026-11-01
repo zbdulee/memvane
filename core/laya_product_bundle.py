@@ -542,7 +542,7 @@ def inspect_product_candidate(engine_root):
             'productRouteAllowed': False}
 
 
-def _plugin_paths(source, commit_id):
+def _plugin_paths(source, commit_id, *, required_paths=None):
     names = _git(source, 'ls-tree', '-r', '-z', commit_id).split(b'\0')
     try:
         paths = {}
@@ -558,12 +558,7 @@ def _plugin_paths(source, commit_id):
                            'oid': oid.decode('ascii')}
     except UnicodeError as exc:
         raise BundleEvidenceError('invalid_commit_path') from exc
-    selected = sorted(paths)
-    if (not selected or any(name.startswith('/') or '..' in Path(name).parts or
-                            '\\' in name or '.git' in Path(name).parts or
-                            '.laya-product' in Path(name).parts or
-                            Path(name).parts[:1] == ('.in_use',) for name in selected) or
-            not {'hooks/run-hook', 'core/laya_index_runtime.py',
+    required = ({'hooks/run-hook', 'core/laya_index_runtime.py',
                  'core/laya_index_vector.py',
                  'core/laya_local_embed_provider.py',
                  'core/laya_local_embed_service.py',
@@ -579,7 +574,14 @@ def _plugin_paths(source, commit_id):
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
                  'hermes_adapter/core_bridge.py', 'plugin.yaml',
                  'LICENSE', 'README.md',
-                 '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(selected)):
+                 '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}
+                if required_paths is None else set(required_paths))
+    selected = sorted(paths)
+    if (not selected or any(name.startswith('/') or '..' in Path(name).parts or
+                            '\\' in name or '.git' in Path(name).parts or
+                            '.laya-product' in Path(name).parts or
+                            Path(name).parts[:1] == ('.in_use',) for name in selected) or
+            not required.issubset(selected)):
         _fail('incomplete_plugin_commit')
     return {name: paths[name] for name in selected}
 
@@ -652,12 +654,12 @@ class _CommitSource:
     and executable mode, even when their index entry says skip-worktree.
     """
 
-    def __init__(self, source, commit_id):
+    def __init__(self, source, commit_id, *, required_paths=None):
         self.root = Path(source)
         if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
                 _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
             _fail('source_commit_mismatch')
-        self.paths = _plugin_paths(source, commit_id)
+        self.paths = _plugin_paths(source, commit_id, required_paths=required_paths)
         self.object_format = _git(source, 'rev-parse', '--show-object-format').decode().strip()
         try:
             self.sparse = {row[2:].decode('utf-8') for row in
