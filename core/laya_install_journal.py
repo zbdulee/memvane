@@ -1317,6 +1317,98 @@ def verify_dispatch_target(decision):
     return proof
 
 
+def verify_notification_target(decision):
+    """Journal, route and bundle metadata proof for leaving a change hint.
+
+    Another project's hook may only leave an untrusted hint and wake the
+    owner. This never opens the owner's index or claim DB, starts a provider,
+    CASes the journal or proves the executing bundle, and never authorizes a
+    store write: the owner's worker repeats the full selected-route proof.
+    """
+    if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
+            any(type(decision.get(key)) is not str for key in
+                ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
+                 'queuePath', 'dbIncarnation', 'scopeId'))):
+        _fail('unselected_host_route')
+    journal = _private_parent(decision['journalPath'])
+    raw = _observed_route({'project_root': decision['projectRoot']}, None)
+    route, digest = _route(raw, journal)
+    if (route['schema'] == ROUTE_SCHEMA and
+            Path(decision['pluginRoot']).parent != journal.parent):
+        _fail('journal_engine_root_mismatch')
+    fresh = select_route(route['projectRoot'], action='recall')
+    if fresh.get('state') != 'candidate' or fresh != decision:
+        _fail('host_route_unverified')
+    for key in ROUTE_FIELDS | ROUTE_FIELDS_V2:
+        if key in fresh and fresh[key] != route[key]:
+            _fail('host_decision_changed')
+    try:
+        # Path classification only; neither store is opened.
+        db_path, queue_path = Path(route['dbPath']), Path(route['queuePath'])
+        if (not db_path.is_absolute() or not queue_path.is_absolute() or
+                db_path.is_symlink() or queue_path.is_symlink() or
+                db_path == queue_path):
+            _fail('invalid_index_paths')
+        plugin_root = Path(route['pluginRoot'])
+        for candidate_path in (db_path, queue_path):
+            canonical_path = candidate_path.resolve(strict=True)
+            if canonical_path == plugin_root or plugin_root in canonical_path.parents:
+                _fail('index_path_overlaps_plugin')
+    except (OSError, RuntimeError) as exc:
+        raise JournalEvidenceError('runtime_identity_unavailable') from exc
+    path, db = _open(journal, write=False)
+    with closing(db):
+        db.execute('BEGIN')
+        try:
+            row = _row(db)
+            db.commit()
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            db.rollback()
+            raise JournalEvidenceError('journal_unavailable') from exc
+        except BaseException:
+            db.rollback()
+            raise
+    if (row['state'] not in ('active', 'restored_old') or
+            row['selected'] is None or row['selected_route_sha'] != digest or
+            _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+            route['scopeId'] != row['scope_id'] or
+            any(route.get(k) != row['selected'].get(k) for k in
+                ('pluginRoot', 'installId', 'generation',
+                 'bundleManifestSha256', 'ownershipManifestSha256',
+                 'vectorProfile'))):
+        _fail('inactive_or_mismatched_journal')
+    if (row['selected']['bundleKind'] != 'full_plugin' or
+            row['provider_attestation_sha'] is None or
+            row['provider_file_identity'] is None):
+        _fail('notification_target_unapproved')
+    try:
+        proof = _inspect_identity(row['selected'])
+    except BundleEvidenceError as exc:
+        raise JournalEvidenceError('installed_bundle_changed') from exc
+    # The sealed bytes and their bundle identity; provider files and runtime
+    # hashes are the owner worker's proof, not this hint's.
+    attestation, observed_sha = _attestation(path)
+    if observed_sha != row['provider_attestation_sha'] or not isinstance(attestation, dict):
+        _fail('production_attestation_changed')
+    if (attestation.get('vectorProfile') != proof.get('vectorProfile') or
+            any(attestation.get(key) != proof.get(key) for key in
+                ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256'))):
+        _fail('production_provider_identity_changed')
+    # The visible route must still be the one just bound to the journal.
+    _observed_route({'project_root': route['projectRoot']}, raw)
+    return {'status': 'installer_active_notification_target',
+            'notificationOnly': True,
+            'journalPath': str(path), 'selectionEpoch': row['epoch'],
+            'pluginRoot': row['selected']['pluginRoot'],
+            'sourceCommit': proof['sourceCommit'],
+            'bundleManifestSha256': proof['bundleManifestSha256'],
+            'ownershipManifestSha256': proof['ownershipManifestSha256'],
+            'installId': route['installId'], 'generation': route['generation'],
+            'projectRoot': route['projectRoot'], 'scopeId': route['scopeId'],
+            'dbIncarnation': route['dbIncarnation'],
+            'vectorProfile': proof.get('vectorProfile')}
+
+
 def verify_worker_attestation(decision):
     """Rehash model, worker and native closure once before an owned worker starts."""
     selected = verify_selected_route(decision)
