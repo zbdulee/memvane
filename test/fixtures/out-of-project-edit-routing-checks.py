@@ -343,6 +343,14 @@ class HookRouting(Routing):
             self.assertIn(('laya-sync', str(self.b.project)), self.wakes())
         self.assertLessEqual(len(self.inbox(self.b)['edits']), cap)
 
+    def test_non_sources_before_a_text_edit_do_not_consume_inbox_capacity(self):
+        changes = [self.b.project / f'config-{number}.json'
+                   for number in range(external().MAX_INBOX_EDITS)]
+        patch_text = ''.join(f'*** Update File: {path}\n' for path in (*changes, self.file))
+        self.index(self.event(tool_name='apply_patch', tool_input={'patch': patch_text}))
+        self.assertIn(('laya-sync', str(self.b.project)), self.wakes())
+        self.assertEqual([row['path'] for row in self.inbox(self.b)['edits']], ['note.md'])
+
     def test_deleted_source_hint(self):
         self.file.unlink()
         self.index()
@@ -587,6 +595,24 @@ class OwnerDrain(Routing):
         self.file.write_text('new unrelated bytes\n')
         self.drain()
         self.assertEqual(self.queue_rows(self.b), [])
+
+    def test_oversize_hint_does_not_block_valid_hints_or_existing_discovery(self):
+        import laya_wiki_discovery
+        self.index()
+        valid = self.b.project / 'valid.md'
+        valid.write_text('still eligible\n')
+        self.index(self.event(valid))
+        self.file.write_bytes(b'x' * (external().MAX_FILE_BYTES + 1))
+        decision = self.decision(self.b)
+        proof = self.proofs[str(self.b.project)]
+        with patch.object(laya_wiki_discovery, 'drain_after_sync',
+                          return_value={'state': 'complete'}) as discover:
+            result = sync._after_sync(decision, proof, object(), {'state': 'unchanged'})
+        self.assertEqual(result['state'], 'unchanged')
+        discover.assert_called_once()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows(self.b)], ['valid.md'])
+        self.assertEqual(self.inbox(self.b)['edits'], [])
+        self.assertNotIn('note.md', [row['path'] for row in self.inbox(self.b)['seen']])
 
     def test_stale_deleted_hint_is_not_compiled(self):
         self.file.unlink()

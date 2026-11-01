@@ -220,7 +220,9 @@ def notify(paths, *, cwd, host, origin):
     notified, failed, overflow = set(), 0, 0
     if host not in HOSTS:
         return {'owners': 0, 'failed': 0, 'overflow': 0}
-    for raw in paths[:MAX_INBOX_EDITS]:
+    # The inbox cap counts eligible pending sources, not preceding non-sources
+    # in a mixed patch. Payload size and the deadline bound input traversal.
+    for raw in paths:
         if time.monotonic() >= deadline:
             break
         owner, proved = None, False
@@ -294,6 +296,16 @@ def drain(decision, *, recheck):
         recheck()
         if journal.verify_selected_route_for_write(decision, 'compile') != proof:
             raise ValueError('external_edit_owner_changed')
+
+    def readable_revision(path):
+        try:
+            return _revision(path)
+        except (OSError, ValueError):
+            # A source that becomes unreadable or exceeds the file budget is
+            # stale input. Drop its hint without blocking other sources or
+            # discovery. Route/proof failures still escape for a retry.
+            return None, None
+
     checked()
     project = Path(decision['projectRoot'])
     found = config.find_project_config(str(project))
@@ -319,7 +331,7 @@ def drain(decision, *, recheck):
             checked()
             revision = None
             if path is not None and _eligible(path, current):
-                blob, revision = _revision(path)
+                blob, revision = readable_revision(path)
             else:
                 blob = None
             current_delete = blob == row['blob'] == 'deleted'
@@ -331,7 +343,7 @@ def drain(decision, *, recheck):
                 if record is not None:
                     # Metadata/proof checks may outlive the first file read.
                     # Bind the queue row to bytes still current at enqueue.
-                    now_blob, revision = _revision(path)
+                    now_blob, revision = readable_revision(path)
                     if now_blob == row['blob']:
                         record['contentRevision'] = revision
                         queue = enqueue._safe_queue_path(str(project))
