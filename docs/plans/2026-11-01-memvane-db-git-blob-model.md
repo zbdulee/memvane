@@ -774,3 +774,15 @@ release gate는 다음 증거를 요구한다:
 7. **host 호환·rollback 창:** 사용 중인 모든 Claude/Codex/Hermes가 bridge를 로드한 뒤
    schema를 전환하고, frontmatter-free 카드 활성화 이후에는 구 bundle 완전 downgrade 대신
    bridge reader rollback만 제공하는 안을 적용하는가? rollback 보존 기간도 함께 정해야 한다.
+
+## 14. 사용자 결정 (2026-11-01)
+
+13절의 질문은 모두 이 문서의 기본 제안으로 확정한다.
+
+1. 처음 보는 branch/worktree의 첫 검색은 검증된 lexical snapshot이 준비될 때까지 `view_preparing` 무컨텍스트를 허용한다. 기존 view 업데이트는 검색을 유지한다.
+2. blob 공유 범위는 같은 common Git dir의 같은 프로젝트다. 별도 clone·다른 프로젝트 공유는 첫 rollout에서 제외한다.
+3. 보존 정책 확정 전 자동 GC는 비활성이다. worktree unregister와 이전 rollback DB 정리는 명시 요청으로만 한다.
+4. tracked 파일의 로컬 unlink·staged deletion·untracked 소실은 committed deletion 전까지 hold한다.
+5. source SHA·HEAD·worktree 지문은 DB가 소유하고, 사람이 읽는 source path/link는 카드에 유지한다. 기존 카드는 일괄 재작성하지 않고 신규·갱신 카드부터 적용한다.
+6. 경로 독립 recipe로 바뀌는 legacy 벡터는 lexical 검색을 유지하며 천천히 backfill한다.
+7. 모든 Claude/Codex host가 bridge를 로드한 뒤 schema를 전환하고, frontmatter-free 카드 활성화 이후의 rollback은 bridge reader rollback으로 제한한다. rollback 보존 기간은 PR 10의 retention 설계에서 정한다.
