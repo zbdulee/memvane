@@ -174,6 +174,7 @@ def _worktree_row(project_root, repository, worktree):
            'admin_dev': worktree['gitDir']['dev'] if worktree['gitDir'] else None,
            'admin_ino': worktree['gitDir']['ino'] if worktree['gitDir'] else None,
            'binding_digest': v.digest('memvane-blob-worktree-v1', evidence),
+           'binding_json': v.canonical(evidence),
            'project_root': observation['project_root'], 'record_json': v.canonical(worktree),
            **{k: observation[k] for k in ('settings_path', 'settings_sha', 'wiki_root', 'wiki_dev', 'wiki_ino')}}
     return row, observation
@@ -198,6 +199,34 @@ def _header(db, repository, scope):
             or row['scope_id'] != scope or row['schema_digest'] != schema.expected_manifest()):
         v.fail('candidate_binding_mismatch')
     v.identifier(row['incarnation'], v.UUID)
+
+
+def _worktree_record(row, repository):
+    record = v.parse_canonical(row['record_json'])
+    binding = v.parse_canonical(row['binding_json'])
+    v.exact(binding, ('project_root', 'settings_path', 'settings_sha', 'wiki_root',
+                      'wiki_dev', 'wiki_ino', 'collections', 'record'))
+    if (not isinstance(record, dict) or set(record) != checkout.WORKTREE_FIELDS
+            or record.get('schema') != checkout.WORKTREE_SCHEMA
+            or record.get('worktreeId') != row['worktree_id']
+            or record.get('repoId') != repository['repoId']
+            or record.get('repositoryDigest') != checkout._digest(repository)
+            or not all(checkout._identity(record.get(k)) for k in ('project', 'checkout'))
+            or (record.get('gitDir') is not None and not checkout._identity(record['gitDir']))
+            or binding.get('record') != record
+            or v.digest('memvane-blob-worktree-v1', binding) != row['binding_digest']):
+        v.fail('worktree_evidence_invalid')
+    expected = dict(project_root=record['project']['path'],
+                    canonical_root=record['checkout']['path'], root_dev=record['checkout']['dev'],
+                    root_ino=record['checkout']['ino'],
+                    git_admin_dir=record['gitDir']['path'] if record['gitDir'] else None,
+                    admin_dev=record['gitDir']['dev'] if record['gitDir'] else None,
+                    admin_ino=record['gitDir']['ino'] if record['gitDir'] else None)
+    if (any(row[k] != val for k, val in expected.items())
+            or any(binding.get(k) != row[k] for k in
+                   ('project_root', 'settings_path', 'settings_sha', 'wiki_root', 'wiki_dev', 'wiki_ino'))):
+        v.fail('worktree_evidence_invalid')
+    return record
 
 
 class BlobStore:
@@ -321,11 +350,14 @@ class BlobStore:
 
     def _blob(self, blob_sha):
         v.identifier(blob_sha)
-        row = self._db.execute('SELECT * FROM wiki_blobs WHERE blob_sha=?', (blob_sha,)).fetchone()
+        row = self._db.execute('SELECT blob_sha,byte_length FROM wiki_blobs WHERE blob_sha=?', (blob_sha,)).fetchone()
         if row is None:
             v.fail('blob_missing')
+        v.integer(row['byte_length'], 0, v.MAX_BODY)
+        raw = self._db.execute('SELECT substr(CAST(body AS BLOB),1,?) FROM wiki_blobs WHERE blob_sha=?',
+                               (v.MAX_BODY + 1, blob_sha)).fetchone()[0]
         try:
-            raw = row['body'].encode('utf8')
+            body = raw.decode('utf8')
         except (AttributeError, UnicodeError):
             v.fail('blob_invalid')
         if len(raw) != row['byte_length'] or v.hash_bytes(raw) != blob_sha or len(raw) > v.MAX_BODY:
@@ -334,10 +366,32 @@ class BlobStore:
         if admission is None:
             v.fail('blob_admission_missing')
         proof = v.parse_canonical(admission['proof_json'])
-        if (proof.get('blob_sha') != blob_sha
+        v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest', 'settings_sha',
+                        'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
+        saved = self._db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (admission['worktree_id'],)).fetchone()
+        if saved is None:
+            v.fail('blob_admission_invalid')
+        worktree = _worktree_record(saved, self._repository)
+        capture = proof['capture']
+        if (proof.get('blob_sha') != blob_sha or proof['worktree_id'] != saved['worktree_id']
+                or proof['binding_digest'] != saved['binding_digest']
+                or proof['settings_sha'] != saved['settings_sha'] or proof['wiki_root'] != saved['wiki_root']
+                or proof['wiki_identity'] != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+                or proof['repository_digest'] != worktree['repositoryDigest']
+                or not checkout._capture_shape(capture)
+                or capture['repoId'] != self._repository['repoId']
+                or capture['worktreeId'] != saved['worktree_id']
+                or capture['checkoutDigest'] != checkout._digest({k: val for k, val in capture.items() if k != 'checkoutDigest'})
+                or any(capture['evidence'][k] != worktree[k] for k in ('project', 'checkout', 'gitDir'))
                 or v.digest('memvane-wiki-admission-v1', proof) != admission['proof_digest']):
             v.fail('blob_admission_invalid')
-        return row['body']
+        v.relative(proof['path'])
+        v.exact(proof['file'], ('dev', 'ino', 'size', 'mtime_ns', 'ctime_ns'))
+        for number in proof['file'].values():
+            v.integer(number)
+        if proof['file']['size'] != row['byte_length']:
+            v.fail('blob_admission_invalid')
+        return body
 
     def ingest_card(self, worktree_id, path):
         v.identifier(worktree_id, v.UUID); v.relative(path)
@@ -390,11 +444,166 @@ class BlobStore:
             v.fail('wiki_card_unavailable')
 
     def document(self, blob_sha):
-        from laya_index_vector import qmd_markdown_title
         with self._session():
             body = self._blob(blob_sha)
             path = f'blobs/{blob_sha}.md'
-            return {'body': body, 'path': path, 'title': qmd_markdown_title(body, path)}
+            return {'body': body, 'path': path, 'title': v.markdown_title(body, blob_sha)}
+
+    def register_recipe(self, spec):
+        spec = v.recipe(spec)
+        key, canonical = v.digest('memvane-chunk-recipe-v1', spec), v.canonical(spec)
+        with self._session(write=True) as db:
+            old = db.execute('SELECT canonical_spec FROM chunk_recipes WHERE recipe_id=?', (key,)).fetchone()
+            if old:
+                if self._recipe(key) != spec:
+                    v.fail('recipe_conflict')
+            else:
+                _insert(db, 'chunk_recipes', dict(recipe_id=key, canonical_spec=canonical))
+        return key
+
+    def _recipe(self, key):
+        v.identifier(key)
+        row = self._db.execute('SELECT canonical_spec FROM chunk_recipes WHERE recipe_id=?', (key,)).fetchone()
+        if row is None:
+            v.fail('recipe_missing')
+        spec = v.recipe(v.parse_canonical(row[0]))
+        if v.digest('memvane-chunk-recipe-v1', spec) != key:
+            v.fail('recipe_invalid')
+        return spec
+
+    @staticmethod
+    def _profile_fields(spec):
+        return {**{k: spec[k] for k in ('model_id', 'model_sha', 'embedding_fingerprint', 'dimension', 'metric')},
+                'input_recipe': v.canonical({k: spec[k] for k in
+                    ('document_input_recipe', 'query_input_recipe', 'query_template')}),
+                'canonical_spec': v.canonical(spec)}
+
+    def register_profile(self, spec):
+        spec = v.profile(spec)
+        key = v.digest('memvane-vector-profile-v1', spec)
+        with self._session(write=True) as db:
+            old = db.execute('SELECT profile_id FROM vector_profiles WHERE profile_id=?', (key,)).fetchone()
+            if old:
+                if self._profile(key) != spec:
+                    v.fail('profile_conflict')
+            else:
+                _insert(db, 'vector_profiles', dict(profile_id=key, **self._profile_fields(spec)))
+        return key
+
+    def _profile(self, key):
+        v.identifier(key)
+        row = self._db.execute('SELECT * FROM vector_profiles WHERE profile_id=?', (key,)).fetchone()
+        if row is None:
+            v.fail('profile_missing')
+        spec = v.profile(v.parse_canonical(row['canonical_spec']))
+        if (v.digest('memvane-vector-profile-v1', spec) != key
+                or any(row[k] != val for k, val in self._profile_fields(spec).items())):
+            v.fail('profile_invalid')
+        return spec
+
+    def _chunks(self, blob, recipe_id):
+        body = self._blob(blob); self._recipe(recipe_id)
+        head = self._db.execute('SELECT * FROM chunk_sets WHERE blob_sha=? AND recipe_id=?', (blob, recipe_id)).fetchone()
+        if head is None:
+            v.fail('chunk_set_missing')
+        rows = [dict(row) for row in self._db.execute(
+            'SELECT seq,position,text,text_sha FROM chunks WHERE blob_sha=? AND recipe_id=? ORDER BY seq',
+            (blob, recipe_id))]
+        rows = v.chunks(body, rows)
+        if head['chunk_count'] != len(rows) or head['set_digest'] != v.chunk_digest(blob, recipe_id, rows):
+            v.fail('chunk_set_invalid')
+        return rows
+
+    def put_chunk_set(self, blob_sha, recipe_id, rows):
+        with self._session(write=True) as db:
+            body = self._blob(blob_sha); self._recipe(recipe_id)
+            rows = v.chunks(body, rows); key = v.chunk_digest(blob_sha, recipe_id, rows)
+            old = db.execute('SELECT set_digest FROM chunk_sets WHERE blob_sha=? AND recipe_id=?', (blob_sha, recipe_id)).fetchone()
+            if old:
+                if self._chunks(blob_sha, recipe_id) != rows or old[0] != key:
+                    v.fail('chunk_set_conflict')
+            else:
+                _insert(db, 'chunk_sets', dict(blob_sha=blob_sha, recipe_id=recipe_id, chunk_count=len(rows), set_digest=key))
+                for row in rows:
+                    _insert(db, 'chunks', dict(blob_sha=blob_sha, recipe_id=recipe_id, **row))
+        return key
+
+    def chunks(self, blob_sha, recipe_id):
+        with self._session():
+            return self._chunks(blob_sha, recipe_id)
+
+    def _inputs(self, blob, recipe_id, profile_id):
+        body = self._blob(blob); self._profile(profile_id)
+        rows = self._chunks(blob, recipe_id)
+        title = v.markdown_title(body, blob)
+        return [v.hash_bytes(f'title: {title or "none"} | text: {r["text"]}'.encode('utf8')) for r in rows]
+
+    def vector_input_sha(self, blob_sha, recipe_id, profile_id, seq):
+        v.integer(seq, 0, v.MAX_CHUNKS - 1)
+        with self._session():
+            inputs = self._inputs(blob_sha, recipe_id, profile_id)
+            if seq >= len(inputs):
+                v.fail('chunk_missing')
+            return inputs[seq]
+
+    def _vectors(self, blob, recipe_id, profile_id):
+        spec = self._profile(profile_id)
+        inputs = self._inputs(blob, recipe_id, profile_id)
+        head = self._db.execute('SELECT * FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                                (blob, recipe_id, profile_id)).fetchone()
+        if head is None:
+            v.fail('embedding_set_missing')
+        saved = list(self._db.execute(
+            'SELECT seq,input_sha,embedding,provenance_digest FROM vectors '
+            'WHERE blob_sha=? AND recipe_id=? AND profile_id=? ORDER BY seq', (blob, recipe_id, profile_id)))
+        rows = v.embedding_rows([{k: row[k] for k in ('seq', 'input_sha', 'embedding')} for row in saved],
+                                spec['dimension'], inputs)
+        if (head['chunk_count'] != len(rows) or head['set_digest'] != v.embedding_digest(blob, recipe_id, profile_id, rows)
+                or any(row['provenance_digest'] != v.vector_digest(blob, recipe_id, profile_id, data)
+                       for row, data in zip(saved, rows))):
+            v.fail('embedding_set_invalid')
+        return rows
+
+    def put_embedding_set(self, blob_sha, recipe_id, profile_id, rows):
+        with self._session(write=True) as db:
+            spec = self._profile(profile_id)
+            inputs = self._inputs(blob_sha, recipe_id, profile_id)
+            rows = v.embedding_rows(rows, spec['dimension'], inputs)
+            key = v.embedding_digest(blob_sha, recipe_id, profile_id, rows)
+            old = db.execute('SELECT set_digest FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                             (blob_sha, recipe_id, profile_id)).fetchone()
+            if old:
+                if self._vectors(blob_sha, recipe_id, profile_id) != rows or old[0] != key:
+                    v.fail('embedding_set_conflict')
+            else:
+                _insert(db, 'embedding_sets', dict(blob_sha=blob_sha, recipe_id=recipe_id, profile_id=profile_id,
+                                                  chunk_count=len(rows), set_digest=key))
+                for row in rows:
+                    _insert(db, 'vectors', dict(blob_sha=blob_sha, recipe_id=recipe_id, profile_id=profile_id,
+                        **row, provenance_digest=v.vector_digest(blob_sha, recipe_id, profile_id, row)))
+        return key
+
+    def vectors(self, blob_sha, recipe_id, profile_id):
+        with self._session():
+            return self._vectors(blob_sha, recipe_id, profile_id)
+
+    def verify(self):
+        with self._session() as db:
+            if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok' or db.execute('PRAGMA foreign_key_check').fetchone():
+                v.fail('candidate_integrity_failed')
+            for row in db.execute('SELECT * FROM worktrees'):
+                _worktree_record(row, self._repository)
+            for row in db.execute('SELECT blob_sha FROM wiki_blobs'):
+                self._blob(row[0])
+            for row in db.execute('SELECT recipe_id FROM chunk_recipes'):
+                self._recipe(row[0])
+            for row in db.execute('SELECT profile_id FROM vector_profiles'):
+                self._profile(row[0])
+            for row in db.execute('SELECT blob_sha,recipe_id FROM chunk_sets'):
+                self._chunks(*row)
+            for row in db.execute('SELECT blob_sha,recipe_id,profile_id FROM embedding_sets'):
+                self._vectors(*row)
+        return True
 
     def counts(self):
         with self._session() as db:

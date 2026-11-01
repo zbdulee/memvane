@@ -45,10 +45,10 @@
 
 **Interfaces:** `register_recipe(spec) -> recipe_id`, `register_profile(spec) -> profile_id`, `put_chunk_set(blob_sha, recipe_id, rows) -> set_digest`, `chunks(blob_sha, recipe_id)`, `vector_input_sha(blob_sha, recipe_id, profile_id, seq)`, `put_embedding_set(blob_sha, recipe_id, profile_id, rows) -> set_digest`, `vectors(...)`.
 
-- [ ] RED cases: canonical/unknown field/type failures, title-less rename stable input, changed recipe/model bytes distinct, gaps/duplicate seq/position, bad text/hash/input hash, float32 dimensions/NaN/Inf/zero norm, partial/fault rollback, exact replay/conflict and separate recipe/profile keys, concurrent duplicate insertion.
-- [ ] Implement recipe/profile digest and pure value validation; atomic sets use one `BEGIN IMMEDIATE` for lookup/replay/insertion, never REPLACE. Counts/seq/positions/input/vector provenance are checked before commit and on read.
-- [ ] Provider document template is exactly `title: {title} | text: {text}`; query template is `task: search result | query: {text}`. Synthetic path is `blobs/<blob_sha>.md`; title uses existing qmd title helper on that path. Offsets use UTF-16 code units, matching current chunker. No provider/model execution.
-- [ ] Run focused RED→GREEN and atomic/rollback boundaries, then commit.
+- [x] RED cases: canonical/unknown field/type failures, title-less rename stable input, changed recipe/model bytes distinct, gaps/duplicate seq/position, bad text/hash/input hash, float32 dimensions/NaN/Inf/zero norm, partial/fault rollback, exact replay/conflict and separate recipe/profile keys, concurrent duplicate insertion.
+- [x] Implement recipe/profile digest and pure value validation; atomic sets use one `BEGIN IMMEDIATE` for lookup/replay/insertion, never REPLACE. Counts/seq/positions/input/vector provenance are checked before commit and on read.
+- [x] Provider document template is exactly `title: {title} | text: {text}`; query template is `task: search result | query: {text}`. Synthetic path is `blobs/<blob_sha>.md`; title follows the exact pinned JS qmd whitespace/line rules. Offsets use UTF-16 code units, matching current chunker. No provider/model execution.
+- [x] Run focused RED→GREEN and atomic/rollback boundaries, then commit.
 
 ## Task 3: immutable source metadata and card attestations
 
