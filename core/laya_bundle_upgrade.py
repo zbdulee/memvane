@@ -906,7 +906,14 @@ def _bundle_failure(exc, root):
     if (reason == 'installed_file_set_not_exact_commit' and
             isinstance(detail, dict) and detail.get('missing') and
             not detail.get('unexpected')):
-        detail = {'path': str(Path(root) / detail['missing'][0]), 'errno': errno.ENOENT}
+        path = Path(root) / detail['missing'][0]
+        try:
+            path.lstat()
+        except OSError as unavailable:
+            detail = {'path': str(path), 'errno': unavailable.errno}
+        else:
+            # A directory (or a concurrent extraction) is not evidence of ENOENT.
+            return reason, {}
     elif reason != 'bundle_file_unavailable':
         return reason, {}
     if (not isinstance(detail, dict) or set(detail) != {'path', 'errno'} or

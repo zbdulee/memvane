@@ -118,6 +118,32 @@ class CodexSparseChecks(unittest.TestCase):
         self.assertEqual(ctx.exception.detail, {'path': str(path), 'errno': errno.ENOENT})
         self.assertFalse((self.installed / '.laya-product').exists())
 
+    def test_existing_directory_is_not_a_missing_installed_file(self):
+        path = self.installed / 'LICENSE'
+        path.unlink()
+        path.mkdir()
+        with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                    'installed_file_set_not_exact_commit') as ctx:
+            self.adopt()
+        reason, detail = auto._bundle_failure(ctx.exception, self.installed)
+        self.assertEqual(reason, 'installed_file_set_not_exact_commit')
+        self.assertNotEqual(detail.get('file', {}).get('errno'), errno.ENOENT)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root bypasses directory access permissions')
+    def test_unreadable_directory_preserves_the_access_error(self):
+        directory = self.installed / '.codex-plugin'
+        original_mode = directory.stat().st_mode & 0o777
+        directory.chmod(0)
+        try:
+            with self.assertRaisesRegex(bundle.BundleEvidenceError,
+                                        'installed_file_set_not_exact_commit') as ctx:
+                self.adopt()
+            reason, detail = auto._bundle_failure(ctx.exception, self.installed)
+            self.assertEqual(reason, 'installed_file_set_not_exact_commit')
+            self.assertEqual(detail.get('file', {}).get('errno'), errno.EACCES)
+        finally:
+            directory.chmod(original_mode)
+
     def test_partial_codex_cache_defers_visibly_and_recovers_after_file_returns(self):
         path = self.installed / 'core/laya_local_embed_provider.py'
         path.unlink()
