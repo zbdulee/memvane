@@ -1,6 +1,7 @@
 # MemVane DB의 Git blob·checkout view 모델
 
-상태: 설계 제안. 사용자 확정 모델(2026-10-27)을 기준으로 하며 제품 구현은 포함하지 않는다.
+상태: 확정 설계. checkout identity와 view capture API는 `core/laya_checkout_view.py`에 있다.
+등록 JSON·capture의 계약은 `docs/development-checkout-capture.md`를 따른다. 새 DB·route·reader는 활성화하지 않는다.
 코드 근거: 이 브랜치의 `b1106b2`, MemVane 0.43.19. 아래의 **현재**는 이 코드의 동작이고,
 **목표**와 **제안**은 구현 계약이다. 성능 수치는 실측 결과가 아니라 검증할 예산이다.
 
