@@ -336,7 +336,7 @@ class ResponseChecks(unittest.TestCase):
             self.assertEqual([call.args[0] for call in request.call_args_list],
                              ['laya-sync', 'laya-compile'])
 
-    def test_edit_gate_accepts_only_scoped_edit_paths(self):
+    def test_edit_gate_validates_cwd_and_accepts_external_edit_paths(self):
         with tempfile.TemporaryDirectory(prefix="laya-host-edit-") as temp:
             project = Path(temp).resolve()
             decision = {"projectRoot": str(project)}
@@ -344,6 +344,8 @@ class ResponseChecks(unittest.TestCase):
                      "tool_input": {"file_path": "docs/a.md"}, "cwd": str(project)}
             response._verified_edit(decision, event, "gate")
             event["tool_input"]["file_path"] = "../outside.md"
+            response._verified_edit(decision, event, "gate")
+            event['cwd'] = str(project.parent)
             with self.assertRaises(response.HostResponseError) as caught:
                 response._verified_edit(decision, event, "gate")
             self.assertEqual(str(caught.exception), "edit_outside_project")

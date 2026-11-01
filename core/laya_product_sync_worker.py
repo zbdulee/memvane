@@ -507,13 +507,19 @@ def _after_sync(decision, proof, grants, result):
     that started the cursor (earlier changes are not discovered) is reported
     as ``wikiDiscovery``.
     """
-    if grants is None or result.get('state') not in ('indexed', 'unchanged'):
+    if result.get('state') not in ('indexed', 'unchanged'):
         return result
-    import laya_wiki_discovery
 
     def recheck():
         if verify_selected_route(decision) != proof:
             raise IndexContractError('selected_proof_changed')
+    import laya_external_edits
+    external = laya_external_edits.drain(decision, recheck=recheck)
+    if isinstance(external, dict) and external.get('remaining', 0):
+        return {**result, 'state': 'pending', 'reason': 'external_edits_pending'}
+    if grants is None:
+        return result
+    import laya_wiki_discovery
     outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
     if outcome['state'] == 'retry':
         return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],

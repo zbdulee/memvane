@@ -1271,7 +1271,7 @@ def _report_filtered(project_root, filtered: dict[str, str]) -> None:
 
 
 def _verified_edit(decision: dict, payload: dict, action: str) -> None:
-    _edit_targets(decision, payload, action)
+    _edit_targets(decision, payload, action, allow_outside=True)
 
 
 def _edit_targets(decision: dict, payload: dict, action: str, *,
@@ -1301,6 +1301,11 @@ def _edit_targets(decision: dict, payload: dict, action: str, *,
     paths = [details[key] for key in
              ("file_path", "path", "notebook_path", "TargetFile", "FilePath", "Path")
              if key in details]
+    if tool == 'MultiEdit' and 'edits' in details:
+        edits = details['edits']
+        if not isinstance(edits, list) or any(not isinstance(edit, dict) for edit in edits):
+            _fail('invalid_edit_path')
+        paths.extend(edit[key] for edit in edits for key in ('file_path', 'path') if key in edit)
     if tool == "apply_patch":
         patch = details.get("patch", details.get("command"))
         if not isinstance(patch, str) or len(patch) > 2 * 1024 * 1024:
@@ -1921,12 +1926,15 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "index":
             current, inside, outside = _edit_targets(decision, payload, "index",
                                                      allow_outside=True)
+            if not _successful_edit(payload):
+                return {}
             if outside:
-                # Paths inside the project keep the selected wake below. An
-                # outside path belongs to another project; that project's own
-                # full-scan sync reconciles it, so nothing is routed here.
                 if verify_selected_route(decision) != proof:
                     _fail("selected_proof_changed")
+                import laya_external_edits
+                external = laya_external_edits.notify(
+                    outside, cwd=current, host=host, origin=decision['projectRoot'])
+                _trace_fields(external_edits=external)
                 if inside:
                     _request_selected_sync(action, decision, proof)
                 return {}

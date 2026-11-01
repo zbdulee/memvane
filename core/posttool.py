@@ -111,7 +111,7 @@ def edited_paths(payload: dict) -> list[str]:
     if not isinstance(tool_input, dict):
         return []
     paths = []
-    for key in ("file_path", "path", "TargetFile", "FilePath", "Path"):
+    for key in ("file_path", "path", "notebook_path", "TargetFile", "FilePath", "Path"):
         value = tool_input.get(key)
         if isinstance(value, str):
             paths.append(value)
