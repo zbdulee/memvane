@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import stat
 import time
+import uuid
 
 MAX_INBOX_EDITS = 64
 MAX_SEEN = 256
@@ -62,13 +63,18 @@ def _read_box(path, decision):
     from laya_wiki_discovery import _read
     value = _read(path)
     if value is None:
-        return {**_binding(decision), 'edits': [], 'seen': []}
-    if (not isinstance(value, dict) or set(value) != {*_binding(decision), 'edits', 'seen'}
+        return {**_binding(decision), 'edits': [], 'seen': [], 'tokens': {}}
+    if (not isinstance(value, dict) or set(value) != {*_binding(decision), 'edits', 'seen', 'tokens'}
             or any(value.get(k) != v for k, v in _binding(decision).items())
             or not isinstance(value['edits'], list) or len(value['edits']) > MAX_INBOX_EDITS
             or not all(_valid_row(row) for row in value['edits'])
             or not isinstance(value['seen'], list) or len(value['seen']) > MAX_SEEN
-            or not all(_valid_row(row) for row in value['seen'])):
+            or not all(_valid_row(row) for row in value['seen'])
+            or not isinstance(value['tokens'], dict)
+            or set(value['tokens']) != {row['path'] for row in value['edits']}
+            or len(value['tokens']) != len(value['edits'])
+            or not all(isinstance(token, str) and _HEX32.fullmatch(token)
+                       for token in value['tokens'].values())):
         raise ValueError('external_edit_inbox_invalid')
     return value
 
@@ -109,6 +115,12 @@ def _eligible(path, decision):
         rel = path.relative_to(decision['projectRoot'])
     except ValueError:
         return False
+    project = Path(decision['projectRoot'])
+    for parent in (path.parent, *path.parent.parents):
+        if (parent / '.git').is_file():
+            return False
+        if parent == project:
+            break
     return (is_source_text(path.name) and bool(rel.parts)
             and not any(part.startswith('.') or part in DENIED_SOURCE_SEGMENTS
                         for part in rel.parts)
@@ -211,6 +223,7 @@ def notify(paths, *, cwd, host, origin):
     for raw in paths[:MAX_INBOX_EDITS]:
         if time.monotonic() >= deadline:
             break
+        owner, proved = None, False
         try:
             path = _safe_path(raw, cwd)
             owner = owner_for(path, targets) if path is not None else None
@@ -220,19 +233,24 @@ def notify(paths, *, cwd, host, origin):
             proof = journal.verify_notification_target(decision)
             if proof.get('notificationOnly') is not True:
                 raise ValueError('external_edit_notification_unproved')
+            proved = True
             blob, _ = _revision(path)
             row = {'path': path.relative_to(owner['projectRoot']).as_posix(),
                    'blob': blob, 'host': host}
             inbox = _inbox_path(decision)
+            if journal.verify_notification_target(decision) != proof:
+                raise ValueError('external_edit_owner_changed')
             with _locked(inbox.with_suffix('.lock'), .15):
                 box = _read_box(inbox, decision)
-                if journal.verify_notification_target(decision) != proof:
-                    raise ValueError('external_edit_owner_changed')
-                if _key(row) not in {_key(r) for r in (*box['edits'], *box['seen'])}:
-                    if len(box['edits']) >= MAX_INBOX_EDITS:
+                pending = [r for r in box['edits'] if r['path'] == row['path']]
+                prior = pending or [r for r in box['seen'] if r['path'] == row['path']]
+                if not prior or _key(prior[-1]) != _key(row):
+                    if not pending and len(box['edits']) >= MAX_INBOX_EDITS:
                         overflow += 1
                     else:
+                        box['edits'] = [r for r in box['edits'] if r['path'] != row['path']]
                         box['edits'].append(row)
+                        box['tokens'][row['path']] = uuid.uuid4().hex
                         _write(inbox, box)
             if owner['projectRoot'] not in notified:
                 result = runtime_work.request('laya-sync', owner['projectRoot'])
@@ -243,6 +261,15 @@ def notify(paths, *, cwd, host, origin):
             # An unavailable recipient never denies A's completed edit or its
             # own sync. No hint grants authority without the owner's proof.
             failed += 1
+            if proved and owner is not None and owner['projectRoot'] not in notified:
+                try:
+                    if journal.verify_notification_target(owner['decision']) != proof:
+                        raise ValueError('external_edit_owner_changed')
+                    result = runtime_work.request('laya-sync', owner['projectRoot'])
+                    if isinstance(result, dict) and result.get('status') in ('queued', 'busy'):
+                        notified.add(owner['projectRoot'])
+                except Exception:
+                    pass
     return {'owners': len(notified), 'failed': failed, 'overflow': overflow}
 
 
@@ -275,15 +302,18 @@ def drain(decision, *, recheck):
     cfg = found['config']
     permitted = (config.event_enabled(cfg, 'postToolUse') and
                  enqueue.compile_gate(cfg, (enqueue.POST_TOOL_TRIGGER,)) is not None)
-    remaining, processed, queued, spent = [], 0, False, 0
+    processed, queued, spent = {}, False, 0
+    accepted = []
     deleted = False
     deadline = time.monotonic() + OWNER_SECONDS
-    with _locked(inbox.with_suffix('.lock'), 1.0):
-        box = _read_box(inbox, decision)
+    # Owners serialize separately. Hooks hold the inbox lock only for a short
+    # metadata replace; hashing and queue work never block incoming hints.
+    with _locked(inbox.with_suffix('.owner.lock'), 1.0):
+        with _locked(inbox.with_suffix('.lock'), 1.0):
+            box = _read_box(inbox, decision)
         for row in box['edits']:
             if spent >= enqueue.compile_max_files() or time.monotonic() >= deadline:
-                remaining.append(row)
-                continue
+                break
             path = _safe_path(row['path'], project)
             current = routes.select_route(str(project), action='compile')
             checked()
@@ -292,22 +322,30 @@ def drain(decision, *, recheck):
                 blob, revision = _revision(path)
             else:
                 blob = None
-            deleted = deleted or blob == row['blob'] == 'deleted'
+            current_delete = blob == row['blob'] == 'deleted'
+            deleted = deleted or current_delete
+            consumed = current_delete
             if permitted and blob == row['blob'] and blob != 'deleted':
                 record = enqueue._source_record(str(path), str(project), str(project), cfg,
                                                 row['host'])
                 if record is not None:
-                    record['contentRevision'] = revision
-                    queue = enqueue._safe_queue_path(str(project))
-                    if queue is None:
-                        raise ValueError('external_edit_compile_queue_unsafe')
-                    checked()
-                    result = enqueue._append_unqueued(queue, [
-                        (record['source']['collection'], record['source']['path'], record)], 1)
-                    queued = queued or bool(result['records']) or result['result'].get('wakePending', False)
-                    spent += 1
-            processed += 1
-            box['seen'].append(row)
+                    # Metadata/proof checks may outlive the first file read.
+                    # Bind the queue row to bytes still current at enqueue.
+                    now_blob, revision = _revision(path)
+                    if now_blob == row['blob']:
+                        record['contentRevision'] = revision
+                        queue = enqueue._safe_queue_path(str(project))
+                        if queue is None:
+                            raise ValueError('external_edit_compile_queue_unsafe')
+                        checked()
+                        result = enqueue._append_unqueued(queue, [
+                            (record['source']['collection'], record['source']['path'], record)], 1)
+                        consumed = bool(result['records']) or result['result'].get('wakePending', False)
+                        queued = queued or consumed
+                        spent += 1
+            processed[row['path']] = box['tokens'][row['path']]
+            if consumed:
+                accepted.append(row)
         if queued:
             checked()
             wiki_selected_laya.request_compile(project, (decision, proof))
@@ -316,6 +354,16 @@ def drain(decision, *, recheck):
             checked()
             wiki_lifecycle_request.request(decision, 'source_edit')
         checked()
-        box['edits'], box['seen'] = remaining, box['seen'][-MAX_SEEN:]
-        _write(inbox, box)
-    return {'remaining': len(remaining), 'processed': processed}
+        with _locked(inbox.with_suffix('.lock'), 1.0):
+            latest = _read_box(inbox, decision)
+            for path, token in processed.items():
+                if latest['tokens'].get(path) == token:
+                    latest['edits'] = [r for r in latest['edits'] if r['path'] != path]
+                    del latest['tokens'][path]
+            for row in accepted:
+                latest['seen'] = [r for r in latest['seen'] if r['path'] != row['path']]
+                latest['seen'].append(row)
+            latest['seen'] = latest['seen'][-MAX_SEEN:]
+            checked()
+            _write(inbox, latest)
+    return {'remaining': len(latest['edits']), 'processed': len(processed)}

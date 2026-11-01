@@ -21,8 +21,14 @@
 
 알림은 B 설치의 scope·DB incarnation에 묶인 0600 JSON과 전용 잠금을 쓴다.
 각 행에는 프로젝트 상대 경로·git blob id 또는 `deleted`·편집 호스트만 담는다.
-원문 본문은 저장하지 않는다. 같은 `(path, blob)`는 대기 목록과 최근 처리 목록에서
-중복을 억제한다. 알림 뒤 B의 기존 `laya-sync` wake를 offer한다.
+원문 본문은 저장하지 않는다. 경로별 대기는 최신 변경 하나로 합치고, 같은 현재
+버전의 연속 알림을 억제한다. 내용이 바뀌었다가 돌아오면 새 변경으로 알린다.
+처리하지 못한 오래된 버전이나 동의가 꺼진 버전은 처리 완료로 기억하지 않는다.
+알림 뒤 B의 기존 `laya-sync` wake를 offer한다.
+
+owner 직렬화 잠금과 짧은 inbox 잠금은 별개다. 파일 읽기와 enqueue 동안 새 알림을
+받을 수 있고, 처리한 알림의 토큰이 그대로일 때만 제거한다. 처리 중 도착한 새
+변경은 다음 pass에 남는다.
 
 owner는 현재 blob이 같은 원문만 B의 편집 이벤트 compile 정책으로 처리한다.
 기존 revision-key 중복 억제·enqueue 상한·`laya-compile` wake를 재사용하며,
@@ -37,7 +43,7 @@ onboarding never/skip은 안내만 숨기므로 이미 선택된 프로젝트를
 
 - 훅 탐색: 설치 128개, 상태 디렉터리 항목 512개, 2초.
 - 파일 읽기: 파일당 4 MiB, 파일·fd 정체성과 수정 시각을 읽기 전후에 대조한다.
-- 알림: 대기 64개, 최근 처리 256개. owner drain은 3초와 기존 enqueue 상한을 따른다.
+- 알림: 대기 64경로, 최근 처리 256경로. owner drain은 3초와 기존 enqueue 상한을 따른다.
 - 대기 큐가 가득 차면 새 개별 알림을 추가하지 않고 B의 full-scan wake는 offer한다.
   초과한 개별 compile 알림의 durable spill은 후속 범위다. 전체 원문 compile 권한으로
   확대하지 않는다.

@@ -299,6 +299,38 @@ class HookRouting(Routing):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertIn(('note.md', blob(self.file.read_bytes())), keys)
 
+    def test_return_to_a_processed_revision_sends_a_new_hint(self):
+        original = self.file.read_bytes()
+        self.index()
+        external().drain(self.decision(self.b), recheck=lambda: None)
+        self.file.write_text('intermediate revision\n')
+        self.index()
+        external().drain(self.decision(self.b), recheck=lambda: None)
+        self.file.write_bytes(original)
+        self.index()
+        self.assertIn(blob(original), [row['blob'] for row in self.inbox(self.b)['edits']])
+
+    def test_revert_while_a_newer_hint_waits_keeps_the_current_revision(self):
+        original = self.file.read_bytes()
+        self.index()
+        external().drain(self.decision(self.b), recheck=lambda: None)
+        self.file.write_text('pending revision\n')
+        self.index()
+        self.file.write_bytes(original)
+        self.index()
+        self.assertEqual(self.inbox(self.b)['edits'][-1]['blob'], blob(original))
+
+    def test_restored_source_reuses_content_without_suppressing_its_hint(self):
+        original = self.file.read_bytes()
+        self.index()
+        external().drain(self.decision(self.b), recheck=lambda: None)
+        self.file.unlink()
+        self.index()
+        external().drain(self.decision(self.b), recheck=lambda: None)
+        self.file.write_bytes(original)
+        self.index()
+        self.assertIn(blob(original), [row['blob'] for row in self.inbox(self.b)['edits']])
+
     def test_inbox_is_capped_and_overflow_still_wakes(self):
         cap = external().MAX_INBOX_EDITS
         self.assertIsInstance(cap, int)
@@ -397,12 +429,14 @@ class HookRouting(Routing):
         run('init', '-q')
         run('add', 'note.md', '.memvane/settings.json')
         run('commit', '-qm', 'init')
-        worktree = self.home / 'work' / 'beta-wt'
-        run('worktree', 'add', '-q', str(worktree))
-        self.assertEqual(routes.select_route(str(worktree), action='index')['state'], 'worktree')
-        (worktree / 'note.md').write_text('worktree edit\n')
-        self.assertEqual(self.index(self.event(worktree / 'note.md')), {})
-        self.assert_not_routed()
+        for worktree in (self.home / 'work' / 'beta-wt',
+                         self.b.project / 'worktrees' / 'nested-wt'):
+            with self.subTest(worktree=str(worktree)):
+                run('worktree', 'add', '-q', str(worktree))
+                self.assertEqual(routes.select_route(str(worktree), action='index')['state'], 'worktree')
+                (worktree / 'note.md').write_text('worktree edit\n')
+                self.assertEqual(self.index(self.event(worktree / 'note.md')), {})
+                self.assert_not_routed()
 
     def test_failed_edit_does_not_route(self):
         for failure in ({'is_error': True}, {'success': False}, {'interrupted': True}):
@@ -579,6 +613,44 @@ class OwnerDrain(Routing):
         self.drain()
         rows = self.queue_rows(self.b)
         self.assertEqual([row['source']['path'] for row in rows], ['note.md'])
+
+    def test_stale_uncompiled_hint_can_be_notified_again_when_current(self):
+        original = self.file.read_bytes()
+        self.index()
+        self.file.write_text('unobserved replacement\n')
+        self.drain()
+        self.assertEqual(self.queue_rows(self.b), [])
+        self.file.write_bytes(original)
+        self.index()
+        self.assertIn(blob(original), [row['blob'] for row in self.inbox(self.b)['edits']])
+
+    def test_disabled_compile_does_not_suppress_a_later_consented_event(self):
+        self.index()
+        self.b.settings.write_text(json.dumps(installs.legacy_settings(self.b)))
+        self.drain()
+        self.assertEqual(self.queue_rows(self.b), [])
+        self.b.settings.write_text(json.dumps({'name': 'beta', 'skipPaths': []}))
+        self.index()
+        self.assertEqual([row['path'] for row in self.inbox(self.b)['edits']], ['note.md'])
+
+    def test_new_hint_during_owner_hash_is_not_lost_or_blocked(self):
+        edits = external()
+        original_revision = edits._revision
+        self.index()
+        armed = [True]
+
+        def interleave(path):
+            revision = original_revision(path)
+            if path == self.file and armed[0]:
+                armed[0] = False
+                self.file.write_text('arrives while the owner works\n')
+                self.index()
+            return revision
+        with patch.object(edits, '_revision', side_effect=interleave):
+            self.drain()
+        self.assertEqual([row['blob'] for row in self.inbox(self.b)['edits']],
+                         [blob(self.file.read_bytes())])
+        self.assertEqual(self.queue_rows(self.b), [])
 
     def test_failed_owner_proof_keeps_the_hint_for_retry(self):
         self.index()
