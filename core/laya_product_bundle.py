@@ -17,7 +17,7 @@ import stat
 import subprocess
 import unicodedata
 
-from git_no_lazy import require_no_lazy_fetch
+from laya_package import require_no_lazy_fetch
 
 
 SCHEMA = 'laya-product-bundle-v1'
@@ -47,7 +47,6 @@ ARTIFACTS = (
     'laya_initial_build.py',
     'laya_package.py',
     'laya_product_bundle.py',
-    'git_no_lazy.py',
     'laya_install_journal.py',
 )
 MAX_FILE = 4 * 1024 * 1024

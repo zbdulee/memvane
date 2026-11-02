@@ -547,7 +547,7 @@ def host_layout(root, home=None):
 
 def _git(root, *args):
     from laya_product_bundle import GIT_PINNED, git_pinned_env
-    from git_no_lazy import require_no_lazy_fetch
+    from laya_package import require_no_lazy_fetch
     env = git_pinned_env()
     require_no_lazy_fetch(root, prefix=GIT_PINNED, env=env)
     done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), stdout=subprocess.PIPE,

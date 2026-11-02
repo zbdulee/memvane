@@ -56,7 +56,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_index_sync.py',
                  'laya_source_catalog.py', 'laya_index_capacity.py',
                  'laya_vector_capacity.py',
-                 'laya_package.py', 'laya_product_bundle.py', 'git_no_lazy.py',
+                 'laya_package.py', 'laya_product_bundle.py',
                  'laya_install_journal.py', 'laya_product_install.py',
                  'laya_host_response.py',
                  'laya_initial_build.py', 'laya_fresh_wiki_origin.py',

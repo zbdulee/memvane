@@ -19,7 +19,7 @@ import time
 import uuid
 
 from onboarding_choice import canonical
-from git_no_lazy import NO_LAZY_FETCH_PATCHES, supports_no_lazy_fetch
+from laya_package import NO_LAZY_FETCH_PATCHES, supports_no_lazy_fetch
 
 CAPTURE_SECONDS = 3.0
 MAX_SECONDS = 10.0

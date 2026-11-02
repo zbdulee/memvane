@@ -11,6 +11,6 @@ test('real Codex promisor clones prove installed bytes without lazy fetch', () =
   // Preserve measured Git evidence on both RED and GREEN.
   if (result.stdout) process.stdout.write(result.stdout);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /Ran 6 tests/);
+  assert.match(result.stderr, /Ran 8 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

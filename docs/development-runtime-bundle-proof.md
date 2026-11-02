@@ -41,6 +41,17 @@ Unreadable admission evidence refuses with
 source-commit backoff. The capture layer shares the pure version predicate;
 product proof does not call checkout capture.
 
+The shared Git helper lives in the existing required `laya_package.py` artifact.
+The engine subbundle's artifact list, manifest and ownership schemas keep their
+exact existing contracts. Inspection accepts a historical sealed bundle without
+rewriting its bytes or identity; a new bundle imports and calls the helper from
+its own packaged modules.
+
+On unsupported Git, every related config row is validated. Any true or valueless
+promisor, filter or partial-clone extension registers partial-clone evidence; a
+later false does not remove it. A malformed row still refuses when later rows
+contain false. A false-only full repository remains eligible.
+
 ## Synthetic verification
 
 The provisioning fixture covers Homebrew, npm-less candidates and explicit
@@ -51,5 +62,13 @@ to G1 through normal APIs at lock-release and review boundaries. Ordinary JS
 dependency bytes differ while node, model, module entry and native bytes match.
 The active/bound/inactive/recovery review check stops immediately after the real
 proposal; journal completion and crash recovery have separate integration tests.
+The historical compatibility fixture uses the byte-preserved packaging module
+from `463e029`, so shallow CI needs no history fetch. The current subbundle runs
+in a separate `python -B -I` process without a host source import path. The
+unsupported-Git control uses the installed Git with its no-lazy-fetch environment
+fence removed; it is not an execution of a historical Git binary. It retains the
+transport fence and restores config bytes/mode if the control's failed fetch
+writes a filter before checking product admission.
+
 These fixtures use temporary homes and synthetic files, never live indexes or
 model execution.

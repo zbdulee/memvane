@@ -249,9 +249,9 @@ class PartialUpgradeChecks(unittest.TestCase):
 
     def test_old_git_still_performs_ancestry_on_a_full_clone(self):
         self.assertFalse(list((self.full_source / '.git/objects/pack').glob('*.promisor')))
-        # Git's later override wins; a false promisor is not a partial clone.
-        self.git(self.full_source, 'config', '--add', 'remote.origin.promisor', 'true')
-        self.git(self.full_source, 'config', '--add', 'remote.origin.promisor', 'false')
+        # A false-only setting never registers a promisor remote. A later
+        # false does not cancel an earlier true (covered separately below).
+        self.git(self.full_source, 'config', '--replace-all', 'remote.origin.promisor', 'false')
         for version in ('git version 2.39.0', 'unparseable synthetic Git version'):
             with self.subTest(version=version), self.version_response(version) as commands:
                 observation = self.observe('full-version-' + version,
@@ -262,6 +262,103 @@ class PartialUpgradeChecks(unittest.TestCase):
                 self.assertEqual(result, (0, self.case.old_commit))
                 self.assertEqual(len(commands), 1)
                 self.assert_no_fetch(observation)
+
+    def test_true_then_false_still_requires_admission_before_object_commands(self):
+        # Git v2.39.0 promisor-remote.c registers on every true value and
+        # ignores false; registration is not a last-value boolean reduction.
+        # Remove the other partial markers so this counterexample is specific.
+        for key in ('extensions.partialclone', 'remote.origin.partialclonefilter'):
+            done = subprocess.run(('git', '-C', str(self.partial), 'config', '--unset-all', key),
+                                  encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  check=False, timeout=30)
+            self.assertIn(done.returncode, (0, 1, 5))
+        self.git(self.partial, 'config', '--replace-all', 'remote.origin.promisor', 'true')
+        self.git(self.partial, 'config', '--add', 'remote.origin.promisor', 'false')
+        self.assertEqual(self.git(self.partial, 'config', '--get-all',
+                                  'remote.origin.promisor').splitlines(), ['true', 'false'])
+        missing_tree = 'e' * 40
+        raw = ('tree ' + missing_tree + '\n'
+               'author Synthetic <fixture@example.invalid> 1700000000 +0000\n'
+               'committer Synthetic <fixture@example.invalid> 1700000000 +0000\n\n'
+               'synthetic missing tree for promisor registration\n')
+        commit = self.git(self.partial, 'hash-object', '-t', 'commit', '-w', '--stdin', input=raw)
+        self.git(self.partial, 'update-ref', 'HEAD', commit)
+        actual_version = self.git(self.partial, '--version')
+        self.assertIn(missing_tree, self.missing())
+        config_path = self.partial / '.git/config'
+        config_before = config_path.read_bytes()
+        config_mode = config_path.stat().st_mode & 0o777
+        related_pattern = r'^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$'
+        def related():
+            return self.git(self.partial, 'config', '--get-regexp', related_pattern).splitlines()
+        expected_related = ['remote.origin.promisor true', 'remote.origin.promisor false']
+        related_before = related()
+        self.assertEqual(related_before, expected_related)
+        # This uses the real installed Git with its no-lazy-fetch feature
+        # disabled through the environment, not an actual Git 2.39.0 binary.
+        # The protocol fence prevents even local file transport execution.
+        with mock.patch.dict(os.environ, {'GIT_ALLOW_PROTOCOL': ''}):
+            def control():
+                env = dict(os.environ)
+                env.pop('GIT_NO_LAZY_FETCH', None)
+                return subprocess.run(('git', '--no-replace-objects', '-C', str(self.partial),
+                                       'cat-file', '-p', missing_tree), env=env,
+                                      encoding='utf-8', stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, check=False, timeout=30)
+            observed = self.observe('true-false-feature-off-control', control)
+            result, error, before, after, evidence = observed
+            config_after = config_path.read_bytes()
+            related_after = related()
+            print(json.dumps({'case': 'promisor-control-config',
+                              'configBeforeHex': config_before.hex(),
+                              'configAfterHex': config_after.hex(),
+                              'relatedBefore': related_before, 'relatedAfter': related_after,
+                              'controlChangedConfig': config_after != config_before},
+                             sort_keys=True), flush=True)
+            # A failed fetch may still save its --filter in remote config.
+            # Restore the exact pre-control setup before testing admission.
+            if config_after != config_before:
+                config_path.write_bytes(config_before)
+                config_path.chmod(config_mode)
+            self.assertEqual(config_path.read_bytes(), config_before)
+            self.assertEqual(related(), expected_related)
+            print(json.dumps({'case': 'promisor-control-kind', 'actualGit': actual_version,
+                              'simulation': 'actual Git with GIT_NO_LAZY_FETCH removed; not Git 2.39.0',
+                              'returncode': result.returncode if result is not None else None},
+                             sort_keys=True), flush=True)
+            self.assertIsNone(error)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertGreater(evidence['fetchChildren'], 0, evidence)
+            self.assertEqual(evidence['transportChildren'], 0, evidence)
+            self.assertEqual(before, after)
+            operations = (
+                ('merge-base', lambda: auto._git(self.partial, 'merge-base',
+                                                self.case.old_commit, commit)),
+                ('cat-file', lambda: bundle._git(self.partial, 'cat-file', '-p', missing_tree)))
+            for name, operation in operations:
+                with self.subTest(operation=name), self.version_response('git version 2.39.0'):
+                    admission_related = related()
+                    print(json.dumps({'case': 'promisor-admission-config', 'operation': name,
+                                      'related': admission_related,
+                                      'configHex': config_path.read_bytes().hex()},
+                                     sort_keys=True), flush=True)
+                    self.assertEqual(admission_related, expected_related)
+                    self.assertEqual(config_path.read_bytes(), config_before)
+                    actual_run = subprocess.run
+                    entered = []
+                    def count_commands(argv, *args, **kwargs):
+                        if name in argv and Path(str(argv[0])).name == 'git':
+                            entered.append(tuple(argv))
+                        return actual_run(argv, *args, **kwargs)
+                    with mock.patch.object(subprocess, 'run', side_effect=count_commands):
+                        observation = self.observe('true-false-product-' + name, operation)
+                    _result, failure, *_ = observation
+                    print(json.dumps({'case': 'true-false-admission', 'operation': name,
+                                      'actualObjectCommands': len(entered)}, sort_keys=True), flush=True)
+                    self.assertIsNotNone(failure)
+                    self.assertEqual(str(failure), 'source_git_no_lazy_fetch_unsupported')
+                    self.assertEqual(entered, [])
+                    self.assert_no_fetch(observation)
 
     def test_missing_tree_refuses_offline_without_transport(self):
         self.offline()
@@ -280,6 +377,45 @@ class PartialUpgradeChecks(unittest.TestCase):
         self.assertIsInstance(error, bundle.BundleEvidenceError)
         self.assertEqual(str(error), 'source_commit_unavailable')
         self.assert_no_fetch(observation)
+
+    def test_all_registration_rows_are_validated_including_hidden_malformed_values(self):
+        config = self.full_source / '.git/config'
+        original = config.read_bytes()
+        cases = (
+            ('true-malformed-false', '\n[remote "origin"]\n'
+             'promisor = true\npromisor = malformed\npromisor = false\n',
+             'source_git_no_lazy_fetch_unavailable'),
+            ('valueless-false', '\n[remote "origin"]\npromisor\npromisor = false\n',
+             'source_git_no_lazy_fetch_unsupported'),
+            ('filter-malformed-false', '\n[remote "origin"]\npartialclonefilter = blob:none\n'
+             'promisor = malformed\npromisor = false\n',
+             'source_git_no_lazy_fetch_unavailable'),
+            ('extension-malformed-false', '\n[extensions]\npartialclone = origin\n'
+             '[remote "origin"]\npromisor = malformed\npromisor = false\n',
+             'source_git_no_lazy_fetch_unavailable'),
+            ('false-only', '\n[remote "origin"]\npromisor = false\n', None))
+        try:
+            for name, suffix, expected in cases:
+                with self.subTest(case=name):
+                    config.write_bytes(original + suffix.encode())
+                    with self.version_response('git version 2.39.0') as commands:
+                        observation = self.observe('config-rows-' + name,
+                            lambda: auto._git(self.full_source, 'merge-base',
+                                             self.case.old_commit, self.case.commit))
+                    result, error, *_ = observation
+                    print(json.dumps({'case': 'config-rows-admission-' + name,
+                                      'actualObjectCommands': len(commands)}, sort_keys=True), flush=True)
+                    if expected is None:
+                        self.assertIsNone(error)
+                        self.assertEqual(result, (0, self.case.old_commit))
+                        self.assertEqual(len(commands), 1)
+                    else:
+                        self.assertIsNotNone(error)
+                        self.assertEqual(str(error), expected)
+                        self.assertEqual(commands, [])
+                    self.assert_no_fetch(observation)
+        finally:
+            config.write_bytes(original)
 
 
 if __name__ == '__main__':
