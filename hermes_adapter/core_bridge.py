@@ -196,11 +196,16 @@ def recall_context(
         # A selected route must make proof or search failure visible to the host.
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
-            from laya_host_response import _upgrade_recall_notice, _refusal_code
-            selected_cwd = _cwd(cwd, **kwargs)
-            if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
-                                       _refusal_code(exc)) is not None:
-                return None
+            try:
+                from laya_host_response import _upgrade_recall_notice, _refusal_code
+                selected_cwd = _cwd(cwd, **kwargs)
+                if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
+                                           _refusal_code(exc)) is not None:
+                    return None
+            except Exception:
+                # A broken core cannot escape the hook through its optional
+                # upgrade diagnostic; unproved failures keep the refusal.
+                pass
             return {"context": "[memvane] selected proof or query failed; request refused"}
     return None
 

@@ -458,7 +458,12 @@ def _managed_plist(path):
                 raise CleanupBlocked('legacy_cleanup_launch_agent_changed')
         finally:
             os.close(fd)
-        value = plistlib.loads(raw)
+        try:
+            value = plistlib.loads(raw)
+        except Exception as exc:
+            # Malformed typed values can raise outside plistlib's parse-error
+            # classes. Refuse the input while retaining earlier apply progress.
+            raise CleanupBlocked('legacy_cleanup_launch_agent_unverified') from exc
         if (MARKER.encode() not in raw or not isinstance(value, dict)
                 or path.stem not in LABELS or value.get('Label') != path.stem):
             raise CleanupBlocked('legacy_cleanup_launch_agent_label_invalid')
@@ -550,6 +555,8 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
         if left:
             report['unverifiedProcesses'] = left
             report['blockers'].append('qmd_daemon_unverified')
+            failed.extend({'phase': 'process_table', 'pid': row['pid'],
+                           'reason': 'qmd_daemon_unverified'} for row in left)
     if report['blockers']:
         # A daemon that did not stop keeps its runtime and state.
         return receipt('blocked')

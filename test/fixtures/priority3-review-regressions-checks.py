@@ -7,6 +7,7 @@ operational state is used. Every hypothesis prints evidence before assertions;
 valid plist/build parsing is established independently of its refusal test.
 """
 from contextlib import ExitStack
+import builtins
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from xml.etree import ElementTree
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -366,6 +368,115 @@ class ReviewRegressions(unittest.TestCase):
              stableScope=identity['scopeId'], changedMetadata=['routeSha256', 'attestationSha256',
                                                             'proposalSha256', 'providerProposalSha256'])
         self.assertEqual(result, {'stateRoot': str(case.state), 'pluginRoot': str(case.plugin)})
+
+    def test_10_actual_date_parser_failure_keeps_the_first_cleanup_cli_receipt(self):
+        case = self.compose(CLEANUP.CleanupPartialChecks)
+        first = case.plist(CLEANUP.cleanup.LABELS[0])
+        second = case.plist(CLEANUP.cleanup.LABELS[1])
+        raw = ('<?xml version="1.0" encoding="UTF-8"?>\n<!-- ' + CLEANUP.cleanup.MARKER + ' -->\n'
+               '<plist version="1.0"><dict><key>Label</key><string>' + second.stem + '</string>'
+               '<key>ProgramArguments</key><array><string>/usr/bin/true</string></array>'
+               '<key>LastFixtureDate</key><date>invalid</date></dict></plist>').encode('utf-8')
+        second.write_bytes(raw)
+        second.chmod(0o600)
+        # XML syntax, marker and job identity are valid independently of
+        # plistlib's date conversion. Observe the actual interpreter exception.
+        xml = ElementTree.fromstring(raw)
+        self.assertEqual(xml.find('./dict/string').text, second.stem)
+        self.assertEqual(xml.find('./dict/date').text, 'invalid')
+        parser_error = None
+        try:
+            plistlib.loads(raw)
+        except Exception as exc:  # observation only; never a fabricated parser result
+            parser_error = {'class': type(exc).__module__ + '.' + type(exc).__name__,
+                            'message': str(exc)}
+        before = case.tree_bytes()
+        code, report = case.cli()
+        emit('N1-date-parser-partial-cli', python=sys.version, parserException=parser_error,
+             cliCode=code, report=report, launchctl=case.commands,
+             firstRemoved=not first.exists(), secondPreserved=second.exists(),
+             treeFilesBefore=sorted(before), treeFilesAfter=sorted(case.tree_bytes()))
+        self.assertIsNotNone(parser_error, 'the interpreter must actually reject this date counterexample')
+        self.assertFalse(first.exists(), 'first valid job must actually unload and unlink')
+        self.assertTrue(second.exists())
+        self.assertEqual(second.read_bytes(), raw)
+        case.assert_trees_preserved(before)
+        self.assertEqual((code, report.get('status'), report.get('partial')), (1, 'partial', True))
+        self.assertEqual(report.get('changesApplied'), 1)
+        self.assertIn({'plist': str(first)}, report.get('completed', []))
+        self.assertTrue(any(row.get('plist') == str(second) and row.get('reason')
+                            for row in report.get('failed', [])))
+
+    def test_11_selected_registered_hook_contains_host_response_import_failure(self):
+        helper, case = self.preview()
+        real_import, real_run = builtins.__import__, HERMES.REAL_RUN
+        selector = ROOT / 'core' / 'laya_index_host_route.py'
+        classifications, imports = [], []
+        def observed_run(argv, *args, **kwargs):
+            result = real_run(argv, *args, **kwargs)
+            if len(argv) > 1 and Path(argv[1]) == selector:
+                classifications.append({'argv': list(argv), 'state': result.stdout.strip(),
+                                        'returncode': result.returncode})
+            return result
+        def selected_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == 'laya_host_response':
+                imports.append({'name': name, 'fromlist': list(fromlist or ()),
+                                'classified': list(classifications)})
+                raise ImportError('synthetic laya_host_response import unavailable')
+            return real_import(name, globals, locals, fromlist, level)
+        escaped, answer = None, None
+        with mock.patch.object(HERMES, 'REAL_RUN', observed_run), \
+                mock.patch.object(builtins, '__import__', selected_import):
+            try:
+                answer, _calls, _preview = helper.invoke(case)
+            except ImportError as exc:
+                escaped = {'class': type(exc).__name__, 'message': str(exc)}
+        emit('N2-selected-import-containment', escaped=escaped, answer=answer,
+             classifications=classifications, importAttempts=imports)
+        self.assertTrue(classifications, 'actual selector CLI must run before the import fault')
+        self.assertEqual(classifications[0]['state'], 'preview')
+        self.assertEqual(classifications[0]['returncode'], 0)
+        self.assertTrue(imports)
+        self.assertTrue(all(item['classified'] for item in imports), 'only post-selection imports fail')
+        self.assertIsNone(escaped, 'an import error must never leave the registered hook')
+        self.assertIn('request refused', (answer or {}).get('context', ''))
+        self.assertNotIn('synthetic laya_host_response import unavailable', answer['context'])
+
+    def test_12_replacement_pid_after_confirmed_stop_keeps_partial_blocked_receipt(self):
+        case = self.compose(CLEANUP.CleanupPartialChecks)
+        case.live = True
+        plist = case.plist(CLEANUP.cleanup.LABELS[0])
+        plist_before = plist.read_bytes()
+        before = case.tree_bytes()
+        replacement = CLEANUP.PID + 1
+        observations = []
+        def process_table():
+            rows = ([(CLEANUP.PID, os.getuid(), case.command)] if not observations else
+                    [(replacement, os.getuid(), case.command)])
+            observations.append(rows)
+            return rows
+        case.ps_all = process_table
+        report = case.apply()
+        emit('N3-replacement-after-stop', report=report, processTables=observations,
+             signals=case.signals, oldStillObserved=case.ps(CLEANUP.PID),
+             replacementPid=replacement, launchctl=case.commands,
+             treeFilesBefore=sorted(before), treeFilesAfter=sorted(case.tree_bytes()))
+        self.assertGreaterEqual(len(observations), 2)
+        self.assertEqual(case.signals, [(CLEANUP.PID, int(signal.SIGTERM))])
+        self.assertIsNone(case.ps(CLEANUP.PID), 'actual _stop must confirm the old pid absent')
+        self.assertEqual(report.get('status'), 'blocked')
+        self.assertEqual(report.get('changesApplied'), 1)
+        self.assertEqual(report.get('stoppedPids'), [CLEANUP.PID])
+        daemon = next(row for row in report['daemons'] if row.get('pid') == CLEANUP.PID)
+        self.assertEqual(daemon['stop'], 'stopped')
+        self.assertTrue(any(row.get('pid') == replacement and row.get('command') == case.command
+                            for row in report.get('unverifiedProcesses', [])))
+        case.assert_trees_preserved(before)
+        self.assertEqual(plist.read_bytes(), plist_before)
+        self.assertEqual(case.commands, [])
+        self.assertIs(report.get('partial'), True)
+        self.assertTrue(any(row.get('pid') == replacement and row.get('reason')
+                            for row in report.get('failed', [])), 'replacement failure must remain explicit')
 
 
 if __name__ == '__main__':
