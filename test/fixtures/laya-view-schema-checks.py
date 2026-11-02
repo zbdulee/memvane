@@ -27,6 +27,8 @@ class ViewSchemaChecks(helpers.BlobStoreCase):
     def fts_db(self):
         db=sqlite3.connect(':memory:',cached_statements=0)
         self.addCleanup(db.close)
+        db.execute('CREATE TABLE generation_slots(ordinal INTEGER PRIMARY KEY)')
+        db.execute('INSERT INTO generation_slots VALUES(1)')
         db.execute('CREATE TABLE generations(ordinal INTEGER PRIMARY KEY,state TEXT NOT NULL)')
         db.execute("INSERT INTO generations VALUES(1,'building')")
         return db

@@ -85,7 +85,8 @@ class ConnectionGuard:
         table(ordinal)
         if self._active is not None or threading.get_ident()!=self._thread:
             v.fail('fts_build_capability_invalid')
-        rows=_execute(self._db,'SELECT state FROM generations WHERE ordinal=?',(ordinal,))
+        rows=_execute(self._db,
+            "SELECT COALESCE(g.state,'building') FROM generation_slots s LEFT JOIN generations g ON g.ordinal=s.ordinal WHERE s.ordinal=?",(ordinal,))
         if len(rows)!=1 or rows[0][0]!='building':v.fail('fts_generation_not_building')
         self._active=ordinal
         self._db.set_authorizer(self._authorize)
@@ -104,7 +105,8 @@ class ConnectionGuard:
 
 def create(db,ordinal):
     table(ordinal)
-    rows=_execute(db,'SELECT state FROM generations WHERE ordinal=?',(ordinal,))
+    rows=_execute(db,
+        "SELECT COALESCE(g.state,'building') FROM generation_slots s LEFT JOIN generations g ON g.ordinal=s.ordinal WHERE s.ordinal=?",(ordinal,))
     if len(rows)!=1 or rows[0][0]!='building':v.fail('fts_generation_not_building')
     _execute(db,_ddl(ordinal))
 
@@ -147,7 +149,7 @@ def _expected_schema(ordinal):
 def schema_rows(db):
     actual=[r for r in _schema(db) if r[1].startswith(PREFIX) or r[2].startswith(PREFIX)]
     expected=[]
-    ordinals=[r[0] for r in _execute(db,'SELECT ordinal FROM generations ORDER BY ordinal')]
+    ordinals=[r[0] for r in _execute(db,'SELECT ordinal FROM generation_slots ORDER BY ordinal')]
     if len(set(ordinals))!=len(ordinals):v.fail('fts_generation_ownership_invalid')
     for ordinal in ordinals:expected.extend(_expected_schema(ordinal))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')

@@ -35,10 +35,10 @@
 
 **Interfaces:** `laya_view_schema.tables(text,sha,uuid,integer) -> dict`, `statements() -> list[str]`; `laya_view_fts.table(ordinal)`, `create(db,ordinal)`, `schema_rows(db)`, `assert_rows(db,ordinal,expected_rows,deadline=None)`, `storage_digest(db,ordinal,deadline=None)`, `proof(db,ordinal,rows,deadline=None)`; `ConnectionGuard(db).building(ordinal)` owns one commit/rollback scope through FTS sync, never nests. All candidate rw connections install its authorizer before their first SQL with `cached_statements=0`; no shadow triggers. schema2 all fixed tables retain exact manifest, dynamic FTS+shadows only for registered ordinal with exact expected schema.
 
-- [ ] Write schema RED cases for missing view module, schema2/v1 refusal unchanged, generation state/PK/FK/noREPLACE/sealed mutation, registered FTS ordinal ownership and bad DDL/extra/missing/shadow mutation. Synthetic SQLite capability check pins legal FTS shadow guards before relying on them.
-- [ ] Run new guarded Node suite on base; preserve expected failures before product files exist.
-- [ ] Implement schema2 and immutable generations/membership/sources/card_sources/seals; views unique(worktree,branch), head epoch/CAS structural guards, building→prepared→published transitions only. FTS ordinal is allocated by SQLite. Prepared/published FTS/shadows reject mutation with enforced supported mechanism; verifier checks exact rows/digest.
-- [ ] Run new schema + PR2 suites + PR1 no-live + existing CJK parity; commit independently testable schema/FTS deliverable.
+- [x] Write schema RED cases for missing view module, schema2/v1 refusal unchanged, generation state/PK/FK/noREPLACE/sealed mutation, registered FTS ordinal ownership and bad DDL/extra/missing/shadow mutation. Synthetic SQLite capability check pins legal FTS shadow guards before relying on them.
+- [x] Run new guarded Node suite on base; preserve expected failures before product files exist.
+- [x] Implement schema2 and immutable generations/membership/sources/card_sources/seals; views unique(worktree,branch), head epoch/CAS structural guards, building→prepared→published transitions only. FTS ordinal is allocated by SQLite. Prepared/published FTS/shadows reject mutation with enforced supported mechanism; verifier checks exact rows/digest.
+- [x] Run new schema + PR2 suites + PR1 no-live + existing CJK parity; commit independently testable schema/FTS deliverable.
 
 ## Task2: capture-bound manifests, prepare and publish
 
@@ -46,11 +46,11 @@
 
 **Interfaces:** `ViewStore(BlobStore)`, `capture_view(worktree_id) -> handle`, `head(handle) -> {view_id,gen_id,epoch,incarnation}`, `prepare_generation(handle, manifest, *, expected_head) -> gen_id`, `publish_generation(handle, gen_id, *, expected_head) -> head`. Handles are store-issued frozen objects/registry-bound, never arbitrary caller view IDs. `manifest = {scan_id,policy_digest,revocation_epoch,complete,sources,members}`; source `{path,fingerprint_id,presence}`, member `{path,blob_sha,display_title,trust_digest}`. All keys exact; complete must be true. Eligibility is derived, never caller-supplied.
 
-- [ ] RED: source/worktree/branch/path/scan binding mismatch; two views same blob/different trust; zero/held/legacy/stale/skipped source; malformed fields/bounds; checkout/settings mutation; same-view stale base and ABA; other-view publication unaffected; building/prepare/publish injected fault rollback; repeated publish exact replay.
-- [ ] Implement bounded manifest normalization. Each source fingerprint belongs to handle worktree/branch/path/scan; present observed source head matches capture, held remains held. Attestation policy/blob and ordered original fingerprints/spans must agree. Historical card_sources keep their original metadata; current-source absence/change/unknown causes ineligible. Rebound must be explicit PR2 evidence, never implicit.
-- [ ] Prepare uses two bounded write transactions: first persist complete building members/source refs/FTS under the generation-specific capability through commit/FTS sync; then read stable physical FTS commitment, compute expected roots before assigning final `g-<uuid>-b<binding>` identity, verify manifest/seal/captured binding and commit prepared state. Unsealed staging rows never become reader heads; an interrupted build leaves the old head intact. Generation identity allocation must account for stable post-commit FTS proof without rewriting sealed metadata. No external scan/model work inside SQLite writer transaction.
-- [ ] Publish revalidates original handle/capture/settings and seal then same-view expected(head,epoch,incarnation) CAS/state transition/head increment atomically. Other views do not affect CAS; published rows remain immutable. Busy uses existing2second bounded refusal/retry code, no arbitrary kills.
-- [ ] Focused schema/generation/PR2/checkout suites pass; commit.
+- [x] RED: source/worktree/branch/path/scan binding mismatch; two views same blob/different trust; zero/held/legacy/stale/skipped source; malformed fields/bounds; checkout/settings mutation; same-view stale base and ABA; other-view publication unaffected; building/prepare/publish injected fault rollback; repeated publish exact replay.
+- [x] Implement bounded manifest normalization. Each source fingerprint belongs to handle worktree/branch/path/scan; present observed source head matches capture, held remains held. Attestation policy/blob and ordered original fingerprints/spans must agree. Historical card_sources keep their original metadata; current-source absence/change/unknown causes ineligible. Rebound must be explicit PR2 evidence, never implicit.
+- [x] Prepare uses two bounded write transactions: first persist complete building members/source refs/FTS under the generation-specific capability through commit/FTS sync; then read stable physical FTS commitment, compute expected roots before assigning final `g-<uuid>-b<binding>` identity, verify manifest/seal/captured binding and commit prepared state. Unsealed staging rows never become reader heads; an interrupted build leaves the old head intact. Generation identity allocation must account for stable post-commit FTS proof without rewriting sealed metadata. No external scan/model work inside SQLite writer transaction.
+- [x] Publish revalidates original handle/capture/settings and seal then same-view expected(head,epoch,incarnation) CAS/state transition/head increment atomically. Other views do not affect CAS; published rows remain immutable. Busy uses existing2second bounded refusal/retry code, no arbitrary kills.
+- [x] Focused schema/generation/PR2/checkout suites pass; commit.
 
 ## Task3: pinned lexical reader, docs and release
 
@@ -64,3 +64,15 @@
 - [ ] Document current candidate API/proof limits; preserve user docs interface and protected3. Version7 manifests to next main patch.
 - [ ] Final focused/full and exact Git packaging, independent detached Codex Astra high read-only PR-head review; reproduce/fix concrete findings and narrow re-review under original handoff. Merge commit then both hosts install before upgrade loop. Claude9/Codex9 proof18/recall18/SE+rccar selected/no fallback/new Claude service/embed/no_pycache, exact-head CI22/24/26 allsuccess.
 - [ ] REPORT/PROGRESS-CODEX/rollout ledger evidence complete; continue to PR4 under the active PR10 goal.
+
+### Task2 slot and handle contract
+
+`ViewHandle` is a frozen dataclass with `view_id,worktree_id,branch_key,head_oid,checkout_digest,policy_digest,incarnation,token`. A handle registry binds the exact issued object to original capture/settings/binding evidence. `head` has exactly `view_id,gen_id,epoch,incarnation` (none/0 before first publish). Non-Git observed sources with unknown tracked state can satisfy candidate eligibility; they never gain deletion authority.
+
+`generation_slots` reserves SQLite ordinal/build UUID/view/metadata-only stage JSON+digest. Stage1 inserts the slot and generation-owned FTS under capability through commit; no generation row exists yet. Stage2 computes stable physical/lexical proof, assigns final gen ID, inserts full generation/membership/source/card-source/seal rows and prepares atomically. State is COALESCE(generation.state,building) for a registered slot. Interrupted slots are unservable staging, no implicit GC. Slot manifest contains no source or wiki bodies, only hashes/paths/titles/receipts and file/capture metadata.
+
+Present source members require same worktree/branch/path/current scan/current head; held missing can retain last observation. All historical card source refs preserve original SHA/span/IDs; same-view fresh observations with same path/SHA/length do not rewrite provenance. Non-null foreign-worktree/branch attestations are refused; caller may supply null trust for unverified membership. Zero/held/stale/skipped/legacy-unbound evidence stays ineligible. Candidate result does not imply compiler truth/owner authority.
+
+### Task2 verified boundary rules
+
+Handle fields are compared with original registry capture, not merely frozen-object identity. A bounded fresh Git/settings capture is checked inside each final write transaction before commit/CAS; stat/settings file observations are checked there too. This is a verified observation point, not a filesystem/DB atomic snapshot. Source scans/models remain outside writer locks. Non-Git observed/unknown tracked metadata remains searchable as candidate evidence only.

@@ -5,8 +5,13 @@ def tables(text,sha,uuid,integer):
       'views':f'''CREATE TABLE views(
         {sha('view_id')} PRIMARY KEY, {uuid('worktree_id')} REFERENCES worktrees(worktree_id),
         {text('branch_key')}, UNIQUE(worktree_id,branch_key))''',
-      'generations':f'''CREATE TABLE generations(
+      'generation_slots':f'''CREATE TABLE generation_slots(
         ordinal INTEGER PRIMARY KEY AUTOINCREMENT CHECK(ordinal>0),
+        {uuid('build_id')} UNIQUE, {sha('view_id')} REFERENCES views(view_id),
+        {sha('manifest_digest')}, {text('stage_json')} CHECK(json_valid(stage_json)),
+        {integer('created_ns')})''',
+      'generations':f'''CREATE TABLE generations(
+        ordinal INTEGER PRIMARY KEY REFERENCES generation_slots(ordinal) CHECK(ordinal>0),
         {text('gen_id')} UNIQUE CHECK(length(gen_id)=100 AND substr(gen_id,1,2)='g-'
           AND substr(gen_id,35,2)='-b' AND substr(gen_id,3,32) NOT GLOB '*[^0-9a-f]*'
           AND substr(gen_id,37)=binding_digest),
@@ -45,7 +50,7 @@ def tables(text,sha,uuid,integer):
 
 
 def immutable_keys():
-    return {'views':(('view_id',),('worktree_id','branch_key')),
+    return {'generation_slots':(('ordinal',),('build_id',)), 'views':(('view_id',),('worktree_id','branch_key')),
             'wiki_members':(('gen_id','path'),), 'source_members':(('gen_id','path'),),
             'card_sources':(('gen_id','wiki_path','ordinal'),),
             'generation_seals':(('gen_id',),)}
