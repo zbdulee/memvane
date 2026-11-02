@@ -19,6 +19,7 @@ from laya_blob_store import (BlobStore, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
 import laya_view_fts as view_fts
 import laya_view_values as vals
+from laya_view_reader import ReaderMixin
 
 SETTINGS_LIMIT = 1024 * 1024
 
@@ -99,14 +100,20 @@ def _current_capture(saved, repository, policy, expected):
         v.fail('checkout_changed')
 
 
-class ViewStore(BlobStore):
+class ViewStore(ReaderMixin, BlobStore):
+    _handle_type = ViewHandle
+
     @classmethod
     def open(cls, path, *, repository, scope_id):
         store = super().open(path, repository=repository, scope_id=scope_id)
         store._handles = {}
+        store._pins = {}
+        store._closed = False
         return store
 
     def close(self):
+        self._closed = True
+        self._pins = {}
         self._handles = {}
         super().close()
 
@@ -208,9 +215,18 @@ class ViewStore(BlobStore):
             if not vals.skipped(source['path'], skips):
                 current[source['path']] = (source, fp)
         members, cards, bodies, total = [], [], {}, 0
+        # These caches live only within this derivation/read snapshot. Shared
+        # bytes never share trust unless the exact attestation also matches.
+        verified_bodies, verified_cards = {}, {}
         for member in manifest['members']:
-            body = self._blob(member['blob_sha'])
-            eligible, refs = self._card(handle, member, current)
+            blob = member['blob_sha']
+            if blob not in verified_bodies:
+                verified_bodies[blob] = self._blob(blob)
+            body = verified_bodies[blob]
+            key = (blob, member['trust_digest'])
+            if key not in verified_cards:
+                verified_cards[key] = self._card(handle, member, current)
+            eligible, refs = verified_cards[key]
             if vals.skipped(member['path'], skips):
                 continue
             total += len(body.encode('utf8'))
@@ -225,9 +241,9 @@ class ViewStore(BlobStore):
                     cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])), bodies=bodies)
 
     @staticmethod
-    def _roots(db, ordinal, plan, rows):
-        storage = view_fts.storage_digest(db, ordinal)
-        lexical = view_fts.proof(db, ordinal, rows)
+    def _roots(db, ordinal, plan, rows, deadline=None):
+        storage = view_fts.storage_digest(db, ordinal, deadline)
+        lexical = view_fts.proof(db, ordinal, rows, deadline)
         return vals.roots(plan['members'], plan['sources'], plan['cards'], lexical, storage)
 
     def prepare_generation(self, handle, manifest, *, expected_head):
@@ -241,7 +257,7 @@ class ViewStore(BlobStore):
                 v.fail('view_head_conflict')
             plan = self._derive(handle, manifest, skips)
         files = _wiki_files(saved, plan['members'])
-        rows = vals.fts_rows(plan['bodies'])
+        rows = vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']})
         build_id = uuid.uuid4().hex
         stage = vals.stage(build_id, self._incarnation, handle, saved, base, manifest, skips, files)
         stage_json = v.canonical(stage)
@@ -269,32 +285,34 @@ class ViewStore(BlobStore):
         # Stage2: stable post-commit FTS proof and all roots before identity.
         self._observe(entry)
         with self._session(write=True) as db:
-            if self._head(db, handle) != base:
-                v.fail('view_head_conflict')
-            _live(db, saved, files)
-            slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (ordinal,)).fetchone()
-            if (slot is None or slot['build_id'] != build_id or slot['view_id'] != handle.view_id
-                    or slot['stage_json'] != stage_json
-                    or db.execute('SELECT 1 FROM generations WHERE ordinal=?', (ordinal,)).fetchone()):
-                v.fail('generation_slot_invalid')
-            roots = self._roots(db, ordinal, plan, rows)
-            binding = vals.binding(stage, ordinal, entry['capture'], roots)
-            fields = vals.generation_fields(stage, ordinal, binding, entry['capture'])
-            gen_id, now = fields['gen_id'], time.time_ns()
-            _insert(db, 'generations', dict(fields, state='building', created_ns=now))
-            for member in plan['members']:
-                _insert(db, 'wiki_members', dict(member, gen_id=gen_id))
-            for source in plan['sources']:
-                _insert(db, 'source_members', dict(source, gen_id=gen_id))
-            for card in plan['cards']:
-                _insert(db, 'card_sources', dict(gen_id=gen_id, wiki_path=card['wiki_path'], ordinal=card['ordinal'],
-                        fingerprint_id=card['fingerprint_id'], spans_json=v.canonical(card['spans'])))
-            _insert(db, 'generation_seals', dict(roots, gen_id=gen_id, binding_digest=binding, sealed_ns=now))
-            if db.execute("UPDATE generations SET state='prepared' WHERE gen_id=? AND state='building'",
-                          (gen_id,)).rowcount != 1:
-                v.fail('generation_slot_invalid')
-            _current_capture(saved, self._repository, self._policy, entry['capture'])
-            _live(db, saved, files)
+            with self._fts_guard.building(ordinal):
+                view_fts.verify_index(db, ordinal)
+                if self._head(db, handle) != base:
+                    v.fail('view_head_conflict')
+                _live(db, saved, files)
+                slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (ordinal,)).fetchone()
+                if (slot is None or slot['build_id'] != build_id or slot['view_id'] != handle.view_id
+                        or slot['stage_json'] != stage_json
+                        or db.execute('SELECT 1 FROM generations WHERE ordinal=?', (ordinal,)).fetchone()):
+                    v.fail('generation_slot_invalid')
+                roots = self._roots(db, ordinal, plan, rows)
+                binding = vals.binding(stage, ordinal, entry['capture'], roots)
+                fields = vals.generation_fields(stage, ordinal, binding, entry['capture'])
+                gen_id, now = fields['gen_id'], time.time_ns()
+                _insert(db, 'generations', dict(fields, state='building', created_ns=now))
+                for member in plan['members']:
+                    _insert(db, 'wiki_members', dict(member, gen_id=gen_id))
+                for source in plan['sources']:
+                    _insert(db, 'source_members', dict(source, gen_id=gen_id))
+                for card in plan['cards']:
+                    _insert(db, 'card_sources', dict(gen_id=gen_id, wiki_path=card['wiki_path'], ordinal=card['ordinal'],
+                            fingerprint_id=card['fingerprint_id'], spans_json=v.canonical(card['spans'])))
+                _insert(db, 'generation_seals', dict(roots, gen_id=gen_id, binding_digest=binding, sealed_ns=now))
+                if db.execute("UPDATE generations SET state='prepared' WHERE gen_id=? AND state='building'",
+                              (gen_id,)).rowcount != 1:
+                    v.fail('generation_slot_invalid')
+                _current_capture(saved, self._repository, self._policy, entry['capture'])
+                _live(db, saved, files)
         return gen_id
 
     def _stored(self, db, gen_id):
@@ -308,7 +326,7 @@ class ViewStore(BlobStore):
             'SELECT * FROM card_sources WHERE gen_id=? ORDER BY wiki_path,ordinal', (gen_id,))]
         return members, sources, cards
 
-    def _verify_generation(self, db, handle, entry, saved, generation):
+    def _verify_generation(self, db, handle, entry, saved, generation, deadline=None):
         """Recompute rows, FTS proof, roots and binding from the original slot."""
         slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (generation['ordinal'],)).fetchone()
         if slot is None or slot['view_id'] != generation['view_id']:
@@ -318,10 +336,13 @@ class ViewStore(BlobStore):
                 or stage['worktree_binding'] != saved['binding_digest']
                 or stage['settings_sha'] != saved['settings_sha']):
             v.fail('generation_binding_mismatch')
+        seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()
+        if (seal is None or view_fts.storage_digest(db, generation['ordinal'], deadline) != seal['fts_storage_digest']):
+            v.fail('fts_storage_mismatch')
         plan = self._derive(handle, stage['manifest'], stage['skip_paths'])
         if self._stored(db, generation['gen_id']) != (plan['members'], plan['sources'], plan['cards']):
             v.fail('generation_rows_mismatch')
-        roots = self._roots(db, generation['ordinal'], plan, vals.fts_rows(plan['bodies']))
+        roots = self._roots(db, generation['ordinal'], plan, vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}), deadline)
         binding = vals.binding(stage, generation['ordinal'], entry['capture'], roots)
         fields = vals.generation_fields(stage, generation['ordinal'], binding, entry['capture'])
         seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()

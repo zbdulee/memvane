@@ -10,6 +10,6 @@ test('inactive view candidate schema and FTS seals reject mutation',()=>{
  try {
   const r=spawnSync('python3',['-B','test/fixtures/laya-view-schema-checks.py'],{encoding:'utf8',timeout:120000,env:{...process.env,HOME:home,PYTHONDONTWRITEBYTECODE:'1'}});
   assert.equal(r.status,0,r.status===null ? JSON.stringify({signal:r.signal,error:r.error?.message}) : r.stdout+r.stderr);
-  assert.match(r.stderr,/Ran 7 tests/);
+  assert.match(r.stderr,/Ran 8 tests/);
  } finally {removeTemp(home);}
 });

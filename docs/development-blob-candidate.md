@@ -2,8 +2,11 @@
 
 `laya_blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
 recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다.
-형식은 `memvane-git-blob-candidate-v1`, application id는 `0x4d564231`, schema는 `1`이다.
-운영 hook·route·v6 reader와의 연결은 없으며 generation·FTS·migration·GC API는 제공하지 않는다.
+형식은 `memvane-git-blob-candidate-v2`, application id는 `0x4d564231`, schema는 `2`다.
+`BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
+view generation·FTS·lexical reader를 제공한다. 세대 API는
+[`development-view-candidate.md`](development-view-candidate.md)에 있다.
+운영 hook·route·v6 reader와의 연결 및 migration·activation·GC API는 없다.
 
 ## 소유권과 위키 소속
 
@@ -31,7 +34,7 @@ admission 이력은 view membership이나 다른 checkout의 신뢰 승계를 �
 
 DB의 leaf directory는 현재 UID의 `0700`, DB는 `0600`인 single-link 정규 파일이다.
 경로 구성 요소의 symlink와 unsafe sidecar를 거절한다. 생성은 no-clobber이고
-기존 v6/알 수 없는 파일은 읽기 전용 header 확인에서 거절한다.
+candidate v1·기존 v6·알 수 없는 파일은 읽기 전용 header 확인에서 바이트 변경 없이 거절한다.
 열린 handle은 DB 파일 정체성·incarnation·scope·settings policy가 바뀌면 실패한다.
 
 ## 내부 API
@@ -102,7 +105,8 @@ receipt는 version·verdict·result digest·prior trust만 허용하며 raw body
 SQLite는 PK/FK·형식·타입·불변성·no-REPLACE 구조를 보호하며 API와 `verify`가
 hash·완전성·참조 의미를 검증한다. 내부 connection과 직접 SQL 쓰기는 지원 인터페이스가 아니다.
 **trust digest와 candidate 검증 성공은 compiler 실행 사실·원문 일치·운영 권한의 증명이 아니다.**
-운영 owner의 실제 증명·policy·publication 검증은 후속 통합이 소유한다.
+candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 실제 증명·policy·
+publication 권한 검증은 후속 통합이 소유한다.
 
 ## 유한 입력
 

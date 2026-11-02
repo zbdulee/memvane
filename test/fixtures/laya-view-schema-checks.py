@@ -141,4 +141,31 @@ class ViewSchemaChecks(helpers.BlobStoreCase):
         with self.assertRaises(self.Error):self.fts.schema_rows(db)
 
 
+    def test_08_fts_integrity_check_is_stable_and_detects_hidden_postings(self):
+        path=self.state/'fts-integrity.db'
+        db=sqlite3.connect(path,cached_statements=0);self.addCleanup(db.close)
+        db.execute('CREATE TABLE generation_slots(ordinal INTEGER PRIMARY KEY)')
+        db.execute('INSERT INTO generation_slots VALUES(1)')
+        db.execute('CREATE TABLE generations(ordinal INTEGER PRIMARY KEY,state TEXT NOT NULL)')
+        db.execute("INSERT INTO generations VALUES(1,'building')")
+        guard=self.fts.ConnectionGuard(db)
+        rows=[dict(filepath='a.md',title='A',body='hello world',path_key='a.md')]
+        with guard.building(1):self.fts.create(db,1);self.fts.populate(db,1,rows)
+        before=self.fts.storage_digest(db,1)
+        with guard.building(1):
+            self.fts.verify_index(db,1)
+            self.assertEqual(self.fts.storage_digest(db,1),before)
+        self.assertEqual(self.fts.storage_digest(db,1),before)
+        # A separate SQL writer is the actual inter-phase tamper boundary.
+        # Direct same-connection shadow writes bypass FTS's private caches and
+        # are never an API operation (opaque post-seal hashes still catch them).
+        with sqlite3.connect(path) as other:
+            row=other.execute('SELECT id,block FROM wiki_fts_1_data ORDER BY id DESC LIMIT 1').fetchone()
+            # Remove a referenced segment, rather than flip a byte that may
+            # merely change an allowed encoding detail of a tiny FTS record.
+            other.execute('DELETE FROM wiki_fts_1_data WHERE id=?',(row[0],))
+        with self.assertRaises(self.Error):
+            with guard.building(1):self.fts.verify_index(db,1)
+
+
 if __name__=='__main__':unittest.main()

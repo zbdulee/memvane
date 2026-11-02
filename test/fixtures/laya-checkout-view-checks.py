@@ -824,7 +824,7 @@ class NoActivation(CheckoutCase):
         candidate_modules = {'laya_checkout_view', 'laya_blob_store',
                              'laya_blob_schema', 'laya_blob_values',
                              'laya_view_schema', 'laya_view_fts',
-                             'laya_view_values', 'laya_view_store'}
+                             'laya_view_values', 'laya_view_store', 'laya_view_reader'}
         users = [str(path.relative_to(REPO))
                  for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
                               *(REPO / 'hermes_adapter').rglob('*.py')]

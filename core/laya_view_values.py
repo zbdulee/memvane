@@ -127,10 +127,10 @@ def skipped(path, patterns):
     return False
 
 
-def fts_rows(bodies):
-    """v6 parity rows: CJK-spaced path/title/body with the raw path key."""
+def fts_rows(bodies, titles=None):
+    """CJK-spaced view path/title/body; identical inputs retain v6 ranking."""
     return [dict(filepath=legacy._qmd_fts_text(path),
-                 title=legacy._qmd_fts_text(legacy._qmd_title(body, path)),
+                 title=legacy._qmd_fts_text(titles[path] if titles is not None else legacy._qmd_title(body, path)),
                  body=legacy._qmd_fts_text(body), path_key=path)
             for path, body in sorted(bodies.items())]
 

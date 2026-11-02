@@ -10,6 +10,6 @@ test('capture-bound view generations seal provenance and publish with epoch CAS'
  try {
   const r=spawnSync('python3',['-B','test/fixtures/laya-view-generations-checks.py'],{encoding:'utf8',timeout:240000,env:{...process.env,HOME:home,PYTHONDONTWRITEBYTECODE:'1'}});
   assert.equal(r.status,0,r.status===null?JSON.stringify({signal:r.signal,error:r.error?.message}):r.stdout+r.stderr);
-  assert.match(r.stderr,/Ran 21 tests/);
+  assert.match(r.stderr,/Ran 22 tests/);
  } finally {removeTemp(home);}
 });

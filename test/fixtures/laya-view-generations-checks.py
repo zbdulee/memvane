@@ -279,4 +279,22 @@ class GenerationChecks(GenerationCase):
         self.assertEqual(store.counts(),before)
 
 
+    def test_22_tampered_postings_between_build_and_seal_are_rejected(self):
+        store,_,h=self.seeded();m=self.snapshot(store,h);base=store.head(h)
+        original=store._observe;observed=[]
+        def observe(entry):
+            saved=original(entry);observed.append(True)
+            if len(observed)==3:
+                with sqlite3.connect(self.db) as db:
+                    ordinal=db.execute('SELECT MAX(ordinal) FROM generation_slots').fetchone()[0]
+                    name='wiki_fts_'+str(ordinal)+'_data'
+                    row=db.execute('SELECT id,block FROM '+name+' ORDER BY id DESC LIMIT 1').fetchone()
+                    db.execute('UPDATE '+name+' SET block=? WHERE id=?',(row[1][:-1]+bytes([row[1][-1]^1]),row[0]))
+            return saved
+        with mock.patch.object(store,'_observe',side_effect=observe):
+            self.refused(store.prepare_generation,h,m,expected_head=base)
+        self.assertEqual(store.counts()['generations'],0)
+        self.assertIsNone(store.head(h)['gen_id'])
+
+
 if __name__=='__main__':unittest.main()

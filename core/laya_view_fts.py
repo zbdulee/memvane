@@ -215,6 +215,16 @@ def storage_digest(db,ordinal,deadline=None):
     return h.hexdigest()
 
 
+
+def verify_index(db,ordinal):
+    """Validate FTS postings against internal content before sealing a build."""
+    name=table(ordinal)
+    try:
+        _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
+    except sqlite3.Error:
+        v.fail('fts_integrity_failed')
+
+
 def proof(db,ordinal,rows,deadline=None):
     physical=storage_digest(db,ordinal,deadline)
     assert_rows(db,ordinal,rows,deadline)
