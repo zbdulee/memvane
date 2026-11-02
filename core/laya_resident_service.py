@@ -20,6 +20,7 @@ the reviewed provider/worker bytes unchanged. Hooks never wait for a model.
 from __future__ import annotations
 
 from contextlib import suppress
+import errno
 import fcntl
 import hashlib
 import json
@@ -1648,6 +1649,10 @@ class Service:
             if code in ('provider_admission_deferred', 'laya_service_resource_deferred') or \
                     type(exc).__name__ == 'ResourceDeferred':
                 reason = 'resource_deferred'
+            elif code in ('provider_lock_invalid', 'provider_socket_invalid',
+                          'provider_socket_changed') or (
+                    isinstance(exc, OSError) and exc.errno == errno.ELOOP):
+                reason = 'identity_invalid'
             elif code in ('provider_artifact_hash_mismatch', 'provider_model_not_gguf',
                           'provider_attestation_invalid', 'provider_closure_unapproved',
                           'provider_recipe_mismatch'):
@@ -1671,7 +1676,7 @@ class Service:
             else:
                 worker.failures += 1
                 worker.failures = min(_MAX_FAILURES, worker.failures)
-                if reason == 'attestation_invalid':
+                if reason in ('attestation_invalid', 'identity_invalid'):
                     worker.state = 'terminal'
                 elif worker.failures >= _MAX_FAILURES:
                     worker.state = 'cooldown'

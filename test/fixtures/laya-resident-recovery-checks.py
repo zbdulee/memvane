@@ -62,6 +62,64 @@ class RecoveryChecks(unittest.TestCase):
                         owner.ensure_running('/synthetic/project', self.manifest)
                 adopt.assert_not_called()
 
+    def test_real_worker_path_security_failures_are_terminal(self):
+        import laya_local_embed_service as local
+        class SyntheticArtifacts:
+            def __init__(self, manifest):
+                self.manifest = manifest
+            def _verify_artifacts(self):
+                pass  # no model or real artifact files in this fixture
+        for kind in ('public_lock', 'regular_socket', 'symlink_lock'):
+            with self.subTest(kind=kind):
+                base = self.base / kind
+                base.mkdir(mode=0o700)
+                root = base / 'service'
+                root.mkdir(mode=0o700)
+                project = str(base / 'project')
+                Path(project).mkdir(mode=0o700)
+                manifest = {**self.manifest, 'serviceSocketPath': str(base / 'install.sock')}
+                proof = {'providerManifest': manifest}
+                decision = {'projectRoot': project}
+                service = svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
+                                      prove=lambda _p: (decision, proof, 'selected'),
+                                      attest=lambda *_a: None, admit=lambda: True,
+                                      retire=lambda *_a: None)
+                svc.register(project, root=root)
+                key = svc._worker_key(manifest)
+                worker = svc.Worker(key, str(base / 'worker.sock'))
+                service.workers[key] = worker
+                lock = Path(worker.socket_path + '.lock')
+                if kind == 'public_lock':
+                    lock.write_text('unsafe lock')
+                    lock.chmod(0o644)
+                elif kind == 'regular_socket':
+                    Path(worker.socket_path).write_text('not a socket')
+                else:
+                    target = base / 'preserved'
+                    target.write_text('must not be opened through a link')
+                    lock.symlink_to(target)
+                with patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts), \
+                     patch.object(local.subprocess, 'Popen',
+                                  side_effect=AssertionError('no model may start')) as spawn:
+                    for now in (1000, 1011, 1032):
+                        with patch.object(svc.time, 'monotonic', return_value=now), \
+                             patch.object(owner.time, 'time', return_value=now):
+                            service._load_attested(project, decision, proof, 'selected',
+                                                   manifest, worker, 'seal')
+                    row = owner.read_owner_state(manifest)
+                    self.assertTrue(row['terminal'], row)
+                    self.assertEqual((row['reason'], worker.state),
+                                     ('identity_invalid', 'terminal'))
+                    probe, clock = self.cold(2000)
+                    with probe, clock, self.assertRaisesRegex(IndexContractError,
+                                                              'provider_start_failed'):
+                        owner.ensure_running(project, manifest)
+                spawn.assert_not_called()
+                if kind == 'regular_socket':
+                    self.assertEqual(Path(worker.socket_path).read_text(), 'not a socket')
+                elif kind == 'symlink_lock':
+                    self.assertEqual(target.read_text(), 'must not be opened through a link')
+
     def test_recall_preserves_lexical_during_cooldown_and_wakes_after_it(self):
         import laya_host_response as host
         import laya_install_journal as journal
