@@ -25,7 +25,9 @@ Sources:
 
 * an install's sealed provider attestation: the exact node, module entry,
   native closure and model files, each verified against the attested sha256
-  (``ensure_for_attestation``, run by the bundle upgrade worker);
+  (``ensure_for_attestation``). The bundle upgrade worker requires the full
+  runtime file digest before calling ensure: an external attestation must
+  pin it explicitly; an owned Laya generation can supply its sealed digest;
 * a new machine (``provision_new``, owner approved): Node from PATH or a
   version manager (supported majors only), ``npm ci --ignore-scripts`` of the
   pinned lock in ``locks/laya-embed-runtime``, and the GGUF from a local file
@@ -770,7 +772,12 @@ def attested_files(attestation):
 
 
 def ensure_for_attestation(attestation, home=None):
-    """The active runtime when it already holds the attested bytes; else copy them."""
+    """Select matching attested bytes, reactivating or provisioning as needed.
+
+    The automatic bundle worker requires a full-file digest before this call.
+    Owned generations are reverified; external paths can supply a copy when
+    its resulting file set reproduces the attestation's explicit digest.
+    """
     manifest = attestation.get('providerManifest') if isinstance(attestation, dict) else None
     closure = attestation.get('dependencyClosure') if isinstance(attestation, dict) else None
     owned = _owned_generation(manifest, home)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -57,6 +58,7 @@ VERIFY_ENGINE_COOLDOWN = "verify-engine-cooldown.json"
 DEDUP_JUDGE_COOLDOWN = "dedup-judge-cooldown"
 DEDUP_JUDGE_ENGINE_COOLDOWN = "dedup-judge-engine-cooldown.json"
 CARD_WRITE_LOCK = ".card-write.lock"
+COMPILE_RUN_LOCK = ".compile-run.lock"
 
 
 def compile_rel(root=None) -> str:
@@ -112,8 +114,66 @@ def ledger(root, name: str):
     return path
 
 
+def _lock_base(root, *, folder=None, create=False):
+    """An existing project folder's real compile directory, without aliases."""
+    root = Path(root).resolve(strict=True)
+    directory = project_dir.folder(root) if folder is None else Path(folder)
+    if directory not in tuple(root / name for name in project_dir.NAMES):
+        raise OSError('unsafe compile project folder')
+    if folder is None and create and not os.path.lexists(directory):
+        directory.mkdir(mode=0o700)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o022 or directory.resolve(strict=True) != directory):
+        raise OSError('unsafe compile project folder')
+    base = directory / 'compile'
+    if create:
+        base.mkdir(mode=0o700, exist_ok=True)
+    info = base.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o022 or base.resolve(strict=True) != base):
+        raise OSError('unsafe compile directory for lock')
+    return base
+
+
+def _named_lock(fd, path):
+    opened, named = os.fstat(fd), path.lstat()
+    if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+            or opened.st_nlink != 1 or opened.st_mode & 0o077
+            or not stat.S_ISREG(named.st_mode)
+            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+        raise OSError('unsafe or changed compile lock')
+
+
+def validate_compile_run_lock(root, fd):
+    """The acquired FD still names this project's active compile run lock."""
+    base = _lock_base(root)
+    _named_lock(fd, base / COMPILE_RUN_LOCK)
+    return base
+
+
+def try_compile_run_lock(root, *, folder=None):
+    """Nonblocking run exclusion, optionally on a mover's explicit folder."""
+    base = _lock_base(root, folder=folder, create=True)
+    path = base / COMPILE_RUN_LOCK
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        _named_lock(fd, path)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _named_lock(fd, path)
+        if folder is None:
+            validate_compile_run_lock(root, fd)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 @contextmanager
-def card_write_lock(root):
+def card_write_lock(root, *, folder=None):
     """Serialize project card read-decision-write sections across all writers.
 
     The queue/kick locks guard their own ledgers, not wiki card bytes.  This
@@ -121,9 +181,7 @@ def card_write_lock(root):
     and one-shot migration cannot interleave a stale read with a later replace
     or unlink.  ``O_NOFOLLOW`` closes a lock-file symlink escape before flock.
     """
-    base = compile_dir(Path(root).resolve(), create=True)
-    if base is None:
-        raise OSError("unsafe compile directory for card lock")
+    base = _lock_base(root, folder=folder, create=True)
     path = base / CARD_WRITE_LOCK
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
@@ -131,7 +189,11 @@ def card_write_lock(root):
     fd = os.open(path, flags, 0o600)
     handle = os.fdopen(fd, "a+")
     try:
+        _named_lock(handle.fileno(), path)
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _named_lock(handle.fileno(), path)
+        if folder is None and _lock_base(root) != base:
+            raise OSError('changed compile directory for card lock')
         yield path
     finally:
         try:

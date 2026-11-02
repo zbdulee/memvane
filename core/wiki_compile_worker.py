@@ -1670,7 +1670,7 @@ def _run_verify_pass(
                               if frames else None))
 
 
-COMPILE_RUN_LOCK = ".compile-run.lock"
+COMPILE_RUN_LOCK = cp.COMPILE_RUN_LOCK
 RUN_LOCK_BUSY_RETRY_SECS = 30
 
 
@@ -1686,24 +1686,7 @@ def try_run_lock(root: Path) -> int | None:
     before recovery and keeps every queue row. Kernel flock is released on
     crash, so a restart is never blocked by a dead owner.
     """
-    base = cp.compile_dir(root, create=True)
-    if base is None:
-        raise OSError("unsafe compile directory for run lock")
-    fd = os.open(base / COMPILE_RUN_LOCK,
-                 os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_nlink != 1 or info.st_mode & 0o077):
-            raise OSError("unsafe compile run lock")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(fd)
-        return None
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+    return cp.try_compile_run_lock(root)
 
 
 def _busy_report(root: Path, queue: Path) -> dict:
@@ -1741,15 +1724,9 @@ def main():
     # Only a selected Laya route compiles; synthetic fixtures stand in for one.
     if selected_route is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
         return 0
-    if selected_route is not None:
-        import event_log
-        event_log.bind(decision=selected_route[0], host='worker')
     config = found["config"]
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
-        return 0
-    queue = _safe_queue_path(root, DEFAULT_SOURCE_QUEUE)
-    if queue is None:
         return 0
     try:
         run_lock = try_run_lock(root)
@@ -1757,9 +1734,35 @@ def main():
         return 0  # unsafe lock path: keep the queue, never run unguarded
     if run_lock is None:
         if args.json:
-            print(json.dumps(_busy_report(root, queue), ensure_ascii=False))
+            queue = cp.ledger(root, cp.SOURCE_QUEUE)
+            if queue is not None:
+                print(json.dumps(_busy_report(root, queue), ensure_ascii=False))
         return 0
     try:
+        try:
+            locked_base = cp.validate_compile_run_lock(root, run_lock)
+            # A move can finish between the first config/route lookup and
+            # run-lock acquisition. Only a fresh selected proof and config
+            # from the locked active folder may enter recovery or claim.
+            found = qmd_config.find_project_config(args.cwd)
+            if Path(found['projectRoot']).resolve() != root:
+                return 0
+            selected_route = wiki_selected_laya.selected(root)
+            if selected_route is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+                return 0
+            config = found['config']
+            compile_cfg = config.get('compile') if isinstance(config.get('compile'), dict) else {}
+            if config.get('indexing') is not True or not qmd_config.compile_active(compile_cfg):
+                return 0
+            queue = _safe_queue_path(root, DEFAULT_SOURCE_QUEUE)
+            if (queue is None or queue.parent != locked_base
+                    or cp.validate_compile_run_lock(root, run_lock) != locked_base):
+                return 0
+        except (OSError, ValueError):
+            return 0  # moved/unsafe authority: preserve all queued work
+        if selected_route is not None:
+            import event_log
+            event_log.bind(decision=selected_route[0], host='worker')
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:
         os.close(run_lock)

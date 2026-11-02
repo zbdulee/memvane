@@ -1669,8 +1669,10 @@ class Service:
                 self.retry.pop(project, None)
             elif reason == 'resource_deferred':
                 worker.state = 'resource_deferred'
-                worker.retry_at = time.monotonic() + LOAD_RETRY_SECONDS[
-                    min(len(LOAD_RETRY_SECONDS) - 1, worker.failures)]
+                # Keep real admission observations inside RECOVERY_MAX_GAP,
+                # independently of earlier model-start failures. Their retry
+                # budget remains on the startup-failure branch below.
+                worker.retry_at = time.monotonic() + LOAD_RETRY_SECONDS[0]
             else:
                 worker.failures += 1
                 worker.failures = min(_MAX_FAILURES, worker.failures)

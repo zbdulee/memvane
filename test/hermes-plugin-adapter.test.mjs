@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,4 +82,16 @@ test('Hermes bridge serves only the selected Laya route', () => {
     assert.doesNotMatch(bridge, new RegExp(script.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.match(bridge, /laya_host_response import serve_selected/);
+});
+
+test('registered Hermes recall distinguishes proved preview, upgrade fence and damaged routes', () => {
+  const result = spawnSync('python3', ['-B', 'test/fixtures/hermes-route-recovery-checks.py'], {
+    encoding: 'utf8', timeout: 300000,
+    env: { ...process.env, QMD_SETUP_GUARD_FIXTURE: '1', PYTHONDONTWRITEBYTECODE: '1',
+      QMD_RECALL_LOG: '' },
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /Ran 5 tests/);
+  assert.match(result.stderr, /\nOK\b/);
 });

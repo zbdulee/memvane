@@ -821,18 +821,50 @@ def _locks(stack, project, state, queue_path):
     from laya_ledger_common import _operation_lock
     from laya_product_install import _install_lock
     import laya_state_move
+    # Snapshot only existing real folders. In particular, a rename must never
+    # create its destination merely to acquire a lock there.
+    def layout_snapshot():
+        rows = []
+        for name in project_dir.NAMES:
+            folder = project / name
+            if not os.path.lexists(folder):
+                continue
+            info = folder.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022 or folder.resolve(strict=True) != folder):
+                _fail('project_dir_move_folder_unsafe')
+            rows.append((folder, info.st_dev, info.st_ino))
+        return rows
+    snapshot = layout_snapshot()
+    folders = [row[0] for row in snapshot]
+    def verify_layout():
+        if layout_snapshot() != snapshot:
+            _fail('project_dir_move_layout_busy')
     stack.enter_context(_install_lock(state))
     if not stack.enter_context(build.owner(state)):
         _fail('initial_build_busy')
-    stack.enter_context(_operation_lock(project_dir.runtime_file(project, MARKER)))
+    verify_layout()
+    # Fixed kind order, then current/legacy order within each kind. Adoption
+    # keeps the destination lock held even when merge unlinks its old twin.
+    for folder in folders:
+        stack.enter_context(_operation_lock(folder / MARKER))
+    for folder in folders:
+        fd = cp.try_compile_run_lock(project, folder=folder)
+        if fd is None:
+            _fail('project_dir_move_compile_busy')
+        stack.callback(os.close, fd)
     stack.enter_context(laya_state_move._provider_lane())
     stack.enter_context(laya_wiki_discovery._locked(
         state / laya_wiki_discovery.lock_path(queue_path).name, DISCOVERY_WAIT_SECONDS))
     if not stack.enter_context(_owner_lock(Path(queue_path))):
         _fail('sync_owner_busy')
-    stack.enter_context(settings_lock.locked(project))
-    stack.enter_context(cp.card_write_lock(project))
+    for folder in folders:
+        stack.enter_context(settings_lock.locked(project, folder=folder))
+    for folder in folders:
+        stack.enter_context(cp.card_write_lock(project, folder=folder))
     stack.enter_context(wiki_mutation_lock.lock(project))
+    verify_layout()
+    return verify_layout
 
 
 def _queue_path(project, intent):
@@ -853,7 +885,7 @@ def move(project_root, state, *, step=None):
     if mode == 'tidy':
         return {'status': 'project_dir_current', 'tidied': tidy(project)}
     with ExitStack() as stack:
-        _locks(stack, project, state, _queue_path(project, intent))
+        verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
         if intent is not None and not _fenced(intent):
             # Prepared but never fenced: start over from the current selection.
@@ -861,6 +893,7 @@ def move(project_root, state, *, step=None):
             intent = None
         if intent is None:
             mode = needed(project)
+            verify_layout()
             if mode in (None, 'tidy'):
                 return {'status': 'project_dir_current'}
             from laya_journal_v4 import refuse_while_legacy_hermes
@@ -869,6 +902,7 @@ def move(project_root, state, *, step=None):
             _mark(step, 'prepared')
         else:
             _write_pointer(intent)
+        verify_layout()
         journal = _switch(intent, step=step)
         _verify(intent)
         receipt = _settle(intent)

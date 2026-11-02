@@ -15,9 +15,11 @@ project under its own state root to the executing bundle:
 A state root that still holds a QMD-origin ledger (``qmd-cutover.json``) is
 refused as ``qmd_origin_detach_required``; no retry clears it.
 
-Before review the worker makes sure the Laya embedding runtime
-(``laya_embed_runtime``) holds the install's attested provider bytes,
-copying them from the attested paths (QMD runtime, QMD model cache) once.
+Before ensure or review the worker requires a full runtime file digest,
+sealed in the attestation or derived from its owned Laya generation. Without
+that digest it refuses as ``provider_changed_rebuild_required``. With an
+explicit digest, external attested paths can supply a copy into the Laya
+runtime; the copy must reproduce the pinned files and pass provider review.
 
 Source rule: the host marketplace clone is the only unattended source, and
 only when its HEAD is the installed commit (from the host's own record) and
@@ -90,7 +92,8 @@ NO_BACKOFF = frozenset(('legacy_hermes_copy_present', 'bundle_file_missing',
 MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
     'lock_busy', 'sync_owner_busy', 'initial_build_busy',
-    'project_dir_move_upgrade_pending'))
+    'project_dir_move_upgrade_pending', 'project_dir_move_compile_busy',
+    'project_dir_move_layout_busy'))
 # A move a retry cannot clear: the install keeps working where it is.
 MOVE_REFUSALS = frozenset((
     'state_move_cross_device', 'state_move_target_exists',
@@ -754,10 +757,10 @@ def _mark_sealed_for_rescan(state):
 def _ensure_embed_runtime(attestation):
     """The Laya embedding runtime holding this install's attested bytes.
 
-    A first upgrade after the runtime moved out of the QMD package copies the
-    attested node, node-llama-cpp tree, native closure and model (each sha256
-    checked) into the Laya runtime; review then names the copies and the
-    content-equal re-attestation keeps the vector profile.
+    The caller first requires the full runtime file digest. A pinned external
+    attestation can copy its node, module tree, native closure and model into
+    the Laya runtime; the copy reproduces that digest before provider review.
+    An owned generation is verified and selected without copying it anew.
     """
     import laya_embed_runtime
     try:
@@ -1107,11 +1110,11 @@ def run(project_root, *, root=None, home=None):
                     state = _live_state(state, home)
                     status, reason = _move_outcome(exc)
                     result = {**result, 'status': status, 'reason': reason,
-                              'stateMove': reason}
+                              'stateMove': {'status': status, 'reason': reason}}
                     _event(state, 'state.move', status, reason)
                 else:
                     if moved is not None:
-                        result = {**result, 'stateMove': moved['status']}
+                        result = {**result, 'stateMove': moved}
                         _event(state, 'state.move', moved['status'],
                                stateRoot=moved.get('stateRoot'))
                         if moved['status'] == 'state_move_complete':
@@ -1126,10 +1129,11 @@ def run(project_root, *, root=None, home=None):
                     except Exception as exc:
                         dir_status, dir_reason = _move_outcome(exc)
                         project_dir_status = {'status': dir_status, 'reason': dir_reason}
-                        result = {**result, 'projectDirMove': dir_reason}
+                        result = {**result, 'projectDirMove': project_dir_status}
                         _event(state, 'project_dir.move', dir_status, dir_reason)
                     else:
                         if dir_moved is not None:
+                            result = {**result, 'projectDirMove': dir_moved}
                             _event(state, 'project_dir.move', dir_moved['status'],
                                    mode=dir_moved.get('mode'))
                             if dir_moved['status'] == 'project_dir_move_complete':
@@ -1143,7 +1147,8 @@ def run(project_root, *, root=None, home=None):
                               reason=reason, **extra)
             except _DirMoveStopped as exc:
                 status, reason = exc.args
-                result = {'status': status, 'reason': reason, 'projectDirMove': reason}
+                result = {'status': status, 'reason': reason,
+                          'projectDirMove': {'status': status, 'reason': reason}}
                 _event(state, 'project_dir.move', status, reason)
                 _write_status(state, status=status, executingRoot=str(root),
                               attempts=attempts - 1 if status == 'deferred' else attempts,
@@ -1172,7 +1177,7 @@ def run(project_root, *, root=None, home=None):
                    **({'file': result['file']} if 'file' in result else {}), **moves)
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
-                if key in ('status', 'reason', 'kind', 'file')}})
+                if key in ('status', 'reason', 'kind', 'file', 'stateMove', 'projectDirMove')}})
     _collect_shared(home)
     events = next((Path(row['stateRoot']) for row in results
                    if Path(row['stateRoot']).is_dir()), None)

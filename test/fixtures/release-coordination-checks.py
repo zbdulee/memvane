@@ -133,7 +133,9 @@ finally:
                 return CONFIG.get('fixtureGuard', False)
 
             def run(project, *, root=None, home=None):
+                global PROJECT
                 project = Path(project)
+                PROJECT = str(project)
                 (ROOT / 'effect.json').write_text(json.dumps({
                     'project': str(project), 'root': str(root),
                     'isolated': sys.flags.isolated,
@@ -141,13 +143,20 @@ finally:
                     'sentinelOpen': _sentinel_open(),
                 }), encoding='utf8')
                 time.sleep(CONFIG.get('runSleep', 0))
-                return [{'stateRoot': str(project / 'state'),
+                return CONFIG.get('rows', [{'stateRoot': CONFIG.get('finalStateRoot', str(project / 'state')),
                          'status': CONFIG.get('status', 'active_upgrade_complete'),
-                         'kind': 'active'}]
+                         'kind': CONFIG.get('kind', 'active'), **CONFIG.get('extra', {})}])
+
+            def identity():
+                return {'pluginRoot': CONFIG.get('ownerRoot', str(ROOT)),
+                    'installId': 'a' * 32, 'generation': 'g-' + 'b' * 32,
+                    'sourceCommit': 'c' * 40, 'bundleManifestSha256': 'd' * 64,
+                    'ownershipManifestSha256': 'e' * 64, 'bundleKind': 'full_plugin',
+                    'vectorProfile': {'profileId': 'f' * 64}, **CONFIG.get('identityOverrides', {})}
 
             def classify(state):
                 (ROOT / 'classify-called').write_text(str(state), encoding='utf8')
-                return 'active', {'pluginRoot': CONFIG.get('ownerRoot', str(ROOT))}
+                return CONFIG.get('observedKind', CONFIG.get('kind', 'active')), identity()
 
             def _sentinel_open():
                 sentinel = CONFIG.get('sentinel')
@@ -162,6 +171,58 @@ finally:
                     if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
                         return True
                 return False
+            '''), encoding='utf8')
+        # Standard metadata observation boundaries shared by protocol fixtures.
+        # These are synthetic inspectors, not real journal/build ownership proof.
+        (core / 'laya_install_journal.py').write_text(textwrap.dedent('''\
+            from pathlib import Path
+            import laya_bundle_upgrade as upgrade
+            READS = 0
+            def inspect_journal(path):
+                global READS
+                READS += 1
+                config = upgrade.CONFIG
+                state = config.get('journalState', 'candidate_ready'
+                    if config.get('kind') in ('bound', 'inactive') else 'active')
+                identity = upgrade.identity()
+                return {'journalPath': str(path), 'state': state,
+                    'epoch': 1 + (READS if config.get('epochChanges') else 0),
+                    'projectRoot': upgrade.PROJECT, 'scopeId': 'c' * 32, 'newWriteSeen': False,
+                    'selected': identity if state in ('active', 'restored_old') else None,
+                    'previous': identity if state == 'pending' else None,
+                    'pending': identity if state in ('pending', 'candidate_ready') else None,
+                    'selectedRouteSha256': 'd' * 64, 'pendingRouteSha256': 'd' * 64,
+                    'providerAttestationSha256': 'e' * 64,
+                    'providerFileIdentitySha256': 'f' * 64, **config.get('journalOverrides', {})}
+            '''), encoding='utf8')
+        (core / 'laya_initial_build.py').write_text(textwrap.dedent('''\
+            from pathlib import Path
+            import laya_bundle_upgrade as upgrade
+            READS = 0
+            def read(state):
+                global READS
+                READS += 1
+                config = upgrade.CONFIG
+                if config.get('kind') not in ('bound', 'inactive') and 'buildPhase' not in config:
+                    return None
+                state = Path(state)
+                project = upgrade.PROJECT
+                identity = {'stateRoot': str(state), 'projectRoot': project,
+                    'installId': upgrade.identity()['installId'], 'scopeId': 'c' * 32,
+                    'dbIncarnation': 'a' * 32, 'journalPath': str(state / 'install-journal.sqlite'),
+                    'routeFile': str(state / 'reviewed-route.json'), 'routeSha256': 'd' * 64,
+                    'vectorProfileId': upgrade.identity()['vectorProfile']['profileId'],
+                    'candidateDb': str(state / 'candidate.sqlite'), 'queueDb': str(state / 'queue.sqlite'),
+                    'catalogDb': str(state / 'catalog.sqlite'), 'bindingStore': str(state / 'bindings.sqlite'),
+                    'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': project}],
+                    'attestationSha256': 'e' * 64, 'proposalSha256': 'f' * 64,
+                    'providerProposalSha256': 'a' * 64, 'originMode': 'fresh_wiki_only',
+                    **config.get('buildIdentityOverrides', {})}
+                return {'schema': 'laya-initial-build-v1', 'epoch': 1,
+                    'phase': ('upgrading' if config.get('phaseChanges') and READS > 1 else
+                        config.get('buildPhase', 'bound' if config.get('kind') == 'bound' else 'building')),
+                    'identity': identity, 'progress': None, 'sealed': None,
+                    'freshness': None, 'blocked': None, 'updatedNs': 1}
             '''), encoding='utf8')
         return root
 

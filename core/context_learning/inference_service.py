@@ -504,11 +504,20 @@ def _retire_stale(root, deadline):
     _terminate_idle(root, deadline)
 
 
-def _hosted_ready(root, python, deadline):
+def _hosted_ready(root, python, deadline, *, reject_mismatch=False):
     try:
         answer = _version(root, deadline)
     except (ServiceFailure, ConnectionResetError, BrokenPipeError, ValueError):
         return False
+    if (reject_mismatch and isinstance(answer, dict)
+            and type(answer.get('protocol')) is int and answer['protocol'] == PROTOCOL
+            and answer.get('hosted') is True and answer.get('status') == 'ready'
+            and isinstance(answer.get('signature'), str) and answer['signature']
+            and isinstance(answer.get('python'), str)
+            and answer['signature'] != _signature()):
+        # A ready compatible host retained its newer learning service. No
+        # startup/replacement is in progress that polling could finish here.
+        raise ServiceFailure('version_mismatch')
     return (_current(answer) and answer.get('status') == 'ready'
             and answer.get('python', python) == python)
 
@@ -527,11 +536,15 @@ def _ensure(root, python, deadline, *, spawn=None):
         return
     import laya_resident_service as host
     try:
-        host.ensure_service(python=python, learning_root=root)
+        state = host.ensure_service(python=python, learning_root=root)
     except Exception as exc:
+        from resource_deferred import ResourceDeferred
+        if isinstance(exc, ResourceDeferred) and str(exc) == 'laya_service_protocol_mismatch':
+            raise ServiceFailure('version_mismatch',
+                timing={'host_reason': 'laya_service_protocol_mismatch'}) from exc
         raise ServiceFailure('starting') from exc
     while time.monotonic() < deadline:
-        if _hosted_ready(root, python, deadline):
+        if _hosted_ready(root, python, deadline, reject_mismatch=state == 'ready'):
             return
         time.sleep(.02)
     raise ServiceFailure('starting')

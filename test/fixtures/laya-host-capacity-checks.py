@@ -293,8 +293,10 @@ class ServeRuntimeTests(unittest.TestCase):
         import laya_index_runtime
         import laya_install_journal
         import laya_local_embed_provider
+        # Runtime argument checks use a synthetic provider, not OS admission.
         with mock.patch.object(laya_install_journal, 'verify_selected_route',
                                return_value=proof), \
+                mock.patch('laya_embed_resident.admit_query', return_value=None), \
                 mock.patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider'), \
                 mock.patch.object(config, 'load_project_config', return_value=settings), \
                 mock.patch.object(laya_index_runtime, 'LayaIndexRuntime', side_effect=runtime), \

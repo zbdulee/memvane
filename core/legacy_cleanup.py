@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import signal
 import stat
 import subprocess
 import time
+from xml.parsers.expat import ExpatError
 
 import safe_rmtree
 
@@ -173,9 +175,13 @@ def _ps(pid):
                             stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, timeout=5, check=False)
     line = result.stdout.strip()
-    if result.returncode != 0 or not line:
+    if result.returncode == 1 and not line and not result.stderr.strip():
         return None
+    if result.returncode != 0 or not line:
+        raise CleanupBlocked('legacy_cleanup_process_observation_unavailable')
     uid, _, command = line.partition(' ')
+    if not uid.isdigit() or not command.strip():
+        raise CleanupBlocked('legacy_cleanup_process_observation_unavailable')
     return int(uid), command.strip()
 
 
@@ -398,6 +404,7 @@ def _stop(row, home, *, ps, kill, sleep, clock):
             not _expected_command(runtime, port).fullmatch(seen[1])):
         return 'identity_changed' if seen is not None else 'already_stopped'
     kill(pid, signal.SIGTERM)
+    row['signalSent'] = True
     deadline = clock() + STOP_WAIT_SECONDS
     while clock() < deadline:
         now = ps(pid)
@@ -408,8 +415,61 @@ def _stop(row, home, *, ps, kill, sleep, clock):
 
 
 def _launchctl(plist):
-    subprocess.run(['launchctl', 'bootout', 'gui/%d' % os.getuid(), str(plist)],
-                   stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+    """Prove successful unload, or the exact job's already-absent state."""
+    label = Path(plist).stem
+    if label not in LABELS:
+        raise CleanupBlocked('legacy_cleanup_launch_agent_label_invalid')
+    _managed_plist(plist)
+    uid = os.getuid()
+    result = subprocess.run(
+        ['launchctl', 'bootout', 'gui/%d' % uid, str(plist)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode == 0:
+        return {'state': 'unloaded', 'changed': True}
+    target = 'gui/%d/%s' % (uid, label)
+    observed = subprocess.run(
+        ['launchctl', 'print', target], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=30, check=False)
+    absent = (r'Bad request\.\nCould not find service "' + re.escape(label) +
+              r'" in domain for user gui: ?' + str(uid) + r'\n?')
+    if (observed.returncode == 113 and observed.stdout == '' and
+            isinstance(observed.stderr, str) and re.fullmatch(absent, observed.stderr)):
+        return {'state': 'already_unloaded', 'changed': False}
+    raise CleanupBlocked('legacy_cleanup_launch_agent_unload_unverified')
+
+
+def _managed_plist(path):
+    """One bounded owner-held plist whose job matches its whitelist name."""
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o022 or info.st_size > 65536):
+                raise CleanupBlocked('legacy_cleanup_launch_agent_unsafe')
+            raw = os.read(fd, 65537)
+            after = os.fstat(fd)
+            named = path.lstat()
+            stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns,
+                                  item.st_ctime_ns, item.st_uid, item.st_mode, item.st_nlink)
+            if (len(raw) != info.st_size or stamp(info) != stamp(after)
+                    or not stat.S_ISREG(named.st_mode) or stamp(named) != stamp(info)):
+                raise CleanupBlocked('legacy_cleanup_launch_agent_changed')
+        finally:
+            os.close(fd)
+        try:
+            value = plistlib.loads(raw)
+        except Exception as exc:
+            # Malformed typed values can raise outside plistlib's parse-error
+            # classes. Refuse the input while retaining earlier apply progress.
+            raise CleanupBlocked('legacy_cleanup_launch_agent_unverified') from exc
+        if (MARKER.encode() not in raw or not isinstance(value, dict)
+                or path.stem not in LABELS or value.get('Label') != path.stem):
+            raise CleanupBlocked('legacy_cleanup_launch_agent_label_invalid')
+        return stamp(info)
+    except (OSError, ValueError, plistlib.InvalidFileException, ExpatError) as exc:
+        raise CleanupBlocked('legacy_cleanup_launch_agent_unverified') from exc
 
 
 def _remove_tree(path, home):
@@ -452,47 +512,96 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
         return {**report, 'status': 'blocked'}
     home = Path(report['home'])
     changes = 0
-    stopped = []
+    stopped, completed, failed = [], [], []
+
+    def receipt(status=None):
+        return {**report, 'status': status or ('partial' if failed else 'cleaned'),
+                'partial': bool(failed), 'completed': completed, 'failed': failed,
+                'stoppedPids': stopped, 'changesApplied': changes}
+
+    def record_signal(row):
+        nonlocal changes
+        if row.get('signalSent'):
+            changes += 1
+            completed.append({'pid': row['pid'], 'action': 'signal_sent'})
+
     for row in report['daemons']:
         if row['state'] != 'running_verified':
             continue
-        outcome = _stop(row, home, ps=ps, kill=kill, sleep=sleep, clock=clock)
+        row['signalSent'] = False
+        try:
+            outcome = _stop(row, home, ps=ps, kill=kill, sleep=sleep, clock=clock)
+        except (CleanupBlocked, OSError, subprocess.SubprocessError) as exc:
+            record_signal(row)
+            row['stop'], row['reason'] = 'unconfirmed', _failure(exc)
+            failed.append({'pid': row['pid'], 'reason': row['reason']})
+            return receipt('partial')
+        record_signal(row)
         row['stop'] = outcome
         if outcome == 'stopped':
-            changes += 1
             stopped.append(row['pid'])
         elif outcome != 'already_stopped':
-            report['blockers'].append('qmd_daemon_' + outcome)
+            reason = 'qmd_daemon_' + outcome
+            report['blockers'].append(reason)
+            row['reason'] = reason
+            failed.append({'pid': row['pid'], 'reason': reason})
     if not report['blockers']:
         # Nothing may still run from a tree about to be removed.
-        left = unverified_processes(home, ps_all=ps_all)
+        try:
+            left = unverified_processes(home, ps_all=ps_all)
+        except (CleanupBlocked, OSError, subprocess.SubprocessError) as exc:
+            failed.append({'phase': 'process_table', 'reason': _failure(exc)})
+            return receipt('partial')
         if left:
             report['unverifiedProcesses'] = left
             report['blockers'].append('qmd_daemon_unverified')
+            failed.extend({'phase': 'process_table', 'pid': row['pid'],
+                           'reason': 'qmd_daemon_unverified'} for row in left)
     if report['blockers']:
         # A daemon that did not stop keeps its runtime and state.
-        return {**report, 'status': 'blocked', 'changesApplied': changes}
-    completed, failed = [], []
+        return receipt('blocked')
     for row in report['launchAgents']:
         if row['state'] != 'managed':
             continue
         plist = Path(row['plist'])
+        unloaded_entry = None
         try:
-            launchctl(plist)
+            snapshot = _managed_plist(plist)
+            evidence = launchctl(plist)
+            # An injected callback returning None is the existing trusted
+            # acknowledgement contract. The real helper returns typed proof.
+            if evidence is None:
+                evidence = {'state': 'unloaded', 'changed': True}
+            if (not isinstance(evidence, dict) or type(evidence.get('changed')) is not bool
+                    or evidence not in ({'state': 'unloaded', 'changed': True},
+                                        {'state': 'already_unloaded', 'changed': False})):
+                raise CleanupBlocked('legacy_cleanup_launch_agent_unload_unverified')
+            row['unload'] = evidence['state']
+            if evidence['changed']:
+                changes += 1
+                unloaded_entry = len(completed)
+                completed.append({'plist': row['plist'], 'action': 'unloaded'})
+            if _managed_plist(plist) != snapshot:
+                raise CleanupBlocked('legacy_cleanup_launch_agent_changed')
             plist.unlink()
-        except OSError as exc:
+        except (CleanupBlocked, OSError, subprocess.SubprocessError) as exc:
             row['state'], row['reason'] = 'failed', _failure(exc)
             failed.append({'plist': row['plist'], 'reason': row['reason']})
-            continue
+            # No later plist or tree deletion after unverified unload. A
+            # successful unload whose unlink failed remains in the receipt.
+            return receipt('partial')
         row['state'] = 'removed'
-        completed.append({'plist': row['plist']})
-        changes += 1
+        if unloaded_entry is not None:
+            completed[unloaded_entry] = {'plist': row['plist']}
+        else:
+            completed.append({'plist': row['plist']})
+            changes += 1
     for row in report['paths']:
         if row['action'] != 'remove':
             continue
         try:
             _remove_tree(Path(row['path']), home)
-        except (CleanupBlocked, OSError) as exc:
+        except (CleanupBlocked, OSError, subprocess.SubprocessError) as exc:
             # Report and keep going: what was removed stays reported.
             row['action'], row['reason'] = 'failed', _failure(exc)
             failed.append({'path': row['path'], 'reason': row['reason']})
@@ -500,13 +609,15 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
         row['action'] = 'removed'
         completed.append({'path': row['path']})
         changes += 1
-    return {**report, 'status': 'partial' if failed else 'cleaned', 'partial': bool(failed),
-            'completed': completed, 'failed': failed, 'stoppedPids': stopped,
-            'changesApplied': changes}
+    return receipt()
 
 
 def _failure(exc):
     if isinstance(exc, CleanupBlocked):
         return str(exc)
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return 'legacy_cleanup_observation_timeout'
+    if isinstance(exc, subprocess.SubprocessError):
+        return 'legacy_cleanup_command_failed'
     import errno
     return 'legacy_cleanup_remove_failed:' + errno.errorcode.get(exc.errno or 0, 'unknown')
