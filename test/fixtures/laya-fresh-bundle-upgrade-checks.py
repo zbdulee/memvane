@@ -41,8 +41,9 @@ from laya_product_bundle import BundleEvidenceError  # noqa: E402
 PROFILE_ID = BUILD['PROFILE_ID']
 SCOPE = BUILD['SCOPE']
 OLD_COMMIT, NEW_COMMIT = '1' * 40, '2' * 40
-PROFILE = {'profileId': PROFILE_ID, 'modelId': 'synthetic-model',
-           'embeddingFingerprint': 'a' * 64, 'dimension': 3, 'metric': 'cosine',
+PROFILE = {'profileId': PROFILE_ID, 'modelId': BUILD['PROFILE']['model_id'],
+           'embeddingFingerprint': BUILD['PROFILE']['embedding_fingerprint'],
+           'dimension': BUILD['PROFILE']['dimension'], 'metric': 'cosine',
            'approvedProviderId': 'synthetic-provider',
            'providerArtifactSha256': 'b' * 64,
            'providerRelativePath': 'core/laya_local_embed_provider.py'}
@@ -63,7 +64,7 @@ def manifest(root):
             'providerPath': root + '/core/laya_local_embed_provider.py',
             'workerPath': root + '/core/laya_local_embed_worker.mjs',
             'workerSha256': 'c' * 64, 'modelPath': '/models/m.gguf',
-            'modelSha256': 'd' * 64, 'dimension': 3,
+            'modelSha256': 'd' * 64, 'dimension': PROFILE['dimension'],
             'serviceSocketPath': '/tmp/synthetic-install/runtime/laya-embed.sock'}
 
 
@@ -102,6 +103,7 @@ class Journal:
         self.pending = self.selected = self.previous = None
         self.route_sha = self.selected_sha = self.previous_sha = None
         self.selected_att = self.selected_fid = None
+        self.previous_att = None
         self.attestation = None
         self.calls = []
 
@@ -121,7 +123,8 @@ class Journal:
                 'previous': self.previous, 'previousRouteSha256': self.previous_sha,
                 'newWriteSeen': self.new_write,
                 'providerAttestationSha256': self.selected_att if active else None,
-                'providerFileIdentitySha256': self.selected_fid if active else None}
+                'providerFileIdentitySha256': self.selected_fid if active else None,
+                'previousProviderAttestationSha256': self.previous_att}
 
     def approval(self, _path=None, **_kwargs):
         if self.state != 'candidate_ready':
@@ -158,8 +161,20 @@ class Journal:
             raise RuntimeError('journal_cas_failed')
         self.calls.append('stage')
         self.previous, self.previous_sha = self.selected, self.selected_sha
+        self.previous_att = self.selected_att
         self.pending, self.route_sha = identity(next_proof), _sha(route_raw)
         self.state, self.epoch, self.new_write = 'pending', self.epoch + 1, False
+        return self.inspect()
+
+    def retarget(self, _path, epoch, current_raw, expected_pending,
+                 expected_sha, next_proof, next_raw):
+        if (self.state != 'pending' or self.new_write or epoch != self.epoch or
+                self.pending != expected_pending or self.route_sha != expected_sha or
+                _sha(current_raw) not in (self.selected_sha, self.route_sha)):
+            raise RuntimeError('journal_cas_failed')
+        self.calls.append('retarget')
+        self.pending, self.route_sha = identity(next_proof), _sha(next_raw)
+        self.epoch += 1
         return self.inspect()
 
 
@@ -327,7 +342,9 @@ class UpgradeCase(FreshBoundCase):
             enter(mock.patch.object(active, 'review_local_provider',
                                     side_effect=lambda **_kw: self.review))
             enter(mock.patch.object(active, 'cas_stage_update', self.fj.stage))
+            enter(mock.patch.object(active, 'cas_retarget_pending', self.fj.retarget))
             enter(mock.patch.object(active, 'cas_activate', self.fj.activate))
+            enter(mock.patch.object(active, '_verify_recovery_project', lambda *_a: None))
             enter(mock.patch.object(active, '_locked_provider', nullcontext))
             enter(mock.patch('laya_embed_resident.wait_for_release', return_value=True))
         else:
@@ -565,16 +582,22 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertEqual(self.row(), fenced)
         self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
 
-    def test_pending_fence_does_not_retarget_another_host(self):
+    def test_pending_fence_retargets_a_fresh_host_after_both_caches_disappear(self):
         self.fence()
         self.assertEqual(self.fj.state, 'pending')
-        fenced = self.row()
-        intent = (self.state / active.INTENT).read_bytes()
-        with self.assertRaisesRegex(Exception, 'active_upgrade_prior_unsettled'):
-            self.run_upgrade(active, self.old_root, OLD_COMMIT)
-        self.assertEqual(self.row(), fenced)
-        self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
-        self.assertEqual(self.fj.state, 'pending')
+        before = json.loads((self.state / active.INTENT).read_bytes())
+        root, commit = str(self.home / 'next-host'), '3' * 40
+        self.bundles[root] = proof(root, commit)
+        self.removed.update((self.old_root, self.new_root))
+        self.review['reviewedProvider']['providerManifest'] = manifest(root)
+        result = self.run_upgrade(active, root, commit)
+        self.assertEqual(result['status'], 'active_upgrade_complete')
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        for key in ('backup', 'oldRecord', 'oldLedger', 'counts'):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(self.fj.selected['pluginRoot'], root)
+        self.assertEqual(self.selection(), 'candidate')
+        self.kept()
 
     @staticmethod
     def run_main(fn, *args):

@@ -216,6 +216,13 @@ class LocalTrainer:
                         if group:
                             rss = sum(int(parts[2]) for parts in group)
                             cpu = sum(float(parts[1]) for parts in group)
+                            # Do not count an exited group as a zero-memory
+                            # sample. A still-running group with no usable RSS
+                            # cannot satisfy a required resource monitor.
+                            if rss <= 0:
+                                if proc.poll() is not None:
+                                    continue
+                                raise OSError('process_stats_unavailable')
                             if not math.isfinite(cpu) or cpu<0:
                                 raise OSError('process_stats_unavailable')
                             group_cpu=cpu

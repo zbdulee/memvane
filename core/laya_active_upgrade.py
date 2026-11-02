@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 
 import laya_fresh_wiki_origin as fresh
 import project_dir
@@ -23,8 +24,10 @@ from laya_install_journal import (PRODUCTION_ATTESTATION,
                                   _canon as journal_canon,
                                   _provider_file_identity, cas_activate,
                                   cas_recover, cas_restore, cas_stage_update,
+                                  cas_retarget_pending,
                                   inspect_journal)
 from laya_product_bundle import (PRODUCTION_ATTESTATION_SCHEMA,
+                                 OPTIONAL_ATTESTATION_FIELDS,
                                  adopt_host_loaded_plugin,
                                  inspect_full_plugin_candidate,
                                  validate_production_provider_attestation)
@@ -39,6 +42,13 @@ REPLACEABLE = frozenset(('schema', 'pluginRoot', 'bundleManifestSha256',
 # The only ledger fields a bundle replacement may change.
 LEDGER_CHANGES = frozenset(('epoch', 'phase', 'routeSha256', 'attestationSha256',
                             'providerFileIdentitySha256'))
+V1 = 'laya-active-upgrade-intent-v1'
+V2 = 'laya-active-upgrade-intent-v2'
+JOURNAL_KEYS = ('epoch', 'state', 'selected', 'previous', 'pending',
+                'selectedRouteSha256', 'previousRouteSha256', 'pendingRouteSha256',
+                'newWriteSeen', 'providerAttestationSha256',
+                'providerFileIdentitySha256', 'previousProviderAttestationSha256')
+META_LIMITS = (1024 * 1024, 8192, 8192, 65536, 8192)
 
 
 class _Ledger:
@@ -130,7 +140,7 @@ def _load_intent(state, project):
         return None
     if isinstance(value, dict) and 'origin' in value:
         _Ledger(value['origin'])  # an intent of the QMD origin refuses here
-    if (value.get('schema') != 'laya-active-upgrade-intent-v1' or
+    if (value.get('schema') not in (V1, V2) or
             value.get('projectRoot') != str(project) or
             value.get('stateRoot') != str(state) or
             not isinstance(value.get('backup'), str) or
@@ -149,6 +159,11 @@ def _load_intent(state, project):
             value['oldLedger'].get('projectRoot') != str(project) or
             value['newLedger'].get('projectRoot') != str(project)):
         _fail('active_upgrade_intent_invalid')
+    if value['schema'] == V2:
+        try:
+            _validate_recovery(value)
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            _fail('active_upgrade_recovery_invalid')
     return value
 
 
@@ -277,7 +292,8 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
                            ('pluginRoot', 'sourceCommit', 'bundleManifestSha256',
                             'ownershipManifestSha256', 'vectorProfile')},
               'reviewSha256': review['proposalSha256'],
-              'backup': str(backup), 'counts': counts}
+              'backup': str(backup), 'counts': counts,
+              'journalBefore': _journal_snapshot(selected)}
     build._write_json(_intent_path(state), intent, replace=prior_intent is not None,
                       max_bytes=LIMIT)
     return intent
@@ -294,7 +310,8 @@ def _backup_proof(intent, *, verify_new=True):
             str(Path(intent['stateRoot']) / 'install-journal.sqlite') or
             set(old) != ledger.fields(old) or set(new) != set(old) or
             old['phase'] != 'active' or new['phase'] != 'upgrading' or
-            new['epoch'] != old['epoch'] + 2 or
+            (new['epoch'] != old['epoch'] + 2 if intent['schema'] == V1 else
+             type(new['epoch']) is not int or new['epoch'] <= old['epoch']) or
             any(old[key] != new[key] for key in set(old) - LEDGER_CHANGES) or
             set(old_route) != set(new_route) or
             any(old_route[key] != new_route[key] for key in
@@ -317,14 +334,419 @@ def _backup_proof(intent, *, verify_new=True):
             new_route['vectorProfile'] != intent['newProof']['vectorProfile']):
         _fail('active_upgrade_intent_changed')
     if verify_new:
-        if new['providerFileIdentitySha256'] != \
-                _sha(journal_canon(_provider_file_identity(new_att)).encode('utf-8')):
-            _fail('active_upgrade_new_provider_changed')
         proof = inspect_full_plugin_candidate(intent['newProof']['pluginRoot'])
         if any(proof[key] != intent['newProof'][key] for key in intent['newProof']):
             _fail('active_upgrade_new_bundle_changed')
+        if new['providerFileIdentitySha256'] != \
+                _sha(journal_canon(_provider_file_identity(new_att)).encode('utf-8')):
+            _fail('active_upgrade_new_provider_changed')
         validate_production_provider_attestation(proof['vectorProfile'], proof,
                                                  new_att)
+
+
+def _journal_snapshot(value):
+    return {key: value.get(key) for key in JOURNAL_KEYS}
+
+
+def _target_identity(intent):
+    route = json.loads(intent['newRoute'])
+    return {**{key: intent['newProof'][key] for key in
+               ('pluginRoot', 'sourceCommit', 'bundleManifestSha256',
+                'ownershipManifestSha256', 'vectorProfile')},
+            'installId': route['installId'], 'generation': route['generation'],
+            'bundleKind': 'full_plugin'}
+
+
+def _metadata_paths(intent):
+    state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    ledger = _intent_ledger(intent)
+    return (state / PRODUCTION_ATTESTATION, state / 'reviewed-route.json',
+            project_dir.runtime_file(project, ledger.route_name),
+            state / ledger.name, project_dir.runtime_file(project, ledger.marker_name))
+
+
+def _metadata(intent):
+    return [_read(path, limit).decode('utf-8') for path, limit in
+            zip(_metadata_paths(intent), META_LIMITS)]
+
+
+def _target_metadata(intent):
+    return [intent['newAttestation'], intent['newRoute'], intent['newRoute'],
+            _bytes(intent['newLedger']).decode(), intent['newMarker']]
+
+
+def _prefix(actual, before, after):
+    if not any(actual == after[:i] + before[i:] for i in range(6)):
+        _fail('active_upgrade_metadata_prefix_changed')
+
+
+def _metadata_object(raw):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                _fail('active_upgrade_recovery_invalid')
+            value[key] = item
+        return value
+    def nonfinite(_value):
+        _fail('active_upgrade_recovery_invalid')
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
+
+
+def _validate_recovery(intent):
+    required = {'schema', 'projectRoot', 'stateRoot', 'oldRecord', 'oldLedger',
+                'newLedger', 'oldRoute', 'newRoute', 'oldAttestation', 'newAttestation',
+                'oldMarker', 'newMarker', 'newProof', 'reviewSha256', 'backup',
+                'counts', 'recovery'}
+    if set(intent) - {'origin', 'journalBefore'} != required:
+        _fail('active_upgrade_recovery_invalid')
+    descriptor = intent['recovery']
+    if (type(descriptor) is not dict or
+            set(descriptor) != {'mode', 'before', 'after', 'journalBefore'} or
+            descriptor['mode'] not in ('normalize', 'switch')):
+        _fail('active_upgrade_recovery_invalid')
+    snapshot = descriptor['journalBefore']
+    if (type(snapshot) is not dict or set(snapshot) != set(JOURNAL_KEYS) or
+            type(snapshot['epoch']) is not int or snapshot['epoch'] < 1 or
+            type(snapshot['newWriteSeen']) is not bool or snapshot['newWriteSeen'] or
+            snapshot['state'] not in ('pending', 'active') or
+            type(snapshot['selected']) is not dict or
+            type(snapshot['previous']) is not dict):
+        _fail('active_upgrade_recovery_invalid')
+    old_route = json.loads(intent['oldRoute'])
+    import laya_install_journal as journal_module
+    for key in ('selectedRouteSha256', 'previousRouteSha256', 'pendingRouteSha256',
+                'providerAttestationSha256', 'providerFileIdentitySha256',
+                'previousProviderAttestationSha256'):
+        digest = snapshot[key]
+        if digest is not None and (type(digest) is not str or not journal_module.SHA.fullmatch(digest)):
+            _fail('active_upgrade_recovery_invalid')
+    for identity in (snapshot['selected'], snapshot['previous'], snapshot['pending']):
+        if identity is None:
+            continue
+        if (type(identity) is not dict or
+                set(identity) != {'pluginRoot', 'sourceCommit', 'bundleManifestSha256',
+                                  'ownershipManifestSha256', 'vectorProfile',
+                                  'installId', 'generation', 'bundleKind'} or
+                identity['bundleKind'] != 'full_plugin' or
+                type(identity['pluginRoot']) is not str or
+                not Path(identity['pluginRoot']).is_absolute() or
+                type(identity['sourceCommit']) is not str or
+                not journal_module.COMMIT.fullmatch(identity['sourceCommit']) or
+                any(type(identity[key]) is not str or not journal_module.SHA.fullmatch(identity[key])
+                    for key in ('bundleManifestSha256', 'ownershipManifestSha256')) or
+                any(identity[key] != old_route[key] for key in
+                    ('installId', 'generation', 'vectorProfile'))):
+            _fail('active_upgrade_recovery_invalid')
+    if snapshot['state'] == 'pending':
+        if (snapshot['pending'] is None or snapshot['selected'] != snapshot['previous'] or
+                snapshot['selectedRouteSha256'] != snapshot['previousRouteSha256'] or
+                snapshot['providerAttestationSha256'] !=
+                snapshot['previousProviderAttestationSha256']):
+            _fail('active_upgrade_recovery_invalid')
+    elif snapshot['pending'] is not None or snapshot['pendingRouteSha256'] is not None:
+        _fail('active_upgrade_recovery_invalid')
+    from laya_install_journal import _route as checked_route
+    journal = Path(intent['stateRoot']) / 'install-journal.sqlite'
+    for name in ('before', 'after'):
+        metadata = descriptor[name]
+        if (type(metadata) is not list or len(metadata) != 5 or
+                any(type(raw) is not str or len(raw.encode()) > limit
+                    for raw, limit in zip(metadata, META_LIMITS))):
+            _fail('active_upgrade_recovery_invalid')
+        try:
+            parsed = [_metadata_object(raw) for raw in metadata]
+        except (ValueError, TypeError):
+            _fail('active_upgrade_recovery_invalid')
+        if any(type(value) is not dict for value in parsed):
+            _fail('active_upgrade_recovery_invalid')
+        for raw in metadata[1:3]:
+            route, _digest = checked_route(raw.encode(), journal)
+            if (set(route) != set(old_route) or
+                    any(route[key] != old_route[key] for key in set(old_route) - REPLACEABLE)):
+                _fail('active_upgrade_recovery_scope_changed')
+        row = parsed[3]
+        if (set(row) != _intent_ledger(intent).fields(intent['oldLedger']) or
+                row.get('phase') != 'upgrading' or type(row.get('epoch')) is not int or
+                row['epoch'] <= intent['oldLedger']['epoch'] or
+                any(row[key] != intent['oldLedger'][key] for key in
+                    set(row) - LEDGER_CHANGES)):
+            _fail('active_upgrade_recovery_scope_changed')
+        if (parsed[0].get('journalPath') != str(journal) or
+                set(parsed[0]) - OPTIONAL_ATTESTATION_FIELDS !=
+                set(json.loads(intent['oldAttestation'])) - OPTIONAL_ATTESTATION_FIELDS or
+                parsed[0].get('vectorProfile') != old_route['vectorProfile'] or
+                set(parsed[4]) != set(json.loads(intent['oldMarker'])) or
+                parsed[4].get('schema') != json.loads(intent['oldMarker'])['schema'] or
+                parsed[4].get('projectRoot') != intent['projectRoot'] or
+                parsed[4].get('journalPath') != str(journal) or
+                parsed[4].get('ledgerPath') != str(journal.parent / fresh.LEDGER)):
+            _fail('active_upgrade_recovery_scope_changed')
+    if descriptor['mode'] == 'normalize':
+        expected = list(descriptor['before'])
+        if snapshot['state'] == 'pending' and _sha(expected[2].encode()) not in (
+                snapshot['selectedRouteSha256'], snapshot['pendingRouteSha256']):
+            expected[2] = intent['newRoute']
+        if descriptor['after'] != expected:
+            _fail('active_upgrade_recovery_invalid')
+        if snapshot['state'] == 'pending' and (
+                _sha(intent['newRoute'].encode()) != snapshot['pendingRouteSha256'] or
+                _target_identity(intent) != snapshot['pending']):
+            _fail('active_upgrade_recovery_invalid')
+    elif descriptor['after'] != _target_metadata(intent):
+        _fail('active_upgrade_recovery_invalid')
+
+
+def _journal_successor(before, intent, *, activate=False):
+    result = {**before, 'epoch': before['epoch'] + 1}
+    identity = _target_identity(intent)
+    if activate:
+        result.update(state='active', selected=identity, pending=None,
+                      selectedRouteSha256=intent['newLedger']['routeSha256'],
+                      pendingRouteSha256=None,
+                      providerAttestationSha256=intent['newLedger']['attestationSha256'],
+                      providerFileIdentitySha256=intent['newLedger']['providerFileIdentitySha256'])
+    else:
+        if before['state'] == 'active':
+            result.update(previous=before['selected'],
+                          previousRouteSha256=before['selectedRouteSha256'],
+                          previousProviderAttestationSha256=before['providerAttestationSha256'])
+        result.update(state='pending', pending=identity,
+                      pendingRouteSha256=intent['newLedger']['routeSha256'],
+                      newWriteSeen=False)
+    return result
+
+
+def _recovery_step(_name):
+    """Crash-test seam; only called after a durable operation."""
+
+
+def _original_journal(intent):
+    if 'journalBefore' in intent:
+        return intent['journalBefore']
+    # Older v1 intents seal their original journal in the verified backup.
+    import laya_install_journal as journal
+    with sqlite3.connect((Path(intent['backup']) / 'journal.sqlite').as_uri() + '?mode=ro',
+                         uri=True) as db:
+        row = journal._row(db)
+    return {'epoch': row['epoch'], 'state': row['state'], 'selected': row['selected'],
+            'previous': row['previous'], 'pending': row['pending'],
+            'selectedRouteSha256': row['selected_route_sha'],
+            'previousRouteSha256': row['previous_route_sha'],
+            'pendingRouteSha256': row['pending_route_sha'],
+            'newWriteSeen': bool(row['new_write_seen']),
+            'providerAttestationSha256': row['provider_attestation_sha'],
+            'providerFileIdentitySha256': _sha(journal_canon(row['provider_file_identity']).encode())
+            if row['provider_file_identity'] is not None else None,
+            'previousProviderAttestationSha256': row['previous_provider_attestation_sha']}
+
+
+def _recovery_state(intent, actual, current):
+    if intent['schema'] == V1:
+        staged = _journal_successor(_original_journal(intent), intent)
+        activated = _journal_successor(staged, intent, activate=True)
+        before = [intent['oldAttestation'], intent['oldRoute'], intent['oldRoute'],
+                  _bytes({**intent['oldLedger'], 'epoch': intent['oldLedger']['epoch'] + 1,
+                          'phase': 'upgrading'}).decode(), intent['oldMarker']]
+        _prefix(actual, before, _target_metadata(intent))
+        if current not in (staged, activated):
+            _fail('active_upgrade_recovery_journal_changed')
+        if current == activated and actual != _target_metadata(intent):
+            _fail('active_upgrade_recovery_journal_changed')
+        return
+    descriptor = intent['recovery']
+    _prefix(actual, descriptor['before'], descriptor['after'])
+    before = descriptor['journalBefore']
+    if descriptor['mode'] == 'normalize':
+        allowed = (before,)
+    else:
+        staged = _journal_successor(before, intent)
+        activated = _journal_successor(staged, intent, activate=True)
+        allowed = (before, staged, activated)
+        if current == before and actual != descriptor['before']:
+            _fail('active_upgrade_recovery_journal_changed')
+        if current == activated and actual != descriptor['after']:
+            _fail('active_upgrade_recovery_journal_changed')
+    if current not in allowed:
+        _fail('active_upgrade_recovery_journal_changed')
+
+
+def _fresh_recovery_target(intent, before, source_root, plugin_root, commit_id,
+                           accepted_provider_sha256, model_path, dimension):
+    state = Path(intent['stateRoot'])
+    review = review_local_provider(source_root=source_root, plugin_root=plugin_root,
+                                   state_root=state, commit_id=commit_id,
+                                   model_path=model_path, dimension=dimension)
+    if review['proposalSha256'] != accepted_provider_sha256:
+        _fail('reviewed_provider_proposal_changed')
+    approved = reattest(json.loads(intent['oldAttestation']), review['reviewedProvider'])
+    if approved is None:
+        _fail('provider_changed_rebuild_required')
+    proof = adopt_host_loaded_plugin(source_root, plugin_root, commit_id=commit_id,
+                                     vector_profile=approved['vectorProfile'])
+    old_route = json.loads(intent['oldRoute'])
+    if proof['vectorProfile'] != old_route['vectorProfile']:
+        _fail('active_upgrade_identity_mismatch')
+    from laya_index_host_route import written_schema
+    route = {**old_route, 'schema': written_schema(old_route['schema']),
+             **{key: proof[key] for key in
+                ('pluginRoot', 'bundleManifestSha256', 'ownershipManifestSha256')}}
+    att = attestation_record(proof=proof, journal_path=state / 'install-journal.sqlite',
+                             reattested=approved, schema=PRODUCTION_ATTESTATION_SCHEMA)
+    validate_production_provider_attestation(proof['vectorProfile'], proof, att)
+    row = {**intent['oldLedger'], 'phase': 'upgrading',
+           'epoch': json.loads(before[3])['epoch'] + 1,
+           'routeSha256': _sha(_bytes(route)),
+           'attestationSha256': _sha(journal_canon(att).encode()),
+           'providerFileIdentitySha256': _sha(journal_canon(_provider_file_identity(att)).encode())}
+    return {**intent, 'schema': V2, 'newLedger': row,
+            'newRoute': _bytes(route).decode(), 'newAttestation': journal_canon(att),
+            'newMarker': _bytes(_intent_ledger(intent).marker(row)).decode(),
+            'newProof': {key: proof[key] for key in
+                         ('pluginRoot', 'sourceCommit', 'bundleManifestSha256',
+                          'ownershipManifestSha256', 'vectorProfile')},
+            'reviewSha256': review['proposalSha256']}
+
+
+def _verify_recovery_project(journal, original):
+    """Bind recovery writes to the journal's project directory and scope."""
+    import laya_install_journal as installer_journal
+    _path, connection = installer_journal._open(journal, write=False)
+    try:
+        connection.execute('BEGIN')
+        bound = installer_journal._row(connection)
+        if (installer_journal._project(original) != (
+                bound['project_root'], bound['project_dev'], bound['project_ino']) or
+                bound['scope_id'] != original['scopeId']):
+            raise installer_journal.JournalEvidenceError('recovery_project_identity_changed')
+    finally:
+        connection.close()
+
+
+def _recover_upgrade(intent, source_root, plugin_root, commit_id,
+                      accepted_provider_sha256, model_path, dimension):
+    state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    journal = state / 'install-journal.sqlite'
+    _backup_proof(intent, verify_new=False)
+    if build.read(state) != intent['oldRecord']:
+        _fail('active_upgrade_build_binding_changed')
+    if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
+        _fail('active_upgrade_restore_store_changed')
+    from laya_index_host_route import (MAX_SETTINGS_BYTES, _derived_collections,
+                                       _read_regular, settings_identity_digest)
+    original = json.loads(intent['oldRoute'])
+    _verify_recovery_project(journal, original)
+    try:
+        settings = project_dir.settings_path(project)
+        if settings is None:
+            _fail('active_upgrade_settings_changed')
+        derived = _derived_collections(original, project,
+                                        _read_regular(settings, MAX_SETTINGS_BYTES))
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+        _fail('active_upgrade_settings_changed')
+    if settings_identity_digest(project, derived) != original['settingsSha256']:
+        _fail('active_upgrade_settings_changed')
+    actual = _metadata(intent)
+    current = _journal_snapshot(inspect_journal(journal))
+    if current['newWriteSeen']:
+        _fail('active_upgrade_rollback_forward_only')
+    _recovery_state(intent, actual, current)
+    _wait_for_sockets(intent)
+    same = (intent['newProof']['pluginRoot'] == str(plugin_root) and
+            intent['newProof']['sourceCommit'] == commit_id and
+            intent['reviewSha256'] == accepted_provider_sha256)
+    resume_switch = intent['schema'] == V2 and intent['recovery']['mode'] == 'switch' and same
+    if resume_switch:
+        try:
+            _verify_recovery_target(intent)
+        except (OSError, ValueError, RuntimeError):
+            resume_switch = False
+    if not resume_switch:
+        after = list(actual)
+        if current['state'] == 'pending' and _sha(actual[2].encode()) not in (
+                current['selectedRouteSha256'], current['pendingRouteSha256']):
+            after[2] = intent['newRoute']
+        normalized = {**intent, 'schema': V2, 'recovery': {
+            'mode': 'normalize', 'before': actual, 'after': after,
+            'journalBefore': current}}
+        _validate_recovery(normalized)
+        _verify_recovery_project(journal, original)
+        build._write_json(_intent_path(state), normalized, replace=True, max_bytes=LIMIT)
+        _recovery_step('normalize-descriptor')
+        if actual[2] != after[2]:
+            _verify_recovery_project(journal, original)
+            inactive._atomic_expected(_metadata_paths(intent)[2],
+                                      actual[2].encode(), after[2].encode())
+            _recovery_step('normalize-route')
+        if _metadata(intent) != after or _journal_snapshot(inspect_journal(journal)) != current:
+            _fail('active_upgrade_recovery_journal_changed')
+        intent = _fresh_recovery_target(normalized, after, source_root, plugin_root,
+                                         commit_id, accepted_provider_sha256,
+                                         model_path, dimension)
+        intent['recovery'] = {'mode': 'switch', 'before': after,
+                              'after': _target_metadata(intent), 'journalBefore': current}
+        _validate_recovery(intent)
+        _verify_recovery_project(journal, original)
+        build._write_json(_intent_path(state), intent, replace=True, max_bytes=LIMIT)
+        _recovery_step('switch-descriptor')
+    descriptor = intent['recovery']
+    current = _journal_snapshot(inspect_journal(journal))
+    staged = _journal_successor(descriptor['journalBefore'], intent)
+    activated = _journal_successor(staged, intent, activate=True)
+    if current == descriptor['journalBefore']:
+        _verify_recovery_target(intent)
+        if current['state'] == 'pending':
+            result = cas_retarget_pending(journal, current['epoch'], descriptor['before'][2].encode(),
+                                           current['pending'], current['pendingRouteSha256'],
+                                           inspect_full_plugin_candidate(str(plugin_root)),
+                                           intent['newRoute'].encode())
+        else:
+            result = cas_stage_update(journal, current['epoch'],
+                                       inspect_full_plugin_candidate(str(plugin_root)),
+                                       intent['newRoute'].encode())
+        if _journal_snapshot(result) != staged:
+            _fail('active_upgrade_recovery_journal_changed')
+        _recovery_step('cas')
+        current = staged
+    if current == staged:
+        for index, (path, before, after) in enumerate(zip(
+                _metadata_paths(intent), descriptor['before'], descriptor['after'])):
+            _verify_recovery_project(journal, original)
+            inactive._atomic_expected(path, before.encode(), after.encode())
+            _recovery_step('metadata-' + str(index))
+        _verify_recovery_target(intent)
+        _verify_recovery_project(journal, original)
+        result = cas_activate(journal, current['epoch'], intent['newRoute'].encode())
+        if _journal_snapshot(result) != activated:
+            _fail('active_upgrade_recovery_journal_changed')
+        _recovery_step('activate')
+    elif current != activated:
+        _fail('active_upgrade_recovery_journal_changed')
+    if (_metadata(intent) != descriptor['after'] or
+            _journal_snapshot(inspect_journal(journal)) != activated or
+            inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']):
+        _fail('active_upgrade_recheck_failed')
+    _verify_recovery_project(journal, original)
+    row = _intent_ledger(intent).change(state / fresh.LEDGER,
+                                       intent['newLedger']['epoch'], 'upgrading', 'active')
+    if (row['routeSha256'] != intent['newLedger']['routeSha256'] or
+            _intent_ledger(intent).classify(project, _metadata_paths(intent)[4],
+                                             _metadata_paths(intent)[2]) != 'candidate'):
+        _fail('active_upgrade_selection_unconfirmed')
+    return {'status': 'active_upgrade_complete', 'routeSha256': row['routeSha256'],
+            'vectorCounts': intent['counts'], 'backup': intent['backup'],
+            'journalEpoch': activated['epoch']}
+
+
+def _verify_recovery_target(intent):
+    proof = inspect_full_plugin_candidate(intent['newProof']['pluginRoot'])
+    if any(proof[key] != intent['newProof'][key] for key in intent['newProof']):
+        _fail('active_upgrade_new_bundle_changed')
+    att = json.loads(intent['newAttestation'])
+    validate_production_provider_attestation(proof['vectorProfile'], proof, att)
+    if _sha(journal_canon(_provider_file_identity(att)).encode()) != \
+            intent['newLedger']['providerFileIdentitySha256']:
+        _fail('active_upgrade_new_provider_changed')
 
 
 def _fence(intent):
@@ -377,6 +799,11 @@ def _replace_ledger(path, before, after, ledger=None):
 
 
 def _switch(intent):
+    if intent['schema'] == V2:
+        row, current = _completed_recovery(intent)
+        return {'status': 'active_upgrade_complete', 'routeSha256': row['routeSha256'],
+                'vectorCounts': inactive._store_counts(intent['oldRecord']['identity']),
+                'backup': intent['backup'], 'journalEpoch': current['epoch']}
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
     ledger = _intent_ledger(intent)
     journal = state / 'install-journal.sqlite'
@@ -550,6 +977,9 @@ def finished_intent_receipt(state, project, intent):
     ledger = _intent_ledger(intent)
     row = ledger.load(state / ledger.name)
     journal = inspect_journal(state / 'install-journal.sqlite')
+    if intent['schema'] == V2:
+        _completed_recovery(intent)
+        inactive._store_counts(intent['oldRecord']['identity'])
     current = row['routeSha256']
     if (row['phase'] != 'active' or
             current not in (intent['oldLedger']['routeSha256'],
@@ -585,7 +1015,37 @@ def _reextracted(intent, plugin_root):
     return live['ownershipManifestSha256'] != intent['newProof']['ownershipManifestSha256']
 
 
-def finish_activated(*, project_root, state_root):
+def _completed_recovery(intent):
+    state = Path(intent['stateRoot'])
+    row = _intent_ledger(intent).load(state / fresh.LEDGER)
+    current = _journal_snapshot(inspect_journal(state / 'install-journal.sqlite'))
+    expected = _target_metadata(intent)
+    expected[3] = _bytes({**intent['newLedger'], 'phase': 'active',
+                          'epoch': intent['newLedger']['epoch'] + 1}).decode()
+    if (intent['recovery']['mode'] != 'switch' or _metadata(intent) != expected or
+            current['state'] != 'active' or current['pending'] is not None or
+            current['selected'] != _target_identity(intent) or
+            current['selectedRouteSha256'] != intent['newLedger']['routeSha256'] or
+            current['providerAttestationSha256'] != intent['newLedger']['attestationSha256'] or
+            current['providerFileIdentitySha256'] !=
+            intent['newLedger']['providerFileIdentitySha256']):
+        _fail('active_upgrade_prior_unsettled')
+    return row, current
+
+
+def upgrade_fenced(state_root):
+    path = Path(state_root) / fresh.LEDGER
+    return path.exists() and fresh._load(path)['phase'] == 'upgrading'
+
+
+def recovery_attestation(project_root, state_root):
+    intent = _load_intent(Path(state_root), Path(project_root))
+    if intent is None:
+        _fail('active_upgrade_intent_missing')
+    return json.loads(intent['oldAttestation'])
+
+
+def finish_activated(*, project_root, state_root, requested_root=None):
     """Finish an upgrade that stopped after its journal switched; None otherwise.
 
     A worker can stop after ``cas_activate`` and before the ledger leaves
@@ -609,11 +1069,24 @@ def finish_activated(*, project_root, state_root):
         intent = _load_intent(state, project)
         if intent is None or _intent_ledger(intent).origin != ledger.origin:
             return None
+        if (intent['schema'] == V2 or
+                (requested_root is not None and
+                 intent['newProof']['pluginRoot'] != str(requested_root))):
+            return None
         row = ledger.load(state / ledger.name)
         current = inspect_journal(journal)
         if (row != intent['newLedger'] or row['phase'] != 'upgrading' or
                 current['state'] != 'active' or
                 current['selectedRouteSha256'] != intent['newLedger']['routeSha256']):
+            return None
+        if current['newWriteSeen']:
+            _fail('active_upgrade_rollback_forward_only')
+        from laya_product_bundle import BundleEvidenceError
+        try:
+            live = inspect_full_plugin_candidate(intent['newProof']['pluginRoot'])
+        except BundleEvidenceError:
+            return None
+        if any(live[key] != intent['newProof'][key] for key in intent['newProof']):
             return None
         _backup_proof(intent)
         return _switch(intent)
@@ -638,11 +1111,29 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if restore:
             if intent is None:
                 _fail('active_upgrade_intent_missing')
+            if intent['schema'] == V2:
+                _fail('active_upgrade_rollback_forward_only')
             _backup_proof(intent, verify_new=False)
             return _restore(intent)
         if intent is not None:
             current_row = ledger.load(state / ledger.name)
             current_journal = inspect_journal(state / 'install-journal.sqlite')
+            if (current_row['phase'] == 'upgrading' and current_journal['newWriteSeen'] and
+                    (current_journal['state'] == 'pending' or
+                     current_journal['selectedRouteSha256'] == intent['newLedger']['routeSha256'])):
+                _fail('active_upgrade_rollback_forward_only')
+            if (current_row['phase'] == 'upgrading' and
+                    (intent['schema'] == V2 or
+                     ((current_journal['state'] == 'pending' or
+                       (current_journal['state'] == 'active' and
+                        current_journal['selectedRouteSha256'] ==
+                        intent['newLedger']['routeSha256'])) and
+                      (intent['newProof']['pluginRoot'] != str(plugin_root) or
+                       intent['newProof']['sourceCommit'] != commit_id or
+                       intent['reviewSha256'] != accepted_provider_sha256 or
+                       _reextracted(intent, plugin_root))))):
+                return _recover_upgrade(intent, source_root, plugin_root, commit_id,
+                                         accepted_provider_sha256, model_path, dimension)
             settled_restored = (
                 current_row['phase'] == 'active' and
                 current_row['routeSha256'] == intent['oldLedger']['routeSha256'] and

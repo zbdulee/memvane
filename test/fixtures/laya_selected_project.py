@@ -75,6 +75,9 @@ class SelectedProject(unittest.TestCase):
             'MEMVANE_TEST_RUNTIME_ROOT': str(self.home / 'runtime-root')})
         patcher.start()
         self.addCleanup(patcher.stop)
+        budget = mock.patch('hook_budget._deadline', None)
+        budget.start()
+        self.addCleanup(budget.stop)
         self.project = self.home / 'project'
         self.auto = self.project / '.auto-context'
         (self.auto / 'wiki').mkdir(parents=True)

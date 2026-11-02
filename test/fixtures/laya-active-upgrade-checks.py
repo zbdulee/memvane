@@ -50,7 +50,8 @@ class ActiveUpgradeCase(unittest.TestCase):
         for path, value in files:
             path.write_bytes(value)
             path.chmod(0o600)
-        self.intent = {'stateRoot': str(self.state), 'projectRoot': str(self.project),
+        self.intent = {'schema': upgrade.V1,
+                       'stateRoot': str(self.state), 'projectRoot': str(self.project),
                        'oldLedger': self.old, 'newLedger': self.new,
                        'oldRoute': self.old_route.decode(),
                        'newRoute': self.new_route.decode(),

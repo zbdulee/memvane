@@ -459,6 +459,8 @@ class ReviewFixTests(MoveCase):
         self.assertEqual(move.status().get('pendingMoves', []), [])
 
     def test_hook_main_accepts_the_route_moved_between_its_two_reads(self):
+        import hook_budget
+        previous_deadline = hook_budget._deadline
         payload = self.home / 'payload.json'
         payload.write_text(json.dumps({'prompt': 'synthetic', 'cwd': str(self.project),
                                        'hook_event_name': 'UserPromptSubmit'}))
@@ -480,6 +482,9 @@ class ReviewFixTests(MoveCase):
                                   str(self.project)])
         self.assertEqual(code, 0)
         self.assertEqual(served, [str(self.target / 'install-journal.sqlite')])
+        self.doCleanups()
+        self.assertEqual(hook_budget._deadline, previous_deadline,
+                         'a hook invocation must not leave its budget in the next fixture')
 
     def test_creating_the_memvane_base_fsyncs_its_parent(self):
         import laya_state_move as move
@@ -506,30 +511,44 @@ class ReviewFixTests(MoveCase):
         self.assertIn(grant, grants.read_text())
 
     def test_a_writer_waiting_on_the_discovery_lock_follows_the_move(self):
-        import laya_state_move as move
         import laya_wiki_discovery as discovery
         before = self.decision()
-        results, entered = [], threading.Event()
+        results, opened, moved = [], threading.Event(), threading.Event()
+        old_lock = discovery._paths(before)[2]
+        real_open = os.open
 
-        def pause(name):
-            if name == 'prepared':
-                entered.set()
-                time.sleep(0.3)
+        def pause_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if threading.current_thread() is thread and path == old_lock:
+                # Keep the old lock FD across the real rename. Its finite
+                # acquisition budget starts when this scheduled call resumes.
+                opened.set()
+                if not moved.wait(5):
+                    os.close(fd)
+                    raise AssertionError('state move did not release the paused writer')
+            return fd
 
         def writer():
-            entered.wait(5)
             try:
                 results.append(discovery.record_grant(before, 'session_start', wait=3.0))
             except Exception as exc:  # noqa: BLE001
                 results.append(exc)
         thread = threading.Thread(target=writer)
-        thread.start()
-        with mock.patch.object(move, '_step', pause):
-            self.run_worker()
-        thread.join()
+        with mock.patch.object(os, 'open', pause_open):
+            thread.start()
+            try:
+                self.assertTrue(opened.wait(5))
+                self.run_worker()
+            finally:
+                moved.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
         self.assertIsInstance(results[0], str, results)
         _state, grants, _lock = discovery._paths(self.decision())
         self.assertIn(results[0], grants.read_text())
+        with discovery._locked(_lock, 0):
+            with self.assertRaisesRegex(discovery.DiscoveryBusy, 'lock_busy'):
+                discovery.record_grant(self.decision(), 'session_start', wait=0)
 
     def test_recall_with_an_unusable_provider_manifest_reaches_the_lexical_search(self):
         decision = self.decision()
