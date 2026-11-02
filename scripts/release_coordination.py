@@ -10,6 +10,7 @@ import fcntl
 import json
 import math
 import os
+import re
 from pathlib import Path
 import selectors
 import signal
@@ -22,13 +23,127 @@ import time
 LOCK = 'bundle-auto-upgrade.lock'
 MAX_STATES = 128
 MAX_WIRE_BYTES = 1024 * 1024
-COMPLETE = frozenset(('current', 'active_upgrade_complete', 'companion_sealed'))
+COMPLETE = frozenset(('current', 'active_upgrade_complete', 'companion_sealed',
+                      'bound_upgrade_complete', 'inactive_upgrade_complete',
+                      'state_move_complete', 'project_dir_move_complete'))
 
 
 class ReleaseError(ValueError):
     def __init__(self, reason):
         self.reason = reason
         super().__init__(reason)
+
+
+def _completed_rows(results):
+    """Every reported phase must be a known terminal outcome, not just a row."""
+    if not isinstance(results, list) or not results or len(results) > MAX_STATES * 2:
+        raise ReleaseError('upgrade_incomplete')
+    rows = []
+    learning = {'learningState': {'learning_state_moved'},
+                'selector': {'selector_not_prepared', 'selector_ready', 'selector_prepared'},
+                'selectorWarm': {'selector_warm_current', 'selector_warm'}}
+    for row in results:
+        if (not isinstance(row, dict) or not isinstance(row.get('stateRoot'), str)
+                or not Path(row['stateRoot']).is_absolute()):
+            raise ReleaseError('worker_result_invalid')
+        if 'status' not in row:
+            phases = set(row) - {'stateRoot'}
+            if not phases or not phases <= set(learning) or any(
+                    not isinstance(row[key], str) or row[key] not in learning[key] for key in phases):
+                raise ReleaseError('upgrade_incomplete')
+            continue
+        if (set(row) - {'stateRoot', 'status', 'reason', 'kind', 'file', 'stateMove', 'projectDirMove'}
+                or not isinstance(row.get('status'), str) or row['status'] not in COMPLETE
+                or not isinstance(row.get('kind'), str) or row['kind'] not in ('active', 'bound', 'inactive')
+                or ('reason' in row and not isinstance(row['reason'], str))):
+            raise ReleaseError('upgrade_incomplete')
+        required = {'active_upgrade_complete': 'active', 'bound_upgrade_complete': 'bound',
+                    'inactive_upgrade_complete': 'inactive', 'project_dir_move_complete': 'active'}
+        if row['status'] in required and row['kind'] != required[row['status']]:
+            raise ReleaseError('upgrade_incomplete')
+        for key, allowed in (('stateMove', {'state_move_complete', 'state_move_current'}),
+                             ('projectDirMove', {'project_dir_move_complete', 'project_dir_current'})):
+            if key not in row:
+                continue
+            phase = row[key]
+            if (not isinstance(phase, dict) or not isinstance(phase.get('status'), str)
+                    or phase['status'] not in allowed
+                    or ('stateRoot' in phase and phase['stateRoot'] != row['stateRoot'])):
+                raise ReleaseError('upgrade_incomplete')
+        rows.append(row)
+    states = [row['stateRoot'] for row in rows]
+    if not rows or len(states) != len(set(states)):
+        raise ReleaseError('worker_result_invalid')
+    return rows
+
+
+def _preferred_owner(upgrade, state, project, root, expected_kind):
+    """Stable validated journal/build metadata; no model or repeated bundle hash."""
+    from laya_install_journal import inspect_journal
+    import laya_initial_build as build
+    state = Path(state)
+    _directory(state)
+    path = state / 'install-journal.sqlite'
+    journal = inspect_journal(path)
+    record = build.read(state)
+    kind, classified = upgrade.classify(state)
+    if (kind != expected_kind or kind not in ('active', 'bound', 'inactive')
+            or not isinstance(journal, dict) or type(journal.get('epoch')) is not int
+            or journal['epoch'] < 1 or journal.get('projectRoot') != project
+            or journal.get('journalPath') != str(path)
+            or not isinstance(journal.get('scopeId'), str)
+            or not re.fullmatch('[0-9a-f]{32}', journal['scopeId'])
+            or type(journal.get('newWriteSeen')) is not bool
+            or (record is not None and not isinstance(record, dict))):
+        raise ReleaseError('preferred_owner_not_selected')
+    if record is not None and (type(record.get('epoch')) is not int or record['epoch'] < 1
+            or not isinstance(record.get('phase'), str)
+            or record['phase'] not in ('registered', 'building', 'sealed', 'blocked', 'bound')):
+        raise ReleaseError('preferred_owner_not_selected')
+    if kind == 'active':
+        if journal.get('state') not in ('active', 'restored_old') or journal.get('pending') is not None:
+            raise ReleaseError('preferred_owner_not_selected')
+        identity = journal.get('selected')
+        for key in ('selectedRouteSha256', 'providerAttestationSha256', 'providerFileIdentitySha256'):
+            if not isinstance(journal.get(key), str) or not re.fullmatch('[0-9a-f]{64}', journal[key]):
+                raise ReleaseError('preferred_owner_not_selected')
+    else:
+        if (journal.get('state') != 'candidate_ready' or journal.get('selected') is not None
+                or journal.get('previous') is not None or journal.get('newWriteSeen') is not False
+                or not isinstance(record, dict) or type(record.get('epoch')) is not int
+                or record['epoch'] < 1 or record.get('phase') not in (
+                    ('bound',) if kind == 'bound' else ('registered', 'building', 'sealed', 'blocked'))):
+            raise ReleaseError('preferred_owner_not_selected')
+        identity = journal.get('pending')
+    if (not isinstance(identity, dict) or classified != identity
+            or identity.get('pluginRoot') != root or identity.get('bundleKind') != 'full_plugin'
+            or not isinstance(identity.get('vectorProfile'), dict)):
+        raise ReleaseError('preferred_owner_not_selected')
+    for key, pattern in (('installId', '[0-9a-f]{32}'), ('generation', 'g-[0-9a-f]{32}'),
+                         ('sourceCommit', '[0-9a-f]{40}|[0-9a-f]{64}'),
+                         ('bundleManifestSha256', '[0-9a-f]{64}'),
+                         ('ownershipManifestSha256', '[0-9a-f]{64}')):
+        if not isinstance(identity.get(key), str) or not re.fullmatch(pattern, identity[key]):
+            raise ReleaseError('preferred_owner_not_selected')
+    profile = identity['vectorProfile'].get('profileId')
+    if not isinstance(profile, str) or not re.fullmatch('[0-9a-f]{64}', profile):
+        raise ReleaseError('preferred_owner_not_selected')
+    if kind != 'active':
+        expected = {'stateRoot': str(state), 'projectRoot': project, 'journalPath': str(path),
+                    'routeFile': str(state / 'reviewed-route.json'),
+                    'installId': identity['installId'], 'scopeId': journal.get('scopeId'),
+                    'vectorProfileId': profile, 'routeSha256': journal.get('pendingRouteSha256')}
+        if (not isinstance(record.get('identity'), dict)
+                or any(record['identity'].get(key) != value for key, value in expected.items())
+                or not isinstance(expected['routeSha256'], str)
+                or not re.fullmatch('[0-9a-f]{64}', expected['routeSha256'])):
+            raise ReleaseError('preferred_owner_not_selected')
+    # Inspectors validate their own on-disk schemas. Compare complete snapshots
+    # again so an epoch/phase/owner switch cannot be combined into one receipt.
+    if (inspect_journal(path) != journal or build.read(state) != record
+            or upgrade.classify(state) != (kind, identity)):
+        raise ReleaseError('release_state_changed')
+    return {'stateRoot': str(state), 'pluginRoot': root}
 
 
 def _node(info):
@@ -232,12 +347,12 @@ class PreparedWorker:
         if (set(value) != {'project', 'results', 'owners'} or value['project'] != self.project
                 or not isinstance(value['results'], list) or not isinstance(value['owners'], list)):
             raise ReleaseError('worker_result_invalid')
-        rows = [r for r in value['results'] if isinstance(r, dict) and 'status' in r]
-        if not rows or any(r['status'] not in COMPLETE for r in rows):
-            raise ReleaseError('upgrade_incomplete')
+        rows = _completed_rows(value['results'])
         states = {r.get('stateRoot') for r in rows}
         owners = value['owners']
         if (not owners or any(not isinstance(r, dict) or set(r) != {'stateRoot', 'pluginRoot'}
+                             or not isinstance(r['stateRoot'], str)
+                             or not isinstance(r['pluginRoot'], str)
                              or r['pluginRoot'] != self.root for r in owners)
                 or {r['stateRoot'] for r in owners} != states or len(owners) != len(states)):
             raise ReleaseError('preferred_owner_not_selected')
@@ -278,11 +393,9 @@ def _worker(root, project):
     signal.alarm(1800)
     try:
         rows = upgrade.run(project, root=Path(root))
-        roots = sorted({r['stateRoot'] for r in rows if r.get('stateRoot') and 'status' in r})
-        owners = []
-        for state in roots:
-            _kind, identity = upgrade.classify(Path(state))
-            owners.append({'stateRoot': state, 'pluginRoot': identity.get('pluginRoot')})
+        finished = _completed_rows(rows)
+        owners = [_preferred_owner(upgrade, row['stateRoot'], project, root, row['kind'])
+                  for row in sorted(finished, key=lambda row: row['stateRoot'])]
         print(json.dumps({'project': project, 'results': rows, 'owners': owners}), flush=True)
         return 0
     finally:

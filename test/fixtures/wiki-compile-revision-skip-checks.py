@@ -496,7 +496,9 @@ class RevisionSkipChecks(unittest.TestCase):
     def test_overlapping_worker_without_run_lock_pays_twice(self):
         # Control for the test above: the pre-lock behavior really re-extracts.
         with patch.object(worker, 'try_run_lock',
-                          side_effect=lambda _root: os.open(os.devnull, os.O_RDONLY)):
+                          side_effect=lambda root: os.open(
+                              worker.cp.under(root, worker.COMPILE_RUN_LOCK),
+                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)):
             _queue, nested, _first, _after = self.overlapping_worker_extractions()
         self.assertEqual(nested[0]['processed'], 1)  # the overlap recovered E1 and paid again
         self.assertGreaterEqual(len(self.extractor_calls), 2)

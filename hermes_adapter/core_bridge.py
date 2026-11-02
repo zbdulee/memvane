@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -79,13 +80,29 @@ def _laya_route_state(action: str, cwd: str) -> str:
     """Read the installed adapter's own selector before any QMD side effect."""
     selector = Path(__file__).resolve().parent.parent / "core" / "laya_index_host_route.py"
     try:
-        result = subprocess.run(
-            [sys.executable, str(selector), "classify", action, cwd],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=2.0, env=_env(), check=False,
-        )
+        if action == "recall":
+            # Only the hook classifier distinguishes an upgrade fence from an
+            # ordinary blocked route. Its event file has the same bounded
+            # payload contract as the command-hook dispatcher.
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as payload:
+                json.dump({"cwd": cwd}, payload)
+                payload.flush()
+                result = subprocess.run(
+                    [sys.executable, str(selector), "classify-hook", action,
+                     payload.name, cwd],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=2.0, env=_env(), check=False,
+                )
+            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "upgrading"}
+        else:
+            result = subprocess.run(
+                [sys.executable, str(selector), "classify", action, cwd],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=2.0, env=_env(), check=False,
+            )
+            allowed = {"legacy", "candidate", "blocked", "worktree"}
         state = result.stdout.strip()
-        return state if result.returncode == 0 and state in {"legacy", "candidate", "blocked", "worktree"} else "blocked"
+        return state if result.returncode == 0 and state in allowed else "blocked"
     except (OSError, subprocess.TimeoutExpired):
         return "blocked"
 
@@ -148,7 +165,9 @@ def recall_context(
             return None
         prompt = user_message or kwargs.get("message") or ""
         route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
-        if route_state in ("candidate", "worktree"):
+        if route_state == "upgrading":
+            return None
+        if route_state in ("candidate", "worktree", "preview"):
             selected_route = True
             # The installed core rechecks the route and the installer-owned
             # journal before opening the selected DB. Never start QMD here.
@@ -156,12 +175,13 @@ def recall_context(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from laya_index_host_route import select_route
-            from laya_host_response import serve_selected
+            from laya_host_response import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
-            if decision.get("state") not in ("candidate", "worktree"):
+            if decision.get("state") != route_state:
                 return {"context": "[memvane] selected route changed; request refused"}
-            return _with_session_notice(selected_cwd, serve_selected(
+            serve = serve_preview if route_state == "preview" else serve_selected
+            return _with_session_notice(selected_cwd, serve(
                 "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))
         if route_state != "legacy":
             return _with_session_notice(_cwd(cwd, **kwargs), {

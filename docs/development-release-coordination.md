@@ -51,6 +51,20 @@ resource guard is replaced. Its result includes the ordinary upgrade outcomes
 and the actual bound `pluginRoot` for each state root. A deferred/refused outcome
 or another selected root fails `finish()`.
 
+Completion checks the outcome and installation kind together. Active, bound and
+inactive upgrades, state moves and project-folder moves have separate terminal
+codes. State/project move outcomes remain structured fields on the result row;
+a completed bundle step with an unfinished move does not complete the release.
+Unknown or malformed rows and unfinished learning upkeep are refused.
+
+The child compares validated journal, build-record and classification snapshots
+at the final state root. An active installation needs its selected owner and no
+pending identity; a pending journal's previous owner cannot authorize completion.
+Bound/inactive installations need a candidate-ready pending identity and the
+matching build phase and identity. The preferred root must match, and repeated
+observations must agree on epoch, phase and identity. These metadata checks do
+not replace the separate full read/write and runtime-path release gates.
+
 Readiness is bounded to at most 60 seconds; the parent run deadline is at most
 2100 seconds. The child uses the ordinary 1800-second upgrade alarm. An alarm
 is not a guarantee of immediate interruption inside a native SQLite call.

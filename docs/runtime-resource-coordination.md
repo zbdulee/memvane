@@ -52,8 +52,10 @@ development execution guard is separate; see
   `provider_unavailable` (lexical results). An idle listener holds no slot. A request is read within
   10 seconds of accept and answered within 15 (query) or 320 (document). A
   worker no binding uses and no request is using stops after 60 seconds. A refusal records `resource_deferred` (not an attempt)
-  for each waiting installation and the service retries the load itself
-  after 5–60 seconds. The service adopts an installation by holding its
+  for each waiting installation and the service rechecks admission every five
+  seconds, independently of prior startup failures. This keeps fresh recovery
+  observations inside the seven-second maximum gap; startup-failure backoff and
+  cooldown remain separate. The service adopts an installation by holding its
   `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
   writing its owner state; a route change (upgrade fence, restore,
   withdrawal) releases that installation within one second. A dead worker
@@ -138,6 +140,24 @@ development execution guard is separate; see
   model peak a second time. System observations include other projects,
   sessions and user workloads without scanning or terminating them. See the
   platform policy section below for estimate provenance and compatibility.
+
+## Hosted learning and project-folder moves
+
+Hosted learning uses the resident's ordinary version/replacement policy. A ready
+host whose ready learning service has a different signature returns the existing
+version-mismatch fallback without polling to the request deadline. Starting or
+replacing services keep their bounded preparation wait. A host protocol mismatch
+uses the same fallback with its fixed `host_reason` retained in diagnostics.
+
+A project-folder move holds the operation, compile-run, settings and card locks
+for every existing folder in a fixed order. Compile-run locks precede discovery
+and card locks; a busy compile defers the move before its fence. Rename preserves
+the legacy inode without creating the destination, while adoption holds the
+destination inode during merges. Changed folder membership or dev/ino defers the
+move. Current settings/card writers recheck the named inode and active path after
+flock; this check does not retrofit older installed writers. A compile worker
+rechecks its route, configuration, queue and named lock after acquiring the run
+lock, before recovering or claiming work.
 
 ## Durable wake and restart behavior
 

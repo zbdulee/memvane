@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
@@ -189,13 +189,19 @@ test('declining never selects a route or creates index, wiki or learning state',
       assert.equal(result.stdout, '', action);
       assert.equal(result.stderr, '', action);
     }
-    // Only the choice file exists; the project folder is untouched.
+    // Only the choice record and its persistent lock exist; the project is untouched.
     assert.deepEqual(readdirSync(join(project, '.memvane')), ['settings.json']);
     assert.deepEqual(readdirSync(home).sort(), ['.local', 'alpha']);
     assert.deepEqual(readdirSync(join(home, '.local', 'state', 'memvane')), ['onboarding']);
     const file = choiceFile(home, project);
-    assert.deepEqual(readdirSync(join(home, '.local', 'state', 'memvane', 'onboarding')),
-      [file.split('/').pop()]);
+    const lock = file.replace(/\.json$/, '.lock');
+    assert.deepEqual(readdirSync(join(home, '.local', 'state', 'memvane', 'onboarding')).sort(),
+      [file.split('/').pop(), lock.split('/').pop()].sort());
+    const lockInfo = lstatSync(lock);
+    assert.ok(lockInfo.isFile() && !lockInfo.isSymbolicLink());
+    assert.equal(lockInfo.mode & 0o777, 0o600);
+    assert.equal(lockInfo.uid, process.getuid());
+    assert.equal(lockInfo.nlink, 1);
     const record = JSON.parse(readFileSync(file, 'utf8'));
     assert.equal(record.projectRoot, realpathSync(project));
     assert.equal(record.never, true);
@@ -274,12 +280,34 @@ test('a choice recorded under a case alias of the project path applies to the pr
     const alias = project.replace(/alpha$/, 'ALPHA');
     if (!existsSync(join(alias, '.memvane', 'settings.json'))) return; // case-sensitive file system
     assert.equal(choice(home, 'onboarding-never', alias).status, 0);
+    // Node realpath preserves a caller's case on macOS; the product uses
+    // F_GETPATH, so compare its actual canonical record paths for both inputs.
+    const canonicalStatus = choice(home, 'onboarding-status', project);
+    const aliasStatus = choice(home, 'onboarding-status', alias);
+    assert.equal(canonicalStatus.status, 0);
+    assert.equal(aliasStatus.status, 0);
+    assert.equal(aliasStatus.body.projectRoot, canonicalStatus.body.projectRoot);
+    assert.equal(canonicalStatus.body.recordPath, choiceFile(home, project));
+    assert.equal(aliasStatus.body.recordPath, canonicalStatus.body.recordPath);
+    const lock = canonicalStatus.body.recordPath.replace(/\.json$/, '.lock');
+    const originalLock = lstatSync(lock);
+    assert.ok(originalLock.isFile() && !originalLock.isSymbolicLink());
+    assert.equal(originalLock.mode & 0o777, 0o600);
+    assert.equal(originalLock.uid, process.getuid());
+    assert.equal(originalLock.nlink, 1);
     assert.equal(sessionStart(home, project, 'sess-1'), '');
     assert.equal(sessionStart(home, alias, 'sess-1'), '');
     assert.equal(choice(home, 'onboarding-resume', project).body.changesApplied, 1);
     assert.equal(choice(home, 'onboarding-skip', project, '--session', 'sess-2').status, 0);
     assert.equal(sessionStart(home, alias, 'sess-2'), '');
-    assert.equal(readdirSync(join(home, '.local', 'state', 'memvane', 'onboarding')).length, 1);
+    assert.deepEqual(readdirSync(join(home, '.local', 'state', 'memvane', 'onboarding')).sort(),
+      [choiceFile(home, project).split('/').pop(), lock.split('/').pop()].sort());
+    const resumedLock = lstatSync(lock);
+    assert.equal(resumedLock.dev, originalLock.dev);
+    assert.equal(resumedLock.ino, originalLock.ino);
+    assert.equal(resumedLock.mode & 0o777, 0o600);
+    assert.equal(resumedLock.uid, process.getuid());
+    assert.equal(resumedLock.nlink, 1);
   } finally {
     removeTemp(home);
   }
@@ -319,4 +347,16 @@ test('a skip older than the retention window shows the notice again and is prune
   } finally {
     removeTemp(home);
   }
+});
+
+test('choice capacity and real process writers preserve accepted session decisions', () => {
+  const result = spawnSync('python3', ['-B', 'test/fixtures/onboarding-choice-boundaries-checks.py'], {
+    encoding: 'utf8', timeout: 120000,
+    env: { ...process.env, QMD_SETUP_GUARD_FIXTURE: '1', PYTHONDONTWRITEBYTECODE: '1',
+      QMD_RECALL_LOG: '' },
+  });
+  if (result.stdout) process.stdout.write(result.stdout);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stderr, /Ran 9 tests/);
+  assert.match(result.stderr, /\nOK\b/);
 });

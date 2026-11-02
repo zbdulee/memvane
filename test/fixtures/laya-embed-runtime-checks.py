@@ -503,9 +503,12 @@ class MovedProvider(Base):
         _runtime, source, commit, record = self.pinned()
         host = self.home / '.claude' / 'plugins' / 'cache' / 'mkt' / 'qmd-auto-context' / '9.9.9'
         shutil.copytree(self.plugin, host)
-        with self.assertRaisesRegex(auto.UpgradeRefused,
-                                    '^provider_changed_rebuild_required$'):
-            self.upgrade_with(self.old_att, source, commit, host, [])
+        with mock.patch.object(auto, '_ensure_embed_runtime',
+                               wraps=auto._ensure_embed_runtime) as ensure:
+            with self.assertRaisesRegex(auto.UpgradeRefused,
+                                        '^provider_changed_rebuild_required$'):
+                self.upgrade_with(self.old_att, source, commit, host, [])
+            ensure.assert_not_called()
         calls = []
         result = self.upgrade_with(record, source, commit, host, calls)
         self.assertEqual(result['status'], 'active_upgrade_complete', result)

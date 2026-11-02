@@ -694,6 +694,7 @@ class GitBranchTests(MoveCase):
         (self.auto / 'compile').mkdir()
         (self.auto / 'compile' / 'source-queue.jsonl').write_text('{"queued": 1}\n')
         (self.auto / 'compile' / '.card-write.lock').write_text('')
+        (self.auto / 'compile' / '.card-write.lock').chmod(0o600)
         (self.auto / 'file-changes').mkdir()
         (self.auto / 'file-changes' / 'snapshot.json').write_text('{}')
         self.pull_rename()

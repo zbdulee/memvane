@@ -20,6 +20,7 @@ record reads as "ask" so a fault shows the notice instead of hiding it.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -42,8 +43,9 @@ import config
 import memvane_paths
 
 SCHEMA = 'memvane-onboarding-choice-v1'
-MAX_BYTES = 16384
+MAX_BYTES = 128 * 1024
 MAX_SESSIONS = 512
+LOCK_TIMEOUT_SECONDS = 2.0
 SKIP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 # Same shape event_log accepts; the id is also quoted into the notice command.
 _SESSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
@@ -102,9 +104,13 @@ def _read(path: Path, root: Path) -> dict | None:
         return None
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077
+                or info.st_size > MAX_BYTES):
             raise ValueError('onboarding_choice_unreadable')
         data = os.read(fd, MAX_BYTES + 1)
+        if len(data) > MAX_BYTES:
+            raise ValueError('onboarding_choice_unreadable')
     finally:
         os.close(fd)
     value = json.loads(data.decode('utf-8'))
@@ -165,10 +171,85 @@ def _private_dir(home=None) -> Path:
     return directory
 
 
-def _write(root: Path, value: dict, home=None) -> None:
+@contextmanager
+def _choice_lock(root: Path, home=None):
+    """Serialize writers on one persistent, private canonical-project inode."""
+    if fcntl is None or not hasattr(os, 'O_NOFOLLOW'):
+        raise ValueError('onboarding_choice_lock_unavailable')
+    directory = _private_dir(home)
+    if directory.resolve(strict=True) != directory:
+        raise ValueError('onboarding_choice_dir_unsafe')
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = None
+    locked = False
+    try:
+        parent = os.fstat(directory_fd)
+        if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid()
+                or stat.S_IMODE(parent.st_mode) != 0o700):
+            raise ValueError('onboarding_choice_dir_unsafe')
+        name = record_path(root, home).with_suffix('.lock').name
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600,
+                         dir_fd=directory_fd)
+            os.fchmod(fd, 0o600)
+        except FileExistsError:
+            fd = os.open(name, flags, dir_fd=directory_fd)
+
+        def check():
+            opened = os.fstat(fd)
+            named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            visible_parent = os.lstat(directory)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                    or stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_nlink != 1
+                    or not stat.S_ISREG(named.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+                    or not stat.S_ISDIR(visible_parent.st_mode)
+                    or visible_parent.st_uid != os.getuid()
+                    or stat.S_IMODE(visible_parent.st_mode) != 0o700
+                    or (parent.st_dev, parent.st_ino) !=
+                       (visible_parent.st_dev, visible_parent.st_ino)
+                    or directory.resolve(strict=True) != directory):
+                raise ValueError('onboarding_choice_lock_changed')
+
+        check()
+        deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except (BlockingIOError, InterruptedError):
+                check()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('onboarding_choice_lock_busy')
+                time.sleep(min(0.01, remaining))
+        # A waiting process must never acquire an unlinked/replaced inode and
+        # then publish concurrently with a writer on its replacement.
+        check()
+        yield check
+    finally:
+        try:
+            if fd is not None:
+                try:
+                    if locked:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _write(root: Path, value: dict, home=None, *, check_locked=None) -> None:
+    data = (json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n').encode()
+    if len(data) > MAX_BYTES:
+        raise ValueError('onboarding_choice_too_large')
+    # Check encoded bytes before creating a temporary or replacing old state.
     directory = _private_dir(home)
     path = record_path(root, home)
-    data = (json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n').encode()
+    if check_locked is not None:
+        check_locked()
     fd, name = tempfile.mkstemp(prefix='.write-', dir=directory)
     try:
         os.fchmod(fd, 0o600)
@@ -176,6 +257,8 @@ def _write(root: Path, value: dict, home=None) -> None:
             out.write(data)
             out.flush()
             os.fsync(out.fileno())
+        if check_locked is not None:
+            check_locked()
         os.replace(name, path)
     finally:
         if os.path.exists(name):
@@ -210,20 +293,22 @@ def skip(project, session, home=None) -> dict:
     if session is None:
         raise ValueError('onboarding_skip_session_required')
     root = _require_root(project)
-    value = _current(root, home)
-    now = _now_ms()
-    kept = [item for item in _live_skips(value, now) if item['session'] != session]
-    value['skippedSessions'] = (kept + [{'session': session, 'at': now}])[-MAX_SESSIONS:]
-    _write(root, value, home)
+    with _choice_lock(root, home) as check:
+        value = _current(root, home)
+        now = _now_ms()
+        kept = [item for item in _live_skips(value, now) if item['session'] != session]
+        value['skippedSessions'] = (kept + [{'session': session, 'at': now}])[-MAX_SESSIONS:]
+        _write(root, value, home, check_locked=check)
     return _result('onboarding_notice_skipped', root, home, session=session, changes=1)
 
 
 def never(project, home=None) -> dict:
     """Stop the automatic notice for this project until an explicit resume."""
     root = _require_root(project)
-    value = _current(root, home)
-    value['never'] = True
-    _write(root, value, home)
+    with _choice_lock(root, home) as check:
+        value = _current(root, home)
+        value['never'] = True
+        _write(root, value, home, check_locked=check)
     return _result('onboarding_notice_never', root, home, changes=1)
 
 
@@ -231,11 +316,13 @@ def resume(project, home=None) -> dict:
     """Forget a skip or decline so the notice shows again."""
     root = _require_root(project)
     removed = 0
-    try:
-        os.unlink(record_path(root, home))
-        removed = 1
-    except FileNotFoundError:
-        pass
+    with _choice_lock(root, home) as check:
+        check()
+        try:
+            os.unlink(record_path(root, home))
+            removed = 1
+        except FileNotFoundError:
+            pass
     return _result('onboarding_notice_enabled', root, home, changes=removed)
 
 
