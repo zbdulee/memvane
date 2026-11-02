@@ -29,7 +29,7 @@ BUSY = 'content_claim_busy'
 
 
 def _deadline(seconds):
-    if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= MAX_DEADLINE:
+    if type(seconds) not in (int, float) or not 0 < seconds <= MAX_DEADLINE or not math.isfinite(seconds):
         v.fail('fill_deadline_invalid')
     return time.monotonic() + seconds
 

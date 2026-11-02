@@ -337,7 +337,7 @@ class ContentFillChecks(helpers.BlobStoreCase):
         self.no_embedding()
 
     def test_16_deadline_requires_finite_positive_bounded_seconds(self):
-        for seconds in (0, -1, True, float('nan'), float('inf'), 301):
+        for seconds in (0, -1, True, float('nan'), float('inf'), 301, 10**1000):
             with self.subTest(seconds=seconds):
                 self.refused(self.fill, deadline_seconds=seconds)
         self.assertEqual((self.inputs, self.documents, self.fences), ([], [], []))

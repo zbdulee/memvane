@@ -145,7 +145,7 @@ class FillChecks(FillCase):
                        dict(max_files=65), dict(max_files=True), dict(max_bytes=0),
                        dict(max_bytes=64 * 1024 * 1024 + 1), dict(max_bytes=True),
                        dict(deadline_seconds=0), dict(deadline_seconds=float('nan')),
-                       dict(deadline_seconds=301)]:
+                       dict(deadline_seconds=301), dict(deadline_seconds=10**1000)]:
             with self.subTest(change=change):
                 self.bounded_refusal(self.fill, store, h, manifest, r, p, **change)
                 self.assert_status(store.fill_status(h, manifest, r, p), 0, False)

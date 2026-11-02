@@ -1,9 +1,10 @@
-# View candidate 세대와 lexical reader 계약
+# View candidate 세대와 lexical·vector reader 계약
 
 `laya_view_store.ViewStore`는 `BlobStore`를 확장하는 비활성 개발용 API다.
 형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
 candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
 운영 v6 reader·hook·route는 이 API를 호출하지 않는다.
+운영 embed provider·worker를 연결하거나 query embedding을 생성하지 않는다.
 
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
@@ -20,10 +21,12 @@ lifecycle, frontmatter 변경, retention·GC는 이 candidate API의 범위 밖�
 | `head(handle)` | `{view_id, gen_id, epoch, incarnation}` |
 | `fill_status(handle, manifest, recipe_id, profile_id)` | 결정적인 job ID와 durable `cursor`·`complete`, 조회는 읽기 전용 |
 | `fill_view(handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30)` | content set을 재사용하는 유계 진행 단계 |
-| `prepare_generation(handle, manifest, *, expected_head)` | 봉인한 `prepared` 세대 ID |
+| `prepare_generation(handle, manifest, *, expected_head, vector_spec=None)` | lexical-only 또는 완전 vector coverage로 봉인한 `prepared` 세대 ID |
 | `publish_generation(handle, gen_id, *, expected_head)` | 같은 view의 CAS 게시 후 head |
 | `pin_view(handle)` | 현재 게시 세대와 seal에 묶인 store 발급 `ViewPin` |
 | `search(pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None, deadline_seconds=2)` | 고정한 세대의 lexical 결과 목록 |
+| `search_exact(pin, query_vector, limit, *, profile_id, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` | 고정한 세대의 exact cosine 결과 목록 |
+| `search_hybrid(pin, fts_query, query_vector, limit, *, profile_id=None, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` | 같은 pin의 `{lexical, semantic, semantic_status}` |
 | `release(pin)` | 해당 pin 해제 |
 | `verify_views()` | 저장된 세대·head·미봉인 slot 검증, 성공 시 `True` |
 | `close()` | 연결 종료 및 모든 handle·pin 무효화 |
@@ -99,19 +102,22 @@ deadline은 유한한 `0 < seconds <= 300`이며 임의 callback을 선점하지
 ## 준비·봉인·게시
 
 세대 상태는 `building → prepared → published` 단방향이다.
-member·source·card-source·seal은 불변이며 head는 같은 view의 게시·봉인 세대만 가리킨다.
+member·source·card-source·member-vector·seal은 불변이며 head는 같은 view의 게시·봉인 세대만 가리킨다.
 prepare는 유한한 두 쓰기 transaction으로 구성한다.
 
 1. SQLite가 ordinal을 할당하는 `generation_slots`와 세대별 FTS를 기록하고 commit한다.
 2. 안정된 FTS physical commitment와 manifest·capture·membership·source·trust roots를
-   계산해 최종 세대 ID를 정하고 전체 행과 seal을 기록해 `prepared`로 봉인한다.
+   vector coverage와 함께 계산해 최종 세대 ID를 정하고 전체 행과 seal을 기록해 `prepared`로 봉인한다.
 
-slot의 stage JSON은 경로·hash·title·trust 참조·파일 및 capture metadata만 포함한다.
+slot의 stage JSON은 경로·hash·title·trust 참조·파일 및 capture metadata와
+vector 모드·recipe/profile spec을 포함한다.
 source·wiki body를 stage JSON에 넣지 않는다. FTS에는 admission을 통과한
 wiki 카드 본문을 사용한다. 미봉인 slot은 검색 head가 될 수 없으며 자동 회수하지 않는다.
 원문 scan·모델 작업은 SQLite writer transaction 안에서 실행하지 않는다.
 
 prepare와 publish는 원래 handle의 capture·settings·파일 관측을 다시 확인한다.
+vector 세대는 준비·봉인·게시 시 참조한 complete set의 실제 행·입력 SHA·바이트·
+provenance를 재검증한다. set head의 count와 digest만으로 게시하지 않는다.
 publish는 같은 transaction 안에서 seal과 원래 base를 확인하고
 `(view_id, incarnation, gen_id, epoch)`를 비교해 head를 바꾼다.
 epoch는 같은 head 값으로 돌아오는 ABA를 구분한다. 다른 view의 게시가 CAS 충돌을
@@ -120,6 +126,21 @@ epoch는 같은 head 값으로 돌아오는 ABA를 구분한다. 다른 view의 
 
 파일·Git·settings 재확인은 검증 시점의 관측이다. 파일시스템과 SQLite를 아우르는
 원자적 snapshot을 보장하지 않는다.
+
+## Vector coverage와 공유 set
+
+`vector_spec=None`은 기본 `lexical-only`이며 vector 참조 행과 `vector_member_count`는 0이다.
+명시적인 spec은 정확히 `{recipe_id, profile_id}` 두 키를 가지며 `exact-complete` 모드다.
+모든 eligible member에 같은 recipe/profile의 완전한 chunk·embedding set이 필요하다.
+일부 member만 채운 partial coverage나 혼합 profile은 게시하지 않는다.
+
+`member_vectors`는 세대별 path·blob·recipe·profile과 `chunk_count`, `chunk_digest`,
+`embedding_digest`를 참조한다. vector 바이트를 세대마다 복사하지 않는다.
+원래 manifest에서 도출한 전체 coverage와 실제 저장한 참조 행을 비교하고,
+정렬한 참조·모드·spec의 `vectors_digest`와 실제 참조 수를 binding root·seal에 포함한다.
+다른 view의 동일 content는 같은 불변 set을 재사용하지만 검색 자격과 provenance는
+해당 view를 따른다. 나중에 shared set이 추가되어도 기존 lexical 세대나 pin이
+자동으로 vector 세대로 바뀌지 않는다. 새 coverage는 새 세대와 같은-view head CAS로 게시한다.
 
 ## FTS와 봉인의 범위
 
@@ -158,6 +179,30 @@ reader는 세대를 봉인한 원래 capture의 정합성과 검색 caller의 �
 prefix는 정확한 경로 또는 `/`로 구분한 하위 경로이며 빈 prefix 목록은 결과가 없다.
 excluded path는 정확한 경로 일치다.
 
+`search_exact`는 pin에 봉인된 recipe/profile만 사용하며 lexical-only 세대는
+`vector_coverage_absent`로 거절한다. query vector는 profile dimension과 일치하는
+유한한 숫자 list/tuple이며 bool과 zero norm은 거절한다. 각 카드의 모든 chunk와
+cosine을 계산한 최댓값이 카드 점수다. 점수 내림차순, 동점은 UTF-8 binary path
+오름차순이다. ANN이나 일부 chunk 절삭을 사용하지 않는다.
+
+view·eligibility·path 필터는 연산량 계산과 scoring·top-K 전에 적용한다.
+`max_float_work`는 양의 정수이며 기본 4,000,000이다. 연산량은 필터를 통과한
+각 path의 `chunk_count × dimension` 합계로 계산한다. 같은 blob을 참조하는 여러
+path도 각각 예산에 포함하며 카드 수 상한으로 해석하지 않는다.
+
+`search_hybrid`는 같은 pin에서 lexical·semantic의 정렬된 두 목록을 반환하며
+순위 융합을 하지 않는다. `profile_id=None`이면 pin에 봉인된 profile을 사용한다.
+`query_vector=None`이면 lexical 결과와 빈 semantic 목록, `provider_absent` 상태를
+반환한다. query가 있어도 lexical-only 세대이면 `lexical_only`다.
+semantic 검색 성공은 `complete`, 명시적 work 예산 초과는 `deferred_work_budget`,
+semantic 시간 초과는 `deferred_deadline`이며 이미 완료한 lexical 결과를 유지한다.
+잘못된 profile·query·pin, seal/set 손상과 checkout 변경은 semantic defer로 숨기지 않고 거절한다.
+
+검색 deadline은 기본 2초, 유한한 `0 < seconds <= 30`이다. hybrid는 호출 시작부터
+입력·pin 확인과 lexical·semantic 전체에 하나의 예산을 적용하고 각 단계에는 남은
+시간만 전달한다. lexical 완료 전에 시간이 소진되면 결과 없이 거절한다.
+이 검색 예산은 callback fill의 기본 30초·최대 300초와 별개다.
+
 결과는 `path, blob_sha, body, display_title, score, view_id, gen_id`와
 `evidence: "commitment-only"`, `owner_verified: false`, `snapshot_state`를 포함한다.
 body는 저장한 wiki 카드이며 반환 전 blob 바이트와 seal을 확인한다.
@@ -184,6 +229,7 @@ seal·receipt·지문·검색 자격은 구조적 commitment다. compiler 실행
 | query UTF-8 / 결과 limit | 4,096 bytes / 1–100 |
 | path prefixes / excluded paths | 32 / 256 |
 | 검색 deadline | 기본 2초, 최대 30초 |
+| exact/hybrid float work | 기본 4,000,000, 명시적인 양의 정수 |
 | pin / handle registry | 128 / 4,096; handle 초과 시 가장 오래된 발급 기록 제거 |
 | pin·세대 전체 검증 deadline / SQL busy | 30초 / 2초 |
 
@@ -195,10 +241,13 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `view_preparing`, `view_handle_invalid`, `view_pin_invalid`, `view_store_closed`,
 `checkout_changed`, `view_head_conflict`, `generation_unsealed`,
 `generation_seal_mismatch`, `fts_storage_mismatch`, `fts_query_invalid`,
-`fts_deadline_exceeded`다. 거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
+`fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
+`vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
+`vector_work_exceeded`, `vector_deadline_exceeded`다.
+거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
 
 검증 성공은 candidate의 구조·일관성에 한정된다. 합성 1,800카드·10 Git views의
-warm 검색 30개 표본은 중앙값 1,022.42 ms, p95 1,240.01 ms다. 검색은 호출마다
+warm 검색 30개 표본은 중앙값 1,064.34 ms, p95 1,425.94 ms다. 검색은 호출마다
 전체 세대의 구조·FTS commitment를 검증한다. warm view p95 50 ms와 lexical
 p95 150 ms 목표는 충족하지 못하며 운영 활성화 전 해결할 성능 항목이다.
 호스트 실행 비용에 따라 기본 2초 제한으로 `fts_deadline_exceeded`를 반환할 수 있다.
