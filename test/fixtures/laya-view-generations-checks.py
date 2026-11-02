@@ -296,5 +296,16 @@ class GenerationChecks(GenerationCase):
         self.assertEqual(store.counts()['generations'],0)
         self.assertIsNone(store.head(h)['gen_id'])
 
+    def test_23_invalid_unicode_manifest_paths_refuse_without_writes(self):
+        store,_,h=self.seeded();original=self.snapshot(store,h)
+        before=store.counts();base=store.head(h)
+        for field in ['members','sources']:
+            for path in ['\ud800.md','\udfff.md','x\ud800y.md']:
+                with self.subTest(field=field,path=ascii(path)):
+                    manifest=copy.deepcopy(original);manifest[field][0]['path']=path
+                    error=self.refused(store.prepare_generation,h,manifest,expected_head=base)
+                    self.assertEqual(error.reason,'invalid_relative_path')
+                    self.assertEqual(store.counts(),before)
+
 
 if __name__=='__main__':unittest.main()

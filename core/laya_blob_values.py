@@ -57,6 +57,10 @@ def relative(value):
             or any(c in value for c in '\x00\r\n\\') or value.startswith('/')
             or any(not p or p.startswith('.') for p in value.split('/'))):
         fail('invalid_relative_path')
+    try:
+        value.encode('utf8')
+    except UnicodeError:
+        fail('invalid_relative_path')
     return value
 
 

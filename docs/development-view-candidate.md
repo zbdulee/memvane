@@ -46,6 +46,7 @@ manifest의 키는 정확히 다음과 같다. 추가 키와 중복 경로는 �
 ```
 
 source path는 프로젝트 상대 경로이고 member path는 wiki 상대 Markdown 경로다.
+상대 경로와 검색 경로 필터는 UTF-8로 인코딩할 수 있어야 한다.
 wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 member가 될 수 없다.
 `presence`는 `present` 또는 `held_missing`이다. `trust_digest`는 null일 수 있다.
 source 지문은 handle과 같은 worktree·branch·path에 속해야 한다.

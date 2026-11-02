@@ -240,5 +240,15 @@ class ReaderChecks(helpers.GenerationCase):
             db.execute(trigger)
         self.refused(store.search,pin,'hello',1)
 
+    def test_18_invalid_unicode_path_filters_refuse_before_sql_and_recover(self):
+        store,_,h,_=self.published();pin=store.pin_view(h)
+        for field in ['path_prefixes','excluded_paths']:
+            for path in ['\ud800','\udfff','x\ud800y']:
+                with self.subTest(field=field,path=ascii(path)):
+                    error=self.refused(store.search,pin,'hello',1,**{field:[path]})
+                    self.assertEqual(error.reason,'invalid_relative_path')
+        self.assertEqual(len(store.search(pin,'hello',1)),1)
+        self.assertEqual(store.search(pin,'hello',1,path_prefixes=['한글']),[])
+
 
 if __name__=='__main__':unittest.main()

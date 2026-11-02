@@ -10,6 +10,6 @@ test('pinned view lexical search preserves snapshots and rejects cross-view or d
  try {
   const r=spawnSync('python3',['-B','test/fixtures/laya-view-reader-checks.py'],{encoding:'utf8',timeout:240000,env:{...process.env,HOME:home,PYTHONDONTWRITEBYTECODE:'1'}});
   assert.equal(r.status,0,r.status===null?JSON.stringify({signal:r.signal,error:r.error?.message}):r.stdout+r.stderr);
-  assert.match(r.stderr,/Ran 17 tests/);
+  assert.match(r.stderr,/Ran 18 tests/);
  } finally {removeTemp(home);}
 });
