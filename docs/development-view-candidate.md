@@ -8,7 +8,7 @@ candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 �
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
 [`development-checkout-capture.md`](development-checkout-capture.md)에 있다.
-원문 body API는 없다. 벡터 자동 채움, reader bridge, migration, 운영 활성화,
+원문 body API는 없다. reader bridge, migration, 운영 활성화,
 lifecycle, frontmatter 변경, retention·GC는 이 candidate API의 범위 밖이다.
 
 ## 내부 API와 수명
@@ -18,6 +18,8 @@ lifecycle, frontmatter 변경, retention·GC는 이 candidate API의 범위 밖�
 | `ViewStore.create(...)` / `ViewStore.open(...)` | `BlobStore`와 같은 생성·소유권 인자로 candidate 열기 |
 | `capture_view(worktree_id)` | 현재 checkout·settings에 묶인 store 발급 `ViewHandle` |
 | `head(handle)` | `{view_id, gen_id, epoch, incarnation}` |
+| `fill_status(handle, manifest, recipe_id, profile_id)` | 결정적인 job ID와 durable `cursor`·`complete`, 조회는 읽기 전용 |
+| `fill_view(handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30)` | content set을 재사용하는 유계 진행 단계 |
 | `prepare_generation(handle, manifest, *, expected_head)` | 봉인한 `prepared` 세대 ID |
 | `publish_generation(handle, gen_id, *, expected_head)` | 같은 view의 CAS 게시 후 head |
 | `pin_view(handle)` | 현재 게시 세대와 seal에 묶인 store 발급 `ViewPin` |
@@ -64,6 +66,35 @@ non-Git의 observed source와 unknown tracked state는 candidate 자격을 가�
 `card_sources`는 원래 attestation의 지문 ID·순서·span을 보존한다.
 같은 경로·SHA·길이를 새 scan에서 관측해도 기존 provenance를 고쳐 쓰지 않는다.
 명시적인 rebound 증거는 `BlobStore`의 별도 불변 attestation 계약을 따른다.
+
+## View 채우기와 재시작
+
+fill job은 store incarnation·발급 view capture·settings·전체 manifest·recipe/profile과
+정렬한 eligible path/blob/UTF-8 byte 길이에 묶인다. `fill_jobs`·`fill_targets`에는
+본문을 저장하지 않는다. identity와 대상은 불변이며 cursor는 대상 수까지 전진한다.
+같은 job의 완료 여부는 cursor와 대상 수의 일치로 결정한다.
+대상 계획은 본문 검증 뒤 길이 metadata만 보관하며 모든 카드 본문을 모아 두지 않는다.
+
+`fill_status`는 job이 없으면 `cursor=0, complete=false`를 반환한다.
+`fill_view`는 정확한 정수 `expected_cursor`로 CAS를 수행하며 결과에
+`job_id`, `cursor`, `complete`, `status`, `filled`, `cache_hits`, `deferred`를 담는다.
+단계 기본 예산은 8개 대상·2,000,000 UTF-8 bytes이며, 명시적인 상한은
+1–64개·1–64 MiB다. 캐시 적중과 같은 내용의 다른 경로도 대상 예산에 포함한다.
+첫 대상이 byte 예산을 넘으면 provider 호출·cursor 전진 없이 deferred로 반환한다.
+호출자는 기존 카드 본문 상한 4 MiB 안에서 필요한 byte 예산을 명시할 수 있다.
+
+완전한 content set을 먼저 commit하고 cursor는 별도 짧은 transaction에서 기록한다.
+cursor 기록이 실패해도 유효한 set은 남으며 다음 호출은 provider 없이 캐시를 재사용한다.
+이 복구는 cursor를 쓰므로 첫 DB 변경 전에 fence가 한 번 필요하다.
+완료된 동일 job의 재호출은 DB 쓰기·fence·provider 호출이 모두 없다.
+빈 대상 job은 한 번의 fenced 초기화로 완료하며 이후 재호출은 읽기 전용이다.
+
+하나의 호출은 job·content·cursor 변경 전체에서 `write_fence()`를 한 번만 호출한다.
+callback·fence·content lock 획득 중 SQLite transaction을 유지하지 않는다.
+callback 뒤 checkout·settings를 재관측하고 cursor commit 직전에 다시 확인한다.
+변경이 관측되면 유효한 불변 content 캐시는 유지할 수 있지만 stale job은 전진하지 않는다.
+다른 content owner의 lock과 경합하면 기다리거나 TTL로 인계하지 않고 deferred로 반환한다.
+deadline은 유한한 `0 < seconds <= 300`이며 임의 callback을 선점하지 못한다.
 
 ## 준비·봉인·게시
 

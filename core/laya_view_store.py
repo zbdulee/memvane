@@ -19,6 +19,7 @@ from laya_blob_store import (BlobStore, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
 import laya_view_fts as view_fts
 import laya_view_values as vals
+from laya_view_fill import FillMixin
 from laya_view_reader import ReaderMixin
 
 SETTINGS_LIMIT = 1024 * 1024
@@ -100,7 +101,7 @@ def _current_capture(saved, repository, policy, expected):
         v.fail('checkout_changed')
 
 
-class ViewStore(ReaderMixin, BlobStore):
+class ViewStore(FillMixin, ReaderMixin, BlobStore):
     _handle_type = ViewHandle
 
     @classmethod
@@ -202,7 +203,7 @@ class ViewStore(ReaderMixin, BlobStore):
                 ok = False
         return int(ok), refs
 
-    def _derive(self, handle, manifest, skips):
+    def _derive(self, handle, manifest, skips, *, retain_bodies=True):
         """Metadata-only derivation inside a short read transaction."""
         current = {}
         for source in manifest['sources']:
@@ -214,31 +215,36 @@ class ViewStore(ReaderMixin, BlobStore):
                 v.fail('source_observation_stale')
             if not vals.skipped(source['path'], skips):
                 current[source['path']] = (source, fp)
-        members, cards, bodies, total = [], [], {}, 0
+        members, cards, bodies, body_bytes, total = [], [], {}, {}, 0
         # These caches live only within this derivation/read snapshot. Shared
         # bytes never share trust unless the exact attestation also matches.
         verified_bodies, verified_cards = {}, {}
         for member in manifest['members']:
             blob = member['blob_sha']
             if blob not in verified_bodies:
-                verified_bodies[blob] = self._blob(blob)
-            body = verified_bodies[blob]
+                body = self._blob(blob)
+                verified_bodies[blob] = body if retain_bodies else len(body.encode('utf8'))
+            value = verified_bodies[blob]
+            size = len(value.encode('utf8')) if retain_bodies else value
             key = (blob, member['trust_digest'])
             if key not in verified_cards:
                 verified_cards[key] = self._card(handle, member, current)
             eligible, refs = verified_cards[key]
             if vals.skipped(member['path'], skips):
                 continue
-            total += len(body.encode('utf8'))
+            total += size
             if total > vals.MAX_WIKI_BYTES:
                 v.fail('generation_too_large')
             members.append(dict(member, eligible=eligible))
             cards.extend(dict(wiki_path=member['path'], **ref) for ref in refs)
             if eligible:
-                bodies[member['path']] = body
+                body_bytes[member['path']] = size
+                if retain_bodies:
+                    bodies[member['path']] = value
         return dict(members=sorted(members, key=lambda m: m['path']),
                     sources=sorted((s for s, _ in current.values()), key=lambda s: s['path']),
-                    cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])), bodies=bodies)
+                    cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])),
+                    bodies=bodies, body_bytes=body_bytes)
 
     @staticmethod
     def _roots(db, ordinal, plan, rows, deadline=None):

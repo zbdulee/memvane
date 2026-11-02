@@ -3,6 +3,7 @@ from functools import lru_cache
 import sqlite3
 
 from laya_blob_values import canonical, hash_bytes
+import laya_fill_schema
 import laya_view_schema
 import laya_view_fts
 
@@ -120,6 +121,8 @@ KEYS = {'store_meta': (('singleton',),),
 
 TABLES.update(laya_view_schema.tables(_text,_sha,_uuid,_integer))
 KEYS.update(laya_view_schema.immutable_keys())
+TABLES.update(laya_fill_schema.tables(_text, _sha, _uuid, _integer))
+KEYS.update(laya_fill_schema.immutable_keys())
 
 
 def statements():
@@ -143,6 +146,7 @@ def statements():
         'CREATE INDEX attestation_by_blob ON card_attestations(blob_sha)',
         'CREATE INDEX attestation_by_source ON attestation_sources(fingerprint_id,trust_digest)'))
     result.extend(laya_view_schema.statements())
+    result.extend(laya_fill_schema.statements())
     return result
 
 
