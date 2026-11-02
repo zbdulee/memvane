@@ -127,6 +127,52 @@ print(json.dumps({'reason':reason,'exit_code':row['exit_code'],
   assert.doesNotMatch(readFileSync(path, 'utf8'), /fail.py|smoke-request/);
 });
 
+test('live zero-RSS snapshots stay unknown and exited failures keep their error', async t => {
+  const dir = privateDir(t);
+  const script = join(dir, 'zero-snapshot.py');
+  writeFileSync(script, 'import time, sys\ntime.sleep(0.35)\nsys.exit(17)\n');
+  const output = await python(`
+from context_learning.local_cycle import LocalTrainer
+from pathlib import Path
+from unittest.mock import patch
+import json, subprocess, sys
+root, script = Path(sys.argv[1]), sys.argv[2]
+original_popen, original_run = subprocess.Popen, subprocess.run
+owned, post_exit = [], [False]
+def capture(argv, *args, **kwargs):
+    process = original_popen(argv, *args, **kwargs)
+    if argv[:2] == [sys.executable, script]:
+        owned.append(process)
+    return process
+def zero_snapshot(argv, *args, **kwargs):
+    if argv == ['/bin/ps', '-axo', 'pgid=,%cpu=,rss=']:
+        if post_exit[0]:
+            owned[-1].wait(timeout=2)
+        return subprocess.CompletedProcess(argv, 0, str(owned[-1].pid) + ' 0.0 0\\n', '')
+    return original_run(argv, *args, **kwargs)
+rows = []
+for required, ended in ((False, False), (True, False), (True, True)):
+    post_exit[0] = ended
+    trainer = LocalTrainer([sys.executable, script], require_monitor=required)
+    with patch.object(subprocess, 'Popen', capture), patch.object(subprocess, 'run', zero_snapshot):
+        try:
+            trainer.call('smoke', {'schema_version':1}, root/'result.json', cwd=root)
+        except Exception as exc:
+            reason = str(exc)
+        else:
+            raise AssertionError('expected a failed or refused synthetic child')
+    rows.append({'required':required,'reason':reason,'resources':trainer.last_resources})
+print(json.dumps(rows))
+`, [dir, script]);
+  const [optional, required, finished] = JSON.parse(output);
+  assert.equal(optional.reason, 'trainer_failed');
+  assert.equal(optional.resources.resource_samples, null);
+  assert.equal(optional.resources.observed_peak_rss_kib, null);
+  assert.equal(required.reason, 'trainer_resource_monitor_unavailable');
+  assert.equal(finished.reason, 'trainer_failed');
+  assert.equal(finished.resources.resource_samples, null);
+});
+
 test('detached worker records a failed cycle and a pre-lock exception as errors', async t => {
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');

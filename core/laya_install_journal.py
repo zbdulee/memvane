@@ -22,7 +22,8 @@ from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
-                                   SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route)
+                                   SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route,
+                                   written_schema)
 # Loaded for the executing-bundle proof (``_executing_from_candidate``),
 # which requires laya_package from the sealed core; no QMD inventory is read.
 import laya_package  # noqa: F401
@@ -798,6 +799,73 @@ def cas_stage_update(journal_path, expected_epoch, next_bundle_proof, proposed_r
                 'pending': _canon(identity), 'pending_route_sha': digest,
                 'new_write_seen': 0}
     return _cas(journal_path, expected_epoch, stage)
+
+
+def cas_retarget_pending(journal_path, expected_epoch, current_route_raw,
+                         expected_pending, expected_pending_route_sha,
+                         next_bundle_proof, next_route_raw):
+    """Replace only an interrupted update's pending target with a fresh proof.
+
+    The selected and previous evidence stays untouched, including provider
+    evidence and write history. Their caches need not exist. This does not
+    activate a bundle, publish metadata, or approve provider equivalence;
+    the installer owns those checks and keeps its selection fence in place.
+    """
+    def retarget(path, row):
+        if (row['state'] != 'pending' or row['new_write_seen'] or
+                row['selected'] is None or row['previous'] is None or
+                row['pending'] is None or row['selected'] != row['previous'] or
+                row['selected_route_sha'] != row['previous_route_sha'] or
+                row['selected_route_sha'] is None or
+                row['provider_attestation_sha'] !=
+                row['previous_provider_attestation_sha'] or
+                row['provider_file_identity'] != row['previous_provider_file_identity'] or
+                row['pending'] == row['selected'] or
+                row['pending_route_sha'] == row['selected_route_sha']):
+            _fail('pending_update_not_replaceable')
+        if (type(expected_pending) is not dict or
+                row['pending'] != expected_pending or
+                row['pending_route_sha'] != expected_pending_route_sha):
+            _fail('pending_update_predecessor_changed')
+        # Supplying the exact before bytes is mandatory, even though the
+        # observed-route helper also supports unpinned reads for other APIs.
+        before, before_sha = _route(current_route_raw, path)
+        _observed_route(row, current_route_raw)
+        if before_sha == row['selected_route_sha']:
+            observed_identity = row['selected']
+        elif before_sha == row['pending_route_sha']:
+            observed_identity = row['pending']
+        else:
+            _fail('pending_update_observed_route_changed')
+        identity_fields = ('pluginRoot', 'installId', 'generation',
+                           'bundleManifestSha256', 'ownershipManifestSha256',
+                           'vectorProfile')
+        if any(before[key] != observed_identity[key] for key in identity_fields):
+            _fail('pending_update_observed_identity_changed')
+        after, after_sha = _route(next_route_raw, path)
+        replaceable = {'schema', 'pluginRoot', 'bundleManifestSha256',
+                       'ownershipManifestSha256'}
+        fixed_identity = ('installId', 'generation', 'vectorProfile')
+        project_identity = (row['project_root'], row['project_dev'], row['project_ino'])
+        if (set(before) != set(after) or
+                after['schema'] != written_schema(before['schema']) or
+                any(before[key] != after[key] for key in set(before) - replaceable) or
+                _project(before) != project_identity or _project(after) != project_identity or
+                before['scopeId'] != row['scope_id'] or after['scopeId'] != row['scope_id'] or
+                any(row['selected'][key] != row['pending'][key] or
+                    after[key] != row['selected'][key] for key in fixed_identity)):
+            _fail('pending_update_identity_mismatch')
+        if (not isinstance(next_bundle_proof, dict) or
+                next_bundle_proof.get('status') !=
+                'exact_commit_full_plugin_candidate_consistent'):
+            _fail('pending_update_full_plugin_required')
+        next_identity = _identity(next_bundle_proof, after, path)
+        if (next_identity['bundleKind'] != 'full_plugin' or
+                next_identity in (row['selected'], row['pending']) or
+                after_sha in (row['selected_route_sha'], row['pending_route_sha'])):
+            _fail('pending_update_target_unchanged')
+        return {'pending': _canon(next_identity), 'pending_route_sha': after_sha}
+    return _cas(journal_path, expected_epoch, retarget)
 
 
 def cas_replace_inactive_candidate(journal_path, expected_epoch,

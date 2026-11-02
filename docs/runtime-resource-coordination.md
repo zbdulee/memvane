@@ -17,6 +17,9 @@ development execution guard is separate; see
   their existing per-group TrainingGuard, avoiding recursive acquisition.
   Legacy adapter children inherit their operation lease, so parent exit cannot
   release compute while that child is still running.
+  Zero-RSS process-group rows are not live memory samples. An exited child
+  keeps its original exit result; a live child without usable RSS cannot
+  satisfy a required resource monitor. Missing observations remain unknown.
 - Selected Laya route wakes: `core/laya_host_response.py` queues `laya-sync` and
   `laya-compile` through `runtime_work.request`. Both are kinds in
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them

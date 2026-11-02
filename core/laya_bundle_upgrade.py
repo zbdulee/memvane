@@ -810,22 +810,25 @@ def upgrade_install(project_root, state, root, home=None):
     kind, identity = classify(state)
     if kind == 'retired' or identity is None:
         return {'status': 'current', 'kind': kind}
+    fenced = False
     if kind == 'active':
         # A switch that stopped after its journal activation still fences
         # the route; its bundle already reads as current here.
         import laya_active_upgrade
+        fenced = laya_active_upgrade.upgrade_fenced(state)
         finished = laya_active_upgrade.finish_activated(project_root=str(project_root),
-                                                        state_root=str(state))
+                                                        state_root=str(state),
+                                                        requested_root=str(root))
         if finished is not None:
             return {**finished, 'kind': kind}
     same_root = identity['pluginRoot'] == str(root)
-    if same_root and not _same_root_readopt(kind, identity, root):
+    if not fenced and same_root and not _same_root_readopt(kind, identity, root):
         return {'status': 'current', 'kind': kind}
     from laya_ledger_common import QMD_ORIGIN_DETACH_REQUIRED, qmd_ledger_present
     if qmd_ledger_present(state):
         _refuse(QMD_ORIGIN_DETACH_REQUIRED)
     commit = installed_commit(root, home)
-    if (not same_root and commit is not None and commit == identity['sourceCommit'] and
+    if (not fenced and not same_root and commit is not None and commit == identity['sourceCommit'] and
             kind != 'inactive'):
         try:
             return {**_seal_companion(identity, root), 'kind': kind}
@@ -841,7 +844,8 @@ def upgrade_install(project_root, state, root, home=None):
     source, commit = select_source(root, home)
     _not_older(source, identity['sourceCommit'], commit,
                bound_root=identity['pluginRoot'], root=root)
-    old = _read_attestation(state)
+    old = (laya_active_upgrade.recovery_attestation(project_root, state) if fenced
+           else _read_attestation(state))
     manifest = old.get('providerManifest') or {}
     _require_pinned_runtime(old)
     _ensure_embed_runtime(old)
