@@ -612,7 +612,9 @@ class V2WorkerChecks(unittest.TestCase):
             return embed
         def choose(_state,_prompt,rows,**_kwargs):
             return [row['id'] for row in rows[:3]],'selected',{}
+        # CRUD uses an admitted synthetic provider independently of OS pressure.
         with patch.dict(os.environ,env,clear=True),\
+                patch('laya_embed_resident.admit_query',return_value=None),\
                 patch.object(runtime_work,'WakeQueue',lambda root=None:real_queue(self.home)),\
                 patch.object(runtime_work,'wake',side_effect=AssertionError('hook spawned')),\
                 patch.object(laya_bundle_upgrade,'_spawn',
