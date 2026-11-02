@@ -822,14 +822,16 @@ class NoActivation(CheckoutCase):
         loaded = set(sys.modules) - MODULES_BEFORE
         self.assertEqual(sorted(m for m in loaded if m.startswith(ROUTE_PREFIXES)), [])
         candidate_modules = {'laya_checkout_view', 'laya_blob_store',
-                             'laya_blob_schema', 'laya_blob_values'}
+                             'laya_blob_schema', 'laya_blob_values',
+                             'laya_view_schema', 'laya_view_fts',
+                             'laya_view_values', 'laya_view_store', 'laya_view_reader'}
         users = [str(path.relative_to(REPO))
                  for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
                               *(REPO / 'hermes_adapter').rglob('*.py')]
                  if path.stem not in candidate_modules
                  and any(name in path.read_text(encoding='utf-8', errors='replace')
                          for name in candidate_modules)]
-        self.assertEqual(users, [], 'live paths must not reach the inactive PR1/PR2 candidate APIs')
+        self.assertEqual(users, [], 'live paths must not reach the inactive checkout/blob/view candidate APIs')
 
 
 if __name__ == '__main__':

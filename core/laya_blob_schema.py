@@ -3,10 +3,12 @@ from functools import lru_cache
 import sqlite3
 
 from laya_blob_values import canonical, hash_bytes
+import laya_view_schema
+import laya_view_fts
 
 APP_ID = 0x4D564231
-SCHEMA_VERSION = 1
-FORMAT = 'memvane-git-blob-candidate-v1'
+SCHEMA_VERSION = 2
+FORMAT = 'memvane-git-blob-candidate-v2'
 
 
 def _text(name):
@@ -30,7 +32,7 @@ def _integer(name, lower=0):
 TABLES = {
     'store_meta': f'''CREATE TABLE store_meta(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=1),
+      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=2),
       {_uuid('repo_id')}, {_uuid('scope_id')}, {_uuid('incarnation')},
       common_git_dir TEXT, common_dev INTEGER, common_ino INTEGER,
       {_text('project_rel')}, git_object_format TEXT,
@@ -94,7 +96,8 @@ TABLES = {
       {_text('verification_kind')} CHECK(verification_kind IN ('compiled','rebound','legacy_verified')),
       {_text('engine_identity')}, {_sha('policy_digest')}, {_sha('provenance_digest')},
       {_text('receipt_json')} CHECK(json_valid(receipt_json)),
-      {_integer('source_count')} CHECK(source_count<=64), {_integer('created_ns')})''',
+      {_integer('source_count')} CHECK(source_count<=64), {_integer('created_ns')},
+      UNIQUE(trust_digest,blob_sha))''',
     'attestation_sources': f'''CREATE TABLE attestation_sources(
       {_sha('trust_digest')} REFERENCES card_attestations(trust_digest),
       {_integer('ordinal')} CHECK(ordinal<64),
@@ -113,6 +116,10 @@ KEYS = {'store_meta': (('singleton',),),
         'source_fingerprints': (('fingerprint_id',),),
         'card_attestations': (('trust_digest',),),
         'attestation_sources': (('trust_digest', 'ordinal'), ('trust_digest', 'fingerprint_id'))}
+
+
+TABLES.update(laya_view_schema.tables(_text,_sha,_uuid,_integer))
+KEYS.update(laya_view_schema.immutable_keys())
 
 
 def statements():
@@ -135,13 +142,15 @@ def statements():
         'CREATE INDEX source_by_sha ON source_fingerprints(source_sha)',
         'CREATE INDEX attestation_by_blob ON card_attestations(blob_sha)',
         'CREATE INDEX attestation_by_source ON attestation_sources(fingerprint_id,trust_digest)'))
+    result.extend(laya_view_schema.statements())
     return result
 
 
 def manifest(db):
     rows = sorted(tuple(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-    return hash_bytes(canonical(rows).encode('utf8'))
+    dynamic=set(laya_view_fts.schema_rows(db))
+    return hash_bytes(canonical([row for row in rows if row not in dynamic]).encode('utf8'))
 
 
 @lru_cache(maxsize=1)
