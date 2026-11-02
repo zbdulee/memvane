@@ -401,7 +401,11 @@ class LegacyCleanup(unittest.TestCase):
         write(self.home / '.cache' / 'qmd' / 'index.sqlite', 'user index')
         write(self.home / '.config' / 'qmd' / 'index.yml', 'collections: {}')
         agents = self.home / 'Library' / 'LaunchAgents'
-        write(agents / 'com.qmd-mcp-daemon.plist', '<!-- managed-by: qmd-auto-context -->')
+        write(agents / 'com.qmd-mcp-daemon.plist',
+              '<?xml version="1.0" encoding="UTF-8"?>\n<!-- managed-by: qmd-auto-context -->\n'
+              '<plist version="1.0"><dict><key>Label</key><string>com.qmd-mcp-daemon</string>'
+              '<key>ProgramArguments</key><array><string>/usr/bin/true</string></array></dict></plist>',
+              mode=0o600)
         write(agents / 'com.qmd-keepalive.plist', 'someone else')
         write(agents / 'com.qmd-logrotate.plist.bak-20260616', 'backup')
         self.processes = {

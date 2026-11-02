@@ -60,6 +60,9 @@ Unknown or malformed rows and unfinished learning upkeep are refused.
 The child compares validated journal, build-record and classification snapshots
 at the final state root. An active installation needs its selected owner and no
 pending identity; a pending journal's previous owner cannot authorize completion.
+When an active build record exists, its stable project/install/scope, incarnation
+and store paths must match the current route. Bundle-dependent review digests
+may describe an earlier active bundle and do not replace those stable bindings.
 Bound/inactive installations need a candidate-ready pending identity and the
 matching build phase and identity. The preferred root must match, and repeated
 observations must agree on epoch, phase and identity. These metadata checks do

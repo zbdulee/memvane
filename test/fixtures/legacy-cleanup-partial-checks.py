@@ -69,8 +69,13 @@ class CleanupPartialChecks(unittest.TestCase):
         return path
 
     def plist(self, label):
+        import plistlib
+        raw = plistlib.dumps({'Label': label, 'ProgramArguments': ['/usr/bin/true']},
+                             fmt=plistlib.FMT_XML)
+        raw = raw.replace(b'<plist version="1.0">',
+            ('<!-- ' + cleanup.MARKER + ' -->\n<plist version="1.0">').encode(), 1)
         return self.write(self.home / 'Library' / 'LaunchAgents' / (label + '.plist'),
-                          '<!-- ' + cleanup.MARKER + ' -->\n')
+                          raw.decode('utf-8'))
 
     def ps(self, pid):
         self.assertEqual(pid, PID)

@@ -22,4 +22,8 @@ legacy cleanup은 전송한 SIGTERM과 확인된 정지를 구분한다. 관측�
 
 합성 owner·OS·provider 경계와 실제 product 제어 흐름을 구분한다. 운영 cleanup·실제 모델·운영 DB는 fixture 입력이 아니다. 보호3은 무변경이며7개 manifest는0.43.37이다. 개발용 Claude 모델 호출은 없다. CI는 개발과 별도로 관찰한다.
 
+독립 gpt-6-astra/high exact-head 리뷰는 `7eb9851`에서 P1 1건·P2 5건으로 HOLD다. 해당 HEAD의 새 회귀 검사는 Python 6건에서 15개 assertion이 실패하며 fixture ERROR는 없다(3.423초). 유효한 plist의 내부 Label 불일치 삭제, Hermes late fence 두 경계와 네 등록 hook의 cwd 중복, 실제 loader가 수락하는 다른 설치의 build record, onboarding 조상 symlink의 외부 mkdir/chmod, stop timeout의 partial=false를 재현한다.
+
+수정본은 유계·nofollow plist Label/inode 검증과 안전한 0644 XML/binary 호환, core 공통 fence/transition 판정, wrapper cwd 정규화, active build의 고정 신원 대조를 사용한다. 선택 기록은 조상 경로 검증 뒤 directory FD에 묶어 쓰고, blocked 정지 실패도 partial/failed에 남긴다. 정상 active 설치에 남는 과거 번들 metadata는 허용한다. 리뷰 회귀와 관련 7개 파일은 25/25 pass·0 fail, 41.776초이며 guard `f2c9c475815b45d8a59016f92faf06af`는 passed/completed/settled다. 기존 comment-only 관리 plist 두 곳은 matching Label의 유효 XML로 정렬하며 기존 assertion을 유지한다. 이 수정본의 전체 검사와 새 exact-head 좁은 재리뷰는 아직 미완료다.
+
 guard 합성 단위21개와 manifest 검사4개도 통과한다. clean code HEAD `8406ff90cabb047ef2271b34affad551a5c91c6d`의 전체 suite는690개 중687pass·0fail·3skip,1259.952초이며 guard는 exit0/passed/completed:true/settled:true다. 전체 실행 중 소스·문서·index는 고정한다. 종료 후 이 REPORT에 결과만 반영하며 최종 exact-head 독립 리뷰·새 릴리스 설치/운영 감사는 아직 미완료다. 마지막 완료 릴리스0.43.36의 운영 근거는 외부 `priority2-release-completion-audit.md`다. 현재 진행 감사표는 외부 `priority3-completion-audit.json`이며 complete:false다.

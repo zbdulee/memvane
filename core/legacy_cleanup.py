@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import signal
 import stat
 import subprocess
 import time
+from xml.parsers.expat import ExpatError
 
 import safe_rmtree
 
@@ -417,6 +419,7 @@ def _launchctl(plist):
     label = Path(plist).stem
     if label not in LABELS:
         raise CleanupBlocked('legacy_cleanup_launch_agent_label_invalid')
+    _managed_plist(plist)
     uid = os.getuid()
     result = subprocess.run(
         ['launchctl', 'bootout', 'gui/%d' % uid, str(plist)],
@@ -433,6 +436,35 @@ def _launchctl(plist):
             isinstance(observed.stderr, str) and re.fullmatch(absent, observed.stderr)):
         return {'state': 'already_unloaded', 'changed': False}
     raise CleanupBlocked('legacy_cleanup_launch_agent_unload_unverified')
+
+
+def _managed_plist(path):
+    """One bounded owner-held plist whose job matches its whitelist name."""
+    path = Path(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o022 or info.st_size > 65536):
+                raise CleanupBlocked('legacy_cleanup_launch_agent_unsafe')
+            raw = os.read(fd, 65537)
+            after = os.fstat(fd)
+            named = path.lstat()
+            stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns,
+                                  item.st_ctime_ns, item.st_uid, item.st_mode, item.st_nlink)
+            if (len(raw) != info.st_size or stamp(info) != stamp(after)
+                    or not stat.S_ISREG(named.st_mode) or stamp(named) != stamp(info)):
+                raise CleanupBlocked('legacy_cleanup_launch_agent_changed')
+        finally:
+            os.close(fd)
+        value = plistlib.loads(raw)
+        if (MARKER.encode() not in raw or not isinstance(value, dict)
+                or path.stem not in LABELS or value.get('Label') != path.stem):
+            raise CleanupBlocked('legacy_cleanup_launch_agent_label_invalid')
+        return stamp(info)
+    except (OSError, ValueError, plistlib.InvalidFileException, ExpatError) as exc:
+        raise CleanupBlocked('legacy_cleanup_launch_agent_unverified') from exc
 
 
 def _remove_tree(path, home):
@@ -504,7 +536,10 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
         if outcome == 'stopped':
             stopped.append(row['pid'])
         elif outcome != 'already_stopped':
-            report['blockers'].append('qmd_daemon_' + outcome)
+            reason = 'qmd_daemon_' + outcome
+            report['blockers'].append(reason)
+            row['reason'] = reason
+            failed.append({'pid': row['pid'], 'reason': reason})
     if not report['blockers']:
         # Nothing may still run from a tree about to be removed.
         try:
@@ -524,6 +559,7 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
         plist = Path(row['plist'])
         unloaded_entry = None
         try:
+            snapshot = _managed_plist(plist)
             evidence = launchctl(plist)
             # An injected callback returning None is the existing trusted
             # acknowledgement contract. The real helper returns typed proof.
@@ -538,6 +574,8 @@ def apply(home=None, *, approved=False, include_user_data=False, ps=_ps, ps_all=
                 changes += 1
                 unloaded_entry = len(completed)
                 completed.append({'plist': row['plist'], 'action': 'unloaded'})
+            if _managed_plist(plist) != snapshot:
+                raise CleanupBlocked('legacy_cleanup_launch_agent_changed')
             plist.unlink()
         except (CleanupBlocked, OSError, subprocess.SubprocessError) as exc:
             row['state'], row['reason'] = 'failed', _failure(exc)

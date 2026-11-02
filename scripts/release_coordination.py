@@ -128,6 +128,27 @@ def _preferred_owner(upgrade, state, project, root, expected_kind):
     profile = identity['vectorProfile'].get('profileId')
     if not isinstance(profile, str) or not re.fullmatch('[0-9a-f]{64}', profile):
         raise ReleaseError('preferred_owner_not_selected')
+    active_route = None
+    if kind == 'active' and record is not None:
+        from laya_index_host_route import select_route
+        from laya_index_runtime import capacity_store_paths
+        active_route = select_route(project, action='recall')
+        if (active_route.get('state') != 'candidate'
+                or any(active_route.get(key) != identity.get(key) for key in
+                       ('pluginRoot', 'installId', 'generation', 'vectorProfile'))
+                or active_route.get('scopeId') != journal['scopeId']):
+            raise ReleaseError('preferred_owner_not_selected')
+        catalog, bindings = capacity_store_paths(active_route['dbPath'])
+        stable = {'projectRoot': project, 'stateRoot': str(state), 'journalPath': str(path),
+                  'installId': identity['installId'], 'scopeId': journal['scopeId'],
+                  'dbIncarnation': active_route['dbIncarnation'],
+                  'candidateDb': active_route['dbPath'], 'queueDb': active_route['queuePath'],
+                  'catalogDb': str(catalog), 'bindingStore': str(bindings),
+                  'routeFile': str(state / 'reviewed-route.json'), 'vectorProfileId': profile,
+                  'collections': active_route['collections']}
+        if (not isinstance(record.get('identity'), dict)
+                or any(record['identity'].get(key) != value for key, value in stable.items())):
+            raise ReleaseError('preferred_owner_not_selected')
     if kind != 'active':
         expected = {'stateRoot': str(state), 'projectRoot': project, 'journalPath': str(path),
                     'routeFile': str(state / 'reviewed-route.json'),
@@ -141,7 +162,8 @@ def _preferred_owner(upgrade, state, project, root, expected_kind):
     # Inspectors validate their own on-disk schemas. Compare complete snapshots
     # again so an epoch/phase/owner switch cannot be combined into one receipt.
     if (inspect_journal(path) != journal or build.read(state) != record
-            or upgrade.classify(state) != (kind, identity)):
+            or upgrade.classify(state) != (kind, identity)
+            or (active_route is not None and select_route(project, action='recall') != active_route)):
         raise ReleaseError('release_state_changed')
     return {'stateRoot': str(state), 'pluginRoot': root}
 

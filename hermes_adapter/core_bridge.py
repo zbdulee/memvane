@@ -175,10 +175,14 @@ def recall_context(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from laya_index_host_route import select_route
-            from laya_host_response import serve_selected, serve_preview
+            from laya_host_response import (serve_selected, serve_preview,
+                                            _upgrade_recall_notice, _refusal_code)
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
+                if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
+                                           'selected_route_changed') is not None:
+                    return None
                 return {"context": "[memvane] selected route changed; request refused"}
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
@@ -192,6 +196,11 @@ def recall_context(
         # A selected route must make proof or search failure visible to the host.
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
+            from laya_host_response import _upgrade_recall_notice, _refusal_code
+            selected_cwd = _cwd(cwd, **kwargs)
+            if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
+                                       _refusal_code(exc)) is not None:
+                return None
             return {"context": "[memvane] selected proof or query failed; request refused"}
     return None
 
