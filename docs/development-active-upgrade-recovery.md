@@ -4,8 +4,8 @@
 the selected bundle. Recovery preserves the original backup, build record,
 store counts, generation, vector profile, project scope and collection paths.
 The journal's project device/inode and the current settings-derived collections
-must match before writes. Project identity is checked again before each
-metadata write, activation and fence release.
+must match before writes. Project identity and the settings-derived scope are checked again before each
+intent or metadata write, journal CAS, activation and fence release.
 
 An interrupted pending update can move to a newly reviewed host bundle even
 when both pinned caches are absent or re-extracted. `cas_retarget_pending`
@@ -20,6 +20,9 @@ mode records the exact five metadata files before normalization and the same
 files with only the project route adjusted to the current pending bytes.
 The v2 intent is fsynced before that write; a v1 worker refuses its schema.
 The ledger remains fenced and normalization never activates or runs a provider.
+An already journal-pinned route is a no-op; its pending target can differ from
+a switch descriptor that was persisted before its CAS. A route replacement
+still requires the exact current pending bytes and identity.
 Historical attestation bytes and file-identity digests are comparison evidence;
 missing files are not represented as a current file proof.
 

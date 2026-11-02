@@ -93,6 +93,39 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(case.run_upgrade(active, *args)['status'],
                                  'active_upgrade_complete')
 
+    def test_lost_recovery_target_after_each_step_accepts_another_target(self):
+        steps = ('normalize-descriptor', 'switch-descriptor', 'cas',
+                 'metadata-0', 'metadata-1', 'metadata-2', 'metadata-3',
+                 'metadata-4', 'activate')
+        for step in steps:
+            with self.subTest(step=step), fixture() as case:
+                original = fence(case)
+                case.removed.update((case.old_root, case.new_root))
+                second = target(case, 3)
+                def stop(name):
+                    if name == step:
+                        raise Kill()
+                with mock.patch.object(active, '_recovery_step', stop):
+                    with self.assertRaises(Kill):
+                        case.run_upgrade(active, *second)
+                case.removed.add(second[0])
+                third = target(case, 4)
+                # Re-enter the newly durable normalization intent as well.
+                def stop_normalize(name):
+                    if name == 'normalize-descriptor':
+                        raise Kill()
+                with mock.patch.object(active, '_recovery_step', stop_normalize):
+                    with self.assertRaises(Kill):
+                        case.run_upgrade(active, *third)
+                self.assertEqual(case.row()['phase'], 'upgrading')
+                self.assertEqual(case.selection(), 'blocked')
+                self.assertEqual(case.run_upgrade(active, *third)['status'],
+                                 'active_upgrade_complete')
+                final = json.loads((case.state / active.INTENT).read_bytes())
+                for key in ('backup', 'oldRecord', 'oldLedger', 'oldRoute',
+                            'oldAttestation', 'oldMarker', 'counts'):
+                    self.assertEqual(final[key], original[key], key)
+
     def test_cas_loss_normalize_crash_then_third_target_never_uses_missing_fid(self):
         with fixture() as case:
             with mock.patch.object(active, '_replace_ledger', side_effect=Kill()):
@@ -309,6 +342,29 @@ class RecoveryTests(unittest.TestCase):
                 if replaced:
                     case.project.rename(replacement_during_cas)
                     original_during_cas.rename(case.project)
+            # Changing settings after the next retarget CAS must refuse before
+            # any metadata write, even though project inode/scope stay fixed.
+            next_args = target(case, 4)
+            settings_before = case.settings.read_bytes()
+            before_route = case.route.read_bytes()
+            before_metadata = [path.read_bytes() for path in active._metadata_paths(legacy)]
+            changed = []
+            def change_settings_after_cas(name):
+                if name == 'cas':
+                    case.settings.write_text('{"name":"other","skipPaths":[]}')
+                    changed.append(True)
+            try:
+                with mock.patch.object(active, '_recovery_step', change_settings_after_cas):
+                    with self.assertRaisesRegex(Exception, 'active_upgrade_settings_changed'):
+                        run(next_args)
+                self.assertEqual(changed, [True])
+                self.assertEqual(case.route.read_bytes(), before_route)
+                self.assertEqual([path.read_bytes() for path in active._metadata_paths(legacy)],
+                                 before_metadata)
+                self.assertEqual(REAL_INSPECT(case.journal_path)['state'], 'pending')
+                self.assertEqual(case.row()['phase'], 'upgrading')
+            finally:
+                case.settings.write_bytes(settings_before)
             self.assertEqual(run(next_args)['status'], 'active_upgrade_complete')
             final = REAL_INSPECT(case.journal_path)
             self.assertEqual(final['selected']['pluginRoot'], next_args[0])

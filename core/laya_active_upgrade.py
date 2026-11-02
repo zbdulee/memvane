@@ -484,12 +484,13 @@ def _validate_recovery(intent):
             _fail('active_upgrade_recovery_scope_changed')
     if descriptor['mode'] == 'normalize':
         expected = list(descriptor['before'])
-        if snapshot['state'] == 'pending' and _sha(expected[2].encode()) not in (
-                snapshot['selectedRouteSha256'], snapshot['pendingRouteSha256']):
+        replace_route = snapshot['state'] == 'pending' and _sha(expected[2].encode()) not in (
+            snapshot['selectedRouteSha256'], snapshot['pendingRouteSha256'])
+        if replace_route:
             expected[2] = intent['newRoute']
         if descriptor['after'] != expected:
             _fail('active_upgrade_recovery_invalid')
-        if snapshot['state'] == 'pending' and (
+        if replace_route and (
                 _sha(intent['newRoute'].encode()) != snapshot['pendingRouteSha256'] or
                 _target_identity(intent) != snapshot['pending']):
             _fail('active_upgrade_recovery_invalid')
@@ -623,19 +624,12 @@ def _verify_recovery_project(journal, original):
         connection.close()
 
 
-def _recover_upgrade(intent, source_root, plugin_root, commit_id,
-                      accepted_provider_sha256, model_path, dimension):
-    state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
-    journal = state / 'install-journal.sqlite'
-    _backup_proof(intent, verify_new=False)
-    if build.read(state) != intent['oldRecord']:
-        _fail('active_upgrade_build_binding_changed')
-    if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
-        _fail('active_upgrade_restore_store_changed')
+def _verify_recovery_scope(journal, original):
+    """Recheck the project and settings-derived scope before recovery writes."""
+    _verify_recovery_project(journal, original)
     from laya_index_host_route import (MAX_SETTINGS_BYTES, _derived_collections,
                                        _read_regular, settings_identity_digest)
-    original = json.loads(intent['oldRoute'])
-    _verify_recovery_project(journal, original)
+    project = Path(original['projectRoot'])
     try:
         settings = project_dir.settings_path(project)
         if settings is None:
@@ -646,6 +640,19 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
         _fail('active_upgrade_settings_changed')
     if settings_identity_digest(project, derived) != original['settingsSha256']:
         _fail('active_upgrade_settings_changed')
+
+
+def _recover_upgrade(intent, source_root, plugin_root, commit_id,
+                      accepted_provider_sha256, model_path, dimension):
+    state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    journal = state / 'install-journal.sqlite'
+    _backup_proof(intent, verify_new=False)
+    if build.read(state) != intent['oldRecord']:
+        _fail('active_upgrade_build_binding_changed')
+    if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
+        _fail('active_upgrade_restore_store_changed')
+    original = json.loads(intent['oldRoute'])
+    _verify_recovery_scope(journal, original)
     actual = _metadata(intent)
     current = _journal_snapshot(inspect_journal(journal))
     if current['newWriteSeen']:
@@ -670,11 +677,11 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
             'mode': 'normalize', 'before': actual, 'after': after,
             'journalBefore': current}}
         _validate_recovery(normalized)
-        _verify_recovery_project(journal, original)
+        _verify_recovery_scope(journal, original)
         build._write_json(_intent_path(state), normalized, replace=True, max_bytes=LIMIT)
         _recovery_step('normalize-descriptor')
         if actual[2] != after[2]:
-            _verify_recovery_project(journal, original)
+            _verify_recovery_scope(journal, original)
             inactive._atomic_expected(_metadata_paths(intent)[2],
                                       actual[2].encode(), after[2].encode())
             _recovery_step('normalize-route')
@@ -686,7 +693,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
         intent['recovery'] = {'mode': 'switch', 'before': after,
                               'after': _target_metadata(intent), 'journalBefore': current}
         _validate_recovery(intent)
-        _verify_recovery_project(journal, original)
+        _verify_recovery_scope(journal, original)
         build._write_json(_intent_path(state), intent, replace=True, max_bytes=LIMIT)
         _recovery_step('switch-descriptor')
     descriptor = intent['recovery']
@@ -695,6 +702,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
     activated = _journal_successor(staged, intent, activate=True)
     if current == descriptor['journalBefore']:
         _verify_recovery_target(intent)
+        _verify_recovery_scope(journal, original)
         if current['state'] == 'pending':
             result = cas_retarget_pending(journal, current['epoch'], descriptor['before'][2].encode(),
                                            current['pending'], current['pendingRouteSha256'],
@@ -711,11 +719,11 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
     if current == staged:
         for index, (path, before, after) in enumerate(zip(
                 _metadata_paths(intent), descriptor['before'], descriptor['after'])):
-            _verify_recovery_project(journal, original)
+            _verify_recovery_scope(journal, original)
             inactive._atomic_expected(path, before.encode(), after.encode())
             _recovery_step('metadata-' + str(index))
         _verify_recovery_target(intent)
-        _verify_recovery_project(journal, original)
+        _verify_recovery_scope(journal, original)
         result = cas_activate(journal, current['epoch'], intent['newRoute'].encode())
         if _journal_snapshot(result) != activated:
             _fail('active_upgrade_recovery_journal_changed')
@@ -726,7 +734,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
             _journal_snapshot(inspect_journal(journal)) != activated or
             inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']):
         _fail('active_upgrade_recheck_failed')
-    _verify_recovery_project(journal, original)
+    _verify_recovery_scope(journal, original)
     row = _intent_ledger(intent).change(state / fresh.LEDGER,
                                        intent['newLedger']['epoch'], 'upgrading', 'active')
     if (row['routeSha256'] != intent['newLedger']['routeSha256'] or
