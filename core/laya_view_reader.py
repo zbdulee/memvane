@@ -97,7 +97,7 @@ class ReaderMixin:
             v.fail('generation_view_mismatch')
         return handle, dict(handle=handle, capture=capture, binding=saved['binding_digest']), saved
 
-    def _read_generation(self, db, gen_id, live_handle, deadline):
+    def _read_generation(self, db, gen_id, live_handle, deadline, *, full_vectors=False):
         _remaining(deadline)
         generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
         if generation is None or generation['state'] not in ('prepared', 'published'):
@@ -107,8 +107,9 @@ class ReaderMixin:
             v.fail('generation_unsealed')
         # The shared verifier compares physical bytes before virtual content.
         handle, entry, saved = self._sealed_handle(db, generation, live_handle)
-        self._verify_generation(db, handle, entry, saved, generation, deadline=deadline)
-        return dict(generation), dict(seal), entry['capture']
+        stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
+                                        full_vectors=full_vectors)
+        return dict(generation), dict(seal), entry['capture'], stage
 
     def pin_view(self, handle):
         if self._closed:
@@ -122,16 +123,21 @@ class ReaderMixin:
             head = self._head(db, handle)
             if head['gen_id'] is None:
                 v.fail('view_preparing')
-            generation, seal, _ = self._read_generation(db, head['gen_id'], handle, deadline)
+            generation, seal, _, stage = self._read_generation(db, head['gen_id'], handle, deadline)
             if generation['state'] != 'published':
                 v.fail('view_head_invalid')
+            sealed = stage['vector_spec']
+            # The verified sealed spec, never the mutable shared cache; every
+            # later read re-verifies this seal before using it.
+            vector = None if sealed is None else dict(
+                sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
         self._observe(issued)
         pin = ViewPin(handle.view_id, head['gen_id'], head['epoch'], self._incarnation, uuid.uuid4().hex)
         # Retain an internal copy rather than a mutable caller-held handle object.
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
         entry = dict(handle=copied, capture=json.loads(v.canonical(issued['capture'])), binding=issued['binding'])
         self._pins[pin.token] = dict(pin=pin, fields=(pin.view_id, pin.gen_id, pin.epoch, pin.incarnation, pin.token),
-            entry=entry, seal=v.digest('memvane-read-pin-seal-v1', seal))
+            entry=entry, seal=v.digest('memvane-read-pin-seal-v1', seal), vector=vector)
         return pin
 
     def _pinned(self, pin):
@@ -171,7 +177,7 @@ class ReaderMixin:
         self._observe(entry)
         _remaining(deadline)
         with self._reading(deadline) as db:
-            generation, seal, original = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
+            generation, seal, original, _ = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
             if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                 v.fail('view_pin_changed')
             name = fts.table(generation['ordinal'])
@@ -210,7 +216,7 @@ class ReaderMixin:
         deadline = time.monotonic() + 30
         with self._reading(deadline) as db:
             for generation in db.execute('SELECT * FROM generations ORDER BY ordinal').fetchall():
-                self._read_generation(db, generation['gen_id'], None, deadline)
+                self._read_generation(db, generation['gen_id'], None, deadline, full_vectors=True)
             for row in db.execute('SELECT * FROM view_heads').fetchall():
                 generation = db.execute('SELECT state,view_id FROM generations WHERE gen_id=?', (row['gen_id'],)).fetchone()
                 if generation is None or tuple(generation) != ('published', row['view_id']) or row['epoch'] < 1:
@@ -230,6 +236,8 @@ class ReaderMixin:
                         or stage['worktree_binding'] != saved['binding_digest'] or stage['settings_sha'] != saved['settings_sha']):
                     v.fail('generation_slot_invalid')
                 _worktree_record(saved, self._repository, self._policy)
+                if stage['vector_spec'] is not None:
+                    self._recipe(stage['vector_spec']['recipe_id']); self._profile(stage['vector_spec']['profile_id'])
                 plan = self._derive(handle, stage['manifest'], stage['skip_paths'])
                 fts.proof(db, slot['ordinal'], vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}), deadline)
         return True

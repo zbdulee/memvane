@@ -12,6 +12,7 @@ import re
 
 import laya_blob_values as v
 import laya_index_a as legacy
+import laya_view_vectors as vectors
 
 MAX_MEMBERS = 20000
 MAX_SOURCES = 20000
@@ -28,9 +29,9 @@ MEMBER_FIELDS = ('path', 'blob_sha', 'display_title', 'trust_digest')
 HEAD_FIELDS = ('view_id', 'gen_id', 'epoch', 'incarnation')
 VIEW_FIELDS = ('view_id', 'worktree_id', 'branch_key', 'head_oid', 'checkout_digest', 'policy_digest')
 STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding', 'settings_sha',
-                'base', 'manifest_digest', 'manifest', 'skip_paths', 'files')
-STAGE_SCHEMA = 'memvane-generation-stage-v1'
-VECTORS = v.digest('memvane-generation-vectors-v1', {'mode': 'lexical-only', 'members': []})
+                'base', 'manifest_digest', 'manifest', 'skip_paths', 'files', 'vector_mode', 'vector_spec')
+STAGE_SCHEMA = 'memvane-generation-stage-v2'
+VECTORS = vectors.coverage_digest(None, [])
 
 
 def _plain(value, limit=MAX_MANIFEST_BYTES):
@@ -139,12 +140,13 @@ def view_fields(handle):
     return {k: getattr(handle, k) for k in VIEW_FIELDS}
 
 
-def stage(build_id, incarnation, handle, saved, base, value, skips, files):
+def stage(build_id, incarnation, handle, saved, base, value, skips, files, vector_spec=None):
     return _plain(dict(schema=STAGE_SCHEMA, build_id=build_id, incarnation=incarnation,
                        view=view_fields(handle), worktree_binding=saved['binding_digest'],
                        settings_sha=saved['settings_sha'], base=base,
                        manifest_digest=manifest_digest(value), manifest=value,
-                       skip_paths=skips, files=files), MAX_MANIFEST_BYTES * 2)
+                       skip_paths=skips, files=files, vector_mode=vectors.mode(vector_spec),
+                       vector_spec=vector_spec), MAX_MANIFEST_BYTES * 2)
 
 
 def check_stage(value, handle, incarnation):
@@ -155,17 +157,20 @@ def check_stage(value, handle, incarnation):
             or manifest_digest(value['manifest']) != value['manifest_digest']
             or skip_patterns({'skipPaths': value['skip_paths']}) != value['skip_paths']):
         v.fail('generation_binding_mismatch')
+    vectors.check_stage(value['vector_mode'], value['vector_spec'])
     expected_head(value['base'], handle.view_id, incarnation)
     v.identifier(value['build_id'], v.UUID)
     return value
 
 
-def roots(members, sources, cards, lexical, storage):
+def roots(members, sources, cards, lexical, storage, vector_spec=None, coverage=()):
+    """Coverage is zero (lexical) or one actual reference per eligible member."""
     return dict(membership_digest=v.digest('memvane-generation-membership-v1', members),
                 sources_digest=v.digest('memvane-generation-sources-v1', sources),
                 trust_digest=v.digest('memvane-generation-trust-v1', [members, cards]),
-                lexical_digest=lexical, fts_storage_digest=storage, vectors_digest=VECTORS,
-                eligible_count=sum(m['eligible'] for m in members), vector_member_count=0)
+                lexical_digest=lexical, fts_storage_digest=storage,
+                vectors_digest=vectors.coverage_digest(vector_spec, list(coverage)),
+                eligible_count=sum(m['eligible'] for m in members), vector_member_count=len(coverage))
 
 
 def binding(stage_value, ordinal, capture, root_values):

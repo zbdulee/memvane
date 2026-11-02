@@ -3,7 +3,8 @@
 Handles are store-issued objects bound to one checkout/settings observation.
 Manifests, fingerprints and receipts are caller-owned commitments: a sealed
 generation proves structural consistency, never compiler truth, source
-observation or operational/deletion authority. No reader, GC or activation.
+observation or operational/deletion authority. Vector coverage is zero or one
+reference per eligible member to shared immutable sets. No GC or activation.
 """
 from __future__ import annotations
 
@@ -19,7 +20,10 @@ from laya_blob_store import (BlobStore, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
 import laya_view_fts as view_fts
 import laya_view_values as vals
+import laya_view_vectors as vectors
+from laya_view_fill import FillMixin
 from laya_view_reader import ReaderMixin
+from laya_view_vectors import VectorMixin
 
 SETTINGS_LIMIT = 1024 * 1024
 
@@ -100,7 +104,7 @@ def _current_capture(saved, repository, policy, expected):
         v.fail('checkout_changed')
 
 
-class ViewStore(ReaderMixin, BlobStore):
+class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
     _handle_type = ViewHandle
 
     @classmethod
@@ -202,7 +206,7 @@ class ViewStore(ReaderMixin, BlobStore):
                 ok = False
         return int(ok), refs
 
-    def _derive(self, handle, manifest, skips):
+    def _derive(self, handle, manifest, skips, *, retain_bodies=True):
         """Metadata-only derivation inside a short read transaction."""
         current = {}
         for source in manifest['sources']:
@@ -214,52 +218,62 @@ class ViewStore(ReaderMixin, BlobStore):
                 v.fail('source_observation_stale')
             if not vals.skipped(source['path'], skips):
                 current[source['path']] = (source, fp)
-        members, cards, bodies, total = [], [], {}, 0
+        members, cards, bodies, body_bytes, total = [], [], {}, {}, 0
         # These caches live only within this derivation/read snapshot. Shared
         # bytes never share trust unless the exact attestation also matches.
         verified_bodies, verified_cards = {}, {}
         for member in manifest['members']:
             blob = member['blob_sha']
             if blob not in verified_bodies:
-                verified_bodies[blob] = self._blob(blob)
-            body = verified_bodies[blob]
+                body = self._blob(blob)
+                verified_bodies[blob] = body if retain_bodies else len(body.encode('utf8'))
+            value = verified_bodies[blob]
+            size = len(value.encode('utf8')) if retain_bodies else value
             key = (blob, member['trust_digest'])
             if key not in verified_cards:
                 verified_cards[key] = self._card(handle, member, current)
             eligible, refs = verified_cards[key]
             if vals.skipped(member['path'], skips):
                 continue
-            total += len(body.encode('utf8'))
+            total += size
             if total > vals.MAX_WIKI_BYTES:
                 v.fail('generation_too_large')
             members.append(dict(member, eligible=eligible))
             cards.extend(dict(wiki_path=member['path'], **ref) for ref in refs)
             if eligible:
-                bodies[member['path']] = body
+                body_bytes[member['path']] = size
+                if retain_bodies:
+                    bodies[member['path']] = value
         return dict(members=sorted(members, key=lambda m: m['path']),
                     sources=sorted((s for s, _ in current.values()), key=lambda s: s['path']),
-                    cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])), bodies=bodies)
+                    cards=sorted(cards, key=lambda c: (c['wiki_path'], c['ordinal'])),
+                    bodies=bodies, body_bytes=body_bytes)
 
     @staticmethod
-    def _roots(db, ordinal, plan, rows, deadline=None):
+    def _roots(db, ordinal, plan, rows, vector_spec, coverage, deadline=None):
         storage = view_fts.storage_digest(db, ordinal, deadline)
         lexical = view_fts.proof(db, ordinal, rows, deadline)
-        return vals.roots(plan['members'], plan['sources'], plan['cards'], lexical, storage)
+        return vals.roots(plan['members'], plan['sources'], plan['cards'], lexical, storage,
+                          vector_spec, coverage)
 
-    def prepare_generation(self, handle, manifest, *, expected_head):
+    def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None):
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
         manifest = vals.manifest(manifest, handle.policy_digest)
+        spec = vectors.spec(vector_spec)
         saved = self._observe(entry)
         skips = _skip_patterns(saved)
         with self._session() as db:
             if self._head(db, handle) != base:
                 v.fail('view_head_conflict')
             plan = self._derive(handle, manifest, skips)
+            # Zero or complete: every eligible member's set is fully validated
+            # before any write; a hole, mixed profile or tamper refuses here.
+            coverage = self._vector_coverage(db, plan, spec, full=True)
         files = _wiki_files(saved, plan['members'])
         rows = vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']})
         build_id = uuid.uuid4().hex
-        stage = vals.stage(build_id, self._incarnation, handle, saved, base, manifest, skips, files)
+        stage = vals.stage(build_id, self._incarnation, handle, saved, base, manifest, skips, files, spec)
         stage_json = v.canonical(stage)
         # Stage1: metadata-only slot plus generation-owned FTS; the FTS guard
         # owns commit/rollback through FTS sync. No generation row exists yet.
@@ -295,7 +309,7 @@ class ViewStore(ReaderMixin, BlobStore):
                         or slot['stage_json'] != stage_json
                         or db.execute('SELECT 1 FROM generations WHERE ordinal=?', (ordinal,)).fetchone()):
                     v.fail('generation_slot_invalid')
-                roots = self._roots(db, ordinal, plan, rows)
+                roots = self._roots(db, ordinal, plan, rows, spec, coverage)
                 binding = vals.binding(stage, ordinal, entry['capture'], roots)
                 fields = vals.generation_fields(stage, ordinal, binding, entry['capture'])
                 gen_id, now = fields['gen_id'], time.time_ns()
@@ -307,6 +321,11 @@ class ViewStore(ReaderMixin, BlobStore):
                 for card in plan['cards']:
                     _insert(db, 'card_sources', dict(gen_id=gen_id, wiki_path=card['wiki_path'], ordinal=card['ordinal'],
                             fingerprint_id=card['fingerprint_id'], spans_json=v.canonical(card['spans'])))
+                for ref in coverage:
+                    _insert(db, 'member_vectors', dict(ref, gen_id=gen_id))
+                # The sealed root must describe the actual stored references.
+                if self._verified_vectors(db, stage, plan, gen_id, full=True) != coverage:
+                    v.fail('vector_rows_mismatch')
                 _insert(db, 'generation_seals', dict(roots, gen_id=gen_id, binding_digest=binding, sealed_ns=now))
                 if db.execute("UPDATE generations SET state='prepared' WHERE gen_id=? AND state='building'",
                               (gen_id,)).rowcount != 1:
@@ -326,8 +345,8 @@ class ViewStore(ReaderMixin, BlobStore):
             'SELECT * FROM card_sources WHERE gen_id=? ORDER BY wiki_path,ordinal', (gen_id,))]
         return members, sources, cards
 
-    def _verify_generation(self, db, handle, entry, saved, generation, deadline=None):
-        """Recompute rows, FTS proof, roots and binding from the original slot."""
+    def _verify_generation(self, db, handle, entry, saved, generation, deadline=None, full_vectors=False):
+        """Recompute rows, FTS proof, vector references, roots and binding from the original slot."""
         slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (generation['ordinal'],)).fetchone()
         if slot is None or slot['view_id'] != generation['view_id']:
             v.fail('generation_slot_invalid')
@@ -342,7 +361,11 @@ class ViewStore(ReaderMixin, BlobStore):
         plan = self._derive(handle, stage['manifest'], stage['skip_paths'])
         if self._stored(db, generation['gen_id']) != (plan['members'], plan['sources'], plan['cards']):
             v.fail('generation_rows_mismatch')
-        roots = self._roots(db, generation['ordinal'], plan, vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}), deadline)
+        # Actual stored references, compared with the sealed spec's complete coverage.
+        coverage = self._verified_vectors(db, stage, plan, generation['gen_id'], full=full_vectors, deadline=deadline)
+        roots = self._roots(db, generation['ordinal'], plan,
+                            vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}),
+                            stage['vector_spec'], coverage, deadline)
         binding = vals.binding(stage, generation['ordinal'], entry['capture'], roots)
         fields = vals.generation_fields(stage, generation['ordinal'], binding, entry['capture'])
         seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()
@@ -361,7 +384,7 @@ class ViewStore(ReaderMixin, BlobStore):
             generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
             if generation is None or generation['view_id'] != handle.view_id:
                 v.fail('generation_missing')
-            stage = self._verify_generation(db, handle, entry, saved, generation)
+            stage = self._verify_generation(db, handle, entry, saved, generation, full_vectors=True)
             if stage['base'] != base:
                 v.fail('view_head_conflict')
             current = self._head(db, handle)

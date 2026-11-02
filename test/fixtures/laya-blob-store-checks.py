@@ -28,12 +28,12 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / 'core'))
 import laya_checkout_view as view  # noqa: E402  (PR 1, present at base)
 
-APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v2'
+APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v3'
 SETTINGS = {'name': 'blobfixture'}
 CARD = b'# Shared Title\n\nA wiki card body.\n'
 BEE = b'# Bee\nsecond card\n'
 API = {'create', 'open', 'register_worktree', 'ingest_card', 'document', 'counts', 'close',
-       'register_recipe', 'register_profile', 'put_chunk_set', 'chunks', 'vector_input_sha',
+       'register_recipe', 'register_profile', 'put_chunk_set', 'chunks', 'vector_input_sha', 'embedding_inputs',
        'put_embedding_set', 'vectors', 'put_fingerprint', 'fingerprint', 'put_attestation',
        'attestation', 'verify'}
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'XDG_'))}
@@ -146,7 +146,7 @@ class BlobStoreChecks(BlobStoreCase):
         data = self.db.read_bytes()
         self.assertEqual(data[:16], b'SQLite format 3\x00')
         self.assertEqual((int.from_bytes(data[68:72], 'big'), int.from_bytes(data[60:64], 'big')),
-                         (APP_ID, 2))
+                         (APP_ID, 3))
         self.assertIn(FORMAT, data)
         again = self.reopen(repository)
         self.assertEqual((again.document(sha), again.counts()), (document, counts))

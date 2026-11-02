@@ -3,12 +3,13 @@ from functools import lru_cache
 import sqlite3
 
 from laya_blob_values import canonical, hash_bytes
+import laya_fill_schema
 import laya_view_schema
 import laya_view_fts
 
 APP_ID = 0x4D564231
-SCHEMA_VERSION = 2
-FORMAT = 'memvane-git-blob-candidate-v2'
+SCHEMA_VERSION = 3
+FORMAT = 'memvane-git-blob-candidate-v3'
 
 
 def _text(name):
@@ -32,7 +33,7 @@ def _integer(name, lower=0):
 TABLES = {
     'store_meta': f'''CREATE TABLE store_meta(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=2),
+      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=3),
       {_uuid('repo_id')}, {_uuid('scope_id')}, {_uuid('incarnation')},
       common_git_dir TEXT, common_dev INTEGER, common_ino INTEGER,
       {_text('project_rel')}, git_object_format TEXT,
@@ -120,6 +121,8 @@ KEYS = {'store_meta': (('singleton',),),
 
 TABLES.update(laya_view_schema.tables(_text,_sha,_uuid,_integer))
 KEYS.update(laya_view_schema.immutable_keys())
+TABLES.update(laya_fill_schema.tables(_text, _sha, _uuid, _integer))
+KEYS.update(laya_fill_schema.immutable_keys())
 
 
 def statements():
@@ -143,6 +146,7 @@ def statements():
         'CREATE INDEX attestation_by_blob ON card_attestations(blob_sha)',
         'CREATE INDEX attestation_by_source ON attestation_sources(fingerprint_id,trust_digest)'))
     result.extend(laya_view_schema.statements())
+    result.extend(laya_fill_schema.statements())
     return result
 
 

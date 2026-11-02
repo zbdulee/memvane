@@ -37,12 +37,22 @@ def tables(text,sha,uuid,integer):
         {sha('fingerprint_id')} REFERENCES source_fingerprints(fingerprint_id),
         {text('spans_json')} CHECK(json_valid(spans_json)), PRIMARY KEY(gen_id,wiki_path,ordinal),
         FOREIGN KEY(gen_id,wiki_path) REFERENCES wiki_members(gen_id,path))''',
+      # Reference to one shared immutable set per eligible member; never vector bytes.
+      'member_vectors':f'''CREATE TABLE member_vectors(
+        {text('gen_id')} REFERENCES generations(gen_id), {text('path')}, {sha('blob_sha')},
+        {sha('recipe_id')} REFERENCES chunk_recipes(recipe_id),
+        {sha('profile_id')} REFERENCES vector_profiles(profile_id),
+        {integer('chunk_count',1)} CHECK(chunk_count<=1024),
+        {sha('chunk_digest')}, {sha('embedding_digest')}, PRIMARY KEY(gen_id,path),
+        FOREIGN KEY(gen_id,path,blob_sha) REFERENCES wiki_members(gen_id,path,blob_sha),
+        FOREIGN KEY(blob_sha,recipe_id) REFERENCES chunk_sets(blob_sha,recipe_id),
+        FOREIGN KEY(blob_sha,recipe_id,profile_id) REFERENCES embedding_sets(blob_sha,recipe_id,profile_id))''',
       'generation_seals':f'''CREATE TABLE generation_seals(
         {text('gen_id')} PRIMARY KEY REFERENCES generations(gen_id),
         {sha('membership_digest')}, {sha('sources_digest')}, {sha('trust_digest')},
         {sha('lexical_digest')}, {sha('fts_storage_digest')}, {sha('vectors_digest')},
         {sha('binding_digest')}, {integer('eligible_count')},
-        {integer('vector_member_count')} CHECK(vector_member_count=0), {integer('sealed_ns')})''',
+        {integer('vector_member_count')} CHECK(vector_member_count<=eligible_count), {integer('sealed_ns')})''',
       'view_heads':f'''CREATE TABLE view_heads(
         {sha('view_id')} PRIMARY KEY REFERENCES views(view_id), {text('gen_id')},
         {integer('epoch',1)}, FOREIGN KEY(gen_id,view_id) REFERENCES generations(gen_id,view_id))''',
@@ -53,16 +63,36 @@ def immutable_keys():
     return {'generation_slots':(('ordinal',),('build_id',)), 'views':(('view_id',),('worktree_id','branch_key')),
             'wiki_members':(('gen_id','path'),), 'source_members':(('gen_id','path'),),
             'card_sources':(('gen_id','wiki_path','ordinal'),),
+            'member_vectors':(('gen_id','path'),),
             'generation_seals':(('gen_id',),)}
 
 
 def statements():
     result=[]
-    for name in ('wiki_members','source_members','card_sources','generation_seals'):
+    for name in ('wiki_members','source_members','card_sources','member_vectors','generation_seals'):
         result.append(f'''CREATE TRIGGER {name}_building BEFORE INSERT ON {name}
           WHEN COALESCE((SELECT state FROM generations WHERE gen_id=NEW.gen_id),'missing')!='building'
           BEGIN SELECT RAISE(ABORT,'generation_not_building'); END''')
     result.extend([
+      # Only an eligible member of this generation, the actual shared set heads
+      # and one recipe/profile per generation may be referenced.
+      '''CREATE TRIGGER member_vector_insert BEFORE INSERT ON member_vectors
+        WHEN NOT EXISTS(SELECT 1 FROM wiki_members WHERE gen_id=NEW.gen_id AND path=NEW.path
+            AND blob_sha=NEW.blob_sha AND eligible=1)
+          OR NOT EXISTS(SELECT 1 FROM embedding_sets e JOIN chunk_sets c
+            ON c.blob_sha=e.blob_sha AND c.recipe_id=e.recipe_id
+            WHERE e.blob_sha=NEW.blob_sha AND e.recipe_id=NEW.recipe_id AND e.profile_id=NEW.profile_id
+              AND e.chunk_count=NEW.chunk_count AND c.chunk_count=NEW.chunk_count
+              AND e.set_digest=NEW.embedding_digest AND c.set_digest=NEW.chunk_digest)
+          OR EXISTS(SELECT 1 FROM member_vectors WHERE gen_id=NEW.gen_id
+            AND (recipe_id!=NEW.recipe_id OR profile_id!=NEW.profile_id))
+        BEGIN SELECT RAISE(ABORT,'member_vector_invalid'); END''',
+      # Coverage is zero or every eligible member, counted from actual rows.
+      '''CREATE TRIGGER generation_seal_vectors BEFORE INSERT ON generation_seals
+        WHEN NEW.eligible_count!=(SELECT COUNT(*) FROM wiki_members WHERE gen_id=NEW.gen_id AND eligible=1)
+          OR NEW.vector_member_count!=(SELECT COUNT(*) FROM member_vectors WHERE gen_id=NEW.gen_id)
+          OR NEW.vector_member_count NOT IN (0,NEW.eligible_count)
+        BEGIN SELECT RAISE(ABORT,'generation_seal_vectors_invalid'); END''',
       '''CREATE TRIGGER generation_insert BEFORE INSERT ON generations
         WHEN NEW.state!='building' OR EXISTS(SELECT 1 FROM generations WHERE gen_id=NEW.gen_id OR ordinal=NEW.ordinal)
           OR (NEW.parent_gen IS NOT NULL AND NOT EXISTS(
@@ -94,6 +124,7 @@ def statements():
         BEGIN SELECT RAISE(ABORT,'immutable_view_head'); END''',
       '''CREATE INDEX generation_by_view ON generations(view_id,ordinal)''',
       '''CREATE INDEX member_by_blob ON wiki_members(blob_sha,gen_id,path)''',
+      '''CREATE INDEX member_vector_by_set ON member_vectors(blob_sha,recipe_id,profile_id,gen_id)''',
       '''CREATE INDEX source_member_by_fingerprint ON source_members(fingerprint_id,gen_id,path)''',
       '''CREATE INDEX card_source_by_fingerprint ON card_sources(fingerprint_id,gen_id,wiki_path)''',
     ])

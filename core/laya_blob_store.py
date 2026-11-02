@@ -565,11 +565,20 @@ class BlobStore:
         with self._session():
             return self._chunks(blob_sha, recipe_id)
 
-    def _inputs(self, blob, recipe_id, profile_id):
+    def _input_texts(self, blob, recipe_id, profile_id):
         body = self._blob(blob); self._profile(profile_id)
         rows = self._chunks(blob, recipe_id)
         title = v.markdown_title(body, blob)
-        return [v.hash_bytes(f'title: {title or "none"} | text: {r["text"]}'.encode('utf8')) for r in rows]
+        return [f'title: {title or "none"} | text: {r["text"]}' for r in rows]
+
+    def _inputs(self, blob, recipe_id, profile_id):
+        return [v.hash_bytes(text.encode('utf8'))
+                for text in self._input_texts(blob, recipe_id, profile_id)]
+
+    def embedding_inputs(self, blob_sha, recipe_id, profile_id):
+        """Exact wiki-only synthetic inputs shared with set hash validation."""
+        with self._session():
+            return self._input_texts(blob_sha, recipe_id, profile_id)
 
     def vector_input_sha(self, blob_sha, recipe_id, profile_id, seq):
         v.integer(seq, 0, v.MAX_CHUNKS - 1)

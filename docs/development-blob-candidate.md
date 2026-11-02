@@ -2,7 +2,8 @@
 
 `laya_blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
 recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다.
-형식은 `memvane-git-blob-candidate-v2`, application id는 `0x4d564231`, schema는 `2`다.
+형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
+candidate v1/v2와 운영 v6 파일은 자동 변환하지 않고 읽기 전용 preflight에서 거절한다.
 `BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
@@ -34,7 +35,7 @@ admission 이력은 view membership이나 다른 checkout의 신뢰 승계를 �
 
 DB의 leaf directory는 현재 UID의 `0700`, DB는 `0600`인 single-link 정규 파일이다.
 경로 구성 요소의 symlink와 unsafe sidecar를 거절한다. 생성은 no-clobber이고
-candidate v1·기존 v6·알 수 없는 파일은 읽기 전용 header 확인에서 바이트 변경 없이 거절한다.
+candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인에서 바이트 변경 없이 거절한다.
 열린 handle은 DB 파일 정체성·incarnation·scope·settings policy가 바뀌면 실패한다.
 
 ## 내부 API
@@ -49,6 +50,7 @@ candidate v1·기존 v6·알 수 없는 파일은 읽기 전용 header 확인에
 | `register_recipe(spec)` / `register_profile(spec)` | canonical spec의 domain-separated SHA ID |
 | `put_chunk_set(blob_sha, recipe_id, rows)` / `chunks(...)` | 완전한 chunk set의 digest / 행 |
 | `vector_input_sha(blob_sha, recipe_id, profile_id, seq)` | 실제 provider 문서 입력 문자열의 UTF-8 SHA |
+| `embedding_inputs(blob_sha, recipe_id, profile_id)` | 같은 입력 생성기를 사용하는 순서 있는 문자열 목록 |
 | `put_embedding_set(blob_sha, recipe_id, profile_id, rows)` / `vectors(...)` | 완전한 vector set의 digest / 행 |
 | `put_fingerprint(spec)` / `fingerprint(id)` | 원문 **metadata** 지문 ID / 값 |
 | `put_attestation(spec)` / `attestation(id)` | 개별 provenance를 묶은 trust digest / 값 |
@@ -80,7 +82,49 @@ text SHA가 일치해야 한다. vector는 해당 chunk/input SHA, 정확한 lit
 lookup·동일 replay 확인·삽입은 한 `BEGIN IMMEDIATE` transaction이다.
 동일 replay는 no-op, 다른 replay는 conflict이며 기존 set을 덮어쓰지 않는다.
 실패한 set의 부모·자식은 모두 rollback한다. recipe/profile이 다르면 별도 set이다.
-모델 실행·중복 inference 조율·backfill은 이 API의 범위가 아니다.
+모델 실행은 호출자가 제공하는 callback이 소유한다.
+
+## Content 채우기와 재사용
+
+`laya_blob_fill.ContentFiller(store)`는 content별 complete set을 재사용한다.
+`ensure_content(blob_sha, recipe_id, profile_id, *, chunker, embedder, write_fence,
+deadline_seconds=30)`의 결과는 `status`(`cache_hit` 또는 `filled`), 세 ID,
+`set_digest`, `chunk_count`다. blob·recipe·profile은 같은 store에 등록되어 있어야 한다.
+세 callback은 캐시가 있어도 callable이어야 한다. 최초 조회에서 완전한 캐시를 찾으면
+count·입력 SHA·실제 vector 바이트와 provenance를 다시 확인하고 DB 쓰기·fence·callback·
+lock 디렉터리 생성 없이 반환한다. 손상된 set은 캐시 누락으로 간주하거나 덮어쓰지 않는다.
+
+캐시가 없으면 store incarnation·blob·recipe·profile별 비차단 `flock`을 획득한다.
+private sibling `<DB 파일명>.content-locks`는 `0700`, lock은 현재 UID의
+single-link `0600` 정규 파일이다. symlink를 따라가지 않으며 DB·parent·root·
+이름이 가리키는 inode와 보유 FD를 재확인한다. 경합은 기다리지 않고 거절한다.
+lock 파일은 지우지 않으며 TTL 인계·프로세스 신호를 사용하지 않는다.
+
+`claim_content(blob_sha, recipe_id, profile_id)` context manager는 opaque claim을
+반환한다. `validate_claim(claim)`은 성공 시 `None`을 반환하며 claim은 발급
+filler/store·정확한 객체·보유 FD에 묶인다. context 종료 뒤 claim은 유효하지 않다.
+claim은 DB lease 행을 만들지 않으며 FD는 callback에 전달하지 않는다.
+이 협력 계약은 같은 UID의 임의 FD 조작·명시적 unlock·같은 inode 재개방에 대한
+OS 보안 경계가 아니다. 프로세스 종료 시 kernel이 lock을 해제한다.
+
+lock 획득 뒤 캐시를 다시 확인하며 이때 완전한 set이 있으면 DB 쓰기·fence·callback 없이
+반환한다. 첫 candidate DB 변경 전에 필수 `write_fence()`를 한 번 호출한다.
+lock 파일 생성은 그 전에 일어날 수 있다. `chunker(document, recipe)`는
+`BlobStore.document()`의 `{body,path,title}`와 등록 recipe를 받고 기존
+`{seq,position,text,text_sha}` 행 목록을 반환한다. 유효한 chunk set이 있으면 chunker를
+건너뛴다. `embedder(inputs, profile)`는 정확한 입력 순서의 `N × dimension` 숫자 배열을
+반환한다. filler가 seq·입력 SHA·little-endian float32 바이트를 구성한다.
+행은 최대 1,024개, packed vector 합계는 최대 16 MiB다. bool·nonfinite·zero norm·
+float32 overflow·개수·차원 불일치는 거절하고 완전한 vector set만 원자적으로 기록한다.
+recipe/profile ID는 callback 구현이 선언과 일치한다는 증명이 아니다.
+callback과 flock 획득 중 SQLite transaction을 유지하지 않는다.
+
+deadline은 유한한 `0 < seconds <= 300`이며 callback 전후와 캐시 검증 후에도
+확인한다. 라이브러리의 경과 시간 확인은 callback을 선점하지 못하므로 호출자가
+외부 timeout을 제공한다. 중단 후 유효한 chunk set은 남을 수 있으며, 재시도나
+crash 전후의 provider 실행을 exactly-once로 보장하지 않는다.
+자동 재시도는 없다. lock 경합은 `content_claim_busy`, 잘못된 deadline은
+`content_deadline_invalid`, 경과 시간 초과는 `content_fill_deadline`으로 거절한다.
 
 ## provenance와 검증의 의미
 

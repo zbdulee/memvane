@@ -1,4 +1,4 @@
-"""Inactive candidate v2 schema and FTS contract; all data is synthetic."""
+"""Inactive candidate v3 schema and FTS contract; all data is synthetic."""
 import contextlib
 import importlib
 import importlib.util
@@ -33,21 +33,21 @@ class ViewSchemaChecks(helpers.BlobStoreCase):
         db.execute("INSERT INTO generations VALUES(1,'building')")
         return db
 
-    def test_01_v2_private_store_has_all_fixed_generation_tables(self):
+    def test_01_v3_private_store_has_all_fixed_generation_tables(self):
         store,_,_=self.create()
         self.assertEqual((self.schema.FORMAT,self.schema.SCHEMA_VERSION),
-                         ('memvane-git-blob-candidate-v2',2))
+                         ('memvane-git-blob-candidate-v3',3))
         data=self.db.read_bytes()
         self.assertEqual((int.from_bytes(data[68:72],'big'),int.from_bytes(data[60:64],'big')),
-                         (0x4D564231,2))
+                         (0x4D564231,3))
         expected={'views','generations','wiki_members','source_members','card_sources',
                   'generation_seals','view_heads'}
         self.assertTrue(expected.issubset(store.counts()))
         self.assertTrue(store.verify())
 
-    def test_02_v1_and_v6_headers_are_refused_without_writes(self):
+    def test_02_v1_v2_and_v6_headers_are_refused_without_writes(self):
         repository,_=self.bind()
-        for version in [1,6]:
+        for version in [1,2,6]:
             path=self.state/f'old-{version}.db'
             with sqlite3.connect(path) as db:
                 db.execute('PRAGMA application_id=0x4d564231')
