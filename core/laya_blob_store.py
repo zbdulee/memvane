@@ -1,4 +1,4 @@
-"""Inactive candidate storage; no routes, index generations or source-body API.
+"""Inactive candidate content/provenance storage; no routes or source-body API.
 
 The caller owns the explicit scope and candidate path. Wiki admission validates
 stable bounded observations, not an atomic filesystem/Git snapshot. Evidence
@@ -19,6 +19,7 @@ import laya_blob_schema as schema
 import laya_blob_values as v
 from laya_blob_values import BlobStoreError
 import laya_checkout_view as checkout
+import laya_view_fts as view_fts
 
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -269,14 +270,15 @@ class BlobStore:
             tmpfd = os.open(temp.name, os.O_CREAT | os.O_EXCL | os.O_RDWR | NOFOLLOW,
                             0o600, dir_fd=fd)
             os.close(tmpfd)
-            db = sqlite3.connect(temp.as_uri() + '?mode=rw', uri=True, isolation_level=None, timeout=2)
+            db = sqlite3.connect(temp.as_uri() + '?mode=rw', uri=True, isolation_level=None, timeout=2, cached_statements=0)
             try:
+                view_fts.ConnectionGuard(db)
                 db.execute('PRAGMA foreign_keys=ON')
                 db.execute('PRAGMA synchronous=FULL')
                 db.execute('BEGIN IMMEDIATE')
                 schema.create(db)
                 common = repository['commonGitDir'] or {}
-                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMAT, schema_version=1,
+                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMAT, schema_version=schema.SCHEMA_VERSION,
                     repo_id=repository['repoId'], scope_id=scope_id, incarnation=uuid.uuid4().hex,
                     common_git_dir=common.get('path'), common_dev=common.get('dev'), common_ino=common.get('ino'),
                     project_rel=repository['projectRelative'], git_object_format=repository['gitObjectFormat'],
@@ -317,14 +319,16 @@ class BlobStore:
         db = None
         try:
             identity = _db_file(path)
-            ro = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2, isolation_level=None)
+            ro = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2, isolation_level=None, cached_statements=0)
             try:
+                ro.execute('PRAGMA query_only=ON')
                 ro.row_factory = sqlite3.Row
                 ro.execute('BEGIN')
                 initial_meta = _header(ro, repository, scope_id)
             finally:
                 ro.close()
-            db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2, isolation_level=None)
+            db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2, isolation_level=None, cached_statements=0)
+            fts_guard = view_fts.ConnectionGuard(db)
             db.row_factory = sqlite3.Row
             db.execute('PRAGMA foreign_keys=ON')
             db.execute('PRAGMA recursive_triggers=ON')
@@ -337,6 +341,7 @@ class BlobStore:
             obj = object.__new__(cls)
             obj._path, obj._identity, obj._repository, obj._scope = path, identity, repository, scope_id
             obj._db = db
+            obj._fts_guard = fts_guard
             obj._incarnation, obj._policy = initial_meta['incarnation'], initial_meta['settings_policy_digest']
             return obj
         except BlobStoreError:
