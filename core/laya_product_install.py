@@ -265,11 +265,11 @@ def _unique(pairs):
 
 
 def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
-                          model_path=None, dimension=None):
+                          model_path=None, dimension=None, runtime_generation=None):
     """Read-only exact local artifact proposal for human/release review.
 
-    The executable inventory is the active Laya embedding runtime
-    (``laya_embed_runtime``): its node, node-llama-cpp entry, every packaged
+    The executable inventory is the named Laya generation when supplied,
+    otherwise the active runtime: its node, node-llama-cpp entry, every packaged
     native binary of the pinned Metal build and its GGUF model. The runtime
     is fully re-hashed; a missing or changed file refuses. A ``model_path``
     argument, when given, must name the runtime's own model file. Review
@@ -307,13 +307,12 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     committed_source = _CommitSource(source, commit_id, required_paths=provider_files)
     artifacts = {}
     for name in provider_files:
-        original = committed_source.read(name)
         installed, _ = _read(root / name, MAX_FILE)
-        if original != installed:
-            _fail('provider_review_installed_blob_changed')
+        committed_source.verify(name, installed)
         artifacts[name] = hashlib.sha256(installed).hexdigest()
     try:
-        runtime = laya_embed_runtime.select()
+        runtime = (laya_embed_runtime.select() if runtime_generation is None else
+                   laya_embed_runtime.select_generation(runtime_generation))
     except laya_embed_runtime.RuntimeUnavailable as exc:
         _fail('provider_review_' + str(exc))
     module_pkg = Path(runtime['modulePackage'])

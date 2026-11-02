@@ -1,19 +1,15 @@
-# MemVane 0.43.35 검증 상태
+# MemVane 0.43.36 검증 상태
 
-기준 main은 `bfca7bf`, 브랜치는 `codex/recovery-pending-fence`다. 구현 범위는 중간 리뷰 U1의 journal pending 이후 복구와 종료 프로세스의 자원 진단이다. PR5 구현은 포함하지 않는다.
+기준 main은 `463e029`이며 브랜치는 `codex/review-runtime-portability`다. 범위는 중간 리뷰의 R1·U2·R2다. git-blob PR5 제품 구현은 포함하지 않는다.
 
-pending CAS는 실제 route, 정확한 predecessor·epoch, selected/previous·provider 증거, 쓰기 이력과 project/scope/store/profile을 확인한다. v2 intent는 원래 backup·record·counts를 보존하고 route-only 정규화와 새 대상 교체를 하나의 유계 descriptor로 재개한다. 사라진 bundle의 FID는 현재 증명이 아니다. 새 대상은 정상 provider review·동등성·adoption과 proof/FID 확인 뒤 활성화하며 fence는 마지막에 해제한다. 매 쓰기 전에 project dev/ino와 journal scope를 확인한다. v2 복구는 forward-only다.
+자동 runtime 준비는 지원 Node 후보의 npm을 함께 확인하고, 실제 Node 설치 prefix의 일반 경로와 Homebrew libexec 경로를 읽는다. npm 없는 후보는 다음 후보로 넘기며 explicit Node 선택과 Node-only 탐색 계약은 유지한다.
 
-LocalTrainer의 0-RSS 행은 유효한 메모리 관측으로 집계하지 않는다. 살아 있는 프로세스의 required monitor는 이를 거절하고, 종료한 프로세스는 원래 종료 오류를 유지한다. 상태 이동 fixture는 테스트별 hook deadline을 격리하고 실제 old lock FD를 rename 전후로 유지하는 이벤트 동기화를 사용한다. 제품의 hook budget과 lock timeout은 유지하며 실제 즉시 lock 거절도 검증한다.
+번들·provider 증명은 committed tree OID와 설치 바이트를 대조한다. 실제 ENOENT인 skip-worktree 파일만 설치 바이트로 증명하며, materialized source·부모 링크·cache mode·추가 파일 검사는 유지한다. 제품 Git은 replacement·graft·lazy fetch·transport를 금지한다. 지원 Git 판별이 불가능한 partial clone과 읽을 수 없는 설정은 전용 재시도 사유로 거절한다. 비활성 checkout capture는 pure Git 버전 판별만 공유한다.
 
-검증 근거는 U1 focused 7개 검사, 실제 SQLite journal fixture12, 상위 crash fixture9·durable-step9, 기존 fresh-bundle23과 추가 scope·inode·CAS 경계다. sampler·상태 이동·host response 등 관련 focused는 7개 파일/133.295초, 최종 scope focused 5개는 18.464초로 통과한다. guard-unit21과 manifest 검사도 통과한다. 실제 모델과 운영 DB는 fixture로 사용하지 않는다. bundle/provider artifact 증명만 합성하며 실제 journal 통합은 원래 v1 backup, 양쪽 cache 소실, scope·inode 교체와 CAS 직후 교체를 검증한다.
+runtime producer는 자신이 봉인·복사·활성화한 generation을 반환한다. bundle upgrade는 그 generation을 최초 provider review와 active·bound·inactive·fenced recovery 재검토까지 전달한다. named generation은 현재 소유 runtime의 canonical/private 경로와 전체 봉인 파일을 재검증하며 active/previous 포인터를 읽거나 쓰지 않는다. 명시 generation 없는 수동 review는 기본 active 선택을 유지한다.
 
-첫 전체 suite는 변경되지 않은 teacher transport의 cleanup 검사 1건으로 중단한다(stopped/completed:false/settled:true). 격리 실행과 두 번째 전체 실행에서 해당 검사는 통과하지만 원인은 미확정이며 transport 코드는 변경하지 않는다. 두 번째 전체 결과는 680개 중 675 pass/2 fail/3 skip, 1182.559초, guard failed/settled:true다. 0-RSS 집계와 fixture deadline 누수는 별도 RED로 재현한다. 종료 후 RSS·early scope·inode 경계도 RED→GREEN을 확인한다. 리뷰 전 전체 검사는 681개 중 678 pass/0 fail/3 skip, 1175.985초로 통과하며 guard는 passed/completed:true/settled:true다. 독립 Astra/high의 P1(C switch descriptor 뒤 CAS 전 target 소실)·P2(CAS 이후 settings 변경)는 둘 다 RED로 확인한다. no-op 정규화와 실제 route 교체의 증명을 구분하고 매 쓰기·CAS·activation·fence 직전에 settings-derived scope를 재검증한다. 관련 focused5파일/6검사는 21.339초로 통과하며 마지막 CAS 직전 재검사도 전체 재검사 범위에 포함한다. 최종 전체v4는 681개 중 678 pass/0 fail/3 skip, 1175.487초로 통과하며 guard는 exit0/passed/completed:true/settled:true다. 독립 Astra/high의 좁은 재리뷰와 추가 gemini-3.8-flash-high 교차 검토는 코드 커밋 `cdeb138`에서 safe to merge이며 새 P0/P1/P2가 없다.
+R1의 Homebrew·npm-less 첫 후보는 원본에서 실제 2건 RED이며 관련 2파일 검사는 32.465초로 통과한다. U2는 실제 file:// partial clone에서 online fetch2·missing33→31과 offline fetch1을 재현한다. 최종 관련 3파일 검사는 29.416초로 통과하며 missing34→34·fetch/transport0을 확인한다. 기존 replacement-ref 거절 사유도 유지한다. R2의 원본 5건은 unlock→return 및 ensure→실제 review 경계의 G1 오선택으로 RED다.
 
-상태 이동 단일 case 프로파일은 1.579초 중 rename에 1.425초를 사용한다. 파일시스템 지연의 기저 원인은 미확정이며 시스템 설정·다른 앱·guard를 변경하지 않는다. 직접 Python 진단은 guard의 Node-test 규칙으로 거절되며 동일 검사는 지원되는 Node wrapper로 실행한다.
+R2 보강 fixture8개는 실제 G0 파일 digest와 proposal, global G1·pointer 불변을 확인한다. binding+manifest5개 Node 검사는24.215초로 통과한다. 첫 두 보강 실행의 socket 길이·상속 mock·patch 대상 오류는 fixture에서 보정하며 실패 로그를 보존한다. 최종 전체 검사는683개 중680 pass·0 fail·3 skip,1253.244초이며 guard는 exit0/passed/completed:true/settled:true다. guard-unit21도 통과한다. 전체 검사 시작 후 제품 코드·테스트·개발문서는 무변경이며 REPORT에는 종료 결과만 반영한다. 독립 exact-head 리뷰·PR·양호스트 설치와 운영 검증 상태는 외부 감사표에 기록한다. 보호 파일 3개는 무변경이며 7개 manifest는 0.43.36이다. 실제 모델·운영 DB는 fixture 입력이 아니며 개발용 Claude 호출은 없다. CI는 개발과 별도로 관찰한다.
 
-7개 manifest는 0.43.35이며 보호 파일 3개는 무변경이다. 초기 Astra 지적 P1/P2는 해결 판정이다. PR·병합·설치의 최종 상태는 외부 감사표에 기록한다. CI는 개발과 별도로 관찰한다. Claude 호출은 없다.
-
-릴리스 전 설치된 0.43.34의 쓰기 증명18은 통과하지만 SE/rccar hosted selector gate는 미통과다. 정상 heal 뒤 hosted warm은 worker_error를 반환하며, 같은 설치·pinned interpreter의 fresh 합성 MPS 추론 성공은 운영 복구 증거가 아니다. 서비스 강제 drain·동일 버전 kill·설치 파일 수정은 없다. 추가 배포 전 이 gate를 확인한다.
-
-상세 근거는 `/Users/dulee/work/memvane-handoff/context/review-remediation-status.md`와 `u1-*.log`에 있다. 현재 복구 계약은 `docs/development-active-upgrade-recovery.md`다.
+현재 계약은 `docs/development-runtime-bundle-proof.md`, 세부 근거는 `/Users/dulee/work/memvane-handoff/context/priority2-*`다. 설치된 0.43.35의 운영 검증 근거는 같은 외부 디렉터리의 `u1-release-completion-audit.md`다. 0.43.36 설치·운영 gate는 아직 미확인이다.

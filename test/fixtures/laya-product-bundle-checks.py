@@ -56,7 +56,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_index_sync.py',
                  'laya_source_catalog.py', 'laya_index_capacity.py',
                  'laya_vector_capacity.py',
-                 'laya_package.py', 'laya_product_bundle.py',
+                 'laya_package.py', 'laya_product_bundle.py', 'git_no_lazy.py',
                  'laya_install_journal.py', 'laya_product_install.py',
                  'laya_host_response.py',
                  'laya_initial_build.py', 'laya_fresh_wiki_origin.py',
@@ -961,7 +961,8 @@ print(json.dumps(result))'''
                               'journalPath': str(self.journal_path), **self.build_files}}
         with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
              mock.patch.object(auto, 'installed_commit', return_value=commit), \
-             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_ensure_embed_runtime',
+                               return_value={'generation': str(self.root / 'synthetic-runtime')}), \
              mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
                                new=lambda _path: 'f' * 64), \
              mock.patch('laya_journal_v4.refuse_while_legacy_hermes'), \
@@ -1128,7 +1129,8 @@ print(json.dumps(result))'''
         backup = self.root / 'inactive-backup'
         with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
              mock.patch.object(auto, 'installed_commit', return_value=commit), \
-             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_ensure_embed_runtime',
+                               return_value={'generation': str(self.root / 'synthetic-runtime')}), \
              mock.patch.object(auto, '_mark_sealed_for_rescan'), \
              mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
                                new=lambda _path: 'f' * 64), \

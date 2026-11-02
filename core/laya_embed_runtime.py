@@ -412,6 +412,32 @@ def select(home=None):
     return _described(generation, manifest)
 
 
+def select_generation(generation, home=None):
+    """Fully verify one named owned generation without reading selection pointers."""
+    try:
+        raw = os.fspath(generation)
+    except TypeError:
+        _fail('laya_embed_runtime_unsafe')
+    if (not isinstance(raw, str) or not os.path.isabs(raw) or '\x00' in raw or
+            any(part in ('.', '..') for part in raw.split('/')) or str(Path(raw)) != raw):
+        _fail('laya_embed_runtime_unsafe')
+    chosen = Path(raw)
+    # Reject outside input before opening it or reading its metadata.
+    expected = root(home) / 'generations'
+    if chosen.parent != expected or not GENERATION.fullmatch(chosen.name):
+        _fail('laya_embed_runtime_unsafe')
+    runtime = _runtime_root(home)
+    try:
+        _owner_dir(runtime / 'generations')
+        _owner_dir(chosen)
+        if str(chosen.resolve(strict=True)) != raw:
+            _fail('laya_embed_runtime_unsafe')
+        manifest = _verify_generation(chosen)
+    except OSError as exc:
+        raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
+    return _described(chosen, manifest)
+
+
 # ------------------------------------------------------------- provisioning
 
 def _package_dir(base, name):
@@ -601,9 +627,9 @@ def _provision(*, node, module_entry, model, expect, home=None):
     runtime = _runtime_root(home, create=True)
     generations = _generations(runtime)
     with _lock(runtime):
-        _seal(runtime, generations, node=node, module_entry=module_entry, model=model,
-              expect=expect)
-    return select(home)
+        chosen = _seal(runtime, generations, node=node, module_entry=module_entry, model=model,
+                       expect=expect)
+    return select_generation(chosen, home)
 
 
 def _generations(runtime):
@@ -667,6 +693,7 @@ def _seal(runtime, generations, *, node, module_entry, model, expect):
         if staging.exists():
             _remove_staging(staging)
         raise
+    return target
 
 
 def _check_expected(described, expect):
@@ -867,7 +894,7 @@ def _adopt_legacy(source, manifest, closure, home, files=None):
                 _remove_staging(aside)
                 raise
         _activate(runtime, target.name)
-    return select(home)
+    return select_generation(target, home)
 
 
 def _reactivate(generation, manifest, closure, home, files=None):
@@ -881,7 +908,7 @@ def _reactivate(generation, manifest, closure, home, files=None):
         if not matches(described, manifest, closure, files):
             _fail('laya_embed_runtime_mismatch')
         _activate(runtime, generation.name)
-    return select(home)
+    return select_generation(generation, home)
 
 
 # ------------------------------------------------- new-machine provisioning
@@ -962,9 +989,10 @@ def _binary(path):
         return False
 
 
-def discover_node(*, path_env=None, home=None, run=_run):
-    """(resolved node binary, version) of the first supported candidate."""
+def discover_node(*, path_env=None, home=None, run=_run, require_npm=False):
+    """First supported (resolved binary, version), with npm when required."""
     seen = []
+    supported = False
     for candidate in node_candidates(path_env=path_env, home=home):
         try:
             resolved = candidate.resolve(strict=True)
@@ -984,16 +1012,29 @@ def discover_node(*, path_env=None, home=None, run=_run):
             continue
         major = int(match.group(1))
         if major >= MIN_NODE_MAJOR and major in NODE_MAJORS:
+            supported = True
+            if require_npm:
+                try:
+                    _npm_cli(resolved)
+                except RuntimeUnavailable as exc:
+                    if str(exc) != 'laya_embed_runtime_npm_unavailable':
+                        raise
+                    continue
             return resolved, match.group(0).lstrip('v')
+    if require_npm and supported:
+        _fail('laya_embed_runtime_npm_unavailable')
     _fail('laya_embed_runtime_node_unavailable')
 
 
 def _npm_cli(node):
     """npm's own CLI script that ships beside this Node install."""
-    cli = Path(node).parents[1] / 'lib' / 'node_modules' / 'npm' / 'bin' / 'npm-cli.js'
-    if not cli.is_file():
-        _fail('laya_embed_runtime_npm_unavailable')
-    return cli
+    prefix = Path(node).resolve(strict=True).parents[1]
+    for relative in ('lib/node_modules/npm/bin/npm-cli.js',
+                     'libexec/lib/node_modules/npm/bin/npm-cli.js'):
+        cli = prefix / relative
+        if cli.is_file():
+            return cli
+    _fail('laya_embed_runtime_npm_unavailable')
 
 
 def _install_module(node, work, *, run=_run):
@@ -1078,7 +1119,8 @@ def provision_new(home=None, *, approve_download=False, model_file=None, node=No
     if not approve_download:
         _fail('laya_embed_runtime_download_approval_required')
     if node is None:
-        node, _version = discover_node(path_env=path_env, home=home, run=run)
+        node, _version = discover_node(path_env=path_env, home=home, run=run,
+                                       require_npm=True)
     runtime = _runtime_root(home, create=True)
     generations = _generations(runtime)
     with _lock(runtime):
@@ -1090,11 +1132,11 @@ def provision_new(home=None, *, approve_download=False, model_file=None, node=No
             entry = _install_module(node, work, run=run)
             model = _fetch_model(work, model_file=model_file, model_sha256=model_sha256,
                                  approve_download=approve_download, fetch=fetch)
-            _seal(runtime, generations, node=node, module_entry=entry, model=model,
-                  expect={'model': model_sha256})
+            chosen = _seal(runtime, generations, node=node, module_entry=entry, model=model,
+                           expect={'model': model_sha256})
         finally:
             _remove_work(work)
-    return select(home)
+    return select_generation(chosen, home)
 
 
 def _remove_work(path):

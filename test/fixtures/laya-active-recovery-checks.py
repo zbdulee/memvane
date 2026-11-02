@@ -382,7 +382,8 @@ class RecoveryTests(unittest.TestCase):
                     mock.patch.object(auto, 'select_source', return_value=(case.home, '3' * 40)), \
                     mock.patch.object(auto, '_not_older'), \
                     mock.patch.object(auto, '_require_pinned_runtime'), \
-                    mock.patch.object(auto, '_ensure_embed_runtime'), \
+                    mock.patch.object(auto, '_ensure_embed_runtime',
+                                      return_value={'generation': str(case.home / 'synthetic-runtime')}), \
                     mock.patch.object(BASE['product'], '_request_build_wake',
                                       return_value={'status': 'fixture'}):
                 result = auto.upgrade_install(case.project, case.state,

@@ -17,6 +17,8 @@ import stat
 import subprocess
 import unicodedata
 
+from git_no_lazy import require_no_lazy_fetch
+
 
 SCHEMA = 'laya-product-bundle-v1'
 OWNER_SCHEMA = 'laya-product-ownership-v1'
@@ -45,6 +47,7 @@ ARTIFACTS = (
     'laya_initial_build.py',
     'laya_package.py',
     'laya_product_bundle.py',
+    'git_no_lazy.py',
     'laya_install_journal.py',
 )
 MAX_FILE = 4 * 1024 * 1024
@@ -434,14 +437,18 @@ GIT_PINNED = ('git', '--no-replace-objects')
 
 
 def git_pinned_env():
-    return {**os.environ, 'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_GRAFT_FILE': os.devnull}
+    return {**os.environ, 'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_GRAFT_FILE': os.devnull,
+            'GIT_NO_LAZY_FETCH': '1', 'GIT_ALLOW_PROTOCOL': ''}
 
 
 def _git(root, *args):
+    env = git_pinned_env()
+    # Keep admission errors distinct from an unavailable commit/object.
+    require_no_lazy_fetch(root, prefix=GIT_PINNED, env=env)
     try:
         done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), check=True,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=15, env=git_pinned_env())
+                              timeout=15, env=env)
         return done.stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise BundleEvidenceError('source_commit_unavailable') from exc
@@ -647,7 +654,7 @@ def _exec_matches(mode, committed_mode):
 
 
 class _CommitSource:
-    """Exact committed bytes, including unmaterialized skip-worktree blobs.
+    """Prove installed bytes against the committed tree without reading blobs.
 
     A sparse checkout is only a source of Git objects; reading it never
     expands the checkout. Materialized files must still prove their bytes
@@ -668,8 +675,10 @@ class _CommitSource:
         except UnicodeError as exc:
             raise BundleEvidenceError('invalid_commit_path') from exc
 
-    def read(self, name):
+    def verify(self, name, installed_raw):
         committed = self.paths[name]
+        if type(installed_raw) is not bytes or len(installed_raw) > MAX_FILE:
+            _fail('unsafe_bundle_file')
         parent = self.root
         for part in Path(name).parts[:-1]:
             parent /= part
@@ -689,16 +698,16 @@ class _CommitSource:
                     (exc.detail or {}).get('errno') != errno.ENOENT or
                     name not in self.sparse):
                 raise
-            size = int(_git(self.root, 'cat-file', '-s', committed['oid']))
-            if size > MAX_FILE:
-                _fail('unsafe_bundle_file')
-            raw = _git(self.root, 'cat-file', 'blob', committed['oid'])
+            if _git_blob_oid(installed_raw, self.object_format) != committed['oid']:
+                _fail('installed_blob_not_exact_commit')
+            return  # Actual sparse ENOENT: the bounded installed bytes prove the OID.
         else:
             if not _exec_matches(info['mode'], committed['mode']):
                 _fail('source_not_exact_commit')
         if _git_blob_oid(raw, self.object_format) != committed['oid']:
             _fail('source_not_exact_commit')
-        return raw
+        if raw != installed_raw:
+            _fail('installed_blob_not_exact_commit')
 
 
 def _exact_commit_entries(source, installed, commit_id):
@@ -734,14 +743,13 @@ def _exact_commit_entries(source, installed, commit_id):
                'truncated': len(unexpected) > 5 or len(missing) > 5})
     entries = {}
     for name, committed in selected.items():
-        source_raw = committed_source.read(name)
         installed_raw, installed_info = _read(installed / name, MAX_FILE)
         if (installed_info['dev'] != installed.stat().st_dev or
                 not _exec_matches(installed_info['mode'], committed['mode']) or
                 installed_info['mode'] & 0o022 or
-                installed_raw != source_raw or
                 (installed / name).stat().st_uid != os.getuid()):
             _fail('installed_blob_not_exact_commit')
+        committed_source.verify(name, installed_raw)
         entries[name] = installed_info
     return entries
 

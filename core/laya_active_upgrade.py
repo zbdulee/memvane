@@ -212,7 +212,7 @@ def _old_state(project, state, journal, ledger=None, *, prior_intent=None):
 
 def _prepare(project, state, journal, source_root, plugin_root, commit_id,
              accepted_provider_sha256, model_path, dimension, ledger=None,
-             *, prior_intent=None):
+             *, prior_intent=None, runtime_generation=None):
     ledger = ledger or _Ledger('fresh')
     row, selected, old_route, old_att, old_marker = _old_state(project, state,
                                                                journal, ledger,
@@ -226,7 +226,9 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
         _fail('active_upgrade_build_binding_changed')
     review = review_local_provider(source_root=source_root, plugin_root=plugin_root,
                                    state_root=state, commit_id=commit_id,
-                                   model_path=model_path, dimension=dimension)
+                                   model_path=model_path, dimension=dimension,
+                                   **({'runtime_generation': runtime_generation}
+                                      if runtime_generation is not None else {}))
     if review['proposalSha256'] != accepted_provider_sha256:
         _fail('reviewed_provider_proposal_changed')
     # Same content at other paths keeps the selected vector profile.
@@ -573,11 +575,14 @@ def _recovery_state(intent, actual, current):
 
 
 def _fresh_recovery_target(intent, before, source_root, plugin_root, commit_id,
-                           accepted_provider_sha256, model_path, dimension):
+                           accepted_provider_sha256, model_path, dimension,
+                           runtime_generation=None):
     state = Path(intent['stateRoot'])
     review = review_local_provider(source_root=source_root, plugin_root=plugin_root,
                                    state_root=state, commit_id=commit_id,
-                                   model_path=model_path, dimension=dimension)
+                                   model_path=model_path, dimension=dimension,
+                                   **({'runtime_generation': runtime_generation}
+                                      if runtime_generation is not None else {}))
     if review['proposalSha256'] != accepted_provider_sha256:
         _fail('reviewed_provider_proposal_changed')
     approved = reattest(json.loads(intent['oldAttestation']), review['reviewedProvider'])
@@ -643,7 +648,8 @@ def _verify_recovery_scope(journal, original):
 
 
 def _recover_upgrade(intent, source_root, plugin_root, commit_id,
-                      accepted_provider_sha256, model_path, dimension):
+                      accepted_provider_sha256, model_path, dimension,
+                      runtime_generation=None):
     state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
     journal = state / 'install-journal.sqlite'
     _backup_proof(intent, verify_new=False)
@@ -689,7 +695,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
             _fail('active_upgrade_recovery_journal_changed')
         intent = _fresh_recovery_target(normalized, after, source_root, plugin_root,
                                          commit_id, accepted_provider_sha256,
-                                         model_path, dimension)
+                                         model_path, dimension, runtime_generation)
         intent['recovery'] = {'mode': 'switch', 'before': after,
                               'after': _target_metadata(intent), 'journalBefore': current}
         _validate_recovery(intent)
@@ -1101,7 +1107,8 @@ def finish_activated(*, project_root, state_root, requested_root=None):
 
 
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
-            accepted_provider_sha256, model_path, dimension, restore=False):
+            accepted_provider_sha256, model_path, dimension, restore=False,
+            runtime_generation=None):
     """Resume one exact sealed upgrade; a failed step leaves a blocked route."""
     project = Path(project_root).resolve(strict=True)
     state = _private_parent(state_root)
@@ -1141,7 +1148,8 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                        intent['reviewSha256'] != accepted_provider_sha256 or
                        _reextracted(intent, plugin_root))))):
                 return _recover_upgrade(intent, source_root, plugin_root, commit_id,
-                                         accepted_provider_sha256, model_path, dimension)
+                                         accepted_provider_sha256, model_path, dimension,
+                                         runtime_generation)
             settled_restored = (
                 current_row['phase'] == 'active' and
                 current_row['routeSha256'] == intent['oldLedger']['routeSha256'] and
@@ -1171,7 +1179,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             intent = _prepare(project, state, state / 'install-journal.sqlite',
                               source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension,
-                              ledger, prior_intent=intent)
+                              ledger, prior_intent=intent, runtime_generation=runtime_generation)
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id
@@ -1194,7 +1202,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             intent = _prepare(project, state, state / 'install-journal.sqlite',
                               source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension,
-                              ledger)
+                              ledger, runtime_generation=runtime_generation)
         elif (intent['newProof']['pluginRoot'] != str(plugin_root) or
               intent['newProof']['sourceCommit'] != commit_id or
               intent['reviewSha256'] != accepted_provider_sha256):
