@@ -19,6 +19,7 @@ that format existed is judged by its `sources:` file list instead:
 | every source present with the same hash                 | keep |
 | no `sourceRevisions`, every `sources:` file exists      | backfill: record the current bytes (`wiki_source_retire.record_source_revisions`), keep |
 | no `sourceRevisions`, every `sources:` file is missing  | retire (`wiki_source_retire.retire_card`) |
+| session-only `sources:`                                 | outside file-source lifecycle; keep |
 | no `sourceRevisions` and no `sources:` file entry       | retire (`wiki_source_retire.retire_card`) |
 
 Git branch safety (`git_branch_safety`): a missing source is acted on only
@@ -57,8 +58,9 @@ maxCardsPerScan`, cursor in the sync state dir); retirements are capped per run
 (`MAX_RETIRE_PER_RUN`), backfills by `MAX_BACKFILL_PER_RUN`, and enqueues by
 the compile per-wake cap. A capped run stops its cursor at the last finished
 card, so the next session resumes there and the corpus converges.
-Mass-deletion guard: every would-be deletion counts — a missing recorded
-source, a missing legacy source, and a card with no source at all. When more
+Mass-deletion guard: missing recorded and legacy file sources count. Cards
+without file provenance are excluded from both the numerator and denominator;
+their retirement still uses the per-run cap. When more
 than `MASS_DELETE_FRACTION` of the decided cards (and more than
 `MASS_DELETE_MIN`) would be deleted in one run, nothing is retired, backfilled
 or enqueued and the run is logged as deferred (unmounted disk, branch switch,
@@ -129,7 +131,7 @@ LEGACY_MISSING = "legacy_missing"
 # 원문이 다른 브랜치·워크트리에만 보이거나 git이 삭제를 증명하지 못한 카드. 지우지 않는다.
 HELD = "held"
 # 가드 분모(판정이 끝난 카드)와 분자(이번 run이 지울 카드).
-DECIDED = (KEEP, MISSING, BACKFILL, LEGACY_MISSING, UNPROVEN, HELD)
+DECIDED = (KEEP, MISSING, BACKFILL, LEGACY_MISSING, HELD)
 DELETING = (MISSING, LEGACY_MISSING, UNPROVEN)
 
 
@@ -261,7 +263,7 @@ def known_collections(config: dict) -> frozenset[str]:
 
 
 def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
-                   known: frozenset[str], label=None) -> dict:
+                   known: frozenset[str], label=None) -> dict | None:
     """Judge a card without `sourceRevisions` by its declared `sources:` files.
 
     Resolution is the same SSOT as recorded revisions
@@ -291,6 +293,10 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
             files.append({"kind": wiki_card.SOURCE_KIND_FILE, "path": record["path"],
                           "collection": collection})
     if not files:
+        if records and all(record.get("kind") == "session" for record in records):
+            # Durable session conclusions do not claim a file dependency.
+            # Their lifetime cannot be decided by file disappearance.
+            return None
         info["state"] = UNPROVEN
         return info
     info["legacy"] = True
@@ -410,7 +416,7 @@ def guard_verdict(infos: dict) -> dict:
     states = [info["state"] for info in infos.values() if info is not None]
     decided = sum(1 for state in states if state in DECIDED)
     verdict = {
-        "wouldDelete": sum(1 for state in states if state in DELETING),
+        "wouldDelete": sum(1 for state in states if state in (MISSING, LEGACY_MISSING)),
         "decidedCards": decided,
         "missingCards": sum(1 for state in states if state == MISSING),
         "legacyMissingCards": sum(1 for state in states if state == LEGACY_MISSING),

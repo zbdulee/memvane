@@ -335,14 +335,18 @@ _CODES = {'queue_full', 'deadline_expired', 'resource_deferred', 'replacement_de
 def _signature():
     """The executing bundle's code, not only this package.
 
-    The hosted service binds its own adapter to the bundle installed when it
-    started. A release that changes only host code (``core/*.py``) must still
-    read as a different service, so the next request replaces it instead of
-    keeping an earlier bundle that no longer binds. The file set matches the
-    resident service's bundle digest; two host caches of one release agree.
+    The hosted adapter must belong to the installed release even when its
+    code bytes match an earlier release. Include the plugin version as well
+    as all host code, so a newer client reaches the resident's normal version
+    replacement policy. Two host caches of one release still agree.
     """
     core = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
+    try:
+        version = json.loads((core.parent / 'plugin.json').read_text('utf-8'))['version']
+    except (OSError, ValueError, KeyError, TypeError):
+        version = '0'
+    digest.update(str(version).encode('utf-8') + b'\0')
     for path in sorted([*core.glob('*.py'), *core.glob('*.mjs'),
                         *core.glob('context_learning/*.py')]):
         digest.update(path.relative_to(core).as_posix().encode() + b'\0')

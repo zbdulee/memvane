@@ -1586,9 +1586,10 @@ class ResponseChecks(unittest.TestCase):
             # Never from another plugin copy: the owner would refuse that root
             # as a terminal identity failure.
             self.assertEqual(wake('starting', root='/other/plugin/root')[1], [])
-            # A real failure, an unknown state and a transition keep the sync path.
-            self.assertEqual(wake('startup_failed'),
-                             ('selected_provider_retry_wait', []))
+            # Transient failures also get the direct, budgeted adoption path.
+            code, calls = wake('startup_failed')
+            self.assertEqual((code, len(calls)), ('selected_provider_retry_wait', 1))
+            # An unknown state and an identity transition keep the sync path.
             self.assertEqual(wake(None), ('selected_provider_preparing', []))
             self.assertEqual(wake('starting', transition=True),
                              ('selected_provider_identity_transition', []))

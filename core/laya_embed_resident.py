@@ -30,6 +30,8 @@ _REASONS = frozenset(('starting', 'ready', 'resource_deferred',
                       'startup_failed', 'worker_exited', 'identity_invalid',
                       'attestation_invalid', 'unexpected'))
 _MAX_FAILURES = 3
+_FAILURE_COOLDOWN_SECONDS = 300
+_TRANSIENT_FAILURES = frozenset(('startup_failed', 'worker_exited'))
 
 
 def _state_path(socket_path):
@@ -124,6 +126,15 @@ def _failure_decision(manifest, *, own_lock=False):
     row = read_owner_state(manifest)
     if row is None:
         return
+    if (row['reason'] in _TRANSIENT_FAILURES
+            and (row['terminal'] or row['attempts'] >= _MAX_FAILURES)):
+        # Older services persisted transient exhaustion as terminal. Keep one
+        # fixed cooldown, including across restarts, without renewing it on
+        # each prompt. A wall-clock rollback must not make it indefinite.
+        elapsed = time.time() - row['at']
+        if 0 <= elapsed < _FAILURE_COOLDOWN_SECONDS:
+            raise ResourceDeferred('laya_service_backoff')
+        return
     if row['terminal']:
         raise IndexContractError('provider_start_failed')
     delay = (5 if row['reason'] in ('resource_deferred', 'starting') else
@@ -139,7 +150,7 @@ def _failure_decision(manifest, *, own_lock=False):
             raise ResourceDeferred('laya_service_backoff')
         _write_state(manifest, 'worker_exited', terminal=True,
                      attempts=_MAX_FAILURES)
-        raise IndexContractError('provider_start_failed')
+        raise ResourceDeferred('laya_service_backoff')
 
 
 def _record_failure(manifest, reason, *, terminal=False, count=True):

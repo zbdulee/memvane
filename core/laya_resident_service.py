@@ -1556,7 +1556,7 @@ class Service:
             self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
-        from laya_embed_resident import _write_state
+        from laya_embed_resident import _failure_decision, _write_state
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
@@ -1568,9 +1568,20 @@ class Service:
                 worker.handle, worker.state = None, 'failed'
                 worker.failures += 1
                 worker.retry_at = time.monotonic() + 5
+            try:
+                # Registry adoption obeys the durable budget after a restart.
+                # Observe worker death first so its retry clock overlaps the
+                # disk backoff, rather than adding a second five-second wait.
+                _failure_decision(manifest)
+            except Exception:
+                self._later(project, 5)
+                return
             if (self.draining.is_set() or worker.loading
                     or worker.retry_at > time.monotonic() or worker.state == 'terminal'):
                 return
+            if worker.state == 'cooldown':
+                worker.failures = 0
+                worker.state = 'starting'
             if not self.cold_load.acquire(blocking=False):
                 return  # another profile is loading; a later tick retries
             worker.loading = True
@@ -1595,7 +1606,8 @@ class Service:
             self.cold_load.release()
 
     def _load_attested(self, project, decision, proof, mode, manifest, worker, seal):
-        from laya_embed_resident import _MAX_FAILURES, _write_state
+        from laya_embed_resident import (_FAILURE_COOLDOWN_SECONDS,
+                                         _MAX_FAILURES, _write_state)
         reason = None
         handle = None
         try:
@@ -1636,6 +1648,9 @@ class Service:
             if code in ('provider_admission_deferred', 'laya_service_resource_deferred') or \
                     type(exc).__name__ == 'ResourceDeferred':
                 reason = 'resource_deferred'
+            elif code in ('provider_lock_invalid', 'provider_socket_invalid',
+                          'provider_socket_changed'):
+                reason = 'identity_invalid'
             elif code in ('provider_artifact_hash_mismatch', 'provider_model_not_gguf',
                           'provider_attestation_invalid', 'provider_closure_unapproved',
                           'provider_recipe_mismatch'):
@@ -1658,9 +1673,16 @@ class Service:
                     min(len(LOAD_RETRY_SECONDS) - 1, worker.failures)]
             else:
                 worker.failures += 1
-                terminal = reason == 'attestation_invalid' or worker.failures >= _MAX_FAILURES
-                worker.state = 'terminal' if terminal else 'failed'
-                worker.retry_at = time.monotonic() + 5 * 2 ** worker.failures
+                worker.failures = min(_MAX_FAILURES, worker.failures)
+                if reason in ('attestation_invalid', 'identity_invalid'):
+                    worker.state = 'terminal'
+                elif worker.failures >= _MAX_FAILURES:
+                    worker.state = 'cooldown'
+                else:
+                    worker.state = 'failed'
+                worker.retry_at = time.monotonic() + (
+                    _FAILURE_COOLDOWN_SECONDS if worker.state == 'cooldown'
+                    else 5 * 2 ** worker.failures)
         if handle is not None:
             # The very next tick binds every waiting project at once.
             self.wake.set()
