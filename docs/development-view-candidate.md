@@ -1,8 +1,8 @@
 # View candidate 세대와 lexical reader 계약
 
 `laya_view_store.ViewStore`는 `BlobStore`를 확장하는 비활성 개발용 API다.
-형식은 `memvane-git-blob-candidate-v2`, application id는 `0x4d564231`, schema는 `2`다.
-candidate v1과 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
+형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
+candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
 운영 v6 reader·hook·route는 이 API를 호출하지 않는다.
 
 내용 admission·recipe·profile·provenance 계약은

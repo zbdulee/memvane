@@ -2,7 +2,8 @@
 
 `laya_blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
 recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다.
-형식은 `memvane-git-blob-candidate-v2`, application id는 `0x4d564231`, schema는 `2`다.
+형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
+candidate v1/v2와 운영 v6 파일은 자동 변환하지 않고 읽기 전용 preflight에서 거절한다.
 `BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
