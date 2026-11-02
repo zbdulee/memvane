@@ -69,7 +69,8 @@ class RecoveryChecks(unittest.TestCase):
                 self.manifest = manifest
             def _verify_artifacts(self):
                 pass  # no model or real artifact files in this fixture
-        for kind in ('public_lock', 'regular_socket', 'symlink_lock'):
+        for kind in ('public_lock', 'regular_socket', 'symlink_lock',
+                     'directory_lock', 'socket_lock'):
             with self.subTest(kind=kind):
                 base = self.base / kind
                 base.mkdir(mode=0o700)
@@ -94,10 +95,17 @@ class RecoveryChecks(unittest.TestCase):
                     lock.chmod(0o644)
                 elif kind == 'regular_socket':
                     Path(worker.socket_path).write_text('not a socket')
-                else:
+                elif kind == 'symlink_lock':
                     target = base / 'preserved'
                     target.write_text('must not be opened through a link')
                     lock.symlink_to(target)
+                elif kind == 'directory_lock':
+                    lock.mkdir(mode=0o700)
+                else:
+                    import socket
+                    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    self.addCleanup(listener.close)
+                    listener.bind(str(lock))
                 with patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts), \
                      patch.object(local.subprocess, 'Popen',
                                   side_effect=AssertionError('no model may start')) as spawn:
@@ -119,6 +127,8 @@ class RecoveryChecks(unittest.TestCase):
                     self.assertEqual(Path(worker.socket_path).read_text(), 'not a socket')
                 elif kind == 'symlink_lock':
                     self.assertEqual(target.read_text(), 'must not be opened through a link')
+                elif kind == 'directory_lock':
+                    self.assertTrue(lock.is_dir())
 
     def test_recall_preserves_lexical_during_cooldown_and_wakes_after_it(self):
         import laya_host_response as host
@@ -137,6 +147,29 @@ class RecoveryChecks(unittest.TestCase):
                     self.assertEqual(host._wake_provider(decision, proof),
                                      'selected_provider_retry_wait')
                 self.assertEqual(adopt.call_count, expected_calls)
+
+    def test_private_lock_resource_error_keeps_its_transient_os_code(self):
+        import errno
+        import laya_local_embed_service as local
+        class SyntheticArtifacts:
+            def __init__(self, manifest):
+                self.manifest = manifest
+            def _verify_artifacts(self):
+                pass
+        lock = Path(self.manifest['serviceSocketPath'] + '.lock')
+        lock.write_text('valid private lock')
+        lock.chmod(0o600)
+        real_open = local.os.open
+        def exhausted(path, *args, **kwargs):
+            if str(path) == str(lock):
+                raise OSError(errno.EMFILE, 'synthetic descriptor exhaustion')
+            return real_open(path, *args, **kwargs)
+        with patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts), \
+             patch.object(local.os, 'open', side_effect=exhausted), \
+             self.assertRaises(OSError) as failure:
+            local.start_owned_embed_service(self.manifest, admit=lambda: True)
+        self.assertEqual(failure.exception.errno, errno.EMFILE)
+        self.assertEqual(lock.read_text(), 'valid private lock')
 
     def test_abrupt_third_launch_enters_recoverable_cooldown(self):
         self.stamp('ready', terminal=False)

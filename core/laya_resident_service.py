@@ -20,7 +20,6 @@ the reviewed provider/worker bytes unchanged. Hooks never wait for a model.
 from __future__ import annotations
 
 from contextlib import suppress
-import errno
 import fcntl
 import hashlib
 import json
@@ -1650,8 +1649,7 @@ class Service:
                     type(exc).__name__ == 'ResourceDeferred':
                 reason = 'resource_deferred'
             elif code in ('provider_lock_invalid', 'provider_socket_invalid',
-                          'provider_socket_changed') or (
-                    isinstance(exc, OSError) and exc.errno == errno.ELOOP):
+                          'provider_socket_changed'):
                 reason = 'identity_invalid'
             elif code in ('provider_artifact_hash_mismatch', 'provider_model_not_gguf',
                           'provider_attestation_invalid', 'provider_closure_unapproved',

@@ -125,6 +125,11 @@ class OwnedEmbedService:
                 self.lease = None
 
 
+def _valid_lock_file(info):
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and not info.st_mode & 0o077)
+
+
 def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15):
     """Load once after owner admission; return a handle that owns its process.
 
@@ -139,11 +144,22 @@ def start_owned_embed_service(manifest, *, admit, startup_timeout_s=15):
     _private_parent(socket_path)
     provider._verify_artifacts()
     lock_path = socket_path + '.lock'
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        # Some invalid kinds (directory, socket, symlink) fail before fstat.
+        # Classify their actual named metadata by the same private-file rule.
+        # A valid/missing path with an OS resource error remains retryable.
+        try:
+            info = os.lstat(lock_path)
+        except OSError:
+            raise exc
+        if not _valid_lock_file(info):
+            raise IndexContractError('provider_lock_invalid') from exc
+        raise
     try:
         info = os.fstat(lock_fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077):
+        if not _valid_lock_file(info):
             raise IndexContractError('provider_lock_invalid')
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
