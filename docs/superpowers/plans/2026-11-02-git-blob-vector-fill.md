@@ -33,11 +33,11 @@
 - `ContentFiller(store).ensure_content(blob_sha, recipe_id, profile_id, *, chunker, embedder, write_fence, deadline_seconds=30) -> dict`: status cache_hit|filled, IDs, set_digest, chunk_count. Claim busy/error uses bounded BlobStoreError reason; no implicit retry loop. Deadline finite0<seconds<=300.
 - chunker(document, recipe)->existing complete chunk rows; document is BlobStore.document, path `blobs/<sha>.md`. embedder(inputs, profile)->N×dimension finite nonzero numeric array; filler constructs seq/input SHA/little-endian float32, then uses existing complete atomic insertion. Output N<=1024 and packed bytes<=16MiB. Invalid/overflow/count/dimension/refusal leaves no partial embedding parent/children.
 - No DB lease row is required: OS lock is execution ownership, later fill_jobs are progress only.
-- [ ] Write actual-format v1/v2/v6 no-write refusal, samebody/rename inputs, recipe/profile changes, two-process contention, inode/claim failures, crash release, no SQL transaction in callbacks, provider count/partial/NaN/zero/output-bound and cache no-op tests.
-- [ ] Parent runs guarded RED and records precise missing API/schema reasons; delegate code only after that signal.
-- [ ] Implement format3 header/check/manifests and shared inputs; preserve existing immutable digest/PK contracts. Capture exact schema2 fixture before updating expectations; no live schema fixture.
-- [ ] Implement acquired claim→cache recheck→first fence→complete chunks→callback outside TX→claim/DB recheck→whole embedding set commit. Cache validation uses existing digest/provenance APIs, not row count alone.
-- [ ] Focused new suite + blob/schema/set regressions pass; commit independently testable slice.
+- [x] Write actual-format v1/v2/v6 no-write refusal, samebody/rename inputs, recipe/profile changes, two-process contention, inode/claim failures, crash release, no SQL transaction in callbacks, provider count/partial/NaN/zero/output-bound and cache no-op tests.
+- [x] Parent runs guarded RED and records precise missing API/schema reasons; delegate code only after that signal.
+- [x] Implement format3 header/check/manifests and shared inputs; preserve existing immutable digest/PK contracts. Capture exact schema2 fixture before updating expectations; no live schema fixture.
+- [x] Implement acquired claim→cache recheck→first fence→complete chunks→callback outside TX→claim/DB recheck→whole embedding set commit. Cache validation uses existing digest/provenance APIs, not row count alone.
+- [x] Focused new suite + blob/schema/set regressions pass; commit independently testable slice.
 
 ## Task2: Capture-bound bounded view fill
 **Files:** Create `core/laya_view_fill.py`, `core/laya_fill_schema.py`, `test/fixtures/laya-view-fill-checks.py`, `test/laya-view-fill.test.mjs`; integrate `core/laya_view_store.py` and exact schema manifest.
@@ -45,9 +45,9 @@
 - `ViewStore.fill_status(handle, manifest, recipe_id, profile_id) -> dict(job_id,cursor,complete)` is readonly; absent job reports cursor0/completefalse. job_id commits incarnation/view/capture/manifest/recipe/profile. Target order is sorted eligible member path, duplicate content reuses the global content set.
 - `ViewStore.fill_view(handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30) -> dict` includes job_id/cursor/complete/status/filled/cache_hits/deferred. expected_cursor is exact nonnegative integer CAS; stale cursor refuses. One per-call fence latch covers job metadata/content writes/cursor updates.
 - Immutable job identity/target manifest metadata, monotonic cursor0..target_count, complete iff cursor==target_count; UPDATE guards forbid identity mutation/rewind/REPLACE. No raw body in job table. Empty target can be marked complete with one fenced initialization; completed repeat is readonly.
-- [ ] RED for defaults/explicit limits, oversized first member defer, restart, SQL busy, content commit followed by cursor failure, cached replay provider0, cursor CAS/manifest/view/recipe/profile binding, branch/settings change during callback and completed no-op0writes/fence0.
-- [ ] Implement short metadata/cursor TX, no callbacks/flock waits inside TX. Recheck capture/settings before each cursor advance; stale callback may retain valid immutable content cache but cannot progress stale view job. Each member's complete set commits before cursor, failure never marks member complete.
-- [ ] Focused fill/content + existing capacity/incremental regressions pass; commit.
+- [x] RED for defaults/explicit limits, oversized first member defer, restart, SQL busy, content commit followed by cursor failure, cached replay provider0, cursor CAS/manifest/view/recipe/profile binding, branch/settings change during callback and completed no-op0writes/fence0.
+- [x] Implement short metadata/cursor TX, no callbacks/flock waits inside TX. Recheck capture/settings before each cursor advance; stale callback may retain valid immutable content cache but cannot progress stale view job. Each member's complete set commits before cursor, failure never marks member complete.
+- [x] Focused fill/content + existing capacity/incremental regressions pass; commit.
 
 ## Task3: Complete coverage seal and pinned exact search
 **Files:** Create `core/laya_view_vectors.py`, `test/fixtures/laya-view-vectors-checks.py`, `test/laya-view-vectors.test.mjs`; modify view schema/values/store/reader integration and developer candidate documentation.
@@ -56,9 +56,9 @@
 - Existing stage fields/version and roots incorporate coverage without modifying old files. New format3 reader never opens format2. `_stored`/seal verification compares actual vector rows; row triggers are immutable and building-only. Shared sets added later cannot alter any existing generation root/pin.
 - `search_exact(pin, query_vector, limit, *, profile_id, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` returns pinned wiki rows/score plus existing commitment-only fields. It filters view/path/eligibility before work/count/scoring, validates every referenced set/profile, and ranks cosine with deterministic path tie-break. No candidates from another view, no early chunk cutting.
 - `search_hybrid(pin, fts_query, query_vector, limit, *, profile_id=None, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` returns `{lexical, semantic, semantic_status}`. query_vector=None / lexical-only / explicit semantic budget or deadline defer leaves lexical intact; malformed input/tamper/wrong profile/pin refuses. One deadline covers lexical+semantic; no ANN/RRF behavior beyond exposing both ordered lanes.
-- [ ] RED for zero/full coverage, holes/mixed/digest spoof, titleless rename sharing, old pin during cache growth/head swap, stale sameviewCAS and other-view invariance, filtered work budget, count*dimension exact boundary, finite/dimension query validation, lexical preservation on semantic defer/deadline/provider absence.
-- [ ] Integrate coverage into pre-identity roots and actual insert/seal validation; publish no incomplete vector generation. Reuse existing vector validation/scoring contracts where compatible; no operational provider import.
-- [ ] Focused blob/view/vector/capacity/incremental/FTS/Hermes regressions and synthetic growth/work report pass; commit.
+- [x] RED for zero/full coverage, holes/mixed/digest spoof, titleless rename sharing, old pin during cache growth/head swap, stale sameviewCAS and other-view invariance, filtered work budget, count*dimension exact boundary, finite/dimension query validation, lexical preservation on semantic defer/deadline/provider absence.
+- [x] Integrate coverage into pre-identity roots and actual insert/seal validation; publish no incomplete vector generation. Reuse existing vector validation/scoring contracts where compatible; no operational provider import.
+- [x] Focused blob/view/vector/capacity/incremental/FTS/Hermes regressions and synthetic growth/work report pass; commit.
 
 ## Task4: Whole-PR verification and release
 - [ ] Docs present current inactive APIs, proof limits, budgets and no automatic conversion/activation. Seven manifests monotonically .32→.33. Final committed tree full npm test under global guard/realpath HOME/files1; exact Git package22; retain base RED and failures.
