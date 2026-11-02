@@ -55,7 +55,8 @@ def _valid_row(row):
             and '\x00' not in path and not Path(path).is_absolute()
             and bool(Path(path).parts)
             and all(part not in ('.', '..') for part in Path(path).parts)
-            and Path(path).as_posix() == path and row['host'] in HOSTS
+            and Path(path).as_posix() == path
+            and isinstance(row['host'], str) and row['host'] in HOSTS
             and isinstance(blob, str) and (blob == 'deleted' or _HEX40.fullmatch(blob)))
 
 
@@ -67,16 +68,21 @@ def _read_box(path, decision):
     if (not isinstance(value, dict) or set(value) != {*_binding(decision), 'edits', 'seen', 'tokens'}
             or any(value.get(k) != v for k, v in _binding(decision).items())
             or not isinstance(value['edits'], list) or len(value['edits']) > MAX_INBOX_EDITS
-            or not all(_valid_row(row) for row in value['edits'])
             or not isinstance(value['seen'], list) or len(value['seen']) > MAX_SEEN
-            or not all(_valid_row(row) for row in value['seen'])
             or not isinstance(value['tokens'], dict)
-            or set(value['tokens']) != {row['path'] for row in value['edits']}
-            or len(value['tokens']) != len(value['edits'])
+            or len(value['tokens']) > MAX_INBOX_EDITS
             or not all(isinstance(token, str) and _HEX32.fullmatch(token)
                        for token in value['tokens'].values())):
         raise ValueError('external_edit_inbox_invalid')
-    return value
+    # Row-local invalid hints grant no authority and must not poison every
+    # later sync. Binding, size and valid-row token checks remain strict.
+    edits = [row for row in value['edits'] if _valid_row(row)]
+    paths = {row['path'] for row in edits}
+    if len(paths) != len(edits) or not paths.issubset(value['tokens']):
+        raise ValueError('external_edit_inbox_invalid')
+    return {**value, 'edits': edits,
+            'seen': [row for row in value['seen'] if _valid_row(row)],
+            'tokens': {path: value['tokens'][path] for path in paths}}
 
 
 def _key(row):
@@ -239,6 +245,8 @@ def notify(paths, *, cwd, host, origin):
             blob, _ = _revision(path)
             row = {'path': path.relative_to(owner['projectRoot']).as_posix(),
                    'blob': blob, 'host': host}
+            if not _valid_row(row):
+                raise ValueError('external_edit_hint_invalid')
             inbox = _inbox_path(decision)
             if journal.verify_notification_target(decision) != proof:
                 raise ValueError('external_edit_owner_changed')

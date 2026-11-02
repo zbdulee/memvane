@@ -264,6 +264,17 @@ class NotificationTargetProof(Routing):
 
 
 class HookRouting(Routing):
+    def test_backslash_filename_cannot_poison_the_owner_inbox(self):
+        unsupported = self.b.project / 'a\\b.md'
+        unsupported.write_text('POSIX filename outside hint path contract')
+        self.index(self.event(unsupported))
+        self.index()
+        decision = self.decision(self.b)
+        external().drain(decision, recheck=lambda: None)
+        self.assertEqual([row['source']['path'] for row in self.queue_rows(self.b)],
+                         ['note.md'])
+        self.assertEqual(self.inbox(self.b)['edits'], [])
+
     def test_external_edit_hints_and_wakes_only_B(self):
         self.assertEqual(self.index(), {})
         self.assertIn(('laya-sync', str(self.b.project)), self.wakes())
@@ -589,6 +600,31 @@ class OwnerDrain(Routing):
         self.assertFalse((self.a.folder / 'compile').exists())
         self.drain()
         self.assertEqual(len(self.queue_rows(self.b)), 1)
+
+    def test_legacy_bad_rows_do_not_block_valid_hints_or_discovery(self):
+        import laya_wiki_discovery
+        self.index()
+        decision = self.decision(self.b)
+        path = external()._inbox_path(decision)
+        box = self.inbox(self.b)
+        bad = {'path': 'a\\b.md', 'blob': 'c' * 40, 'host': 'codex'}
+        malformed = {'path': 'bad-host.md', 'blob': 'd' * 40, 'host': []}
+        box['edits'].extend([bad, malformed])
+        box['seen'].append(bad)
+        box['tokens'].update({bad['path']: '1' * 32, malformed['path']: '2' * 32})
+        installs.private_write(path, json.dumps(box).encode('utf-8'))
+        proof = self.proofs[str(self.b.project)]
+        with patch.object(laya_wiki_discovery, 'drain_after_sync',
+                          return_value={'state': 'complete'}) as discover:
+            result = sync._after_sync(decision, proof, object(), {'state': 'unchanged'})
+        self.assertEqual(result['state'], 'unchanged')
+        discover.assert_called_once()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows(self.b)],
+                         ['note.md'])
+        saved = self.inbox(self.b)
+        self.assertEqual(saved['edits'], [])
+        self.assertEqual(saved['tokens'], {})
+        self.assertEqual([row['path'] for row in saved['seen']], ['note.md'])
 
     def test_stale_blob_is_not_compiled(self):
         self.index()

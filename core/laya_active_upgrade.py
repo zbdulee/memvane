@@ -152,10 +152,15 @@ def _load_intent(state, project):
     return value
 
 
-def _old_state(project, state, journal, ledger=None):
+def _old_state(project, state, journal, ledger=None, *, prior_intent=None):
     ledger = ledger or _Ledger('fresh')
     auto = project_dir.folder(project)
     row = ledger.load(state / ledger.name)
+    if prior_intent is not None:
+        old = prior_intent['oldLedger']
+        if row != {**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'}:
+            _fail('active_upgrade_fence_changed')
+        row = old
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
         _fail('active_upgrade_not_selected')
     marker = _read(auto / ledger.marker_name, 8192)
@@ -165,11 +170,18 @@ def _old_state(project, state, journal, ledger=None):
     if (marker != _bytes(ledger.marker(row)) or route != reviewed or
             _sha(route) != row['routeSha256'] or
             _sha(attestation) != row['attestationSha256'] or
-            ledger.classify(project, auto / ledger.marker_name,
-                            auto / ledger.route_name) != 'candidate'):
+            (prior_intent is None and
+             ledger.classify(project, auto / ledger.marker_name,
+                             auto / ledger.route_name) != 'candidate')):
+        _fail('active_upgrade_old_metadata_changed')
+    if prior_intent is not None and (
+            route != prior_intent['oldRoute'].encode('utf-8') or
+            attestation != prior_intent['oldAttestation'].encode('utf-8') or
+            marker != prior_intent['oldMarker'].encode('utf-8')):
         _fail('active_upgrade_old_metadata_changed')
     selected = inspect_journal(journal)
     if (selected['state'] not in ('active', 'restored_old') or
+            selected.get('pending') is not None or
             selected['selectedRouteSha256'] != row['routeSha256'] or
             selected['providerAttestationSha256'] != row['attestationSha256'] or
             selected['providerFileIdentitySha256'] != row['providerFileIdentitySha256'] or
@@ -184,14 +196,18 @@ def _old_state(project, state, journal, ledger=None):
 
 
 def _prepare(project, state, journal, source_root, plugin_root, commit_id,
-             accepted_provider_sha256, model_path, dimension, ledger=None):
+             accepted_provider_sha256, model_path, dimension, ledger=None,
+             *, prior_intent=None):
     ledger = ledger or _Ledger('fresh')
     row, selected, old_route, old_att, old_marker = _old_state(project, state,
-                                                               journal, ledger)
+                                                               journal, ledger,
+                                                               prior_intent=prior_intent)
     record = build.read(state)
     if (record is None or record['identity']['projectRoot'] != str(project) or
             record['identity']['stateRoot'] != str(state) or
             record['identity']['vectorProfileId'] != row['vectorProfileId']):
+        _fail('active_upgrade_build_binding_changed')
+    if prior_intent is not None and record != prior_intent['oldRecord']:
         _fail('active_upgrade_build_binding_changed')
     review = review_local_provider(source_root=source_root, plugin_root=plugin_root,
                                    state_root=state, commit_id=commit_id,
@@ -241,8 +257,13 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
         if row[key] != new_row[key]:
             _fail('active_upgrade_store_identity_changed')
     counts = inactive._store_counts(record['identity'])
-    backup = inactive._backup(record['identity'], record, old_route, old_att,
-                              counts)
+    if prior_intent is None:
+        backup = inactive._backup(record['identity'], record, old_route, old_att,
+                                  counts)
+    else:
+        if counts != prior_intent['counts']:
+            _fail('active_upgrade_restore_store_changed')
+        backup = prior_intent['backup']
     intent = {'schema': 'laya-active-upgrade-intent-v1',
               'projectRoot': str(project), 'stateRoot': str(state),
               'oldRecord': record, 'oldLedger': row, 'newLedger': new_row,
@@ -257,7 +278,7 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
                             'ownershipManifestSha256', 'vectorProfile')},
               'reviewSha256': review['proposalSha256'],
               'backup': str(backup), 'counts': counts}
-    build._write_json(_intent_path(state), intent, replace=False,
+    build._write_json(_intent_path(state), intent, replace=prior_intent is not None,
                       max_bytes=LIMIT)
     return intent
 
@@ -636,6 +657,22 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 intent['newLedger']['routeSha256'])
         else:
             settled_restored = settled_forward = False
+        if (intent is not None and current_row['phase'] == 'upgrading' and
+                current_row['routeSha256'] == intent['oldLedger']['routeSha256'] and
+                current_journal['state'] in ('active', 'restored_old') and
+                current_journal['selectedRouteSha256'] ==
+                intent['oldLedger']['routeSha256'] and
+                (intent['newProof']['pluginRoot'] != str(plugin_root) or
+                 intent['newProof']['sourceCommit'] != commit_id or
+                 intent['reviewSha256'] != accepted_provider_sha256 or
+                 _reextracted(intent, plugin_root))):
+            # Before staging, no target metadata is visible. Keep the fence
+            # and original snapshot while re-proving a replacement target.
+            _backup_proof(intent, verify_new=False)
+            intent = _prepare(project, state, state / 'install-journal.sqlite',
+                              source_root, plugin_root, commit_id,
+                              accepted_provider_sha256, model_path, dimension,
+                              ledger, prior_intent=intent)
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id

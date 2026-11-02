@@ -55,8 +55,11 @@ development execution guard is separate; see
   writing its owner state; a route change (upgrade fence, restore,
   withdrawal) releases that installation within one second. A dead worker
   releases its installations as `worker_exited`; the service itself re-loads
-  and re-adopts them from its registry (bounded by the same three-failure
-  budget), without waiting for a hook. The full artifact rehash
+  and re-adopts them from its registry without waiting for a hook. Three
+  transient start failures enter a 300-second cooldown, then a fresh retry
+  budget; the durable owner state enforces that cooldown across service
+  restarts too. Transient exhaustion serves lexical recall while waiting.
+  Attestation and identity failures remain terminal. The full artifact rehash
   (`verify_worker_attestation`) runs once per installation identity, only when
   the service binds it. It forwards at
   most three queries and three documents to the worker at once, so a burst
@@ -546,7 +549,9 @@ from injected analytical tests; the shared OS reporter always attaches it.
   starts the service detached; hooks never wait for it. It never idle-exits.
   A login item is not installed by the plugin.
 - Identity: the service reports protocol, plugin version, code digest and
-  interpreter. Two host caches of one release share the service.
+  interpreter. The learning service signature includes the plugin version
+  and host code, so a version-only release also requests normal adoption.
+  Two host caches of one release share the service.
 - Replacement: a client from a strictly newer version asks the service to
   drain. Listeners close first (clients see an absent socket and serve lexical
   results, never exit 3), in-flight requests and the learning queue finish

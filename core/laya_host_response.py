@@ -1382,7 +1382,8 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     preparing, wake_failed) leave recall serving its lexical lists.
     """
     from laya_install_journal import verify_selected_route
-    from laya_embed_resident import _failure_decision, read_owner_state
+    from laya_embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
+                                     read_owner_state)
     current = verify_selected_route(decision)
     _recall_epoch(current)
     if current != proof:
@@ -1400,7 +1401,8 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
         state = read_owner_state(proof['providerManifest'])
     except Exception as exc:
         raise HostResponseError('selected_provider_state_invalid') from exc
-    if state is not None and state['terminal']:
+    if (state is not None and state['terminal']
+            and state['reason'] not in _TRANSIENT_FAILURES):
         _fail('selected_provider_start_failed')
     try:
         # A prompt that finds no vector owner brings a backed-off sync wake
@@ -1447,7 +1449,8 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     proves the route again before it binds the socket. Returns the deferral
     code, or None.
     """
-    if state is None or state['reason'] not in ('starting', 'resource_deferred'):
+    if state is None or state['reason'] not in (
+            'starting', 'resource_deferred', 'startup_failed', 'worker_exited'):
         return None
     manifest = proof['providerManifest']
     path = manifest.get('serviceSocketPath')

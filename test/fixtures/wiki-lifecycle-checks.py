@@ -185,7 +185,7 @@ class WikiLifecycle(unittest.TestCase):
         result, syncs, _ = self.run_lifecycle()
         self.assertTrue(all(card.exists() for card in cards))
         self.assertTrue(unproven.exists())
-        self.assertEqual(result['guard'], {'wouldDelete': 6, 'decidedCards': 7, 'missingCards': 5,
+        self.assertEqual(result['guard'], {'wouldDelete': 5, 'decidedCards': 6, 'missingCards': 5,
                                            'legacyMissingCards': 0, 'noSourceCards': 1})
         self.assertEqual((result['retired'], syncs), (0, 0))
         self.assertEqual(self.queue_rows(), [])
@@ -265,13 +265,31 @@ class WikiLifecycle(unittest.TestCase):
         self.assertEqual((result['retired'], result['backfilled'], result['undecidable']), (0, 0, 1))
         self.assertIn('legacy_partial_missing', self.log.read_text())
 
-    def test_legacy_card_without_file_sources_is_retired(self):
+    def test_session_only_card_survives_while_empty_legacy_card_retires(self):
         empty = self.card('empty.md', provenance=False, sources=[])
         session = self.card('session.md', provenance=False,
                             sources=['{kind: "session", path: "", collection: ""}'])
         result, _, _ = self.run_lifecycle()
-        self.assertFalse(empty.exists() or session.exists())
-        self.assertEqual(result['retired'], 2)
+        self.assertFalse(empty.exists())
+        self.assertTrue(session.exists())
+        self.assertEqual(result['retired'], 1)
+
+    def test_session_cards_do_not_block_regeneration_or_real_deletion(self):
+        self.source('changed.md', b'before')
+        changed = self.card('changed.md', [self.revision('changed.md')])
+        missing = self.card('gone.md', [self.revision('gone.md', b'deleted')])
+        self.source('changed.md', b'after')
+        sessions = [self.card(f'session-{i}.md', provenance=False,
+                             sources=['{kind: "session", ref: "session:local"}'])
+                    for i in range(4)]
+        before = [page.read_bytes() for page in sessions]
+        result, _, _ = self.run_lifecycle()
+        self.assertIsNone(result['guard'])
+        self.assertEqual((result['retired'], result['enqueued']), (1, 1))
+        self.assertFalse(missing.exists())
+        self.assertTrue(changed.exists())
+        self.assertEqual([page.read_bytes() for page in sessions], before)
+        self.assertEqual(self.queue_rows()[0]['source']['path'], 'docs/changed.md')
 
     def test_legacy_card_with_unreadable_sources_is_kept(self):
         card = self.card('block.md', provenance=False,
@@ -326,15 +344,15 @@ class WikiLifecycle(unittest.TestCase):
         self.assertEqual((result['retired'], result['undecidable']), (1, 1))
         self.assertIn('source_foreign_collection', self.log.read_text())
 
-    def test_guard_counts_no_source_retirements(self):
+    def test_guard_excludes_no_source_retirements(self):
         self.source('keep.md', b'k')
         self.card('keep.md', [self.revision('keep.md')])
         cards = [self.card(f'n{i}.md', provenance=False) for i in range(4)]
         result, syncs, _ = self.run_lifecycle()
-        self.assertTrue(all(card.exists() for card in cards))
-        self.assertEqual(result['guard'], {'wouldDelete': 4, 'decidedCards': 5, 'missingCards': 0,
-                                           'legacyMissingCards': 0, 'noSourceCards': 4})
-        self.assertEqual((result['retired'], syncs), (0, 0))
+        self.assertTrue(all(not card.exists() for card in cards))
+        self.assertIsNone(result['guard'])
+        self.assertEqual(result['retired'], 4)
+        self.assertGreaterEqual(syncs, 1)
 
     def test_guard_does_not_count_backfillable_legacy_cards(self):
         for i in range(6):
@@ -412,7 +430,7 @@ class WikiLifecycle(unittest.TestCase):
                                             'legacyMissing': 1, 'retire': 1, 'undecidable': 1,
                                             'manual': 1})
         self.assertEqual(report['undecidableReasons'], {'source_foreign_collection': 1})
-        self.assertEqual(report['guard'], {'wouldDelete': 3, 'decidedCards': 6, 'missingCards': 1,
+        self.assertEqual(report['guard'], {'wouldDelete': 2, 'decidedCards': 5, 'missingCards': 1,
                                            'legacyMissingCards': 1, 'noSourceCards': 1,
                                            'tripped': False})
 

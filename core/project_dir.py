@@ -147,7 +147,9 @@ def layout(project) -> str:
 
     ``none``      neither folder;
     ``legacy``    only ``.auto-context/`` (not moved yet);
-    ``current``   only ``.memvane/``;
+    ``current``   only ``.memvane/``, or it owns the route while legacy
+                  leftovers have no settings or cards and are preserved
+                  unless disposable;
     ``adopt``     ``.memvane/`` holds the settings (a pulled or checked-out
                   rename) while ``.auto-context/`` keeps the runtime files
                   (the route record) and whatever git did not move (untracked
@@ -177,6 +179,10 @@ def layout(project) -> str:
         return 'adopt'
     if _has_content(legacy):
         return 'conflict'
+    if current_settings and os.path.lexists(current / ROUTE):
+        # The route has moved. Non-card notes or editor swap files in the
+        # legacy folder do not ask for another adoption, and are not trash.
+        return 'current'
     return 'adopt' if current_settings else 'conflict'
 
 

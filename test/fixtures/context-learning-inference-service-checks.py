@@ -264,6 +264,32 @@ class BundleSignatureTests(unittest.TestCase):
         self.assertEqual(claude, codex, 'two host caches of one release must agree')
         self.assertNotEqual(claude, nxt, 'a host-code-only release kept the old service signature')
 
+    def test_version_only_release_requests_hosted_service_adoption(self):
+        import shutil
+        import laya_resident_service as host
+        source = Path(service.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='qmd-version-sig-') as temp:
+            roots = []
+            for name, version in (('old', '1.0.0'), ('new', '1.0.1'), ('companion', '1.0.1')):
+                root = Path(temp).resolve() / name
+                shutil.copytree(source, root / 'core',
+                                ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                (root / 'plugin.json').write_text(json.dumps({'version': version}))
+                roots.append(root)
+            old, new, companion = [self.signature(root / 'core') for root in roots]
+            self.assertEqual(new, companion, 'same-release hosts must share a service')
+            answer = {'protocol': service.PROTOCOL, 'signature': old,
+                      'status': 'ready', 'python': sys.executable}
+            def adopt(**_kwargs):
+                answer['signature'] = new
+            learning = Path(temp).resolve() / 'learning'
+            learning.mkdir(mode=0o700)
+            with patch.object(service, '_signature', return_value=new), \
+                 patch.object(service, '_version', side_effect=lambda *_a: dict(answer)), \
+                 patch.object(host, 'ensure_service', side_effect=adopt) as ensure:
+                service._ensure(learning, sys.executable, time.monotonic() + 1)
+            ensure.assert_called_once_with(python=sys.executable, learning_root=learning)
+
 
 class ResponseTests(unittest.TestCase):
     def test_invalid_candidate_response_is_not_a_publishable_generation(self):

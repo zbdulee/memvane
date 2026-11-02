@@ -120,22 +120,22 @@ class ResidentChecks(unittest.TestCase):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_protocol_mismatch'):
                 ensure_running('/synthetic/project', self.manifest)
 
-    def test_failure_budget_is_terminal_even_without_an_exit_record(self):
+    def test_failure_budget_backs_off_even_without_an_exit_record(self):
         manifest = self.manifest
         _write_state(manifest, 'worker_exited', terminal=True, attempts=3)
         with patch('laya_embed_resident.probe', return_value='absent'), \
              patch('laya_resident_service.request_adopt') as adopt:
-            with self.assertRaisesRegex(IndexContractError, 'provider_start_failed'):
+            with self.assertRaisesRegex(ResourceDeferred, 'laya_service_backoff'):
                 ensure_running('/synthetic/project', manifest)
         adopt.assert_not_called()
         # Even SIGKILL leaves no exit record: a surviving READY stamp at the
-        # third launch must still become terminal once its socket is absent.
+        # third launch must still enter cooldown once its socket is absent.
         _write_state(manifest, 'ready', attempts=3)
         now = read_owner_state(manifest)['at']
         with patch('laya_embed_resident.probe', return_value='absent'), \
              patch('laya_resident_service.request_adopt') as adopt, \
              patch('laya_embed_resident.time.time', return_value=now + 21):
-            with self.assertRaisesRegex(IndexContractError, 'provider_start_failed'):
+            with self.assertRaisesRegex(ResourceDeferred, 'laya_service_backoff'):
                 ensure_running('/synthetic/project', manifest)
         self.assertTrue(read_owner_state(manifest)['terminal'])
         adopt.assert_not_called()

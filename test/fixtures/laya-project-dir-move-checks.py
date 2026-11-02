@@ -741,6 +741,21 @@ class SettingsOnlyGitTests(MoveCase):
 
 
 class LeftoverTests(MoveCase):
+    def test_noncard_leftovers_do_not_block_an_already_moved_route(self):
+        self.move()
+        (self.auto / 'wiki').mkdir(parents=True)
+        note = self.auto / 'notes.txt'
+        swap = self.auto / 'wiki' / '.card.md.swp'
+        note.write_text('owner note, preserve')
+        swap.write_text('editor recovery bytes, preserve')
+        self.assertEqual(project_dir.layout(self.project), 'current')
+        self.assertIsNone(dir_move.needed(self.project))
+        results = upgrade.run(str(self.project))
+        self.assertEqual(results[0]['status'], 'current', results)
+        self.assertEqual((note.read_text(), swap.read_text()),
+                         ('owner note, preserve', 'editor recovery bytes, preserve'))
+        self.assertEqual(self.decision()['state'], 'candidate')
+
     def test_metadata_left_in_the_old_folder_is_current_and_tidied(self):
         self.move()
         leftover = self.auto / 'wiki' / 'concepts'

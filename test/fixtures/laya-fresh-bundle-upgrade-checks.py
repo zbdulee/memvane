@@ -505,6 +505,77 @@ class ActiveUpgradeTests(UpgradeCase):
                 self.run_upgrade(active)
         self.assertEqual(self.row()['phase'], 'upgrading')
 
+    def prestage_fence(self):
+        self.bound()
+        self.activate()
+        with mock.patch.object(active, '_wait_for_sockets', side_effect=Kill()):
+            with self.assertRaises(Kill):
+                self.run_upgrade(active)
+        self.assertEqual(self.row()['phase'], 'upgrading')
+        self.assertEqual(self.fj.state, 'active')
+        self.assertNotIn('stage', self.fj.calls)
+        return json.loads((self.state / active.INTENT).read_bytes())
+
+    def test_prestage_fence_accepts_a_new_reviewed_host_target(self):
+        before = self.prestage_fence()
+        root, commit = str(self.home / 'next-host'), '3' * 40
+        self.bundles[root] = proof(root, commit)
+        self.review['reviewedProvider']['providerManifest'] = manifest(root)
+        result = self.run_upgrade(active, root, commit)
+        self.assertEqual(result['status'], 'active_upgrade_complete')
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        for key in ('backup', 'oldRecord', 'oldLedger', 'counts'):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(self.fj.selected['pluginRoot'], root)
+        self.assertEqual(self.selection(), 'candidate')
+        self.kept()
+
+    def test_prestage_fence_reproves_same_commit_reextraction(self):
+        before = self.prestage_fence()
+        self.bundles[self.new_root] = {
+            **self.new, 'ownershipManifestSha256': _sha(b'reextracted')}
+        REEXTRACTED.add(self.new_root)
+        result = self.run_upgrade(active)
+        self.assertEqual(result['status'], 'active_upgrade_complete')
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertEqual(after['backup'], before['backup'])
+        self.assertEqual(self.fj.selected['ownershipManifestSha256'],
+                         self.bundles[self.new_root]['ownershipManifestSha256'])
+        self.assertEqual(self.selection(), 'candidate')
+        self.kept()
+
+    def test_prestage_retarget_refuses_changed_old_metadata(self):
+        self.prestage_fence()
+        fenced = self.row()
+        intent = (self.state / active.INTENT).read_bytes()
+        self.route.write_bytes(self.route.read_bytes() + b' ')
+        with self.assertRaisesRegex(Exception, 'active_upgrade_old_metadata_changed'):
+            self.run_upgrade(active, self.old_root, OLD_COMMIT)
+        self.assertEqual(self.row(), fenced)
+        self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
+
+    def test_prestage_retarget_refuses_provider_change(self):
+        self.prestage_fence()
+        fenced = self.row()
+        intent = (self.state / active.INTENT).read_bytes()
+        self.review['reviewedProvider']['providerManifest'] = {
+            **manifest(self.old_root), 'modelSha256': 'a' * 64}
+        with self.assertRaisesRegex(Exception, 'provider_changed_rebuild_required'):
+            self.run_upgrade(active, self.old_root, OLD_COMMIT)
+        self.assertEqual(self.row(), fenced)
+        self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
+
+    def test_pending_fence_does_not_retarget_another_host(self):
+        self.fence()
+        self.assertEqual(self.fj.state, 'pending')
+        fenced = self.row()
+        intent = (self.state / active.INTENT).read_bytes()
+        with self.assertRaisesRegex(Exception, 'active_upgrade_prior_unsettled'):
+            self.run_upgrade(active, self.old_root, OLD_COMMIT)
+        self.assertEqual(self.row(), fenced)
+        self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
+        self.assertEqual(self.fj.state, 'pending')
+
     @staticmethod
     def run_main(fn, *args):
         import io
