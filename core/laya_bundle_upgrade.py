@@ -80,9 +80,12 @@ DEFERRALS = frozenset((
     'learning_compute_busy', 'learning_inference_deadline',
     'initial_build_busy', 'active_upgrade_resident_busy',
     'journal_v4_install_busy', 'embed_runtime_busy',
-    'legacy_hermes_copy_present', 'bundle_file_missing'))
+    'legacy_hermes_copy_present', 'bundle_file_missing',
+    'source_git_no_lazy_fetch_unsupported', 'source_git_no_lazy_fetch_unavailable'))
 # These deferrals wait for a host change instead of holding a worker open.
-NO_BACKOFF = frozenset(('legacy_hermes_copy_present', 'bundle_file_missing'))
+NO_BACKOFF = frozenset(('legacy_hermes_copy_present', 'bundle_file_missing',
+                        'source_git_no_lazy_fetch_unsupported',
+                        'source_git_no_lazy_fetch_unavailable'))
 # A state-root move waits for the same lanes plus the install and route locks.
 MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
@@ -544,9 +547,12 @@ def host_layout(root, home=None):
 
 def _git(root, *args):
     from laya_product_bundle import GIT_PINNED, git_pinned_env
+    from laya_package import require_no_lazy_fetch
+    env = git_pinned_env()
+    require_no_lazy_fetch(root, prefix=GIT_PINNED, env=env)
     done = subprocess.run((*GIT_PINNED, '-C', str(root), *args), stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, timeout=15, check=False,
-                          env=git_pinned_env())
+                          env=env)
     return done.returncode, done.stdout.decode('utf-8', 'replace').strip()
 
 
@@ -848,17 +854,23 @@ def upgrade_install(project_root, state, root, home=None):
            else _read_attestation(state))
     manifest = old.get('providerManifest') or {}
     _require_pinned_runtime(old)
-    _ensure_embed_runtime(old)
+    ensured = _ensure_embed_runtime(old)
+    if (not isinstance(ensured, dict) or
+            not isinstance(ensured.get('generation'), str) or not ensured['generation']):
+        _refuse('laya_embed_runtime_corrupt')
+    runtime_generation = ensured['generation']
     from laya_product_install import review_local_provider
     review = review_local_provider(source_root=str(source), plugin_root=str(root),
                                    state_root=str(state), commit_id=commit,
-                                   dimension=manifest.get('dimension'))
+                                   dimension=manifest.get('dimension'),
+                                   runtime_generation=runtime_generation)
     if not provider_equivalent(old, review, root):
         _refuse('provider_changed_rebuild_required')
     options = dict(project_root=str(project_root), state_root=str(state),
                    source_root=str(source), plugin_root=str(root), commit_id=commit,
                    accepted_provider_sha256=review['proposalSha256'],
-                   model_path=None, dimension=manifest.get('dimension'))
+                   model_path=None, dimension=manifest.get('dimension'),
+                   runtime_generation=runtime_generation)
     if kind == 'active':
         import laya_active_upgrade
         result = laya_active_upgrade.upgrade(**options)

@@ -75,7 +75,8 @@ class Base(unittest.TestCase):
         # (laya-embed-runtime); here only the call before review is recorded.
         self.ensured = []
         ensure = mock.patch.object(auto, '_ensure_embed_runtime',
-                                   side_effect=self.ensured.append)
+                                   side_effect=lambda att: self.ensured.append(att) or
+                                   {'generation': str(self.home / 'synthetic-runtime')})
         ensure.start()
         self.addCleanup(ensure.stop)
         # Runtime file pinning has its own checks (laya-embed-runtime,

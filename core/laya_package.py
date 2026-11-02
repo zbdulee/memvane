@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 
 
 SCHEMA = 'laya-source-bundle-v1'
@@ -327,3 +328,115 @@ def verified_active_artifact(plugin_root, install_receipt_path,
             'productComplete': False,
             'entry': candidate['files']['core/laya_index_a.py']['path'],
             'limitations': 'caller must authenticate selection journal and recheck before use'}
+
+
+# Read-only Git admission is part of this existing standalone dependency.
+# Maintenance releases that backport GIT_NO_LAZY_FETCH; upstream from 2.46.
+NO_LAZY_FETCH_PATCHES = {39: 4, 40: 2, 41: 1, 42: 2, 43: 4, 44: 1, 45: 1}
+_RELATED_CONFIG = r'^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$'
+_MAX_CONFIG_BYTES = 65536
+
+
+class GitNoLazyFetchError(ValueError):
+    pass
+
+
+def supports_no_lazy_fetch(version):
+    """Whether the reported Git release implements the no-lazy-fetch fence."""
+    if isinstance(version, bytes):
+        version = version.decode('utf-8', 'replace')
+    if not isinstance(version, str):
+        return False
+    parsed = re.match(r'^git version ([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(?=$|[ .])',
+                      version)
+    if parsed is None:
+        return False
+    major, minor, patch = map(int, parsed.groups())
+    required = NO_LAZY_FETCH_PATCHES.get(minor)
+    return major == 2 and (minor >= 46 or (required is not None and patch >= required))
+
+
+def _unavailable():
+    raise GitNoLazyFetchError('source_git_no_lazy_fetch_unavailable')
+
+
+def _boolean(value):
+    if value is None:
+        return True  # A valueless Git boolean is true; an empty value is false.
+    lowered = value.lower()
+    if lowered in ('true', 'yes', 'on'):
+        return True
+    if lowered in ('', 'false', 'no', 'off'):
+        return False
+    if re.fullmatch(r'[+-]?[0-9]+', value):
+        try:
+            return int(value) != 0
+        except ValueError:
+            _unavailable()
+    _unavailable()
+
+
+def _partial_config(raw):
+    """Validate every relevant row and accumulate Git's registration evidence.
+
+    Each true/valueless promisor or filter registers a remote. A later false
+    does not undo that registration. No row is skipped after finding one.
+    """
+    if not isinstance(raw, bytes) or len(raw) > _MAX_CONFIG_BYTES or not raw.endswith(b'\0'):
+        _unavailable()
+    partial = False
+    for record in raw[:-1].split(b'\0'):
+        key, separator, value = record.partition(b'\n')
+        key = key.decode('utf-8', 'surrogateescape')
+        value = value.decode('utf-8', 'surrogateescape') if separator else None
+        if key.lower() == 'extensions.partialclone':
+            if value is None:
+                _unavailable()
+            partial = True
+            continue
+        section, dot, rest = key.partition('.')
+        remote, final_dot, variable = rest.rpartition('.')
+        if (not dot or section.lower() != 'remote' or not final_dot or not remote or
+                variable.lower() not in ('promisor', 'partialclonefilter')):
+            _unavailable()
+        # Subsection names stay case-sensitive; rows are never collapsed.
+        if variable.lower() == 'partialclonefilter':
+            if value is None:
+                _unavailable()
+            partial = True
+        else:
+            registered = _boolean(value)  # Validate even if partial is already true.
+            partial = registered or partial
+    return partial
+
+
+def require_no_lazy_fetch(root, *, prefix, env, timeout=15):
+    """Refuse unsafe Git only when a full repository cannot be established.
+
+    The probes use the caller's executable, prefix, directory and environment.
+    Neither probe reads objects or invokes a transport. Output stays private.
+    """
+    command = (*prefix, '-C', str(root))
+    try:
+        version = subprocess.run((*command, '--version'), stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, check=False,
+                                 timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GitNoLazyFetchError('source_git_no_lazy_fetch_unavailable') from exc
+    if version.returncode != 0:
+        _unavailable()
+    if supports_no_lazy_fetch(version.stdout):
+        return
+    try:
+        config = subprocess.run((*command, 'config', '--null', '--includes',
+                                 '--get-regexp', _RELATED_CONFIG),
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                check=False, timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GitNoLazyFetchError('source_git_no_lazy_fetch_unavailable') from exc
+    if config.returncode == 1 and config.stdout == b'':
+        return
+    if config.returncode != 0:
+        _unavailable()
+    if _partial_config(config.stdout):
+        raise GitNoLazyFetchError('source_git_no_lazy_fetch_unsupported')

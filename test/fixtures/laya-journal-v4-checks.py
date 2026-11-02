@@ -727,7 +727,8 @@ class WorkerReproof(ReproofBase):
              mock.patch.object(auto, '_not_older'), \
              mock.patch.object(auto, '_read_attestation',
                                return_value=attestation or self.old_att), \
-             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_ensure_embed_runtime',
+                               return_value={'generation': str(self.base / 'synthetic-runtime')}), \
              mock.patch.object(product, 'review_local_provider', return_value=review), \
              mock.patch.object(product, '_request_build_wake',
                                return_value={'status': 'queued'}), \

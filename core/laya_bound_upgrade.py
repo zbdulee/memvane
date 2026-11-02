@@ -112,7 +112,8 @@ def _check_intent(intent):
 
 
 def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
-             commit_id, accepted_provider_sha256, model_path, dimension):
+             commit_id, accepted_provider_sha256, model_path, dimension,
+             runtime_generation=None):
     record = build.read(state)
     if (record is None or record['phase'] != 'bound' or
             record['identity']['projectRoot'] != str(project) or
@@ -161,7 +162,9 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
     from laya_product_install import review_local_provider
     review = review_local_provider(source_root=source_root, plugin_root=plugin_root,
                                    state_root=state, commit_id=commit_id,
-                                   model_path=model_path, dimension=dimension)
+                                   model_path=model_path, dimension=dimension,
+                                   **({'runtime_generation': runtime_generation}
+                                      if runtime_generation is not None else {}))
     if review['proposalSha256'] != accepted_provider_sha256:
         _fail('reviewed_provider_proposal_changed')
     from laya_provider_reproof import attestation_record, reattest
@@ -276,7 +279,7 @@ def _switch(intent):
 
 
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
-            accepted_provider_sha256, model_path, dimension):
+            accepted_provider_sha256, model_path, dimension, runtime_generation=None):
     """Resume or start one exact bound-build bundle replacement."""
     from laya_product_install import _install_lock, _private_parent
     project = Path(project_root).resolve(strict=True)
@@ -305,7 +308,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         if intent is None:
             intent = _prepare(project, state, journal_path, ledger, source_root,
                               plugin_root, commit_id, accepted_provider_sha256,
-                              model_path, dimension)
+                              model_path, dimension, runtime_generation)
         _check_intent(intent)
         inactive._verify_backup(intent)
         return _switch(intent)

@@ -411,7 +411,7 @@ def _restore(intent, old_proof, new_proof):
 
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             accepted_provider_sha256, model_path, dimension,
-            restore=False):
+            restore=False, runtime_generation=None):
     """Switch a private, unselected candidate to the currently installed host.
 
     Repeating after an interrupted attempt resumes the exact intent. A caught
@@ -485,7 +485,9 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         review = review_local_provider(source_root=source_root,
                                        plugin_root=plugin_root, state_root=state,
                                        commit_id=commit_id, model_path=model_path,
-                                       dimension=dimension)
+                                       dimension=dimension,
+                                       **({'runtime_generation': runtime_generation}
+                                          if runtime_generation is not None else {}))
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
         from laya_provider_reproof import attestation_record, reattest

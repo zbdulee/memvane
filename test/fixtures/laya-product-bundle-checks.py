@@ -961,7 +961,8 @@ print(json.dumps(result))'''
                               'journalPath': str(self.journal_path), **self.build_files}}
         with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
              mock.patch.object(auto, 'installed_commit', return_value=commit), \
-             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_ensure_embed_runtime',
+                               return_value={'generation': str(self.root / 'synthetic-runtime')}), \
              mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
                                new=lambda _path: 'f' * 64), \
              mock.patch('laya_journal_v4.refuse_while_legacy_hermes'), \
@@ -1128,7 +1129,8 @@ print(json.dumps(result))'''
         backup = self.root / 'inactive-backup'
         with mock.patch.object(auto, 'select_source', return_value=(self.source, commit)), \
              mock.patch.object(auto, 'installed_commit', return_value=commit), \
-             mock.patch.object(auto, '_ensure_embed_runtime'), \
+             mock.patch.object(auto, '_ensure_embed_runtime',
+                               return_value={'generation': str(self.root / 'synthetic-runtime')}), \
              mock.patch.object(auto, '_mark_sealed_for_rescan'), \
              mock.patch.object(laya_embed_runtime, 'sealed_files_sha256',
                                new=lambda _path: 'f' * 64), \

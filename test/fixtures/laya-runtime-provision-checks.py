@@ -91,9 +91,67 @@ class Machine(EMBED['Base']):
         return R.provision_new(approve_download=True, node=self.node, run=self.npm,
                                fetch=self.fetch, model_sha256=sha(self.model_bytes), **options)
 
+    def auto_provision(self, path_env, *, run=None):
+        # Keep real manager discovery under this fixture HOME, never a system
+        # install as a fallback. Every subprocess and download is injected.
+        manager_nodes = R._manager_nodes
+        with mock.patch.object(R, '_manager_nodes', side_effect=lambda home: [
+                path for path in manager_nodes(home) if path.is_relative_to(self.home)]):
+            return R.provision_new(approve_download=True, home=self.home,
+                                   path_env=path_env, run=run or self.npm,
+                                   fetch=self.fetch, model_sha256=sha(self.model_bytes))
 
 
 class Provisioning(Machine):
+    def test_homebrew_libexec_npm_uses_the_selected_node(self):
+        node = write(self.home / 'Cellar/node/24.14.0/bin/node', MACHO, 0o755)
+        self.npm_cli.unlink()
+        self.npm_cli = write(node.parents[1] / 'libexec/lib/node_modules/npm/bin/npm-cli.js',
+                             '// synthetic Homebrew npm')
+        runtime = self.auto_provision(str(node.parent))
+        self.assertEqual(runtime['nodeSha256'], sha(node.read_bytes()))
+        installs = [row['argv'] for row in self.runs if row['argv'][1:2] == [str(self.npm_cli)]]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0][:4], [str(node), str(self.npm_cli), 'ci', '--ignore-scripts'])
+
+    def test_auto_provision_skips_path_node_without_npm_but_node_only_discovery_keeps_it(self):
+        first = write(self.home / 'bin/node', MACHO + b'path', 0o755)
+        self.node.write_bytes(MACHO + b'manager')
+        self.assertEqual(R.discover_node(path_env=str(first.parent), home=self.home,
+                                        run=self.npm)[0], first)
+        runtime = self.auto_provision(str(first.parent))
+        self.assertEqual(runtime['nodeSha256'], sha(self.node.read_bytes()))
+        installs = [row['argv'] for row in self.runs if row['argv'][1:2] == [str(self.npm_cli)]]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0][0], str(self.node))
+
+    def test_supported_nodes_without_npm_refuse_without_network(self):
+        first = write(self.home / 'bin/node', MACHO + b'path', 0o755)
+        self.node.write_bytes(MACHO + b'manager')
+        self.npm_cli.unlink()
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_npm_unavailable$'):
+            self.auto_provision(str(first.parent))
+        self.assertEqual(self.fetches, [])
+        self.assertTrue(all(row['argv'][1:] == ['--version'] for row in self.runs))
+
+    def test_no_supported_node_has_a_distinct_reason(self):
+        first = write(self.home / 'bin/node', MACHO, 0o755)
+        self.node.write_bytes(MACHO + b'manager')
+        def unsupported(argv, **_kw):
+            return Result(stdout='v20.18.0\n')
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_node_unavailable$'):
+            self.auto_provision(str(first.parent), run=unsupported)
+        self.assertEqual((self.runs, self.fetches), ([], []))
+
+    def test_explicit_node_without_npm_never_selects_another_node(self):
+        self.npm_cli.unlink()
+        other = write(self.home / '.nvm/versions/node/v26.1.0/bin/node', MACHO, 0o755)
+        write(other.parents[1] / 'lib/node_modules/npm/bin/npm-cli.js', '// other npm')
+        with mock.patch.object(R, 'discover_node', side_effect=AssertionError('explicit node changed')):
+            with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_npm_unavailable$'):
+                self.provision()
+        self.assertEqual((self.runs, self.fetches), ([], []))
+
     def test_clean_machine_builds_a_sealed_runtime_from_lock_and_download(self):
         self.assertFalse((self.home / '.cache' / 'qmd').exists())
         self.assertFalse(self.qmd_runtime.exists())
