@@ -22,4 +22,4 @@ legacy cleanup은 전송한 SIGTERM과 확인된 정지를 구분한다. 관측�
 
 합성 owner·OS·provider 경계와 실제 product 제어 흐름을 구분한다. 운영 cleanup·실제 모델·운영 DB는 fixture 입력이 아니다. 보호3은 무변경이며7개 manifest는0.43.37이다. 개발용 Claude 모델 호출은 없다. CI는 개발과 별도로 관찰한다.
 
-guard 합성 단위21개와 manifest 검사4개도 통과한다. 전체 suite·최종 exact-head 독립 리뷰·새 릴리스 설치/운영 감사는 아직 미완료다. 마지막 완료 릴리스0.43.36의 운영 근거는 외부 `priority2-release-completion-audit.md`다. 현재 진행 감사표는 외부 `priority3-completion-audit.json`이며 complete:false다.
+guard 합성 단위21개와 manifest 검사4개도 통과한다. clean code HEAD `8406ff90cabb047ef2271b34affad551a5c91c6d`의 전체 suite는690개 중687pass·0fail·3skip,1259.952초이며 guard는 exit0/passed/completed:true/settled:true다. 전체 실행 중 소스·문서·index는 고정한다. 종료 후 이 REPORT에 결과만 반영하며 최종 exact-head 독립 리뷰·새 릴리스 설치/운영 감사는 아직 미완료다. 마지막 완료 릴리스0.43.36의 운영 근거는 외부 `priority2-release-completion-audit.md`다. 현재 진행 감사표는 외부 `priority3-completion-audit.json`이며 complete:false다.
