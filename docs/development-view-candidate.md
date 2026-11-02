@@ -169,4 +169,7 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 warm 검색 30개 표본은 중앙값 1,022.42 ms, p95 1,240.01 ms다. 검색은 호출마다
 전체 세대의 구조·FTS commitment를 검증한다. warm view p95 50 ms와 lexical
 p95 150 ms 목표는 충족하지 못하며 운영 활성화 전 해결할 성능 항목이다.
+호스트 실행 비용에 따라 기본 2초 제한으로 `fts_deadline_exceeded`를 반환할 수 있다.
+규모 fixture는 완료 비용 측정을 위해 명시적 30초 제한을 사용하며,
+기본 제한의 거절·복구 검사는 별도로 유지한다.
 모델 품질, 실제 migration 또는 운영 endpoint parity도 이 candidate 검증의 범위 밖이다.

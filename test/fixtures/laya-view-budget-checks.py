@@ -74,6 +74,10 @@ class BudgetChecks(helpers.GenerationCase):
                                   trust_digest=trust) for path in paths])
 
     def publish_and_read(self, store, handle, manifest, *, limit=10, **filters):
+        # Measure complete candidate work even on a slow CI host. The product
+        # default stays 2s; deadline refusal/recovery has its own reader case.
+        # This is a scale/latency observation, never an assertion of the SLA.
+        filters = dict(filters, deadline_seconds=30)
         base = store.head(handle)
         gen, prepare = self.measured(store, store.prepare_generation, handle, manifest,
                                      expected_head=base)
@@ -108,7 +112,9 @@ class BudgetChecks(helpers.GenerationCase):
                 warm.append(dict(pin=repeat_pin, search=repeat_search))
             finally:
                 store.release(repeat)
-        return head, rows, dict(prepare=prepare, publish=publish,
+        return head, rows, dict(default_search_deadline_seconds=2,
+                               measurement_deadline_seconds=30,
+                               prepare=prepare, publish=publish,
                                cold_pin=pin_time, cold_search=search, warm=warm)
 
     def test_01_ten_git_views_share_one_blob_and_keep_their_own_trust(self):
