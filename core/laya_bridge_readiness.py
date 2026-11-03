@@ -213,7 +213,8 @@ def registered_response(payload, host, decision, root):
 
 def _observe_registered_hook(challenge, host):
     """Only a collector that owns the actual launched host may attest its descendants."""
-    raise ValueError('registered_hook_observer_unavailable')
+    from laya_bridge_observer import observe_registered_hook
+    return observe_registered_hook(challenge, host)
 
 
 def _check_observation(observed, registry, host):

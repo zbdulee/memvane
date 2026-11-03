@@ -90,7 +90,19 @@ class ObserverChecks(unittest.TestCase):
             path.write_text(FAKE, encoding='utf8')
             path.chmod(0o600)
         log = self.case.home / ('observer-' + behavior + '.jsonl')
-        exe = Path(sys.executable).resolve()
+        # Framework Python's command-line launcher execs Python.app on macOS.
+        # This synthetic native HostSpec must name the stable executable,
+        # rather than ask the collector to accept a changed process image.
+        if sys.platform == 'darwin':
+            import ctypes
+            path = ctypes.create_string_buffer(4096)
+            lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+            self.assertGreater(lib.proc_pidpath(os.getpid(), path, len(path)), 0)
+            exe = Path(path.value.decode('utf8')).resolve(strict=True)
+        elif sys.platform.startswith('linux'):
+            exe = Path('/proc/self/exe').resolve(strict=True)
+        else:
+            exe = Path(sys.executable).resolve(strict=True)
         session = 'synthetic-owned-session'
         host = FakeHostSpec((str(exe), '-B', '-I', str(root / 'fake-cli.py'), 'cli', str(root),
             challenge.challenge_id, 'claude', challenge.nonce_sha256, session, behavior,
