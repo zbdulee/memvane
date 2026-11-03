@@ -240,7 +240,8 @@ def _idle_connections(context):
         owner.check()
         R._need(owner.db is not None and not owner.pending and owner.transaction is None
                 and not owner.db.in_transaction, 'normal_writer_snapshot_busy')
-        R._need(all(cursor._window_closed or cursor._window_exhausted
+        R._need(all(getattr(cursor, '_window_closed', False) is True
+                    or getattr(cursor, '_window_exhausted', False) is True
                     for cursor in list(owner.db._live_cursors.values())),
                 'normal_writer_snapshot_busy')
 
@@ -270,7 +271,8 @@ def mark_new_write(writer):
     _idle_connections(context)
     record['transitioning'] = True
     try:
-        _prove_plan(context, context.plan)
+        original_plan = context.plan
+        _prove_plan(context, original_plan)
         path = Path(old['decision']['journalPath'])
 
         def mark(image):
@@ -290,7 +292,19 @@ def mark_new_write(writer):
             return J._mutate_row(image, path, row, old['bundle']['epoch'],
                                  lambda _path, _row: {'new_write_seen': 1})
 
-        R.mutate_image(path, mark)
+        def before_replace():
+            context._creator()
+            R._need(_issued.get(writer) is record and record.get('transitioning') is True
+                    and not context.finished and context.entered
+                    and context.plan is original_plan, 'normal_writer_expired')
+            _idle_connections(context)
+            validate_sync_owner(context.queue_owner, original_plan.queue_path)
+            P.validate_writer_plan(original_plan)
+            context.lifetime.check()
+            validate_sync_owner(context.queue_owner, original_plan.queue_path)
+            R._need(time.monotonic() < context.deadline, 'normal_writer_deadline')
+
+        R.mutate_image(path, mark, before_replace=before_replace)
         plan = P.capture_writer_plan(old['project'], executing_root=old['executing_root'])
         current = P._plan_record(plan)[1]
         R._need(current['bundle']['epoch'] == old['bundle']['epoch'] + 1

@@ -536,8 +536,9 @@ def _discard_staging(lockfd, path):
     os.fsync(lockfd)
 
 
-def mutate_image(journal_path, operation):
+def mutate_image(journal_path, operation, *, before_replace=None):
     """Mutate an owned sibling; the named v5 journal is never opened for write."""
+    _need(before_replace is None or callable(before_replace), 'reader_publication_check_invalid')
     path = _journal(journal_path)
     with _readonly(path, path.parent) as before:
         _, record = _selection(before)
@@ -582,6 +583,8 @@ def mutate_image(journal_path, operation):
                   _file(image, path.parent) == [info.st_dev, info.st_ino], 'reader_image_changed')
             _sync(image)
             journal._step('v5-image-fsynced')
+            if before_replace is not None:
+                before_replace()
             _need(_file(path, path.parent) == current_node, 'reader_journal_changed')
             os.replace(image, path)
             journal._step('v5-image-replaced')
