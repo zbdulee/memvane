@@ -54,11 +54,18 @@ class Observed(sqlite3.Connection):
         super().__init__(database,*a,**kw);self.fixture_path=path_of(database)
         if self.fixture_path.parent==state and self.fixture_path.name.startswith(C.TEMP_PREFIX):
             temp_refs.append((str(self.fixture_path),weakref.ref(self)))
-    def close(self):
-        super().close()
+    def _observed_close(self,finish):
+        finish()
         if self.fixture_path.parent==state and self.fixture_path.name.startswith(C.TEMP_PREFIX):
             closed.add(str(self.fixture_path))
-def connect(*a,**kw):kw['factory']=Observed;return actual_connect(*a,**kw)
+    def close(self):
+        if isinstance(self,getattr(W,'_OwnedSQLite',())):return super().close()
+        return self._observed_close(super().close)
+    def _native_close_locked(self):return self._observed_close(super()._native_close_locked)
+def connect(*a,**kw):
+    supplied=kw.get('factory',sqlite3.Connection)
+    kw['factory']=Observed if supplied is sqlite3.Connection else type('ObservedManaged',(Observed,supplied),{})
+    return actual_connect(*a,**kw)
 def checkpoint(parent_fd,src,dst):
     source=state/src;target=state/dst;info=os.stat(src,dir_fd=parent_fd,follow_symlinks=False)
     fd=os.open(src,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=parent_fd)
@@ -238,7 +245,7 @@ class SidecarCreateChecks(unittest.TestCase):
                         observed['integrityReached']=True
                         return super().execute('SELECT FROM deliberately_invalid_verification_sql')
                     return super().execute(sql,*args,**kwargs)
-                def close(db):
+                def _observed_close(db,finish):
                     if db.fixture_temp and not db.fixture_ro:
                         observed['rwSetupComplete']=(super().execute('SELECT * FROM meta').fetchall()==[expected_meta])
                     if db.fixture_ro:
@@ -248,9 +255,17 @@ class SidecarCreateChecks(unittest.TestCase):
                             observed['firstCloseInTransaction']=db.in_transaction
                             observed['firstClosePhysicalEX']=held
                             raise sqlite3.OperationalError('synthetic_one_time_verification_ro_close_failure')
-                        super().close();events.append(dict(event='actual-ro-close',physicalExclusive=held));return
-                    super().close()
-            def connect(*args,**kwargs):kwargs['factory']=VerificationConnection;return actual(*args,**kwargs)
+                        finish();events.append(dict(event='actual-ro-close',physicalExclusive=held));return
+                    finish()
+                def close(db):
+                    if isinstance(db,getattr(windows,'_OwnedSQLite',())):return super().close()
+                    return db._observed_close(super().close)
+                def _native_close_locked(db):return db._observed_close(super()._native_close_locked)
+            def connect(*args,**kwargs):
+                supplied=kwargs.get('factory',sqlite3.Connection)
+                kwargs['factory']=(VerificationConnection if supplied is sqlite3.Connection else
+                    type('VerificationManaged',(VerificationConnection,supplied),{}))
+                return actual(*args,**kwargs)
             created=None;error=None;chain=[];drain_error=None;reference=None
             try:
                 with mock.patch.object(sqlite3,'connect',side_effect=connect):
@@ -414,11 +429,19 @@ class SidecarCreateChecks(unittest.TestCase):
                     super().__init__(database,*a,**kw);path=existing.database_path(database)
                     db.fixture_temp=path.parent==state and path.name.startswith(prefix)
                     if db.fixture_temp:references.append(weakref.ref(db))
-                def close(db):
+                def _observed_close(db,finish):
                     held=ex_held() if db.fixture_temp else None
-                    super().close()
+                    finish()
                     if db.fixture_temp:events.append(dict(event='actual-temp-close',physicalExclusive=held))
-            def connect(*a,**kw):kw['factory']=TempConnection;return actual_connect(*a,**kw)
+                def close(db):
+                    if isinstance(db,getattr(windows,'_OwnedSQLite',())):return super().close()
+                    return db._observed_close(super().close)
+                def _native_close_locked(db):return db._observed_close(super()._native_close_locked)
+            def connect(*a,**kw):
+                supplied=kw.get('factory',sqlite3.Connection)
+                kw['factory']=(TempConnection if supplied is sqlite3.Connection else
+                    type('TempManaged',(TempConnection,supplied),{}))
+                return actual_connect(*a,**kw)
             def broken(db,identity):
                 actual_setup(db,identity)
                 if not getattr(db,'fixture_temp',False):raise RuntimeError('fixed initializer did not use its actual private temp')

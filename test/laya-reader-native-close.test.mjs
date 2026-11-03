@@ -18,6 +18,6 @@ test('native SQLite last close finishes within the component physical boundary',
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 1 test\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, /Ran 3 tests\b/);assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

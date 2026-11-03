@@ -87,13 +87,21 @@ class ConnectionObservation:
                     owner.events.append(dict(event='first-pragma-failure',physicalExclusive=owner.exclusive_held()))
                     raise sqlite3.OperationalError('synthetic_first_pragma_failure')
                 return super().execute(sql,*args,**kwargs)
-            def close(self):
+            def _observed_close(self,finish):
                 held=owner.exclusive_held() if self.is_base_rw else None
-                super().close()
+                finish()
                 if self.is_base_rw:owner.events.append(dict(event='actual-db-close',physicalExclusive=held))
+            def close(self):
+                if isinstance(self,getattr(owner.windows,'_OwnedSQLite',())):
+                    return super().close()
+                return self._observed_close(super().close)
+            def _native_close_locked(self):
+                return self._observed_close(super()._native_close_locked)
         self.factory=ObservedConnection
     def connect(self,*args,**kwargs):
-        kwargs['factory']=self.factory
+        supplied=kwargs.get('factory',sqlite3.Connection)
+        kwargs['factory']=(self.factory if supplied is sqlite3.Connection else
+            type('ObservedManagedConnection',(self.factory,supplied),{}))
         return self.actual_connect(*args,**kwargs)
     def exclusive_held(self):
         # Valid component controls before/after construction distinguish the
