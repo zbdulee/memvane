@@ -62,7 +62,7 @@ state,project=Path(p['state']),Path(p['project'])
 case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
 helper=base.JournalReaderChecks('runTest');phase='owner'
 def checkpoint(name):
-    folder=mover.current_folder(project) if name=='anchor-entry' else mover.legacy_folder(project)
+    folder=mover.legacy_folder(project) if name=='fenced-before-rename' else mover.current_folder(project)
     assert R._node(folder)==p['folderNode'] and R._node(folder/'wiki')==p['wikiNode']
     print(json.dumps(dict(event='physical-prefix-checkpoint',phase=name,pid=os.getpid(),
         actualOwner=True,actualLifetimeEX=True,actualPrefenceFullProof=True,
@@ -83,11 +83,19 @@ try:
                 original_anchor=mover._anchor_wiki
                 def anchor_entry(chosen):
                     assert Path(chosen)==project
-                    checkpoint('anchor-entry')
+                    if p['phase']=='anchor-entry':checkpoint('anchor-entry')
                     return original_anchor(chosen)
                 mover._anchor_wiki=anchor_entry
+                original_swap=mover._swap_store
+                def swap_entry(chosen):
+                    if p['phase']=='catalog-rebound-before-store-swap':
+                        checkpoint('catalog-rebound-before-store-swap')
+                    return original_swap(chosen)
+                mover._swap_store=swap_entry
                 def observed_step(name):
                     if name=='fenced' and p['phase']=='fenced-before-rename':checkpoint('fenced-before-rename')
+                    if name=='stores' and p['phase']=='stores-swapped-before-publish':
+                        checkpoint('stores-swapped-before-publish')
                 mover._switch(intent,step=observed_step)
                 raise RuntimeError('actual physical checkpoint was not reached')
 except Exception as exc:
@@ -119,6 +127,11 @@ class MovePrefixChecks(unittest.TestCase):
         folder_node=seed.reader._node(old);wiki_node=seed.reader._node(old/'wiki')
         original_project={str(path.relative_to(old)):path.read_bytes() for path in old.rglob('*')
                           if path.is_file() and not path.is_symlink()}
+        import laya_initial_build as build
+        stable_paths=[case.state/'reviewed-route.json',case.state/seed_module.base.J.PRODUCTION_ATTESTATION,
+                      build.record_path(case.state),case.state/mover.INTENT]
+        if intent['discovery'] is not None:stable_paths.append(Path(intent['discovery'][0]))
+        original_metadata={str(path):path.read_bytes() for path in stable_paths}
         self.require(not os.path.lexists(new),'rename destination must not be pre-created')
         bundle=seed_module.base.J.inspect_journal(case.journal)
         payload=case.home/'physical-prefix.json'
@@ -140,20 +153,59 @@ class MovePrefixChecks(unittest.TestCase):
         finally:
             if child.poll() is None:child.kill()
             child.communicate(timeout=5)
-        folder=new if phase=='anchor-entry' else old
-        self.require((not os.path.lexists(old) and new.is_dir()) if phase=='anchor-entry'
+        moved=phase!='fenced-before-rename'
+        store_prefix=phase in ('catalog-rebound-before-store-swap','stores-swapped-before-publish')
+        folder=new if moved else old
+        self.require((not os.path.lexists(old) and new.is_dir()) if moved
                      else (old.is_dir() and not os.path.lexists(new)), 'exact rename prefix paths')
         self.require(seed.reader._node(folder)==folder_node,'original project-folder inode')
         self.require(seed.reader._node(folder/'wiki')==wiki_node,'original wiki inode')
+        expected_project=dict(original_project)
+        if store_prefix:
+            anchor_relative=str(Path('wiki')/mover.project_dir.WIKI_ANCHOR)
+            self.require(anchor_relative not in original_project,'anchor absent before actual _anchor_wiki')
+            anchor=folder/anchor_relative
+            self.require(anchor.is_file() and not anchor.is_symlink() and anchor.read_bytes()==b'',
+                         'actual _anchor_wiki creates only the empty wiki anchor')
+            expected_project[anchor_relative]=b''
         self.require({str(path.relative_to(folder)):path.read_bytes() for path in folder.rglob('*')
-                      if path.is_file() and not path.is_symlink()}==original_project,
-                     'settings/old route/marker/wiki bytes before anchor')
+                      if path.is_file() and not path.is_symlink()}==expected_project,
+                     'original settings/route/marker/wiki unchanged; only actual anchor may be added')
         import laya_fresh_wiki_origin as fresh
         self.require((case.state/fresh.LEDGER).read_bytes()==mover._canonical(intent['fencedLedger']),
                      'exact durable fenced ledger')
         self.require((folder/fresh.ROUTE).read_bytes()==intent['oldRoute'].encode('utf8'),'old route remains exact')
         self.require((folder/fresh.MARKER).read_bytes()==intent['oldMarker'].encode('utf8'),'old marker remains exact')
         self.require(seed_module.base.J.inspect_journal(case.journal)==bundle,'bundle epoch/flag unchanged')
+        prefix_evidence=None
+        if store_prefix:
+            self.require({str(path):path.read_bytes() for path in stable_paths}==original_metadata,
+                         'reviewed route/attestation/build/discovery/intent remain exact old metadata')
+            with seed.ro(case.catalog) as db:
+                catalog_meta=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+            self.require(catalog_meta=={key:intent['catalog'][key][1] for key in ('binding','roots')},
+                         'actual catalog commit has the new roots and binding')
+            temp=Path(intent['store']['temp'])
+            live_store=Path(intent['store']['path'])
+            expected_store=(intent['oldLedger']['bindingStoreIdentity']
+                if phase=='catalog-rebound-before-store-swap' else intent['store']['identity'])
+            self.require(seed.reader._node(live_store)==expected_store,'exact old/new live binding inode')
+            if phase=='catalog-rebound-before-store-swap':
+                self.require(temp.is_file() and seed.reader._node(temp)==intent['store']['identity'],
+                             'prepared new binding still exists at its original temporary inode')
+            else:self.require(not os.path.lexists(temp),'actual _swap_store renamed temporary binding into live')
+            with seed.ro(case.db) as db:
+                generation_state=db.execute('SELECT state FROM generations WHERE gen=?',
+                    (intent['generation']['gen'],)).fetchone()
+                live_head=db.execute('SELECT gen FROM head WHERE scope=?',(case.route['scopeId'],)).fetchone()
+            self.require(generation_state==('prepared',),'reserved target generation remains prepared')
+            self.require(live_head==(seal.old_generation,),'actual old published head remains selected before _publish')
+            prefix_evidence=dict(catalog='new',binding='old' if temp.exists() else 'new',
+                actualBindingNode=seed.reader._node(live_store),temporaryBindingExists=temp.exists(),
+                reservedGeneration=intent['generation']['gen'],reservedState=generation_state[0],
+                actualHead=live_head[0],metadata='exact-old-fenced',actualEmptyAnchor=True)
+            print(json.dumps(dict(case='actual-store-prefix-prerequisite',phase=phase,
+                                  observed=prefix_evidence,actualWriterExit=child.returncode)),flush=True)
         with seed.ro(case.journal) as db:
             preferred=db.execute('SELECT preferred_endpoint FROM reader_selection').fetchone()[0]
             row=db.execute('SELECT record FROM read_endpoints WHERE endpoint_id=?',(preferred,)).fetchone()
@@ -252,10 +304,11 @@ class MovePrefixChecks(unittest.TestCase):
         observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
             originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
+            storePrefix=prefix_evidence,
             resumed=False,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096],
             mutation=mutation_evidence,queryUnchanged=snapshot()==before,
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
-        self.assertEqual(snapshot(),before,'fresh prefix reader must not heal or mutate moved/state files')
+        self.assertTrue(snapshot()==before,'fresh prefix reader must not heal or mutate moved/state files')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
             events=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]
@@ -278,6 +331,12 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_actual_fenced_before_rename_is_readable_without_resume(self):
         self.check_prefix('fenced-before-rename')
+
+    def test_actual_catalog_commit_before_store_swap_is_readable_without_resume(self):
+        self.check_prefix('catalog-rebound-before-store-swap')
+
+    def test_actual_store_swap_fsync_before_publish_is_readable_without_resume(self):
+        self.check_prefix('stores-swapped-before-publish')
 
     def test_renamed_prefix_rejects_replaced_container_even_when_original_wiki_inode_survives(self):
         self.check_prefix('anchor-entry',mutation='container-inode')
