@@ -10,8 +10,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
+import signal
 import sqlite3
 import stat
+import subprocess
 import sys
 import time
 import threading
@@ -23,6 +26,39 @@ import weakref
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('windows_real_seed',ROOT/'test/fixtures/laya-reader-move-seal-checks.py')
 seed_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(seed_module)
+
+MANIFEST_LINK_CHILD=r'''
+from contextlib import ExitStack,nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime'];signal.alarm(30)
+spec=importlib.util.spec_from_file_location('manifest_link_seed',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as R,laya_reader_lease as L,laya_reader_windows as W
+import laya_project_dir_move as mover,laya_state_move
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+project,state=Path(p['project']),Path(p['state']);actual_link=os.link
+assert len(R._issued)==0
+def linked(src,dst,*args,**kwargs):
+    result=actual_link(src,dst,*args,**kwargs)
+    if Path(dst).name=='component-windows-v1.json':
+        info=os.stat(dst,dir_fd=kwargs.get('dst_dir_fd'),follow_symlinks=False)
+        print(json.dumps(dict(event='manifest-linked-before-temp-unlink',pid=os.getpid(),
+            source=str(src),destination=str(dst),node=[info.st_dev,info.st_ino],nlink=info.st_nlink,
+            freshIssuedInstaller=True,actualOwner=True)),flush=True)
+        os.kill(os.getpid(),signal.SIGKILL)
+    return result
+with helper.full_authority(case,R,L,W,mover),mock.patch.object(laya_state_move,'_provider_lane',lambda:nullcontext()):
+    installer=R.seal_current_reader(state,project,executing_root=case.plugin)
+    with ExitStack() as locks:
+        mover._locks(locks,project,state,mover._queue_path(project,None))
+        with mock.patch.object(os,'link',side_effect=linked):W.prepare_windows(installer)
+raise RuntimeError('actual manifest os.link checkpoint was not reached')
+'''
 
 def emit(case,**values):print(json.dumps(dict(case=case,**values),sort_keys=True),flush=True)
 
@@ -110,6 +146,121 @@ class ReaderWindowsChecks(unittest.TestCase):
             (Path(str(path)+suffix).read_bytes(),tuple(getattr(Path(str(path)+suffix).lstat(),key)
                 for key in ('st_dev','st_ino','st_mode','st_uid','st_nlink')))
             for suffix in ('','-wal','-shm','-journal')}
+
+    def test_manifest_link_sigkill_retry_recovers_exact_temp_alias_without_replacing_lock_inodes(self):
+        windows=importlib.import_module('laya_reader_windows')
+        parent=self.seed.reader._lock_dir(self.seed.install,create=False)
+        manifest=parent/'component-windows-v1.json'
+        if os.path.lexists(manifest):raise RuntimeError('first prepare prerequisite requires a fresh unprepared registry')
+        payload=self.case.home/'window-manifest-crash.json'
+        payload.write_text(json.dumps(dict(home=str(self.case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(self.case.project),state=str(self.case.state),plugin=str(self.case.plugin),proof=self.case.proof)),encoding='utf8')
+        payload.chmod(0o600)
+        child=subprocess.Popen([sys.executable,'-B','-I','-c',MANIFEST_LINK_CHILD,str(ROOT),str(payload)],
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+        try:
+            if not select.select([child.stdout],[],[],35)[0]:raise RuntimeError('actual link checkpoint deadline')
+            line=child.stdout.readline()
+            if not line:
+                _,stderr=child.communicate(timeout=5)
+                raise RuntimeError('fresh manifest issuer failed before os.link checkpoint: '+stderr[-4000:])
+            checkpoint=json.loads(line)
+            if checkpoint.get('event')!='manifest-linked-before-temp-unlink' or child.wait(timeout=5)!=-signal.SIGKILL:
+                raise RuntimeError('actual successful-link/SIGKILL prerequisite missing')
+        finally:
+            if child.poll() is None:child.kill()
+            child.communicate(timeout=5)
+        info=manifest.lstat();raw=manifest.read_bytes();document=json.loads(raw)
+        aliases=[path for path in parent.iterdir() if os.path.samestat(path.lstat(),info)]
+        temps=[path for path in aliases if path!=manifest]
+        required={'publish-cut.lock','reader-lifetime.lock'}|{
+            role+'-'+kind+'.lock' for role in ('base','binding','catalog','queue','sidecar')
+            for kind in ('mutation','physical')}
+        if (info.st_nlink!=2 or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o600
+                or len(temps)!=1 or not temps[0].name.startswith('.component-windows-')
+                or temps[0].name!=Path(checkpoint['source']).name
+                or document.get('install_id')!=self.seed.install or document.get('version')!=1
+                or raw!=self.seed.reader._raw(document) or set(document['locks'])!=required):
+            raise RuntimeError('actual linked canonical manifest/private unique-alias/twelve-lock prerequisite missing')
+        locks={name:(parent/name).lstat() for name in document['locks']}
+        if any([node.st_dev,node.st_ino]!=document['locks'][name] or node.st_uid!=os.getuid()
+               or not stat.S_ISREG(node.st_mode) or stat.S_IMODE(node.st_mode)!=0o600 or node.st_nlink!=1
+               for name,node in locks.items()):
+            raise RuntimeError('actual manifest twelve lock nodes differ before retry')
+        error=None
+        with self.seed.prepared():
+            try:windows.prepare_windows(self.seed.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=type(exc).__name__+':'+str(exc)
+        same_manifest=manifest.exists() and os.path.samestat(info,manifest.lstat()) and manifest.read_bytes()==raw
+        same_locks=all((parent/name).exists() and os.path.samestat(node,(parent/name).lstat()) for name,node in locks.items())
+        emit('manifest-link-crash-retry',checkpoint=checkpoint,actualExit=child.returncode,error=error,
+            originalNlink=info.st_nlink,manifestSameNodeAndBytes=same_manifest,allTwelveLockNodesPreserved=same_locks,
+            tempAliasRemoved=not os.path.lexists(temps[0]),currentNlink=manifest.lstat().st_nlink)
+        with self.subTest(boundary='actual-link-crash-retry-succeeds'):
+            if error is not None:self.fail('boundary recovery unsupported after actual linked-manifest crash: '+error)
+        with self.subTest(boundary='same-manifest-and-all-lock-nodes'):
+            self.assertTrue(same_manifest);self.assertTrue(same_locks)
+        with self.subTest(boundary='exact-owned-temp-alias-reclaimed'):
+            self.assertFalse(os.path.lexists(temps[0]));self.assertEqual(manifest.lstat().st_nlink,1)
+
+    def test_missing_unrelated_queue_lock_refuses_new_open_but_preserves_existing_close_authority(self):
+        from laya_index_a import LayaIndexA
+        windows=None;writer=None;new_writer=None;saved=None;named=None
+        with self.seed.prepared():
+            windows,component=self.api()
+            parent=self.seed.reader._lock_dir(self.seed.install,create=False)
+            base_lock=parent/'base-physical.lock'
+            def raw_base_exclusive():
+                fd=os.open(base_lock,os.O_RDONLY|os.O_NOFOLLOW)
+                try:
+                    try:fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+                    except BlockingIOError:return True
+                    return False
+                finally:os.close(fd)
+            self.assertFalse(raw_base_exclusive(),'raw valid base lock is free before actual open')
+            observer=ConnectionObservation(self.case.db,windows,component)
+            observer.exclusive_held=raw_base_exclusive
+            with mock.patch.object(sqlite3,'connect',side_effect=observer.connect):
+                writer=LayaIndexA(self.case.db,coordination=component)
+            reference=observer.latest();initial_rw=len(observer.refs)
+            named=parent/'queue-mutation.lock';saved=parent/'queue-mutation.fixture-preserved'
+            original=named.lstat();os.rename(named,saved)
+            error=None;close_error=None;drain_error=None;lifetime_error=None
+            try:
+                with mock.patch.object(sqlite3,'connect',side_effect=observer.connect):
+                    try:new_writer=LayaIndexA(self.case.db,coordination=component)
+                    except (ValueError,OSError,RuntimeError) as exc:error=type(exc).__name__+':'+str(exc)
+                try:writer.close(deadline=time.monotonic()+0.1)
+                except (ValueError,OSError,RuntimeError) as exc:close_error=type(exc).__name__+':'+str(exc)
+                try:windows.drain_pending(deadline=time.monotonic()+0.1)
+                except (ValueError,OSError,RuntimeError) as exc:drain_error=type(exc).__name__+':'+str(exc)
+                try:
+                    with self.seed.lease.reader_lifetime(self.seed.install,exclusive=True):pass
+                except (ValueError,OSError,RuntimeError) as exc:lifetime_error=str(exc)
+                closes=[row for row in observer.events if row['event']=='actual-db-close']
+                emit('unrelated-window-missing-existing-owner-close',newOpenError=error,
+                    newRwConnects=len(observer.refs)-initial_rw,closeError=close_error,drainError=drain_error,
+                    actualCloseEvents=closes,pending=windows.pending_count(),lifetimeExclusiveError=lifetime_error,
+                    queueNameStillMissing=not os.path.lexists(named),rawBaseEXProbe=True)
+                with self.subTest(boundary='new-open-still-refused'):
+                    self.assertIsNotNone(error);self.assertEqual(len(observer.refs)-initial_rw,0)
+                with self.subTest(boundary='existing-own-base-close-survives-unrelated-loss'):
+                    self.assertIsNone(close_error);self.assertIsNone(drain_error)
+                    self.assertEqual(len(closes),1);self.assertTrue(closes[0]['physicalExclusive'])
+                    self.assert_closed(reference);self.assertEqual(windows.pending_count(),0)
+                with self.subTest(boundary='closed-handle-releases-independent-lifetime'):
+                    self.assertIsNone(lifetime_error)
+            finally:
+                if os.path.lexists(named):
+                    node=named.lstat()
+                    if not stat.S_ISREG(node.st_mode) or node.st_uid!=os.getuid() or node.st_nlink!=1:
+                        raise RuntimeError('unsafe fixture queue-lock cleanup refused')
+                    named.unlink()
+                os.rename(saved,named)
+                if not os.path.samestat(original,named.lstat()):raise RuntimeError('queue lock original inode not restored')
+                if new_writer is not None:new_writer.close(deadline=time.monotonic()+0.5)
+                if writer is not None:writer.close(deadline=time.monotonic()+0.5)
+                self.drain(windows)
 
     def test_open_owned_cannot_redirect_component_a_opener_to_foreign_database_b(self):
         foreign=self.case.home/'foreign-window.sqlite'
