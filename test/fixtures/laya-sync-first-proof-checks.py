@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Actual selected worker first proof; later worker opens remain separate."""
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 from contextvars import copy_context
 import importlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import select
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -70,6 +72,18 @@ class SyncFirstProofChecks(unittest.TestCase):
                 calls.append(str(database))
             return connect(database,*args,**kwargs)
         return mock.patch.object(sqlite3,'connect',side_effect=observe)
+
+    @contextmanager
+    def markerless(self):
+        fresh=importlib.import_module('laya_fresh_wiki_origin')
+        ledger,marker,_route=fresh._paths(self.case.project,self.case.journal)
+        saved=[]
+        for path in (marker,ledger):
+            target=path.with_name(path.name+'.saved-first-proof')
+            os.rename(path,target);saved.append((path,target))
+        try:yield
+        finally:
+            for path,target in reversed(saved):os.rename(target,path)
 
     def deferred_run(self):
         error=None;result=None;starts=[]
@@ -257,5 +271,97 @@ class SyncFirstProofChecks(unittest.TestCase):
                     emit('worker-legacy-recovery-refused',mode=mode,rwConnects=rw,hotImagePreserved=True)
                 finally:
                     if mode=='initial-intent':intent.unlink()
+
+    def test_markerless_valid_v4_clean_and_hot_preserve_approved_selection(self):
+        with self.fixture.F.warm(),self.seed.authority(),self.markerless():
+            for mode in ('clean','hot'):
+                with self.subTest(mode=mode):
+                    self.publish_v4()
+                    decision=self.worker.select_route(str(self.case.project),action='update')
+                    self.assertEqual(decision['state'],'candidate')
+                    baseline=self.worker.verify_selected_route(decision)
+                    self.assertTrue(baseline['productRouteAllowed'])
+                    if mode=='hot':self.crash_hot()
+                    error=None;proof=None
+                    try:_decision,proof=self.selected()
+                    except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                    emit('worker-markerless-v4',mode=mode,baselineApproved=True,error=error,selected=proof is not None)
+                    self.assertIsNone(error)
+                    self.assertEqual(proof,baseline)
+                    self.assertFalse(Path(str(self.case.journal)+'-journal').exists())
+
+    def test_markerless_hot_foreign_route_is_denied_before_queue_owner_creation(self):
+        access=importlib.import_module('laya_worker_journal')
+        host=importlib.import_module('laya_index_host_route')
+        with self.fixture.F.warm(),self.seed.authority(),self.markerless():
+            self.publish_v4();self.crash_hot()
+            route=next(host._candidate_paths(self.case.project))[2];original=route.read_bytes()
+            target=self.case.home/'foreign-queue.sqlite'
+            with closing(sqlite3.connect(self.queue)) as source,closing(sqlite3.connect(target)) as copy:source.backup(copy)
+            target.chmod(0o600)
+            bad=json.loads(original);bad['queuePath']=str(target);route.write_bytes(json.dumps(bad).encode())
+            owners=[];rw=[];before=self.case.journal.read_bytes()
+            def forbidden(*args,**kwargs):owners.append(True);raise AssertionError('foreign owner created')
+            try:
+                with mock.patch.object(access,'sync_owner',side_effect=forbidden),self.journal_connects(rw), \
+                        self.assertRaises((ValueError,RuntimeError)):
+                    self.selected()
+                self.assertEqual(owners,[]);self.assertEqual(rw,[])
+                self.assertEqual(self.case.journal.read_bytes(),before)
+                self.assertFalse(Path(str(target)+'.sync.lock').exists())
+                emit('worker-markerless-foreign-hot',ownerAcquires=0,sourceRwConnects=0,hotImagePreserved=True)
+            finally:route.write_bytes(original)
+
+    def test_markerless_hot_source_change_at_owner_acquisition_is_denied_without_rw(self):
+        access=importlib.import_module('laya_worker_journal')
+        with self.fixture.F.warm(),self.seed.authority(),self.markerless():
+            self.publish_v4();self.crash_hot()
+            owner=access.sync_owner;mutated=[];rw=[]
+            def change(queue):
+                # This test actor changes the same named image after its
+                # private preimage was authenticated, before owner acquisition.
+                with self.case.journal.open('ab') as handle:handle.write(b'x')
+                mutated.append(self.case.journal.read_bytes())
+                return owner(queue)
+            with mock.patch.object(access,'sync_owner',side_effect=change),self.journal_connects(rw), \
+                    self.assertRaises((ValueError,RuntimeError)):
+                self.selected()
+            self.assertEqual(len(mutated),1);self.assertEqual(rw,[])
+            self.assertEqual(self.case.journal.read_bytes(),mutated[0])
+            with self.sync.sync_owner(self.queue) as successor:self.assertIsNotNone(successor)
+            emit('worker-markerless-source-change',sameInodeChanged=True,sourceRwConnects=0,ownerReleased=True)
+
+    def test_probe_sigkill_reuses_bounded_owned_scratch_and_preserves_unknown_files(self):
+        with self.fixture.F.warm(),self.seed.authority(),self.markerless():
+            self.publish_v4();self.crash_hot();before=self.case.journal.read_bytes();scratch=None
+            command=[sys.executable,'-B','-I',str(ROOT/'core/laya_legacy_journal_probe.py'),
+                     'probe',str(self.case.journal),'--checkpoint-after-copy']
+            for _ in range(2):
+                child=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,encoding='utf8')
+                try:
+                    self.assertTrue(select.select([child.stdout],[],[],4)[0],'private copy checkpoint deadline')
+                    line=child.stdout.readline()
+                    self.assertTrue(line,'probe child exited before checkpoint')
+                    checkpoint=json.loads(line);self.assertEqual(checkpoint['stage'],'private-copy-ready')
+                    current=Path(checkpoint['scratch'])
+                    if scratch is not None:self.assertEqual(current,scratch)
+                    scratch=current;child.kill();self.assertEqual(child.wait(timeout=2),-signal.SIGKILL)
+                finally:
+                    if child.poll() is None:child.kill()
+                    child.communicate(timeout=2)
+                self.assertEqual(self.case.journal.read_bytes(),before)
+                self.assertEqual(set(os.listdir(scratch)),{'.owner.json','probe.sqlite','probe.sqlite-journal'})
+            unknown=scratch/'user-owned.txt';unknown.write_text('preserve');unknown.chmod(0o600)
+            try:
+                with self.assertRaises((ValueError,RuntimeError)):self.selected()
+                self.assertEqual(unknown.read_text(),'preserve')
+                self.assertEqual(self.case.journal.read_bytes(),before)
+            finally:unknown.unlink()
+            _decision,proof=self.selected()
+            self.assertTrue(proof['productRouteAllowed'])
+            self.assertEqual(set(os.listdir(scratch)),{'.owner.json'})
+            emit('worker-legacy-probe-sigkill',kills=2,sameOwnedScratch=True,
+                 unknownPreserved=True,retryRecovered=True)
 
 if __name__=='__main__':unittest.main()
