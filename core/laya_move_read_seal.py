@@ -90,8 +90,12 @@ def _copy(source, state, stage, name):
 
 
 def _generation(db_path, state, old, new, decision):
+    from laya_index_a import LayaIndexA
     from laya_index_vector import verify_generation_seal
     with R._readonly(db_path, state) as db:
+        for generation in (old, new):
+            R._need(LayaIndexA._generation_fts_matches(SimpleNamespace(db=db), generation),
+                    'reader_move_fts_changed')
         def members(gen):
             return db.execute('SELECT m.path,m.hash,m.eligible,c.body FROM membership m '
                 'JOIN content c ON c.hash=m.hash WHERE m.gen=? ORDER BY m.path', (gen,)).fetchall()
@@ -148,6 +152,24 @@ def _binding(path, parent, roots, decision, generation):
         return store._decode(generation, row)
 
 
+def _catalog_scan(db, binding):
+    import laya_source_catalog as source
+    row = db.execute('SELECT seq,phase,raw_digest,files,bytes FROM scans WHERE scan_id=?',
+                     (binding.catalog_scan_id,)).fetchone()
+    R._need(row is not None and row[1:3] == ('complete', binding.catalog_raw_digest),
+            'reader_move_catalog_changed')
+    digest, files, size = hashlib.sha256(), 0, 0
+    for path, sha, length in db.execute(
+            'SELECT path,sha256,size FROM scan_files WHERE seq=? ORDER BY path', (row[0],)):
+        R._need(type(path) is str and type(sha) is str and source._HEX64.fullmatch(sha)
+                and type(length) is int and length >= 0, 'reader_move_catalog_changed')
+        digest.update(source._raw_line(path, sha, length))
+        files += 1
+        size += length
+    R._need(digest.hexdigest() == binding.catalog_raw_digest and row[3:] == (files, size),
+            'reader_move_catalog_changed')
+
+
 def stage_move_reader(intent, *, installer):
     """Prepare a project tuple only; state tuples and publication fail closed."""
     scope = _owner()
@@ -159,9 +181,13 @@ def stage_move_reader(intent, *, installer):
     import laya_source_catalog as source
     from laya_index_host_route import wiki_index_roots
     original = R._installer(installer)
-    old_record, attestation, proof = R._recheck(original)
     state, project, root = R._issued[original][:3]
     R._need((state, project) == (scope.state, scope.project), 'reader_install_changed')
+    selected = R.read_selection(state / R._JOURNAL)
+    # This preparer stages the live mover's generation only. An independently
+    # selected reader needs its own tuple plan; never silently replace it.
+    R._need(selected.preferred_endpoint == original.endpoint_id, 'reader_move_selection_unsupported')
+    old_record, attestation, proof = R._recheck(original)
     raw_intent = _read_private(state / mover.INTENT, mover.LIMIT)
     R._need(type(intent) is dict and R._raw(intent) == raw_intent and
             mover._canonical(mover._load_intent(state, project)) == raw_intent,
@@ -178,13 +204,16 @@ def stage_move_reader(intent, *, installer):
     R._need(published[0] == old_generation, 'reader_move_generation_changed')
     body_digest, epoch = _generation(Path(old_record['db_path']), state, old_generation, new_generation, decision)
     old_roots, new_roots = wiki_index_roots(decision['collections']), wiki_index_roots(new_decision['collections'])
+    old_binding = _binding(Path(old_record['binding_path']), state, old_roots, decision, old_generation)
+    with R._readonly(Path(old_record['catalog_path']), state) as db:
+        _catalog_scan(db, old_binding)
     binding = _binding(Path(intent['store']['temp']), state, new_roots, decision, new_generation)
     R._need(R._raw(binding.as_record()) == R._raw(intent['generation']['binding'])
             and list(R._node(Path(intent['store']['temp']))) == intent['store']['identity'],
             'reader_move_binding_changed')
     aliases = []
     for (name, old_path, dev, ino), (new_name, new_path, new_dev, new_ino) in zip(
-            _binding(Path(old_record['binding_path']), state, old_roots, decision, old_generation).roots,
+            old_binding.roots,
             binding.roots):
         R._need(name == new_name and old_roots[name] == old_path and new_roots[name] == new_path,
                 'reader_move_alias_changed')
@@ -224,6 +253,7 @@ def stage_move_reader(intent, *, installer):
                 and db.execute('SELECT phase,raw_digest FROM scans WHERE scan_id=?',
                     (binding.catalog_scan_id,)).fetchone() == ('complete', binding.catalog_raw_digest),
                 'reader_move_catalog_changed')
+        _catalog_scan(db, binding)
     new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
     _sidecar(new_side, stage, {**identity, 'collections':new_decision['collections']},
              Path(old_record['db_path']), state, new_decision)
@@ -231,6 +261,7 @@ def stage_move_reader(intent, *, installer):
     for path in new_parts: R._sync(path)
     R._sync(stage, True)
     _owner(); R._recheck(original)
+    R._need(R.read_selection(state / R._JOURNAL) == selected, 'reader_selection_changed')
     R._need(R._node(stage) == stage_node and stage.resolve(strict=True) == stage
             and stage.stat().st_uid == os.getuid() and stage.stat().st_mode & 0o077 == 0,
             'reader_move_stage_changed')
