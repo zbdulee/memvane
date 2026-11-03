@@ -41,4 +41,4 @@
 - [x] **Step 2: base RED를 보관한다.** `npm run test:focused -- test/laya-view-review-regressions.test.mjs`를 격리 환경에서 실행한다. 실제 손상 사유 대신 `deferred_deadline`이나 `fts_deadline_exceeded`가 나오는 assertion 실패와 정상 대조군 결과를 구분한다. 테스트 harness 오류는 제품 RED로 세지 않는다.
 - [x] **Step 3: `_reading`의 재분류 범위를 제한한다.** `BlobStoreError` 자체의 무결성·checkout·busy·I/O reason은 유지한다. `_session`이 감싼 SQLite interruption은 원래 예외 연결과 숫자 `SQLITE_INTERRUPT`를 확인한다. 숫자 code가 없는 Python은 정확한 `sqlite3.OperationalError` interruption만 호환 처리한다. 재분류에는 deadline 만료도 필요하며 다른 SQLite 오류를 대신 수락하지 않는다.
 - [x] **Step 4: focused GREEN을 확인한다.** 새 회귀와 `test/laya-view-reader.test.mjs`, `test/laya-view-vectors.test.mjs`, `test/laya-view-generations.test.mjs`를 동일 guard 아래 순차 실행한다. 손상·checkout·기타 SQLite 거절과 정상 deadline 대조군이 모두 통과해야 한다.
-- [ ] **Step 5: 변경과 근거를 검토한다.** 신규 regression과 reader 수정만 별도 commit으로 묶는다. 전체 suite·독립 exact-head 리뷰·manifest 버전·릴리스 운영 검증은 PR5 통합 게이트에서 수행한다. focused 통과를 전체 PR5 완료로 보고하지 않는다.
+- [x] **Step 5: 변경과 근거를 검토한다.** 신규 regression과 reader 수정만 별도 commit으로 묶는다. 전체 suite·독립 exact-head 리뷰·manifest 버전·릴리스 운영 검증은 PR5 통합 게이트에서 수행한다. focused 통과를 전체 PR5 완료로 보고하지 않는다.
