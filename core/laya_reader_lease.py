@@ -274,18 +274,28 @@ def resolve_endpoint(project, *, action, host_root):
           and host_root.is_absolute() and host_root.resolve(strict=True) == host_root,
           'reader_resolution_invalid')
     first = journal.select_route(str(project), action=action)
-    _need(first.get('state') == 'candidate' and first.get('projectRoot') == str(project),
-          'reader_selection_unproved')
-    path = reader._journal(first['journalPath'])
+    pointer = None
+    if first.get('state') == 'candidate':
+        _need(first.get('projectRoot') == str(project), 'reader_selection_unproved')
+        path = reader._journal(first['journalPath'])
+    else:
+        # A private pointer locates a possible journal; it grants no route or
+        # endpoint authority. The selected retained seal proves the prefix.
+        import laya_project_dir_move as mover
+        pointer = mover.read_pointer(project)
+        _need(pointer is not None and pointer['mode'] == 'rename', 'reader_selection_unproved')
+        path = reader._journal(Path(pointer['stateRoot']) / reader._JOURNAL)
     initial = journal.inspect_journal(path)
     _need(initial['state'] in ('active', 'restored_old') and initial['pending'] is None
           and isinstance(initial['selected'], dict), 'reader_selection_unproved')
     install_id = initial['selected']['installId']
-    _need(first.get('installId') == install_id, 'reader_install_changed')
+    _need(pointer is not None or first.get('installId') == install_id, 'reader_install_changed')
     with reader_lifetime(install_id, exclusive=False):
         decision = journal.select_route(str(project), action=action)
         _need(decision == first and journal.inspect_journal(path) == initial,
               'reader_selection_changed')
+        if pointer is not None:
+            _need(mover.read_pointer(project) == pointer, 'reader_selection_changed')
         token = None
         try:
             prior = None
@@ -302,6 +312,8 @@ def resolve_endpoint(project, *, action, host_root):
                               'reader_install_changed')
                         _need(stored['install_id'] == install_id and stored['project'] == str(project)
                               and stored['state'] == str(path.parent), 'reader_install_changed')
+                        _need(pointer is None or stored.get('capability') == 'v6-retained-ro-v1',
+                              'reader_selection_unproved')
                         if prior is not None:
                             _forward_image(prior, image)
                         token = reader._persisted_endpoint(path.parent, project, host_root,

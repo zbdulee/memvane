@@ -397,17 +397,22 @@ def _finish(original, selected, old_record, attestation, proof, raw_intent,
     R._read_only.add(endpoint); R._retained.add(endpoint)
     _records[endpoint] = (original, record, attestation, proof, stage, stage_node,
         tuple((path, R._node(path), _logical(path, stage)) for path in old_paths.values()))
+    from laya_move_reader_prefix import capture_layout, bundle_row
+    scope = _owner()
+    layout = capture_layout(project) if scope.kind == 'project' else None
+    bundle = bundle_row(state)
     seal = object.__new__(MoveReadSeal)
     for key, value in dict(move_id=move_id, retained_endpoint=endpoint, old_generation=old_generation,
             exclusion_epoch=epoch, old_tuple_digest=old_digest, new_tuple_digest=new_digest,
             path_aliases=tuple(aliases), prefix_digest=R._sha(R._raw([raw_intent.decode('utf8'), aliases,
-                old_digest, new_digest]))).items():
+                old_digest, new_digest, 2, layout, bundle]))).items():
         object.__setattr__(seal, key, value)
     scope = _owner()
     with R._readonly(Path(old_record['db_path']), state) as db:
         exclusions = db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
                                 (old_record['scope'],)).fetchall()
-    data = dict(move_id=move_id, endpoint_id=endpoint.endpoint_id, record=record,
+    data = dict(version=2, layout=layout, bundle_row=bundle,
+        move_id=move_id, endpoint_id=endpoint.endpoint_id, record=record,
         source_record=old_record, state=str(state), project=str(project), root=str(root),
         stage=str(stage), stage_node=stage_node, kind=scope.kind,
         intent=raw_intent.decode('utf8'), old_generation=old_generation, new_generation=new_generation,

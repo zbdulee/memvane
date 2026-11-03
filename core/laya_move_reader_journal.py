@@ -7,10 +7,11 @@ from pathlib import Path
 import laya_journal_reader as R
 import laya_move_read_seal as M
 
-_FIELDS = frozenset(('move_id','endpoint_id','record','source_record','state','project','root',
+_FIELDS_V1 = frozenset(('move_id','endpoint_id','record','source_record','state','project','root',
     'stage','stage_node','kind','intent','old_generation','new_generation','exclusion_epoch',
     'exclusions','body_digest','old_tuple_digest','new_tuple_digest','path_aliases','prefix_digest',
     'base_epoch','previous_endpoint','transition_id','materials'))
+_FIELDS = _FIELDS_V1 | {'version', 'layout', 'bundle_row'}
 
 
 def seal_prefix(db):
@@ -23,7 +24,9 @@ def _decode(move_id, packed):
     R._need(type(packed) is str and len(packed.encode('utf8')) <= 262144, 'reader_move_seal_invalid')
     data = json.loads(packed, object_pairs_hook=R.journal._pairs,
                       parse_constant=R.journal._nonfinite)
-    R._need(type(data) is dict and set(data) == _FIELDS and R._raw(data).decode('utf8') == packed,
+    R._need(type(data) is dict and (set(data) == _FIELDS_V1 or
+            (set(data) == _FIELDS and data['version'] == 2 and type(data['version']) is int))
+            and R._raw(data).decode('utf8') == packed,
             'reader_move_seal_invalid')
     R._need(data['move_id'] == move_id and type(move_id) is str and R.journal.SHA.fullmatch(move_id)
             and type(data['base_epoch']) is int and data['base_epoch'] >= 1
@@ -38,9 +41,14 @@ def _decode(move_id, packed):
             and record.get('capability') == 'v6-retained-ro-v1'
             and data['endpoint_id'] == R._sha(b'memvane-reader-endpoint-v1\0'+R._raw(record)),
             'reader_move_seal_invalid')
+    prefix = [data['intent'], data['path_aliases'], data['old_tuple_digest'], data['new_tuple_digest']]
+    if data.get('version') == 2:
+        R._need(type(data['bundle_row']) is dict and
+                (type(data['layout']) is dict if data['kind'] == 'project' else data['layout'] is None),
+                'reader_move_seal_invalid')
+        prefix.extend((2, data['layout'], data['bundle_row']))
     R._need(data['move_id'] == R._sha(data['intent'].encode('utf8')) and
-            data['prefix_digest'] == R._sha(R._raw([data['intent'], data['path_aliases'],
-                data['old_tuple_digest'], data['new_tuple_digest']])), 'reader_move_seal_invalid')
+            data['prefix_digest'] == R._sha(R._raw(prefix)), 'reader_move_seal_invalid')
     return data
 
 
@@ -85,7 +93,15 @@ def _verify(data, attestation, *, root):
     stage_info = stage.lstat()
     R._need(stat.S_ISDIR(stage_info.st_mode) and stage_info.st_uid == os.getuid()
             and stat.S_IMODE(stage_info.st_mode) == 0o700, 'reader_move_material_changed')
-    live, raw, proof = R._evidence(state,project,root)
+    import laya_fresh_wiki_origin as fresh
+    from laya_move_reader_prefix import fenced_project, capture_layout
+    decision = None
+    if data['kind'] == 'project' and fresh._load(state / fresh.LEDGER)['phase'] == 'upgrading':
+        live, raw, proof, decision = fenced_project(data, attestation, root)
+    else:
+        live, raw, proof = R._evidence(state,project,root)
+        if data.get('version') == 2 and data['kind'] == 'project':
+            R._need(capture_layout(project) == data['layout'], 'reader_move_layout_changed')
     historical = data['source_record']
     R._need(proof['selectionEpoch'] >= historical['creation_epoch'], 'reader_endpoint_changed')
     live['creation_epoch'] = historical['creation_epoch']
@@ -132,7 +148,8 @@ def _verify(data, attestation, *, root):
                 data['exclusion_epoch'],old_parts]))
             and data['new_tuple_digest'] == R._sha(R._raw([data['body_digest'],data['new_generation'],
                 data['exclusion_epoch'],data['path_aliases'],new_parts])), 'reader_move_material_changed')
-    decision = R.journal.select_route(str(project),action='recall')
+    if decision is None:
+        decision = R.journal.select_route(str(project),action='recall')
     body, epoch = M._generation(Path(historical['db_path']),state,data['old_generation'],data['old_generation'],decision)
     with R._readonly(Path(historical['db_path']),state) as db:
         exclusions = db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
@@ -169,6 +186,9 @@ def _issued_seal(seal):
         R._need(getattr(seal,name) == data[name], 'reader_move_seal_changed')
     R._need(R._raw(seal.path_aliases) == R._raw(data['path_aliases']), 'reader_move_seal_changed')
     _record, raw, _proof = R._recheck(original)
+    if data.get('version') == 2:
+        from laya_move_reader_prefix import bundle_row
+        R._need(bundle_row(scope.state) == data['bundle_row'], 'reader_move_bundle_changed')
     _verify(data,raw,root=Path(data['root']))
     decision = R.journal.select_route(data['project'],action='recall')
     body, epoch = M._generation(Path(data['source_record']['db_path']),Path(data['state']),
