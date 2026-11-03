@@ -4,6 +4,7 @@
 Only existing bundle/provider/executing-copy and provider-lane seams are
 synthetic. Physical rename, fsync, fence, journal and fresh FTS are actual.
 """
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import select
 import signal
 import stat
+import sqlite3
 import subprocess
 import sys
 import unittest
@@ -249,6 +251,45 @@ class MovePrefixChecks(unittest.TestCase):
                              'ledger remains exact fenced old metadata')
                 mutation_evidence=dict(kind=mutation,reviewedRoute='new',projectRoute='old',
                     catalog='old',binding='old',ledger='exact-fenced')
+            elif mutation=='binding-before-catalog':
+                mover._swap_store(intent)
+                self.require(seed.reader._node(case.store)==intent['store']['identity'],
+                             'actual canonical binding swap without catalog rebind')
+                self.require(not Path(intent['store']['temp']).exists(),'actual binding temp consumed')
+                with seed.ro(case.catalog) as db:
+                    meta=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+                self.require(meta=={key:intent['catalog'][key][0] for key in ('binding','roots')},
+                             'catalog remains exactly old after premature binding swap')
+                mutation_evidence=dict(kind=mutation,catalog='old',binding='new',temporaryBindingExists=False)
+            elif mutation=='rebound-catalog-row-changed':
+                mover._rebind_catalog(intent)
+                with closing(sqlite3.connect(case.catalog.as_uri()+'?mode=rw',uri=True)) as db:
+                    row=db.execute('SELECT seq,path,size FROM scan_files ORDER BY seq,path LIMIT 1').fetchone()
+                    self.require(row is not None,'actual catalog scan member before mutation')
+                    db.execute('UPDATE scan_files SET size=size+1 WHERE seq=? AND path=?',row[:2]);db.commit()
+                    self.require(db.execute('SELECT size FROM scan_files WHERE seq=? AND path=?',row[:2]).fetchone()
+                                 ==(row[2]+1,),'actual committed catalog member mutation')
+                    meta=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+                self.require(meta=={key:intent['catalog'][key][1] for key in ('binding','roots')},
+                             'catalog retains expected new metadata despite scan row mutation')
+                # Classify the separate cold-WAL physical gate with bare
+                # SQLite, then keep existing sidecars for this T2 tuple guard.
+                trial=case.home/'catalog-bare-sqlite-control.sqlite'
+                trial.write_bytes(case.catalog.read_bytes());trial.chmod(0o600)
+                baseline=trial.read_bytes()
+                with closing(sqlite3.connect(trial.as_uri()+'?mode=ro',uri=True)) as control:
+                    control.execute('SELECT count(*) FROM scan_files').fetchone()
+                    aux=[suffix for suffix in ('-wal','-shm') if Path(str(trial)+suffix).exists()]
+                self.require(aux==['-wal','-shm'] and trial.read_bytes()==baseline,
+                             'bare SQLite cold WAL creates aux without content changes')
+                keepalive=sqlite3.connect(case.catalog.as_uri()+'?mode=rw',uri=True)
+                self.addCleanup(keepalive.close)
+                keepalive.execute('SELECT count(*) FROM scan_files').fetchone()
+                self.require(all(Path(str(case.catalog)+suffix).exists() for suffix in ('-wal','-shm')),
+                             'T2 metadata guard uses explicitly existing source auxiliaries')
+                mutation_evidence=dict(kind=mutation,catalog='new',binding='old',scanMemberChanged=True,
+                    bareSQLiteColdAuxCreated=aux,bareSQLiteContentUnchanged=True,
+                    physicalColdBoundaryProved=False,sourceAuxiliariesPreexisting=True)
             elif mutation=='reserved-generation-ahead':
                 with seed.ro(case.db) as db:
                     self.require(db.execute('SELECT state FROM generations WHERE gen=?',
@@ -302,13 +343,17 @@ class MovePrefixChecks(unittest.TestCase):
         result=subprocess.run([sys.executable,'-B','-I','-c',probe,str(ROOT),str(payload)],
             input='release\n',capture_output=True,encoding='utf8',timeout=30)
         observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+        after=snapshot()
+        changed=[[group,path] for group in ('project','state') for path in
+                 sorted(set(before[group])|set(after[group])) if before[group].get(path)!=after[group].get(path)]
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
             originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
             storePrefix=prefix_evidence,
             resumed=False,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096],
-            mutation=mutation_evidence,queryUnchanged=snapshot()==before,
+            mutation=mutation_evidence,queryUnchanged=after==before,queryChangedPaths=changed,
+            catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
-        self.assertTrue(snapshot()==before,'fresh prefix reader must not heal or mutate moved/state files')
+        self.assertTrue(after==before,'fresh prefix reader must not heal or mutate moved/state files')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
             events=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]
@@ -343,6 +388,12 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_renamed_prefix_rejects_only_reviewed_route_advancing_ahead_of_catalog_binding_and_project_route(self):
         self.check_prefix('anchor-entry',mutation='reviewed-route-ahead')
+
+    def test_binding_swap_before_catalog_rebind_is_refused_without_capability(self):
+        self.check_prefix('anchor-entry',mutation='binding-before-catalog')
+
+    def test_rebound_catalog_member_change_is_refused_without_capability(self):
+        self.check_prefix('anchor-entry',mutation='rebound-catalog-row-changed')
 
     def test_public_mover_refuses_published_retained_intent_before_any_destructive_reprepare(self):
         seed=seed_module.MoveSealChecks('runTest')
