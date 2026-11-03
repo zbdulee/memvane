@@ -43,5 +43,18 @@ class ReaderMoveChecks(unittest.TestCase):
         self.assertTrue(self.case.auto.is_dir())
         self.assertFalse((self.case.project/'.memvane').exists())
 
+    def test_current_state_noop_does_not_add_a_journal_requirement(self):
+        mover=importlib.import_module('laya_state_move')
+        self.assertFalse(mover.legacy_root(self.case.state,self.case.home))
+        saved=self.case.state/'saved-journal.sqlite'
+        self.case.journal.rename(saved)
+        try:
+            with self.helper.full_authority(self.case,self.reader,mover):
+                state,result=mover.move(self.case.project,self.case.state,home=self.case.home)
+            self.assertEqual(state,self.case.state)
+            self.assertEqual(result,dict(status='state_move_current'))
+            self.assertFalse(self.case.journal.exists())
+        finally:saved.rename(self.case.journal)
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
