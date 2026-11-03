@@ -613,13 +613,33 @@ class LayaIndexA:
             for suffix in ('-wal','-shm','-journal'):
                 Path(str(tmp) + suffix).unlink(missing_ok=True)
 
-    def __init__(self, path, *, create=False):
+    def __init__(self, path, *, create=False, coordination=None):
         path = Path(path)
         if not path.parent.is_dir() or path.is_symlink():
             raise IndexContractError('invalid_explicit_path')
         self.path = path
+        self._connection_owner = None
+        if coordination is not None:
+            # A component is bound to an already proved file. First creation
+            # has its separate installer/publication integration.
+            if create:
+                raise IndexContractError('coordinated_creation_unavailable')
+            from laya_reader_windows import open_owned
+            self._connection_owner = open_owned(coordination, path=path,
+                opener=self._connect_existing, initialize=self._initialize_connection,
+                deadline=time.monotonic() + 2)
+            return
         if create:
             self._create_new(path)
+        self.db = self._connect_existing()
+        try:
+            self._initialize_connection(self.db)
+        except BaseException:
+            self.db.close()
+            raise
+
+    def _connect_existing(self):
+        path = self.path
         if not path.is_file():
             raise IndexContractError('database_missing')
         uri = path.resolve(strict=True).as_uri()
@@ -636,24 +656,31 @@ class LayaIndexA:
                     raise
         except sqlite3.Error as exc:
             raise IndexContractError('database_unreadable') from exc
-        self.db = sqlite3.connect(uri + '?mode=rw', uri=True, timeout=2,
-                                  isolation_level=None)
-        try:
-            self.db.execute('PRAGMA foreign_keys=ON')
-            if self._read_header_snapshot() != ro_incarnation:
-                raise IndexContractError('database_incarnation_mismatch')
-            mode = self.db.execute('PRAGMA journal_mode=WAL').fetchone()
-            if mode is None or str(mode[0]).lower() != 'wal':
-                raise IndexContractError('wal_unavailable')
-            self.db.execute('PRAGMA synchronous=FULL')
-            if self._read_header_snapshot() != ro_incarnation:
-                raise IndexContractError('database_incarnation_mismatch')
-        except BaseException:
-            self.db.close()
-            raise
+        self._opening_incarnation = ro_incarnation
+        return sqlite3.connect(uri + '?mode=rw', uri=True, timeout=2,
+                               isolation_level=None)
 
-    def close(self):
-        self.db.close()
+    def _initialize_connection(self, db):
+        self.db = db
+        self.db.execute('PRAGMA foreign_keys=ON')
+        if self._read_header_snapshot() != self._opening_incarnation:
+            raise IndexContractError('database_incarnation_mismatch')
+        mode = self.db.execute('PRAGMA journal_mode=WAL').fetchone()
+        if mode is None or str(mode[0]).lower() != 'wal':
+            raise IndexContractError('wal_unavailable')
+        self.db.execute('PRAGMA synchronous=FULL')
+        if self._read_header_snapshot() != self._opening_incarnation:
+            raise IndexContractError('database_incarnation_mismatch')
+
+    def close(self, *, deadline=None):
+        if self._connection_owner is None:
+            self.db.close()
+            return
+        from laya_reader_windows import close_or_defer, ReaderCloseDeferred
+        if deadline is None:
+            deadline = time.monotonic() + 2
+        if not close_or_defer(self._connection_owner, deadline=deadline):
+            raise ReaderCloseDeferred('reader_connection_close_deferred')
 
     def incarnation(self):
         """Stable identity for a newly created A-int database, not its file path."""

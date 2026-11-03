@@ -105,7 +105,12 @@ class LayaIndexRuntime:
                  db_path: str, queue_path: str, db_incarnation: str,
                  catalog_path: str | None = None,
                  binding_store_path: str | None = None,
-                 wiki_only: bool = False):
+                 wiki_only: bool = False,
+                 connection_windows=None):
+        if connection_windows is not None and (
+                not isinstance(connection_windows, Mapping)
+                or set(connection_windows) != {'base'}):
+            raise IndexContractError('invalid_runtime_connection_windows')
         capacity = (catalog_path, binding_store_path)
         if capacity != (None, None) and (
                 not isinstance(source_root, Mapping)
@@ -142,7 +147,8 @@ class LayaIndexRuntime:
         # In-process sync_step memo and pins a busy A-int kept; never durable.
         self._snapshot_verdict = None
         self._unreleased_pins = []
-        self.index = LayaIndexA(db_path)
+        self.index = (LayaIndexA(db_path) if connection_windows is None else
+                      LayaIndexA(db_path, coordination=connection_windows['base']))
         try:
             if self.index.incarnation() != db_incarnation:
                 raise IndexContractError('database_incarnation_mismatch')
