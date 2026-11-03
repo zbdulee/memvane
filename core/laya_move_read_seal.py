@@ -72,6 +72,14 @@ def _logical(path, parent, *, skip_meta=False):
     with R._readonly(path, parent) as db:
         R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
                 'reader_move_store_corrupt')
+        digest.update(b'memvane-move-sqlite-v2\0')
+        digest.update(R._raw([db.execute('PRAGMA application_id').fetchone()[0],
+                              db.execute('PRAGMA user_version').fetchone()[0]]))
+        # Document rowids join the ordinary rows to FTS; SQL dumps omit them.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='docs'").fetchone():
+            for path_, rowid in db.execute('SELECT path,rowid FROM docs ORDER BY path'):
+                data = R._raw(['docs-rowid', path_, rowid])
+                digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
         for line in db.iterdump():
             # Only replay comparisons omit these rows; both complete meta
             # rowsets are checked separately against the proved transition.
@@ -280,6 +288,8 @@ def stage_move_reader(intent, *, installer):
         if key == 'sidecar_path' and not has_side:
             continue
         old_paths[key] = _copy(Path(old_record[key]), state, stage, filename)
+    if has_side:
+        _sidecar(old_paths['sidecar_path'], stage, identity, Path(old_record['db_path']), state, decision)
     new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite',
                         meta_variants=_catalog_variants(Path(old_record['catalog_path']), state, intent['catalog']))
     with closing(sqlite3.connect(new_catalog.as_uri() + '?mode=rw', uri=True)) as db:
@@ -451,6 +461,8 @@ def _stage_state(intent, installer, scope):
                  for key, name in (('catalog_path','catalog.sqlite'),
                                    ('binding_path','binding.sqlite'), ('sidecar_path','sidecar.sqlite'))
                  if key != 'sidecar_path' or has_side}
+    if has_side:
+        _sidecar(old_paths['sidecar_path'], stage, old_identity, Path(old_record['db_path']), state, decision)
     new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
     new_binding = _copy(Path(old_record['binding_path']), state, stage, 'new-binding.sqlite')
     _binding(new_binding, stage, roots, decision, generation)
