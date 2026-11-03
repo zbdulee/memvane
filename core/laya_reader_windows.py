@@ -462,6 +462,7 @@ class _OwnedConnection:
         self.pid, self.thread = os.getpid(), threading.current_thread()
         self.pending = False
         self.transaction = None
+        self.auxiliaries = None
 
     def check(self):
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
@@ -586,6 +587,14 @@ def write_transaction(owner, *, visible, deadline):
         raise
 
 
+def _auxiliary_nodes(path, state):
+    result = {}
+    for suffix in ('-wal', '-shm', '-journal'):
+        auxiliary = Path(str(path) + suffix)
+        result[suffix] = tuple(R._file(auxiliary, state)) if os.path.lexists(auxiliary) else None
+    return result
+
+
 def checkpoint_owned(owner, *, deadline):
     """Explicit writer-only WAL reset; no caller gains a clean-read capability.
 
@@ -597,7 +606,8 @@ def checkpoint_owned(owner, *, deadline):
             'reader_connection_not_owned')
     owner.check()
     owner.lifetime.check()
-    R._need(owner.db is not None and not owner.pending and owner.transaction is None
+    R._need(owner.db is not None and owner.auxiliaries is not None
+            and not owner.pending and owner.transaction is None
             and not owner.db.in_transaction, 'reader_checkpoint_unavailable')
     _deadline(deadline)
     _pid, installer, scope, node, _manifest = _component(owner.component)
@@ -613,11 +623,8 @@ def checkpoint_owned(owner, *, deadline):
             # SQLite can mutate its already-open WAL/SHM before returning a
             # result. Reject shared/unsafe names before the first SQL call,
             # and bind completion to these same named file incarnations.
-            auxiliaries = {}
-            for suffix in ('-wal', '-shm', '-journal'):
-                auxiliary = Path(str(path) + suffix)
-                auxiliaries[suffix] = (tuple(R._file(auxiliary, Path(endpoint.record['state'])))
-                    if os.path.lexists(auxiliary) else None)
+            auxiliaries = _auxiliary_nodes(path, Path(endpoint.record['state']))
+            R._need(auxiliaries == owner.auxiliaries, 'reader_checkpoint_files_changed')
             if time.monotonic() >= deadline:
                 raise ReaderWindowBusy('reader_checkpoint_deadline')
             previous = owner.db.execute('PRAGMA busy_timeout').fetchone()[0]
@@ -652,11 +659,8 @@ def checkpoint_owned(owner, *, deadline):
             result = tuple(rows[0])
             R._need(tuple(R._file(path, Path(endpoint.record['state']))) == node,
                     'reader_component_changed')
-            for suffix, before in auxiliaries.items():
-                auxiliary = Path(str(path) + suffix)
-                after = (tuple(R._file(auxiliary, Path(endpoint.record['state'])))
-                    if os.path.lexists(auxiliary) else None)
-                R._need(after == before, 'reader_checkpoint_files_changed')
+            R._need(_auxiliary_nodes(path, Path(endpoint.record['state'])) == auxiliaries,
+                    'reader_checkpoint_files_changed')
             if time.monotonic() >= deadline:
                 raise ReaderWindowBusy('reader_checkpoint_deadline')
             if result == (0, -1, -1):
@@ -697,11 +701,29 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
             validate(check.db)
         finally:
             check.close_locked()
+        state = Path(_endpoint.record['state'])
+        opening_auxiliaries = _auxiliary_nodes(component.path, state)
         owner = _connect_owned(component, 'rw')
         try:
             R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                     'reader_component_changed')
             initialize(owner.db)
+            R._need(not owner.db.in_transaction, 'reader_connection_transaction_active')
+            # Force an actual main read while the creating EX is still held:
+            # the WAL handle must be in use before we bind its named inode.
+            # Existing names must span initialization unchanged; newly created
+            # auxiliaries belong to this fixed SQLite open/read sequence.
+            cursor = owner.db.execute('SELECT count(*) FROM sqlite_master')
+            try:
+                cursor.fetchall()
+            finally:
+                cursor.close()
+                sqlite3.Cursor.close(cursor)
+            auxiliaries = _auxiliary_nodes(component.path, state)
+            R._need(all(before is None or auxiliaries[suffix] == before
+                        for suffix, before in opening_auxiliaries.items()),
+                    'reader_component_changed')
+            owner.auxiliaries = auxiliaries
         except BaseException:
             owner.close_locked()
             raise
