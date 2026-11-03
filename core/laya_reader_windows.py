@@ -98,9 +98,11 @@ def _manifest(install_id, parent, parent_fd, parent_info, *, links=1):
         raw = os.read(fd, 65537)
         R._need(len(raw) <= 65536, 'reader_windows_invalid')
         document = json.loads(raw)
-        R._need(type(document) is dict and set(document) == {'version', 'install_id', 'locks'}
+        R._need(type(document) is dict and set(document) == {'version', 'install_id', 'locks', 'temporary'}
                 and type(document['version']) is int and document['version'] == 1
                 and document['install_id'] == install_id
+                and type(document['temporary']) is str
+                and re.fullmatch(r'\.component-windows-[0-9a-f]{32}', document['temporary']) is not None
                 and type(document['locks']) is dict
                 and set(document['locks']) == {*_WINDOW_NAMES, 'reader-lifetime.lock'}
                 and R._raw(document) == raw, 'reader_windows_invalid')
@@ -139,8 +141,8 @@ def _prepare_initial(install_id, parent, parent_fd, parent_info):
             os.close(fd)
     info = os.stat('reader-lifetime.lock', dir_fd=parent_fd, follow_symlinks=False)
     nodes['reader-lifetime.lock'] = [info.st_dev, info.st_ino]
-    raw = R._raw(dict(version=1, install_id=install_id, locks=nodes))
     temporary = '.component-windows-' + uuid.uuid4().hex
+    raw = R._raw(dict(version=1, install_id=install_id, locks=nodes, temporary=temporary))
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                  0o600, dir_fd=parent_fd)
     try:
@@ -164,19 +166,14 @@ def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
     The caller holds lifetime EX. Unknown hardlinks or invalid contents are
     refused; neither the manifest inode nor any coordination lock is replaced.
     """
-    _manifest(install_id, parent, parent_fd, parent_info, links=2)
+    raw = _manifest(install_id, parent, parent_fd, parent_info, links=2)
     fd = os.open(_MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
     try:
         _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=2)
         info = os.fstat(fd)
-        aliases = []
-        for name in os.listdir(parent_fd):
-            if re.fullmatch(r'\.component-windows-[0-9a-f]{32}', name):
-                node = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                if os.path.samestat(info, node):
-                    aliases.append(name)
-        R._need(len(aliases) == 1, 'reader_windows_recovery_unproved')
-        name = aliases[0]
+        # A matching filename pattern does not prove it is our temporary
+        # publication name. Recover only the exact name committed in the bytes.
+        name = json.loads(raw)['temporary']
         temporary = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
         try:
             _named(install_id, parent, parent_fd, parent_info, name, temporary, links=2)
