@@ -10,6 +10,7 @@ import stat
 import sys
 
 LIMIT = 16 * 1024 * 1024
+JOURNAL_MAGIC = bytes.fromhex('d9d505f920a163d7')
 NAMES = ('probe.sqlite', 'probe.sqlite-journal', 'probe.sqlite-wal', 'probe.sqlite-shm')
 
 
@@ -49,6 +50,10 @@ def pair(path):
         need(len(header) == 100 and header[:16] == b'SQLite format 3\0'
              and int.from_bytes(header[60:64], 'big') in (3, 4)
              and int.from_bytes(header[68:72], 'big') == 0x4c594a31, 'legacy_probe_header_invalid')
+        # Product metadata uses a single DB. Even an ambiguous super-journal
+        # footer is outside this copy protocol; SQLite must never resolve it.
+        need(not (len(bodies[1]) >= 16 and bodies[1].endswith(JOURNAL_MAGIC)),
+             'legacy_probe_super_journal_unsupported')
         receipt = [dict(node=signature(info), sha256=hashlib.sha256(body).hexdigest())
                    for info, body in zip(before, bodies)]
         return bodies, receipt

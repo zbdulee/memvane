@@ -625,10 +625,36 @@ def _recover_interrupted_transaction(path):
     return True
 
 
+def _reject_super_journal(path):
+    """Refuse external super-journal references before any SQLite open."""
+    side = Path(str(path)+'-journal')
+    try:
+        fd = os.open(side, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('unsafe_journal_file')
+        if info.st_size >= 16:
+            tail = os.pread(fd, 16, info.st_size-16)
+            if tail.endswith(bytes.fromhex('d9d505f920a163d7')):
+                _fail('journal_super_journal_unsupported')
+        after = os.fstat(fd)
+        if (not os.path.samestat(info, side.lstat()) or
+                (info.st_size, info.st_mtime_ns, info.st_ctime_ns) !=
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            _fail('journal_changed')
+    finally:
+        os.close(fd)
+
+
 def _open(path, *, write):
     if write and _reader_no_recovery.get():
         _fail('reader_journal_read_only')
     path = _private_parent(path)
+    _reject_super_journal(path)
     preimage = _initial_preimage.get()
     if preimage is not None:
         if write or path != preimage.logical_path:

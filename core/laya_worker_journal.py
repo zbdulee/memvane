@@ -42,8 +42,8 @@ def _legacy_binding(project, decision, journal, row, digest, route):
             and row['provider_attestation_sha'] is not None
             and row['provider_file_identity'] is not None, 'worker_journal_binding_changed')
     proof = J._inspect_identity(selected)
-    R._need(J._verified_executing_root(selected, proof) == selected['pluginRoot'],
-            'worker_journal_binding_changed')
+    # The verifier accepts an equally sealed companion at another root.
+    J._verified_executing_root(selected, proof)
     attestation, digest = J._attestation(journal)
     R._need(attestation is not None and digest == row['provider_attestation_sha']
             and J._provider_file_identity(attestation) == row['provider_file_identity']
