@@ -380,6 +380,82 @@ class MoveSealChecks(unittest.TestCase):
             self._check_retained_tamper_rejection(stage,intent,seal,before,'retained-sidecar-hidden-rowid',
                 'actual-readonly-docs-FTS-parity-refusal; iterdump-identical')
 
+    def test_copy_refuses_a_real_hot_orphan_at_final_destination_before_creating_database(self):
+        copy_module=importlib.import_module('laya_move_read_seal')
+        with self.prepared():
+            stage=self.case.state/'orphan-copy-fixture';stage.mkdir(mode=0o700)
+            name='catalog-target.sqlite'
+            destination=copy_module._copy(self.case.catalog,self.case.state,stage,name)
+            with closing(sqlite3.connect(destination)) as db:
+                self.assertEqual(db.execute('PRAGMA journal_mode=DELETE').fetchone(),('delete',))
+                db.execute('CREATE TABLE hot_probe(id INTEGER PRIMARY KEY,value TEXT NOT NULL)')
+                db.executemany('INSERT INTO hot_probe VALUES(?,?)',[(n,'original-'+str(n)+'-'+'x'*3000) for n in range(80)])
+                db.commit()
+                originals=db.execute('SELECT id,value FROM hot_probe ORDER BY id').fetchall()
+            main_before=destination.read_bytes()
+            writer=r'''import json,os,signal,sqlite3,sys
+from pathlib import Path
+signal.alarm(25)
+path=Path(sys.argv[1])
+db=sqlite3.connect(path,isolation_level=None)
+assert db.execute('PRAGMA journal_mode=DELETE').fetchone()==('delete',)
+db.execute('PRAGMA synchronous=FULL')
+db.execute('PRAGMA cache_size=1')
+db.execute('PRAGMA cache_spill=ON')
+db.execute('BEGIN IMMEDIATE')
+db.execute("UPDATE hot_probe SET value='changed-'||value")
+journal=Path(str(path)+'-journal')
+assert journal.is_file() and journal.stat().st_size>0
+print(json.dumps(dict(event='uncommitted-spill',pid=os.getpid(),rows=db.execute('SELECT count(*) FROM hot_probe').fetchone()[0],
+    journalBytes=journal.stat().st_size)),flush=True)
+assert sys.stdin.readline().strip()=='release'
+'''
+            process=subprocess.Popen([sys.executable,'-B','-I','-c',writer,str(destination)],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+            try:
+                if not select.select([process.stdout],[],[],15)[0]:raise RuntimeError('actual hot writer checkpoint unavailable')
+                line=process.stdout.readline()
+                if not line:raise RuntimeError('hot journal factory failed before its checkpoint')
+                evidence=json.loads(line)
+                if evidence.get('event')!='uncommitted-spill':raise RuntimeError('hot journal factory did not reach actual spill')
+                process.kill();self.assertEqual(process.wait(timeout=5),-signal.SIGKILL)
+            finally:
+                if process.poll() is None:process.kill()
+                process.communicate(timeout=5)
+            journal=Path(str(destination)+'-journal')
+            if destination.read_bytes()==main_before:
+                raise RuntimeError('actual SQLite pager spill did not change main bytes; not an orphan-copy RED')
+            journal_bytes=journal.read_bytes();journal_node=(journal.stat().st_dev,journal.stat().st_ino)
+            control=stage/'rollback-control';control.mkdir(mode=0o700)
+            trial=control/'trial.sqlite';trial.write_bytes(destination.read_bytes());trial.chmod(0o600)
+            trial_journal=Path(str(trial)+'-journal');trial_journal.write_bytes(journal_bytes);trial_journal.chmod(0o600)
+            try:
+                with closing(sqlite3.connect(trial)) as db:
+                    restored=db.execute('SELECT id,value FROM hot_probe ORDER BY id').fetchall()
+                    integrity=db.execute('PRAGMA integrity_check').fetchall()
+            except sqlite3.Error as exc:
+                raise RuntimeError('actual hot rollback control could not recover copied metadata') from exc
+            if restored!=originals or integrity!=[('ok',)] or trial_journal.exists():
+                raise RuntimeError('valid hot journal/SQLite rollback cleanup was not demonstrated')
+            self.assertEqual(journal.read_bytes(),journal_bytes)
+            destination.unlink()  # Only this test-owned main, after actual hot proof.
+            before=self.live();entries=set(stage.rglob('*'))
+            error,result=None,None
+            try:result=copy_module._copy(self.case.catalog,self.case.state,stage,name)
+            except (ValueError,OSError,RuntimeError,sqlite3.Error) as exc:error=str(exc)
+            print(json.dumps(dict(case='final-copy-orphan-hot-journal',checkpoint=evidence,actualExit=process.returncode,
+                realRollbackControl=True,error=error,destinationCreated=destination.exists(),
+                orphanPreserved=journal.exists() and journal.read_bytes()==journal_bytes,
+                newArtifacts=sorted(str(path) for path in set(stage.rglob('*'))-entries),liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            with self.subTest(boundary='refusal-before-final-main'):
+                self.assertIsNotNone(error)
+                self.assertIsNone(result)
+                self.assertFalse(destination.exists())
+            self.assertEqual(journal.read_bytes(),journal_bytes)
+            self.assertEqual((journal.stat().st_dev,journal.stat().st_ino),journal_node)
+            self.assertEqual(set(stage.rglob('*')),entries)
+
     def test_actual_catalog_sidecar_body_profile_and_symlink_tamper_are_refused(self):
         stage,_seal_type=self.producer()
         with self.prepared() as intent:
@@ -882,7 +958,10 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
     def test_partial_backup_cleanup_refuses_replaced_symlink_without_touching_its_target(self):
         self.partial_backup_retry(replace_with_symlink=True)
 
-    def partial_backup_retry(self, *, replace_with_symlink=False):
+    def test_partial_backup_cleanup_refuses_nonexact_private_mode_without_removing_pending(self):
+        self.partial_backup_retry(pending_mode=0o400)
+
+    def partial_backup_retry(self, *, replace_with_symlink=False,pending_mode=None):
         self.producer()
         with self.prepared() as intent:pass
         with self.ro(self.case.catalog) as db:
@@ -928,6 +1007,17 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
         self.assertEqual(self.live(),before)
         self.assertEqual(intent_path.read_bytes(),intent_before)
         sentinel=None
+        mode_evidence=None
+        if pending_mode is not None:
+            original_node=(partial.lstat().st_dev,partial.lstat().st_ino)
+            partial.chmod(pending_mode)
+            mode_evidence=(original_node,partial.read_bytes(),set(partial.parent.iterdir()))
+            def restore_mode():
+                if os.path.lexists(partial):
+                    current=partial.lstat()
+                    if stat.S_ISREG(current.st_mode) and (current.st_dev,current.st_ino)==original_node:
+                        partial.chmod(0o600)
+            self.addCleanup(restore_mode)
         if replace_with_symlink:
             sentinel=self.case.home/'unowned-copy-target'
             sentinel.write_bytes(b'fixture target must survive unchanged\n')
@@ -946,6 +1036,22 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
             liveUnchanged=self.live()==before,intentPreserved=intent_path.read_bytes()==intent_before)),flush=True)
         self.assertEqual(self.live(),before)
         self.assertEqual(intent_path.read_bytes(),intent_before)
+        if pending_mode is not None:
+            node,contents,entries=mode_evidence
+            preserved=(partial.exists() and (partial.stat().st_dev,partial.stat().st_ino)==node
+                       and partial.read_bytes()==contents and stat.S_IMODE(partial.stat().st_mode)==pending_mode)
+            print(json.dumps(dict(case='pending-copy-exact-private-mode',requestedMode=oct(pending_mode),
+                error=None if recovered is None else recovered.get('reason'),pendingPreserved=preserved,
+                stageEntriesPreserved=set(partial.parent.iterdir())==entries)),flush=True)
+            with self.subTest(boundary='explicit-mode-refusal'):
+                self.assertNotEqual(result.returncode,0)
+                self.assertIsNotNone(recovered)
+                self.assertEqual(recovered['event'],'error')
+                self.assertRegex(recovered['reason'],r'^reader_[a-z0-9_]+$')
+            with self.subTest(boundary='pending-inode-and-bytes-preservation'):
+                self.assertTrue(preserved,'non-0600 scratch must not be removed or replaced')
+                self.assertEqual(set(partial.parent.iterdir()),entries)
+            return
         if replace_with_symlink:
             self.assertNotEqual(result.returncode,0)
             self.assertEqual(recovered['event'],'error')
