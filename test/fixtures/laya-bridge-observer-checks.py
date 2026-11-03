@@ -35,7 +35,7 @@ class FakeHostSpec:
 
 
 FAKE = r'''
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, subprocess, sys, time
 if sys.argv[1] == 'serve-qa-stdin':
     role = 'core'
     root = str(pathlib.Path(__file__).resolve().parents[1])
@@ -48,6 +48,17 @@ import laya_bridge_observer as observer
 with open(log, 'a', encoding='utf8') as out:
     out.write(json.dumps(dict(pid=os.getpid(), role=role))+'\n')
 if role == 'cli':
+    if behavior == 'outside-owned':
+        time.sleep(12)
+        sys.exit(0)
+    if host == 'codex' and behavior != 'late-thread':
+        if behavior == 'bad-thread':
+            print(json.dumps(dict(type='thread.started',thread_id=7)),flush=True)
+            time.sleep(12)
+            sys.exit(0)
+        if behavior != 'missing-thread':
+            print(json.dumps(dict(type='thread.started',thread_id=(
+                'other-session' if behavior == 'thread-session' else session))),flush=True)
     if behavior == 'stdout':
         print(ident+' '+nonce, flush=True)
         sys.exit(0)
@@ -75,6 +86,14 @@ if role == 'cli':
             child = subprocess.run(argv, env=env, timeout=12, capture_output=True, encoding='utf8')
             pathlib.Path(log+'.dispatcher.json').write_text(json.dumps(dict(status=child.returncode,
                 stdout=child.stdout[:4096],stderr=child.stderr[:4096])),encoding='utf8')
+        elif behavior == 'late-thread':
+            child = subprocess.Popen(argv, env=env)
+            end=time.monotonic()+5
+            while not pathlib.Path(log+'.packet-sent').exists():
+                if time.monotonic()>=end:sys.exit(72)
+                time.sleep(0.005)
+            print(json.dumps(dict(type='thread.started',thread_id=session)),flush=True)
+            child.wait(timeout=8)
         else:
             child = subprocess.run(argv, env=env, timeout=12)
         pathlib.Path(log+'.cli-complete').write_text('child-wait-completed', encoding='utf8')
@@ -85,6 +104,12 @@ observation = dict(observed_challenge_id=ident, observed_nonce_sha256=nonce,
     plugin_root=root, release_commit='c'*40, manifest_sha256='d'*64, hook_stage='registered-v4')
 if behavior == 'nonce': observation['observed_nonce_sha256']='0'*64
 if behavior == 'root': observation['plugin_root']=str(pathlib.Path(root).parent)
+if behavior == 'late-thread':
+    send=observer._send
+    def sent(peer,value):
+        send(peer,value)
+        pathlib.Path(log+'.packet-sent').write_text('real-packet-sent',encoding='utf8')
+    observer._send=sent
 observer.emit_registered_hook(ident, 'codex' if behavior == 'host' else host,
     observation, 'wrong-session' if behavior == 'session' else session)
 pathlib.Path(log+'.core-complete').write_text('post-ACK-emitter-returned', encoding='utf8')
@@ -109,14 +134,14 @@ class ObserverChecks(unittest.TestCase):
             self.assertTrue(callable(getattr(module, name, None)), name)
         return module
 
-    def challenge(self):
+    def challenge(self, host_name='claude'):
         import laya_bridge_readiness as bridge
         return bridge, bridge.begin_bridge_preflight(self.case.state, release_commit='c'*40,
-                                                     expected_hosts=frozenset(('claude',)))
+                                                     expected_hosts=frozenset((host_name,)))
 
-    def collect(self, behavior):
+    def collect(self, behavior, host_name='claude'):
         observer = self.observer()
-        bridge, challenge = self.challenge()
+        bridge, challenge = self.challenge(host_name)
         root = self.case.plugin
         (root / 'core').mkdir(mode=0o700, exist_ok=True)
         for path in (root / 'fake-cli.py', root / 'unregistered.py', root / 'core/laya_host_response.py'):
@@ -158,24 +183,40 @@ class ObserverChecks(unittest.TestCase):
             exe = Path(sys.executable).resolve(strict=True)
         session = 'synthetic-owned-session'
         config=root/'.observer-fixture.json'
-        config.write_text(json.dumps(dict(ident=challenge.challenge_id,host='claude',nonce=challenge.nonce_sha256,
+        config.write_text(json.dumps(dict(ident=challenge.challenge_id,host=host_name,nonce=challenge.nonce_sha256,
             session=session,behavior=behavior,source=str(HERE.parents[1]/'core'),log=str(log))),encoding='utf8')
         config.chmod(0o600)
         host = FakeHostSpec((str(exe), '-B', '-I', str(root / 'fake-cli.py'), 'cli', str(root),
-            challenge.challenge_id, 'claude', challenge.nonce_sha256, session, behavior,
+            challenge.challenge_id, host_name, challenge.nonce_sha256, session, behavior,
             str(HERE.parents[1] / 'core'), str(log)), self.case.project, exe, root,
-            'c'*40, 'd'*64, session)
+            'c'*40, 'd'*64, '' if host_name == 'codex' else session)
+        outside, outside_identity = None, None
+        if behavior == 'outside-owned':
+            argv=list(host.argv)
+            argv[4]='external'
+            outside=subprocess.Popen(argv,cwd=str(self.case.project),stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,encoding='utf8')
+            outside_identity=observer._process_identity(outside.pid)
+            # This handle is a sibling of the collector's host, not its child.
+            # Only this fixture owns its cleanup; collector must not signal it.
+            self.addCleanup(lambda: self.reap_outside(outside, outside_identity, observer))
         error, receipt = None, None
         with self.helper.full_authority(self.case, observer, bridge), \
-                mock.patch.object(observer, '_host_spec', return_value=host):
+                mock.patch.object(observer, '_host_spec', return_value=host), \
+                mock.patch.object(observer, '_TIMEOUT', 0.8 if host_name == 'codex' else 8):
             try:
-                receipt = bridge.collect_bridge_preflight(challenge, host='claude')
+                receipt = bridge.collect_bridge_preflight(challenge, host=host_name)
             except ValueError as exc:
                 error = str(exc)
                 if behavior == 'path-bash':
                     print(json.dumps(dict(case='path-bash-refusal', trace=[
                         [Path(frame.filename).name,frame.lineno,frame.name]
                         for frame in traceback.extract_tb(exc.__traceback__)])),flush=True)
+        if outside is not None:
+            out,err=outside.communicate(timeout=10)
+            print(json.dumps(dict(case='outside-owned-emitter',status=outside.returncode,
+                real_pid=outside.pid,signalled=outside.returncode<0)),flush=True)
+            self.assertGreaterEqual(outside.returncode,0,'collector must not signal an outside process')
         processes = [json.loads(line) for line in log.read_text(encoding='utf8').splitlines()] if log.exists() else []
         if behavior == 'path-bash' and Path(str(log)+'.dispatcher.json').exists():
             print(Path(str(log)+'.dispatcher.json').read_text(encoding='utf8'),flush=True)
@@ -191,6 +232,12 @@ class ObserverChecks(unittest.TestCase):
             self.fail('owned synthetic host/hook remains after collector completion: %r' % identity)
         directory = bridge._issued(challenge, bridge.BridgeChallenge)[0]
         return observer, bridge, challenge, receipt, error, processes, directory
+
+    @staticmethod
+    def reap_outside(process, identity, observer):
+        if process.poll() is None and observer.same_process(identity):
+            process.kill()  # Only the explicitly owned fixture sibling handle.
+        process.communicate(timeout=10)
 
     def test_kernel_peer_identity_matches_real_connected_owned_child(self):
         observer = self.observer()
@@ -254,6 +301,32 @@ class ObserverChecks(unittest.TestCase):
         _, _, _, receipt, error, _, _ = self.collect('path-bash')
         self.assertIsNone(error)
         self.assertIsNotNone(receipt, 'actual registered script must not depend on the caller PATH Bash')
+
+    def test_kernel_peer_outside_the_owned_host_tree_is_refused_without_signalling_it(self):
+        _, _, _, receipt, error, _, directory = self.collect('outside-owned')
+        self.assertIsNone(receipt)
+        self.assertIsNotNone(error)
+        self.assertFalse((directory/'claude.json').exists())
+
+    def test_codex_session_comes_from_the_owned_root_typed_event(self):
+        _,bridge,challenge,receipt,error,_,_=self.collect('valid','codex')
+        self.assertIsNone(error)
+        self.assertIsNotNone(receipt)
+        row=bridge._read(receipt)
+        self.assertEqual(row['session_id'],'synthetic-owned-session')
+
+    def test_codex_delayed_native_thread_event_precedes_receipt_acceptance(self):
+        _,_,_,receipt,error,_,_=self.collect('late-thread','codex')
+        self.assertIsNone(error)
+        self.assertIsNotNone(receipt)
+
+    def test_codex_missing_malformed_or_conflicting_native_thread_cannot_issue_receipts(self):
+        for behavior in ('missing-thread','bad-thread','thread-session'):
+            with self.subTest(behavior=behavior):
+                _,_,_,receipt,error,_,directory=self.collect(behavior,'codex')
+                self.assertIsNone(receipt)
+                self.assertIsNotNone(error)
+                self.assertFalse((directory/'codex.json').exists())
 
     def test_drip_stream_cannot_extend_an_absolute_receive_deadline(self):
         observer=self.observer()
