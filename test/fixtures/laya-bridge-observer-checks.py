@@ -52,8 +52,12 @@ if role == 'cli':
     if behavior == 'nohook':
         sys.exit(0)
     if behavior != 'manual-core':
-        if behavior in ('direct-core','entrypoint'):
-            script = pathlib.Path(root)/('unregistered.py' if behavior == 'entrypoint' else 'core/laya_host_response.py')
+        if behavior == 'direct-core':
+            script = pathlib.Path(root)/'core/laya_host_response.py'
+            argv = [sys.executable, '-B', str(script), 'serve-qa-stdin', 'recall', host, os.getcwd()]
+            env = dict(os.environ)
+        elif behavior == 'entrypoint':
+            script = pathlib.Path(root)/'unregistered.py'
             argv = [sys.executable, '-B', '-I', str(script), 'core', *sys.argv[2:]]
             env = dict(os.environ)
         else:
@@ -267,6 +271,10 @@ class ObserverChecks(unittest.TestCase):
             # Sibling handles model already-tracked descendants after reparenting;
             # this unit does not claim new ancestry authority.
             observer._cleanup(root,identities)
+            # The collector cannot waitpid a reparented non-child. This fixture
+            # owns both handles and reaps their terminal OS exit after cleanup.
+            root.wait(timeout=1)
+            worker.wait(timeout=1)
             print(json.dumps(dict(case='tracked-cleanup',root_status=root.poll(),worker_status=worker.poll(),
                                    siblings_are_cleanup_control_not_ancestry=True)),flush=True)
             self.assertIsNotNone(root.poll())
@@ -274,10 +282,16 @@ class ObserverChecks(unittest.TestCase):
         finally:
             for process in handles:
                 if process.poll() is None:
-                    current=observer._process_identity(process.pid)
-                    saved=identities.get(process.pid,current)
-                    self.assertTrue(all(current[k]==saved[k] for k in ('pid','uid','start_key','executable')))
-                    process.kill()  # Only this fixture's bootstrap Popen handle.
+                    try:
+                        current=observer._process_identity(process.pid)
+                    except ValueError:
+                        # Exiting/zombie identities are deliberately rejected by
+                        # the production identity API; wait without signalling.
+                        process.wait(timeout=5)
+                    else:
+                        saved=identities.get(process.pid,current)
+                        self.assertTrue(all(current[k]==saved[k] for k in ('pid','uid','start_key','executable')))
+                        process.kill()  # Only this fixture's bootstrap Popen handle.
                 process.wait(timeout=5)
                 process.stdout.close()
                 process.stderr.close()

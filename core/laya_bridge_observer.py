@@ -1,6 +1,7 @@
 """Owned native-host QA collector. A wire reply alone is never host authority."""
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import selectors
@@ -109,13 +110,25 @@ def _send(peer, value):
     peer.sendall(raw)
 
 
-def _receive(peer):
+def _receive(peer, *, deadline):
+    if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        _refuse()
     data = bytearray()
-    while b'\n' not in data:
-        part = peer.recv(min(2048, _MAX + 1 - len(data)))
-        if not part or len(data) + len(part) > _MAX:
-            _refuse()
-        data.extend(part)
+    original_timeout = peer.gettimeout()
+    try:
+        while b'\n' not in data:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _refuse()
+            peer.settimeout(remaining if original_timeout is None else min(original_timeout, remaining))
+            part = peer.recv(min(2048, _MAX + 1 - len(data)))
+            if not part or len(data) + len(part) > _MAX:
+                _refuse()
+            data.extend(part)
+    finally:
+        peer.settimeout(original_timeout)
+    if time.monotonic() >= deadline:
+        _refuse()
     if data.count(b'\n') != 1 or not data.endswith(b'\n'):
         _refuse()
     value = json.loads(data.decode('utf8'))
@@ -132,11 +145,34 @@ def _cleanup(process, owned):
                     os.kill(item['pid'], sig)
                 except ProcessLookupError:
                     pass
-        try:
-            process.wait(timeout=0.5)
-            return
-        except subprocess.TimeoutExpired:
-            pass
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            process.poll()  # Reap the root, independently of tracked children.
+            if not any(same_process(item) for item in owned.values()):
+                break
+            time.sleep(0.01)
+        if not any(same_process(item) for item in owned.values()):
+            break
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        pass  # Never signal an identity that no longer matches its snapshot.
+
+
+def _dispatcher(chain, plugin_root, host):
+    script = plugin_root / 'hooks/run-hook'
+    if script.resolve(strict=True) != script or not script.is_file():
+        _refuse()
+    bash = {path.resolve(strict=True) for path in (Path('/bin/bash'), Path('/usr/bin/bash'))
+            if path.is_file()}
+    for item in chain[1:-1]:
+        arguments = list(item['argv'][1:])
+        while arguments and arguments[0] in ('--noprofile', '--norc', '-e', '-u', '-x'):
+            arguments.pop(0)
+        if (Path(item['executable']) in bash and
+                arguments == [str(script), 'recall', host]):
+            return item
+    _refuse()
 
 
 def _finish_after_ack(process, selector, deadline, output_bytes):
@@ -231,7 +267,10 @@ def observe_registered_hook(challenge, host):
                                     or Path(script).resolve(strict=True) != Path(script)
                                     or not Path(script).is_file()):
                                 _refuse()
-                            packet = _receive(peer)
+                            if arguments[1:4] != ['serve-qa-stdin', 'recall', host]:
+                                _refuse()
+                            dispatcher = _dispatcher(chain, spec.plugin_root, host)
+                            packet = _receive(peer, deadline=deadline)
                             if set(packet) != {'schema','challenge_id','host','session_id','observation'}:
                                 _refuse()
                             observation = packet['observation']
@@ -249,9 +288,16 @@ def observe_registered_hook(challenge, host):
                                 process_start=root['start'], executable=root['executable'],
                                 observed_entrypoint='hooks/run-hook:recall:' + host)
                             B._check_observation(result, registry, host)
-                            if not same_process(hook) or not same_process(root) or _peer_identity(peer) != (uid,pid):
+                            if (not same_process(hook) or not same_process(dispatcher) or
+                                    not same_process(root) or _peer_identity(peer) != (uid,pid)):
                                 _refuse()
-                            descendant_chain(pid, root)
+                            renewed = descendant_chain(pid, root)
+                            if _dispatcher(renewed, spec.plugin_root, host)['pid'] != dispatcher['pid']:
+                                _refuse()
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                _refuse()
+                            peer.settimeout(remaining)
                             _send(peer, dict(ack=True))
                             selector.unregister(server)
                             _finish_after_ack(process, selector, deadline, output_bytes)
@@ -303,6 +349,7 @@ def observe_registered_hook(challenge, host):
 
 
 def emit_registered_hook(challenge_id, host, observation, session_id):
+    deadline = time.monotonic() + _TIMEOUT
     if not B._ID.fullmatch(challenge_id) or host not in ('claude','codex'):
         _refuse()
     directory = B._registry() / challenge_id
@@ -310,8 +357,7 @@ def emit_registered_hook(challenge_id, host, observation, session_id):
     if host not in registry['expected_hosts'] or set(observation) != _ENVELOPE or not isinstance(session_id,str):
         _refuse()
     ref = directory / (host + '.transport.json')
-    end = time.monotonic() + _TIMEOUT
-    while not ref.exists() and time.monotonic() < end:
+    while not ref.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     transport = B._read(ref)
     if transport.get('schema') != 'memvane-bridge-transport-v1' or transport['challenge_id'] != challenge_id or transport['host'] != host:
@@ -322,14 +368,21 @@ def emit_registered_hook(challenge_id, host, observation, session_id):
     if list(collector['start_key']) != transport['collector_start']:
         _refuse()
     with socket.socket(socket.AF_UNIX) as peer:
-        peer.settimeout(_TIMEOUT)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _refuse()
+        peer.settimeout(remaining)
         peer.connect(str(path))
         if _peer_identity(peer) != (os.getuid(), collector['pid']):
             _refuse()
         _private_socket(path, transport['socket_node'], transport['directory_node'])
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _refuse()
+        peer.settimeout(remaining)
         _send(peer, dict(schema='memvane-bridge-wire-v1', challenge_id=challenge_id,
                         host=host, session_id=session_id, observation=observation))
-        if _receive(peer) != {'ack': True}:
+        if _receive(peer, deadline=deadline) != {'ack': True}:
             _refuse()
 
 
