@@ -57,6 +57,9 @@ def _deadline(value):
 
 
 def _owner(installer):
+    import laya_writer_scope as normal
+    if type(installer) is normal.NormalWriter:
+        return normal._owner(installer)
     from laya_move_read_seal import _owner as move_owner
     endpoint = R._installer(installer)
     owner = move_owner()
@@ -191,6 +194,7 @@ def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
 
 def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
+    R._installer(installer)
     endpoint, _scope = _owner(installer)
     record = endpoint.record
     row = L._read_v5_bundle(Path(record['state']) / 'install-journal.sqlite')
@@ -248,6 +252,9 @@ def _location(endpoint, role):
 
 
 def component_for(installer, role):
+    import laya_writer_scope as normal
+    if type(installer) is normal.NormalWriter:
+        R._need(role in ('base', 'queue'), 'normal_writer_component_unsupported')
     endpoint, scope = _owner(installer)
     path, node = _location(endpoint, role)
     record = endpoint.record
@@ -539,8 +546,9 @@ class _OwnedSQLite(sqlite3.Connection):
 
 
 class _OwnedConnection:
-    def __init__(self, component, db, lifetime):
+    def __init__(self, component, db, lifetime, pin=None):
         self.component, self.db, self.lifetime = component, db, lifetime
+        self.pin = pin
         self.pid, self.thread = os.getpid(), threading.current_thread()
         self.pending = False
         self.transaction = None
@@ -558,19 +566,33 @@ class _OwnedConnection:
         self.db._native_close_locked()
         self.db = None
         self.lifetime.close()
+        if self.pin is not None:
+            self.pin.close()
+            self.pin = None
         _owned.pop(id(self), None)
         self.pending = False
 
 
 def _connect_owned(component, mode):
-    lifetime = _Lifetime(component.install_id)
+    import laya_writer_scope as normal
+    _pid, installer, _scope, _node, _manifest = _component(component)
+    is_normal = type(installer) is normal.NormalWriter
+    pin = lifetime = None
     try:
+        if is_normal:
+            pin = normal._connection_pin(installer, component.role, component.path)
+        lifetime = _Lifetime(component.install_id)
+        if is_normal:
+            normal._connection_check(installer, component.role, component.path)
         db = sqlite3.connect(component.path.as_uri() + '?mode=' + mode, uri=True,
                              timeout=2, isolation_level=None, factory=_OwnedSQLite)
     except BaseException:
-        lifetime.close()
+        if lifetime is not None:
+            lifetime.close()
+        if pin is not None:
+            pin.close()
         raise
-    owner = _OwnedConnection(component, db, lifetime)
+    owner = _OwnedConnection(component, db, lifetime, pin)
     _owned[id(owner)] = owner
     try:
         if mode == 'rw':
@@ -876,7 +898,9 @@ def _connection_binding(owner, db, *, cleanup=False):
         # Its independent lifetime and held locks survive mover revocation.
         # Require the originally issued namespace, main and journal instead
         # of reacquiring an already revoked writer scope.
-        endpoint = R._installer(installer)
+        import laya_writer_scope as normal
+        endpoint = (scope.endpoint if type(installer) is normal.NormalWriter
+                    else R._installer(installer))
         R._need(scope.pid == os.getpid()
                 and R._node(scope.project) == scope.project_node
                 and R._node(scope.state) == scope.state_node,
@@ -994,13 +1018,19 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
             preopen()
         # An issued seal alone is not current installer evidence. Protect the
         # base during this full recheck, before the fixed RW connect below.
-        R._recheck(_endpoint)
+        import laya_writer_scope as normal
+        if type(installer) is normal.NormalWriter:
+            normal.validate_normal_writer(installer)
+        else:
+            R._recheck(_endpoint)
         current_path, current_node = _location(_endpoint, component.role)
         R._need(current_path == component.path and current_node == node
                 and tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                 'reader_component_changed')
         check = _connect_owned(component, 'ro')
         try:
+            if type(installer) is normal.NormalWriter:
+                normal._validate_identity(installer, component.role, check.db)
             validate(check.db)
         finally:
             check.close_locked()

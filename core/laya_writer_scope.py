@@ -1,8 +1,8 @@
-"""Inactive normal-writer admission, separate from reader and mover authority.
+"""Normal base/queue admission, separate from reader and mover authority.
 
 Admission proves one warm content image under EX. A later component opener
 must revalidate its actual header under EX; this token is no immutable image
-or all-writer cohort proof. Product RW openers do not accept it yet.
+or all-writer cohort proof. Operational workers do not select this path yet.
 """
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -60,6 +60,72 @@ def validate_normal_writer(writer):
     context.lifetime.check()
     validate_sync_owner(context.queue_owner, context.plan.queue_path)
     R._need(time.monotonic() < context.deadline, 'normal_writer_deadline')
+
+
+class _Endpoint:
+    def __init__(self, writer, snapshot):
+        self.writer = writer
+        self.record = dict(snapshot['endpoint'])
+        # Preferred reader B can differ from the canonical writer A.
+        for role, key in (('base', 'db'), ('catalog', 'catalog'),
+                          ('binding', 'binding'), ('sidecar', 'sidecar')):
+            component = snapshot['components'][role]
+            self.record[key+'_path'] = component['path']
+            self.record[key+'_node'] = component['node']
+
+
+def _owner(writer):
+    validate_normal_writer(writer)
+    context = _record(writer)['context']
+    return context.endpoint, context
+
+
+def _connection_check(writer, role, path):
+    validate_normal_writer(writer)
+    record = _record(writer)
+    R._need(role in ('base', 'queue'), 'normal_writer_component_unsupported')
+    snapshot = record['snapshot']
+    row = snapshot['components'][role]
+    R._need(Path(path) == Path(row['path']), 'normal_writer_component_changed')
+    from laya_writer_proof_reader import _files
+    files = _files(Path(path), Path(snapshot['endpoint']['state']))
+    R._need(list(files[''][:2]) == row['node'], 'normal_writer_component_changed')
+    if files['-wal'] is None or files['-shm'] is None:
+        raise W.ReaderWindowBusy('normal_writer_cold_open_unproved')
+    R._need(files['-journal'] is None, 'normal_writer_recovery_unproved')
+    return files
+
+
+def _connection_pin(writer, role, path):
+    before = _connection_check(writer, role, path)
+    pin = _record(writer)['context'].queue_owner.pin()
+    try:
+        R._need(_connection_check(writer, role, path) == before,
+                'normal_writer_component_changed')
+        return pin
+    except BaseException:
+        pin.close()
+        raise
+
+
+def _validate_identity(writer, role, db):
+    """Actual fixed header/identity proof; no caller callback can omit it."""
+    validate_normal_writer(writer)
+    db.execute('BEGIN')
+    try:
+        if role == 'base':
+            from laya_index_a import LayaIndexA
+            LayaIndexA._check_header(db)
+            incarnation = db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
+        else:
+            R._need(role == 'queue', 'normal_writer_component_unsupported')
+            from laya_index_claim_queue import ClaimQueue
+            incarnation = ClaimQueue._check_database(db)
+        R._need(incarnation == writer.incarnation, 'normal_writer_incarnation_changed')
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
 
 
 def _approved(proof, snapshot):
@@ -120,6 +186,10 @@ class _NormalWriterContext:
                 object.__setattr__(writer, 'scope_id', snapshot['decision']['scopeId'])
                 object.__setattr__(writer, 'incarnation', snapshot['decision']['dbIncarnation'])
                 self.writer = writer
+                self.project, self.state = Path(snapshot['project']), Path(snapshot['endpoint']['state'])
+                self.project_node = snapshot['endpoint']['project_node']
+                self.state_node = snapshot['endpoint']['state_node']
+                self.endpoint = _Endpoint(writer, snapshot)
                 self.entered = True
                 _issued[writer] = dict(context=self, snapshot=snapshot, proof=proof)
             validate_normal_writer(writer)
@@ -143,5 +213,5 @@ class _NormalWriterContext:
 
 
 def normal_writer_scope(plan, *, queue_owner, deadline):
-    """Issue inactive admission only after an owned, approved full write proof."""
+    """Issue base/queue admission after an owned, approved full write proof."""
     return _NormalWriterContext(plan, queue_owner, deadline)
