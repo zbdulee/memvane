@@ -196,6 +196,64 @@ class WriterProofReaderChecks(unittest.TestCase):
                     except (ValueError,RuntimeError,sqlite3.Error):pass
                 module.drain_proof_readers(deadline=time.monotonic()+2)
 
+    def test_foreign_thread_exit_does_not_unissue_or_poison_empty_window_creator_cleanup(self):
+        owner_scope=ExitStack();context=None;errors=[]
+        claim=owner_scope.enter_context(self.sync.sync_owner(Path(self.fixture.plan.queue_path)))
+        context=self.P.writer_proof_windows(self.fixture.plan,queue_owner=claim,deadline=time.monotonic()+20)
+        window=context.__enter__()
+        try:
+            def other_thread():
+                try:context.__exit__(None,None,None)
+                except (ValueError,RuntimeError) as exc:errors.append(str(exc))
+            thread=threading.Thread(target=other_thread);thread.start();thread.join(2)
+            if thread.is_alive():raise RuntimeError('foreign context exit did not terminate')
+            self.assertTrue(errors)
+            valid=True
+            try:self.P.validate_writer_proof_window(window)
+            except (ValueError,RuntimeError):valid=False
+            context.__exit__(None,None,None);owner_scope.close()
+            physical=self.fixture.probe('base-physical.lock','SH')
+            with self.sync.sync_owner(Path(self.fixture.plan.queue_path)) as next_owner:
+                fresh=next_owner is not None
+            emit('foreign-proof-window-exit',reasons=errors,stillValidForCreator=valid,
+                physicalFreeAfterCreatorExit=physical,nextOwnerAcquired=fresh)
+            self.assertTrue(valid,'foreign exit must leave issuance intact')
+            self.assertTrue(physical);self.assertTrue(fresh)
+        finally:
+            owner_scope.close()
+            if context is not None:
+                try:context.__exit__(None,None,None)
+                except (ValueError,RuntimeError,sqlite3.Error):pass
+                # A failing baseline may poison its public context. Recover
+                # only this test's original empty stack so it cannot leak.
+                context.stack.__exit__(None,None,None)
+
+    def test_failed_native_close_invalidates_entire_window_before_other_role_connect(self):
+        with self.warm():
+            module=self.api();stack,window=self.scope();blocked=[True]
+            native=self.W._OwnedSQLite._native_close_locked
+            def close(db):
+                if blocked[0]:raise sqlite3.OperationalError('synthetic_scope_close_failure')
+                return native(db)
+            try:
+                reader_context=module.proof_reader(window,'base');reader=reader_context.__enter__()
+                with mock.patch.object(self.W._OwnedSQLite,'_native_close_locked',new=close):
+                    with self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):reader.close()
+                    error=None;opened=False
+                    with self.fixture.fixture.traced() as calls:
+                        try:
+                            with module.proof_reader(window,'queue'):opened=True
+                        except (ValueError,RuntimeError,sqlite3.Error) as exc:error=str(exc)
+                    emit('failed-close-scope-revocation',otherRoleOpened=opened,error=error,contentConnects=calls)
+                    self.assertFalse(opened)
+                    self.assertIsNotNone(error)
+                    self.assertEqual(calls,[],'close failure permits cleanup only, no other role connect')
+            finally:
+                blocked[0]=False
+                try:stack.close()
+                except (ValueError,RuntimeError,sqlite3.Error):pass
+                module.drain_proof_readers(deadline=time.monotonic()+2)
+
     def test_cold_no_aux_base_rejects_before_first_sqlite_connect_without_file_changes(self):
         # Observe the ordinary last-close boundary, then make the proof reader
         # the first content opener. This is a refusal test, not cold success.
