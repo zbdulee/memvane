@@ -7,18 +7,23 @@ normal participants open the stable UID locks without creating them.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
+import json
 import math
 import os
 from pathlib import Path
 import sqlite3
 import threading
 import time
+import uuid
 import weakref
 
 import laya_journal_reader as R
 import laya_reader_lease as L
 
 _ROLES = ('base', 'binding', 'catalog', 'queue', 'sidecar')
+_WINDOW_NAMES = ('publish-cut.lock',) + tuple(f'{role}-{kind}.lock'
+    for role in _ROLES for kind in ('mutation', 'physical'))
+_MANIFEST = 'component-windows-v1.json'
 _components = weakref.WeakKeyDictionary()
 # Strong ownership starts immediately after connect, before any initialization.
 # No finalizer closes these handles. Only their creating thread may drain them.
@@ -75,9 +80,76 @@ def _named(install_id, parent, parent_fd, parent_info, name, fd):
     R._need(os.path.samestat(opened, named), 'reader_window_changed')
 
 
+def _manifest(install_id, parent, parent_fd, parent_info):
+    """Completed preparation commits every stable lock inode, without repair."""
+    fd = os.open(_MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd)
+        raw = os.read(fd, 65537)
+        R._need(len(raw) <= 65536, 'reader_windows_invalid')
+        document = json.loads(raw)
+        R._need(type(document) is dict and set(document) == {'version', 'install_id', 'locks'}
+                and document['version'] == 1 and document['install_id'] == install_id
+                and type(document['locks']) is dict
+                and set(document['locks']) == {*_WINDOW_NAMES, 'reader-lifetime.lock'}
+                and R._raw(document) == raw, 'reader_windows_invalid')
+        for name, node in document['locks'].items():
+            R._need(type(node) is list and len(node) == 2
+                    and all(type(value) is int and value >= 0 for value in node),
+                    'reader_windows_invalid')
+            lock = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+            try:
+                _named(install_id, parent, parent_fd, parent_info, name, lock)
+                info = os.fstat(lock)
+                R._need(node == [info.st_dev, info.st_ino], 'reader_window_changed')
+            finally:
+                os.close(lock)
+        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd)
+        return raw
+    finally:
+        os.close(fd)
+
+
+def _prepare_initial(install_id, parent, parent_fd, parent_info):
+    nodes = {}
+    for name in _WINDOW_NAMES:
+        try:
+            fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                         dir_fd=parent_fd)
+        try:
+            _named(install_id, parent, parent_fd, parent_info, name, fd)
+            os.fsync(fd)
+            info = os.fstat(fd)
+            nodes[name] = [info.st_dev, info.st_ino]
+        finally:
+            os.close(fd)
+    info = os.stat('reader-lifetime.lock', dir_fd=parent_fd, follow_symlinks=False)
+    nodes['reader-lifetime.lock'] = [info.st_dev, info.st_ino]
+    raw = R._raw(dict(version=1, install_id=install_id, locks=nodes))
+    temporary = '.component-windows-' + uuid.uuid4().hex
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=parent_fd)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        # No-clobber commit. A crash before this point has no complete marker;
+        # lifetime EX excludes all live participants before any retry creates.
+        os.link(temporary, _MANIFEST, src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                follow_symlinks=False)
+    finally:
+        os.unlink(temporary, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+
+
 def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
     endpoint, _scope = _owner(installer)
+    R._recheck(endpoint)
     record = endpoint.record
     row = L._read_v5_bundle(Path(record['state']) / 'install-journal.sqlite')
     R._need(row['pending'] is None and row['state'] in ('active', 'restored_old')
@@ -86,21 +158,14 @@ def prepare_windows(installer):
     install_id = record['install_id']
     parent, parent_fd, parent_info = L._parent(install_id, create=False)
     try:
-        names = ['publish-cut.lock'] + [f'{role}-{kind}.lock'
-            for role in _ROLES for kind in ('mutation', 'physical')]
-        for name in names:
-            try:
-                fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL |
-                             os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-            except FileExistsError:
-                fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
-                             dir_fd=parent_fd)
-            try:
-                _named(install_id, parent, parent_fd, parent_info, name, fd)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        os.fsync(parent_fd)
+        # A completed namespace is never repaired, even if a lock is missing.
+        if os.path.lexists(parent / _MANIFEST):
+            _manifest(install_id, parent, parent_fd, parent_info)
+        else:
+            with L.reader_lifetime(install_id, exclusive=True):
+                if not os.path.lexists(parent / _MANIFEST):
+                    _prepare_initial(install_id, parent, parent_fd, parent_info)
+                _manifest(install_id, parent, parent_fd, parent_info)
     finally:
         os.close(parent_fd)
 
@@ -120,7 +185,12 @@ def component_for(installer, role):
     object.__setattr__(component, 'install_id', record['install_id'])
     object.__setattr__(component, 'role', role)
     object.__setattr__(component, 'path', path)
-    _components[component] = (os.getpid(), installer, scope, tuple(node))
+    parent, parent_fd, parent_info = L._parent(record['install_id'], create=False)
+    try:
+        manifest = _manifest(record['install_id'], parent, parent_fd, parent_info)
+    finally:
+        os.close(parent_fd)
+    _components[component] = (os.getpid(), installer, scope, tuple(node), manifest)
     return component
 
 
@@ -165,7 +235,7 @@ class _Lifetime:
 
 @contextmanager
 def _window(component, kind, *, exclusive, deadline):
-    _component(component)
+    binding = _component(component)
     R._need(type(exclusive) is bool, 'reader_window_mode_invalid')
     _deadline(deadline)
     lifetime = _Lifetime(component.install_id)
@@ -186,6 +256,8 @@ def _window(component, kind, *, exclusive, deadline):
                 time.sleep(min(0.005, remaining))
         _named(component.install_id, lifetime.parent, lifetime.parent_fd,
                lifetime.parent_info, name, fd)
+        R._need(_manifest(component.install_id, lifetime.parent, lifetime.parent_fd,
+                          lifetime.parent_info) == binding[4], 'reader_windows_changed')
         yield
     finally:
         if fd is not None:
@@ -222,32 +294,49 @@ class _OwnedConnection:
         self.pending = False
 
 
-def open_owned(component, *, path, opener, initialize, deadline):
+def _connect_owned(component, mode):
+    lifetime = _Lifetime(component.install_id)
+    try:
+        db = sqlite3.connect(component.path.as_uri() + '?mode=' + mode, uri=True,
+                             timeout=2, isolation_level=None)
+    except BaseException:
+        lifetime.close()
+        raise
+    owner = _OwnedConnection(component, db, lifetime)
+    _owned[id(owner)] = owner
+    return owner
+
+
+def open_owned(component, *, path, validate, initialize, deadline):
     """Open and initialize under EX; register before initialize's first PRAGMA."""
-    _pid, installer, scope, node = _component(component)
+    # Until a managed worker's same-thread drain is integrated, reject before
+    # opening in a background thread rather than strand a connection on exit.
+    R._need(threading.current_thread() is threading.main_thread(),
+            'reader_connection_main_thread_required')
+    _pid, installer, scope, node, _sealed_manifest = _component(component)
     _endpoint, current = _owner(installer)
     R._need(current is scope and Path(path) == component.path,
             'reader_component_owner_changed')
-    lifetime = _Lifetime(component.install_id)
-    owner = None
-    try:
-        with physical_window(component, exclusive=True, deadline=deadline):
+    with physical_window(component, exclusive=True, deadline=deadline):
+        # An issued seal alone is not current installer evidence. Protect the
+        # base during this full recheck, before the fixed RW connect below.
+        R._recheck(_endpoint)
+        R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
+                'reader_component_changed')
+        check = _connect_owned(component, 'ro')
+        try:
+            validate(check.db)
+        finally:
+            check.close_locked()
+        owner = _connect_owned(component, 'rw')
+        try:
             R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                     'reader_component_changed')
-            db = opener()
-            owner = _OwnedConnection(component, db, lifetime)
-            _owned[id(owner)] = owner
-            try:
-                R._need(isinstance(db, sqlite3.Connection), 'reader_connection_invalid')
-                initialize(db)
-            except BaseException:
-                owner.close_locked()
-                raise
+            initialize(owner.db)
+        except BaseException:
+            owner.close_locked()
+            raise
         return owner
-    except BaseException:
-        if owner is None:
-            lifetime.close()
-        raise
 
 
 def close_or_defer(owner, *, deadline):
@@ -273,7 +362,8 @@ def _local_pending():
 
 
 def pending_count():
-    return len(_local_pending())
+    # Observation is process-wide; draining remains restricted to the owner.
+    return sum(owner.pending and owner.pid == os.getpid() for owner in list(_owned.values()))
 
 
 def drain_pending(*, deadline):

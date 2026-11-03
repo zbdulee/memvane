@@ -626,7 +626,7 @@ class LayaIndexA:
                 raise IndexContractError('coordinated_creation_unavailable')
             from laya_reader_windows import open_owned
             self._connection_owner = open_owned(coordination, path=path,
-                opener=self._connect_existing, initialize=self._initialize_connection,
+                validate=self._validate_existing, initialize=self._initialize_connection,
                 deadline=time.monotonic() + 2)
             return
         if create:
@@ -645,20 +645,22 @@ class LayaIndexA:
         uri = path.resolve(strict=True).as_uri()
         try:
             with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2)) as check:
-                check.execute('BEGIN')
-                try:
-                    self._check_header(check)  # one snapshot; no DDL or WAL switch
-                    ro_incarnation = check.execute(
-                        "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
-                    check.commit()
-                except BaseException:
-                    check.rollback()
-                    raise
+                self._validate_existing(check)
         except sqlite3.Error as exc:
             raise IndexContractError('database_unreadable') from exc
-        self._opening_incarnation = ro_incarnation
         return sqlite3.connect(uri + '?mode=rw', uri=True, timeout=2,
                                isolation_level=None)
+
+    def _validate_existing(self, check):
+        check.execute('BEGIN')
+        try:
+            self._check_header(check)  # one snapshot; no DDL or WAL switch
+            self._opening_incarnation = check.execute(
+                "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
+            check.commit()
+        except BaseException:
+            check.rollback()
+            raise
 
     def _initialize_connection(self, db):
         self.db = db
