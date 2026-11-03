@@ -70,6 +70,66 @@ print(json.dumps(dict(event='hot-journal-read-attempt',issued=issued,error=error
 
 
 class PrefixReviewChecks(unittest.TestCase):
+    def test_concurrent_v4_settle_between_pointer_exists_and_open_is_current(self):
+        base=seed_module.base
+        helper=base.JournalReaderChecks('runTest');helper.setUp();self.addCleanup(helper.doCleanups)
+        class PublishedV4(base.published.MoveCase):
+            STATE_PARTS=('.local','state','memvane','3'*32)
+            TEMP_DIR=str(Path('/tmp').resolve());TEMP_PREFIX=''
+            PROVIDER_EXTRA={'serviceSocketPath':'{state}/runtime/laya-embed.sock'}
+        case=helper.compose(PublishedV4)
+        mover=importlib.import_module('laya_project_dir_move')
+        with helper.full_authority(case),ExitStack() as locks:
+            mover._locks(locks,case.project,case.state,mover._queue_path(case.project,None))
+            mover._prepare(case.project,case.state,'rename')
+        original_path=mover.pointer_path(case.project)
+        payload=case.home/'settle-race.json'
+        payload.write_text(json.dumps(dict(home=str(case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(case.project),state=str(case.state),plugin=str(case.plugin),proof=case.proof)),encoding='utf8')
+        payload.chmod(0o600)
+        complete=PREPARE_HELD.split('with helper.full_authority',1)[0]+r'''
+with helper.full_authority(case,mover),mock.patch.object(laya_state_move,'_provider_lane',lambda:nullcontext()):
+    result=mover.move(project,state)
+    assert result['status']=='project_dir_move_complete'
+    assert mover.read_pointer(project) is None and not mover.intent_present(state)
+    print(json.dumps(dict(event='actual-settle-complete',result=result)),flush=True)
+'''
+        actual_exists,actual_path=os.path.lexists,mover.pointer_path
+        armed=False;settled=None;after_b=None
+        def snapshot():
+            return {str(path):(path.read_bytes(),path.stat().st_dev,path.stat().st_ino)
+                for root in (case.project,case.state) for path in root.rglob('*')
+                if path.is_file() and not path.is_symlink() and not path.name.endswith('.lock')}
+        def locate(project):
+            nonlocal armed
+            path=actual_path(project)
+            if path==original_path:armed=True
+            return path
+        def exists(path):
+            nonlocal armed,settled,after_b
+            present=actual_exists(path)
+            if armed and settled is None and Path(path)==original_path and present:
+                armed=False
+                child=subprocess.run([sys.executable,'-B','-I','-c',complete,str(ROOT),str(payload)],
+                    capture_output=True,encoding='utf8',timeout=35)
+                if child.returncode:raise RuntimeError('actual B completion prerequisite failed: '+child.stderr)
+                settled=json.loads(child.stdout)
+                if settled.get('event')!='actual-settle-complete':raise RuntimeError('actual settle checkpoint missing')
+                if actual_exists(original_path):raise RuntimeError('actual B did not remove original pointer')
+                after_b=snapshot()
+            return present
+        error,outcome=None,None
+        with helper.full_authority(case,mover),mock.patch.object(mover,'pointer_path',side_effect=locate), \
+                mock.patch('os.path.lexists',side_effect=exists):
+            try:outcome=mover.move(case.project,case.state)
+            except (ValueError,OSError,RuntimeError) as exc:error=type(exc).__name__+':'+str(exc)
+        if settled is None or after_b is None:raise RuntimeError('actual B settle race not reached')
+        print(json.dumps(dict(case='v4-concurrent-settle-pointer',actualB=settled,error=error,result=outcome,
+            filesUnchanged=snapshot()==after_b)),flush=True)
+        self.assertIsNone(error,'normal completed move must not fail a pending pointer read')
+        self.assertEqual(outcome,dict(status='project_dir_current'))
+        self.assertTrue(snapshot()==after_b,'A must not modify B completed installation')
+
     def test_concurrent_v4_prepare_is_busy_not_stale_missing_intent(self):
         base=seed_module.base
         helper=base.JournalReaderChecks('runTest');helper.setUp();self.addCleanup(helper.doCleanups)
