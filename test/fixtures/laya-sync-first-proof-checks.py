@@ -364,4 +364,60 @@ class SyncFirstProofChecks(unittest.TestCase):
             emit('worker-legacy-probe-sigkill',kills=2,sameOwnedScratch=True,
                  unknownPreserved=True,retryRecovered=True)
 
+    def test_super_journal_trailer_is_rejected_before_private_or_source_sqlite_open(self):
+        access=importlib.import_module('laya_worker_journal')
+        package=importlib.import_module('laya_package')
+        with self.seed.authority(),self.markerless():
+            self.publish_v4();self.crash_hot()
+            scratch=package.sync_owner_directory(create=True)/'legacy-journal-probe'
+            sentinel=self.case.home/'outside-sentinel-mj123456900'
+            body=(str(scratch/'probe.sqlite-journal')+'\0').encode()
+            sentinel.write_bytes(body);sentinel.chmod(0o600)
+            name=str(sentinel).encode();magic=bytes.fromhex('d9d505f920a163d7')
+            header=self.case.journal.read_bytes()[:100]
+            page_size=int.from_bytes(header[16:18],'big');page_size=65536 if page_size==1 else page_size
+            trailer=((0x40000000//page_size)+1).to_bytes(4,'big')+name+len(name).to_bytes(4,'big')+sum(name).to_bytes(4,'big')+magic
+            side=Path(str(self.case.journal)+'-journal')
+            with side.open('ab') as file:file.write(trailer)
+            before=(self.case.journal.read_bytes(),side.read_bytes())
+            with self.subTest(phase='private-probe'):
+                error=None
+                try:access._probe(self.case.journal)
+                except Exception as exc:error=str(exc)
+                preserved=sentinel.exists() and sentinel.read_bytes()==body
+                emit('worker-super-journal-private-probe',error=error,outsideSentinelPreserved=preserved)
+                self.assertIsNotNone(error,'super-journal input must not reach scratch SQLite')
+                self.assertTrue(preserved)
+            if not sentinel.exists():sentinel.write_bytes(body);sentinel.chmod(0o600)
+            with self.subTest(phase='original-journal'):
+                calls=[];connect=sqlite3.connect
+                def observe(database,*args,**kwargs):
+                    if str(database).startswith(self.case.journal.as_uri()):calls.append(str(database))
+                    return connect(database,*args,**kwargs)
+                with self.J.read_only_journals(),mock.patch.object(sqlite3,'connect',side_effect=observe), \
+                        self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):
+                    self.J.journal_version(self.case.journal)
+                emit('worker-super-journal-source',sourceSqliteConnects=calls)
+                self.assertEqual(calls,[])
+            self.assertEqual((self.case.journal.read_bytes(),side.read_bytes()),before)
+            self.assertEqual(sentinel.read_bytes(),body)
+
+    def test_markerless_hot_companion_copy_uses_existing_executing_proof_contract(self):
+        with self.fixture.F.warm(),self.seed.authority(),self.markerless():
+            self.publish_v4()
+            companion=self.case.home/'synthetic-approved-companion'
+            # Keep the existing fixture's explicit executing-copy authority
+            # boundary; the real J proof must retain and approve its result.
+            with mock.patch.object(self.J,'_verified_executing_root',return_value=str(companion)):
+                decision=self.worker.select_route(str(self.case.project),action='update')
+                baseline=self.worker.verify_selected_route(decision)
+                self.assertTrue(baseline['productRouteAllowed'])
+                self.assertEqual(baseline['executingPluginRoot'],str(companion))
+                self.crash_hot();error=None;proof=None
+                try:_decision,proof=self.selected()
+                except Exception as exc:error=str(exc)
+                emit('worker-markerless-hot-companion',baselineApproved=True,error=error,selected=proof is not None)
+                self.assertIsNone(error)
+                self.assertEqual(proof,baseline)
+
 if __name__=='__main__':unittest.main()
