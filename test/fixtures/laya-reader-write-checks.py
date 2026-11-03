@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import select
+import sqlite3
 import subprocess
 import sys
 import time
@@ -180,6 +181,84 @@ class WriteChecks(unittest.TestCase):
             self.assertEqual(retained,dict(mutation=True,cut=True));self.assertEqual(attempts,[True,True])
             self.assertEqual(remaining,0)
             self.assertEqual(events,[dict(transaction=False,rows=[],mutation=True,cut=True,physicalSharedAvailable=False)])
+
+    def test_failed_rollback_blocks_explicit_commit(self):
+        self.rollback_only_case(False)
+
+    def test_caught_rollback_failure_blocks_automatic_commit(self):
+        self.rollback_only_case(True)
+
+    def rollback_only_case(self,automatic):
+        with self.writer() as (writer,component):
+            scope=self.case.route['scopeId'];path='wiki/rollback-only.md';attempts=[];rows_at_close=[]
+            cls=type(writer.db);rollback=cls.rollback;native=cls._native_close_locked
+            def fail_once(db):
+                attempts.append(db.in_transaction)
+                if len(attempts)==1:raise RuntimeError('synthetic_rollback_only_failure')
+                return rollback(db)
+            def close(db):
+                rows_at_close.extend(db.execute('SELECT * FROM exclusions WHERE scope=? AND value=?',(scope,path)).fetchall())
+                return native(db)
+            error=None;tx=None
+            with mock.patch.object(cls,'rollback',fail_once),mock.patch.object(cls,'_native_close_locked',close):
+                try:
+                    with self.W.write_transaction(writer._connection_owner,visible=True,deadline=time.monotonic()+1) as tx:
+                        writer.db.execute('INSERT INTO exclusions VALUES(?,?,?)',(scope,'path',path))
+                        if automatic:
+                            try:tx.rollback()
+                            except RuntimeError:pass
+                        else:
+                            raise RuntimeError('original_body_failure')
+                except Exception as exc:
+                    if automatic:error=type(exc).__name__+':'+str(exc)
+                if not automatic:
+                    try:tx.commit()
+                    except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                live=writer.db.in_transaction
+                retained=dict(mutation=not self.probe('base-mutation.lock'),cut=not self.probe('publish-cut.lock'))
+                self.W.drain_pending(deadline=time.monotonic()+1)
+            print(json.dumps(dict(case='rollback-only-commit-refusal',automatic=automatic,error=error,
+                actualTransactionRetained=live,locksRetained=retained,rowsAtNativeClose=rows_at_close,
+                rollbackAttempts=attempts)),flush=True)
+            self.assertIsNotNone(error);self.assertTrue(live)
+            self.assertEqual(retained,dict(mutation=True,cut=True));self.assertEqual(rows_at_close,[])
+            self.assertEqual(attempts,[True,True]);self.assertEqual(self.W.pending_count(),0)
+
+    def test_sqlite_busy_begin_cannot_outlive_budget_and_enter_dml(self):
+        code=r'''
+import os,signal,sqlite3,sys,time
+signal.alarm(5)
+db=sqlite3.connect(sys.argv[1],isolation_level=None,timeout=2)
+db.execute('BEGIN IMMEDIATE');print('SQL_LOCKED',flush=True)
+time.sleep(.6);db.rollback();db.close()
+'''
+        with self.writer() as (writer,component):
+            scope=self.case.route['scopeId'];path='wiki/native-busy-deadline.md'
+            child=subprocess.Popen([sys.executable,'-B','-I','-c',code,str(self.case.db)],
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+            entered=False;error=None;elapsed=None
+            try:
+                if not select.select([child.stdout],[],[],4)[0] or child.stdout.readline()!='SQL_LOCKED\n':
+                    raise RuntimeError('actual independent SQLite writer prerequisite failed')
+                start=time.monotonic()
+                try:
+                    with self.W.write_transaction(writer._connection_owner,visible=True,deadline=start+.03):
+                        entered=True
+                        writer.db.execute('INSERT INTO exclusions VALUES(?,?,?)',(scope,'path',path))
+                except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                elapsed=time.monotonic()-start
+            finally:
+                try:out,err=child.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill();child.communicate();raise
+                if child.returncode!=0:raise RuntimeError('actual independent SQLite writer failed: '+err)
+            rows=writer.db.execute('SELECT * FROM exclusions WHERE scope=? AND value=?',(scope,path)).fetchall()
+            timeout=writer.db.execute('PRAGMA busy_timeout').fetchone()[0]
+            print(json.dumps(dict(case='native-sqlite-busy-admission',error=error,entered=entered,
+                seconds=elapsed,rows=rows,busyTimeoutAfter=timeout)),flush=True)
+            self.assertIsNotNone(error);self.assertFalse(entered);self.assertEqual(rows,[])
+            self.assertLess(elapsed,.4);self.assertEqual(timeout,2000)
+            self.assertTrue(self.probe('base-mutation.lock'));self.assertTrue(self.probe('publish-cut.lock'))
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
