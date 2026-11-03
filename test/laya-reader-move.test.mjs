@@ -20,7 +20,7 @@ test('actual project movement defers while the v5 reader lifetime is held', () =
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 2 tests\b/);
+    assert.match(result.stderr, /Ran 5 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);
