@@ -420,4 +420,42 @@ class SyncFirstProofChecks(unittest.TestCase):
                 self.assertIsNone(error)
                 self.assertEqual(proof,baseline)
 
+    def test_commit_unlink_during_source_guard_retries_once_and_churn_is_typed(self):
+        with self.seed.authority():
+            for churn in (False,True):
+                with self.subTest(churn=churn):
+                    self.publish_v4();side=Path(str(self.case.journal)+'-journal')
+                    with closing(sqlite3.connect(self.case.journal,isolation_level=None)) as writer:
+                        def begin():
+                            writer.execute('BEGIN IMMEDIATE')
+                            writer.execute('UPDATE selection SET epoch=epoch+1,new_write_seen=1 WHERE id=1')
+                        begin();self.assertTrue(side.exists())
+                        open_file=os.open;pread=os.pread;opens=[];commits=[];inode=[None]
+                        def opening(path,*args,**kwargs):
+                            if Path(path)==side:
+                                if opens and churn:begin()
+                                fd=open_file(path,*args,**kwargs)
+                                opens.append(True);inode[0]=os.fstat(fd).st_ino;return fd
+                            return open_file(path,*args,**kwargs)
+                        def read(fd,*args):
+                            result=pread(fd,*args)
+                            if os.fstat(fd).st_ino==inode[0]:
+                                writer.commit();commits.append(True)
+                                self.assertFalse(side.exists())
+                            return result
+                        result=None;error=None
+                        with self.J.read_only_journals(),mock.patch.object(os,'open',side_effect=opening), \
+                                mock.patch.object(os,'pread',side_effect=read):
+                            try:result=self.J.journal_version(self.case.journal)
+                            except Exception as exc:error=exc
+                        emit('worker-journal-commit-unlink',churn=churn,actualCommits=len(commits),
+                             guardOpens=len(opens),result=result,errorType=type(error).__name__,error=str(error))
+                        if churn:
+                            self.assertIsInstance(error,self.J.JournalEvidenceError)
+                            self.assertEqual(str(error),'journal_changed')
+                            self.assertEqual(len(commits),2)
+                        else:
+                            self.assertIsNone(error);self.assertEqual(result,4)
+                            self.assertEqual(len(commits),1)
+
 if __name__=='__main__':unittest.main()
