@@ -197,6 +197,31 @@ class MovePrefixChecks(unittest.TestCase):
                              'ledger remains exact fenced old metadata')
                 mutation_evidence=dict(kind=mutation,reviewedRoute='new',projectRoute='old',
                     catalog='old',binding='old',ledger='exact-fenced')
+            elif mutation=='reserved-generation-ahead':
+                with seed.ro(case.db) as db:
+                    self.require(db.execute('SELECT state FROM generations WHERE gen=?',
+                        (intent['generation']['gen'],)).fetchone()==('prepared',),'actual reserved generation starts prepared')
+                mover._publish(intent)
+                with seed.ro(case.db) as db:
+                    self.require(db.execute('SELECT state FROM generations WHERE gen=?',
+                        (intent['generation']['gen'],)).fetchone()==('published',),'actual _publish publishes reserved generation')
+                    self.require(db.execute('SELECT gen FROM head WHERE scope=?',
+                        (case.route['scopeId'],)).fetchone()==(intent['generation']['gen'],),'actual reserved target is live head')
+                with seed.ro(case.catalog) as db:
+                    meta=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+                self.require(meta=={key:intent['catalog'][key][0] for key in ('binding','roots')},'catalog remains old')
+                self.require(seed.reader._node(case.store)==intent['oldLedger']['bindingStoreIdentity'],'binding remains old')
+                self.require((case.state/'reviewed-route.json').read_bytes()==intent['oldRoute'].encode('utf8'),'reviewed route remains old')
+                mutation_evidence=dict(kind=mutation,actualReservedHead=intent['generation']['gen'],
+                    reservedState='published',catalog='old',binding='old',metadata='old-fenced')
+            elif mutation=='missing-intent-public':
+                intent_path=case.state/mover.INTENT
+                self.require(intent_path.is_file(),'actual state intent exists before fixture removal')
+                intent_path.unlink()
+                self.require(mover.read_pointer(case.project) is not None,'actual project pointer remains')
+                self.require(seed.reader.read_selection(case.journal)==selected,'actual retained selection remains')
+                mutation_evidence=dict(kind=mutation,stateIntentAbsent=True,projectPointerPreserved=True,
+                    retainedSelectionPreserved=True)
             else:raise RuntimeError('unknown test-owned prefix mutation')
             print(json.dumps(dict(case='physical-prefix-negative-input',mutation=mutation_evidence,
                                   actualRenameCheckpointProved=True)),flush=True)
@@ -209,6 +234,18 @@ class MovePrefixChecks(unittest.TestCase):
                 folderNode=seed.reader._node(folder),wikiNode=seed.reader._node(folder/'wiki'),
                 savedContainerNode=None if saved_container is None else seed.reader._node(saved_container))
         before=snapshot();journal_node=case.journal.stat()
+        if mutation=='missing-intent-public':
+            error,outcome=None,None
+            try:
+                with seed.authority():outcome=mover.move(case.project,case.state)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='missing-state-intent-public-move',actualWriterExit=child.returncode,
+                mutation=mutation_evidence,error=error,result=outcome,filesUnchanged=snapshot()==before)),flush=True)
+            self.assertEqual(snapshot(),before)
+            self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
+            self.assertIsNotNone(error,'missing intent must not bypass retained completion safety with project_dir_current')
+            self.assertIsNone(outcome)
+            return
         probe=journal_fixture.FRESH_READER if mutation is None else NEGATIVE_READER
         result=subprocess.run([sys.executable,'-B','-I','-c',probe,str(ROOT),str(payload)],
             input='release\n',capture_output=True,encoding='utf8',timeout=30)
