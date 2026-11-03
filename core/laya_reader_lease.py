@@ -11,6 +11,7 @@ import stat
 
 import laya_journal_reader as reader
 from laya_move_read_seal import MoveReadSeal, stage_move_reader
+from laya_move_reader_journal import publish_move_reader
 
 
 def _need(value, reason):
@@ -186,17 +187,19 @@ def _image(db):
           and transitions[-1] == (selected.epoch, selected.preferred_endpoint,
                                   selected.previous_endpoint, selected.transition_id)
           and referenced == set(endpoints), 'reader_selection_invalid')
-    return bundle, selected, stored, transitions, endpoints, records
+    from laya_move_reader_journal import seal_prefix
+    return bundle, selected, stored, transitions, endpoints, records, seal_prefix(db)
 
 
 def _forward_image(before, after):
     """Admit only an exact immutable prefix followed by reader-only CAS steps."""
-    old_bundle, old, old_stored, prefix, endpoints, _ = before
-    bundle, selected, _stored, transitions, current, records = after
+    old_bundle, old, old_stored, prefix, endpoints, _, old_seals = before
+    bundle, selected, _stored, transitions, current, records, new_seals = after
     _need(bundle == old_bundle and selected.epoch > old.epoch
           and transitions[:len(prefix)] == prefix
           and all(current.get(key) == value for key, value in endpoints.items()),
           'reader_store_changed')
+    _need(all(new_seals.get(key) == value for key,value in old_seals.items()), 'reader_store_changed')
     stable = ('scope', 'install_id', 'project', 'state', 'incarnation', 'project_node',
               'state_node', 'attestation_sha256', 'profile', 'checkout_policy', 'settings', 'roots')
     for key, record in records.items():
@@ -236,7 +239,7 @@ def resolve_endpoint(project, *, action, host_root):
                 try:
                     with reader._readonly(path, path.parent) as db:
                         image = _image(db)
-                        bundle_row, selected, stored, _transitions, endpoints, _records = image
+                        bundle_row, selected, stored, _transitions, endpoints, _records, _seals = image
                         _need(bundle_row['state'] in ('active', 'restored_old')
                               and bundle_row['pending'] is None
                               and bundle_row['selected']['installId'] == install_id,

@@ -20,6 +20,7 @@ import laya_journal_reader as R
 _active = ContextVar('reader_move_writer', default=None)
 _scopes = weakref.WeakSet()
 _records = weakref.WeakKeyDictionary()
+_seals = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -386,6 +387,8 @@ def _finish(original, selected, old_record, attestation, proof, raw_intent,
         record[key] = str(path)
         record[{'catalog_path':'catalog_node','binding_path':'binding_node'}.get(key, 'sidecar_node')] = R._node(path)
     record['capability'] = 'v6-retained-ro-v1'
+    record.update(move_id=move_id, pinned_generation=old_generation,
+                  exclusion_epoch=epoch, tuple_commitment=old_digest)
     endpoint = object.__new__(R.VerifiedEndpoint)
     packed = R._raw(record)
     object.__setattr__(endpoint, 'endpoint_id', R._sha(b'memvane-reader-endpoint-v1\0' + packed))
@@ -400,6 +403,22 @@ def _finish(original, selected, old_record, attestation, proof, raw_intent,
             path_aliases=tuple(aliases), prefix_digest=R._sha(R._raw([raw_intent.decode('utf8'), aliases,
                 old_digest, new_digest]))).items():
         object.__setattr__(seal, key, value)
+    scope = _owner()
+    with R._readonly(Path(old_record['db_path']), state) as db:
+        exclusions = db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
+                                (old_record['scope'],)).fetchall()
+    data = dict(move_id=move_id, endpoint_id=endpoint.endpoint_id, record=record,
+        source_record=old_record, state=str(state), project=str(project), root=str(root),
+        stage=str(stage), stage_node=stage_node, kind=scope.kind,
+        intent=raw_intent.decode('utf8'), old_generation=old_generation, new_generation=new_generation,
+        exclusion_epoch=epoch, exclusions=exclusions, body_digest=body_digest,
+        old_tuple_digest=old_digest, new_tuple_digest=new_digest, path_aliases=aliases,
+        prefix_digest=seal.prefix_digest, base_epoch=selected.epoch,
+        previous_endpoint=selected.preferred_endpoint,
+        transition_id=R._sha(b'memvane-move-reader-transition-v1\0'+move_id.encode('ascii'))[:32],
+        materials=[[str(path),R._node(path),_logical(path,stage)]
+                   for path in dict.fromkeys([*old_paths.values(),*new_parts])])
+    _seals[seal] = (original, R._raw(data))
     return seal
 
 

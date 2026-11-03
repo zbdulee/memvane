@@ -265,6 +265,9 @@ def _endpoint(state, project, root, options):
 
 def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
     """Reissue a persisted reader after current full proof, without CAS authority."""
+    if stored.get('capability') == 'v6-retained-ro-v1':
+        from laya_move_reader_journal import resolve_retained
+        return resolve_retained(state, project, root, endpoint_id, stored, attestation)
     _need(isinstance(stored, dict) and type(stored.get('creation_epoch')) is int
           and stored['creation_epoch'] >= 1, 'reader_endpoint_invalid')
     options = dict(target=stored.get('db_path'), catalog=stored.get('catalog_path'),
@@ -292,6 +295,9 @@ def _revoke_reader(endpoint):
 
 def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
+    from laya_move_reader_journal import _persisted, recheck_persisted
+    if endpoint in _persisted:
+        return recheck_persisted(endpoint)
     if endpoint in _retained:
         from laya_move_read_seal import _recheck_retained
         return _recheck_retained(endpoint)
@@ -376,8 +382,11 @@ def _stored_endpoint(db, endpoint_id):
     record = json.loads(packed)
     _need(isinstance(record, dict) and _raw(record) == packed and
           _sha(b'memvane-reader-endpoint-v1\0' + packed) == endpoint_id
-          and record.get('store_format') == 'v6' and record.get('capability') == 'v6-ro-v1'
+          and record.get('store_format') == 'v6' and record.get('capability') in ('v6-ro-v1','v6-retained-ro-v1')
           and record.get('attestation_sha256') == _sha(row[1]), 'reader_endpoint_invalid')
+    if record.get('capability') == 'v6-retained-ro-v1':
+        from laya_move_reader_journal import validate_endpoint
+        validate_endpoint(db, endpoint_id, record, row[1])
     return record
 
 
@@ -398,6 +407,8 @@ def _selection(db):
     if selected.previous_endpoint is not None:
         previous = _stored_endpoint(db, selected.previous_endpoint)
         _need(record['install_id'] == previous['install_id'], 'reader_install_changed')
+    from laya_move_reader_journal import validate_selection
+    validate_selection(db, selected, record)
     return selected, record
 
 
@@ -590,6 +601,7 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
 
     def select(db):
         current, old = _selection(db)
+        _need(old.get('capability') != 'v6-retained-ro-v1', 'reader_move_pin_active')
         record, raw, proof = _recheck(target)
         _need(all(record[k] == old[k] for k in ('scope', 'install_id', 'project', 'state',
               'incarnation', 'project_node', 'state_node', 'attestation_sha256', 'profile',

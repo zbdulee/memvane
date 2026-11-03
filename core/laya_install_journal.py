@@ -86,6 +86,12 @@ for _table, _key in (('read_endpoints', 'endpoint_id'), ('reader_transitions', '
                  if _op == 'INSERT' else '')
         _READER_DDL[_name] = (f'CREATE TRIGGER {_name} BEFORE {_op} ON {_table}{_when} '
                               "BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END")
+_MOVE_READER_DDL = {
+    'move_read_seals': 'CREATE TABLE move_read_seals(move_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL)',
+    'move_read_seals_update': "CREATE TRIGGER move_read_seals_update BEFORE UPDATE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'move_read_seals_delete': "CREATE TRIGGER move_read_seals_delete BEFORE DELETE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'move_read_seals_insert': "CREATE TRIGGER move_read_seals_insert BEFORE INSERT ON move_read_seals WHEN EXISTS(SELECT 1 FROM move_read_seals WHERE move_id=NEW.move_id) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+}
 # The withdrawn-selection state. A v3 file stores its old name; readers see
 # only ``restored_origin``.
 RESTORED = 'restored_origin'
@@ -484,7 +490,8 @@ def _schema_version_read(db):
         return None
     if version == 5:
         objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-        if objects != {'selection': _CREATE, **_READER_DDL}:
+        base = {'selection': _CREATE, **_READER_DDL}
+        if objects not in (base, {**base, **_MOVE_READER_DDL}):
             return None
     return version
 
