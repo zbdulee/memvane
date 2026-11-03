@@ -431,7 +431,12 @@ class ClaimQueue:
             return self._conditional_ack(job, token, index)
         except ReaderWindowBusy as exc:
             if str(exc) == 'reader_ack_base_changed':
-                return DEFER
+                owner = self._connection_owner
+                if (owner.transaction is None and owner.db is not None
+                        and not owner.db.in_transaction):
+                    return DEFER
+                # A normal verdict must not hide a failed rollback and its
+                # retained SQL/locks. The creator must observe and drain it.
             raise
 
     def _require_ack_base(self, index):
