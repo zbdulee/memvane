@@ -58,6 +58,8 @@ def validate_normal_writer(writer):
     validate_sync_owner(context.queue_owner, context.plan.queue_path)
     P.validate_writer_plan(context.plan)
     context.lifetime.check()
+    validate_sync_owner(context.queue_owner, context.plan.queue_path)
+    R._need(time.monotonic() < context.deadline, 'normal_writer_deadline')
 
 
 def _approved(proof, snapshot):
