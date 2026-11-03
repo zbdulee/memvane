@@ -435,8 +435,25 @@ def borrow_sync_owner(queue_path: Path, claim=None):
             yield owned
     else:
         validate_sync_owner(claim, queue_path)
-        yield True
-        validate_sync_owner(claim, queue_path)
+        pin = claim.pin()
+        try:
+            yield True
+            validate_sync_owner(claim, queue_path)
+        finally:
+            # Revocation stops new writes, but cannot expose an in-flight
+            # claim's retry cleanup to another owner before this call unwinds.
+            pin.close()
+
+
+def _sync_callback(callback, claim, queue_path):
+    def checked(*args, **kwargs):
+        if claim is not None:
+            validate_sync_owner(claim, queue_path)
+        result = callback(*args, **kwargs)
+        if claim is not None:
+            validate_sync_owner(claim, queue_path)
+        return result
+    return checked
 
 
 def _head(runtime: LayaIndexRuntime):
@@ -487,6 +504,7 @@ def sync_full(runtime: LayaIndexRuntime, *, before_publish,
         raise TypeError('invalid_vector_requirement')
     if require_vector and vector_batch is None:
         return _result('deferred', reason='vector_provider_unavailable')
+    before_publish = _sync_callback(before_publish, owner, runtime.queue.path)
     with borrow_sync_owner(runtime.queue.path, claim=owner) as owned:
         if not owned:
             return _result('deferred', reason='owner_busy')
@@ -641,6 +659,9 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
     from laya_source_catalog import PENDING_PHASES
     index, queue = runtime.index, runtime.queue
     catalog, store = runtime.catalog, runtime.binding_store
+    before_publish = _sync_callback(before_publish, owner, queue.path)
+    if before_head_publish is not None:
+        before_head_publish = _sync_callback(before_head_publish, owner, queue.path)
     with borrow_sync_owner(queue.path, claim=owner) as owned:
         if not owned:
             return _result('deferred', reason='owner_busy')
