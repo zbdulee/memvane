@@ -104,9 +104,19 @@ def _stage_directory(state, move_id):
     return stage
 
 
+def _pending_node(path, stage):
+    node = R._file(path, stage)
+    info = path.lstat()
+    R._need([info.st_dev, info.st_ino] == node and stat.S_IMODE(info.st_mode) == 0o600,
+            'reader_move_copy_changed')
+    return node
+
+
 def _copy(source, state, stage, name, *, meta_variants=None):
     destination = stage / name
     pending = stage / ('.' + name + '.copying')
+    R._need(not any(os.path.lexists(str(destination) + suffix)
+                    for suffix in ('-journal', '-wal', '-shm')), 'reader_move_copy_changed')
     if os.path.lexists(destination):
         R._need(not any(os.path.lexists(str(pending) + suffix)
                        for suffix in ('', '-journal', '-wal', '-shm')), 'reader_move_copy_changed')
@@ -121,10 +131,10 @@ def _copy(source, state, stage, name, *, meta_variants=None):
         return destination
     # Only this reserved, unpublished copy name is recoverable scratch. Check
     # every inode before removing any leftover; completed tuple names stay put.
-    leftovers = [(path, R._file(path, stage)) for suffix in ('-journal', '-wal', '-shm', '')
+    leftovers = [(path, _pending_node(path, stage)) for suffix in ('-journal', '-wal', '-shm', '')
                  for path in (Path(str(pending) + suffix),) if os.path.lexists(path)]
     for path, node in leftovers:
-        R._need(R._file(path, stage) == node, 'reader_move_copy_changed')
+        R._need(_pending_node(path, stage) == node, 'reader_move_copy_changed')
         path.unlink()
     if leftovers:
         R._sync(stage, True)
@@ -142,6 +152,8 @@ def _copy(source, state, stage, name, *, meta_variants=None):
     R._need(_logical(source, state) == _logical(pending, stage)
             and R._file(pending, stage) == pending_node
             and not os.path.lexists(destination)
+            and not any(os.path.lexists(str(destination) + suffix)
+                        for suffix in ('-journal', '-wal', '-shm'))
             and not any(os.path.lexists(str(pending) + suffix)
                         for suffix in ('-journal', '-wal', '-shm')), 'reader_move_copy_changed')
     os.replace(pending, destination)
