@@ -23,6 +23,7 @@ import fcntl
 import os
 from pathlib import Path
 import stat
+import threading
 import uuid
 
 from laya_index_a import IndexContractError
@@ -180,9 +181,110 @@ def _file_identity(path: Path):
     return info.st_dev, info.st_ino
 
 
+_sync_leases = {}
+# Explicit close ownership: losing a Python reference must not release an
+# exclusion still needed by an outstanding native DB handle.
+_sync_pins = {}
+
+
+class SyncLease:
+    """An issued, lexical, same-thread sync owner; not a mover permission."""
+    __slots__ = ()
+
+    def __new__(cls):
+        raise IndexContractError('sync_owner_not_issued')
+
+    def __reduce__(self):
+        raise TypeError('sync_owner_not_serializable')
+
+    def pin(self):
+        record = _lease_record(self)
+        _check_sync_lease(record)
+        fd = os.dup(record['fd'])
+        try:
+            _check_sync_lease(record)
+            pin = object.__new__(_SyncPin)
+            _sync_pins[pin] = (fd, record['pid'], record['thread'])
+            return pin
+        except BaseException:
+            os.close(fd)
+            raise
+
+
+class _SyncPin:
+    """Retain kernel exclusion until explicit close, without owner authority."""
+    __slots__ = ()
+
+    def __new__(cls):
+        raise IndexContractError('sync_pin_not_issued')
+
+    def __reduce__(self):
+        raise TypeError('sync_pin_not_serializable')
+
+    def close(self):
+        record = _sync_pins.get(self)
+        if record is None:
+            return
+        fd, pid, thread = record
+        if pid != os.getpid() or thread is not threading.current_thread():
+            raise IndexContractError('sync_owner_not_issued')
+        os.close(fd)
+        del _sync_pins[self]
+
+
+def _lease_record(claim):
+    if type(claim) is not SyncLease or claim not in _sync_leases:
+        raise IndexContractError('sync_owner_not_issued')
+    record = _sync_leases[claim]
+    if record['pid'] != os.getpid() or record['thread'] is not threading.current_thread():
+        raise IndexContractError('sync_owner_not_issued')
+    return record
+
+
+def _check_sync_lease(record, queue_path=None):
+    try:
+        current = (record['queue'] if record['recheck'] is None
+                   else Path(record['recheck']()))
+        if (not current.is_absolute() or current.is_symlink()
+                or (queue_path is not None and Path(queue_path) != current)):
+            raise IndexContractError('sync_owner_lock_unavailable')
+        opened = os.fstat(record['fd'])
+        lock_path = Path(str(current) + '.sync.lock')
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+                or opened.st_nlink != 1 or stat.S_IMODE(opened.st_mode) != 0o600
+                or (opened.st_dev, opened.st_ino) != record['lock_node']
+                or _file_identity(lock_path) != record['lock_node']
+                or stat.S_IMODE(lock_path.lstat().st_mode) != 0o600
+                or _file_identity(current) != record['queue_node']):
+            raise IndexContractError('sync_owner_lock_unavailable')
+        # A separate open description must contend, never reacquire a missing
+        # lock on the issuing FD. Arbitrary same-UID FD tampering is outside
+        # this cooperative issued-API contract.
+        probe = os.open(lock_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                        | getattr(os, 'O_CLOEXEC', 0) | os.O_NONBLOCK)
+        try:
+            if (os.fstat(probe).st_dev, os.fstat(probe).st_ino) != record['lock_node']:
+                raise IndexContractError('sync_owner_lock_unavailable')
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise IndexContractError('sync_owner_lock_unavailable')
+        finally:
+            os.close(probe)
+    except OSError as exc:
+        raise IndexContractError('sync_owner_lock_unavailable') from exc
+
+
+def validate_sync_owner(claim, queue_path):
+    """Validate only an active issued lease, without promoting bools or pins."""
+    _check_sync_lease(_lease_record(claim), queue_path)
+
+
 @contextmanager
-def _owner_lock(queue_path: Path, *, recheck_queue=None):
-    """A held kernel lock proves a previous participating lease owner ended.
+def sync_owner(queue_path: Path, *, recheck_queue=None):
+    """Hold queue exclusion and issue a lexical, same-thread owner or None.
 
     All selected sync writers use this exact queue-adjacent file from before
     taking a claim lease until after receipt/ACK or retry release. The file is
@@ -190,6 +292,7 @@ def _owner_lock(queue_path: Path, *, recheck_queue=None):
     A directory mover may supply its checked new queue name; both nodes must
     still match the originally acquired queue and open kernel lock.
     """
+    queue_path = Path(queue_path)
     if not queue_path.is_absolute() or queue_path.is_symlink():
         raise IndexContractError('sync_owner_lock_unavailable')
     queue_identity = _file_identity(queue_path)
@@ -208,19 +311,42 @@ def _owner_lock(queue_path: Path, *, recheck_queue=None):
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            yield False
+            yield None
             return
-        current_queue = queue_path if recheck_queue is None else Path(recheck_queue())
-        if (_file_identity(Path(str(current_queue) + '.sync.lock')) != (opened.st_dev, opened.st_ino)
-                or _file_identity(current_queue) != queue_identity):
-            raise IndexContractError('sync_owner_lock_unavailable')
-        yield True
-        current_queue = queue_path if recheck_queue is None else Path(recheck_queue())
-        if (_file_identity(Path(str(current_queue) + '.sync.lock')) != (opened.st_dev, opened.st_ino)
-                or _file_identity(current_queue) != queue_identity):
-            raise IndexContractError('sync_owner_lock_unavailable')
+        record = dict(fd=fd, pid=os.getpid(), thread=threading.current_thread(),
+                      queue=queue_path, queue_node=queue_identity,
+                      lock_node=(opened.st_dev, opened.st_ino), recheck=recheck_queue)
+        _check_sync_lease(record)
+        claim = object.__new__(SyncLease)
+        _sync_leases[claim] = record
+        try:
+            yield claim
+            _check_sync_lease(record)
+        finally:
+            del _sync_leases[claim]
     finally:
+        # Do not LOCK_UN: explicit pins share this open description and keep
+        # exclusion after lexical authority is revoked.
         os.close(fd)
+
+
+@contextmanager
+def _owner_lock(queue_path: Path, *, recheck_queue=None):
+    """Legacy exact-bool adapter; no implicit reentry into a held owner."""
+    with sync_owner(queue_path, recheck_queue=recheck_queue) as claim:
+        yield claim is not None
+
+
+@contextmanager
+def borrow_sync_owner(queue_path: Path, claim=None):
+    """Reuse only an explicitly supplied live owner; otherwise acquire normally."""
+    if claim is None:
+        with _owner_lock(queue_path) as owned:
+            yield owned
+    else:
+        validate_sync_owner(claim, queue_path)
+        yield True
+        validate_sync_owner(claim, queue_path)
 
 
 def _head(runtime: LayaIndexRuntime):
