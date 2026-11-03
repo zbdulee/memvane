@@ -327,6 +327,22 @@ def _selected(project):
         raise IndexContractError('selected_project_unavailable')
     import laya_install_journal as journal
     from laya_worker_journal import worker_journal_access
+    # Clean legacy installs need no new ledger, lock or recovery permission.
+    # A hot image falls through to the narrowly owned recovery admission.
+    with journal.read_only_journals():
+        decision = select_route(str(project), action='update')
+        if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project):
+            try:
+                if journal.journal_version(decision['journalPath']) != 5:
+                    with journal.legacy_identity_reads():
+                        proof = verify_selected_route(decision)
+                    if (proof.get('productRouteAllowed') is not True
+                            or not isinstance(proof.get('providerManifest'), dict)):
+                        raise IndexContractError('selected_provider_unavailable')
+                    return decision, proof
+            except journal.JournalEvidenceError as exc:
+                if str(exc) not in ('journal_unavailable', 'writer_plan_v5_required'):
+                    raise
     # Classification/version reads must not recover a legacy hot image. The
     # legacy proof also checks its actual transaction's version, closing the
     # v4-observed/v5-published interval before any raw content connection.
