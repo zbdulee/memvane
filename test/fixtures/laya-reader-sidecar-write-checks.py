@@ -173,4 +173,15 @@ class SidecarWriteChecks(unittest.TestCase):
             self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual((first,second),(expected[0],expected[1]))
             self.assertTrue(before==self.rows())
 
+    def test_exhausted_retained_source_cursor_allows_valid_publication(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            cursor=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash')
+            self.assertTrue(cursor.fetchall());error=None;result=None
+            try:
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+            finally:cursor.close()
+            print(json.dumps(dict(case='sidecar-exhausted-source-cursor',error=error,result=result)),flush=True)
+            self.assertIsNone(error);self.assertEqual(result['status'],'published')
+
 if __name__=='__main__':unittest.main(verbosity=2)
