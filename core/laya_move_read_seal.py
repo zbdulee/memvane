@@ -225,8 +225,9 @@ def stage_move_reader(intent, *, installer):
         aliases.append((old_path, new_path, dev, ino, new_dev, new_ino))
     identity = build.read(state)['identity']
     side = Path(old_record['sidecar_path'])
-    R._need(side.is_file(), 'reader_move_sidecar_missing')
-    _sidecar(side, state, identity, Path(old_record['db_path']), state, decision)
+    has_side = os.path.lexists(side)
+    if has_side:
+        _sidecar(side, state, identity, Path(old_record['db_path']), state, decision)
     move_id = R._sha(raw_intent)
     stage = state / ('.reader-move-' + move_id)
     os.mkdir(stage, 0o700)
@@ -235,6 +236,8 @@ def stage_move_reader(intent, *, installer):
     old_paths = {}
     for key, filename in (('catalog_path', 'old-catalog.sqlite'), ('binding_path', 'old-binding.sqlite'),
                           ('sidecar_path', 'old-sidecar.sqlite')):
+        if key == 'sidecar_path' and not has_side:
+            continue
         old_paths[key] = _copy(Path(old_record[key]), state, stage, filename)
     new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
     with closing(sqlite3.connect(new_catalog.as_uri() + '?mode=rw', uri=True)) as db:
@@ -256,32 +259,40 @@ def stage_move_reader(intent, *, installer):
                     (binding.catalog_scan_id,)).fetchone() == ('complete', binding.catalog_raw_digest),
                 'reader_move_catalog_changed')
         _catalog_scan(db, binding)
-    new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
-    _sidecar(new_side, stage, {**identity, 'collections':new_decision['collections']},
-             Path(old_record['db_path']), state, new_decision)
-    new_parts = [new_catalog, new_binding, new_side]
+    new_parts = [new_catalog, new_binding]
+    if has_side:
+        new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
+        _sidecar(new_side, stage, {**identity, 'collections':new_decision['collections']},
+                 Path(old_record['db_path']), state, new_decision)
+        new_parts.append(new_side)
     return _finish(original, selected, old_record, attestation, proof, raw_intent,
                    stage, stage_node, old_paths, new_parts, body_digest,
-                   old_generation, new_generation, epoch, aliases)
+                   old_generation, new_generation, epoch, aliases,
+                   absent_sidecar=None if has_side else side)
 
 
 def _finish(original, selected, old_record, attestation, proof, raw_intent,
             stage, stage_node, old_paths, new_parts, body_digest,
-            old_generation, new_generation, epoch, aliases):
+            old_generation, new_generation, epoch, aliases, *, absent_sidecar=None):
     state, project, root = R._issued[original][:3]
     move_id = R._sha(raw_intent)
     for path in new_parts: R._sync(path)
     R._sync(stage, True)
     _owner(); R._recheck(original)
     R._need(R.read_selection(state / R._JOURNAL) == selected, 'reader_selection_changed')
+    R._need(absent_sidecar is None or not os.path.lexists(absent_sidecar), 'reader_move_sidecar_changed')
     R._need(R._node(stage) == stage_node and stage.resolve(strict=True) == stage
             and stage.stat().st_uid == os.getuid() and stage.stat().st_mode & 0o077 == 0,
             'reader_move_stage_changed')
     old_digest = R._sha(R._raw([body_digest, old_generation, epoch,
-        [(key, _logical(path, stage)) for key, path in old_paths.items()]]))
+        [(key, _logical(path, stage)) for key, path in old_paths.items()]
+        + ([('sidecar_path', None)] if absent_sidecar is not None else [])]))
     new_digest = R._sha(R._raw([body_digest, new_generation, epoch, aliases,
-        [_logical(path, stage) for path in new_parts]]))
+        [_logical(path, stage) for path in new_parts]
+        + ([None] if absent_sidecar is not None else [])]))
     record = dict(old_record)
+    if absent_sidecar is not None:
+        record.update(sidecar_path=None, sidecar_node=None, sidecar_absent=True)
     for key, path in old_paths.items():
         record[key] = str(path)
         record[{'catalog_path':'catalog_node','binding_path':'binding_node'}.get(key, 'sidecar_node')] = R._node(path)
@@ -301,6 +312,15 @@ def _finish(original, selected, old_record, attestation, proof, raw_intent,
                 old_digest, new_digest]))).items():
         object.__setattr__(seal, key, value)
     return seal
+
+
+def _state_pointer(intent, project, home):
+    import laya_state_move as mover
+    expected = dict(schema=mover.POINTER_SCHEMA, projectRoot=str(project),
+        installId=intent['installId'], fromRoot=intent['fromRoot'], toRoot=intent['toRoot'],
+        oldRouteSha256=R._sha(intent['oldRoute'].encode('utf8')),
+        newRouteSha256=R._sha(intent['newRoute'].encode('utf8')))
+    R._need(mover.read_pointer(project, home) == expected, 'reader_move_pointer_changed')
 
 
 def _stage_state(intent, installer, scope):
@@ -324,6 +344,7 @@ def _stage_state(intent, installer, scope):
             'reader_move_intent_changed')
     home = state.parents[3]
     mover._ordered_intent(intent, home)
+    _state_pointer(intent, project, home)
     target = mover.target_root(state, home)
     R._need(mover.legacy_root(state, home) and intent['fromRoot'] == str(state)
             and not os.path.lexists(target), 'reader_move_alias_changed')
@@ -352,6 +373,8 @@ def _stage_state(intent, installer, scope):
     fresh.validate_row(new_ledger, target / fresh.LEDGER)
     old_pointer = dict(schema=build.POINTER_SCHEMA, projectRoot=str(project),
                        stateRoot=str(state), installId=proof['installId'])
+    side = Path(old_record['sidecar_path'])
+    has_side = os.path.lexists(side)
     expected = dict(schema=mover.SCHEMA, projectRoot=str(project), installId=proof['installId'],
         fromRoot=str(state), toRoot=str(target), oldRoute=R._raw(decision).decode('utf8'),
         newRoute=R._raw(new_route).decode('utf8'), oldAttestation=old_att, newAttestation=new_att,
@@ -359,7 +382,7 @@ def _stage_state(intent, installer, scope):
         oldMarker=R._raw(fresh._marker(old_ledger)).decode('utf8'),
         newMarker=R._raw(fresh._marker(new_ledger)).decode('utf8'),
         oldPointer=old_pointer, newPointer={**old_pointer, 'stateRoot':str(target)},
-        docs=[old_record['db_path'], new_identity['candidateDb']],
+        docs=[old_record['db_path'], new_identity['candidateDb']] if has_side else None,
         counts=inactive._store_counts(old_identity))
     R._need(intent == expected and new_decision == new_route
             and _read_private(state / 'reviewed-route.json', 8192) == intent['oldRoute'].encode('utf8')
@@ -371,9 +394,8 @@ def _stage_state(intent, installer, scope):
     bound = _binding(Path(old_record['binding_path']), state, roots, decision, generation)
     with R._readonly(Path(old_record['catalog_path']), state) as db:
         _catalog_scan(db, bound)
-    side = Path(old_record['sidecar_path'])
-    R._need(side.is_file(), 'reader_move_sidecar_missing')
-    _sidecar(side, state, old_identity, Path(old_record['db_path']), state, decision)
+    if has_side:
+        _sidecar(side, state, old_identity, Path(old_record['db_path']), state, decision)
     # The target node is the expected successor of this same-volume rename,
     # not a claim that the absent destination has already been stat'ed.
     node = R._node(state)
@@ -384,24 +406,30 @@ def _stage_state(intent, installer, scope):
     R._sync(state, True)
     old_paths = {key:_copy(Path(old_record[key]), state, stage, 'old-' + name)
                  for key, name in (('catalog_path','catalog.sqlite'),
-                                   ('binding_path','binding.sqlite'), ('sidecar_path','sidecar.sqlite'))}
+                                   ('binding_path','binding.sqlite'), ('sidecar_path','sidecar.sqlite'))
+                 if key != 'sidecar_path' or has_side}
     new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
     new_binding = _copy(Path(old_record['binding_path']), state, stage, 'new-binding.sqlite')
     _binding(new_binding, stage, roots, decision, generation)
     with R._readonly(new_catalog, stage) as db:
         _catalog_scan(db, bound)
-    new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
-    with closing(sqlite3.connect(new_side.as_uri() + '?mode=rw', uri=True)) as db:
-        R._need(db.execute('SELECT candidate_db FROM meta').fetchall()
-                == [(old_record['db_path'],)], 'reader_move_sidecar_changed')
-        db.execute('UPDATE meta SET candidate_db=?', (new_identity['candidateDb'],))
-        db.commit()
-    _sidecar(new_side, stage, new_identity, Path(old_record['db_path']), state, new_decision)
+    new_parts = [new_catalog, new_binding]
+    if has_side:
+        new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
+        with closing(sqlite3.connect(new_side.as_uri() + '?mode=rw', uri=True)) as db:
+            R._need(db.execute('SELECT candidate_db FROM meta').fetchall()
+                    == [(old_record['db_path'],)], 'reader_move_sidecar_changed')
+            db.execute('UPDATE meta SET candidate_db=?', (new_identity['candidateDb'],))
+            db.commit()
+        _sidecar(new_side, stage, new_identity, Path(old_record['db_path']), state, new_decision)
+        new_parts.append(new_side)
     R._need(not os.path.lexists(target) and target.parent.resolve(strict=True) == target.parent
             and R._node(target.parent) == target_parent, 'reader_move_alias_changed')
+    _state_pointer(intent, project, home)
     return _finish(original, selected, old_record, attestation, proof, raw_intent,
-                   stage, stage_node, old_paths, [new_catalog, new_binding, new_side],
-                   body_digest, generation, generation, epoch, aliases)
+                   stage, stage_node, old_paths, new_parts,
+                   body_digest, generation, generation, epoch, aliases,
+                   absent_sidecar=None if has_side else side)
 
 
 def _recheck_retained(endpoint):
