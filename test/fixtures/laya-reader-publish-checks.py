@@ -184,4 +184,46 @@ class PublishChecks(unittest.TestCase):
             self.assertTrue(self.fixture.probe('base-mutation.lock'));self.assertTrue(self.fixture.probe('publish-cut.lock'))
             self.assertEqual(self.publish(writer,p),'published')
 
+    def test_replay_from_renamed_open_database_cannot_ack_unpublished_replacement(self):
+        from laya_index_a import LayaIndexA
+        def files(path):
+            values={}
+            for suffix in ('','-wal','-shm','-journal'):
+                file=Path(str(path)+suffix)
+                if not os.path.lexists(file):values[suffix]=None
+                else:
+                    info=file.lstat()
+                    values[suffix]=(file.read_bytes(),info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_nlink)
+            return values
+        with self.candidate() as (writer,p):
+            alternate=self.case.home/'unpublished-replacement.sqlite'
+            fd=os.open(alternate,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
+            destination=sqlite3.connect(alternate.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+            try:writer.db.backup(destination)
+            finally:destination.close()
+            other=LayaIndexA(alternate);moved_original=[];moved_replacement=[]
+            try:
+                prepared=self.state(other,p)
+                self.assertEqual(prepared['candidate'][1],'prepared');self.assertIsNone(prepared['receipt'])
+                self.assertEqual(self.publish(writer,p),'published')
+                for suffix in ('','-wal','-shm'):
+                    source=Path(str(self.case.db)+suffix);saved=self.case.home/('published-original.sqlite'+suffix)
+                    source.rename(saved);moved_original.append((saved,source))
+                for suffix in ('','-wal','-shm'):
+                    source=Path(str(alternate)+suffix);target=Path(str(self.case.db)+suffix)
+                    source.rename(target);moved_replacement.append((target,source))
+                before=files(self.case.db);result=None;error=None
+                try:result=self.publish(writer,p)
+                except self.W.ReaderWindowBusy as exc:error=str(exc)
+                after=files(self.case.db)
+                emit('replay-current-database-binding',result=result,error=error,
+                    replacementPrepared=prepared['candidate'][1],replacementReceipt=prepared['receipt'],
+                    replacementHead=prepared['head'],replacementFilesUnchanged=before==after)
+                self.assertEqual(error,'reader_publish_changed');self.assertIsNone(result)
+                self.assertTrue(before==after)
+            finally:
+                for source,target in reversed(moved_replacement):source.rename(target)
+                for source,target in reversed(moved_original):source.rename(target)
+                other.close()
+
 if __name__=='__main__':unittest.main(verbosity=2)
