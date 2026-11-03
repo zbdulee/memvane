@@ -179,9 +179,15 @@ class MoveSealChecks(unittest.TestCase):
     def test_actual_catalog_sidecar_body_profile_and_symlink_tamper_are_refused(self):
         stage,_seal_type=self.producer()
         with self.prepared() as intent:
+            before=self.live()
+            with closing(sqlite3.connect(self.case.store)) as db:
+                with self.assertRaisesRegex(sqlite3.IntegrityError,'binding_store_sealed'):
+                    db.execute("UPDATE meta SET value=? WHERE key='scope'",('f'*32,))
+                db.rollback()
+            self.assertEqual(self.live(),before)
+            print(json.dumps(dict(case='binding-metadata-mutation',result='blocked-by-actual-schema-trigger',
+                producerRefusalNotClaimedForUnchangedInput=True)),flush=True)
             mutations=((self.case.catalog,"UPDATE meta SET value=? WHERE key='scope'",'f'*32,
-                        "SELECT value FROM meta WHERE key='scope'"),
-                       (self.case.store,"UPDATE meta SET value=? WHERE key='scope'",'f'*32,
                         "SELECT value FROM meta WHERE key='scope'"),
                        (self.sidecar,'UPDATE meta SET profile_id=?','f'*64,'SELECT profile_id FROM meta'),
                        (self.sidecar,'UPDATE docs SET body=? WHERE path=(SELECT min(path) FROM docs)',

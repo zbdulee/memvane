@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 
 import laya_journal_reader as reader
+from laya_move_read_seal import MoveReadSeal, stage_move_reader
 
 
 def _need(value, reason):

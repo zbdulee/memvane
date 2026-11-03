@@ -21,6 +21,7 @@ _JOURNAL = 'install-journal.sqlite'
 _MAX_IMAGE = 16 * 1024 * 1024
 _issued = weakref.WeakKeyDictionary()
 _read_only = weakref.WeakSet()
+_retained = weakref.WeakSet()
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -286,10 +287,14 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
 def _revoke_reader(endpoint):
     _issued.pop(endpoint, None)
     _read_only.discard(endpoint)
+    _retained.discard(endpoint)
 
 
 def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
+    if endpoint in _retained:
+        from laya_move_read_seal import _recheck_retained
+        return _recheck_retained(endpoint)
     state, project, root, options, packed, raw = _issued[endpoint]
     record, attestation, proof = _evidence(state, project, root, **options)
     creation_epoch = json.loads(packed)['creation_epoch']

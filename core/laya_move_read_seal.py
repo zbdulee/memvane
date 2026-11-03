@@ -1,0 +1,275 @@
+"""Writer-owned preparation of retained project-move tuples, without publication.
+
+Scopes are cooperative issued API state, not a same-UID introspection boundary.
+No lifetime EX is acquired here; physical publication is a separate operation.
+"""
+from contextlib import closing
+from contextvars import ContextVar
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+from types import SimpleNamespace
+import weakref
+
+import laya_journal_reader as R
+
+_active = ContextVar('reader_move_writer', default=None)
+_scopes = weakref.WeakSet()
+_records = weakref.WeakKeyDictionary()
+
+
+@dataclass(frozen=True, eq=False, init=False)
+class MoveReadSeal:
+    move_id: str
+    retained_endpoint: R.VerifiedEndpoint
+    old_generation: str
+    exclusion_epoch: int
+    old_tuple_digest: str
+    new_tuple_digest: str
+    path_aliases: tuple
+    prefix_digest: str
+
+    def __init__(self):
+        raise ValueError('reader_move_seal_not_issued')
+
+
+class _Scope:
+    pass
+
+
+def _register_writer(stack, project, state, *, kind, recheck=None):
+    """Called only after the owning mover successfully acquired every lock."""
+    scope = _Scope()
+    scope.project, scope.state = Path(project), R._state(state)
+    scope.project_node, scope.state_node = R._node(scope.project), R._node(scope.state)
+    scope.pid, scope.kind, scope.recheck = os.getpid(), kind, recheck
+    _scopes.add(scope)
+    previous = _active.set(scope)
+    def revoke():
+        _scopes.discard(scope)
+        _active.reset(previous)
+    # Registered last: unissue before the same ExitStack releases its locks.
+    stack.callback(revoke)
+
+
+def _owner():
+    scope = _active.get()
+    R._need(scope is not None and scope in _scopes and scope.pid == os.getpid(),
+            'reader_move_owner_required')
+    R._need(R._node(scope.project) == scope.project_node and
+            R._node(scope.state) == scope.state_node, 'reader_move_owner_changed')
+    if scope.recheck is not None:
+        scope.recheck()
+    return scope
+
+
+def _logical(path, parent):
+    digest = hashlib.sha256()
+    with R._readonly(path, parent) as db:
+        R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
+                'reader_move_store_corrupt')
+        for line in db.iterdump():
+            data = line.encode('utf8')
+            digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
+    return digest.hexdigest()
+
+
+def _copy(source, state, stage, name):
+    destination = stage / name
+    fd = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
+    with R._readonly(source, state) as src, closing(sqlite3.connect(
+            destination.as_uri() + '?mode=rw', uri=True, isolation_level=None)) as dst:
+        src.backup(dst)
+    R._sync(destination)
+    R._need(_logical(source, state) == _logical(destination, stage), 'reader_move_copy_changed')
+    return destination
+
+
+def _generation(db_path, state, old, new, decision):
+    from laya_index_vector import verify_generation_seal
+    with R._readonly(db_path, state) as db:
+        def members(gen):
+            return db.execute('SELECT m.path,m.hash,m.eligible,c.body FROM membership m '
+                'JOIN content c ON c.hash=m.hash WHERE m.gen=? ORDER BY m.path', (gen,)).fetchall()
+        a, b = members(old), members(new)
+        R._need(a == b and a, 'reader_move_body_changed')
+        seals = [verify_generation_seal(SimpleNamespace(db=db), gen) for gen in (old, new)]
+        profile = decision['vectorProfile']
+        for seal in seals:
+            R._need(seal['profile_id'] == profile['profileId']
+                    and seal['model_id'] == profile['modelId']
+                    and seal['embedding_fingerprint'] == profile['embeddingFingerprint']
+                    and seal['dimension'] == profile['dimension'], 'reader_move_profile_changed')
+        exclusions = tuple(db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
+                                      (decision['scopeId'],)))
+        epochs = [db.execute('SELECT rev_epoch FROM generations WHERE gen=?', (gen,)).fetchone()
+                  for gen in (old, new)]
+        R._need(epochs == [(len(exclusions),)] * 2, 'reader_move_exclusions_changed')
+        return R._sha(R._raw(a)), len(exclusions)
+
+
+def _sidecar(path, parent, identity, db_path, state, decision):
+    import laya_incremental_docs as docs
+    from laya_index_vector import _read_chunk_set, qmd_markdown_title
+    with R._readonly(path, parent) as side, R._readonly(db_path, state) as index:
+        R._need(side.execute('PRAGMA user_version').fetchone() == (1,) and
+                side.execute('SELECT * FROM meta').fetchall() == [docs._expected_meta(identity)],
+                'reader_move_sidecar_changed')
+        rows = side.execute('SELECT rowid,path,hash,title,body,profile_id,chunk_count FROM docs ORDER BY path').fetchall()
+        fts = side.execute('SELECT rowid,path,title,body FROM docs_fts ORDER BY path').fetchall()
+        R._need(fts == [(row[0], row[1], row[3], row[4]) for row in rows], 'reader_move_sidecar_changed')
+        for _rowid, path_, hash_, title, body, profile, count in rows:
+            R._need(type(body) is str and R._sha(body.encode('utf8')) == hash_
+                    and profile == identity['vectorProfileId'] and type(count) is int and count > 0
+                    and qmd_markdown_title(body, path_) == title
+                    and docs._verified(identity, path_, body), 'reader_move_sidecar_changed')
+            cached = _read_chunk_set(index, hash_, title, profile, decision['vectorProfile']['dimension'])
+            R._need(cached is not None and len(cached) == count, 'reader_move_sidecar_changed')
+    return _logical(path, parent)
+
+
+def _binding(path, parent, roots, decision, generation):
+    import laya_index_capacity as capacity
+    import laya_source_catalog as source
+    roots = source._check_roots(roots)
+    with R._readonly(path, parent) as db:
+        store = object.__new__(capacity.GenerationBindingStore)
+        store.path, store.db = path, db
+        store.scope, store.db_incarnation, store.roots = decision['scopeId'], decision['dbIncarnation'], roots
+        store._roots_value = capacity._canonical(list(roots.items())).decode('ascii')
+        store._node, store.store_id = tuple(R._node(path)), None
+        store._check_file_header(); store._check_store()
+        row = db.execute(capacity._LOOKUP_SQL, (store.scope, generation, store.db_incarnation)).fetchone()
+        R._need(row is not None, 'reader_move_binding_missing')
+        return store._decode(generation, row)
+
+
+def stage_move_reader(intent, *, installer):
+    """Prepare a project tuple only; state tuples and publication fail closed."""
+    scope = _owner()
+    R._need(scope.kind == 'project', 'reader_move_stage_unsupported')
+    from laya_product_install import _read_private
+    import laya_project_dir_move as mover
+    import laya_initial_build as build
+    import laya_incremental_docs as docs
+    import laya_source_catalog as source
+    from laya_index_host_route import wiki_index_roots
+    original = R._installer(installer)
+    old_record, attestation, proof = R._recheck(original)
+    state, project, root = R._issued[original][:3]
+    R._need((state, project) == (scope.state, scope.project), 'reader_install_changed')
+    raw_intent = _read_private(state / mover.INTENT, mover.LIMIT)
+    R._need(type(intent) is dict and R._raw(intent) == raw_intent and
+            mover._canonical(mover._load_intent(state, project)) == raw_intent,
+            'reader_move_intent_changed')
+    R._need(intent['installId'] == proof['installId'] and intent['mode'] in ('rename', 'adopt')
+            and intent['oldRoute'].encode('utf8') == _read_private(state / 'reviewed-route.json', 8192),
+            'reader_move_intent_changed')
+    decision, _ = R.journal._route(intent['oldRoute'].encode('utf8'), state / R._JOURNAL)
+    new_decision, _ = R.journal._route(intent['newRoute'].encode('utf8'), state / R._JOURNAL)
+    R._need(new_decision == R.journal.rebound_project_dir_route(decision, project),
+            'reader_move_alias_changed')
+    old_generation, new_generation = intent['generation']['base'], intent['generation']['gen']
+    published = R._published(state, Path(old_record['db_path']), decision)
+    R._need(published[0] == old_generation, 'reader_move_generation_changed')
+    body_digest, epoch = _generation(Path(old_record['db_path']), state, old_generation, new_generation, decision)
+    old_roots, new_roots = wiki_index_roots(decision['collections']), wiki_index_roots(new_decision['collections'])
+    binding = _binding(Path(intent['store']['temp']), state, new_roots, decision, new_generation)
+    R._need(R._raw(binding.as_record()) == R._raw(intent['generation']['binding'])
+            and list(R._node(Path(intent['store']['temp']))) == intent['store']['identity'],
+            'reader_move_binding_changed')
+    aliases = []
+    for (name, old_path, dev, ino), (new_name, new_path, new_dev, new_ino) in zip(
+            _binding(Path(old_record['binding_path']), state, old_roots, decision, old_generation).roots,
+            binding.roots):
+        R._need(name == new_name and old_roots[name] == old_path and new_roots[name] == new_path,
+                'reader_move_alias_changed')
+        materialized = Path(old_path if intent['mode'] == 'rename' else new_path)
+        R._need(materialized.resolve(strict=True) == materialized
+                and R._node(materialized) == [new_dev, new_ino], 'reader_move_alias_changed')
+        aliases.append((old_path, new_path, dev, ino, new_dev, new_ino))
+    identity = build.read(state)['identity']
+    side = Path(old_record['sidecar_path'])
+    R._need(side.is_file(), 'reader_move_sidecar_missing')
+    _sidecar(side, state, identity, Path(old_record['db_path']), state, decision)
+    move_id = R._sha(raw_intent)
+    stage = state / ('.reader-move-' + move_id)
+    os.mkdir(stage, 0o700)
+    stage_node = R._node(stage)
+    R._sync(state, True)
+    old_paths = {}
+    for key, filename in (('catalog_path', 'old-catalog.sqlite'), ('binding_path', 'old-binding.sqlite'),
+                          ('sidecar_path', 'old-sidecar.sqlite')):
+        old_paths[key] = _copy(Path(old_record[key]), state, stage, filename)
+    new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
+    with closing(sqlite3.connect(new_catalog.as_uri() + '?mode=rw', uri=True)) as db:
+        for key, values in intent['catalog'].items():
+            if key == 'path':
+                R._need(values == old_record['catalog_path'], 'reader_move_catalog_changed'); continue
+            R._need(key in ('binding', 'roots') and len(values) == 2 and
+                    db.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone() == (values[0],),
+                    'reader_move_catalog_changed')
+            db.execute('UPDATE meta SET value=? WHERE key=?', (values[1], key))
+        db.commit()
+    new_binding = _copy(Path(intent['store']['temp']), state, stage, 'new-binding.sqlite')
+    _binding(new_binding, stage, new_roots, decision, new_generation)
+    with R._readonly(new_catalog, stage) as db:
+        source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db,binding=source._binding(decision['scopeId'], new_roots)))
+        meta = dict(db.execute('SELECT key,value FROM meta'))
+        R._need(json.loads(meta['roots']) == new_roots and meta['scope'] == decision['scopeId']
+                and db.execute('SELECT phase,raw_digest FROM scans WHERE scan_id=?',
+                    (binding.catalog_scan_id,)).fetchone() == ('complete', binding.catalog_raw_digest),
+                'reader_move_catalog_changed')
+    new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
+    _sidecar(new_side, stage, {**identity, 'collections':new_decision['collections']},
+             Path(old_record['db_path']), state, new_decision)
+    new_parts = [new_catalog, new_binding, new_side]
+    for path in new_parts: R._sync(path)
+    R._sync(stage, True)
+    _owner(); R._recheck(original)
+    R._need(R._node(stage) == stage_node and stage.resolve(strict=True) == stage
+            and stage.stat().st_uid == os.getuid() and stage.stat().st_mode & 0o077 == 0,
+            'reader_move_stage_changed')
+    old_digest = R._sha(R._raw([body_digest, old_generation, epoch,
+        [(key, _logical(path, stage)) for key, path in old_paths.items()]]))
+    new_digest = R._sha(R._raw([body_digest, new_generation, epoch, aliases,
+        [_logical(path, stage) for path in new_parts]]))
+    record = dict(old_record)
+    for key, path in old_paths.items():
+        record[key] = str(path)
+        record[{'catalog_path':'catalog_node','binding_path':'binding_node'}.get(key, 'sidecar_node')] = R._node(path)
+    record['capability'] = 'v6-retained-ro-v1'
+    endpoint = object.__new__(R.VerifiedEndpoint)
+    packed = R._raw(record)
+    object.__setattr__(endpoint, 'endpoint_id', R._sha(b'memvane-reader-endpoint-v1\0' + packed))
+    object.__setattr__(endpoint, 'record', R._freeze(record))
+    R._issued[endpoint] = (state, project, root, {}, packed, attestation)
+    R._read_only.add(endpoint); R._retained.add(endpoint)
+    _records[endpoint] = (original, record, attestation, proof, stage, stage_node,
+        tuple((path, R._node(path), _logical(path, stage)) for path in old_paths.values()))
+    seal = object.__new__(MoveReadSeal)
+    for key, value in dict(move_id=move_id, retained_endpoint=endpoint, old_generation=old_generation,
+            exclusion_epoch=epoch, old_tuple_digest=old_digest, new_tuple_digest=new_digest,
+            path_aliases=tuple(aliases), prefix_digest=R._sha(R._raw([raw_intent.decode('utf8'), aliases,
+                old_digest, new_digest]))).items():
+        object.__setattr__(seal, key, value)
+    return seal
+
+
+def _recheck_retained(endpoint):
+    R._need(endpoint in _records, 'reader_endpoint_not_issued')
+    original, record, attestation, _proof, stage, stage_node, copies = _records[endpoint]
+    R._need(stage.resolve(strict=True) == stage and R._node(stage) == stage_node
+            and stage.stat().st_uid == os.getuid() and stage.stat().st_mode & 0o077 == 0,
+            'reader_endpoint_changed')
+    _live_record, raw, proof = R._recheck(original)
+    R._need(raw == attestation, 'reader_endpoint_changed')
+    for path, node, digest in copies:
+        R._need(R._file(path, stage) == node and _logical(path, stage) == digest,
+                'reader_endpoint_changed')
+    R._need(R._raw(record) == R._issued[endpoint][4], 'reader_endpoint_changed')
+    return record, raw, proof

@@ -864,6 +864,8 @@ def _locks(stack, project, state, queue_path):
         stack.enter_context(cp.card_write_lock(project, folder=folder))
     stack.enter_context(wiki_mutation_lock.lock(project))
     verify_layout()
+    from laya_move_read_seal import _register_writer
+    _register_writer(stack, project, state, kind='project', recheck=verify_layout)
     return verify_layout
 
 

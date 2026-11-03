@@ -646,6 +646,11 @@ def _locks(stack, project, state):
     if isinstance(queue, str):
         stack.enter_context(laya_wiki_discovery._locked(
             state / laya_wiki_discovery.lock_path(queue).name, DISCOVERY_WAIT_SECONDS))
+        from laya_index_sync import _owner_lock
+        if not stack.enter_context(_owner_lock(Path(queue))):
+            _fail('sync_owner_busy')
+    from laya_move_read_seal import _register_writer
+    _register_writer(stack, project, state, kind='state')
 
 
 def _provider_lane():
