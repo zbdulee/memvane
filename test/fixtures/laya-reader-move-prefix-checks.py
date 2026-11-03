@@ -98,6 +98,8 @@ try:
                     if name=='fenced' and p['phase']=='fenced-before-rename':checkpoint('fenced-before-rename')
                     if name=='stores' and p['phase']=='stores-swapped-before-publish':
                         checkpoint('stores-swapped-before-publish')
+                    if name=='published' and p['phase']=='published-before-records':
+                        checkpoint('published-before-records')
                 mover._switch(intent,step=observed_step)
                 raise RuntimeError('actual physical checkpoint was not reached')
 except Exception as exc:
@@ -155,8 +157,18 @@ class MovePrefixChecks(unittest.TestCase):
         finally:
             if child.poll() is None:child.kill()
             child.communicate(timeout=5)
+        published_prefix=phase=='published-before-records'
+        if published_prefix:self.require(seal.exclusion_epoch==0,'published prefix seed retains exclusion epoch zero')
+        def physical_state():
+            return {str(path.relative_to(case.state)):(path.read_bytes(),
+                tuple(getattr(path.lstat(),key) for key in ('st_dev','st_ino','st_mode','st_uid','st_nlink')))
+                for path in case.state.rglob('*') if path.is_file() and not path.is_symlink()}
+        # Snapshot the actual closed-writer state before prerequisite RO SQL.
+        # Any new aux from those observations or the reader still fails; no
+        # keepalive/rewarm is added to conceal the physical cold boundary.
+        published_physical_before=physical_state() if published_prefix else None
         moved=phase!='fenced-before-rename'
-        store_prefix=phase in ('catalog-rebound-before-store-swap','stores-swapped-before-publish')
+        store_prefix=phase in ('catalog-rebound-before-store-swap','stores-swapped-before-publish','published-before-records')
         folder=new if moved else old
         self.require((not os.path.lexists(old) and new.is_dir()) if moved
                      else (old.is_dir() and not os.path.lexists(new)), 'exact rename prefix paths')
@@ -200,8 +212,10 @@ class MovePrefixChecks(unittest.TestCase):
                 generation_state=db.execute('SELECT state FROM generations WHERE gen=?',
                     (intent['generation']['gen'],)).fetchone()
                 live_head=db.execute('SELECT gen FROM head WHERE scope=?',(case.route['scopeId'],)).fetchone()
-            self.require(generation_state==('prepared',),'reserved target generation remains prepared')
-            self.require(live_head==(seal.old_generation,),'actual old published head remains selected before _publish')
+            expected_state='published' if published_prefix else 'prepared'
+            expected_head=intent['generation']['gen'] if published_prefix else seal.old_generation
+            self.require(generation_state==(expected_state,),'actual target generation has exact checkpoint state')
+            self.require(live_head==(expected_head,),'actual head matches the exact pre/post-publication checkpoint')
             prefix_evidence=dict(catalog='new',binding='old' if temp.exists() else 'new',
                 actualBindingNode=seed.reader._node(live_store),temporaryBindingExists=temp.exists(),
                 reservedGeneration=intent['generation']['gen'],reservedState=generation_state[0],
@@ -411,6 +425,7 @@ class MovePrefixChecks(unittest.TestCase):
                 folderNode=seed.reader._node(folder),wikiNode=seed.reader._node(folder/'wiki'),
                 savedContainerNode=None if saved_container is None else seed.reader._node(saved_container))
         before=snapshot();journal_node=case.journal.stat()
+        query_physical_before=physical_state() if published_prefix else None
         if mutation=='missing-intent-public':
             error,outcome=None,None
             try:
@@ -438,6 +453,22 @@ class MovePrefixChecks(unittest.TestCase):
         existing_shm=(shm in before['state'] and shm in after['state']
                       and before['catalogAuxNodes']['-shm']==after['catalogAuxNodes']['-shm'])
         if existing_shm:comparable['state'][shm]=before['state'][shm]
+        published_physical_changes=None
+        query_new_files=None
+        if published_prefix:
+            physical_after=physical_state()
+            published_physical_changes=[]
+            for path in sorted(set(published_physical_before)|set(physical_after)):
+                original=published_physical_before.get(path);current=physical_after.get(path)
+                same_existing_shm=(path.endswith('-shm') and original is not None and current is not None
+                                   and original[1]==current[1])
+                if original!=current and not same_existing_shm:published_physical_changes.append(path)
+            for path,original in query_physical_before.items():
+                current=physical_after.get(path)
+                if (path.endswith('-shm') and current is not None and original[1]==current[1]
+                        and path in before['state'] and path in after['state']):
+                    comparable['state'][path]=before['state'][path]
+            query_new_files=sorted(set(physical_after)-set(query_physical_before))
         unchanged=comparable==before
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
             originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
@@ -445,12 +476,18 @@ class MovePrefixChecks(unittest.TestCase):
             resumed=False,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096],
             mutation=mutation_evidence,queryUnchanged=unchanged,queryChangedPaths=changed,
             existingShmConcurrencyOnly=existing_shm and changed==[['state',shm]],
+            semanticFTSSucceeded=result.returncode==0 and observed is not None and observed.get('ftsRows',0)>0,
+            closedWriterPhysicalChangedPaths=published_physical_changes,queryNewFiles=query_new_files,
             catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
         if mutation=='catalog-scope-nul':
             with self.subTest(boundary='full-text-byte-commitment'):
                 self.assertNotEqual(mutation_evidence['beforeDigest'],mutation_evidence['afterDigest'],
                                     'logical commitment must retain TEXT bytes after embedded NUL')
+        if published_prefix:
+            with self.subTest(boundary='closed-writer-physical-cold-no-new-aux'):
+                self.assertEqual(published_physical_changes,[],
+                    'closed writer/prerequisite/query must preserve main/WAL/metadata/files and aux identities')
         self.assertTrue(unchanged,'fresh prefix reader must preserve DB/WAL/metadata, aux identities and file set')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
@@ -480,6 +517,9 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_actual_store_swap_fsync_before_publish_is_readable_without_resume(self):
         self.check_prefix('stores-swapped-before-publish')
+
+    def test_actual_target_publish_before_records_is_readable_without_resume(self):
+        self.check_prefix('published-before-records')
 
     def test_catalog_committed_prefix_rejects_damaged_canonical_old_binding_header(self):
         self.check_prefix('catalog-rebound-before-store-swap',mutation='canonical-old-binding-header')
