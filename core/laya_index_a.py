@@ -988,64 +988,130 @@ class LayaIndexA:
                 or not isinstance(claim_digest, str) or len(claim_digest) != 64
                 or type(claim_epoch) is not int or claim_epoch < 0):
             raise IndexContractError('invalid_claim_proof')
+        if self._connection_owner is not None:
+            return self._publish_coordinated(expected, gen, claim, proof, require_vector, fault_at)
         self._begin()
         try:
-            prior = self.db.execute('''SELECT scope,gen,source_manifest,claim_digest,claim_epoch
-                FROM receipts WHERE claim=?''', (claim,)).fetchone()
-            candidate = self.db.execute('SELECT scope,state,rev_epoch FROM generations WHERE gen=?',
-                                        (gen,)).fetchone()
-            seal = self.db.execute('''SELECT base_gen,source_manifest,claim_digest,claim_epoch
-                FROM candidate_seals WHERE gen=?''', (gen,)).fetchone()
-            vector_seal = self.db.execute('SELECT 1 FROM gen_vector_seals WHERE gen=?',
-                                          (gen,)).fetchone()
-            if require_vector and vector_seal is None:
-                raise IndexContractError('vector_generation_unsealed')
-            if vector_seal is not None:
-                # The verifier reads this exact write transaction. A forged or
-                # incomplete seal must never accompany a receipt or new head.
-                from laya_index_vector import verify_generation_seal
-                verify_generation_seal(self, gen)
-            if prior is not None:
-                self.db.rollback()
-                if candidate is not None and prior == (candidate[0], gen, *proof):
-                    return 'replayed'
-                raise IndexContractError('claim_conflict')
-            if candidate is None or candidate[1] != 'prepared':
-                self.db.rollback()
-                return 'not_prepared'
-            scope = candidate[0]
-            if seal is not None:
-                if any(value is None for value in proof):
-                    raise IndexContractError('claim_conflict')
-                if source_manifest != seal[1]:
-                    self.db.rollback()
-                    return 'index_stale'
-                if (claim_digest, claim_epoch) != seal[2:] or expected != seal[0]:
-                    raise IndexContractError('claim_conflict')
-            elif any(value is not None for value in proof):
-                raise IndexContractError('claim_conflict')
-            if candidate[2] != self.db.execute(
-                    'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]:
-                self.db.rollback()
-                return 'index_stale'
-            current = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
-            if (current[0] if current else None) != expected:
-                self.db.rollback()
-                return 'stale'
-            self.db.execute("UPDATE generations SET state='published' WHERE gen=?", (gen,))
-            self.db.execute('''INSERT INTO receipts
-                (claim,scope,gen,source_manifest,claim_digest,claim_epoch)
-                VALUES(?,?,?,?,?,?)''', (claim, scope, gen, *proof))
-            if fault_at == 'after_receipt':
-                raise InjectedFault('publish_after_receipt')
-            self.db.execute('INSERT INTO head VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET gen=excluded.gen',
-                            (scope, gen))
-            if fault_at == 'after_head':
-                raise InjectedFault('publish_after_head')
+            status, prepared = self._prepare_publication(expected, gen, claim, proof,
+                                                         require_vector, self.db)
+            if status is not None:
+                return status
+            self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
             self.db.commit()
             return 'published'
         except BaseException:
             self._rollback()
+            raise
+
+    def _publication_inputs(self, gen, claim):
+        prior = self.db.execute('''SELECT scope,gen,source_manifest,claim_digest,claim_epoch
+                FROM receipts WHERE claim=?''', (claim,)).fetchone()
+        candidate = self.db.execute('SELECT scope,state,rev_epoch FROM generations WHERE gen=?',
+                                        (gen,)).fetchone()
+        seal = self.db.execute('''SELECT base_gen,source_manifest,claim_digest,claim_epoch
+                FROM candidate_seals WHERE gen=?''', (gen,)).fetchone()
+        vector_seal = self.db.execute('''SELECT scope,profile_id,rows_digest,rows_count
+                FROM gen_vector_seals WHERE gen=?''', (gen,)).fetchone()
+        return prior, candidate, seal, vector_seal
+
+    def _prepare_publication(self, expected, gen, claim, proof, require_vector, transaction):
+        inputs = self._publication_inputs(gen, claim)
+        prior, candidate, seal, vector_seal = inputs
+        if require_vector and vector_seal is None:
+            raise IndexContractError('vector_generation_unsealed')
+        if vector_seal is not None:
+            # The full row proof remains in one real SQLite write snapshot,
+            # outside the managed publication cut.
+            from laya_index_vector import verify_generation_seal
+            verify_generation_seal(self, gen)
+        if prior is not None:
+            transaction.rollback()
+            if candidate is not None and prior == (candidate[0], gen, *proof):
+                return 'replayed', None
+            raise IndexContractError('claim_conflict')
+        if candidate is None or candidate[1] != 'prepared':
+            transaction.rollback()
+            return 'not_prepared', None
+        scope = candidate[0]
+        if seal is not None:
+            if any(value is None for value in proof):
+                raise IndexContractError('claim_conflict')
+            if proof[0] != seal[1]:
+                transaction.rollback()
+                return 'index_stale', None
+            if proof[1:] != seal[2:] or expected != seal[0]:
+                raise IndexContractError('claim_conflict')
+        elif any(value is not None for value in proof):
+            raise IndexContractError('claim_conflict')
+        if candidate[2] != self.db.execute(
+                'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]:
+            transaction.rollback()
+            return 'index_stale', None
+        current = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+        if (current[0] if current else None) != expected:
+            transaction.rollback()
+            return 'stale', None
+        return None, (*inputs, current)
+
+    def _write_publication(self, scope, gen, claim, proof, fault_at):
+        self.db.execute("UPDATE generations SET state='published' WHERE gen=?", (gen,))
+        self.db.execute('''INSERT INTO receipts
+                (claim,scope,gen,source_manifest,claim_digest,claim_epoch)
+                VALUES(?,?,?,?,?,?)''', (claim, scope, gen, *proof))
+        if fault_at == 'after_receipt':
+            raise InjectedFault('publish_after_receipt')
+        self.db.execute('INSERT INTO head VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET gen=excluded.gen',
+                            (scope, gen))
+        if fault_at == 'after_head':
+            raise InjectedFault('publish_after_head')
+
+    def _publication_stamp(self):
+        import laya_reader_windows as windows
+        owner = self._connection_owner
+        owner.check()
+        if owner.db is not self.db:
+            raise windows.ReaderWindowBusy('reader_publish_changed')
+        _pid, installer, scope, node, _manifest = windows._component(owner.component)
+        endpoint, current = windows._owner(installer)
+        state = Path(endpoint.record['state'])
+        if (current is not scope or tuple(windows.R._file(self.path, state)) != node
+                or windows._auxiliary_nodes(self.path, state) != owner.auxiliaries):
+            raise windows.ReaderWindowBusy('reader_publish_changed')
+        return (owner, self.db, node, tuple(sorted(owner.auxiliaries.items())),
+                self.db.execute('PRAGMA main.data_version').fetchone()[0],
+                self.db.total_changes,
+                self.db.execute('PRAGMA main.schema_version').fetchone()[0])
+
+    def _publish_coordinated(self, expected, gen, claim, proof, require_vector, fault_at):
+        import laya_reader_windows as windows
+        try:
+            with self._write_transaction(visible=False) as transaction:
+                status, prepared = self._prepare_publication(expected, gen, claim, proof,
+                                                             require_vector, transaction)
+                if status is not None:
+                    return status
+                stamp = self._publication_stamp()
+            # This stage admits only bounded key lookups and three DMLs. Full
+            # header/generation scans and exclusion aggregates stay above.
+            with windows.write_transaction(self._connection_owner, visible=True,
+                                           deadline=time.monotonic() + .05):
+                if self._publication_stamp() != stamp:
+                    raise windows.ReaderWindowBusy('reader_publish_changed')
+                if (self.db.execute('PRAGMA application_id').fetchone() != (self.APP_ID,)
+                        or self.db.execute('PRAGMA user_version').fetchone() != (self.SCHEMA_VERSION,)):
+                    raise IndexContractError('schema_version_unknown')
+                current_inputs = self._publication_inputs(gen, claim)
+                current_head = self.db.execute('SELECT gen FROM head WHERE scope=?',
+                                               (prepared[1][0],)).fetchone()
+                if (*current_inputs, current_head) != prepared or self._publication_stamp() != stamp:
+                    raise windows.ReaderWindowBusy('reader_publish_changed')
+                self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+            return 'published'
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, 'sqlite_errorcode', None)
+            if ((type(code) is int and code & 0xff in (5, 6))
+                    or 'locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+                raise windows.ReaderWindowBusy('reader_publish_busy') from exc
             raise
 
     def pin(self, scope, fault_at=None):
