@@ -264,8 +264,23 @@ def _forward_image(before, after):
               'reader_install_changed')
 
 
+def _read_v5_bundle(path):
+    """Read a candidate journal without the legacy writer-recovery opener."""
+    with reader._readonly(path, path.parent) as db:
+        _need(reader.journal._schema_version_read(db) == 5, 'reader_schema_unknown')
+        return reader.journal._row(db)
+
+
 @contextmanager
 def resolve_endpoint(project, *, action, host_root):
+    """Resolve and hold a reader without invoking legacy journal recovery."""
+    with reader.journal.read_only_journals():
+        with _resolve_endpoint(project, action=action, host_root=host_root) as endpoint:
+            yield endpoint
+
+
+@contextmanager
+def _resolve_endpoint(project, *, action, host_root):
     """Yield only the persisted preferred steady endpoint under lifetime SH."""
     journal = reader.journal
     project, host_root = Path(project), Path(host_root)
@@ -285,14 +300,14 @@ def resolve_endpoint(project, *, action, host_root):
         pointer = mover.read_pointer(project)
         _need(pointer is not None and pointer['mode'] == 'rename', 'reader_selection_unproved')
         path = reader._journal(Path(pointer['stateRoot']) / reader._JOURNAL)
-    initial = journal.inspect_journal(path)
+    initial = _read_v5_bundle(path)
     _need(initial['state'] in ('active', 'restored_old') and initial['pending'] is None
           and isinstance(initial['selected'], dict), 'reader_selection_unproved')
     install_id = initial['selected']['installId']
     _need(pointer is not None or first.get('installId') == install_id, 'reader_install_changed')
     with reader_lifetime(install_id, exclusive=False):
         decision = journal.select_route(str(project), action=action)
-        _need(decision == first and journal.inspect_journal(path) == initial,
+        _need(decision == first and _read_v5_bundle(path) == initial,
               'reader_selection_changed')
         if pointer is not None:
             _need(mover.read_pointer(project) == pointer, 'reader_selection_changed')

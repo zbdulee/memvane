@@ -21,7 +21,7 @@ def seal_prefix(db):
 
 
 def refuse_incomplete_move(state, *, move_id=None):
-    """Preserve published read material until the successor protocol exists."""
+    """Refuse unfinished v5 moves and preserve referenced read material."""
     state = Path(state)
     path = R._journal(state / R._JOURNAL)
     with R._readonly(path, state) as db:
@@ -30,8 +30,7 @@ def refuse_incomplete_move(state, *, move_id=None):
         from laya_reader_lease import _image
         _bundle, _selection, stored, _history, _endpoints, _records, seals = _image(db)
         if move_id is None:
-            R._need(stored.get('capability') != 'v6-retained-ro-v1',
-                    'reader_move_completion_unavailable')
+            R._need(False, 'reader_move_completion_unavailable')
         else:
             R._need(move_id not in seals, 'reader_move_referenced')
 

@@ -885,6 +885,12 @@ def move(project_root, state, *, step=None):
     project = Path(project_root)
     state = Path(state)
     intent = _load_intent(state, project) if intent_present(state) else None
+    pointer = read_pointer(project)
+    if pointer is not None:
+        if pointer['stateRoot'] != str(state):
+            _fail('project_dir_move_pointer_changed')
+        if intent is None:
+            _fail('project_dir_move_intent_missing')
     mode = intent['mode'] if intent is not None else needed(project)
     if mode is None:
         return {'status': 'project_dir_current'}
@@ -894,11 +900,11 @@ def move(project_root, state, *, step=None):
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
         from laya_move_reader_journal import refuse_incomplete_move
-        refuse_incomplete_move(state)
         # The install/operation/owner lanes precede reader admission; the
         # existing journal CAS obtains its transition lock inside this EX.
         from laya_reader_lease import move_lifetime
         stack.enter_context(move_lifetime(state, project, intent=intent))
+        refuse_incomplete_move(state)
         if intent is not None and not _fenced(intent):
             # Prepared but never fenced: start over from the current selection.
             _abort(intent)

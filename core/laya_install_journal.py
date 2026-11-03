@@ -7,7 +7,7 @@ detect interruption, but are not a cross-file power-loss transaction.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 import hashlib
 import json
@@ -496,6 +496,19 @@ def _schema_version_read(db):
     return version
 
 
+_reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
+
+
+@contextmanager
+def read_only_journals():
+    """Keep bridge classification and proof reads out of legacy recovery."""
+    token = _reader_no_recovery.set(True)
+    try:
+        yield
+    finally:
+        _reader_no_recovery.reset(token)
+
+
 def _recover_interrupted_transaction(path):
     """Roll back a crashed writer's hot rollback journal, then nothing else.
 
@@ -525,6 +538,8 @@ def _recover_interrupted_transaction(path):
 
 
 def _open(path, *, write):
+    if write and _reader_no_recovery.get():
+        _fail('reader_journal_read_only')
     path = _private_parent(path)
     preimage = _initial_preimage.get()
     if preimage is not None:
@@ -556,7 +571,7 @@ def _open(path, *, write):
             version = _schema_version(db)
         except sqlite3.OperationalError:
             db.close()
-            if write or not _recover_interrupted_transaction(path):
+            if write or _reader_no_recovery.get() or not _recover_interrupted_transaction(path):
                 raise
             db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
             version = _schema_version(db)

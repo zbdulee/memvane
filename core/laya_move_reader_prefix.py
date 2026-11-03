@@ -123,6 +123,9 @@ def fenced_project(data, attestation, root):
         LayaIndexA._check_header(db)
         R._need(db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
                 == (historical['incarnation'],), 'reader_incarnation_changed')
+        R._need(db.execute('SELECT scope,state FROM generations WHERE gen=?',
+                (data['new_generation'],)).fetchone() == (historical['scope'], 'prepared'),
+                'reader_move_prefix_unproved')
     with R._readonly(Path(route['queuePath']), state) as db:
         R._need(ClaimQueue._check_database(db) == historical['incarnation'], 'queue_incarnation_mismatch')
     # The unchanged source descriptor is historical; every live path above is
