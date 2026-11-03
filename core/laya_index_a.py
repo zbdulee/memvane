@@ -739,7 +739,7 @@ class LayaIndexA:
         if self._connection_owner is None:
             self._begin()
             try:
-                yield
+                yield self.db
                 self.db.commit()
             except BaseException:
                 self._rollback()
@@ -747,9 +747,9 @@ class LayaIndexA:
         else:
             from laya_reader_windows import write_transaction
             with write_transaction(self._connection_owner, visible=visible,
-                                   deadline=time.monotonic() + 2):
+                                   deadline=time.monotonic() + 2) as transaction:
                 self._check_header(self.db)
-                yield
+                yield transaction
 
     def ensure_content(self, hash_, body):
         """Store one immutable content row ahead of a stage; True if inserted.
@@ -801,8 +801,7 @@ class LayaIndexA:
         digest = _digest(scope, [(path, hash_, flag) for path, hash_, flag, _ in rows])
         if sealed and source_manifest != digest:
             raise IndexContractError('manifest_mismatch')
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             prior = self.db.execute('SELECT scope,state,digest,rev_epoch FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
             if prior is not None:
@@ -818,7 +817,7 @@ class LayaIndexA:
                     current_epoch = self.db.execute(
                         'SELECT COUNT(*) FROM exclusions WHERE scope=?',
                         (scope,)).fetchone()[0]
-                    self.db.rollback()
+                    transaction.rollback()
                     return ('already_staged' if prior[3] == current_epoch
                             else 'index_stale')
                 raise IndexContractError('generation_conflict')
@@ -862,11 +861,7 @@ class LayaIndexA:
                 if fault_after == n:
                     raise InjectedFault('stage_after_member')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
-            self.db.commit()
             return 'prepared'
-        except BaseException:
-            self._rollback()
-            raise
 
     def stage_stream(self, gen, scope, documents, fault_after=None, *,
                      base, source_manifest, claim_digest, claim_epoch):
@@ -907,8 +902,7 @@ class LayaIndexA:
                 digest.add(path, hash_, int(eligible))
                 yield path, hash_, int(eligible), body
 
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             prior = self.db.execute('SELECT scope,state,digest,rev_epoch FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
             if prior is not None:
@@ -934,7 +928,7 @@ class LayaIndexA:
                     raise IndexContractError('generation_conflict')
                 current_epoch = self.db.execute(
                     'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]
-                self.db.rollback()
+                transaction.rollback()
                 return 'already_staged' if prior[3] == current_epoch else 'index_stale'
             head = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
             if (head[0] if head else None) != base:
@@ -978,11 +972,7 @@ class LayaIndexA:
             if digest.hexdigest() != source_manifest:
                 raise IndexContractError('manifest_mismatch')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
-            self.db.commit()
             return 'prepared'
-        except BaseException:
-            self._rollback()
-            raise
 
     def publish(self, expected, gen, claim, fault_at=None, *,
                 source_manifest=None, claim_digest=None, claim_epoch=None,
@@ -1059,8 +1049,7 @@ class LayaIndexA:
             raise
 
     def pin(self, scope, fault_at=None):
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             row = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
             if row is None:
                 raise IndexContractError('no_published_generation')
@@ -1074,11 +1063,7 @@ class LayaIndexA:
             self.db.execute('INSERT INTO pins VALUES(?,?,?)', (token, scope, row[0]))
             if fault_at == 'after_insert':
                 raise InjectedFault('pin_after_insert')
-            self.db.commit()
             return token, row[0]
-        except BaseException:
-            self._rollback()
-            raise
 
     def exclude(self, scope, path=None, hash_=None):
         """Append-only serving block, including old pins. Never deletes bytes."""
@@ -1266,13 +1251,8 @@ class LayaIndexA:
             raise
 
     def release(self, token):
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             self.db.execute('DELETE FROM pins WHERE token=?', (token,))
-            self.db.commit()
-        except BaseException:
-            self._rollback()
-            raise
 
     def receipt(self, claim):
         self.db.execute('BEGIN')

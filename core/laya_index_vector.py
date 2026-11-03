@@ -368,19 +368,14 @@ class LayaVectorIndex:
     def register_profile(self, model_id, embedding_fingerprint, dimension):
         profile_id = profile_identity(model_id, embedding_fingerprint, dimension)
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             row = db.execute('SELECT 1 FROM vector_profiles WHERE profile_id=?',
                              (profile_id,)).fetchone()
             if row is None:
                 db.execute('INSERT INTO vector_profiles VALUES(?,?,?,?,?)',
                            (profile_id, model_id, embedding_fingerprint, dimension, 'cosine'))
             _profile(db, profile_id)
-            db.commit()
             return profile_id
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def insert_chunk(self, hash_, profile_id, seq, pos, vector, source_evidence_digest,
                      *, title):
@@ -393,8 +388,7 @@ class LayaVectorIndex:
                 or not title or len(title_bytes) > MAX_TITLE_BYTES):
             raise IndexContractError('invalid_vector_chunk')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             blob, _ = _blob(vector, profile['dimension'])
             provenance = _provenance(hash_, title, profile_id, seq, pos,
@@ -409,11 +403,7 @@ class LayaVectorIndex:
                 db.execute('INSERT INTO vector_chunks VALUES(?,?,?,?,?,?,?,?)',
                            (hash_, title, profile_id, seq, pos, blob,
                             source_evidence_digest, provenance))
-            db.commit()
             return provenance
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def seal_chunk_set(self, hash_, title, profile_id, expected_count):
         """Seal an imported complete set; used before private candidate publish."""
@@ -422,8 +412,7 @@ class LayaVectorIndex:
                 or not 1 <= expected_count <= MAX_CANDIDATES):
             raise IndexContractError('vector_chunk_set_invalid')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             rows = _read_chunk_set(db, hash_, title, profile_id,
                                    profile['dimension'], allow_unsealed=True)
@@ -439,11 +428,7 @@ class LayaVectorIndex:
                 db.execute('INSERT INTO vector_chunk_sets VALUES(?,?,?,?,?)',
                            (hash_, title, profile_id, expected_count, digest))
             _read_chunk_set(db, hash_, title, profile_id, profile['dimension'])
-            db.commit()
             return expected_count
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def cached_chunk_set(self, hash_, title, profile_id):
         """Read a proven complete set; absent returns None, partial fails closed."""
@@ -471,8 +456,7 @@ class LayaVectorIndex:
                 or not 1 <= len(rows) <= MAX_CANDIDATES):
             raise IndexContractError('vector_chunk_set_invalid')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             cached = _read_chunk_set(db, hash_, title, profile_id,
                                      profile['dimension'])
@@ -483,7 +467,6 @@ class LayaVectorIndex:
                            _blob(current['vector'], profile['dimension'])[0]
                         for row, current in zip(rows, cached))):
                     raise IndexContractError('vector_chunk_conflict')
-                db.commit()
                 return len(cached)
             evidence = source_evidence(hash_, title)
             last_pos = -1
@@ -505,25 +488,19 @@ class LayaVectorIndex:
                        (hash_, title, profile_id, len(rows),
                         _chunk_set_digest(hash_, title, profile_id, verified)))
             _read_chunk_set(db, hash_, title, profile_id, profile['dimension'])
-            db.commit()
             return len(rows)
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def seal_generation(self, gen, profile_id):
         if not isinstance(gen, str) or not gen or not _hex(profile_id):
             raise IndexContractError('invalid_vector_generation')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             prior = db.execute('SELECT 1 FROM gen_vector_seals WHERE gen=?', (gen,)).fetchone()
             if prior is not None:
                 result = verify_generation_seal(self.index, gen)
                 if result['profile_id'] != profile_id:
                     raise IndexContractError('vector_profile_mismatch')
-                db.commit()
                 return result
             generation = db.execute('SELECT scope,state FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
@@ -575,11 +552,7 @@ class LayaVectorIndex:
             db.execute('INSERT INTO gen_vector_seals VALUES(?,?,?,?,?)',
                        (gen, scope, profile_id, digest, rows_count))
             result = verify_generation_seal(self.index, gen)
-            db.commit()
             return result
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def profile_for_pin(self, token):
         db = self.index.db
