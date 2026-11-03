@@ -1,4 +1,4 @@
-"""Writer-owned preparation of retained project-move tuples, without publication.
+"""Writer-owned preparation of retained move tuples, without publication.
 
 Scopes are cooperative issued API state, not a same-UID introspection boundary.
 No lifetime EX is acquired here; physical publication is a separate operation.
@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 from types import SimpleNamespace
 import weakref
 
@@ -66,19 +67,47 @@ def _owner():
     return scope
 
 
-def _logical(path, parent):
+def _logical(path, parent, *, skip_meta=False):
     digest = hashlib.sha256()
     with R._readonly(path, parent) as db:
         R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
                 'reader_move_store_corrupt')
         for line in db.iterdump():
+            # Only replay comparisons omit these rows; both complete meta
+            # rowsets are checked separately against the proved transition.
+            if skip_meta and line.startswith('INSERT INTO "meta" VALUES('):
+                continue
             data = line.encode('utf8')
             digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
     return digest.hexdigest()
 
 
-def _copy(source, state, stage, name):
+def _stage_directory(state, move_id):
+    stage = state / ('.reader-move-' + move_id)
+    try:
+        os.mkdir(stage, 0o700)
+        R._sync(state, True)
+    except FileExistsError:
+        pass
+    info = stage.lstat()
+    R._need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            and not info.st_mode & 0o077 and stage.resolve(strict=True) == stage,
+            'reader_move_stage_changed')
+    return stage
+
+
+def _copy(source, state, stage, name, *, meta_variants=None):
     destination = stage / name
+    if os.path.lexists(destination):
+        if meta_variants is not None:
+            with R._readonly(source, state) as src, R._readonly(destination, stage) as dst:
+                R._need(src.execute('SELECT * FROM meta').fetchall() == meta_variants[0]
+                        and dst.execute('SELECT * FROM meta').fetchall() in meta_variants,
+                        'reader_move_copy_changed')
+        R._need(_logical(source, state, skip_meta=meta_variants is not None)
+                == _logical(destination, stage, skip_meta=meta_variants is not None),
+                'reader_move_copy_changed')
+        return destination
     fd = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     os.close(fd)
     with R._readonly(source, state) as src, closing(sqlite3.connect(
@@ -87,6 +116,20 @@ def _copy(source, state, stage, name):
     R._sync(destination)
     R._need(_logical(source, state) == _logical(destination, stage), 'reader_move_copy_changed')
     return destination
+
+
+def _catalog_variants(path, state, changes):
+    with R._readonly(path, state) as db:
+        before = db.execute('SELECT * FROM meta').fetchall()
+    values = dict(before)
+    for key, pair in changes.items():
+        if key == 'path':
+            R._need(pair == str(path), 'reader_move_catalog_changed')
+            continue
+        R._need(key in ('binding', 'roots') and len(pair) == 2 and values.get(key) == pair[0],
+                'reader_move_catalog_changed')
+        values[key] = pair[1]
+    return before, [(key, values[key]) for key, _value in before]
 
 
 def _generation(db_path, state, old, new, decision):
@@ -229,25 +272,26 @@ def stage_move_reader(intent, *, installer):
     if has_side:
         _sidecar(side, state, identity, Path(old_record['db_path']), state, decision)
     move_id = R._sha(raw_intent)
-    stage = state / ('.reader-move-' + move_id)
-    os.mkdir(stage, 0o700)
+    stage = _stage_directory(state, move_id)
     stage_node = R._node(stage)
-    R._sync(state, True)
     old_paths = {}
     for key, filename in (('catalog_path', 'old-catalog.sqlite'), ('binding_path', 'old-binding.sqlite'),
                           ('sidecar_path', 'old-sidecar.sqlite')):
         if key == 'sidecar_path' and not has_side:
             continue
         old_paths[key] = _copy(Path(old_record[key]), state, stage, filename)
-    new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
+    new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite',
+                        meta_variants=_catalog_variants(Path(old_record['catalog_path']), state, intent['catalog']))
     with closing(sqlite3.connect(new_catalog.as_uri() + '?mode=rw', uri=True)) as db:
         for key, values in intent['catalog'].items():
             if key == 'path':
                 R._need(values == old_record['catalog_path'], 'reader_move_catalog_changed'); continue
+            current = db.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone()
             R._need(key in ('binding', 'roots') and len(values) == 2 and
-                    db.execute('SELECT value FROM meta WHERE key=?', (key,)).fetchone() == (values[0],),
+                    current in ((values[0],), (values[1],)),
                     'reader_move_catalog_changed')
-            db.execute('UPDATE meta SET value=? WHERE key=?', (values[1], key))
+            if current != (values[1],):
+                db.execute('UPDATE meta SET value=? WHERE key=?', (values[1], key))
         db.commit()
     new_binding = _copy(Path(intent['store']['temp']), state, stage, 'new-binding.sqlite')
     _binding(new_binding, stage, new_roots, decision, new_generation)
@@ -327,6 +371,7 @@ def _stage_state(intent, installer, scope):
     import laya_fresh_wiki_origin as fresh
     import laya_inactive_upgrade as inactive
     import laya_initial_build as build
+    import laya_incremental_docs as docs
     import laya_state_move as mover
     from laya_index_host_route import wiki_index_roots
     from laya_product_install import _read_private
@@ -400,10 +445,8 @@ def _stage_state(intent, installer, scope):
     # not a claim that the absent destination has already been stat'ed.
     node = R._node(state)
     aliases = [(str(state), str(target), *node, *node)]
-    stage = state / ('.reader-move-' + R._sha(raw_intent))
-    os.mkdir(stage, 0o700)
+    stage = _stage_directory(state, R._sha(raw_intent))
     stage_node = R._node(stage)
-    R._sync(state, True)
     old_paths = {key:_copy(Path(old_record[key]), state, stage, 'old-' + name)
                  for key, name in (('catalog_path','catalog.sqlite'),
                                    ('binding_path','binding.sqlite'), ('sidecar_path','sidecar.sqlite'))
@@ -415,11 +458,14 @@ def _stage_state(intent, installer, scope):
         _catalog_scan(db, bound)
     new_parts = [new_catalog, new_binding]
     if has_side:
-        new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
+        new_side = _copy(side, state, stage, 'new-sidecar.sqlite', meta_variants=(
+            [docs._expected_meta(old_identity)], [docs._expected_meta(new_identity)]))
         with closing(sqlite3.connect(new_side.as_uri() + '?mode=rw', uri=True)) as db:
-            R._need(db.execute('SELECT candidate_db FROM meta').fetchall()
-                    == [(old_record['db_path'],)], 'reader_move_sidecar_changed')
-            db.execute('UPDATE meta SET candidate_db=?', (new_identity['candidateDb'],))
+            current = db.execute('SELECT candidate_db FROM meta').fetchall()
+            R._need(current in ([(old_record['db_path'],)], [(new_identity['candidateDb'],)]),
+                    'reader_move_sidecar_changed')
+            if current != [(new_identity['candidateDb'],)]:
+                db.execute('UPDATE meta SET candidate_db=?', (new_identity['candidateDb'],))
             db.commit()
         _sidecar(new_side, stage, new_identity, Path(old_record['db_path']), state, new_decision)
         new_parts.append(new_side)
