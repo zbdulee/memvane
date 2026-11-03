@@ -422,8 +422,8 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_commit_unlink_during_source_guard_retries_once_and_churn_is_typed(self):
         with self.seed.authority():
-            for churn in (False,True):
-                with self.subTest(churn=churn):
+            for moment,churn in ((m,c) for m in ('open','pread') for c in (False,True)):
+                with self.subTest(moment=moment,churn=churn):
                     self.publish_v4();side=Path(str(self.case.journal)+'-journal')
                     with closing(sqlite3.connect(self.case.journal,isolation_level=None)) as writer:
                         def begin():
@@ -431,24 +431,27 @@ class SyncFirstProofChecks(unittest.TestCase):
                             writer.execute('UPDATE selection SET epoch=epoch+1,new_write_seen=1 WHERE id=1')
                         begin();self.assertTrue(side.exists())
                         open_file=os.open;pread=os.pread;opens=[];commits=[];inode=[None]
+                        def commit():
+                            writer.commit();commits.append(True)
+                            self.assertFalse(side.exists())
                         def opening(path,*args,**kwargs):
                             if Path(path)==side:
                                 if opens and churn:begin()
                                 fd=open_file(path,*args,**kwargs)
-                                opens.append(True);inode[0]=os.fstat(fd).st_ino;return fd
+                                opens.append(True);inode[0]=os.fstat(fd).st_ino
+                                if moment=='open':commit()
+                                return fd
                             return open_file(path,*args,**kwargs)
                         def read(fd,*args):
                             result=pread(fd,*args)
-                            if os.fstat(fd).st_ino==inode[0]:
-                                writer.commit();commits.append(True)
-                                self.assertFalse(side.exists())
+                            if moment=='pread' and os.fstat(fd).st_ino==inode[0]:commit()
                             return result
                         result=None;error=None
                         with self.J.read_only_journals(),mock.patch.object(os,'open',side_effect=opening), \
                                 mock.patch.object(os,'pread',side_effect=read):
                             try:result=self.J.journal_version(self.case.journal)
                             except Exception as exc:error=exc
-                        emit('worker-journal-commit-unlink',churn=churn,actualCommits=len(commits),
+                        emit('worker-journal-commit-unlink',moment=moment,churn=churn,actualCommits=len(commits),
                              guardOpens=len(opens),result=result,errorType=type(error).__name__,error=str(error))
                         if churn:
                             self.assertIsInstance(error,self.J.JournalEvidenceError)
@@ -457,5 +460,28 @@ class SyncFirstProofChecks(unittest.TestCase):
                         else:
                             self.assertIsNone(error);self.assertEqual(result,4)
                             self.assertEqual(len(commits),1)
+
+    def test_source_guard_keeps_hardlinked_rollback_journal_rejected(self):
+        with self.seed.authority():
+            for moment in ('initial','named'):
+                with self.subTest(moment=moment):
+                    self.publish_v4();side=Path(str(self.case.journal)+'-journal')
+                    alias=side.with_name('test-hardlink-journal-alias')
+                    with closing(sqlite3.connect(self.case.journal,isolation_level=None)) as writer:
+                        writer.execute('BEGIN IMMEDIATE')
+                        writer.execute('UPDATE selection SET epoch=epoch+1 WHERE id=1')
+                        stat=Path.lstat;linked=[]
+                        def named(path,*args,**kwargs):
+                            if path==side and moment=='named' and not linked:
+                                os.link(side,alias);linked.append(True)
+                            return stat(path,*args,**kwargs)
+                        if moment=='initial':os.link(side,alias)
+                        try:
+                            with self.J.read_only_journals(),mock.patch.object(Path,'lstat',new=named), \
+                                    self.assertRaisesRegex(self.J.JournalEvidenceError,'unsafe_journal_file'):
+                                self.J.journal_version(self.case.journal)
+                        finally:
+                            if os.path.lexists(alias):alias.unlink()
+                            writer.rollback()
 
 if __name__=='__main__':unittest.main()
