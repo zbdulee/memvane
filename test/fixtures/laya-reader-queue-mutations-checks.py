@@ -163,10 +163,13 @@ class QueueMutationChecks(unittest.TestCase):
         from laya_index_a import LayaIndexA
         with self.opened() as (base,queue,_component):
             p=self.prep(base,queue);before=self.jobs(queue);unmanaged=LayaIndexA(self.case.db)
-            try:result=queue.conditional_ack(p['ack'],p['ack']['lease_token'],unmanaged)
+            try:
+                matching=self.Q.ClaimQueue.decide(unmanaged,p['ack'])
+                result=queue.conditional_ack(p['ack'],p['ack']['lease_token'],unmanaged)
             finally:unmanaged.close()
             emit('managed-ack-unmanaged-index',result=result,jobsUnchanged=self.jobs(queue)==before,
-                 foreignActualInstallCoverage='MISSING: separate actual coordinated install remains required')
+                 actualMatchingReceipt=matching==self.Q.ACK)
+            self.assertEqual(matching,self.Q.ACK)
             self.assertEqual(result,self.Q.DEFER);self.assertTrue(self.jobs(queue)==before)
 
     def test_managed_delete_binding_write_is_explicitly_unsupported_before_begin(self):
@@ -187,5 +190,79 @@ class QueueMutationChecks(unittest.TestCase):
                 self.assertIsNotNone(error);self.assertTrue('unsupported' in error or 'journal' in error)
                 self.assertFalse(entered);self.assertEqual(begins,[])
             finally:store.close(deadline=time.monotonic()+1)
+
+    def test_foreign_actual_install_with_identical_claim_receipt_cannot_ack_local_job(self):
+        from laya_index_a import LayaIndexA
+        import laya_selected_project as selected
+        with self.opened() as (base,queue,_component):
+            p=self.prep(base,queue);job=p['ack'];before=self.jobs(queue)
+            original_env={key:os.environ[key] for key in ('HOME','MEMVANE_TEST_RUNTIME_ROOT')}
+            foreign=self.seed.__class__('runTest')
+            foreign.INSTALL_ID='9'*32
+            foreign.STATE_PARTS=('.local','state','memvane',foreign.INSTALL_ID)
+            original_setup=selected.SelectedProject.setUp
+            def configured(case):
+                original_setup(case)
+                # Both real installations use one UID registry namespace;
+                # their normal fixture-configured install IDs remain distinct.
+                os.environ['MEMVANE_TEST_RUNTIME_ROOT']=original_env['MEMVANE_TEST_RUNTIME_ROOT']
+            other=None
+            try:
+                with mock.patch.object(selected.SelectedProject,'setUp',configured):foreign.setUp()
+                with foreign.prepared():
+                    self.W.prepare_windows(foreign.installer)
+                    component=self.W.component_for(foreign.installer,'base')
+                    other=LayaIndexA(foreign.case.db,coordination=component)
+                    old=other.db.execute('SELECT gen FROM head WHERE scope=?',(job['scope'],)).fetchone()[0]
+                    docs=[('wiki/queue-receipt.md','synthetic actual queue receipt',True)]
+                    proof={key:job[key] for key in ('source_manifest','claim_digest','claim_epoch')}
+                    self.assertEqual(other.stage(job['gen'],job['scope'],docs,base=old,**proof),'prepared')
+                    self.assertEqual(other.publish(old,job['gen'],job['claim'],**proof),'published')
+                    matching=self.Q.ClaimQueue.decide(other,job)
+                    self.assertEqual(matching,self.Q.ACK,'actual foreign receipt must match before authority refusal')
+                    self.assertNotEqual(foreign.install,self.seed.install)
+                    self.assertEqual(other._connection_owner.lifetime.parent.parent,
+                                     base._connection_owner.lifetime.parent.parent)
+                with mock.patch.dict(os.environ,original_env):
+                    sql=[];queue.db.set_trace_callback(sql.append)
+                    try:result=queue.conditional_ack(job,job['lease_token'],other)
+                    finally:queue.db.set_trace_callback(None)
+                    after=self.jobs(queue)
+                    emit('actual-foreign-install-ack-authority',foreignInstall=foreign.install,
+                        localInstall=self.seed.install,actualForeignReceiptVerdict=matching,
+                        sameUidRegistry=True,result=result,jobsUnchanged=after==before,queueSql=sql)
+                    self.assertEqual(result,self.Q.DEFER);self.assertEqual(after,before);self.assertEqual(sql,[])
+            finally:
+                if other is not None:other.close(deadline=time.monotonic()+1)
+                foreign.doCleanups()
+
+    def test_queue_name_change_after_actual_dml_rolls_back_before_commit(self):
+        with self.opened() as (base,queue,_component):
+            p=self.prep(base,queue);before=self.jobs(queue)
+            replacement=self.case.state/'queue-precommit-replacement.sqlite'
+            saved=self.case.state/'queue-precommit-original.sqlite'
+            copy=sqlite3.connect(replacement)
+            try:queue.db.backup(copy);copy.execute('PRAGMA journal_mode=DELETE')
+            finally:copy.close()
+            replacement.chmod(0o600);replacement_bytes=replacement.read_bytes()
+            cls=type(queue.db);actual=cls.execute;swapped=False;error=None;result=None
+            def execute(db,sql,*args,**kwargs):
+                nonlocal swapped
+                cursor=actual(db,sql,*args,**kwargs)
+                if db is queue.db and sql.strip().upper().startswith('INSERT INTO JOBS') and not swapped:
+                    os.rename(self.case.queue,saved);os.replace(replacement,self.case.queue);swapped=True
+                return cursor
+            try:
+                with mock.patch.object(cls,'execute',execute):
+                    try:result=queue.enqueue(p['fresh'])
+                    except self.W.ReaderWindowBusy as exc:error=str(exc)
+                unchanged=self.case.queue.read_bytes()==replacement_bytes
+            finally:
+                if swapped:self.case.queue.unlink();os.rename(saved,self.case.queue)
+            after=self.jobs(queue)
+            emit('queue-binding-before-commit',swapped=swapped,result=result,error=error,
+                replacementMainUnchanged=unchanged,originalJobsRolledBack=before==after)
+            self.assertTrue(swapped);self.assertIsNone(result);self.assertIsNotNone(error)
+            self.assertTrue(unchanged);self.assertEqual(after,before)
 
 if __name__=='__main__':unittest.main(verbosity=2)
