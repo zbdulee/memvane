@@ -27,6 +27,20 @@ try:
 finally:os.close(fd)
 '''
 
+OWNER_PROBE=r'''
+import json,signal,sys
+from pathlib import Path
+signal.alarm(4)
+sys.path.insert(0,sys.argv[1])
+from laya_index_a import IndexContractError
+from laya_index_sync import sync_owner
+try:
+    with sync_owner(Path(sys.argv[2])) as owner:
+        result=dict(acquired=owner is not None,error=None)
+except IndexContractError as exc:result=dict(acquired=False,error=str(exc))
+print(json.dumps(result),flush=True)
+'''
+
 def emit(case,**fields):print(json.dumps(dict(case=case,**fields),sort_keys=True),flush=True)
 def evidence(path):
     info=path.lstat()
@@ -140,6 +154,44 @@ class SyncLeaseChecks(unittest.TestCase):
         finally:
             if pin is not None:pin.close()
 
+    def test_fresh_owner_refuses_missing_or_replaced_lock_while_expired_claim_pin_lives(self):
+        self.api();pin=None
+        try:
+            with sync.sync_owner(self.queue) as claim:pin=claim.pin()
+            saved=self.home/'pinned-original-lock'
+            for variant in ('missing','replaced','queue-and-lock-replaced'):
+                with self.subTest(variant=variant):
+                    saved_queue=self.home/'pinned-original-queue'
+                    if variant=='queue-and-lock-replaced':
+                        os.rename(self.queue,saved_queue)
+                        with closing(sqlite3.connect(self.queue)) as db:
+                            db.execute('CREATE TABLE replacement(value TEXT)');db.commit()
+                        self.queue.chmod(0o600)
+                    os.rename(self.lock,saved)
+                    if variant!='missing':
+                        self.lock.write_bytes(b'foreign lock sentinel');self.lock.chmod(0o600)
+                    foreign=evidence(self.lock) if self.lock.exists() else None
+                    try:
+                        result=subprocess.run([sys.executable,'-B','-I','-c',OWNER_PROBE,
+                            str(ROOT/'core'),str(self.queue)],encoding='utf8',capture_output=True,timeout=5)
+                        self.assertEqual(result.returncode,0,result.stderr)
+                        observed=json.loads(result.stdout)
+                        created=foreign is None and self.lock.exists()
+                        emit('fresh-owner-pinned-lock-continuity',variant=variant,**observed,newLockCreated=created)
+                        self.assertFalse(created,'pinned lock name must not be recreated')
+                        self.assertFalse(observed['acquired'],'pinned old inode must exclude a fresh owner')
+                        if foreign is not None:self.assertEqual(evidence(self.lock),foreign)
+                    finally:
+                        if self.lock.exists():self.lock.unlink()
+                        os.rename(saved,self.lock)
+                        if saved_queue.exists():
+                            self.queue.unlink();os.rename(saved_queue,self.queue)
+                    self.assertFalse(self.probe())
+            pin.close();pin=None
+            self.assertTrue(self.probe())
+        finally:
+            if pin is not None:pin.close()
+
     def test_actual_other_thread_cannot_borrow_claim_but_none_borrow_obeys_kernel_lifecycle(self):
         self.api();result={}
         with sync.sync_owner(self.queue) as claim:
@@ -165,5 +217,19 @@ class SyncLeaseChecks(unittest.TestCase):
         emit('sync-lease-thread-lifecycle',observations=result,freeAfterThread=self.probe())
         self.assertTrue(result.get('laterNoneBorrow'));self.assertTrue(result.get('laterExternalBusy'))
         self.assertTrue(self.probe())
+
+    def test_body_io_error_keeps_original_exception_and_releases_both_owner_locks(self):
+        self.api()
+        for owner_context in (sync.sync_owner,sync._owner_lock):
+            with self.subTest(api=owner_context.__name__):
+                marker=OSError('synthetic caller IO failure');observed=None
+                try:
+                    with owner_context(self.queue):raise marker
+                except BaseException as exc:observed=exc
+                emit('sync-owner-caller-exception',api=owner_context.__name__,
+                    originalException=observed is marker,observedType=type(observed).__name__)
+                self.assertIs(observed,marker)
+                with sync.sync_owner(self.queue) as fresh:self.assertIsNotNone(fresh)
+                self.assertTrue(self.probe())
 
 if __name__=='__main__':unittest.main(verbosity=2)
