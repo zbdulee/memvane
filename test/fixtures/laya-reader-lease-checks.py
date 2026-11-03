@@ -39,6 +39,27 @@ except (ValueError,OSError) as exc:
     print(json.dumps(dict(state='refused',reason=str(exc))),flush=True)
 '''
 
+CAS_CHILD=r'''
+import json,pathlib,sys
+sys.path.insert(0,sys.argv[1])
+import laya_install_journal as journal,laya_journal_reader as reader,laya_product_bundle as bundle
+p=json.loads(pathlib.Path(sys.argv[2]).read_text())
+plugin=pathlib.Path(p['plugin'])
+def inspect(root):
+    assert pathlib.Path(root)==plugin
+    return p['proof']
+journal._inspect_identity=lambda *a,**k:p['proof']
+journal._verified_executing_root=lambda *a,**k:str(plugin)
+journal._provider_file_identity=lambda *a,**k:[[str(plugin/'p.py'),1,2,3,4,5]]
+journal.inspect_full_plugin_candidate=bundle.inspect_full_plugin_candidate=inspect
+state,project=pathlib.Path(p['state']),pathlib.Path(p['project'])
+seal=reader.seal_current_reader(state,project,executing_root=plugin)
+target=reader.seal_reader_endpoint(seal,db_path=pathlib.Path(p['target']))
+result=reader.cas_reader(state/'install-journal.sqlite',expected_epoch=p['epoch'],
+    expected_endpoint=p['expected'],target=target,transition_id='c'*32)
+print(json.dumps(dict(epoch=result.epoch,endpoint=result.preferred_endpoint)))
+'''
+
 
 class ReaderLeaseChecks(unittest.TestCase):
     def setUp(self):
@@ -227,6 +248,69 @@ class ReaderLeaseChecks(unittest.TestCase):
                     mutate.assert_not_called()
                 self.assertEqual(self.case.journal.read_bytes(),before)
                 self.assertEqual(self.reader.read_selection(self.case.journal),changed)
+
+    def test_v5_conversion_replay_never_recreates_a_named_lock_while_old_inode_is_held(self):
+        api=self.api();path=self.path();saved=path.with_name('still-held-lifetime.lock')
+        with api.reader_lifetime(self.install,exclusive=False):
+            path.rename(saved)
+            try:
+                error=None;new_inode=None;writer=None
+                try:
+                    with self.helper.full_authority(self.case,self.reader,self.bridge):
+                        self.reader.convert_reader_v5(self.case.state,self.case.project,
+                            installer=self.installer,readiness=self.readiness)
+                except (ValueError,OSError) as exc:error=str(exc)
+                if path.exists():
+                    new_inode=[path.stat().st_dev,path.stat().st_ino]
+                    with self.child('exclusive') as (process,writer):
+                        process.wait(timeout=3)
+                print(json.dumps(dict(case='v5-replay-held-unlinked-lock',error=error,
+                    recreated_inode=new_inode,exclusive_child=writer)),flush=True)
+                self.assertIsNotNone(error,'v5 replay must refuse a missing lifetime lock')
+                self.assertFalse(path.exists(),'v5 replay must not publish a second lock inode')
+            finally:
+                if path.exists():path.unlink()
+                saved.rename(path)
+
+    def test_resolver_accepts_a_complete_pin_when_real_child_cas_replaces_journal_during_resolution(self):
+        api=self.api()
+        other=self.helper.alternate(self.case,self.reader,self.installer,'resolution-race-b.sqlite')
+        payload=self.case.home/'reader-cas-child.json'
+        payload.write_text(json.dumps(dict(plugin=str(self.case.plugin),proof=self.case.proof,
+            state=str(self.case.state),project=str(self.case.project),target=other.record['db_path'],
+            epoch=self.selection.epoch,expected=self.selection.preferred_endpoint)),encoding='utf8')
+        payload.chmod(0o600)
+        actual=self.reader._selection;published=[]
+        def race(db):
+            result=actual(db)
+            if not published:
+                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT/'core'),str(payload)],
+                    capture_output=True,encoding='utf8',timeout=15)
+                self.assertEqual(run.returncode,0,run.stderr)
+                published.append(json.loads(run.stdout))
+            return result
+        with self.helper.full_authority(self.case,self.reader,api),mock.patch.object(self.reader,'_selection',side_effect=race):
+            with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as endpoint:
+                self.assertIn(endpoint.endpoint_id,(self.selection.preferred_endpoint,other.endpoint_id))
+                self.reader._recheck(endpoint)
+        self.assertEqual(published[0]['endpoint'],other.endpoint_id)
+        print(json.dumps(dict(case='resolve-real-child-publication',published=published)),flush=True)
+
+    def test_resolver_rejects_unproved_same_bytes_journal_inode_replacement(self):
+        api=self.api();actual=self.reader._selection;replaced=False
+        def race(db):
+            nonlocal replaced
+            result=actual(db)
+            if not replaced:
+                replaced=True
+                copy=self.case.state/'unproved-journal.sqlite'
+                copy.write_bytes(self.case.journal.read_bytes());copy.chmod(0o600)
+                os.replace(copy,self.case.journal)
+            return result
+        with self.helper.full_authority(self.case,self.reader,api),mock.patch.object(self.reader,'_selection',side_effect=race):
+            with self.assertRaises(ValueError):
+                with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin):pass
+        self.assertTrue(replaced)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
