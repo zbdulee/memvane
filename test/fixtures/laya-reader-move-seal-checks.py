@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import select
 import sqlite3
 import stat
@@ -238,6 +239,124 @@ with _install_lock(Path(sys.argv[2])):
                 process.stdin.write('release\n');process.stdin.flush()
             try:process.communicate(timeout=4)
             except subprocess.TimeoutExpired:process.kill();process.communicate(timeout=4)
+
+    def test_preferred_b_is_retained_or_refused_before_any_staging_artifact(self):
+        stage,_seal_type=self.producer()
+        other=self.helper.alternate(self.case,self.reader,self.installer,'preferred-b.sqlite')
+        with self.authority():
+            selected=self.reader.cas_reader(self.case.journal,expected_epoch=self.selection.epoch,
+                expected_endpoint=self.selection.preferred_endpoint,target=other,transition_id='d'*32)
+        self.assertEqual(self.reader.read_selection(self.case.journal).preferred_endpoint,other.endpoint_id)
+        with self.prepared() as intent:
+            before=self.live()
+            tree_before={str(path.relative_to(self.case.state)) for path in self.case.state.rglob('*')}
+            directories_before={str(path.relative_to(self.case.state)) for path in self.case.state.rglob('*') if path.is_dir()}
+            error,seal=None,None
+            try:seal=stage(intent,installer=self.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            tree_after={str(path.relative_to(self.case.state)) for path in self.case.state.rglob('*')}
+            directories_after={str(path.relative_to(self.case.state)) for path in self.case.state.rglob('*') if path.is_dir()}
+            observed=dict(case='preferred-b-retained-or-prestage-refusal',selected=selected.preferred_endpoint,
+                actualPreferred=self.reader.read_selection(self.case.journal).preferred_endpoint,
+                expectedDb=other.record['db_path'],returnedDb=None if seal is None else seal.retained_endpoint.record['db_path'],
+                error=error,newArtifacts=sorted(tree_after-tree_before),liveUnchanged=self.live()==before)
+            print(json.dumps(observed),flush=True)
+            self.assertEqual(self.reader.read_selection(self.case.journal),selected)
+            self.assertEqual(self.live(),before)
+            if error is not None:
+                self.assertRegex(error,r'^reader_[a-z0-9_]+$','only explicit reader refusal is admissible')
+                self.assertEqual(directories_after,directories_before,'unsupported preferred endpoint must refuse before staging')
+                self.assertEqual(tree_after,tree_before,'prestage refusal must not leave producer artifacts')
+            else:
+                self.assertIsNotNone(seal)
+                self.assertEqual(seal.retained_endpoint.record['db_path'],other.record['db_path'],observed)
+
+    def test_complete_catalog_row_digest_mismatch_is_not_sealed(self):
+        stage,_seal_type=self.producer()
+        source=importlib.import_module('laya_source_catalog')
+        with self.prepared() as intent:
+            with self.ro(self.case.store) as db:
+                row=db.execute('SELECT record FROM bindings WHERE scope=? AND generation=? AND db_incarnation=?',
+                    (self.case.route['scopeId'],intent['generation']['base'],self.case.incarnation)).fetchone()
+                self.assertIsNotNone(row,'actual selected generation binding is required')
+                bound=source.GenerationSourceBinding.from_record(json.loads(row[0]))
+            def digest(db,seq):
+                value=hashlib.sha256()
+                for path,sha,size in db.execute('SELECT path,sha256,size FROM scan_files WHERE seq=? ORDER BY path',(seq,)):
+                    value.update(source._raw_line(path,sha,size))
+                return value.hexdigest()
+            guard=None
+            with closing(sqlite3.connect(self.case.catalog)) as db:
+                scan=db.execute('SELECT seq,phase,raw_digest FROM scans WHERE scan_id=?',(bound.catalog_scan_id,)).fetchone()
+                self.assertIsNotNone(scan)
+                self.assertEqual(scan[1:],('complete',bound.catalog_raw_digest))
+                self.assertEqual(digest(db,scan[0]),scan[2],'seed scan rows must match the committed raw digest')
+                target=db.execute('SELECT path,sha256 FROM scan_files WHERE seq=? ORDER BY path LIMIT 1',(scan[0],)).fetchone()
+                self.assertIsNotNone(target)
+                corrupted='f'*64 if target[1]!='f'*64 else 'e'*64
+                before_guard=self.live()
+                try:
+                    db.execute('UPDATE scan_files SET sha256=? WHERE seq=? AND path=?',(corrupted,scan[0],target[0]));db.commit()
+                except sqlite3.IntegrityError as exc:
+                    db.rollback();guard=str(exc)
+                recomputed=digest(db,scan[0])
+                stored=db.execute('SELECT raw_digest FROM scans WHERE seq=?',(scan[0],)).fetchone()[0]
+            if guard is not None:
+                print(json.dumps(dict(case='catalog-row-tamper',schemaGuard=guard,producerRefusalClaimed=False)),flush=True)
+                self.assertEqual(self.live(),before_guard)
+                return
+            self.assertNotEqual(recomputed,stored,'actual row mutation must break the complete scan commitment')
+            self.assertEqual(stored,bound.catalog_raw_digest)
+            before=self.live();error,seal=None,None
+            try:seal=stage(intent,installer=self.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='catalog-row-tamper',boundScan=bound.catalog_scan_id,storedDigest=stored,
+                recomputedDigest=recomputed,issued=seal is not None,error=error,liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertIsNotNone(error,'mismatched actual scan rows must refuse issuance')
+            self.assertIsNone(seal)
+
+    def test_prepared_new_generation_fts_damage_is_not_sealed(self):
+        stage,_seal_type=self.producer()
+        index_module=importlib.import_module('laya_index_a')
+        vector=importlib.import_module('laya_index_vector')
+        with self.prepared() as intent:
+            old,new=intent['generation']['base'],intent['generation']['gen']
+            guard=None
+            with closing(sqlite3.connect(self.case.db)) as db:
+                index=SimpleNamespace(db=db)
+                self.assertTrue(index_module.LayaIndexA._generation_fts_matches(index,old))
+                self.assertTrue(index_module.LayaIndexA._generation_fts_matches(index,new))
+                seal_before=vector.verify_generation_seal(index,new)
+                members_before=db.execute('SELECT path,hash,eligible FROM membership WHERE gen=? ORDER BY path',(new,)).fetchall()
+                ordinal=db.execute('SELECT ord FROM gen_index WHERE gen=?',(new,)).fetchone()
+                self.assertIsNotNone(ordinal)
+                table=index_module._gen_fts(ordinal[0])
+                rowid=db.execute('SELECT rowid FROM "'+table+'" ORDER BY rowid LIMIT 1').fetchone()
+                self.assertIsNotNone(rowid)
+                before_guard=self.live()
+                try:
+                    db.execute('DELETE FROM "'+table+'" WHERE rowid=?',rowid);db.commit()
+                except sqlite3.IntegrityError as exc:
+                    db.rollback();guard=str(exc)
+                old_matches=index_module.LayaIndexA._generation_fts_matches(index,old)
+                new_matches=index_module.LayaIndexA._generation_fts_matches(index,new)
+                self.assertEqual(db.execute('SELECT path,hash,eligible FROM membership WHERE gen=? ORDER BY path',(new,)).fetchall(),members_before)
+                self.assertEqual(vector.verify_generation_seal(index,new),seal_before)
+            if guard is not None:
+                print(json.dumps(dict(case='new-fts-tamper',schemaGuard=guard,producerRefusalClaimed=False)),flush=True)
+                self.assertEqual(self.live(),before_guard)
+                return
+            self.assertTrue(old_matches,'old published head remains valid')
+            self.assertFalse(new_matches,'the actual prepared FTS must be damaged before invoking producer')
+            before=self.live();error,seal=None,None
+            try:seal=stage(intent,installer=self.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='new-fts-tamper',generation=new,ftsTable=table,oldFtsValid=old_matches,
+                newFtsValid=new_matches,issued=seal is not None,error=error,liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertIsNotNone(error,'prepared FTS damage must refuse issuance')
+            self.assertIsNone(seal)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
