@@ -247,6 +247,57 @@ class DeleteChecks(existing.QueueMutationChecks):
         with sqlite3.connect(self.case.store.as_uri()+'?mode=ro',uri=True) as db:
             self.assertIsNone(db.execute('SELECT 1 FROM bindings WHERE generation=?',(binding.generation,)).fetchone())
 
+    def test_foreign_after_first_busy_pragma_before_begin_releases_unused_locks(self):
+        with self.binding() as (_C,store,binding,_kwargs):
+            journal=Path(str(store.path)+'-journal');cls=type(store.db);execute=cls.execute;created=[];sql=[];error=None
+            def foreign(db,statement,*args,**kwargs):
+                cursor=execute(db,statement,*args,**kwargs)
+                if db is store.db and statement=='PRAGMA busy_timeout':
+                    journal.write_bytes(b'after-pragma foreign');journal.chmod(0o600);created.append(True)
+                return cursor
+            store.db.set_trace_callback(sql.append)
+            try:
+                with mock.patch.object(cls,'execute',foreign):
+                    try:store.put(binding)
+                    except Exception as exc:error=str(exc)
+                result=dict(error=error,pending=self.W.pending_count(),cutSH=self.probe('publish-cut.lock',True),
+                    physicalSH=self.probe('binding-physical.lock',True),begin=[s for s in sql if s.startswith('BEGIN')],
+                    foreign=journal.read_bytes().decode() if journal.exists() else None)
+            finally:
+                store.db.set_trace_callback(None)
+                if journal.exists():journal.unlink()
+                if store._connection_owner.pending:self.W.drain_pending(deadline=time.monotonic()+1)
+            existing.emit('delete-pre-begin-pragma-race',**result)
+            self.assertEqual(created,[True]);self.assertIsNotNone(error);self.assertEqual(result['begin'],[])
+            self.assertEqual(result['pending'],0);self.assertTrue(result['cutSH']);self.assertTrue(result['physicalSH'])
+            self.assertEqual(result['foreign'],'after-pragma foreign')
+
+    def test_native_begin_busy_plus_timeout_restore_failure_keeps_close_pending_only(self):
+        import sqlite3
+        with self.binding() as (_C,store,_binding,kwargs):
+            other=sqlite3.connect(self.case.store.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+            other.execute('BEGIN IMMEDIATE');cls=type(store.db);execute=cls.execute;error=None;entered=False;restores=[]
+            def fail_restore(db,statement,*args,**kw):
+                if db is store.db and statement=='PRAGMA busy_timeout=2000':
+                    restores.append(True);raise sqlite3.OperationalError('synthetic_busy_timeout_restore_failure')
+                return execute(db,statement,*args,**kw)
+            try:
+                with mock.patch.object(cls,'execute',fail_restore):
+                    try:
+                        with self.W.delete_binding_transaction(store._connection_owner,deadline=time.monotonic()+.04):entered=True
+                    except Exception as exc:error=str(exc)
+                result=dict(error=error,entered=entered,restores=len(restores),pending=self.W.pending_count(),
+                    active=store.db.in_transaction,transaction=store._connection_owner.transaction is not None,
+                    cutSH=self.probe('publish-cut.lock',True),physicalSH=self.probe('binding-physical.lock',True))
+            finally:other.rollback();other.close()
+            existing.emit('delete-busy-timeout-restore-failure',**result)
+            self.assertIn('synthetic_busy_timeout_restore_failure',error or '')
+            self.assertFalse(entered);self.assertEqual(restores,[True]);self.assertEqual(result['pending'],1)
+            self.assertFalse(result['active']);self.assertFalse(result['transaction'])
+            self.assertTrue(result['cutSH']);self.assertTrue(result['physicalSH'])
+            self.W.drain_pending(deadline=time.monotonic()+1)
+            self.assertIsNone(store._connection_owner.db);self.assertEqual(self.W.pending_count(),0)
+
 # Only the DELETE contracts; inherited queue checks have their own wrapper.
 if __name__=='__main__':
     names=[name for name in DeleteChecks.__dict__ if name.startswith('test_')]
