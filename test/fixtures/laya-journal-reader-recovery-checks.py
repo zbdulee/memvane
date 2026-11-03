@@ -1127,7 +1127,7 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_empty_rehearsal_stage_after_owner_creation_or_cleanup_crash_is_resumable(self):
         import laya_journal_recovery as recovery
-        for phase in ('before-owner-write', 'after-owner-unlink'):
+        for phase in ('before-owner-write', 'after-owner-unlink', 'after-prefix-write'):
             with self.subTest(phase=phase), fixture() as values:
                 helper, case, reader, bridge, _, _, _ = values
                 before = self.snapshot(helper, case)
@@ -1145,13 +1145,23 @@ class RecoveryChecks(unittest.TestCase):
                         pipe.send(dict(event='checkpoint', phase=phase,
                             stage=str(path.parent), node=[path.parent.stat().st_dev,
                                                         path.parent.stat().st_ino],
-                            entries=sorted(p.name for p in path.parent.iterdir())))
+                            entries=sorted(p.name for p in path.parent.iterdir()),
+                            provenance=('synthetic partial metadata write' if phase == 'after-prefix-write'
+                                        else 'actual filesystem checkpoint')))
                         os._exit(EXIT_AT_CHECKPOINT)
 
                     def written(path, data):
                         path = Path(path)
                         if phase == 'before-owner-write' and path.name == 'owner.json':
                             checkpoint(path)  # The actual private mkdir has completed.
+                        if phase == 'after-prefix-write' and path.name == 'owner.json':
+                            # A synthetic torn-metadata control, not a claim
+                            # that a natural write was observed to tear.
+                            with os.fdopen(recovery._exclusive(path), 'wb') as out:
+                                out.write(data[:len(data) // 2])
+                                out.flush()
+                                os.fsync(out.fileno())
+                            checkpoint(path)
                         return actual_write(path, data)
 
                     def unlinked(path, *args, **kwargs):
@@ -1170,7 +1180,7 @@ class RecoveryChecks(unittest.TestCase):
                     reached = receive(pipe, event='checkpoint')
                     process.join(10)
                     self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
-                self.assertEqual(reached['entries'], [])
+                self.assertEqual(reached['entries'], ['owner.json'] if phase == 'after-prefix-write' else [])
                 self.assertEqual(Path(case.journal).read_bytes(), canonical)
                 self.assertEqual(side.read_bytes(), rollback)
                 reader._issued.clear()
@@ -1189,6 +1199,75 @@ class RecoveryChecks(unittest.TestCase):
                 self.assertIsNone(error, 'a real empty-stage owner publication/retirement crash must resume')
                 self.assertEqual(selected.epoch, 1)
                 self.unchanged(helper, case, before)
+
+    def test_unproved_rehearsal_owner_never_reclaims_trial_or_unrelated_files(self):
+        import laya_journal_recovery as recovery
+        for kind in ('missing', 'prefix-with-trial', 'non-prefix', 'hardlink', 'symlink', 'unknown-file'):
+            with self.subTest(kind=kind), fixture() as values:
+                helper, case, reader, bridge, _, _, _ = values
+                self.pending_initial(values, hot=True)
+                canonical = Path(case.journal).read_bytes()
+                side = Path(str(case.journal) + '-journal')
+                rollback = side.read_bytes()
+
+                def resume(pipe):
+                    actual_write = recovery._write
+
+                    def written(path, data):
+                        result = actual_write(path, data)
+                        path = Path(path)
+                        if path.name == 'trial.sqlite-journal':
+                            pipe.send(dict(event='checkpoint', stage=str(path.parent)))
+                            os._exit(EXIT_AT_CHECKPOINT)
+                        return result
+
+                    with helper.full_authority(case, reader, bridge), \
+                            mock.patch.object(recovery, '_write', side_effect=written):
+                        helper.installer(case, reader, bridge)
+
+                with child(resume) as (process, pipe):
+                    reached = receive(pipe, event='checkpoint')
+                    process.join(10)
+                    self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+                stage = Path(reached['stage'])
+                owner = stage / 'owner.json'
+                raw = owner.read_bytes()
+                if kind == 'missing':
+                    owner.unlink()
+                elif kind == 'prefix-with-trial':
+                    owner.write_bytes(raw[:len(raw) // 2])
+                elif kind == 'non-prefix':
+                    owner.write_bytes(b'unrelated private metadata must survive')
+                elif kind == 'hardlink':
+                    os.link(owner, case.state / 'owner-hardlink-witness')
+                elif kind == 'symlink':
+                    saved = case.state / 'saved-rehearsal-owner.json'
+                    owner.rename(saved)
+                    owner.symlink_to(saved)
+                else:
+                    sentinel = stage / 'unrelated-private.txt'
+                    sentinel.write_bytes(b'not a rehearsal output')
+                    sentinel.chmod(0o600)
+
+                def snapshot():
+                    return {p.name: (p.lstat().st_ino, p.lstat().st_mode, p.lstat().st_nlink,
+                                    os.readlink(p) if p.is_symlink() else p.read_bytes())
+                            for p in stage.iterdir()}
+
+                expected = snapshot()
+                error = None
+                with self.live_rw_opens(case.journal) as writes, helper.full_authority(case, reader, bridge):
+                    try:
+                        helper.installer(case, reader, bridge)
+                    except (ValueError, OSError, sqlite3.Error) as exc:
+                        error = dict(type=type(exc).__name__, reason=str(exc))
+                emit('unproved-rehearsal-owner-negative', kind=kind, refusal=error,
+                     live_rw_opens=writes, stage_unchanged=snapshot() == expected)
+                self.assertIsNotNone(error)
+                self.assertEqual(writes, [])
+                self.assertEqual(snapshot(), expected)
+                self.assertEqual(Path(case.journal).read_bytes(), canonical)
+                self.assertEqual(side.read_bytes(), rollback)
 
     def test_actual_released_writer_opened_before_conversion_refuses_v5_before_dml(self):
         with fixture() as (helper, case, reader, bridge, installer, readiness, _):

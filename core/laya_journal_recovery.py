@@ -210,10 +210,8 @@ def _rehearsal(image):
     image.revalidate()
     state = image.logical_path.parent
     stage = state / ('.reader-rehearse-' + image.data['transition'])
-    created = False
     try:
         stage.mkdir(mode=0o700)
-        created = True
     except FileExistsError:
         pass
     _directory(stage)
@@ -223,8 +221,34 @@ def _rehearsal(image):
         state_node=image.data['state_node'], stage_node=stage_node,
         intent_node=image.nodes[1], intent_sha=R._sha(image.descriptor),
         transition=image.data['transition'], journal_node=image.data['journal_node']))
-    if created:
+    def stage_entries():
+        image.revalidate()
+        _directory(stage)
+        _require(R._node(stage) == stage_node and stat.S_IMODE(stage.lstat().st_mode) == 0o700)
+        return set(os.listdir(stage))
+
+    entries = stage_entries()
+    initialize = not entries
+    if entries:
+        _require(owner.name in entries)
+        previous_node = R._file(owner, stage)
+        _require(stat.S_IMODE(owner.lstat().st_mode) == 0o600)
+        previous = _read(owner, 16384)
+        if previous != binding:
+            # Only an isolated unfinished write of this exact metadata may be
+            # recovered. A trial or unrelated entry makes adoption impossible.
+            _require(entries == {owner.name} and len(previous) < len(binding)
+                     and binding.startswith(previous))
+            _require(stage_entries() == {owner.name} and R._file(owner, stage) == previous_node
+                     and stat.S_IMODE(owner.lstat().st_mode) == 0o600
+                     and _read(owner, 16384) == previous)
+            owner.unlink()
+            initialize = True
+    if initialize:
+        _require(stage_entries() == set())
         _write(owner, binding)
+        _require(stage_entries() == {owner.name} and
+                 stat.S_IMODE(owner.lstat().st_mode) == 0o600 and _read(owner, 16384) == binding)
         R._sync(stage, True)
         R._sync(state, True)
     owner_node = R._file(owner, stage)
@@ -233,7 +257,8 @@ def _rehearsal(image):
         image.revalidate()
         _directory(stage)
         _require(R._node(stage) == stage_node and stat.S_IMODE(stage.lstat().st_mode) == 0o700
-                 and R._file(owner, stage) == owner_node and _read(owner, 16384) == binding
+                 and R._file(owner, stage) == owner_node and stat.S_IMODE(owner.lstat().st_mode) == 0o600
+                 and _read(owner, 16384) == binding
                  and set(os.listdir(stage)) <= {'owner.json', 'trial.sqlite', 'trial.sqlite-journal'})
         entries = [(path, R._file(path, stage)) for path in
                    (stage / 'trial.sqlite-journal', stage / 'trial.sqlite') if os.path.lexists(path)]
