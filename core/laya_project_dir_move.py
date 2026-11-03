@@ -887,11 +887,11 @@ def move(project_root, state, *, step=None):
     intent = _load_intent(state, project) if intent_present(state) else None
     # Before owner admission a pointer is only a pending hint: another mover
     # may have published or settled the intent since the previous read.
-    pointer = read_pointer(project)
+    pending_pointer = os.path.lexists(pointer_path(project))
     mode = intent['mode'] if intent is not None else needed(project)
-    if mode is None and pointer is None:
+    if mode is None and not pending_pointer:
         return {'status': 'project_dir_current'}
-    if mode == 'tidy' and pointer is None:
+    if mode == 'tidy' and not pending_pointer:
         return {'status': 'project_dir_current', 'tidied': tidy(project)}
     with ExitStack() as stack:
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))

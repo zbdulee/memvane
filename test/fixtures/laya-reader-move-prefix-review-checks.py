@@ -143,6 +143,7 @@ with helper.full_authority(case,mover),mock.patch.object(laya_state_move,'_provi
         self.assertEqual(base.J.journal_version(case.journal),4)
         self.assertFalse(mover.intent_present(case.state))
         real_read_pointer=mover.read_pointer
+        real_pointer_path=mover.pointer_path
         self.assertIsNone(real_read_pointer(case.project))
         payload=case.home/'race-owner-payload.json'
         payload.write_text(json.dumps(dict(home=str(case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
@@ -177,10 +178,10 @@ with helper.full_authority(case,mover),mock.patch.object(laya_state_move,'_provi
                 if actual is None or real_read_pointer(case.project)!=prepared['pointer']:
                     raise RuntimeError('B checkpoint lacks actual matching durable intent/pointer')
                 before=snapshot()
-            return real_read_pointer(project)
+            return real_pointer_path(project)
         error=None;outcome=None;failure=None
         try:
-            with helper.full_authority(case,mover),mock.patch.object(mover,'read_pointer',side_effect=schedule):
+            with helper.full_authority(case,mover),mock.patch.object(mover,'pointer_path',side_effect=schedule):
                 try:outcome=mover.move(case.project,case.state)
                 except (ValueError,OSError,RuntimeError) as exc:
                     failure=exc;error=upgrade._reason(exc)
