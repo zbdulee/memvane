@@ -219,7 +219,9 @@ class MovePrefixChecks(unittest.TestCase):
         mutation_evidence=None
         saved_container=None
         if mutation is not None:
-            self.require(phase=='anchor-entry','negative mutates only an actual completed rename prefix')
+            catalog_mutations=('canonical-old-binding-header','catalog-scope-nul')
+            required_phase=('catalog-rebound-before-store-swap' if mutation in catalog_mutations else 'anchor-entry')
+            self.require(phase==required_phase,'negative begins at its exact actual physical prefix')
             if mutation=='container-inode':
                 saved_container=case.project/'preserved-original-container'
                 folder.rename(saved_container)
@@ -290,6 +292,83 @@ class MovePrefixChecks(unittest.TestCase):
                 mutation_evidence=dict(kind=mutation,catalog='new',binding='old',scanMemberChanged=True,
                     bareSQLiteColdAuxCreated=aux,bareSQLiteContentUnchanged=True,
                     physicalColdBoundaryProved=False,sourceAuxiliariesPreexisting=True)
+            elif mutation in catalog_mutations or mutation=='catalog-without-anchor':
+                import laya_move_read_seal as M
+                from laya_index_host_route import wiki_index_roots
+                from laya_index_source_port import SourceStale
+                # Keep actual committed SQL connections alive, so existing WAL
+                # auxiliaries isolate these semantic guards from the separate
+                # still-pending cold-open/sidecar-creation contract.
+                catalog_connection=sqlite3.connect(case.catalog.as_uri()+'?mode=rw',uri=True)
+                self.addCleanup(catalog_connection.close)
+                catalog_connection.execute('SELECT count(*) FROM meta').fetchone()
+                binding_connection=sqlite3.connect(case.store.as_uri()+'?mode=rw',uri=True)
+                self.addCleanup(binding_connection.close)
+                binding_connection.execute('SELECT count(*) FROM sqlite_master').fetchone()
+                old_route=json.loads(intent['oldRoute']);new_route=json.loads(intent['newRoute'])
+                old_roots=wiki_index_roots(old_route['collections'])
+                new_roots=wiki_index_roots(new_route['collections'])
+                temporary=Path(intent['store']['temp'])
+                self.require(seed.reader._node(case.store)==intent['oldLedger']['bindingStoreIdentity'],
+                             'canonical old binding inode retained at semantic mutation boundary')
+                self.require(temporary.is_file() and seed.reader._node(temporary)==intent['store']['identity'],
+                             'real prepared temporary binding retains its original inode')
+                old_bound=M._binding(case.store,case.state,old_roots,old_route,seal.old_generation)
+                new_bound=M._binding(temporary,case.state,new_roots,old_route,intent['generation']['gen'])
+                self.require(seed.reader._raw(new_bound.as_record())==seed.reader._raw(intent['generation']['binding']),
+                             'actual temporary new-generation binding decoder control')
+                if mutation=='canonical-old-binding-header':
+                    previous_header=binding_connection.execute('PRAGMA application_id').fetchone()[0]
+                    self.require(previous_header!=0,'actual canonical old binding has its format header')
+                    binding_connection.execute('PRAGMA application_id=0');binding_connection.commit()
+                    self.require(binding_connection.execute('PRAGMA application_id').fetchone()==(0,),
+                                 'actual old binding application_id mutation committed')
+                    decoder_error=None
+                    try:M._binding(case.store,case.state,old_roots,old_route,seal.old_generation)
+                    except (SourceStale,ValueError,OSError,RuntimeError) as exc:decoder_error=str(exc)
+                    mutation_evidence=dict(kind=mutation,applicationIdBefore=previous_header,applicationIdAfter=0,
+                        actualCanonicalOldDecoderError=decoder_error,newTemporaryDecoderValid=True,
+                        oldCanonicalDecoderValidBefore=True,sameCanonicalNode=seed.reader._node(case.store),
+                        sourceConnectionsKeptAlive=True,physicalColdBoundaryProved=False)
+                    print(json.dumps(dict(case='canonical-binding-header-control',observed=mutation_evidence)),flush=True)
+                    with self.subTest(boundary='actual-old-binding-decoder-refuses-header'):
+                        self.assertIsNotNone(decoder_error,'actual decoder must refuse the same damaged canonical binding')
+                elif mutation=='catalog-scope-nul':
+                    before_scope=catalog_connection.execute("SELECT value FROM meta WHERE key='scope'").fetchone()[0]
+                    self.require(before_scope==old_route['scopeId'],'actual catalog has expected scope before mutation')
+                    before_digest=M._logical(case.catalog,case.state)
+                    before_dump=tuple(catalog_connection.iterdump())
+                    catalog_connection.execute("UPDATE meta SET value=value||char(0)||'other' WHERE key='scope'")
+                    catalog_connection.commit()
+                    after_scope,scope_hex=catalog_connection.execute(
+                        "SELECT value,hex(CAST(value AS BLOB)) FROM meta WHERE key='scope'").fetchone()
+                    self.require(after_scope.encode('utf8')==before_scope.encode('utf8')+b'\x00other',
+                                 'actual committed TEXT scope contains all appended NUL bytes')
+                    after_digest=M._logical(case.catalog,case.state)
+                    mutation_evidence=dict(kind=mutation,scopeBeforeHex=before_scope.encode('utf8').hex().upper(),
+                        scopeAfterHex=scope_hex,actualTextBytesChanged=True,
+                        beforeDigest=before_digest,afterDigest=after_digest,
+                        sqlDumpEqual=tuple(catalog_connection.iterdump())==before_dump,
+                        oldCanonicalDecoderValid=True,newTemporaryDecoderValid=True,
+                        sourceConnectionsKeptAlive=True,physicalColdBoundaryProved=False)
+                else:
+                    anchor=folder/'wiki'/mover.project_dir.WIKI_ANCHOR
+                    self.require(not os.path.lexists(anchor),'actual anchor-entry checkpoint has no wiki anchor')
+                    mover._rebind_catalog(intent)
+                    rebound=dict(catalog_connection.execute(
+                        "SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+                    self.require(rebound=={key:intent['catalog'][key][1] for key in ('binding','roots')},
+                                 'actual catalog rebind commits despite deliberately omitted anchor')
+                    self.require(not os.path.lexists(anchor),'no synthetic or actual anchor was added')
+                    with seed.ro(case.db) as db:
+                        self.require(db.execute('SELECT state FROM generations WHERE gen=?',
+                            (intent['generation']['gen'],)).fetchone()==('prepared',),'target still prepared without anchor')
+                    self.require(seed.reader._node(case.store)==intent['oldLedger']['bindingStoreIdentity'] and
+                                 temporary.is_file(),'old binding and prepared temp survive catalog-only advance')
+                    mutation_evidence=dict(kind=mutation,actualCatalogCommit=True,anchorAbsent=True,
+                        catalog='new',binding='old',temporaryBindingExists=True,targetState='prepared',
+                        oldCanonicalDecoderValid=True,newTemporaryDecoderValid=True,
+                        sourceConnectionsKeptAlive=True,physicalColdBoundaryProved=False)
             elif mutation=='reserved-generation-ahead':
                 with seed.ro(case.db) as db:
                     self.require(db.execute('SELECT state FROM generations WHERE gen=?',
@@ -353,6 +432,10 @@ class MovePrefixChecks(unittest.TestCase):
             mutation=mutation_evidence,queryUnchanged=after==before,queryChangedPaths=changed,
             catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
+        if mutation=='catalog-scope-nul':
+            with self.subTest(boundary='full-text-byte-commitment'):
+                self.assertNotEqual(mutation_evidence['beforeDigest'],mutation_evidence['afterDigest'],
+                                    'logical commitment must retain TEXT bytes after embedded NUL')
         self.assertTrue(after==before,'fresh prefix reader must not heal or mutate moved/state files')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
@@ -382,6 +465,15 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_actual_store_swap_fsync_before_publish_is_readable_without_resume(self):
         self.check_prefix('stores-swapped-before-publish')
+
+    def test_catalog_committed_prefix_rejects_damaged_canonical_old_binding_header(self):
+        self.check_prefix('catalog-rebound-before-store-swap',mutation='canonical-old-binding-header')
+
+    def test_catalog_committed_prefix_commits_full_scope_text_and_rejects_embedded_nul(self):
+        self.check_prefix('catalog-rebound-before-store-swap',mutation='catalog-scope-nul')
+
+    def test_actual_rename_rejects_catalog_rebind_without_preceding_wiki_anchor(self):
+        self.check_prefix('anchor-entry',mutation='catalog-without-anchor')
 
     def test_renamed_prefix_rejects_replaced_container_even_when_original_wiki_inode_survives(self):
         self.check_prefix('anchor-entry',mutation='container-inode')
