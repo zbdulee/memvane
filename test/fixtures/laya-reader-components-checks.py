@@ -93,6 +93,79 @@ class ReaderComponentChecks(unittest.TestCase):
                 self.assertEqual(len(closes),1);self.assertTrue(closes[0]['physicalExclusive'])
     def drain(self,windows):return windows.drain_pending(deadline=time.monotonic()+1)
 
+    def test_queue_open_respects_base_physical_exclusive_before_fullproof_first_base_sqlite(self):
+        with self.seed.prepared():
+            windows,components=self.components();self.require_constructor_api('queue')
+            for action in ('queue-open','completed-prepare'):
+                with self.subTest(action=action):
+                    trace=[];queue=None;completed=False;error=None;busy=False;started=time.monotonic()
+                    try:
+                        with windows.physical_window(components['base'],exclusive=True,deadline=time.monotonic()+0.2):
+                            with mock.patch.object(sqlite3,'connect',side_effect=self.dispatch({},trace)):
+                                try:
+                                    if action=='queue-open':
+                                        queue=self.queue_module.ClaimQueue.open(self.case.queue,coordination=components['queue'])
+                                    else:windows.prepare_windows(self.seed.installer)
+                                    completed=True
+                                except Exception as exc:
+                                    error=type(exc).__name__+':'+str(exc)
+                                    busy=isinstance(exc,windows.ReaderWindowBusy);exc.__traceback__=None
+                            base_opens=[row for row in trace if row['path']==str(self.case.db)]
+                            queue_rw=[row for row in trace if row['path']==str(self.case.queue)
+                                      and 'mode=rw' in row['database']]
+                            pending_before_cleanup=windows.pending_count()
+                            returned=queue is not None
+                    finally:
+                        # Even unsafe BASE returns are closed only after base
+                        # EX release. Completed prepare has no returned handle.
+                        if queue is not None:queue.close(deadline=time.monotonic()+1)
+                        self.drain(windows)
+                    emit('queue-proof-base-physical-exclusion',action=action,error=error,readerWindowBusy=busy,
+                        returnedQueue=returned,completedAction=completed,elapsed=time.monotonic()-started,
+                        baseContentConnects=base_opens,queueRWConnects=queue_rw,sqliteTrace=trace,
+                        pendingBeforeCleanup=pending_before_cleanup,pendingAfterCleanup=windows.pending_count())
+                    with self.subTest(boundary='bounded-component-proof-busy'):
+                        self.assertTrue(busy);self.assertFalse(returned);self.assertFalse(completed)
+                    with self.subTest(boundary='base-proof-first-content-open-zero'):self.assertEqual(base_opens,[])
+                    with self.subTest(boundary='queue-rw-open-zero'):self.assertEqual(queue_rw,[])
+                    self.assertEqual(pending_before_cleanup,0);self.assertEqual(windows.pending_count(),0)
+
+    def test_invalid_explicit_runtime_mapping_refuses_before_any_content_sqlite_open(self):
+        with self.seed.prepared():
+            windows,components=self.components();self.require_runtime_api()
+            variants=(('explicit-none',{'queue':None}),('wrong-issued-role',{'queue':components['base']}))
+            for label,mapping in variants:
+                with self.subTest(mapping=label):
+                    runtime=None;trace=[];error=None;invalid=False
+                    try:
+                        with windows.physical_window(components['queue'],exclusive=True,deadline=time.monotonic()+0.2):
+                            with mock.patch.object(sqlite3,'connect',side_effect=self.dispatch({},trace)):
+                                try:
+                                    runtime=self.runtime_module.LayaIndexRuntime(source_root=self.roots,
+                                        scope=self.case.route['scopeId'],db_path=str(self.case.db),
+                                        queue_path=str(self.case.queue),db_incarnation=self.case.route['dbIncarnation'],
+                                        catalog_path=str(self.case.catalog),binding_store_path=str(self.case.store),
+                                        wiki_only=True,connection_windows=mapping)
+                                except Exception as exc:
+                                    error=type(exc).__name__+':'+str(exc)
+                                    invalid=isinstance(exc,ValueError);exc.__traceback__=None
+                            content=[row for row in trace if Path(row['path']).is_absolute()
+                                     and self.case.state in Path(row['path']).parents
+                                     and Path(row['path'])!=self.case.journal]
+                            journal=[row for row in trace if Path(row['path'])==self.case.journal]
+                            returned=runtime is not None;pending_before_cleanup=windows.pending_count()
+                    finally:
+                        if runtime is not None:runtime.close(deadline=time.monotonic()+1)
+                        self.drain(windows)
+                    emit('runtime-explicit-mapping-first-open',mapping=label,error=error,
+                         invalidMappingError=invalid,returnedRuntime=returned,contentConnects=content,
+                         journalConnects=journal,sqliteTrace=trace,pendingBeforeCleanup=pending_before_cleanup,
+                         pendingAfterCleanup=windows.pending_count(),onlyExplicitMappingEntriesUnderTest=True)
+                    with self.subTest(boundary='invalid-mapping-explicit-refusal'):
+                        self.assertTrue(invalid);self.assertFalse(returned)
+                    with self.subTest(boundary='all-content-first-open-zero'):self.assertEqual(content,[])
+                    self.assertEqual(pending_before_cleanup,0);self.assertEqual(windows.pending_count(),0)
+
     def test_four_role_runtime_gc_retains_all_deferred_connections_until_same_thread_drain(self):
         windows=None;runtime=None;external=ExitStack();observers=None
         try:
