@@ -181,12 +181,14 @@ def _file_identity(path: Path):
 
 
 @contextmanager
-def _owner_lock(queue_path: Path):
+def _owner_lock(queue_path: Path, *, recheck_queue=None):
     """A held kernel lock proves a previous participating lease owner ended.
 
     All selected sync writers use this exact queue-adjacent file from before
     taking a claim lease until after receipt/ACK or retry release. The file is
     never unlinked, including on failure; unlinking would split the lock domain.
+    A directory mover may supply its checked new queue name; both nodes must
+    still match the originally acquired queue and open kernel lock.
     """
     if not queue_path.is_absolute() or queue_path.is_symlink():
         raise IndexContractError('sync_owner_lock_unavailable')
@@ -208,12 +210,14 @@ def _owner_lock(queue_path: Path):
         except BlockingIOError:
             yield False
             return
-        if (_file_identity(lock_path) != (opened.st_dev, opened.st_ino)
-                or _file_identity(queue_path) != queue_identity):
+        current_queue = queue_path if recheck_queue is None else Path(recheck_queue())
+        if (_file_identity(Path(str(current_queue) + '.sync.lock')) != (opened.st_dev, opened.st_ino)
+                or _file_identity(current_queue) != queue_identity):
             raise IndexContractError('sync_owner_lock_unavailable')
         yield True
-        if (_file_identity(lock_path) != (opened.st_dev, opened.st_ino)
-                or _file_identity(queue_path) != queue_identity):
+        current_queue = queue_path if recheck_queue is None else Path(recheck_queue())
+        if (_file_identity(Path(str(current_queue) + '.sync.lock')) != (opened.st_dev, opened.st_ino)
+                or _file_identity(current_queue) != queue_identity):
             raise IndexContractError('sync_owner_lock_unavailable')
     finally:
         os.close(fd)
