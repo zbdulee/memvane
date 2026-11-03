@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -66,6 +67,100 @@ import laya_reader_lease as lease
 try:
     with lease.reader_lifetime(sys.argv[2],exclusive=True):print(json.dumps(dict(state='held')))
 except (ValueError,OSError) as exc:print(json.dumps(dict(state='refused',reason=str(exc))))
+'''
+
+CRASH_PUBLISHER=r'''
+from contextlib import ExitStack,nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime']
+signal.alarm(35)
+spec=importlib.util.spec_from_file_location('crash_publisher_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as R,laya_reader_lease as L,laya_project_dir_move as mover,laya_state_move as state_move
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+state,project=Path(p['state']),Path(p['project']);initial=len(R._issued);phase='issuer'
+try:
+    assert initial==0
+    with helper.full_authority(case,R,L,mover),mock.patch.object(state_move,'_provider_lane',lambda:nullcontext()):
+        installer=R.seal_current_reader(state,project,executing_root=case.plugin)
+        phase='owner'
+        with ExitStack() as locks:
+            intent=mover._load_intent(state,project);assert intent is not None
+            mover._locks(locks,project,state,mover._queue_path(project,intent))
+            with L.reader_lifetime(p['install'],exclusive=False):
+                phase='stage-replay'
+                seal=L.stage_move_reader(intent,installer=installer)
+                assert seal.retained_endpoint.endpoint_id==p['retained']
+                def checkpoint(name):
+                    if name==p['step']:
+                        print(json.dumps(dict(event='publisher-checkpoint',step=name,pid=os.getpid(),
+                            initialIssued=initial,actualFreshIssuer=True,endpoint=seal.retained_endpoint.endpoint_id)),flush=True)
+                        os.kill(os.getpid(),signal.SIGKILL)
+                base.J._conversion_step=checkpoint
+                phase='publish'
+                L.publish_move_reader(state/'install-journal.sqlite',seal=seal)
+                raise RuntimeError('actual COW publisher checkpoint was not reached')
+except Exception as exc:
+    print(json.dumps(dict(event='error',phase=phase,reason=str(exc),errorType=type(exc).__name__)),flush=True)
+    sys.exit(2)
+'''
+
+CRASH_READ_PROBE=r'''
+from pathlib import Path
+from types import SimpleNamespace
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime']
+signal.alarm(25)
+spec=importlib.util.spec_from_file_location('crash_read_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as R,laya_reader_lease as L,laya_index_a as index
+assert len(R._issued)==0
+calls=[]
+def forbidden(*a,**k):calls.append('installer');raise AssertionError('read probe may not issue an installer')
+R.seal_current_reader=forbidden
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+path=Path(p['state'])/'install-journal.sqlite'
+with helper.full_authority(case,R,L):
+    with R._readonly(path,path.parent) as db:
+        bundle=base.J._row(db);selected,record=R._selection(db)
+        table=bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='move_read_seals'").fetchone())
+        count=db.execute('SELECT count(*) FROM move_read_seals').fetchone()[0] if table else 0
+        endpoint=db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
+                            (selected.preferred_endpoint,)).fetchone();assert endpoint is not None
+        transition=db.execute('SELECT epoch,preferred_endpoint,previous_endpoint FROM reader_transitions WHERE transition_id=?',
+                              (selected.transition_id,)).fetchone()
+        assert transition==(selected.epoch,selected.preferred_endpoint,selected.previous_endpoint)
+        retained=record.get('capability')=='v6-retained-ro-v1'
+        if retained:
+            assert table and count==1 and selected.preferred_endpoint==p['retained']
+            assert selected.previous_endpoint==p['oldEndpoint'] and selected.epoch==p['oldEpoch']+1
+            assert record['move_id']==p['move'] and record['pinned_generation']==p['generation']
+            assert record['exclusion_epoch']==p['exclusion']
+        else:
+            assert not table and count==0 and selected.preferred_endpoint==p['oldEndpoint'] and selected.epoch==p['oldEpoch']
+    with L.resolve_endpoint(Path(p['project']),action='recall',host_root=case.plugin) as token:
+        assert type(token) is R.VerifiedEndpoint and token.endpoint_id==selected.preferred_endpoint
+        R._recheck(token)
+        with R._readonly(Path(token.record['db_path']),Path(token.record['db_path']).parent) as db:
+            generation=token.record.get('pinned_generation')
+            if generation is None:generation=db.execute('SELECT gen FROM head WHERE scope=?',(token.record['scope'],)).fetchone()[0]
+            assert generation==p['generation']
+            assert index.LayaIndexA._generation_fts_matches(SimpleNamespace(db=db),generation)
+            table_name=index._gen_fts(db.execute('SELECT ord FROM gen_index WHERE gen=?',(generation,)).fetchone()[0])
+            rows=db.execute('SELECT m.path,c.body FROM "'+table_name+'" f JOIN membership m ON m.path=f.path_key AND m.gen=? '
+                'JOIN content c ON c.hash=m.hash WHERE "'+table_name+'" MATCH ?',(generation,'otter')).fetchall()
+            assert rows and any('otter' in body for _path,body in rows)
+    assert not calls
+print(json.dumps(dict(event='read-only-crash-image',retained=retained,readerEpoch=selected.epoch,
+    endpoint=selected.preferred_endpoint,sealRows=count,ftsRows=len(rows),installerCalls=len(calls),
+    bundleEpoch=bundle['epoch'],newWriteSeen=bundle['new_write_seen'],actualHostExecuted=False)),flush=True)
 '''
 
 
@@ -216,6 +311,80 @@ class MoveJournalChecks(unittest.TestCase):
         before=self.case.journal.read_bytes()
         with self.assertRaises((ValueError,OSError,RuntimeError)):publish(self.case.journal,seal=seal)
         self.assertEqual(self.case.journal.read_bytes(),before)
+
+    def test_publisher_actual_cow_kill_leaves_old_or_whole_retained_readable_without_repair(self):
+        for step in ('v5-image-fsynced','v5-image-replaced'):
+            with self.subTest(step=step):
+                seed=seed_module.MoveSealChecks('runTest')
+                try:
+                    seed.setUp()
+                    with seed.prepared():
+                        stage,_type=seed.producer()
+                        seal=stage(seed.mover._load_intent(seed.case.state,seed.case.project),installer=seed.installer)
+                        seed.reader._recheck(seal.retained_endpoint)
+                        self.assertTrue(callable(getattr(seed.lease,'publish_move_reader',None)))
+                    case=seed.case
+                    old=seed.reader.read_selection(case.journal)
+                    bundle=seed_module.base.J.inspect_journal(case.journal)
+                    stores=seed.live();stores['files'].pop(str(case.journal))
+                    payload=case.home/'cow-crash-publication.json'
+                    payload.write_text(json.dumps(dict(home=str(case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+                        project=str(case.project),state=str(case.state),plugin=str(case.plugin),proof=case.proof,
+                        install=seed.install,step=step,retained=seal.retained_endpoint.endpoint_id,move=seal.move_id,
+                        oldEndpoint=old.preferred_endpoint,oldEpoch=old.epoch,generation=seal.old_generation,
+                        exclusion=seal.exclusion_epoch)),encoding='utf8');payload.chmod(0o600)
+                    child=subprocess.Popen([sys.executable,'-B','-I','-c',CRASH_PUBLISHER,str(ROOT),str(payload)],
+                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+                    try:
+                        if not select.select([child.stdout],[],[],30)[0]:raise RuntimeError('publisher checkpoint timeout')
+                        line=child.stdout.readline()
+                        if not line:raise RuntimeError('publisher factory exited without a checkpoint')
+                        checkpoint=json.loads(line);print(json.dumps(checkpoint),flush=True)
+                        if checkpoint.get('event')!='publisher-checkpoint':
+                            raise RuntimeError('publisher factory failure, not crash atomicity RED: '+json.dumps(checkpoint))
+                        self.assertEqual(checkpoint['step'],step)
+                        self.assertEqual(child.wait(timeout=5),-signal.SIGKILL)
+                    finally:
+                        if child.poll() is None:child.kill()
+                        child.communicate(timeout=5)
+                    named_before=case.journal.read_bytes();node=case.journal.stat()
+                    result=subprocess.run([sys.executable,'-B','-I','-c',CRASH_READ_PROBE,str(ROOT),str(payload)],
+                        capture_output=True,encoding='utf8',timeout=30)
+                    observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+                    print(json.dumps(dict(case='actual-publisher-crash-reader',step=step,exit=child.returncode,
+                        result=observed,readReturncode=result.returncode,stderr=result.stderr[:4096])),flush=True)
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                    self.assertEqual(observed['retained'],step=='v5-image-replaced')
+                    self.assertEqual(observed['installerCalls'],0)
+                    self.assertEqual(case.journal.read_bytes(),named_before)
+                    self.assertTrue(os.path.samestat(node,case.journal.stat()))
+                    self.assertEqual(seed_module.base.J.inspect_journal(case.journal),bundle)
+                    after=seed.live();after['files'].pop(str(case.journal))
+                    self.assertEqual(after,stores)
+                finally:seed.doCleanups()
+
+    def test_actual_a_to_b_cas_makes_previously_issued_move_seal_stale_without_journal_write(self):
+        with self.staged() as seal:
+            publish=self.publisher()
+            other=self.seed.helper.alternate(self.case,self.reader,self.seed.installer,'publication-stale-b.sqlite')
+            before=self.reader.read_selection(self.case.journal)
+            changed=self.reader.cas_reader(self.case.journal,expected_epoch=before.epoch,
+                expected_endpoint=before.preferred_endpoint,target=other,transition_id='c'*32)
+            self.assertEqual(changed.preferred_endpoint,other.endpoint_id)
+            self.assertEqual(changed.epoch,before.epoch+1)
+            self.reader._recheck(other)
+            original=self.case.journal.read_bytes();node=self.case.journal.stat()
+            error,selected=None,None
+            try:selected=publish(self.case.journal,seal=seal)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='actual-cas-stales-issued-move-seal',old=before.preferred_endpoint,
+                current=changed.preferred_endpoint,readerEpoch=changed.epoch,error=error,published=selected is not None,
+                journalUnchanged=self.case.journal.read_bytes()==original)),flush=True)
+            self.assertIsNotNone(error)
+            self.assertIsNone(selected)
+            self.assertEqual(self.case.journal.read_bytes(),original)
+            self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
+            self.assertEqual(self.reader.read_selection(self.case.journal),changed)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
