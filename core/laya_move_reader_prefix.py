@@ -25,6 +25,48 @@ def bundle_row(state):
         return R.journal._row(db)
 
 
+def _capacity_prefix(data, intent, route, *, moved):
+    import laya_move_read_seal as M
+    from laya_index_host_route import wiki_index_roots
+    state, stage = Path(data['state']), Path(data['stage'])
+    source, ledger = data['source_record'], intent['oldLedger']
+    catalog, binding = Path(source['catalog_path']), Path(source['binding_path'])
+    R._need(str(catalog) == ledger['catalogDb'] and R._file(catalog, state)
+            == source['catalog_node'] == ledger['catalogIdentity']
+            and str(binding) == ledger['bindingStore'], 'reader_move_prefix_unproved')
+    with R._readonly(catalog, state) as db:
+        meta = dict(db.execute('SELECT key,value FROM meta'))
+    pair = {k: meta.get(k) for k in ('binding', 'roots')}
+    old = {k: intent['catalog'][k][0] for k in pair}
+    new = {k: intent['catalog'][k][1] for k in pair}
+    R._need(pair == old or (moved and pair == new), 'reader_move_prefix_unproved')
+    node = R._file(binding, state)
+    old_node = source['binding_node']
+    R._need(old_node == ledger['bindingStoreIdentity'], 'reader_move_prefix_unproved')
+    temporary = Path(intent['store']['temp'])
+    digests = {path: digest for path, _node, digest in data['materials']}
+    def matches(path, parent, filename):
+        expected = digests.get(str(stage / filename))
+        R._need(expected is not None and M._logical(path, parent) == expected,
+                'reader_move_material_changed')
+    if node == old_node:
+        R._need(R._file(temporary, state) == intent['store']['identity'], 'reader_move_prefix_unproved')
+        matches(temporary, state, 'new-binding.sqlite')
+    else:
+        R._need(moved and pair == new and node == intent['store']['identity']
+                and not os.path.lexists(temporary), 'reader_move_prefix_unproved')
+        matches(binding, state, 'new-binding.sqlite')
+    if pair == new:
+        matches(catalog, state, 'new-catalog.sqlite')
+        new_route = R.journal._route(intent['newRoute'].encode('utf8'), state / R._JOURNAL)[0]
+        path, parent = (stage / 'new-binding.sqlite', stage) if node == old_node else (binding, state)
+        bound = M._binding(path, parent, wiki_index_roots(new_route['collections']), route, data['new_generation'])
+        R._need(R._raw(bound.as_record()) == R._raw(intent['generation']['binding']),
+                'reader_move_binding_changed')
+        with R._readonly(catalog, state) as db:
+            M._catalog_scan(db, bound)
+
+
 def fenced_project(data, attestation, root):
     """Return historical source evidence only for the exact sealed prefix.
 
@@ -106,17 +148,10 @@ def fenced_project(data, attestation, root):
                 ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')),
             'reader_move_bundle_changed')
     ledger = intent['oldLedger']
-    for key, ledger_key, node_key in (('db_path', 'candidateDb', 'candidateIdentity'),
-            ('catalog_path', 'catalogDb', 'catalogIdentity'),
-            ('binding_path', 'bindingStore', 'bindingStoreIdentity')):
-        path = Path(historical[key])
-        R._need(str(path) == ledger[ledger_key] and R._file(path, state) == ledger[node_key]
-                == historical[{'db_path': 'db_node', 'catalog_path': 'catalog_node',
-                               'binding_path': 'binding_node'}[key]], 'reader_move_prefix_unproved')
-    with R._readonly(Path(historical['catalog_path']), state) as db:
-        meta = dict(db.execute('SELECT key,value FROM meta'))
-        R._need(all(meta.get(k) == intent['catalog'][k][0] for k in ('binding', 'roots')),
-                'reader_move_prefix_unproved')
+    path = Path(historical['db_path'])
+    R._need(str(path) == ledger['candidateDb'] and R._file(path, state)
+            == ledger['candidateIdentity'] == historical['db_node'], 'reader_move_prefix_unproved')
+    _capacity_prefix(data, intent, route, moved=folder == new)
     R._need(route['dbPath'] == historical['db_path'] and route['scopeId'] == historical['scope']
             and route['dbIncarnation'] == historical['incarnation'], 'reader_move_source_changed')
     with R._readonly(Path(route['dbPath']), state) as db:
