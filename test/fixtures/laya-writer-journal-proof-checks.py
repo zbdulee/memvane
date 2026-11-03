@@ -172,6 +172,29 @@ class WriterJournalProofChecks(unittest.TestCase):
             with self.subTest(kind=type(bad).__name__), self.assertRaises((ValueError, TypeError, RuntimeError)):
                 with api(bad): self.fail('unissued context entered')
 
+    def test_scope_exit_after_base_close_cannot_downgrade_queue_to_raw(self):
+        with self.fixture.warm(), self.seed.authority():
+            stack, window = self.fixture.scope()
+            binding = self.api()(window)
+            calls, closes = [], []
+            native = self.W._OwnedSQLite._native_close_locked
+            def close(db):
+                result = native(db)
+                closes.append(True)
+                if len(closes) == 1: binding.__exit__(None, None, None)
+                return result
+            error = None
+            try:
+                with binding, self.trace(calls), mock.patch.object(self.W._OwnedSQLite, '_native_close_locked', new=close):
+                    try: self.proof()
+                    except (ValueError, RuntimeError, sqlite3.Error) as exc: error = str(exc)
+                emit('journal-mid-proof-scope-exit', contentConnects=calls, error=error)
+                self.assertIsNotNone(error)
+                self.assertEqual(len(closes), 1)
+                self.assertEqual(len(calls), 1, 'queue must not open after managed binding revocation')
+                self.assertTrue(calls[0]['managed'])
+            finally: stack.close()
+
     def test_default_identity_reader_loads_no_proof_dependencies(self):
         self.api()
         # The fixed engine's pre-existing project_dir import failure is tracked
