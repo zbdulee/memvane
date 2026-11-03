@@ -11,7 +11,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -68,28 +70,37 @@ def _owner(installer):
     return endpoint, owner
 
 
-def _named(install_id, parent, parent_fd, parent_info, name, fd):
+def _named(install_id, parent, parent_fd, parent_info, name, fd, *, links=1):
     R._need(R._lock_dir(install_id, create=False) == parent
             and os.path.samestat(parent_info, parent.lstat())
             and os.path.samestat(parent_info, os.fstat(parent_fd)),
             'reader_window_changed')
     opened = os.fstat(fd)
     named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    L._private_file(opened)
-    L._private_file(named)
+    for info in (opened, named):
+        if links == 1:
+            L._private_file(info)
+        else:
+            # Only the explicitly recovered manifest publication accepts two
+            # names. Component and lifetime locks always require one link.
+            R._need(links == 2 and stat.S_ISREG(info.st_mode)
+                    and info.st_uid == os.getuid() and info.st_nlink == 2
+                    and stat.S_IMODE(info.st_mode) == 0o600,
+                    'reader_windows_invalid')
     R._need(os.path.samestat(opened, named), 'reader_window_changed')
 
 
-def _manifest(install_id, parent, parent_fd, parent_info):
+def _manifest(install_id, parent, parent_fd, parent_info, *, links=1):
     """Completed preparation commits every stable lock inode, without repair."""
     fd = os.open(_MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
     try:
-        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd)
+        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=links)
         raw = os.read(fd, 65537)
         R._need(len(raw) <= 65536, 'reader_windows_invalid')
         document = json.loads(raw)
         R._need(type(document) is dict and set(document) == {'version', 'install_id', 'locks'}
-                and document['version'] == 1 and document['install_id'] == install_id
+                and type(document['version']) is int and document['version'] == 1
+                and document['install_id'] == install_id
                 and type(document['locks']) is dict
                 and set(document['locks']) == {*_WINDOW_NAMES, 'reader-lifetime.lock'}
                 and R._raw(document) == raw, 'reader_windows_invalid')
@@ -104,7 +115,7 @@ def _manifest(install_id, parent, parent_fd, parent_info):
                 R._need(node == [info.st_dev, info.st_ino], 'reader_window_changed')
             finally:
                 os.close(lock)
-        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd)
+        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=links)
         return raw
     finally:
         os.close(fd)
@@ -137,6 +148,7 @@ def _prepare_initial(install_id, parent, parent_fd, parent_info):
             output.write(raw)
             output.flush()
             os.fsync(output.fileno())
+        os.fsync(parent_fd)  # lock names and the private temp precede commit
         # No-clobber commit. A crash before this point has no complete marker;
         # lifetime EX excludes all live participants before any retry creates.
         os.link(temporary, _MANIFEST, src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
@@ -144,6 +156,40 @@ def _prepare_initial(install_id, parent, parent_fd, parent_info):
     finally:
         os.unlink(temporary, dir_fd=parent_fd)
         os.fsync(parent_fd)
+
+
+def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
+    """Recover only the proved, unique temp alias of a complete publication.
+
+    The caller holds lifetime EX. Unknown hardlinks or invalid contents are
+    refused; neither the manifest inode nor any coordination lock is replaced.
+    """
+    _manifest(install_id, parent, parent_fd, parent_info, links=2)
+    fd = os.open(_MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=2)
+        info = os.fstat(fd)
+        aliases = []
+        for name in os.listdir(parent_fd):
+            if re.fullmatch(r'\.component-windows-[0-9a-f]{32}', name):
+                node = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if os.path.samestat(info, node):
+                    aliases.append(name)
+        R._need(len(aliases) == 1, 'reader_windows_recovery_unproved')
+        name = aliases[0]
+        temporary = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        try:
+            _named(install_id, parent, parent_fd, parent_info, name, temporary, links=2)
+            R._need(os.path.samestat(info, os.fstat(temporary)), 'reader_windows_recovery_unproved')
+            _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=2)
+            os.unlink(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd)
+        finally:
+            os.close(temporary)
+    finally:
+        os.close(fd)
+    _manifest(install_id, parent, parent_fd, parent_info)
 
 
 def prepare_windows(installer):
@@ -160,7 +206,15 @@ def prepare_windows(installer):
     try:
         # A completed namespace is never repaired, even if a lock is missing.
         if os.path.lexists(parent / _MANIFEST):
-            _manifest(install_id, parent, parent_fd, parent_info)
+            if os.stat(_MANIFEST, dir_fd=parent_fd, follow_symlinks=False).st_nlink == 2:
+                with L.reader_lifetime(install_id, exclusive=True):
+                    # Another preparer may have completed before this EX.
+                    if os.stat(_MANIFEST, dir_fd=parent_fd, follow_symlinks=False).st_nlink == 2:
+                        _recover_manifest_link(install_id, parent, parent_fd, parent_info)
+                    else:
+                        _manifest(install_id, parent, parent_fd, parent_info)
+            else:
+                _manifest(install_id, parent, parent_fd, parent_info)
         else:
             with L.reader_lifetime(install_id, exclusive=True):
                 if not os.path.lexists(parent / _MANIFEST):
@@ -234,7 +288,7 @@ class _Lifetime:
 
 
 @contextmanager
-def _window(component, kind, *, exclusive, deadline):
+def _window(component, kind, *, exclusive, deadline, closing=False):
     binding = _component(component)
     R._need(type(exclusive) is bool, 'reader_window_mode_invalid')
     _deadline(deadline)
@@ -256,8 +310,16 @@ def _window(component, kind, *, exclusive, deadline):
                 time.sleep(min(0.005, remaining))
         _named(component.install_id, lifetime.parent, lifetime.parent_fd,
                lifetime.parent_info, name, fd)
-        R._need(_manifest(component.install_id, lifetime.parent, lifetime.parent_fd,
-                          lifetime.parent_info) == binding[4], 'reader_windows_changed')
+        if closing:
+            # Existing handles need only their sealed lifetime/physical locks
+            # to finish. Unrelated component damage cannot strand this close.
+            sealed = json.loads(binding[4])['locks']
+            for required, opened in (('reader-lifetime.lock', lifetime.fd), (name, fd)):
+                info = os.fstat(opened)
+                R._need(sealed[required] == [info.st_dev, info.st_ino], 'reader_window_changed')
+        else:
+            R._need(_manifest(component.install_id, lifetime.parent, lifetime.parent_fd,
+                              lifetime.parent_info) == binding[4], 'reader_windows_changed')
         yield
     finally:
         if fd is not None:
@@ -349,7 +411,7 @@ def close_or_defer(owner, *, deadline):
     R._need(not owner.db.in_transaction, 'reader_connection_transaction_active')
     owner.lifetime.check()
     try:
-        with physical_window(owner.component, exclusive=True, deadline=deadline):
+        with _window(owner.component, 'physical', exclusive=True, deadline=deadline, closing=True):
             owner.close_locked()
         return True
     except ReaderWindowBusy:
