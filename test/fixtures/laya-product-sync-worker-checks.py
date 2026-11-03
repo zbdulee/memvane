@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Selected worker wiring only; no model, QMD, socket or host is started."""
-from contextlib import ExitStack, closing, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, closing, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -114,12 +114,15 @@ class WorkerChecks(unittest.TestCase):
             calls.append(('start',manifest))
             self.assertTrue(admit())
             return service
-        def complete(_runtime,*,before_publish,vector_batch,require_vector):
+        def complete(_runtime,*,before_publish,vector_batch,require_vector,owner=None):
             self.assertTrue(require_vector)
             self.assertEqual(vector_batch,batch)
             before_publish()
             return {'state':'indexed'}
         patches=[patch.object(worker,'_selected',return_value=(self.decision,self.proof)),
+            # This wiring fixture substitutes the entire runtime/sync boundary.
+            # Actual owner/kernel lifetime is covered by the real-store fixture.
+            patch.object(worker,'sync_owner',side_effect=lambda _queue:nullcontext(object())),
             patch.object(worker,'ReviewedLocalQmdProvider',return_value=provider),
             patch.object(worker,'resource_report',return_value={'ready':True}),
             patch.object(worker,'verify_worker_attestation',return_value=self.proof['providerManifest']),
@@ -241,7 +244,7 @@ class WorkerChecks(unittest.TestCase):
     def test_qa_barrier_holds_exact_scope_once_and_records_completion_order(self):
         root,arm=self.arm()
         order=[]
-        def complete(_runtime,*,before_publish,vector_batch,require_vector):
+        def complete(_runtime,*,before_publish,vector_batch,require_vector,owner=None):
             order.append(vector_batch['source_manifest'])
             return {'state':'unchanged','generation':'g-main','claim':None}
         controller,_service,_calls,start,patches=self.wiring(sync=complete,batch=self.BATCH)
@@ -801,7 +804,7 @@ class CapacityWorkerChecks(unittest.TestCase):
         seen={'steps':[],'fills':0,'runtime':None,'scans':0,'cas':0}
         answers=iter(steps);fill_answers=iter(fills)
         def step(runtime,*,before_publish,require_vector,vector_profile_id,
-                 before_head_publish=None):
+                 before_head_publish=None,owner=None):
             self.assertTrue(require_vector)
             self.assertEqual(seen['scans'],1)  # the wake asked for its scan first
             seen['steps'].append(vector_profile_id)
