@@ -48,6 +48,11 @@ _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 if [ "${MEMVANE_BRIDGE_PREFLIGHT+x}" = x ]; then
   case "$ACTION" in
     recall|update-queued)
+      # The registered shebang follows PATH; QA provenance uses one system
+      # interpreter. Exec preserves event stdin and the host-owned ancestry.
+      if [ "${BASH:-}" != /bin/bash ]; then
+        exec /bin/bash "$_qmd_code_root/hooks/run-hook" "$@"
+      fi
       python3 -B "$_qmd_code_root/core/laya_host_response.py" \
         serve-qa-stdin "$ACTION" "$ENGINE" "$PWD"
       _qa_status=$?
