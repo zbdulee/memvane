@@ -126,7 +126,7 @@ def _connect_material(token, mode):
     lifetime = W._Lifetime(item.component.install_id)
     try:
         db = sqlite3.connect((item.state / item.name).as_uri() + '?mode=' + mode,
-                             uri=True, timeout=2, isolation_level=None)
+                             uri=True, timeout=2, isolation_level=None, factory=W._OwnedSQLite)
     except BaseException:
         lifetime.close()
         raise

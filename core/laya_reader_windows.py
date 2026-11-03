@@ -393,6 +393,65 @@ def publish_window(component, *, exclusive, deadline):
     return _window(component, 'publish', exclusive=exclusive, deadline=deadline)
 
 
+class _OwnedSQLite(sqlite3.Connection):
+    """Track cursors issued by the managed connection's supported methods.
+
+    The product uses cursor/execute/executemany/executescript. Direct native
+    constructors such as sqlite3.Cursor(db) and base-class method bypasses are
+    outside this cooperative API; this is not an arbitrary-native-API seal.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._live_cursors = weakref.WeakValueDictionary()
+        self._closing_cursors = False
+        self._native_closed = False
+
+    def _cursor_allowed(self):
+        if self._closing_cursors:
+            raise sqlite3.ProgrammingError('reader_connection_closing')
+
+    def _track_cursor(self, cursor):
+        self._live_cursors[id(cursor)] = cursor
+        return cursor
+
+    def cursor(self, *args, **kwargs):
+        self._cursor_allowed()
+        return self._track_cursor(super().cursor(*args, **kwargs))
+
+    def execute(self, *args, **kwargs):
+        self._cursor_allowed()
+        return self._track_cursor(super().execute(*args, **kwargs))
+
+    def executemany(self, *args, **kwargs):
+        self._cursor_allowed()
+        return self._track_cursor(super().executemany(*args, **kwargs))
+
+    def executescript(self, *args, **kwargs):
+        self._cursor_allowed()
+        return self._track_cursor(super().executescript(*args, **kwargs))
+
+    def close(self):
+        # The public raw handle must obey the same EX/deferred-owner contract.
+        # A repeated close after its owner completed is SQLite's usual no-op.
+        if not close_connection(self):
+            R._need(self._native_closed, 'reader_connection_not_owned')
+
+    def _native_close_locked(self):
+        # sqlite3_close_v2 can otherwise return before outstanding statements
+        # finalize. Reset every issued live cursor before closing the cache and
+        # native handle. Any failure leaves the strong owner/lifetime pending.
+        self._closing_cursors = True
+        try:
+            cursors = list(self._live_cursors.values())
+            for cursor in cursors:
+                cursor.close()
+            super().close()
+            self._native_closed = True
+            self._live_cursors.clear()
+        finally:
+            self._closing_cursors = False
+
+
 class _OwnedConnection:
     def __init__(self, component, db, lifetime):
         self.component, self.db, self.lifetime = component, db, lifetime
@@ -406,7 +465,7 @@ class _OwnedConnection:
     def close_locked(self):
         # A failing SQLite close remains strongly owned and pending as well.
         self.pending = True
-        self.db.close()
+        self.db._native_close_locked()
         self.db = None
         self.lifetime.close()
         _owned.pop(id(self), None)
@@ -417,7 +476,7 @@ def _connect_owned(component, mode):
     lifetime = _Lifetime(component.install_id)
     try:
         db = sqlite3.connect(component.path.as_uri() + '?mode=' + mode, uri=True,
-                             timeout=2, isolation_level=None)
+                             timeout=2, isolation_level=None, factory=_OwnedSQLite)
     except BaseException:
         lifetime.close()
         raise
