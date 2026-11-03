@@ -176,6 +176,77 @@ class DeleteChecks(existing.QueueMutationChecks):
             finally:
                 if journal.exists() and journal.read_bytes()==b'post-commit foreign journal':journal.unlink()
 
+    def test_before_begin_foreign_journal_does_not_retain_global_cut(self):
+        with self.binding() as (_C,store,binding,_kwargs):
+            journal=Path(str(store.path)+'-journal');journal.write_bytes(b'before-begin foreign');journal.chmod(0o600)
+            cls=type(store.db);rollback=cls.rollback;sql=[];rollbacks=[];error=None
+            def rb(db):rollbacks.append(True);return rollback(db)
+            store.db.set_trace_callback(sql.append)
+            try:
+                with mock.patch.object(cls,'rollback',rb):
+                    try:store.put(binding)
+                    except Exception as exc:error=str(exc)
+                result=dict(error=error,begin=[s for s in sql if s.startswith('BEGIN')],
+                    rollbacks=rollbacks,pending=self.W.pending_count(),cutSH=self.probe('publish-cut.lock',True),
+                    physicalSH=self.probe('binding-physical.lock',True),foreign=journal.read_bytes().decode())
+            finally:
+                store.db.set_trace_callback(None);journal.unlink()
+                if store._connection_owner.pending:self.W.drain_pending(deadline=time.monotonic()+1)
+            existing.emit('delete-before-begin-foreign-release',**result)
+            self.assertIsNotNone(error);self.assertEqual(result['begin'],[]);self.assertEqual(rollbacks,[])
+            self.assertEqual(result['pending'],0);self.assertTrue(result['cutSH']);self.assertTrue(result['physicalSH'])
+            self.assertEqual(result['foreign'],'before-begin foreign')
+
+    def test_restored_journal_drains_after_original_mover_scope_has_expired(self):
+        import laya_index_capacity as C
+        journal=Path(str(self.case.store)+'-journal');saved=journal.with_name(journal.name+'.expired-held')
+        store=None;error=None;calls=[];original_node=None;binding=None
+        try:
+            with self.seed.prepared():
+                self.W.prepare_windows(self.seed.installer)
+                scope=self.case.route['scopeId'];component=self.W.component_for(self.seed.installer,'binding')
+                store=C.GenerationBindingStore(self.case.store,scope=scope,
+                    db_incarnation=self.case.route['dbIncarnation'],roots={self.case.WIKI:str(self.case.auto/'wiki')},coordination=component)
+                gen=self.case.head()[0];binding=C.bind_generation(store.get(scope,gen,self.case.route['dbIncarnation']),nonce='b'*32)
+                cls=type(store.db);execute,rollback=cls.execute,cls.rollback
+                def swap(db,sql,*args,**kwargs):
+                    nonlocal original_node
+                    cursor=execute(db,sql,*args,**kwargs)
+                    if db is store.db and sql==C._INSERT_SQL:
+                        info=journal.lstat();original_node=(info.st_dev,info.st_ino)
+                        journal.rename(saved);journal.write_bytes(b'expired-scope foreign');journal.chmod(0o600)
+                    return cursor
+                with mock.patch.object(cls,'execute',swap):
+                    with self.assertRaises(Exception):store.put(binding)
+            # The real mover context has revoked its scope and released locks.
+            self.assertIsNotNone(original_node);journal.unlink();saved.rename(journal)
+            def rb(db):calls.append(True);return rollback(db)
+            with mock.patch.object(cls,'rollback',rb):
+                try:self.W.drain_pending(deadline=time.monotonic()+1)
+                except Exception as exc:error=str(exc)
+            remaining=self.W.pending_count();cut=self.probe('publish-cut.lock',True)
+            existing.emit('delete-expired-scope-drain',error=error,rollbacks=len(calls),pending=remaining,cutSH=cut)
+            self.assertIsNone(error);self.assertEqual(calls,[True]);self.assertEqual(remaining,0);self.assertTrue(cut)
+        finally:
+            if saved.exists():
+                if journal.exists():journal.unlink()
+                saved.rename(journal)
+            if store is not None and store._connection_owner.db is not None:
+                # RED-only cleanup: actual original journal under still-held
+                # physical EX. Never issue or alter a writer/scope capability.
+                tx=store._connection_owner.transaction
+                if tx is not None:
+                    info=journal.lstat();self.assertEqual((info.st_dev,info.st_ino),original_node)
+                    self.assertFalse(self.probe('binding-physical.lock',True))
+                    import sqlite3
+                    sqlite3.Connection.rollback(store.db);tx._finish()
+                store.close(deadline=time.monotonic()+1)
+                self.W.drain_pending(deadline=time.monotonic()+1)
+        # A fresh RO open sees no row after actual same-thread rollback.
+        import sqlite3
+        with sqlite3.connect(self.case.store.as_uri()+'?mode=ro',uri=True) as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM bindings WHERE generation=?',(binding.generation,)).fetchone())
+
 # Only the DELETE contracts; inherited queue checks have their own wrapper.
 if __name__=='__main__':
     names=[name for name in DeleteChecks.__dict__ if name.startswith('test_')]
