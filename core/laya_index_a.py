@@ -1065,10 +1065,11 @@ class LayaIndexA:
         if fault_at == 'after_head':
             raise InjectedFault('publish_after_head')
 
-    def _publication_stamp(self):
+    def _publication_binding(self):
         import laya_reader_windows as windows
         owner = self._connection_owner
         owner.check()
+        owner.lifetime.check()
         if owner.db is not self.db:
             raise windows.ReaderWindowBusy('reader_publish_changed')
         _pid, installer, scope, node, _manifest = windows._component(owner.component)
@@ -1077,7 +1078,10 @@ class LayaIndexA:
         if (current is not scope or tuple(windows.R._file(self.path, state)) != node
                 or windows._auxiliary_nodes(self.path, state) != owner.auxiliaries):
             raise windows.ReaderWindowBusy('reader_publish_changed')
-        return (owner, self.db, node, tuple(sorted(owner.auxiliaries.items())),
+        return owner, self.db, node, tuple(sorted(owner.auxiliaries.items()))
+
+    def _publication_stamp(self):
+        return (*self._publication_binding(),
                 self.db.execute('PRAGMA main.data_version').fetchone()[0],
                 self.db.total_changes,
                 self.db.execute('PRAGMA main.schema_version').fetchone()[0])
@@ -1085,10 +1089,12 @@ class LayaIndexA:
     def _publish_coordinated(self, expected, gen, claim, proof, require_vector, fault_at):
         import laya_reader_windows as windows
         try:
+            self._publication_binding()
             with self._write_transaction(visible=False) as transaction:
                 status, prepared = self._prepare_publication(expected, gen, claim, proof,
                                                              require_vector, transaction)
                 if status is not None:
+                    self._publication_binding()
                     return status
                 stamp = self._publication_stamp()
             # This stage admits only bounded key lookups and three DMLs. Full
@@ -1106,6 +1112,7 @@ class LayaIndexA:
                 if (*current_inputs, current_head) != prepared or self._publication_stamp() != stamp:
                     raise windows.ReaderWindowBusy('reader_publish_changed')
                 self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+            self._publication_binding()
             return 'published'
         except sqlite3.OperationalError as exc:
             code = getattr(exc, 'sqlite_errorcode', None)
