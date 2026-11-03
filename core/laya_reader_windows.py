@@ -528,6 +528,7 @@ class _WriteTransaction:
         self.owner = owner
         self.locks = ExitStack()
         self.rollback_pending = False
+        self.configuration_failed = False
 
     def _check(self):
         self.owner.check()
@@ -578,6 +579,9 @@ class _DeleteTransaction(_WriteTransaction):
     def _hold(self):
         self.rollback_pending = True
         self.owner.pending = True
+
+    def _unused(self):
+        return not self.begun and self.journal_fd is None and not self.owner.db.in_transaction
 
     def _finish(self):
         R._need(not self.owner.db.in_transaction, 'reader_connection_transaction_active')
@@ -670,11 +674,11 @@ class _DeleteTransaction(_WriteTransaction):
     def rollback(self):
         self._check()
         try:
-            if not self.begun and self.journal_fd is None and not self.owner.db.in_transaction:
+            if self._unused():
                 # Admission failed before native BEGIN. No SQL or journal is
                 # ours to undo; an unrelated file cannot retain our cut.
                 self._finish()
-                self.owner.pending = False
+                self.owner.pending = self.configuration_failed
                 return
             _connection_binding(self.owner, self.owner.db, cleanup=True)
             if self.owner.db.in_transaction:
@@ -740,6 +744,7 @@ def _transaction_context(owner, *, visible, deadline, delete=False):
                 owner.db.execute(f'PRAGMA busy_timeout={previous}')
             except BaseException:
                 owner.pending = True
+                transaction.configuration_failed = True
                 raise
         R._need(time.monotonic() < deadline, 'reader_write_deadline')
         yield transaction
@@ -750,7 +755,8 @@ def _transaction_context(owner, *, visible, deadline, delete=False):
             # describe the same current named database as normal completion.
             connection_binding(owner, owner.db)
     except BaseException as error:
-        if owner.transaction is transaction and not transaction.rollback_pending:
+        unused = isinstance(transaction, _DeleteTransaction) and transaction._unused()
+        if owner.transaction is transaction and (unused or not transaction.rollback_pending):
             try:
                 transaction.rollback()
             except BaseException:
