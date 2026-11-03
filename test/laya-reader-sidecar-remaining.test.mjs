@@ -18,6 +18,6 @@ test('managed sidecar preserve retire and backfill mutation contracts', () => {
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected ? 1 : 7} tests?\\b`));assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, new RegExp(`Ran ${selected ? 1 : 8} tests?\\b`));assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

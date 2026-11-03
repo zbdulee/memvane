@@ -158,6 +158,42 @@ class RemainingChecks(existing.SidecarWriteChecks):
                 self.assertIsNone(error);self.assertEqual(result['state'],'pending')
             finally:other.close(deadline=time.monotonic()+1)
 
+    def test_backfill_retained_catalog_read_snapshot_cannot_authorize_old_cursor_advance(self):
+        with self.opened() as (runtime,snapshot,_row,component):
+            self.require('backfill_cached')
+            from laya_source_catalog import LayaSourceCatalog
+            other=LayaSourceCatalog(runtime.catalog.path,runtime.catalog.roots,runtime.scope,wiki_only=True,
+                coordination=runtime.catalog._connection_owner.component)
+            publish=self.I.publish_document;require=runtime.catalog.require_current
+            expected=runtime.catalog.db.execute('SELECT path FROM scan_files WHERE seq=? ORDER BY path',(snapshot.seq,)).fetchall()
+            self.assertGreaterEqual(len(expected),3)
+            committed=[];injected=[];held=[];first=[];error=None;result=None
+            def published(*args,**kwargs):
+                value=publish(*args,**kwargs);committed.append(value['status']);return value
+            def checked(value):
+                result=require(value)
+                if committed and not injected:
+                    cursor=runtime.catalog.db.execute('SELECT path FROM scan_files WHERE seq=? ORDER BY path',(snapshot.seq,))
+                    held.append(cursor);first.append(cursor.fetchone())
+                    self.assertEqual(other.request_scan()['status'],'started')
+                    self.assertEqual(other.step(max_files=100,max_stats=100)['status'],'complete')
+                    injected.append((runtime.catalog._pointer('current'),other._pointer('current')))
+                return result
+            try:
+                with mock.patch.object(self.I,'publish_document',published),mock.patch.object(runtime.catalog,'require_current',checked):
+                    try:result=self.I.backfill_cached(runtime,self.identity,self.identity['vectorProfileId'],coordination=component,**self.options())
+                    except Exception as exc:error=str(exc)
+                remaining=held[0].fetchall()
+                with self.seed.ro(self.fixture.sidecar) as db:cursor=db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
+                print(json.dumps(dict(case='sidecar-backfill-active-catalog-snapshot',error=error,result=result,
+                    observedPointers=injected,cursor=cursor,nextRowsPreserved=first+remaining==expected)),flush=True)
+                self.assertTrue(injected);self.assertNotEqual(*injected[0])
+                self.assertEqual(cursor,(snapshot.scan_id,''));self.assertIsNotNone(error);self.assertIsNone(result)
+                self.assertEqual(first+remaining,expected)
+            finally:
+                for cursor in held:cursor.close()
+                other.close(deadline=time.monotonic()+1)
+
 if __name__=='__main__':
     names=[name for name in RemainingChecks.__dict__ if name.startswith('test_')]
     if len(sys.argv)>1:
