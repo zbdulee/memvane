@@ -3,7 +3,12 @@
 from contextlib import contextmanager
 import importlib
 import importlib.util
+import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -11,6 +16,62 @@ from unittest import mock
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('catalog_queue_helpers',ROOT/'test/fixtures/laya-reader-queue-mutations-checks.py')
 existing=importlib.util.module_from_spec(spec);spec.loader.exec_module(existing)
+
+CATALOG_CHILD=r'''
+from contextlib import ExitStack,nullcontext,contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import importlib.util,json,os,signal,sys,time
+root,payload,mode=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+p=json.loads(payload.read_text());sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime'];signal.alarm(30)
+spec=importlib.util.spec_from_file_location('catalog_crash_seed',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as R,laya_reader_lease as L,laya_reader_windows as W
+import laya_project_dir_move as mover,laya_state_move
+from laya_source_catalog import LayaSourceCatalog
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+project,state=Path(p['project']),Path(p['state'])
+assert len(R._issued)==0
+with helper.full_authority(case,R,L,W,mover),mock.patch.object(laya_state_move,'_provider_lane',lambda:nullcontext()):
+    installer=R.seal_current_reader(state,project,executing_root=case.plugin)
+    with ExitStack() as locks:
+        mover._locks(locks,project,state,mover._queue_path(project,None))
+        W.prepare_windows(installer);component=W.component_for(installer,'catalog')
+        catalog=LayaSourceCatalog(Path(p['catalog']),p['roots'],p['scope'],wiki_only=True,coordination=component)
+        try:
+            if mode=='crash':
+                assert catalog.request_scan()['status']=='started'
+                actual=W.write_transaction
+                @contextmanager
+                def stop(owner,*,visible,deadline):
+                    if visible:
+                        scan=catalog._scan_row(catalog._pointer('active'))
+                        print(json.dumps(dict(event='terminal-private-commit',phase=scan['phase'],current=catalog._pointer('current'),
+                            active=scan['seq'],cursor=scan['cursor'],nativeSQLActive=catalog.db.in_transaction)),flush=True)
+                        os.kill(os.getpid(),signal.SIGKILL)
+                    with actual(owner,visible=visible,deadline=deadline) as tx:yield tx
+                with mock.patch.object(W,'write_transaction',stop):catalog.step(max_files=100,max_stats=100)
+                raise RuntimeError('actual terminal private commit was not reached')
+            result=catalog.step(max_files=100,max_stats=100)
+            print(json.dumps(dict(event='fresh-resume',result=result,scan_id=catalog.require_complete().scan_id)),flush=True)
+        finally:catalog.close(deadline=time.monotonic()+1);W.drain_pending(deadline=time.monotonic()+1)
+'''
+
+READ_CATALOG=r'''
+import json,sqlite3,sys
+from pathlib import Path
+db=sqlite3.connect(Path(sys.argv[1]).as_uri()+'?mode=ro',uri=True,isolation_level=None)
+try:
+    db.execute('BEGIN')
+    current=db.execute('SELECT seq FROM current WHERE id=1').fetchone()[0]
+    active=db.execute('SELECT seq FROM active WHERE id=1').fetchone()[0]
+    row=db.execute('SELECT phase,cursor,raw_digest FROM scans WHERE seq=?',(active,)).fetchone()
+    complete=db.execute('SELECT scan_id,raw_digest,files FROM scans WHERE seq=?',(current,)).fetchone()
+    print(json.dumps(dict(current=current,active=active,scan=row,complete=complete)))
+finally:db.close()
+'''
 
 class CatalogChecks(existing.QueueMutationChecks):
     @contextmanager
@@ -90,6 +151,63 @@ class CatalogChecks(existing.QueueMutationChecks):
             self.assertEqual(complete,original)
             self.assertEqual(catalog.step(max_files=100,max_stats=100)['status'],'blocked')
             with self.assertRaises(Exception):catalog.require_complete()
+
+    def test_external_coalesce_between_private_commit_and_cut_is_not_lost(self):
+        with self.catalog() as (catalog,component):
+            old=catalog.require_complete();self.assertEqual(catalog.request_scan()['status'],'started')
+            other=self.C.LayaSourceCatalog(catalog.path,catalog.roots,catalog.scope,wiki_only=True,coordination=component)
+            actual=self.W.write_transaction;injections=[]
+            @contextmanager
+            def between(owner,*,visible,deadline):
+                if owner is catalog._connection_owner and visible and not injections:
+                    injections.append(other.request_scan())
+                with actual(owner,visible=visible,deadline=deadline) as tx:yield tx
+            try:
+                with mock.patch.object(self.W,'write_transaction',between):result=catalog.step(max_files=100,max_stats=100)
+                pending=catalog._scan_row(catalog._pointer('active'))
+                self.assertEqual(catalog.require_complete(),old)
+                self.assertEqual(result['status'],'busy');self.assertEqual(injections[0]['status'],'coalesced')
+                self.assertEqual(pending['rerequested'],1)
+                completed=catalog.step(max_files=100,max_stats=100)
+                self.assertEqual(completed['status'],'complete');self.assertIn('next_scan_id',completed)
+                active=catalog._scan_row(catalog._pointer('active'))
+                self.assertEqual(active['scan_id'],completed['next_scan_id'])
+                with self.assertRaises(Exception):catalog.require_servable()
+                self.assertEqual(catalog.step(max_files=100,max_stats=100)['status'],'complete')
+                catalog.require_servable()
+                existing.emit('catalog-coalesce-gap',first=result['status'],injections=injections,nextScan=completed['next_scan_id'])
+            finally:other.close(deadline=time.monotonic()+1)
+
+    def test_sigkill_after_terminal_private_commit_preserves_old_snapshot_then_fresh_resume(self):
+        with self.seed.prepared():
+            self.W.prepare_windows(self.seed.installer)
+        path=self.case.auto/'wiki'/'terminal-crash.md';path.write_text('# Terminal crash\nsynthetic complete catalog boundary\n',encoding='utf8')
+        payload=self.case.state/'catalog-crash-payload.json'
+        payload.write_text(json.dumps(dict(home=str(self.case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(self.case.project),state=str(self.case.state),plugin=str(self.case.plugin),proof=self.case.proof,
+            catalog=str(self.case.catalog),roots={self.case.WIKI:str(self.case.auto/'wiki')},scope=self.case.route['scopeId'])))
+        payload.chmod(0o600)
+        def read():
+            result=subprocess.run([sys.executable,'-B','-I','-c',READ_CATALOG,str(self.case.catalog)],
+                capture_output=True,encoding='utf8',timeout=5)
+            self.assertEqual(result.returncode,0,result.stderr)
+            return json.loads(result.stdout)
+        before=read()
+        child=subprocess.run([sys.executable,'-B','-I','-c',CATALOG_CHILD,str(ROOT),str(payload),'crash'],
+            capture_output=True,encoding='utf8',timeout=35)
+        self.assertEqual(child.returncode,-signal.SIGKILL,child.stdout+child.stderr)
+        checkpoint=json.loads(child.stdout.splitlines()[-1]);after=read()
+        self.assertEqual(checkpoint['event'],'terminal-private-commit');self.assertFalse(checkpoint['nativeSQLActive'])
+        self.assertEqual(after['complete'],before['complete']);self.assertNotEqual(after['current'],after['active'])
+        self.assertEqual(after['scan'][0],'verify_files');self.assertIsNone(after['scan'][2])
+        resumed=subprocess.run([sys.executable,'-B','-I','-c',CATALOG_CHILD,str(ROOT),str(payload),'resume'],
+            capture_output=True,encoding='utf8',timeout=35)
+        self.assertEqual(resumed.returncode,0,resumed.stdout+resumed.stderr)
+        result=json.loads(resumed.stdout.splitlines()[-1]);final=read()
+        self.assertEqual(result['result']['status'],'complete');self.assertEqual(final['current'],after['active'])
+        self.assertNotEqual(final['complete'][1],before['complete'][1])
+        existing.emit('catalog-terminal-real-sigkill',actualExit=child.returncode,checkpoint=checkpoint,
+            oldCompleteRetained=True,freshResume=result['result']['status'],newDigest=True,coldCapabilityClaim=False)
 
 if __name__=='__main__':
     names=[name for name in CatalogChecks.__dict__ if name.startswith('test_')]

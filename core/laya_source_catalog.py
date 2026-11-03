@@ -9,9 +9,12 @@ same source contract but spreads the work over durable steps:
     ``max_files`` units (one directory listing or one file hash each),
     ``max_bytes`` streamed file bytes and ``max_stats`` verification stats.
     Phases: interleaved enumerate/hash -> verify_dirs -> verify_files -> publish.
-  * The complete snapshot pointer moves only in the transaction that finishes
-    verification. Pending, deferred or blocked scans never replace it, and a
+  * The complete snapshot pointer moves atomically with its verified complete
+    record. Pending, deferred or blocked scans never replace it, and a
     partial listing is never evidence of deletion.
+  * Coordinated scan/hash progress uses a private mutation transaction. Its
+    stamp and terminal cursor precede a separate short publication transaction;
+    snapshot completion, scan activation and blocked status require the cut.
   * The catalog is servable only while the newest requested scan is the
     current complete one; a pending or blocked newer scan fails closed.
     Servability is a precondition, never a freshness claim (see below).
@@ -60,6 +63,7 @@ Two correctness claims are kept apart
 from __future__ import annotations
 
 import codecs
+from contextlib import contextmanager
 import errno
 import hashlib
 import json
@@ -636,6 +640,10 @@ class LayaSourceCatalog:
             'SELECT seq FROM scans WHERE seq IS NOT ?', (current,)).fetchall()]
         for seq in stale:
             self._drop_scan(seq)
+        return self._allocate_scan()
+
+    def _allocate_scan(self) -> Tuple[int, str]:
+        # At most MAX_COLLECTIONS root rows; no source traversal or cleanup.
         scan_id = uuid.uuid4().hex
         seq = self.db.execute("INSERT INTO scans(scan_id,phase,started_ns) "
                               "VALUES(?,'enumerate',?)",
@@ -644,6 +652,124 @@ class LayaSourceCatalog:
                             [(seq, name + '/', name) for name in self.roots])
         self.db.execute('INSERT OR REPLACE INTO active VALUES(1,?)', (seq,))
         return seq, scan_id
+
+    @contextmanager
+    def _managed_write(self, *, visible=False):
+        from laya_reader_windows import write_transaction
+        with write_transaction(self._connection_owner, visible=visible,
+                deadline=time.monotonic() + (.05 if visible else 2)) as transaction:
+            self._check_identity()
+            yield transaction
+
+    def _managed_result(self, action, busy):
+        from laya_reader_windows import ReaderWindowBusy
+        try:
+            return action()
+        except (ReaderWindowBusy, sqlite3.OperationalError) as exc:
+            if isinstance(exc, sqlite3.OperationalError) and not _is_busy(exc):
+                raise
+            owner = self._connection_owner
+            # An unfinished rollback is an error requiring explicit drain,
+            # rather than an ordinary retry result.
+            if owner.pending or owner.transaction is not None or owner.db.in_transaction:
+                raise
+            return busy
+
+    def _catalog_stamp(self):
+        from laya_reader_windows import connection_binding
+        return (connection_binding(self._connection_owner, self.db),
+                self.db.execute('PRAGMA data_version').fetchone()[0],
+                self.db.total_changes,
+                self.db.execute('PRAGMA schema_version').fetchone()[0])
+
+    def _publication_rows(self):
+        current, active = self._pointer('current'), self._pointer('active')
+        return current, active, self._scan_row(active)
+
+    def _recheck_publication(self, stamp, rows):
+        from laya_reader_windows import ReaderWindowBusy
+        if self._catalog_stamp() != stamp or self._publication_rows() != rows or self._catalog_stamp() != stamp:
+            raise ReaderWindowBusy('reader_catalog_changed')
+
+    def _prune_scans(self):
+        # Cleanup never removes the active scan or the published snapshot.
+        current, active = self._pointer('current'), self._pointer('active')
+        for (seq,) in self.db.execute('SELECT seq FROM scans WHERE seq IS NOT ? AND seq IS NOT ?',
+                                      (current, active)).fetchall():
+            self._drop_scan(seq)
+
+    def _request_scan_managed(self):
+        def request():
+            with self._managed_write():
+                self._ensure_partial_tables()
+                self._prune_scans()
+                active = self._scan_row(self._pointer('active'))
+                if active is not None and active['phase'] in PENDING_PHASES:
+                    self.db.execute('UPDATE scans SET rerequested=1 WHERE seq=?', (active['seq'],))
+                    return {'status': 'coalesced', 'scan_id': active['scan_id']}
+                rows = self._publication_rows()
+                stamp = self._catalog_stamp()
+            with self._managed_write(visible=True):
+                self._recheck_publication(stamp, rows)
+                _seq, scan_id = self._allocate_scan()
+            return {'status': 'started', 'scan_id': scan_id}
+        return self._managed_result(request, {'status': 'busy', 'scan_id': None})
+
+    def _step_managed(self, work):
+        busy = {'status': 'busy', 'scan_id': None, 'phase': None, 'work': work.report()}
+        def step():
+            blocked = None
+            with self._managed_write() as transaction:
+                # Capture original identity before DDL and progress writes, so
+                # a blocked private step can roll back without publishing it.
+                original_rows = self._publication_rows()
+                original_stamp = self._catalog_stamp()
+                self._ensure_partial_tables()
+                self._prune_scans()
+                scan = self._scan_row(self._pointer('active'))
+                if scan is None or scan['phase'] not in PENDING_PHASES:
+                    transaction.rollback()
+                    result = self._settled(scan)
+                    result['work'] = work.report()
+                    return result
+                seq = scan['seq']
+                busy.update(scan_id=scan['scan_id'], phase=scan['phase'])
+                opener = _DirOpener(self.db, self.roots, seq)
+                try:
+                    result = self._advance(scan, work, opener, deferred_publish=True)
+                except _Blocked as exc:
+                    blocked = (exc.reason, exc.detail)
+                except OSError as exc:
+                    reason = 'source_changed' if exc.errno in _CHANGED_ERRNOS else 'source_unreadable'
+                    blocked = (reason, f'{type(exc).__name__}: {exc.strerror or exc}')
+                finally:
+                    opener.close()
+                if blocked is not None:
+                    # rollback does not reset total_changes. Read it before
+                    # releasing this SQL writer, not after the commit gap.
+                    stamp = (original_stamp[0], original_stamp[1],
+                             self.db.total_changes, original_stamp[3])
+                    rows = original_rows
+                    transaction.rollback()
+                else:
+                    self.db.execute('UPDATE scans SET steps=steps+1 WHERE seq=?', (seq,))
+                    summary = result.pop('_publication', None)
+                    if summary is None:
+                        result.update(scan_id=scan['scan_id'], work=work.report())
+                        return result
+                    rows, stamp = self._publication_rows(), self._catalog_stamp()
+            with self._managed_write(visible=True):
+                self._recheck_publication(stamp, rows)
+                if blocked is not None:
+                    result = self._block(seq, *blocked)
+                    self.db.execute('UPDATE scans SET steps=steps+1 WHERE seq=?', (seq,))
+                else:
+                    result = self._commit_publication(seq, summary, cleanup=False)
+            result.update(scan_id=scan['scan_id'], work=work.report())
+            return result
+        result = self._managed_result(step, busy)
+        result['work'] = work.report()
+        return result
 
     # -- scan control ---------------------------------------------------------
 
@@ -654,6 +780,8 @@ class LayaSourceCatalog:
         then chains one more scan, so serving stays closed for a change that
         may have landed after its item was verified.
         """
+        if self._connection_owner is not None:
+            return self._request_scan_managed()
         if not self._begin_write():
             return {'status': 'busy', 'scan_id': None}
         try:
@@ -679,6 +807,8 @@ class LayaSourceCatalog:
                      _positive_int('max_bytes', max_bytes),
                      _positive_int('max_stats', max_stats))
         _require_platform()
+        if self._connection_owner is not None:
+            return self._step_managed(work)
         if not self._begin_write():
             return {'status': 'busy', 'scan_id': None, 'phase': None,
                     'work': work.report()}
@@ -728,7 +858,7 @@ class LayaSourceCatalog:
                 'blocked': {'reason': reason, 'detail': detail}}
 
     def _advance(self, scan: Dict[str, Any], work: _Work,
-                 opener: _DirOpener) -> Dict[str, Any]:
+                 opener: _DirOpener, *, deferred_publish=False) -> Dict[str, Any]:
         seq = scan['seq']
         state = {'phase': scan['phase'], 'cursor': scan['cursor'],
                  'entries': scan['entries']}
@@ -741,6 +871,13 @@ class LayaSourceCatalog:
         while outcome is None:
             outcome = handlers[state['phase']](seq, state, work, opener)
         if outcome == 'complete':
+            if deferred_publish:
+                # This durable terminal cursor can be retried after a cut
+                # conflict or process exit; it is not a completed snapshot.
+                self.db.execute('UPDATE scans SET phase=?,cursor=?,entries=? WHERE seq=?',
+                                (state['phase'], state['cursor'], state['entries'], seq))
+                return {'status': 'pending', 'phase': state['phase'],
+                        '_publication': self._publication_summary(seq)}
             return self._publish(seq)
         self.db.execute('UPDATE scans SET phase=?,cursor=?,entries=? WHERE seq=?',
                         (state['phase'], state['cursor'], state['entries'], seq))
@@ -909,6 +1046,9 @@ class LayaSourceCatalog:
 
     def _publish(self, seq: int) -> Dict[str, Any]:
         """Swap the complete snapshot pointer inside the step transaction."""
+        return self._commit_publication(seq, self._publication_summary(seq), cleanup=True)
+
+    def _publication_summary(self, seq: int) -> Dict[str, Any]:
         digest = hashlib.sha256()
         files = total = 0
         cursor = self.db.execute('SELECT path,sha256,size FROM scan_files WHERE seq=? '
@@ -922,17 +1062,20 @@ class LayaSourceCatalog:
         previous = self._pointer('current')
         changes = self._changes(previous, seq, files)
         raw_digest = digest.hexdigest()
+        return {'raw_digest': raw_digest, 'files': files, 'bytes': total, **changes}
+
+    def _commit_publication(self, seq: int, summary: Dict[str, Any], *, cleanup: bool):
+        previous = self._pointer('current')
         self.db.execute("UPDATE scans SET phase='complete',cursor='',raw_digest=?,files=?,"
                         'bytes=?,finished_ns=? WHERE seq=?',
-                        (raw_digest, files, total, time.time_ns(), seq))
+                        (summary['raw_digest'], summary['files'], summary['bytes'], time.time_ns(), seq))
         self.db.execute('INSERT OR REPLACE INTO current VALUES(1,?)', (seq,))
-        if previous is not None and previous != seq:
+        if cleanup and previous is not None and previous != seq:
             self._drop_scan(previous)
         result: Dict[str, Any] = {'status': 'complete', 'phase': 'complete',
-                                  'published': {'raw_digest': raw_digest, 'files': files,
-                                                'bytes': total, **changes}}
+                                  'published': summary}
         if self.db.execute('SELECT rerequested FROM scans WHERE seq=?', (seq,)).fetchone()[0]:
-            result['next_scan_id'] = self._start_scan()[1]
+            result['next_scan_id'] = (self._start_scan() if cleanup else self._allocate_scan())[1]
         return result
 
     def _changes(self, previous: Optional[int], seq: int, files: int) -> Dict[str, int]:
@@ -1097,6 +1240,25 @@ class LayaSourceCatalog:
         if (not isinstance(proof, PendingMemberProof) or not _HEX64.match(profile_id or '')
                 or type(ordinal) is not int or ordinal < 0):
             raise ValueError('invalid pending fill record')
+        if self._connection_owner is not None:
+            def update():
+                with self._managed_write() as transaction:
+                    self._ensure_partial_tables()
+                    if (not self._pending_proof_current(proof)
+                            or (ordinal and self.db.execute('SELECT 1 FROM hash_ready WHERE seq=? AND ord=?',
+                                (proof.seq, ordinal)).fetchone() is None)):
+                        transaction.rollback()
+                        return False
+                    previous = self.db.execute('SELECT ord FROM pending_fill WHERE seq=? AND profile_id=?',
+                                               (proof.seq, profile_id)).fetchone()
+                    if previous is not None and ordinal < previous[0]:
+                        transaction.rollback()
+                        return False
+                    self.db.execute('INSERT INTO pending_fill(seq,profile_id,ord) VALUES(?,?,?) '
+                                    'ON CONFLICT(seq,profile_id) DO UPDATE SET ord=excluded.ord',
+                                    (proof.seq, profile_id, ordinal))
+                return True
+            return self._managed_result(update, False)
         if not self._begin_write():
             return False
         try:
@@ -1395,6 +1557,24 @@ class LayaSourceCatalog:
                 or not isinstance(cursor, str) or type(done) is not bool
                 or type(rows) is not int or rows < 0):
             raise ValueError('invalid vector fill record')
+        if self._connection_owner is not None:
+            def update():
+                with self._managed_write() as transaction:
+                    if self._pointer('current') != snapshot.seq:
+                        transaction.rollback()
+                        return False
+                    columns = [row[1] for row in self.db.execute('PRAGMA table_info(vector_fill)')]
+                    if columns and 'rows' not in columns:
+                        self.db.execute('DROP TABLE vector_fill')
+                    self.db.execute('CREATE TABLE IF NOT EXISTS vector_fill('
+                                    'seq INTEGER NOT NULL, profile_id TEXT NOT NULL, '
+                                    'cursor TEXT NOT NULL, done INTEGER NOT NULL, '
+                                    'rows INTEGER NOT NULL, PRIMARY KEY(seq, profile_id))')
+                    self.db.execute('DELETE FROM vector_fill WHERE seq<>?', (snapshot.seq,))
+                    self.db.execute('INSERT OR REPLACE INTO vector_fill VALUES(?,?,?,?,?)',
+                                    (snapshot.seq, profile_id, cursor, int(done), rows))
+                return True
+            return self._managed_result(update, False)
         if not self._begin_write():
             return False
         try:
