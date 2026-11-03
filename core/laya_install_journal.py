@@ -499,6 +499,7 @@ def _schema_version_read(db):
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
 _writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
+_CURRENT_IDENTITY_BINDING = object()
 
 
 class _WriterIdentityReads:
@@ -553,8 +554,9 @@ def writer_identity_reads(window):
     return _WriterIdentityReads(window)
 
 
-def _identity_connection(path):
-    binding = _writer_identity_reads.get()
+def _identity_connection(path, *, binding=_CURRENT_IDENTITY_BINDING):
+    if binding is _CURRENT_IDENTITY_BINDING:
+        binding = _writer_identity_reads.get()
     if binding is None:
         return closing(sqlite3.connect(path.resolve(strict=True).as_uri() + '?mode=ro',
                                        uri=True, timeout=2))
@@ -1423,7 +1425,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                                     *((_executing_root(),) if read_only else ())}:
                     if canonical_path == plugin_root or plugin_root in canonical_path.parents:
                         _fail('index_path_overlaps_plugin')
-            with _identity_connection(db_path) as index_db:
+            with _identity_connection(db_path, binding=binding) as index_db:
                 index_db.execute('BEGIN')
                 LayaIndexA._check_header(index_db)
                 incarnation = index_db.execute(
@@ -1431,7 +1433,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 if incarnation != route['dbIncarnation']:
                     _fail('index_incarnation_mismatch')
                 index_db.commit()
-            with _identity_connection(queue_path) as queue_db:
+            with _identity_connection(queue_path, binding=binding) as queue_db:
                 queue_db.execute('BEGIN')
                 if ClaimQueue._check_database(queue_db) != incarnation:
                     _fail('queue_incarnation_mismatch')
