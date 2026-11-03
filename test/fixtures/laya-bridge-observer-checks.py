@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -32,7 +34,13 @@ class FakeHostSpec:
 
 FAKE = r'''
 import json, os, pathlib, subprocess, sys
-role, root, ident, host, nonce, session, behavior, source, log = sys.argv[1:]
+if sys.argv[1] == 'serve-qa-stdin':
+    role = 'core'
+    root = str(pathlib.Path(__file__).resolve().parents[1])
+    spec = json.loads((pathlib.Path(root)/'.observer-fixture.json').read_text(encoding='utf8'))
+    ident, host, nonce, session, behavior, source, log = [spec[k] for k in ('ident','host','nonce','session','behavior','source','log')]
+else:
+    role, root, ident, host, nonce, session, behavior, source, log = sys.argv[1:]
 sys.path.insert(0, source)
 import laya_bridge_observer as observer
 with open(log, 'a', encoding='utf8') as out:
@@ -44,8 +52,14 @@ if role == 'cli':
     if behavior == 'nohook':
         sys.exit(0)
     if behavior != 'manual-core':
-        script = pathlib.Path(root)/('unregistered.py' if behavior == 'entrypoint' else 'core/laya_host_response.py')
-        child = subprocess.run([sys.executable, '-B', '-I', str(script), 'core', *sys.argv[2:]], timeout=12)
+        if behavior in ('direct-core','entrypoint'):
+            script = pathlib.Path(root)/('unregistered.py' if behavior == 'entrypoint' else 'core/laya_host_response.py')
+            argv = [sys.executable, '-B', '-I', str(script), 'core', *sys.argv[2:]]
+            env = dict(os.environ)
+        else:
+            argv = ['/bin/bash', str(pathlib.Path(root)/'hooks/run-hook'), 'recall', host]
+            env = dict(os.environ, BRIDGE_FAKE_PYTHON=sys.executable)
+        child = subprocess.run(argv, env=env, timeout=12)
         pathlib.Path(log+'.cli-complete').write_text('child-wait-completed', encoding='utf8')
         sys.exit(child.returncode)
 if behavior == 'earlyexit':
@@ -92,6 +106,13 @@ class ObserverChecks(unittest.TestCase):
             path.write_text(FAKE, encoding='utf8')
             path.chmod(0o600)
         log = self.case.home / ('observer-' + behavior + '.jsonl')
+        (root/'hooks').mkdir(mode=0o700,exist_ok=True)
+        dispatcher=root/'hooks/run-hook'
+        dispatcher.write_text('#!/bin/bash\nset -u\n'
+            'root="$(cd "$(dirname "$0")/.." && pwd)"\n'
+            '"$BRIDGE_FAKE_PYTHON" -B "$root/core/laya_host_response.py" serve-qa-stdin "$1" "$2" "$PWD"\n'
+            'status=$?\nexit "$status"\n',encoding='utf8')
+        dispatcher.chmod(0o700)
         # Framework Python's command-line launcher execs Python.app on macOS.
         # This synthetic native HostSpec must name the stable executable,
         # rather than ask the collector to accept a changed process image.
@@ -106,6 +127,10 @@ class ObserverChecks(unittest.TestCase):
         else:
             exe = Path(sys.executable).resolve(strict=True)
         session = 'synthetic-owned-session'
+        config=root/'.observer-fixture.json'
+        config.write_text(json.dumps(dict(ident=challenge.challenge_id,host='claude',nonce=challenge.nonce_sha256,
+            session=session,behavior=behavior,source=str(HERE.parents[1]/'core'),log=str(log))),encoding='utf8')
+        config.chmod(0o600)
         host = FakeHostSpec((str(exe), '-B', '-I', str(root / 'fake-cli.py'), 'cli', str(root),
             challenge.challenge_id, 'claude', challenge.nonce_sha256, session, behavior,
             str(HERE.parents[1] / 'core'), str(log)), self.case.project, exe, root,
@@ -182,6 +207,102 @@ class ObserverChecks(unittest.TestCase):
                 self.assertIsNone(receipt)
                 self.assertIsNotNone(error)
                 self.assertFalse((directory / 'claude.json').exists())
+
+    def test_direct_core_descendant_without_registered_bash_dispatcher_has_no_receipt(self):
+        _, _, _, receipt, error, _, directory = self.collect('direct-core')
+        self.assertIsNone(receipt,'bare core descendant is not a registered hook invocation')
+        self.assertIsNotNone(error)
+        self.assertFalse((directory/'claude.json').exists())
+
+    def test_drip_stream_cannot_extend_an_absolute_receive_deadline(self):
+        observer=self.observer()
+        supported='deadline' in inspect.signature(observer._receive).parameters
+        stop=threading.Event()
+        reader,writer=socket.socketpair()
+        with reader,writer:
+            reader.settimeout(0.04)
+            def drip():
+                try:
+                    for _ in range(10):
+                        if stop.is_set():break
+                        writer.sendall(b'x')
+                        if stop.wait(0.02):break
+                except OSError:pass
+                finally:
+                    writer.close()
+            thread=threading.Thread(target=drip)
+            start=time.monotonic()
+            thread.start()
+            error=None
+            try:
+                try:
+                    if supported:observer._receive(reader,deadline=start+0.07)
+                    else:observer._receive(reader)
+                except (ValueError,TimeoutError,OSError) as exc:error=type(exc).__name__
+                elapsed=time.monotonic()-start
+            finally:
+                stop.set()
+                thread.join(1)
+            print(json.dumps(dict(case='absolute-receive-deadline',deadline_api=supported,
+                elapsed=elapsed,error=error,absolute_budget=0.07,writer_alive=thread.is_alive())),flush=True)
+            self.assertFalse(thread.is_alive())
+            self.assertIsNotNone(error)
+            self.assertLess(elapsed,0.12,'drip bytes must not renew the absolute receive budget')
+
+    def test_cleanup_reaps_term_ignoring_tracked_child_after_root_has_exited(self):
+        observer=self.observer()
+        handles,identities=[],{}
+        try:
+            for ignore in (False,True):
+                script=('import signal,time; '+('signal.signal(signal.SIGTERM,signal.SIG_IGN); ' if ignore else '')+
+                        "print('ready',flush=True); time.sleep(20)")
+                process=subprocess.Popen([sys.executable,'-B','-I','-c',script],
+                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+                handles.append(process)
+                import select
+                self.assertTrue(select.select([process.stdout],[],[],5)[0])
+                self.assertEqual(process.stdout.readline().strip(),'ready')
+                identities[process.pid]=observer._process_identity(process.pid)
+            root,worker=handles
+            # Sibling handles model already-tracked descendants after reparenting;
+            # this unit does not claim new ancestry authority.
+            observer._cleanup(root,identities)
+            print(json.dumps(dict(case='tracked-cleanup',root_status=root.poll(),worker_status=worker.poll(),
+                                   siblings_are_cleanup_control_not_ancestry=True)),flush=True)
+            self.assertIsNotNone(root.poll())
+            self.assertIsNotNone(worker.poll(),'root.wait completion cannot leave a tracked TERM-ignore worker alive')
+        finally:
+            for process in handles:
+                if process.poll() is None:
+                    current=observer._process_identity(process.pid)
+                    saved=identities.get(process.pid,current)
+                    self.assertTrue(all(current[k]==saved[k] for k in ('pid','uid','start_key','executable')))
+                    process.kill()  # Only this fixture's bootstrap Popen handle.
+                process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
+    def test_private_socket_rejects_symlink_modes_and_real_parent_inode_replacement(self):
+        observer=self.observer()
+        for variant in ('socket-mode','parent-mode','symlink','socket-inode','parent-inode','moved-parent'):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory(prefix='bg-',dir='/tmp') as temp:
+                parent=Path(temp).resolve()/'private'
+                parent.mkdir(mode=0o700)
+                path=parent/'s.sock'
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path));path.chmod(0o600)
+                    node=[path.stat().st_dev,path.stat().st_ino]
+                    parent_node=[parent.stat().st_dev,parent.stat().st_ino]
+                    if variant=='socket-mode':path.chmod(0o644)
+                    elif variant=='parent-mode':parent.chmod(0o755)
+                    elif variant=='symlink':
+                        alias=parent/'alias.sock';alias.symlink_to(path);path=alias
+                    elif variant=='socket-inode':node=[node[0],node[1]+1]
+                    elif variant=='parent-inode':parent_node=[parent_node[0],parent_node[1]+1]
+                    else:
+                        old=parent.with_name('old-private');parent.rename(old);parent.mkdir(mode=0o700)
+                        (old/'s.sock').rename(path)
+                    with self.assertRaises(ValueError):observer._private_socket(path,node,parent_node)
 
     def test_real_packet_nonce_host_session_root_and_entrypoint_mismatches_refuse(self):
         for behavior in ('nonce', 'host', 'session', 'root', 'entrypoint'):
