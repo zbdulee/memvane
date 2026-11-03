@@ -885,20 +885,23 @@ def move(project_root, state, *, step=None):
     project = Path(project_root)
     state = Path(state)
     intent = _load_intent(state, project) if intent_present(state) else None
+    # Before owner admission a pointer is only a pending hint: another mover
+    # may have published or settled the intent since the previous read.
     pointer = read_pointer(project)
-    if pointer is not None:
-        if pointer['stateRoot'] != str(state):
-            _fail('project_dir_move_pointer_changed')
-        if intent is None:
-            _fail('project_dir_move_intent_missing')
     mode = intent['mode'] if intent is not None else needed(project)
-    if mode is None:
+    if mode is None and pointer is None:
         return {'status': 'project_dir_current'}
-    if mode == 'tidy':
+    if mode == 'tidy' and pointer is None:
         return {'status': 'project_dir_current', 'tidied': tidy(project)}
     with ExitStack() as stack:
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
+        pointer = read_pointer(project)
+        if pointer is not None:
+            if pointer['stateRoot'] != str(state):
+                _fail('project_dir_move_pointer_changed')
+            if intent is None:
+                _fail('project_dir_move_intent_missing')
         from laya_move_reader_journal import refuse_incomplete_move
         # The install/operation/owner lanes precede reader admission; the
         # existing journal CAS obtains its transition lock inside this EX.
