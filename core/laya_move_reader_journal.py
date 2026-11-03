@@ -20,6 +20,22 @@ def seal_prefix(db):
     return dict(db.execute('SELECT move_id,record FROM move_read_seals'))
 
 
+def refuse_incomplete_move(state, *, move_id=None):
+    """Preserve published read material until the successor protocol exists."""
+    state = Path(state)
+    path = R._journal(state / R._JOURNAL)
+    with R._readonly(path, state) as db:
+        if R.journal._schema_version_read(db) != 5:
+            return
+        from laya_reader_lease import _image
+        _bundle, _selection, stored, _history, _endpoints, _records, seals = _image(db)
+        if move_id is None:
+            R._need(stored.get('capability') != 'v6-retained-ro-v1',
+                    'reader_move_completion_unavailable')
+        else:
+            R._need(move_id not in seals, 'reader_move_referenced')
+
+
 def _decode(move_id, packed):
     R._need(type(packed) is str and len(packed.encode('utf8')) <= 262144, 'reader_move_seal_invalid')
     data = json.loads(packed, object_pairs_hook=R.journal._pairs,

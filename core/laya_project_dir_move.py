@@ -599,6 +599,8 @@ def _load_intent(state, project):
 def _abort(intent):
     """Drop an intent whose fence was never written: nothing selected changed."""
     state = Path(intent['stateRoot'])
+    from laya_move_reader_journal import refuse_incomplete_move
+    refuse_incomplete_move(state, move_id=_sha(_canonical(intent)))
     _drop_pointer(intent['projectRoot'])
     temp = Path(intent['store']['temp'])
     for suffix in ('', '-journal'):
@@ -794,6 +796,8 @@ def _verify(intent):
 
 
 def _settle(intent):
+    from laya_move_reader_journal import refuse_incomplete_move
+    refuse_incomplete_move(Path(intent['stateRoot']), move_id=_sha(_canonical(intent)))
     state = Path(intent['stateRoot'])
     _drop_pointer(intent['projectRoot'])
     tag = _sha(_canonical(intent))[:20]
@@ -889,6 +893,8 @@ def move(project_root, state, *, step=None):
     with ExitStack() as stack:
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
+        from laya_move_reader_journal import refuse_incomplete_move
+        refuse_incomplete_move(state)
         # The install/operation/owner lanes precede reader admission; the
         # existing journal CAS obtains its transition lock inside this EX.
         from laya_reader_lease import move_lifetime
