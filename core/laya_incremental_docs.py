@@ -697,7 +697,13 @@ def _backfill_cursor(runtime, identity, snapshot, db, coordination, setup_stamp,
     except IndexContractError:
         return False
     side_stamp, absent = _sidecar_prepare(db, identity, setup_stamp, None)
-    with _document_transaction(db, coordination, visible=False) as transaction:
+    from laya_reader_windows import write_cursor_progress
+    with write_cursor_progress(db, coordination, deadline=time.monotonic() + .05) as transaction:
+        try:
+            runtime.catalog.require_current(snapshot)
+        except IndexContractError:
+            transaction.rollback()
+            return False
         _recheck_sidecar(db, side_stamp, None, absent)
         prior = db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
         if prior != expected:

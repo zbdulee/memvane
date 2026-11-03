@@ -755,12 +755,24 @@ def write_transaction(owner, *, visible, deadline):
     return _transaction_context(owner, visible=visible, deadline=deadline)
 
 
-def write_connection(db, coordination, *, visible, deadline):
-    """A raw handle must belong to the exact issued requested component."""
+def _writer_connection(db, coordination):
     owner = next((item for item in _owned.values() if item.db is db), None)
     R._need(owner is not None and owner.component is coordination,
             'reader_connection_not_owned')
+    return owner
+
+
+def write_connection(db, coordination, *, visible, deadline):
+    """A raw handle must belong to the exact issued requested component."""
+    owner = _writer_connection(db, coordination)
     return write_transaction(owner, visible=visible, deadline=deadline)
+
+
+def write_cursor_progress(db, coordination, *, deadline):
+    """Nonvisible sidecar progress ordered against catalog publication."""
+    owner = _writer_connection(db, coordination)
+    R._need(owner.component.role == 'sidecar', 'reader_cursor_component_unsupported')
+    return _transaction_context(owner, visible=False, deadline=deadline, shared_cut=True)
 
 
 def delete_binding_transaction(owner, *, deadline):
@@ -768,7 +780,7 @@ def delete_binding_transaction(owner, *, deadline):
 
 
 @contextmanager
-def _transaction_context(owner, *, visible, deadline, delete=False):
+def _transaction_context(owner, *, visible, deadline, delete=False, shared_cut=False):
     """Own mutation/cut locks and SQL completion as one explicit lifetime."""
     R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner,
             'reader_connection_not_owned')
@@ -777,6 +789,8 @@ def _transaction_context(owner, *, visible, deadline, delete=False):
     R._need(type(visible) is bool and owner.db is not None and not owner.pending
             and owner.transaction is None and not owner.db.in_transaction,
             'reader_transaction_unavailable')
+    R._need(not shared_cut or (not visible and not delete and owner.component.role == 'sidecar'),
+            'reader_transaction_cut_invalid')
     R._need(owner.journal_mode == ('delete' if delete else 'wal'),
             'reader_journal_write_unsupported')
     if delete:
@@ -798,6 +812,9 @@ def _transaction_context(owner, *, visible, deadline, delete=False):
         if visible:
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=True, deadline=deadline))
+        elif shared_cut:
+            transaction.locks.enter_context(publish_window(owner.component,
+                exclusive=False, deadline=deadline))
         connection_binding(owner, owner.db)
         R._need(time.monotonic() < deadline, 'reader_write_deadline')
         # A native SQLite writer can outlive our cooperative lock admission.

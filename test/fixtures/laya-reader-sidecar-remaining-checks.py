@@ -5,6 +5,7 @@ import importlib.util
 import inspect
 import json
 from pathlib import Path
+import sys
 import time
 import unittest
 from unittest import mock
@@ -147,14 +148,20 @@ class RemainingChecks(existing.SidecarWriteChecks):
                 return result
             try:
                 with mock.patch.object(self.I,'publish_document',published),mock.patch.object(runtime.catalog,'require_current',checked):
-                    result=self.I.backfill_cached(runtime,self.identity,self.identity['vectorProfileId'],coordination=component,**self.options())
+                    error=None;result=None
+                    try:result=self.I.backfill_cached(runtime,self.identity,self.identity['vectorProfileId'],coordination=component,**self.options())
+                    except Exception as exc:error=str(exc)
                 with self.seed.ro(self.fixture.sidecar) as db:cursor=db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
                 print(json.dumps(dict(case='sidecar-backfill-current-check-gap',committed=committed,injected=injected,
-                    result=result,cursor=cursor,previousScan=snapshot.scan_id,newBackfillExecuted=False)),flush=True)
-                self.assertTrue(injected);self.assertEqual(result['state'],'pending');self.assertEqual(cursor,(snapshot.scan_id,''))
+                    error=error,result=result,cursor=cursor,previousScan=snapshot.scan_id,newBackfillExecuted=False)),flush=True)
+                self.assertTrue(injected);self.assertEqual(cursor,(snapshot.scan_id,''))
+                self.assertIsNone(error);self.assertEqual(result['state'],'pending')
             finally:other.close(deadline=time.monotonic()+1)
 
 if __name__=='__main__':
     names=[name for name in RemainingChecks.__dict__ if name.startswith('test_')]
+    if len(sys.argv)>1:
+        if any(name not in names for name in sys.argv[1:]):raise ValueError('unknown test method')
+        names=sys.argv[1:]
     result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RemainingChecks(name) for name in names))
     raise SystemExit(not result.wasSuccessful())
