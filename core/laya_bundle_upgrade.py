@@ -93,7 +93,7 @@ MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
     'lock_busy', 'sync_owner_busy', 'initial_build_busy',
     'project_dir_move_upgrade_pending', 'project_dir_move_compile_busy',
-    'project_dir_move_layout_busy'))
+    'project_dir_move_layout_busy', 'reader_lifetime_busy'))
 # A move a retry cannot clear: the install keeps working where it is.
 MOVE_REFUSALS = frozenset((
     'state_move_cross_device', 'state_move_target_exists',

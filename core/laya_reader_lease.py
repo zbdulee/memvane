@@ -98,6 +98,72 @@ def reader_lifetime(install_id, *, exclusive):
         os.close(parent_fd)
 
 
+def _move_identity(state, project, intent):
+    """Bind lifetime admission to the real selected journal, including resume.
+
+    Move metadata is already validated by the owning mover. It supplies only
+    its exact old/new state aliases, never a search path or a reader capability.
+    The mover retains all of its own route/approval/provider validations.
+    """
+    journal = reader.journal
+    state, project = Path(state), Path(project)
+    path = state / 'install-journal.sqlite'
+    version = journal.journal_version(path)
+    _need(version in (3, 4, 5), 'reader_schema_unknown')
+    if version != 5:
+        return None
+    state = reader._state(state)
+    path = reader._journal(path)
+    _need(project.is_absolute() and project.resolve(strict=True) == project,
+          'reader_move_project_invalid')
+    with reader._readonly(path, state) as db:
+        row = journal._row(db)
+        selection, record = reader._selection(db)
+        selected = row['selected']
+        _need(row['state'] in ('active', 'restored_old') and row['pending'] is None
+              and isinstance(selected, dict) and row['project_root'] == str(project)
+              and [row['project_dev'], row['project_ino']] == reader._node(project)
+              and isinstance(selected.get('vectorProfile'), dict),
+              'reader_move_selection_unproved')
+        install_id = selected['installId']
+        states = {str(state)}
+        if intent is not None:
+            _need(intent.get('projectRoot') == str(project)
+                  and intent.get('installId') == install_id, 'reader_install_changed')
+            if 'fromRoot' in intent or 'toRoot' in intent:
+                old, new = intent.get('fromRoot'), intent.get('toRoot')
+                _need(type(old) is str and type(new) is str and str(state) in (old, new)
+                      and Path(old).is_absolute() and Path(new).is_absolute()
+                      and Path(old).name == install_id and Path(new).name == install_id,
+                      'reader_move_state_invalid')
+                states.update((old, new))
+            else:
+                _need(intent.get('stateRoot') == str(state), 'reader_move_state_invalid')
+        _need(record['install_id'] == install_id and record['scope'] == row['scope_id']
+              and record['project'] == str(project) and record['state'] in states
+              and record['state_node'] == reader._node(state)
+              and record['project_node'] == reader._node(project)
+              and record['profile'] == selected['vectorProfile']['profileId'],
+              'reader_install_changed')
+        return install_id, row, selection, record
+
+
+@contextmanager
+def move_lifetime(state, project, *, intent=None):
+    """Exclude v5 readers during an existing mover's physical switch/settle.
+
+    Legacy journal formats retain their existing mover behavior. This is
+    admission only: it does not seal retained tuples or legal crash prefixes.
+    """
+    before = _move_identity(state, project, intent)
+    if before is None:
+        yield None
+        return
+    with reader_lifetime(before[0], exclusive=True) as fd:
+        _need(_move_identity(state, project, intent) == before, 'reader_selection_changed')
+        yield fd
+
+
 def _image(db):
     """Capture one complete immutable journal image, including its CAS prefix."""
     bundle = reader.journal._row(db)

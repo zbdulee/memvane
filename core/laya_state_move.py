@@ -661,6 +661,9 @@ def move(project_root, state, *, home=None, step=None):
     with ExitStack() as stack:
         _locks(stack, project, state)
         intent = _load_intent(state, project)
+        if intent is not None or legacy_root(state, home):
+            from laya_reader_lease import move_lifetime
+            stack.enter_context(move_lifetime(state, project, intent=intent))
         if intent is not None and str(state) == intent['fromRoot']:
             # Prepared but never moved: start over from the current selection.
             _abort(state, project)

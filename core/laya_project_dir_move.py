@@ -887,6 +887,10 @@ def move(project_root, state, *, step=None):
     with ExitStack() as stack:
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
+        # The install/operation/owner lanes precede reader admission; the
+        # existing journal CAS obtains its transition lock inside this EX.
+        from laya_reader_lease import move_lifetime
+        stack.enter_context(move_lifetime(state, project, intent=intent))
         if intent is not None and not _fenced(intent):
             # Prepared but never fenced: start over from the current selection.
             _abort(intent)
