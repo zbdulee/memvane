@@ -149,6 +149,11 @@ class LayaIndexRuntime:
         # In-process sync_step memo and pins a busy A-int kept; never durable.
         self._snapshot_verdict = None
         self._unreleased_pins = []
+        if self._connection_windows:
+            from laya_reader_windows import validate_runtime_components
+            validate_runtime_components(self._connection_windows,
+                paths=dict(base=db_path, queue=queue_path, catalog=catalog_path,
+                           binding=binding_store_path), scope=scope, incarnation=db_incarnation)
         self.index = LayaIndexA(db_path, **self._window_options('base'))
         try:
             if self.index.incarnation() != db_incarnation:

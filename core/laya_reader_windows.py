@@ -4,7 +4,7 @@ These optional v6 boundaries do not attest a complete writer cohort or grant
 immutable reads. Preparation needs the existing installer and real mover owner;
 normal participants open the stable UID locks without creating them.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import fcntl
 import json
@@ -192,7 +192,6 @@ def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
 def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
     endpoint, _scope = _owner(installer)
-    R._recheck(endpoint)
     record = endpoint.record
     row = L._read_v5_bundle(Path(record['state']) / 'install-journal.sqlite')
     R._need(row['pending'] is None and row['state'] in ('active', 'restored_old')
@@ -205,15 +204,19 @@ def prepare_windows(installer):
         if os.path.lexists(parent / _MANIFEST):
             if os.stat(_MANIFEST, dir_fd=parent_fd, follow_symlinks=False).st_nlink == 2:
                 with L.reader_lifetime(install_id, exclusive=True):
+                    R._recheck(endpoint)
                     # Another preparer may have completed before this EX.
                     if os.stat(_MANIFEST, dir_fd=parent_fd, follow_symlinks=False).st_nlink == 2:
                         _recover_manifest_link(install_id, parent, parent_fd, parent_info)
                     else:
                         _manifest(install_id, parent, parent_fd, parent_info)
             else:
-                _manifest(install_id, parent, parent_fd, parent_info)
+                with _proof_windows(component_for(installer, 'base'), deadline=time.monotonic() + 2):
+                    R._recheck(endpoint)
+                    _manifest(install_id, parent, parent_fd, parent_info)
         else:
             with L.reader_lifetime(install_id, exclusive=True):
+                R._recheck(endpoint)
                 if not os.path.lexists(parent / _MANIFEST):
                     _prepare_initial(install_id, parent, parent_fd, parent_info)
                 _manifest(install_id, parent, parent_fd, parent_info)
@@ -264,6 +267,27 @@ def _component(component):
     return binding
 
 
+def validate_runtime_components(components, *, paths, scope, incarnation):
+    """Validate every explicit entry before any runtime SQLite connection.
+
+    Missing entries retain the common engine's optional-boundary behavior;
+    an explicit None or a component for another role cannot opt out of a lock.
+    """
+    installs = set()
+    for role, component in components.items():
+        binding = _component(component)
+        expected = paths.get(role)
+        R._need(expected is not None and component.role == role
+                and component.path == Path(expected), 'invalid_runtime_connection_windows')
+        endpoint, owner = _owner(binding[1])
+        record = endpoint.record
+        R._need(owner is binding[2] and record['scope'] == scope
+                and record['incarnation'] == incarnation
+                and record['db_path'] == paths['base'], 'invalid_runtime_connection_windows')
+        installs.add(component.install_id)
+    R._need(len(installs) == 1, 'invalid_runtime_connection_windows')
+
+
 class _Lifetime:
     """An independent SH descriptor, never borrowed from a caller context."""
     def __init__(self, install_id):
@@ -296,14 +320,17 @@ class _Lifetime:
 
 
 @contextmanager
-def _window(component, kind, *, exclusive, deadline, closing=False):
+def _window(component, kind, *, exclusive, deadline, closing=False, proof_role=None):
     binding = _component(component)
     R._need(type(exclusive) is bool, 'reader_window_mode_invalid')
     _deadline(deadline)
     lifetime = _Lifetime(component.install_id)
     fd = None
     try:
-        name = f'{component.role}-{kind}.lock'
+        R._need(proof_role is None or (proof_role in _ROLES and kind == 'physical' and not closing),
+                'reader_window_mode_invalid')
+        role = component.role if proof_role is None else proof_role
+        name = f'{role}-{kind}.lock'
         fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
                      dir_fd=lifetime.parent_fd)
         L._private_file(os.fstat(fd))
@@ -333,6 +360,18 @@ def _window(component, kind, *, exclusive, deadline, closing=False):
         if fd is not None:
             os.close(fd)
         lifetime.close()
+
+
+@contextmanager
+def _proof_windows(component, *, deadline):
+    # A full installer recheck reads all five component namespaces, including
+    # sidecar absence. No content connection precedes these sorted EX locks.
+    # The role override grants locks only, never another component's RW open.
+    with ExitStack() as stack:
+        for role in sorted(_ROLES):
+            stack.enter_context(_window(component, 'physical', exclusive=True,
+                                        deadline=deadline, proof_role=role))
+        yield
 
 
 def physical_window(component, *, exclusive, deadline):
@@ -387,7 +426,7 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
     _endpoint, current = _owner(installer)
     R._need(current is scope and Path(path) == component.path,
             'reader_component_owner_changed')
-    with physical_window(component, exclusive=True, deadline=deadline):
+    with _proof_windows(component, deadline=deadline):
         R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                 'reader_component_changed')
         if preopen is not None:
