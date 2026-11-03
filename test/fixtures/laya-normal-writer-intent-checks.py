@@ -3,6 +3,7 @@
 from contextlib import ExitStack, closing, contextmanager
 import importlib
 import importlib.util
+import gc
 import json
 from pathlib import Path
 import sqlite3
@@ -88,12 +89,12 @@ class NormalWriterIntentChecks(unittest.TestCase):
                 writer,_context=self.fixture.admission(owners);runtime=self.fixture.runtime(writer)
                 before=self.J.inspect_journal(self.case.journal);injected=[False]
                 original=reader.mutate_image
-                def race(path,operation):
+                def race(path,operation,**kwargs):
                     if not injected[0]:
                         injected[0]=True
                         reader.cas_reader(self.case.journal,expected_epoch=selection.epoch,
                             expected_endpoint=selection.preferred_endpoint,target=alternate,transition_id='b'*32)
-                    return original(path,operation)
+                    return original(path,operation,**kwargs)
                 try:
                     mark=self.api()
                     with mock.patch.object(reader,'mutate_image',side_effect=race):
@@ -137,5 +138,55 @@ class NormalWriterIntentChecks(unittest.TestCase):
             finally:
                 blocked[0]=False;readers.drain_proof_readers(deadline=time.monotonic()+2)
                 if runtime is not None:runtime.close()
+
+    def test_publication_after_private_image_fsync_rechecks_original_lease_and_deadline(self):
+        with self.warm_clean(),self.seed.authority():
+            mark=self.api()
+            for mode in ('lease','deadline'):
+                with self.subTest(mode=mode),ExitStack() as owners:
+                    self.fixture.plan=self.P.capture_writer_plan(self.case.project,executing_root=self.case.plugin)
+                    writer,_context=self.fixture.admission(owners);runtime=self.fixture.runtime(writer)
+                    before=self.case.journal.read_bytes();epoch=self.J.inspect_journal(self.case.journal)['epoch']
+                    clock=time.monotonic;advanced=[False];observed=[]
+                    def now():return clock()+(100 if advanced[0] else 0)
+                    def step(name):
+                        if name=='v5-image-fsynced':
+                            observed.append(name)
+                            if mode=='lease':owners.close()
+                            else:advanced[0]=True
+                    try:
+                        with mock.patch.object(time,'monotonic',side_effect=now), \
+                                mock.patch.object(self.J,'_conversion_step',new=step):
+                            with self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):mark(writer)
+                        changed=self.case.journal.read_bytes()!=before
+                        emit('normal-intent-expired-at-publication',mode=mode,atFsync=observed,journalChanged=changed)
+                        self.assertEqual(observed,['v5-image-fsynced'])
+                        self.assertFalse(changed,'expired publication must preserve the original journal image')
+                        self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'],epoch)
+                        with self.assertRaises(ValueError):self.N.validate_normal_writer(writer)
+                    finally:runtime.close()
+
+    def test_callable_native_cursor_factory_is_busy_without_attribute_error_or_cursor_reset(self):
+        with self.warm_clean(),self.seed.authority(),ExitStack() as owners:
+            writer,_context=self.fixture.admission(owners);runtime=self.fixture.runtime(writer)
+            cursor=None
+            try:
+                mark=self.api();before=self.J.inspect_journal(self.case.journal)['epoch']
+                cursor=runtime.index.db.cursor(factory=lambda db:sqlite3.Cursor(db))
+                cursor.execute('SELECT value FROM schema_meta ORDER BY key')
+                error=None
+                try:mark(writer)
+                except Exception as exc:error=exc
+                emit('normal-intent-callable-cursor',errorType=type(error).__name__,error=str(error))
+                self.assertIsInstance(error,ValueError)
+                self.assertIn('normal_writer_snapshot_busy',str(error))
+                self.assertIsNotNone(cursor.fetchone())
+                self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'],before)
+                cursor.close();cursor=None;gc.collect()
+                self.N.validate_normal_writer(writer)
+                self.assertTrue(mark(writer)['productRouteAllowed'])
+            finally:
+                if cursor is not None:cursor.close()
+                runtime.close()
 
 if __name__=='__main__':unittest.main()
