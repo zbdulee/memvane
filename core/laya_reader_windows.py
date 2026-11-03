@@ -221,17 +221,28 @@ def prepare_windows(installer):
         os.close(parent_fd)
 
 
-def component_for(installer, role):
-    endpoint, scope = _owner(installer)
-    # Queue binding and the read-open bootstrap plan are separate integrations;
-    # this issuer cannot invent a queue path absent from the endpoint record.
+def _location(endpoint, role):
+    record = endpoint.record
+    if role == 'queue':
+        # The selected route, not a caller's path, locates this component.
+        # open_owned repeats the full current proof and this exact comparison.
+        decision = R.journal.select_route(record['project'], action='recall')
+        R._need(type(decision.get('queuePath')) is str, 'reader_component_changed')
+        path = Path(decision['queuePath'])
+        return path, tuple(R._file(path, Path(record['state'])))
     keys = {'base': 'db', 'binding': 'binding', 'catalog': 'catalog', 'sidecar': 'sidecar'}
     R._need(type(role) is str and role in keys, 'reader_component_unsupported')
     key = keys[role]
-    record = endpoint.record
     path = Path(record[key + '_path'])
     node = record.get(key + '_node')
     R._need(node is not None, 'reader_component_identity_missing')
+    return path, tuple(node)
+
+
+def component_for(installer, role):
+    endpoint, scope = _owner(installer)
+    path, node = _location(endpoint, role)
+    record = endpoint.record
     component = object.__new__(Component)
     object.__setattr__(component, 'install_id', record['install_id'])
     object.__setattr__(component, 'role', role)
@@ -366,7 +377,7 @@ def _connect_owned(component, mode):
     return owner
 
 
-def open_owned(component, *, path, validate, initialize, deadline):
+def open_owned(component, *, path, validate, initialize, deadline, preopen=None):
     """Open and initialize under EX; register before initialize's first PRAGMA."""
     # Until a managed worker's same-thread drain is integrated, reject before
     # opening in a background thread rather than strand a connection on exit.
@@ -377,10 +388,16 @@ def open_owned(component, *, path, validate, initialize, deadline):
     R._need(current is scope and Path(path) == component.path,
             'reader_component_owner_changed')
     with physical_window(component, exclusive=True, deadline=deadline):
+        R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
+                'reader_component_changed')
+        if preopen is not None:
+            preopen()
         # An issued seal alone is not current installer evidence. Protect the
         # base during this full recheck, before the fixed RW connect below.
         R._recheck(_endpoint)
-        R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
+        current_path, current_node = _location(_endpoint, component.role)
+        R._need(current_path == component.path and current_node == node
+                and tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                 'reader_component_changed')
         check = _connect_owned(component, 'ro')
         try:
@@ -413,6 +430,13 @@ def close_or_defer(owner, *, deadline):
         return True
     except ReaderWindowBusy:
         return False
+
+
+def close_owned(owner, *, deadline=None):
+    if deadline is None:
+        deadline = time.monotonic() + 2
+    if not close_or_defer(owner, deadline=deadline):
+        raise ReaderCloseDeferred('reader_connection_close_deferred')
 
 
 def _local_pending():

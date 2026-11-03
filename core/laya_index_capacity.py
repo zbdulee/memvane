@@ -293,7 +293,7 @@ class GenerationBindingStore:
     """
 
     def __init__(self, path: Any, *, scope: str, db_incarnation: str, roots: Any,
-                 create: bool = False):
+                 create: bool = False, coordination=None):
         path = Path(path)
         if not path.is_absolute() or not path.parent.is_dir() or path.is_symlink():
             raise IndexContractError('invalid_explicit_path')
@@ -308,6 +308,16 @@ class GenerationBindingStore:
                                         in self.roots.items()]).decode('ascii')
         self._node: Optional[Tuple[int, int]] = None
         self.store_id: Optional[str] = None
+        self._connection_owner = None
+        if coordination is not None:
+            if create:
+                raise IndexContractError('coordinated_creation_unavailable')
+            import time
+            from laya_reader_windows import open_owned
+            self._connection_owner = open_owned(coordination, path=path,
+                preopen=self._preopen_connection, validate=self._validate_connection,
+                initialize=self._initialize_connection, deadline=time.monotonic() + 2)
+            return
         if create:
             self._create()
         self._node = self._check_node()
@@ -328,8 +338,26 @@ class GenerationBindingStore:
             self.db.close()
             raise
 
-    def close(self) -> None:
-        self.db.close()
+    def _preopen_connection(self):
+        self._node = self._check_node()
+        self._check_file_header()
+
+    def _validate_connection(self, db):
+        self.db = db
+        self.store_id = self._transaction(False, lambda store_id: store_id)
+
+    def _initialize_connection(self, db):
+        self.db = db
+        self._check_node()
+        _configure(db)
+        self.store_id = self._transaction(False, lambda store_id: store_id)
+
+    def close(self, *, deadline=None) -> None:
+        if self._connection_owner is None:
+            self.db.close()
+        else:
+            from laya_reader_windows import close_owned
+            close_owned(self._connection_owner, deadline=deadline)
 
     # -- file access ----------------------------------------------------------
 

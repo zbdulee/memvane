@@ -109,8 +109,10 @@ class LayaIndexRuntime:
                  connection_windows=None):
         if connection_windows is not None and (
                 not isinstance(connection_windows, Mapping)
-                or set(connection_windows) != {'base'}):
+                or not connection_windows
+                or not set(connection_windows) <= {'base', 'queue', 'catalog', 'binding'}):
             raise IndexContractError('invalid_runtime_connection_windows')
+        self._connection_windows = {} if connection_windows is None else dict(connection_windows)
         capacity = (catalog_path, binding_store_path)
         if capacity != (None, None) and (
                 not isinstance(source_root, Mapping)
@@ -147,12 +149,11 @@ class LayaIndexRuntime:
         # In-process sync_step memo and pins a busy A-int kept; never durable.
         self._snapshot_verdict = None
         self._unreleased_pins = []
-        self.index = (LayaIndexA(db_path) if connection_windows is None else
-                      LayaIndexA(db_path, coordination=connection_windows['base']))
+        self.index = LayaIndexA(db_path, **self._window_options('base'))
         try:
             if self.index.incarnation() != db_incarnation:
                 raise IndexContractError('database_incarnation_mismatch')
-            self.queue = ClaimQueue.open(queue_path)
+            self.queue = ClaimQueue.open(queue_path, **self._window_options('queue'))
             try:
                 if self.queue.binding() != db_incarnation:
                     raise IndexContractError('queue_index_binding_mismatch')
@@ -165,34 +166,44 @@ class LayaIndexRuntime:
             self.index.close()
             raise
 
+    def _window_options(self, role):
+        return ({'coordination': self._connection_windows[role]}
+                if role in self._connection_windows else {})
+
     def _open_capacity(self, catalog_path, binding_store_path, db_incarnation):
         from laya_index_capacity import GenerationBindingStore
         from laya_source_catalog import LayaSourceCatalog
         roots = dict(self.source_root)
         self.catalog = LayaSourceCatalog(catalog_path, roots, self.scope,
-                                         wiki_only=self.wiki_only)
+                                         wiki_only=self.wiki_only,
+                                         **self._window_options('catalog'))
         try:
             self.binding_store = GenerationBindingStore(
                 binding_store_path, scope=self.scope, db_incarnation=db_incarnation,
-                roots=roots)
+                roots=roots, **self._window_options('binding'))
         except BaseException:
             self.catalog.close()
             self.catalog = None
             raise
 
-    def close(self):
+    def close(self, *, deadline=None):
+        def close(store):
+            if deadline is None:
+                store.close()
+            else:
+                store.close(deadline=deadline)
         try:
             if self.binding_store is not None:
-                self.binding_store.close()
+                close(self.binding_store)
         finally:
             try:
                 if self.catalog is not None:
-                    self.catalog.close()
+                    close(self.catalog)
             finally:
                 try:
-                    self.queue.close()
+                    close(self.queue)
                 finally:
-                    self.index.close()
+                    close(self.index)
 
     def __enter__(self):
         return self

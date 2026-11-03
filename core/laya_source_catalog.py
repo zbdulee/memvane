@@ -446,7 +446,7 @@ class LayaSourceCatalog:
     """
 
     def __init__(self, path: Any, roots: Mapping[str, str], scope: str, *,
-                 create: bool = False, wiki_only: bool = False):
+                 create: bool = False, wiki_only: bool = False, coordination=None):
         self.roots = _check_roots(roots)
         if wiki_only and len(self.roots) != 1:
             raise IndexContractError('wiki_only_roots_invalid')
@@ -458,6 +458,16 @@ class LayaSourceCatalog:
         path = Path(path)
         if not path.parent.is_dir() or path.is_symlink():
             raise IndexContractError('invalid_catalog_path')
+        self.path = path
+        self._connection_owner = None
+        if coordination is not None:
+            if create:
+                raise IndexContractError('coordinated_creation_unavailable')
+            from laya_reader_windows import open_owned
+            self._connection_owner = open_owned(coordination, path=path,
+                validate=self._validate_connection, initialize=self._initialize_connection,
+                deadline=time.monotonic() + 2)
+            return
         if create:
             try:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -491,6 +501,24 @@ class LayaSourceCatalog:
             for suffix in ('', '-wal', '-shm', '-journal'):
                 Path(str(path) + suffix).unlink(missing_ok=True)
 
+    def _validate_connection(self, db):
+        self.db = db
+        db.execute('BEGIN')
+        try:
+            self._check_identity()
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _initialize_connection(self, db):
+        self.db = db
+        mode = db.execute('PRAGMA journal_mode=WAL').fetchone()
+        if mode is None or str(mode[0]).lower() != 'wal':
+            raise IndexContractError('wal_unavailable')
+        db.execute('PRAGMA synchronous=FULL')
+        self._check_identity()
+
     def _initialize(self) -> None:
         self.db.execute(f'PRAGMA application_id={APP_ID}')
         self.db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
@@ -517,9 +545,13 @@ class LayaSourceCatalog:
         if row is None or row[0] != self.binding:
             raise IndexContractError('catalog_binding_mismatch')
 
-    def close(self) -> None:
+    def close(self, *, deadline=None) -> None:
         if self.db is not None:
-            self.db.close()
+            if self._connection_owner is None:
+                self.db.close()
+            else:
+                from laya_reader_windows import close_owned
+                close_owned(self._connection_owner, deadline=deadline)
             self.db = None
 
     def __enter__(self):

@@ -17,6 +17,7 @@ from contextlib import closing
 from pathlib import Path
 import re
 import sqlite3
+import time
 import uuid
 
 from laya_index_a import IndexContractError
@@ -111,6 +112,7 @@ class ClaimQueue:
     def __init__(self, path, db):
         self.path = Path(path)
         self.db = db
+        self._connection_owner = None
 
     @staticmethod
     def _path(path):
@@ -156,11 +158,21 @@ class ClaimQueue:
             raise
 
     @classmethod
-    def open(cls, path):
+    def open(cls, path, *, coordination=None):
         path = cls._path(path)
         if not path.is_file():
             raise UnknownDatabase('queue_missing')
         uri = path.resolve(strict=True).as_uri()
+        if coordination is not None:
+            from laya_reader_windows import open_owned
+            result = cls(path, None)
+            try:
+                result._connection_owner = open_owned(coordination, path=path,
+                    validate=cls._validate_connection, initialize=result._initialize_connection,
+                    deadline=time.monotonic() + 2)
+                return result
+            except sqlite3.Error as exc:
+                raise UnknownDatabase('queue_unreadable') from exc
         try:
             # Classify a single read snapshot before requesting RW/WAL access.
             with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2,
@@ -251,8 +263,30 @@ class ClaimQueue:
             self.db.rollback()
             raise
 
-    def close(self):
-        self.db.close()
+    @classmethod
+    def _validate_connection(cls, db):
+        db.execute('BEGIN')
+        try:
+            cls._check_database(db)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _initialize_connection(self, db):
+        self.db = db
+        self._validate_connection(db)
+        db.execute('PRAGMA foreign_keys=ON')
+        if str(db.execute('PRAGMA journal_mode=WAL').fetchone()[0]).lower() != 'wal':
+            raise UnknownDatabase('queue_wal_unavailable')
+        db.execute('PRAGMA synchronous=FULL')
+
+    def close(self, *, deadline=None):
+        if self._connection_owner is None:
+            self.db.close()
+        else:
+            from laya_reader_windows import close_owned
+            close_owned(self._connection_owner, deadline=deadline)
 
     def _begin(self):
         self.db.execute('BEGIN IMMEDIATE')
