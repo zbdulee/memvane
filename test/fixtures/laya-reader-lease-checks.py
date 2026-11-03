@@ -193,5 +193,26 @@ class ReaderLeaseChecks(unittest.TestCase):
             with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as endpoint:
                 self.assertEqual(endpoint.endpoint_id,self.selection.preferred_endpoint)
 
+    def test_existing_read_keeps_a_new_read_gets_b_and_read_token_cannot_mutate_selection(self):
+        api=self.api()
+        other=self.helper.alternate(self.case,self.reader,self.installer,'lifetime-reader-b.sqlite')
+        with self.helper.full_authority(self.case,self.reader,api):
+            with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as old_reader:
+                changed=self.reader.cas_reader(self.case.journal,expected_epoch=self.selection.epoch,
+                    expected_endpoint=self.selection.preferred_endpoint,target=other,transition_id='a'*32)
+                self.assertEqual(old_reader.endpoint_id,self.selection.preferred_endpoint)
+                self.reader._recheck(old_reader)
+                with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as new_reader:
+                    self.assertEqual(new_reader.endpoint_id,changed.preferred_endpoint)
+                    self.assertEqual(new_reader.record['db_path'],other.record['db_path'])
+                before=self.case.journal.read_bytes()
+                with mock.patch.object(self.reader,'mutate_image',wraps=self.reader.mutate_image) as mutate:
+                    with self.assertRaisesRegex(ValueError,'reader_endpoint_read_only|reader_endpoint_readonly'):
+                        self.reader.cas_reader(self.case.journal,expected_epoch=changed.epoch,
+                            expected_endpoint=changed.preferred_endpoint,target=old_reader,transition_id='b'*32)
+                    mutate.assert_not_called()
+                self.assertEqual(self.case.journal.read_bytes(),before)
+                self.assertEqual(self.reader.read_selection(self.case.journal),changed)
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
