@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import time
 import unittest
 from unittest import mock
@@ -111,5 +112,65 @@ class SidecarWriteChecks(unittest.TestCase):
             finally:runtime.index.db.set_trace_callback(None)
             print(json.dumps(dict(case='sidecar-unmanaged-base-refusal',error=error,result=result,baseSQL=len(sql),rowsUnchanged=before==self.rows())),flush=True)
             self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual(sql,[]);self.assertTrue(before==self.rows())
+
+    def test_catalog_live_handle_swap_is_refused_before_any_source_sql(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            original=runtime.catalog.db
+            replacement=sqlite3.connect(runtime.catalog.path.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+            before=self.rows();sql=[];runtime.catalog.db=replacement
+            replacement.set_trace_callback(sql.append);runtime.index.db.set_trace_callback(sql.append)
+            error=None;result=None
+            try:
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+            finally:
+                runtime.index.db.set_trace_callback(None);runtime.catalog.db=original;replacement.close()
+            print(json.dumps(dict(case='sidecar-source-live-handle-swap',error=error,result=result,sourceSQL=len(sql),rowsUnchanged=before==self.rows())),flush=True)
+            self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual(sql,[]);self.assertTrue(before==self.rows())
+
+    def test_actual_trigger_added_after_setup_cannot_split_doc_and_fts(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            setup=self.I._setup;before=self.rows();injected=[];error=None;result=None
+            def changed(*args,**kwargs):
+                value=setup(*args,**kwargs)
+                if getattr(args[0],'_window_owner',None) is not None and not injected:
+                    with self.W.physical_window(component,exclusive=True,deadline=time.monotonic()+1):
+                        other=sqlite3.connect(self.fixture.sidecar.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+                        try:
+                            other.execute('BEGIN IMMEDIATE')
+                            other.execute('CREATE TRIGGER delete_inserted_doc AFTER INSERT ON docs '
+                                          'BEGIN DELETE FROM docs WHERE rowid=NEW.rowid; END')
+                            other.commit();injected.append(True)
+                        finally:other.close()
+                return value
+            with mock.patch.object(self.I,'_setup',changed):
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+            print(json.dumps(dict(case='sidecar-setup-schema-race',error=error,result=result,injected=injected,rowsUnchanged=before==self.rows())),flush=True)
+            self.assertEqual(injected,[True]);self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(before==self.rows())
+
+    def test_explicitly_closed_retained_cursor_allows_valid_publication(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            cursor=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash')
+            cursor.fetchone();cursor.close();error=None;result=None
+            try:result=self.publish(runtime,snapshot,row,component)
+            except Exception as exc:error=str(exc)
+            print(json.dumps(dict(case='sidecar-closed-source-cursor',error=error,result=result,retainedCursor=True)),flush=True)
+            self.assertIsNotNone(cursor);self.assertIsNone(error);self.assertEqual(result['status'],'published')
+
+    def test_unfinished_source_cursor_is_deferred_without_consuming_its_next_row(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            expected=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash').fetchall()
+            self.assertGreaterEqual(len(expected),2)
+            cursor=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash');first=cursor.fetchone()
+            error=None;result=None;before=self.rows()
+            try:
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+                second=cursor.fetchone()
+            finally:cursor.close()
+            print(json.dumps(dict(case='sidecar-active-source-cursor',error=error,result=result,nextRowPreserved=second==expected[1],rowsUnchanged=before==self.rows())),flush=True)
+            self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual((first,second),(expected[0],expected[1]))
+            self.assertTrue(before==self.rows())
 
 if __name__=='__main__':unittest.main(verbosity=2)
