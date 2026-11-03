@@ -18,6 +18,6 @@ test('base reader physical windows and strong deferred close owner', () => {
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 3 tests\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, /Ran 7 tests\b/);assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });
