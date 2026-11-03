@@ -177,7 +177,7 @@ class MoveCase(SelectedProject):
                        'vectorRows': seal[0]}
         fresh._write(self.state / fresh.LEDGER, self.ledger, replace=True)
         record = {'projectRoot': str(self.project), 'stateRoot': str(self.state),
-                  'installId': '3' * 32, 'scopeId': SCOPE,
+                  'installId': self.INSTALL_ID, 'scopeId': SCOPE,
                   'collections': self.collections(),
                   'candidateDb': str(self.db), 'queueDb': str(self.queue),
                   'catalogDb': str(self.catalog), 'bindingStore': str(self.store),

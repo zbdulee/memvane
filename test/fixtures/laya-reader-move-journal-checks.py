@@ -54,6 +54,15 @@ with helper.full_authority(case,R,L):
                 'AND m.gen=? JOIN content c ON c.hash=m.hash WHERE "'+table+'" MATCH ?',
                 (record['pinned_generation'],'otter')).fetchall()
             assert rows and any('otter' in body for _path,body in rows)
+            if p.get('newToken'):
+                assert db.execute('SELECT count(*) FROM "'+table+'" WHERE "'+table+'" MATCH ?',
+                                  (p['newToken'],)).fetchone()[0]==0
+                current=db.execute('SELECT gen FROM head WHERE scope=?',(record['scope'],)).fetchone()[0]
+                assert current==p['currentHead'] and current!=record['pinned_generation']
+                current_table=index._gen_fts(db.execute('SELECT ord FROM gen_index WHERE gen=?',(current,)).fetchone()[0])
+                assert index.LayaIndexA._generation_fts_matches(SimpleNamespace(db=db),current)
+                assert db.execute('SELECT count(*) FROM "'+current_table+'" WHERE "'+current_table+'" MATCH ?',
+                                  (p['newToken'],)).fetchone()[0]>0
         print(json.dumps(dict(event='resolved',initialIssued=initial,installerCalls=len(calls),
             endpoint=endpoint.endpoint_id,pinnedGeneration=record['pinned_generation'],
             exclusionEpoch=record['exclusion_epoch'],ftsRows=len(rows),actualHostExecuted=False)),flush=True)
@@ -189,6 +198,15 @@ class MoveJournalChecks(unittest.TestCase):
                 actualStageProved=True,classification='feature-RED-not-independent-product-defect')),flush=True)
             self.fail('T2 feature RED: publish_move_reader absent after actual v5/owner/staging proof')
         return publish
+
+    def fresh_once(self,seed,seal,**extra):
+        payload=seed.case.home/'move-journal-fresh-once.json'
+        payload.write_text(json.dumps(dict(home=str(seed.case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(seed.case.project),plugin=str(seed.case.plugin),proof=seed.case.proof,
+            generation=seal.old_generation,exclusion=seal.exclusion_epoch,**extra)),encoding='utf8')
+        payload.chmod(0o600)
+        return subprocess.run([sys.executable,'-B','-I','-c',FRESH_READER,str(ROOT),str(payload)],
+            input='release\n',capture_output=True,encoding='utf8',timeout=30)
 
     def stores(self):
         snapshot=self.seed.live()
@@ -579,6 +597,121 @@ class MoveJournalChecks(unittest.TestCase):
             with self.subTest(boundary='fresh-read'):
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                 self.assertEqual(observed['endpoint'],selected.preferred_endpoint)
+
+
+    def test_issued_move_seal_cannot_publish_into_a_real_different_install_journal(self):
+        original_env=dict(os.environ)
+        foreign=seed_module.MoveSealChecks('runTest')
+        foreign.INSTALL_ID='4'*32
+        foreign.STATE_PARTS=('.local','state','memvane','4'*32)
+        self.addCleanup(foreign.doCleanups);foreign.setUp()
+        with foreign.authority():
+            _record,_raw,proof=foreign.reader._evidence(foreign.case.state,foreign.case.project,foreign.case.plugin)
+        self.assertEqual(proof['installId'],'4'*32)
+        self.assertNotEqual(proof['installId'],self.case.route['installId'])
+        with mock.patch.dict(os.environ,original_env,clear=True),self.staged() as seal:
+            publish=self.publisher()
+            journals=(self.case.journal,foreign.case.journal)
+            before={path:(path.read_bytes(),path.stat()) for path in journals}
+            error,result=None,None
+            try:result=publish(foreign.case.journal,seal=seal)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='different-real-install-publication',issuerInstall=self.case.route['installId'],
+                targetInstall=proof['installId'],targetFullProof=True,error=error,published=result is not None,
+                bothJournalsUnchanged=all(path.read_bytes()==saved[0] for path,saved in before.items()))),flush=True)
+            self.assertIsNotNone(error);self.assertIsNone(result)
+            for path,(contents,node) in before.items():
+                self.assertEqual(path.read_bytes(),contents)
+                self.assertTrue(os.path.samestat(node,path.stat()))
+
+    def test_offline_exact_schema_missing_seal_and_seal_transition_fork_are_refused_without_healing(self):
+        with self.staged() as seal:
+            self.publisher()(self.case.journal,seal=seal)
+            control=self.fresh_once(self.seed,seal)
+            if control.returncode:
+                raise RuntimeError('healthy published fresh-read control failed before corruption: '+control.stderr)
+            with self.seed.ro(self.case.journal) as db:
+                objects=db.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY name").fetchall()
+                table_names=[name for kind,name,_sql in objects if kind=='table']
+                rows={name:db.execute('SELECT * FROM "'+name.replace('"','""')+'"').fetchall() for name in table_names}
+                header=(db.execute('PRAGMA application_id').fetchone()[0],db.execute('PRAGMA user_version').fetchone()[0])
+            stores=self.stores()
+            for variant in ('missing-seal','seal-transition-fork'):
+                with self.subTest(variant=variant):
+                    image=self.case.state/('offline-'+variant+'.sqlite');image.touch(mode=0o600)
+                    with closing(sqlite3.connect(image)) as db:
+                        db.execute('PRAGMA application_id='+str(header[0]));db.execute('PRAGMA user_version='+str(header[1]))
+                        db.execute('BEGIN IMMEDIATE')
+                        for kind,_name,sql in objects:
+                            if kind=='table':db.execute(sql)
+                        for name in table_names:
+                            supplied=rows[name]
+                            if name=='move_read_seals':
+                                if variant=='missing-seal':supplied=[]
+                                else:
+                                    supplied=[]
+                                    for move,packed in rows[name]:
+                                        value=json.loads(packed);value['transition_id']='f'*32
+                                        supplied.append((move,self.reader._raw(value).decode('utf8')))
+                            if supplied:
+                                db.executemany('INSERT INTO "'+name.replace('"','""')+'" VALUES('+','.join('?' for _ in supplied[0])+')',supplied)
+                        for kind,_name,sql in objects:
+                            if kind!='table':
+                                self.assertIn(kind,('index','trigger'));db.execute(sql)
+                        db.commit()
+                        self.assertEqual(db.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY name").fetchall(),objects)
+                    os.replace(image,self.case.journal)
+                    before=self.case.journal.read_bytes();node=self.case.journal.stat()
+                    result=self.fresh_once(self.seed,seal)
+                    print(json.dumps(dict(case='offline-immutable-seal-image',variant=variant,exactOriginalDDL=True,
+                        offlineCorruptionNotProductApproved=True,readReturncode=result.returncode,
+                        typedCapabilityObserved='"event": "resolved"' in result.stdout,
+                        stderr=result.stderr[:2048],journalUnchanged=self.case.journal.read_bytes()==before)),flush=True)
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertNotIn('"event": "resolved"',result.stdout)
+                    self.assertEqual(self.case.journal.read_bytes(),before)
+                    self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
+                    self.assertEqual(self.stores(),stores)
+
+    def test_retained_a_remains_searchable_after_actual_normal_sync_advances_live_head_to_b(self):
+        with self.staged() as seal:
+            selected=self.publisher()(self.case.journal,seal=seal)
+            generation_a=seal.old_generation
+        # Publication's mover owner is released before normal sync/fill.
+        # The durable intent/retained selection remain; this is not a claim
+        # that the selected worker itself ran during the move protocol.
+        with self.seed.authority():
+            token='newonlyquokkaprogression'
+            page=sorted((self.case.auto/'wiki').rglob('*.md'))[0]
+            page.write_text(page.read_text(encoding='utf8')+'\n'+token+'\n',encoding='utf8')
+            roots={self.case.WIKI:str(self.case.auto/'wiki')}
+            with self.case.runtime(roots) as runtime:
+                runtime.catalog.request_scan()
+            synced=self.case.publish_all(roots);self.case.rebind_fixture_ledger(roots)
+            generation_b=self.case.head()[0]
+            print(json.dumps(dict(case='normal-head-advance-publication',sync=synced,
+                oldGeneration=generation_a,liveGeneration=generation_b)),flush=True)
+            self.assertNotEqual(generation_b,generation_a,'actual normal sync must publish a new live generation')
+            control_error=None
+            try:
+                _record,_raw,proof=self.reader._evidence(self.case.state,self.case.project,self.case.plugin)
+                current_generation=self.reader._published(self.case.state,self.case.db,self.case.decision())[0]
+            except Exception as exc:control_error=type(exc).__name__+':'+str(exc)
+            print(json.dumps(dict(case='actual-live-head-advance-control',oldGeneration=generation_a,
+                liveGeneration=generation_b,currentFullProofError=control_error)),flush=True)
+            if control_error is not None:raise RuntimeError('earlier healthy B proof failed, not retained pin RED: '+control_error)
+            self.assertEqual(current_generation,generation_b)
+            before=self.seed.live();node=self.case.journal.stat()
+            result=self.fresh_once(self.seed,seal,newToken=token,currentHead=generation_b)
+            observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+            print(json.dumps(dict(case='retained-a-versus-healthy-b',oldGeneration=generation_a,liveGeneration=generation_b,
+                read=observed,readReturncode=result.returncode,stderr=result.stderr[:4096],liveUnchanged=self.seed.live()==before)),flush=True)
+            self.assertEqual(self.seed.live(),before)
+            self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual(observed['endpoint'],selected.preferred_endpoint)
+            self.assertEqual(observed['pinnedGeneration'],generation_a)
+            self.assertEqual(observed['exclusionEpoch'],seal.exclusion_epoch)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

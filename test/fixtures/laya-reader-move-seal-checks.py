@@ -122,6 +122,7 @@ except Exception as exc:
 
 
 class MoveSealChecks(unittest.TestCase):
+    INSTALL_ID='3'*32
     STATE_PARTS=('.local','state','memvane','3'*32)
     PUBLISH_SIDECAR=True
 
@@ -129,6 +130,7 @@ class MoveSealChecks(unittest.TestCase):
         self.helper=base.JournalReaderChecks('runTest')
         self.helper.setUp();self.addCleanup(self.helper.doCleanups)
         class PublishedInstall(base.published.MoveCase):
+            INSTALL_ID=getattr(self,'INSTALL_ID','3'*32)
             STATE_PARTS=self.STATE_PARTS
             TEMP_DIR=str(Path('/tmp').resolve())
             TEMP_PREFIX=''
