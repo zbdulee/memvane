@@ -263,6 +263,9 @@ def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
     state, project, root, options, packed, raw = _issued[endpoint]
     record, attestation, proof = _evidence(state, project, root, **options)
+    creation_epoch = json.loads(packed)['creation_epoch']
+    _need(proof['selectionEpoch'] >= creation_epoch, 'reader_endpoint_changed')
+    record['creation_epoch'] = creation_epoch
     _need(_raw(record) == packed and attestation == raw
           and endpoint.endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed),
           'reader_endpoint_changed')
