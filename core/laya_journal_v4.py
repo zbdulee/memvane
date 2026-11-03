@@ -214,7 +214,10 @@ def convert_install(state, project_root, *, root=None, home=None):
     """Convert one install's journal when every host reads v4."""
     state = Path(state)
     journal = state / 'install-journal.sqlite'
-    if journal_version(journal) == V4:
+    version = journal_version(journal)
+    if version == 5:
+        return {'status': 'journal_v5_current'}
+    if version == V4:
         return {'status': 'journal_v4_current'}
     ready, reason = hosts_ready(root, home)
     if not ready:

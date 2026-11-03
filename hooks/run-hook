@@ -82,6 +82,9 @@ case "$_laya_route_state" in
     exec <"$_laya_route_payload"
     rm -f "$_laya_route_payload" || { echo '[memvane] route payload cleanup failed' >&2; exit 3; }
     trap - EXIT
+    if [ "$ACTION" = recall ] && [ -n "${MEMVANE_BRIDGE_PREFLIGHT:-}" ]; then
+      export MEMVANE_BRIDGE_HOOK_ENTRY="hooks/run-hook:recall:$ENGINE"
+    fi
     exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;

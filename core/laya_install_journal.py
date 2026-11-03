@@ -42,7 +42,7 @@ APP_ID = 0x4c594a31
 VERSION = 4
 # Every journal format this code reads and CAS-writes. A v3 journal still
 # carries the retired global-QMD inventory column; it is never re-checked.
-READ_VERSIONS = (3, 4)
+READ_VERSIONS = (3, 4, 5)
 ID = re.compile(r'[0-9a-f]{32}\Z')
 GEN = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
@@ -67,7 +67,22 @@ _CREATE = '''CREATE TABLE selection(
   new_write_seen INTEGER NOT NULL,
   provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
   provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
-_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE)}
+SCHEMA_V5 = 'laya-installer-journal-v5'
+_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE), 5: (SCHEMA_V5, _CREATE)}
+# Kept here so sealed engine subbundles can still identify and read a journal
+# without importing full-plugin installer or host-observer modules.
+_READER_DDL = {
+    'read_endpoints': 'CREATE TABLE read_endpoints(endpoint_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL, attestation BLOB NOT NULL)',
+    'reader_selection': 'CREATE TABLE reader_selection(id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>=1), preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT, transition_id TEXT NOT NULL)',
+    'reader_transitions': 'CREATE TABLE reader_transitions(transition_id TEXT PRIMARY KEY NOT NULL, epoch INTEGER UNIQUE NOT NULL, preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT)',
+}
+for _table, _key in (('read_endpoints', 'endpoint_id'), ('reader_transitions', 'transition_id')):
+    for _op in ('UPDATE', 'DELETE', 'INSERT'):
+        _name = _table + '_' + _op.lower()
+        _when = (f' WHEN EXISTS(SELECT 1 FROM {_table} WHERE {_key}=NEW.{_key})'
+                 if _op == 'INSERT' else '')
+        _READER_DDL[_name] = (f'CREATE TRIGGER {_name} BEFORE {_op} ON {_table}{_when} '
+                              "BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END")
 # The withdrawn-selection state. A v3 file stores its old name; readers see
 # only ``restored_origin``.
 RESTORED = 'restored_origin'
@@ -464,6 +479,10 @@ def _schema_version_read(db):
             db.execute("SELECT sql FROM sqlite_master WHERE name='selection'").fetchone()
             != (expected[1],)):
         return None
+    if version == 5:
+        objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
+        if objects != {'selection': _CREATE, **_READER_DDL}:
+            return None
     return version
 
 
@@ -479,6 +498,14 @@ def _recover_interrupted_transaction(path):
     side = path.with_name(path.name + '-journal')
     if not side.exists() or side.is_symlink():
         return False
+    # A v5 live image is always a complete, closed rollback-format DB.
+    # An unexpected sidecar must never induce repair from the read path.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if int.from_bytes(os.pread(fd, 4, 60), 'big') == 5:
+            return False
+    finally:
+        os.close(fd)
     with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
                                  isolation_level=None)) as db:
         db.execute('PRAGMA application_id').fetchone()
@@ -511,7 +538,7 @@ def _open(path, *, write):
 
 
 def journal_version(journal_path):
-    """Read-only journal format (3 or 4); refuses an unknown file."""
+    """Read the supported journal format and refuse an unknown file."""
     path, db = _open(journal_path, write=False)
     with closing(db):
         db.execute('BEGIN')
@@ -535,12 +562,12 @@ def _row(db):
     record = db.execute('SELECT * FROM selection WHERE id=1').fetchone()
     if record is None or db.execute('SELECT count(*) FROM selection').fetchone()[0] != 1:
         _fail('journal_selection_missing')
-    fields = (_FIELDS_V4 if version == 4 else
+    fields = (_FIELDS_V4 if version >= 4 else
               _FIELDS_V4[:14] + ('user_qmd_inventory',) + _FIELDS_V4[14:])
     if len(record) != len(fields):
         _fail('journal_schema_unknown')
     row = dict(zip(fields, record))
-    stored_restored = RESTORED if version == 4 else _V3_RESTORED
+    stored_restored = RESTORED if version >= 4 else _V3_RESTORED
     if (row['schema'] != _FORMATS[version][0] or type(row['epoch']) is not int or
             row['epoch'] < 1 or
             row['state'] not in ('candidate_ready', 'pending', 'active', 'restored_old',
@@ -679,30 +706,51 @@ def inspect_journal(journal_path):
                                            if row['provider_file_identity'] is not None else None)}
 
 
+def _mutate_row(db, path, row, expected_epoch, mutate):
+    if type(expected_epoch) is not int or row['epoch'] != expected_epoch:
+        _fail('stale_journal_cas')
+    values = mutate(path, row)
+    if values is None:
+        return False
+    if values.get('state') == RESTORED and row['_version'] == 3:
+        values = {**values, 'state': _V3_RESTORED}
+    fields = ','.join(f'{key}=?' for key in values)
+    args = (*values.values(), expected_epoch + 1, expected_epoch)
+    if db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?', args).rowcount != 1:
+        _fail('stale_journal_cas')
+    return True
+
+
 def _cas(path, expected_epoch, mutate):
+    path = _private_parent(path)
+
+    def v5():
+        from laya_journal_reader import mutate_image
+        mutate_image(path, lambda image: _mutate_row(
+            image, path, _row(image), expected_epoch, mutate))
+        return inspect_journal(path)
+
+    if journal_version(path) == 5:
+        return v5()
     path, db = _open(path, write=True)
     try:
         db.execute('PRAGMA synchronous=FULL')
         db.execute('BEGIN IMMEDIATE')
         row = _row(db)
-        if type(expected_epoch) is not int or row['epoch'] != expected_epoch:
-            _fail('stale_journal_cas')
-        values = mutate(path, row)
-        if values is not None:
-            if values.get('state') == RESTORED and row['_version'] == 3:
-                values = {**values, 'state': _V3_RESTORED}
-            fields = ','.join(f'{key}=?' for key in values)
-            args = (*values.values(), expected_epoch + 1, expected_epoch)
-            changed = db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?',
-                                 args)
-            if changed.rowcount != 1:
-                _fail('stale_journal_cas')
-        db.commit()
+        if row['_version'] == 5:
+            # Conversion committed after the first observation. Release the
+            # old writer transaction before acquiring the image writer lock.
+            db.rollback()
+        else:
+            _mutate_row(db, path, row, expected_epoch, mutate)
+            db.commit()
     except BaseException:
         db.rollback()
         raise
     finally:
         db.close()
+    if row['_version'] == 5:
+        return v5()
     return inspect_journal(path)
 
 
@@ -730,7 +778,11 @@ def convert_to_v4(journal_path):
         db.execute('PRAGMA synchronous=FULL')
         db.execute('BEGIN IMMEDIATE')
         before = _row(db)
-        if before.pop('_version') == 4:
+        old_version = before.pop('_version')
+        if old_version == 5:
+            db.rollback()
+            return {'status': 'journal_v5_current', 'journalPath': str(path), 'epoch': before['epoch']}
+        if old_version == 4:
             db.commit()
             return {'status': 'journal_v4_current', 'journalPath': str(path),
                     'epoch': before['epoch']}

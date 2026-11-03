@@ -2559,6 +2559,13 @@ def main(argv: list[str] | None = None) -> int:
         decision = _reselect(cwd, action)
         if decision != selection and not _relocated(selection, decision):
             _fail("selected_route_changed")
+        if (action == 'recall' and host in ('claude', 'codex') and
+                os.environ.get('MEMVANE_BRIDGE_HOOK_ENTRY') == 'hooks/run-hook:recall:' + host):
+            from laya_bridge_readiness import registered_response
+            challenge = registered_response(payload, host, decision, Path(__file__).resolve().parents[1])
+            if challenge is not None:
+                print(json.dumps(host_payload(host, json.dumps(challenge))), flush=True)
+                return 0
         with learning_capture() as capture:
             response = (serve_preview(action, host, decision, payload)
                         if decision['state'] == 'preview' else

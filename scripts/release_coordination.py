@@ -34,6 +34,16 @@ class ReleaseError(ValueError):
         super().__init__(reason)
 
 
+def collect_registered_bridge_preflight(state, *, release_commit, expected_hosts):
+    """Collect registered v4 host evidence using the installer's selected core."""
+    from laya_bridge_readiness import (begin_bridge_preflight, collect_bridge_preflight,
+                                       check_bridge_preflight)
+    challenge = begin_bridge_preflight(state, release_commit=release_commit,
+                                       expected_hosts=expected_hosts)
+    refs = [collect_bridge_preflight(challenge, host=host) for host in sorted(expected_hosts)]
+    return check_bridge_preflight(refs, release_commit=release_commit, expected_hosts=expected_hosts)
+
+
 def _completed_rows(results):
     """Every reported phase must be a known terminal outcome, not just a row."""
     if not isinstance(results, list) or not results or len(results) > MAX_STATES * 2:
