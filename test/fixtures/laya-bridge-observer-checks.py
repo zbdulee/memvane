@@ -6,12 +6,14 @@ import inspect
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from unittest import mock
 
@@ -60,10 +62,21 @@ if role == 'cli':
             script = pathlib.Path(root)/'unregistered.py'
             argv = [sys.executable, '-B', '-I', str(script), 'core', *sys.argv[2:]]
             env = dict(os.environ)
+        elif behavior == 'path-bash':
+            argv = [str(pathlib.Path(root)/'hooks/run-hook'), 'recall', host]
+            # Only the disposable fake core is reachable through this actual
+            # dispatcher; keep the fixture runtime root and setup guard.
+            env = dict(os.environ, PATH=str(pathlib.Path(root)/'bin')+os.pathsep+os.environ['PATH'],
+                       QMD_SANDBOX='', CLAUDE_HEADLESS='', CLAUDE_SANDBOX='')
         else:
             argv = ['/bin/bash', str(pathlib.Path(root)/'hooks/run-hook'), 'recall', host]
             env = dict(os.environ, BRIDGE_FAKE_PYTHON=sys.executable)
-        child = subprocess.run(argv, env=env, timeout=12)
+        if behavior == 'path-bash':
+            child = subprocess.run(argv, env=env, timeout=12, capture_output=True, encoding='utf8')
+            pathlib.Path(log+'.dispatcher.json').write_text(json.dumps(dict(status=child.returncode,
+                stdout=child.stdout[:4096],stderr=child.stderr[:4096])),encoding='utf8')
+        else:
+            child = subprocess.run(argv, env=env, timeout=12)
         pathlib.Path(log+'.cli-complete').write_text('child-wait-completed', encoding='utf8')
         sys.exit(child.returncode)
 if behavior == 'earlyexit':
@@ -117,6 +130,19 @@ class ObserverChecks(unittest.TestCase):
             '"$BRIDGE_FAKE_PYTHON" -B "$root/core/laya_host_response.py" serve-qa-stdin "$1" "$2" "$PWD"\n'
             'status=$?\nexit "$status"\n',encoding='utf8')
         dispatcher.chmod(0o700)
+        if behavior == 'path-bash':
+            dispatcher.write_bytes((HERE.parents[1]/'hooks/run-hook').read_bytes())
+            private_bin=root/'bin'
+            private_bin.mkdir(mode=0o700)
+            shutil.copyfile('/bin/bash',private_bin/'bash')
+            (private_bin/'bash').chmod(0o700)
+            if sys.platform == 'darwin':
+                # A relocated Apple platform binary needs its own fixture
+                # signature. This changes only our private copy, never the
+                # system binary, trust configuration or security settings.
+                signed=subprocess.run(['/usr/bin/codesign','--force','--sign','-',str(private_bin/'bash')],
+                    capture_output=True,encoding='utf8',timeout=10)
+                self.assertEqual(signed.returncode,0,signed.stderr)
         # Framework Python's command-line launcher execs Python.app on macOS.
         # This synthetic native HostSpec must name the stable executable,
         # rather than ask the collector to accept a changed process image.
@@ -146,7 +172,13 @@ class ObserverChecks(unittest.TestCase):
                 receipt = bridge.collect_bridge_preflight(challenge, host='claude')
             except ValueError as exc:
                 error = str(exc)
+                if behavior == 'path-bash':
+                    print(json.dumps(dict(case='path-bash-refusal', trace=[
+                        [Path(frame.filename).name,frame.lineno,frame.name]
+                        for frame in traceback.extract_tb(exc.__traceback__)])),flush=True)
         processes = [json.loads(line) for line in log.read_text(encoding='utf8').splitlines()] if log.exists() else []
+        if behavior == 'path-bash' and Path(str(log)+'.dispatcher.json').exists():
+            print(Path(str(log)+'.dispatcher.json').read_text(encoding='utf8'),flush=True)
         print(json.dumps(dict(case=behavior, actualHostExecuted=False, error=error,
                               receipt=None if receipt is None else str(receipt), processes=processes)), flush=True)
         # Never signal a PID from this log. The collector owns cleanup, and
@@ -217,6 +249,11 @@ class ObserverChecks(unittest.TestCase):
         self.assertIsNone(receipt,'bare core descendant is not a registered hook invocation')
         self.assertIsNotNone(error)
         self.assertFalse((directory/'claude.json').exists())
+
+    def test_registered_dispatcher_works_when_env_selects_a_distinct_bash_executable(self):
+        _, _, _, receipt, error, _, _ = self.collect('path-bash')
+        self.assertIsNone(error)
+        self.assertIsNotNone(receipt, 'actual registered script must not depend on the caller PATH Bash')
 
     def test_drip_stream_cannot_extend_an_absolute_receive_deadline(self):
         observer=self.observer()
