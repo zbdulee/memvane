@@ -244,6 +244,102 @@ class MoveSealChecks(unittest.TestCase):
                         stage(request,installer=installer)
                     self.assertEqual(self.live(),before)
 
+    def _check_retained_tamper_rejection(self,stage,intent,seal,before,case_name,control):
+        artifacts=set(self.case.state.rglob('*'))
+        replay_error,reissued=None,None
+        try:reissued=stage(intent,installer=self.installer)
+        except (ValueError,OSError,RuntimeError) as exc:replay_error=str(exc)
+        recheck_error=None
+        try:self.reader._recheck(seal.retained_endpoint)
+        except (ValueError,OSError,RuntimeError) as exc:recheck_error=str(exc)
+        after=set(self.case.state.rglob('*'))
+        print(json.dumps(dict(case=case_name,actualValidatorControl=control,
+            reissued=reissued is not None,replayError=replay_error,issuedTokenRecheckError=recheck_error,
+            newArtifacts=sorted(str(path) for path in after-artifacts),liveUnchanged=self.live()==before)),flush=True)
+        self.assertEqual(self.live(),before)
+        self.assertEqual(after,artifacts,'rejected replay must not create another stage')
+        # Keep both independent violations visible in the same execution.
+        with self.subTest(boundary='same-intent-reissue'):
+            self.assertIsNotNone(replay_error,'tampered retained component must refuse replay')
+            self.assertIsNone(reissued)
+        with self.subTest(boundary='already-issued-retained-token'):
+            self.assertIsNotNone(recheck_error,'original retained token must reject the same actual tamper')
+
+    def test_retained_catalog_header_change_invisible_to_iterdump_refuses_replay_and_recheck(self):
+        stage,_seal_type=self.producer()
+        source=importlib.import_module('laya_source_catalog')
+        with self.prepared() as intent:
+            seal=stage(intent,installer=self.installer)
+            self.reader._recheck(seal.retained_endpoint)
+            retained=Path(seal.retained_endpoint.record['catalog_path'])
+            self.assertNotEqual(retained,self.case.catalog)
+            before=self.live();dump_before=self.dump(retained)
+            with self.ro(retained) as db:
+                header_before=db.execute('PRAGMA application_id').fetchone()[0]
+                expected_binding=db.execute("SELECT value FROM meta WHERE key='binding'").fetchone()[0]
+                source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db,binding=expected_binding))
+            self.assertEqual(header_before,source.APP_ID)
+            with closing(sqlite3.connect(retained)) as db:
+                db.execute('PRAGMA application_id=0');db.commit()
+            dump_after=self.dump(retained)
+            with self.ro(retained) as db:
+                header_after=db.execute('PRAGMA application_id').fetchone()[0]
+                with self.assertRaisesRegex(ValueError,'^catalog_schema_unknown$'):
+                    source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db,binding=expected_binding))
+            print(json.dumps(dict(case='retained-catalog-header-control',applicationIdBefore=header_before,
+                applicationIdAfter=header_after,iterdumpUnchanged=dump_after==dump_before,
+                actualReadonlyValidator='catalog_schema_unknown')),flush=True)
+            self.assertEqual(header_after,0)
+            self.assertEqual(dump_after,dump_before,'control must isolate header state omitted by iterdump')
+            self._check_retained_tamper_rejection(stage,intent,seal,before,'retained-catalog-header',
+                'actual-readonly-catalog-schema-refusal; iterdump-identical')
+
+    def test_retained_sidecar_hidden_rowid_change_refuses_replay_and_recheck(self):
+        stage,_seal_type=self.producer()
+        validator=importlib.import_module('laya_move_read_seal')
+        build=importlib.import_module('laya_initial_build')
+        with self.prepared() as intent:
+            seal=stage(intent,installer=self.installer)
+            self.reader._recheck(seal.retained_endpoint)
+            retained=Path(seal.retained_endpoint.record['sidecar_path'])
+            self.assertNotEqual(retained,self.sidecar)
+            identity=build.read(self.case.state)['identity'];decision=json.loads(intent['oldRoute'])
+            validator._sidecar(retained,retained.parent,identity,self.case.db,self.case.state,decision)
+            before=self.live();dump_before=self.dump(retained)
+            with self.ro(retained) as db:
+                maximum=db.execute('SELECT max(rowid) FROM docs').fetchone()[0]
+                self.assertIsNotNone(maximum)
+                logical_before=db.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY path').fetchall()
+                fts_before=db.execute('SELECT rowid,path,title,body FROM docs_fts ORDER BY path').fetchall()
+            guard=None
+            with closing(sqlite3.connect(retained)) as db:
+                try:
+                    self.assertEqual(db.execute('UPDATE docs SET rowid=? WHERE rowid=?',(maximum+10,maximum)).rowcount,1)
+                    db.commit()
+                except sqlite3.IntegrityError as exc:
+                    db.rollback();guard=str(exc)
+            if guard is not None:
+                print(json.dumps(dict(case='retained-sidecar-rowid',schemaGuard=guard,producerRefusalClaimed=False)),flush=True)
+                self.assertEqual(self.dump(retained),dump_before)
+                self.assertEqual(self.live(),before)
+                return
+            dump_after=self.dump(retained)
+            with self.ro(retained) as db:
+                logical_after=db.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY path').fetchall()
+                actual=db.execute('SELECT rowid,path,title,body FROM docs ORDER BY path').fetchall()
+                fts_after=db.execute('SELECT rowid,path,title,body FROM docs_fts ORDER BY path').fetchall()
+            self.assertEqual(logical_after,logical_before)
+            self.assertEqual(fts_after,fts_before)
+            self.assertNotEqual(actual,fts_after)
+            self.assertEqual(dump_after,dump_before,'last-row rowid mutation must remain invisible to iterdump')
+            with self.assertRaisesRegex(ValueError,'^reader_move_sidecar_changed$'):
+                validator._sidecar(retained,retained.parent,identity,self.case.db,self.case.state,decision)
+            print(json.dumps(dict(case='retained-sidecar-rowid-control',oldRowid=maximum,newRowid=maximum+10,
+                iterdumpUnchanged=True,logicalDocsUnchanged=True,ftsUnchanged=True,
+                actualReadonlyValidator='reader_move_sidecar_changed')),flush=True)
+            self._check_retained_tamper_rejection(stage,intent,seal,before,'retained-sidecar-hidden-rowid',
+                'actual-readonly-docs-FTS-parity-refusal; iterdump-identical')
+
     def test_actual_catalog_sidecar_body_profile_and_symlink_tamper_are_refused(self):
         stage,_seal_type=self.producer()
         with self.prepared() as intent:
