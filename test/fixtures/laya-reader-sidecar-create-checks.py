@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Coordinated first sidecar publication over real absent selected v5 seeds."""
 from contextlib import contextmanager, ExitStack
+import gc
 import importlib
 import importlib.util
 import json
@@ -151,6 +152,152 @@ class SidecarCreateChecks(unittest.TestCase):
     def close_owner(self,owner):
         if owner is not None:self.W.close_owned(owner,deadline=time.monotonic()+1)
         self.W.drain_pending(deadline=time.monotonic()+1)
+
+    def test_published_inode_replacement_refuses_before_replacement_target_sqlite_open(self):
+        with self.owner():
+            component=self.api();replacement=self.case.state/'replacement-sidecar.sqlite'
+            with sqlite3.connect(replacement,isolation_level=None) as db:
+                self.assertEqual(db.execute('PRAGMA journal_mode=DELETE').fetchone(),('delete',))
+                self.I._setup(db,self.identity)
+            db.close();replacement.chmod(0o600)
+            replacement_before=(replacement.read_bytes(),node(replacement))
+            original=self.W.component_for;swaps=[];rows=[];created=None;error=None;invalid=False
+            def replace_at_reissue(installer,role):
+                if role=='sidecar' and self.target.exists() and not swaps:
+                    published=node(self.target)
+                    os.replace(replacement,self.target)
+                    swaps.append(dict(publishedNode=published,replacementNode=node(self.target)))
+                return original(installer,role)
+            try:
+                with mock.patch.object(self.W,'component_for',new=replace_at_reissue), \
+                        mock.patch.object(sqlite3,'connect',side_effect=self.trace(rows)):
+                    try:created=self.W.create_sidecar_owned(component,identity=self.identity,deadline=time.monotonic()+3)
+                    except Exception as exc:error=type(exc).__name__+':'+str(exc);invalid=isinstance(exc,ValueError);exc.__traceback__=None
+                if len(swaps)!=1:raise RuntimeError('actual native publication/final component reissue seam was not reached')
+                after=existing.ReaderWindowsChecks.files(self.target)
+                target_sql=[row for row in rows if row['path']==str(self.target)]
+                preserved=(self.target.read_bytes(),node(self.target))==replacement_before
+                aux_absent=all(after[suffix] is None for suffix in ('-wal','-shm','-journal'))
+                emit('published-inode-reissue-replacement',error=error,valueError=invalid,returned=created is not None,
+                    swaps=swaps,targetSQLiteConnects=target_sql,replacementPreserved=preserved,auxAbsent=aux_absent)
+                with self.subTest(boundary='published-node-must-bind-final-issued-component'):
+                    self.assertTrue(invalid);self.assertIsNone(created)
+                with self.subTest(boundary='replacement-first-sqlite-open-zero'):self.assertEqual(target_sql,[])
+                with self.subTest(boundary='replacement-bytes-node-mode-owner-nlink-aux-preserved'):
+                    self.assertTrue(preserved);self.assertTrue(aux_absent)
+            finally:self.close_owner(created)
+
+    def test_expired_deadline_after_actual_verify_never_enters_native_publication(self):
+        with self.owner():
+            component=self.api();actual_verify=self.C._verify;actual_rename=self.C._rename_noreplace
+            verified=[];renamed=[];created=None;error=None;invalid=False;deadline=time.monotonic()+1.0
+            def slow_verify(*args,**kwargs):
+                digest=actual_verify(*args,**kwargs)
+                verified.append(dict(actualVerificationCompleted=True,completedAt=time.monotonic()))
+                time.sleep(max(0,deadline-time.monotonic())+0.03)
+                return digest
+            def rename(*args,**kwargs):
+                renamed.append(dict(calledAt=time.monotonic(),deadline=deadline))
+                return actual_rename(*args,**kwargs)
+            try:
+                with mock.patch.object(self.C,'_verify',new=slow_verify), \
+                        mock.patch.object(self.C,'_rename_noreplace',new=rename):
+                    try:created=self.W.create_sidecar_owned(component,identity=self.identity,deadline=deadline)
+                    except Exception as exc:error=type(exc).__name__+':'+str(exc);invalid=isinstance(exc,ValueError);exc.__traceback__=None
+                if not verified:raise RuntimeError('actual verifier did not complete before deadline-overrun observation')
+                emit('actual-verify-deadline-overrun',verification=verified,deadline=deadline,now=time.monotonic(),
+                    error=error,valueError=invalid,nativeRenames=renamed,targetPresent=self.target.exists(),
+                    returned=created is not None,pending=self.W.pending_count())
+                with self.subTest(boundary='expired-create-refused'):
+                    self.assertTrue(invalid);self.assertIsNone(created)
+                with self.subTest(boundary='no-native-publication-after-deadline'):
+                    self.assertEqual(renamed,[]);self.assertFalse(self.target.exists())
+                self.assertEqual(self.W.pending_count(),0)
+            finally:self.close_owner(created)
+
+    def test_verify_sql_error_then_one_close_failure_rolls_back_before_same_thread_drain(self):
+        with self.owner():
+            component=self.api();actual=sqlite3.connect;state=self.case.state;prefix=self.C.TEMP_PREFIX
+            windows=self.W;expected_meta=self.I._expected_meta(self.identity)
+            observed={'integrityReached':False,'closeAttempts':0,'rwSetupComplete':False};refs=[];events=[]
+            def ex_held():
+                try:
+                    with windows.physical_window(component,exclusive=False,deadline=time.monotonic()+0.03):return False
+                except windows.ReaderWindowBusy:return True
+            class VerificationConnection(sqlite3.Connection):
+                def __init__(db,database,*args,**kwargs):
+                    super().__init__(database,*args,**kwargs)
+                    path=existing.database_path(database)
+                    db.fixture_temp=path.parent==state and path.name.startswith(prefix)
+                    db.fixture_ro=db.fixture_temp and 'mode=ro' in str(database)
+                    if db.fixture_ro:refs.append(weakref.ref(db))
+                def execute(db,sql,*args,**kwargs):
+                    if (db.fixture_ro and not observed['integrityReached']
+                            and sql.strip().upper()=='PRAGMA INTEGRITY_CHECK'):
+                        if not db.in_transaction:raise RuntimeError('actual verification BEGIN prerequisite missing')
+                        observed['integrityReached']=True
+                        return super().execute('SELECT FROM deliberately_invalid_verification_sql')
+                    return super().execute(sql,*args,**kwargs)
+                def close(db):
+                    if db.fixture_temp and not db.fixture_ro:
+                        observed['rwSetupComplete']=(super().execute('SELECT * FROM meta').fetchall()==[expected_meta])
+                    if db.fixture_ro:
+                        observed['closeAttempts']+=1
+                        held=ex_held()
+                        if observed['closeAttempts']==1:
+                            observed['firstCloseInTransaction']=db.in_transaction
+                            observed['firstClosePhysicalEX']=held
+                            raise sqlite3.OperationalError('synthetic_one_time_verification_ro_close_failure')
+                        super().close();events.append(dict(event='actual-ro-close',physicalExclusive=held));return
+                    super().close()
+            def connect(*args,**kwargs):kwargs['factory']=VerificationConnection;return actual(*args,**kwargs)
+            created=None;error=None;chain=[];drain_error=None;reference=None
+            try:
+                with mock.patch.object(sqlite3,'connect',side_effect=connect):
+                    try:created=self.W.create_sidecar_owned(component,identity=self.identity,deadline=time.monotonic()+3)
+                    except Exception as exc:
+                        error=type(exc).__name__+':'+str(exc)
+                        pending=[exc];seen=set()
+                        while pending:
+                            item=pending.pop()
+                            if id(item) in seen:continue
+                            seen.add(id(item));chain.append(dict(type=type(item).__name__,message=str(item)[:300]))
+                            pending.extend(value for value in (item.__cause__,item.__context__) if value is not None)
+                            item.__traceback__=None
+                        del pending,item
+                if refs:reference=refs[0]
+                if not observed['integrityReached'] or not observed['rwSetupComplete'] or len(refs)!=1:
+                    raise RuntimeError('actual initialized-temp/BEGIN/integrity SQL/RO connection prerequisite missing')
+                gc.collect()
+                pending_before=self.W.pending_count();alive=existing.ReaderWindowsChecks.live(reference)
+                try:self.W.drain_pending(deadline=time.monotonic()+0.5)
+                except (ValueError,OSError,RuntimeError) as exc:drain_error=type(exc).__name__+':'+str(exc);exc.__traceback__=None
+                emit('verify-failure-close-retry-before-fallback',error=error,exceptionChain=chain,observation=observed,
+                    pendingAfterGc=pending_before,actualROConnectionAlive=alive,drainError=drain_error,
+                    pendingAfterDrain=self.W.pending_count(),actualCloseEvents=list(events),targetPresent=self.target.exists())
+                with self.subTest(boundary='failed-close-retains-real-ro-owner'):
+                    self.assertIsNone(created);self.assertIsNotNone(error);self.assertEqual(pending_before,1);self.assertTrue(alive)
+                    self.assertTrue(observed['firstClosePhysicalEX'])
+                with self.subTest(boundary='validation-rollback-precedes-first-close'):
+                    self.assertFalse(observed['firstCloseInTransaction'])
+                with self.subTest(boundary='same-thread-drain-retries-actual-close'):
+                    self.assertIsNone(drain_error);self.assertEqual(self.W.pending_count(),0)
+                    self.assertEqual(observed['closeAttempts'],2);self.assertEqual(len(events),1)
+                    self.assertTrue(events[0]['physicalExclusive'])
+                    existing.ReaderWindowsChecks.assert_closed(self,reference)
+                    with self.seed.lease.reader_lifetime(self.seed.install,exclusive=True):pass
+                self.assertFalse(self.target.exists())
+            finally:
+                # Only after the original metrics/assertions: a real rollback
+                # and same-thread drain prevent the unsafe BASE from leaking.
+                rollback=False
+                if reference is not None and reference() is not None:
+                    try:
+                        if reference().in_transaction:reference().rollback();rollback=True
+                    except sqlite3.ProgrammingError:pass
+                self.close_owner(created)
+                emit('verification-close-finally-cleanup',actualFallbackRollback=rollback,pending=self.W.pending_count())
+
     def test_admission_locks_block_creation_before_first_sqlite_or_new_temp(self):
         with self.owner():
             component=self.api()
