@@ -517,6 +517,7 @@ class _WriteTransaction:
 
     def commit(self):
         self._check()
+        R._need(not self.rollback_pending, 'reader_transaction_rollback_pending')
         self.owner.db.commit()
         self._finish()
 
@@ -557,12 +558,26 @@ def write_transaction(owner, *, visible, deadline):
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=True, deadline=deadline))
         R._need(time.monotonic() < deadline, 'reader_write_deadline')
-        owner.db.execute('BEGIN IMMEDIATE')
+        # A native SQLite writer can outlive our cooperative lock admission.
+        # Limit that driver's busy wait to the remaining caller budget, then
+        # recheck after BEGIN before any caller DML is allowed to run.
+        previous = owner.db.execute('PRAGMA busy_timeout').fetchone()[0]
+        remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+        owner.db.execute(f'PRAGMA busy_timeout={min(previous, remaining_ms)}')
+        try:
+            owner.db.execute('BEGIN IMMEDIATE')
+        finally:
+            try:
+                owner.db.execute(f'PRAGMA busy_timeout={previous}')
+            except BaseException:
+                owner.pending = True
+                raise
+        R._need(time.monotonic() < deadline, 'reader_write_deadline')
         yield transaction
         if owner.transaction is transaction:
             transaction.commit()
     except BaseException as error:
-        if owner.transaction is transaction:
+        if owner.transaction is transaction and not transaction.rollback_pending:
             try:
                 transaction.rollback()
             except BaseException:
