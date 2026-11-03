@@ -60,8 +60,8 @@ class WriterScopeChecks(unittest.TestCase):
                 self.assertEqual(len(mover._scopes), before)
                 with self.assertRaises(ValueError): mover._owner()
                 with self.assertRaises(ValueError): self.seed.reader._installer(writer)
-                # W integration is a separate next gate; admission is inactive.
-                with self.assertRaises(ValueError): self.W.component_for(writer, 'base')
+                # Normal admission never gains preparation or mover authority.
+                with self.assertRaises(ValueError): self.W.prepare_windows(writer)
                 del context; gc.collect()
                 module.validate_normal_writer(writer)
                 self.assertFalse(self.F.fixture.probe('reader-lifetime.lock', 'EX'))
@@ -72,7 +72,7 @@ class WriterScopeChecks(unittest.TestCase):
             self.assertTrue(all(c['managed'] for c in calls))
             self.assertTrue(self.F.fixture.probe('reader-lifetime.lock', 'EX'))
             emit('normal-writer-separate-admission', contentConnects=calls,
-                 readerStale=True, moverRegistered=False, rwAuthorityConnected=False)
+                 readerStale=True, moverRegistered=False, actualWorkerConnected=False)
 
     def test_failed_proof_close_issues_nothing_and_retains_original_windows_until_drain(self):
         with self.F.warm(), self.seed.authority(), ExitStack() as owners:
