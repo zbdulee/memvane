@@ -165,6 +165,7 @@ def resolve_endpoint(project, *, action, host_root):
             prior = None
             for attempt in range(3):
                 node, image = reader._node(path), None
+                proved = False
                 try:
                     with reader._readonly(path, path.parent) as db:
                         image = _image(db)
@@ -181,6 +182,7 @@ def resolve_endpoint(project, *, action, host_root):
                             selected.preferred_endpoint, stored, endpoints[selected.preferred_endpoint][1])
                         _need(journal.select_route(str(project), action=action) == decision,
                               'reader_selection_changed')
+                        proved = True
                     break
                 except ValueError as exc:
                     if token is not None:
@@ -188,7 +190,7 @@ def resolve_endpoint(project, *, action, host_root):
                         token = None
                     # A replaced name is insufficient. The next complete image
                     # must prove a strict reader CAS extension of this snapshot.
-                    if (str(exc) != 'reader_store_changed' or image is None or
+                    if (not proved or str(exc) != 'reader_store_changed' or image is None or
                             reader._node(path) == node or attempt == 2):
                         raise
                     prior = image
