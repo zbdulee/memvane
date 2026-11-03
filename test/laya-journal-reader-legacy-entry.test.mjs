@@ -20,7 +20,7 @@ test('actual released selected writer entries reject reader-v5 without side effe
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 6 tests\b/);
+    assert.match(result.stderr, /Ran 10 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);
