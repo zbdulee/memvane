@@ -143,6 +143,9 @@ class ReaderComponentChecks(unittest.TestCase):
                         emit('store-first-pragma-failure',role=role,error=error,returned=opened is not None,
                              injected=observer.injected,events=observer.events,pending=windows.pending_count())
                         self.assertTrue(observer.injected);self.assertIsNotNone(error);self.assertIsNone(opened)
+                        expected = 'UnknownDatabase' if role == 'queue' else 'IndexContractError'
+                        self.assertTrue(error.startswith(expected + ':'),
+                            role + ' must preserve its default constructor error contract: ' + error)
                         failures=[row for row in observer.events if row['event']=='first-pragma-failure']
                         self.assertEqual(len(failures),1);self.assertTrue(failures[0]['physicalExclusive'])
                         self.assert_closed_roles({role:observer},(role,));self.assertEqual(windows.pending_count(),0)
