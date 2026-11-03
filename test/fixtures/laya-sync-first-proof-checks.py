@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Actual selected worker first proof; later worker opens remain separate."""
 from contextlib import ExitStack, closing
+from contextvars import copy_context
 import importlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -14,6 +17,14 @@ from unittest import mock
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('sync_first_seed',ROOT/'test/fixtures/laya-normal-writer-connections-checks.py')
 existing=importlib.util.module_from_spec(spec);spec.loader.exec_module(existing)
+
+HOT_CHILD="""import os,sqlite3,sys
+db=sqlite3.connect(sys.argv[1],isolation_level=None)
+db.execute('PRAGMA cache_size=1');db.execute('PRAGMA cache_spill=ON')
+db.execute('BEGIN IMMEDIATE');db.execute('DROP TABLE selection');db.execute('CREATE TABLE junk(x)')
+for _ in range(300):db.execute('INSERT INTO junk VALUES(randomblob(4000))')
+os._exit(9)
+"""
 
 def emit(label,**values):print(json.dumps(dict(case=label,**values),sort_keys=True),flush=True)
 
@@ -39,6 +50,26 @@ class SyncFirstProofChecks(unittest.TestCase):
     def selected(self):return self.worker._selected(self.case.project)
 
     def trace(self,calls):return self.fixture.fixture.fixture.trace(calls)
+
+    def publish_v4(self):
+        tmp=self.case.journal.with_name('test-legacy-v4-image')
+        tmp.write_bytes(self.v4);tmp.chmod(0o600);os.replace(tmp,self.case.journal)
+
+    def crash_hot(self):
+        child=subprocess.run([sys.executable,'-B','-I','-c',HOT_CHILD,str(self.case.journal)],
+            encoding='utf8',capture_output=True,timeout=10)
+        self.assertEqual(child.returncode,9,child.stderr)
+        self.assertTrue(Path(str(self.case.journal)+'-journal').exists())
+        with closing(sqlite3.connect(self.case.journal.as_uri()+'?mode=ro',uri=True)) as db:
+            with self.assertRaises(sqlite3.OperationalError):db.execute('SELECT count(*) FROM selection').fetchone()
+
+    def journal_connects(self,calls):
+        connect=sqlite3.connect
+        def observe(database,*args,**kwargs):
+            if str(database).startswith(self.case.journal.as_uri()+'?mode=rw'):
+                calls.append(str(database))
+            return connect(database,*args,**kwargs)
+        return mock.patch.object(sqlite3,'connect',side_effect=observe)
 
     def deferred_run(self):
         error=None;result=None;starts=[]
@@ -150,5 +181,81 @@ class SyncFirstProofChecks(unittest.TestCase):
                 emit('worker-first-native-close-failure',propagated=True,pinUntilCreatorDrain=True)
             finally:
                 blocked[0]=False;readers.drain_proof_readers(deadline=time.monotonic()+2)
+
+    def test_legacy_v4_hot_journal_preserves_existing_worker_recovery(self):
+        with self.fixture.F.warm(),self.seed.authority():
+            self.publish_v4()
+            self.assertEqual(self.J.journal_version(self.case.journal),4)
+            side=Path(str(self.case.journal)+'-journal')
+            # The unchanged public legacy proof supplies the minimum baseline.
+            self.crash_hot();decision=self.worker.select_route(str(self.case.project),action='update')
+            baseline=self.worker.verify_selected_route(decision)
+            self.assertTrue(baseline['productRouteAllowed']);self.assertFalse(side.exists())
+            self.crash_hot();error=None;proof=None
+            try:_decision,proof=self.selected()
+            except Exception as exc:error=type(exc).__name__+':'+str(exc)
+            emit('worker-legacy-hot-v4',baselineApproved=True,error=error,selected=proof is not None,hotSidecarRemains=side.exists())
+            self.assertIsNone(error)
+            self.assertEqual(proof,baseline);self.assertFalse(side.exists())
+            self.assertEqual(self.J.journal_version(self.case.journal),4)
+
+    def test_foreign_queue_or_journal_route_is_rejected_before_owner_lock_or_rw(self):
+        access=importlib.import_module('laya_worker_journal')
+        host=importlib.import_module('laya_index_host_route')
+        foreign=self.case.home/'foreign-journal-namespace';foreign.mkdir(mode=0o700)
+        route=next(host._candidate_paths(self.case.project))[2];original=route.read_bytes()
+        with self.seed.authority():
+            for field,source in (('queuePath',self.queue),('journalPath',self.case.journal)):
+                target=foreign/source.name
+                with closing(sqlite3.connect(source.as_uri()+'?mode=ro',uri=True)) as src, \
+                        closing(sqlite3.connect(target)) as dst:src.backup(dst)
+                target.chmod(0o600)
+                bad=json.loads(original);bad[field]=str(target)
+                route.write_bytes(json.dumps(bad).encode())
+                owners=[];rw=[];error=None
+                def owner(*args,**kwargs):owners.append(str(args[0]));raise AssertionError('foreign owner acquisition')
+                try:
+                    with mock.patch.object(access,'sync_owner',side_effect=owner),self.journal_connects(rw):
+                        try:self.selected()
+                        except Exception as exc:error=str(exc)
+                    self.assertIsNotNone(error);self.assertEqual(owners,[]);self.assertEqual(rw,[])
+                    self.assertFalse(Path(str(target)+'.sync.lock').exists())
+                    emit('worker-foreign-route',field=field,ownerAcquires=owners,rwConnects=rw,error=error)
+                finally:route.write_bytes(original)
+
+    def test_copied_expired_legacy_recovery_binding_cannot_open_rw(self):
+        access=importlib.import_module('laya_worker_journal')
+        with self.seed.authority():
+            self.publish_v4();self.crash_hot()
+            with access.worker_journal_access(self.case.project),self.J.read_only_journals():copied=copy_context()
+            before=self.case.journal.read_bytes();rw=[]
+            with self.journal_connects(rw),self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):
+                copied.run(self.J.inspect_journal,self.case.journal)
+            self.assertEqual(rw,[]);self.assertEqual(self.case.journal.read_bytes(),before)
+            self.assertTrue(Path(str(self.case.journal)+'-journal').exists())
+            emit('worker-legacy-binding-revoked',rwConnects=rw,originalHotImagePreserved=True)
+
+    def test_v5_header_and_initial_intent_never_receive_worker_rw_recovery(self):
+        access=importlib.import_module('laya_worker_journal')
+        with self.seed.authority():
+            v5=self.case.journal.read_bytes()
+            for mode in ('v5','initial-intent'):
+                if mode=='initial-intent':
+                    # Discard only this test-owned v5 crash image by restoring
+                    # its real converter's committed v4 image and journal.
+                    with closing(sqlite3.connect(self.case.journal)) as db:db.execute('PRAGMA application_id').fetchone()
+                    self.publish_v4()
+                self.crash_hot();intent=self.case.journal.parent/self.J._INITIAL_INTENT
+                if mode=='initial-intent':intent.write_text('test-owned-initial-intent');intent.chmod(0o600)
+                before=self.case.journal.read_bytes();rw=[]
+                try:
+                    with access.worker_journal_access(self.case.project),self.J.read_only_journals(), \
+                            self.journal_connects(rw),self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):
+                        self.J.inspect_journal(self.case.journal)
+                    self.assertEqual(rw,[]);self.assertEqual(self.case.journal.read_bytes(),before)
+                    self.assertTrue(Path(str(self.case.journal)+'-journal').exists())
+                    emit('worker-legacy-recovery-refused',mode=mode,rwConnects=rw,hotImagePreserved=True)
+                finally:
+                    if mode=='initial-intent':intent.unlink()
 
 if __name__=='__main__':unittest.main()

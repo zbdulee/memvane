@@ -17,6 +17,6 @@ test('selected sync first content proof requires plan and owned read windows',()
     });
     if(r.stdout)process.stdout.write(r.stdout);
     assert.ifError(r.error);assert.equal(r.status,0,r.stdout+r.stderr);
-    assert.match(r.stderr,/Ran 6 tests\b/);assert.match(r.stderr,/\nOK\b/);
+    assert.match(r.stderr,/Ran 10 tests\b/);assert.match(r.stderr,/\nOK\b/);
   }finally{removeTemp(home);}
 });
