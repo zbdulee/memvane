@@ -132,5 +132,54 @@ class WriteChecks(unittest.TestCase):
             self.assertEqual(after,dict(mutation=True,cut=True))
             self.assertEqual(closes,[dict(transactionActive=False,mutation=True,cut=True,physicalSharedAvailable=False)])
 
+    def test_expired_admission_never_begins_sql(self):
+        with self.writer() as (writer,component):
+            sql=[];entered=False;error=None
+            writer.db.set_trace_callback(sql.append)
+            try:
+                with self.W.write_transaction(writer._connection_owner,visible=True,deadline=time.monotonic()-1):
+                    entered=True
+            except Exception as exc:error=type(exc).__name__+':'+str(exc)
+            writer.db.set_trace_callback(None)
+            begins=[s for s in sql if s.strip().upper().startswith('BEGIN')]
+            print(json.dumps(dict(case='expired-write-admission',entered=entered,error=error,begin=begins)),flush=True)
+            self.assertIsNotNone(error);self.assertFalse(entered);self.assertEqual(begins,[])
+            self.assertTrue(self.probe('base-mutation.lock'));self.assertTrue(self.probe('publish-cut.lock'))
+
+    def test_rollback_failure_retains_sql_and_both_locks_until_same_thread_drain(self):
+        with self.writer() as (writer,component):
+            scope=self.case.route['scopeId'];path='wiki/rollback-pending.md';attempts=[];events=[]
+            cls=type(writer.db);execute=cls.execute;rollback=cls.rollback;native=cls._native_close_locked
+            def actual_dml_fault(db,sql,*a,**kw):
+                cursor=execute(db,sql,*a,**kw)
+                if sql.startswith('INSERT OR IGNORE INTO exclusions'):
+                    raise RuntimeError('synthetic_after_actual_visible_dml')
+                return cursor
+            def fail_once(db):
+                attempts.append(db.in_transaction)
+                if len(attempts)==1:raise RuntimeError('synthetic_first_rollback_failure')
+                return rollback(db)
+            def close(db):
+                events.append(dict(transaction=db.in_transaction,
+                    rows=db.execute('SELECT * FROM exclusions WHERE scope=? AND value=?',(scope,path)).fetchall(),
+                    mutation=self.probe('base-mutation.lock'),cut=self.probe('publish-cut.lock'),
+                    physicalSharedAvailable=self.probe('base-physical.lock','SH')))
+                return native(db)
+            with mock.patch.object(cls,'execute',actual_dml_fault),mock.patch.object(cls,'rollback',fail_once),mock.patch.object(cls,'_native_close_locked',close):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_after_actual_visible_dml'):
+                    writer.exclude(scope,path=path)
+                pending=self.W.pending_count();live=writer.db.in_transaction
+                retained=dict(mutation=not self.probe('base-mutation.lock'),cut=not self.probe('publish-cut.lock'))
+                with self.assertRaisesRegex(ValueError,'reader_lifetime_busy'):
+                    with self.seed.lease.reader_lifetime(self.seed.install,exclusive=True):pass
+                remaining=self.W.drain_pending(deadline=time.monotonic()+1)
+            print(json.dumps(dict(case='rollback-pending-same-thread-drain',pending=pending,
+                actualTransactionLive=live,retained=retained,rollbackAttempts=attempts,nativeClose=events,
+                remaining=remaining)),flush=True)
+            self.assertEqual(pending,1);self.assertTrue(live)
+            self.assertEqual(retained,dict(mutation=True,cut=True));self.assertEqual(attempts,[True,True])
+            self.assertEqual(remaining,0)
+            self.assertEqual(events,[dict(transaction=False,rows=[],mutation=True,cut=True,physicalSharedAvailable=False)])
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
