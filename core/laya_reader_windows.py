@@ -586,6 +586,74 @@ def write_transaction(owner, *, visible, deadline):
         raise
 
 
+def checkpoint_owned(owner, *, deadline):
+    """Explicit writer-only WAL reset; no caller gains a clean-read capability.
+
+    Busy/partial checkpoints may have advanced the main image. They are not a
+    completed reset. The deadline bounds admission and the driver's busy wait,
+    rather than promising a hard wall-clock bound on checkpoint filesystem I/O.
+    """
+    R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner,
+            'reader_connection_not_owned')
+    owner.check()
+    owner.lifetime.check()
+    R._need(owner.db is not None and not owner.pending and owner.transaction is None
+            and not owner.db.in_transaction, 'reader_checkpoint_unavailable')
+    _deadline(deadline)
+    _pid, installer, scope, node, _manifest = _component(owner.component)
+    R._need(node is not None, 'reader_component_absent')
+    endpoint, current = _owner(installer)
+    R._need(current is scope, 'reader_component_owner_changed')
+    with mutation_window(owner.component, exclusive=True, deadline=deadline):
+        with physical_window(owner.component, exclusive=True, deadline=deadline):
+            path, current_node = _location(endpoint, owner.component.role)
+            R._need(path == owner.component.path and current_node == node
+                    and tuple(R._file(path, Path(endpoint.record['state']))) == node,
+                    'reader_component_changed')
+            if time.monotonic() >= deadline:
+                raise ReaderWindowBusy('reader_checkpoint_deadline')
+            previous = owner.db.execute('PRAGMA busy_timeout').fetchone()[0]
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            owner.db.execute(f'PRAGMA busy_timeout={min(previous, remaining_ms)}')
+            try:
+                if time.monotonic() >= deadline:
+                    raise ReaderWindowBusy('reader_checkpoint_deadline')
+                cursor = owner.db.execute('PRAGMA main.wal_checkpoint(TRUNCATE)')
+                try:
+                    rows = cursor.fetchall()
+                finally:
+                    cursor.close()
+                    sqlite3.Cursor.close(cursor)
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, 'sqlite_errorcode', None)
+                # Python 3.9 does not expose sqlite_errorcode. Keep its normal
+                # driver busy/locked errors distinct from syntax/corruption.
+                if ((type(code) is int and code & 0xff in (5, 6))
+                        or 'locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+                    raise ReaderWindowBusy('reader_checkpoint_busy') from exc
+                raise
+            finally:
+                try:
+                    owner.db.execute(f'PRAGMA busy_timeout={previous}')
+                except BaseException:
+                    owner.pending = True
+                    raise
+            R._need(len(rows) == 1 and len(rows[0]) == 3
+                    and all(type(value) is int for value in rows[0]),
+                    'reader_checkpoint_result_invalid')
+            result = tuple(rows[0])
+            if time.monotonic() >= deadline:
+                raise ReaderWindowBusy('reader_checkpoint_deadline')
+            if result == (0, -1, -1):
+                return dict(state='no_wal', checkpoint=result)
+            if result != (0, 0, 0):
+                raise ReaderWindowBusy('reader_checkpoint_busy')
+            wal = Path(str(path) + '-wal')
+            R._file(wal, Path(endpoint.record['state']))
+            R._need(wal.lstat().st_size == 0, 'reader_checkpoint_result_invalid')
+            return dict(state='reset_complete', checkpoint=result)
+
+
 def open_owned(component, *, path, validate, initialize, deadline, preopen=None):
     """Open and initialize under EX; register before initialize's first PRAGMA."""
     # Until a managed worker's same-thread drain is integrated, reject before
