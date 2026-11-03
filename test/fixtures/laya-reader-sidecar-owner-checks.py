@@ -113,11 +113,12 @@ class SidecarOwnerChecks(unittest.TestCase):
                 if row is None:raise RuntimeError('actual existing completed document prerequisite missing')
                 original_setup=self.incremental._setup;setups=[]
                 observer=existing.ConnectionObservation(self.sidecar,self.windows,component)
-                def setup_then_hold(db,identity):
-                    result=original_setup(db,identity)
-                    setups.append(True)
-                    external.enter_context(self.windows.physical_window(component,exclusive=False,
-                        deadline=time.monotonic()+0.2))
+                def setup_then_hold(db,identity,**kwargs):
+                    result=original_setup(db,identity,**kwargs)
+                    if kwargs.get('coordination') is component:
+                        setups.append(True)
+                        external.enter_context(self.windows.physical_window(component,exclusive=False,
+                            deadline=time.monotonic()+0.2))
                     return result
                 error=None;returned=None;deferred=False
                 with mock.patch.object(sqlite3,'connect',side_effect=observer.connect), \

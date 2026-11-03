@@ -7,6 +7,7 @@ the installer's separate completion gate. Selected sync uses the same writer.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from laya_index_vector import LayaVectorIndex
 
 SCHEMA = 'laya-incremental-docs-v1'
 FILE = 'laya-incremental-docs.sqlite'
+_FIXED_SCHEMA = None
 
 
 def _fail(reason):
@@ -103,7 +105,9 @@ def _expected_meta(identity):
             identity['candidateDb'], identity['projectRoot'])
 
 
-def _setup(db, identity):
+def _setup(db, identity, *, coordination=None):
+    if coordination is not None:
+        return _setup_managed(db, identity, coordination)
     expected = _expected_meta(identity)
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -138,6 +142,111 @@ def _setup(db, identity):
     except BaseException:
         db.rollback()
         raise
+
+
+def _schema_rows(db):
+    return db.execute('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name').fetchall()
+
+
+def _fixed_schema():
+    global _FIXED_SCHEMA
+    if _FIXED_SCHEMA is None:
+        reference = sqlite3.connect(':memory:', isolation_level=None)
+        try:
+            # Shape only: the identity values do not enter the schema.
+            _setup(reference, dict(installId='',scopeId='',dbIncarnation='',
+                vectorProfileId='',candidateDb='',projectRoot=''))
+            _FIXED_SCHEMA = _schema_rows(reference)
+        finally:
+            reference.close()
+    return _FIXED_SCHEMA
+
+
+@contextmanager
+def _document_transaction(db, coordination, *, visible):
+    if coordination is not None:
+        from laya_reader_windows import write_connection
+        with write_connection(db, coordination, visible=visible,
+                deadline=time.monotonic() + (.05 if visible else 2)) as transaction:
+            yield transaction
+        return
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        yield db
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def _setup_managed(db, identity, coordination):
+    expected = _fixed_schema()
+    without_cursor = [row for row in expected if row[1] != 'cached_backfill']
+    with _document_transaction(db, coordination, visible=False):
+        if (db.execute('PRAGMA user_version').fetchone() != (1,)
+                or db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(identity)]):
+            _fail('incremental_identity_changed')
+        actual = _schema_rows(db)
+        if actual == without_cursor:
+            db.execute('''CREATE TABLE IF NOT EXISTS cached_backfill(
+            id INTEGER PRIMARY KEY CHECK(id=1), scan_id TEXT NOT NULL,
+            cursor TEXT NOT NULL)''')
+            actual = _schema_rows(db)
+        if actual != expected:
+            _fail('incremental_schema_changed')
+
+
+def _source_owners(runtime, coordination):
+    """Actual participant binding before any preparation SQL."""
+    from laya_reader_windows import _component, connection_binding
+    side_binding = _component(coordination)
+    owners = (getattr(runtime.index, '_connection_owner', None),
+              getattr(runtime.catalog, '_connection_owner', None))
+    if any(owner is None for owner in owners):
+        _fail('incremental_sources_uncoordinated')
+    if coordination.role != 'sidecar':
+        _fail('incremental_sources_uncoordinated')
+    for role, owner in zip(('base', 'catalog'), owners):
+        connection_binding(owner, owner.db)
+        binding = _component(owner.component)
+        if (owner.component.role != role or owner.component.install_id != coordination.install_id
+                or binding[2] is not side_binding[2]):
+            _fail('incremental_sources_uncoordinated')
+    return owners
+
+
+def _source_stamps(owners):
+    from laya_reader_windows import connection_binding, ReaderWindowBusy
+    result = []
+    for owner in owners:
+        db = owner.db
+        # A surviving issued cursor may keep an implicit old read snapshot.
+        # This writer boundary defers rather than finalizing caller cursors.
+        if owner.pending or owner.transaction is not None or db.in_transaction or db._live_cursors:
+            raise ReaderWindowBusy('reader_writer_statement_active')
+        result.append((connection_binding(owner, db),
+            db.execute('PRAGMA data_version').fetchone()[0], db.total_changes,
+            db.execute('PRAGMA schema_version').fetchone()[0]))
+    return tuple(result)
+
+
+def _source_rows(runtime, snapshot, path, source_hash):
+    base, catalog = runtime.index.db, runtime.catalog
+    return (base.execute('SELECT gen FROM head WHERE scope=?', (runtime.scope,)).fetchone(),
+        catalog._publication_rows(),
+        catalog.db.execute('SELECT sha256,size FROM scan_files WHERE seq=? AND path=?',
+                           (snapshot.seq, path)).fetchone(),
+        base.execute("SELECT kind,value FROM exclusions WHERE scope=? AND "
+                     "((kind='path' AND value=?) OR (kind='hash' AND value=?)) ORDER BY kind,value",
+                     (runtime.scope, path, source_hash)).fetchall())
+
+
+def _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash):
+    from laya_reader_windows import ReaderWindowBusy
+    if (_source_stamps(owners) != stamps
+            or _source_rows(runtime, snapshot, path, source_hash) != rows
+            or _source_stamps(owners) != stamps):
+        raise ReaderWindowBusy('reader_sidecar_sources_changed')
 
 
 def _verified(identity, path, body):
@@ -238,6 +347,8 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
     the completed sidecar row and selected identity without reopening source
     files. Replays of the same document are idempotent.
     """
+    owners = _source_owners(runtime, coordination) if coordination is not None else None
+    stamps = _source_stamps(owners) if owners is not None else None
     from laya_index_host_route import wiki_index_roots
     if (profile_id != identity['vectorProfileId'] or
             runtime.scope != identity['scopeId'] or
@@ -277,17 +388,23 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
         # Keep the last completed sidecar row searchable across that interval;
         # replacing it here would shadow the old head with an unusable draft.
         return {'status': 'unverified'}
+    rows = _source_rows(runtime, snapshot, path, source_hash) if owners is not None else None
+    if owners is not None:
+        _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash)
     db = (_open(identity['stateRoot']) if coordination is None else
           _open(identity['stateRoot'], coordination=coordination, identity=identity))
     try:
-        _setup(db, identity)
-        db.execute('BEGIN IMMEDIATE')
-        try:
+        if coordination is None:
+            _setup(db, identity)
+        else:
+            _setup(db, identity, coordination=coordination)
+        with _document_transaction(db, coordination, visible=True):
+            if owners is not None:
+                _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash)
             old = db.execute('SELECT rowid,hash,title,body,profile_id,chunk_count '
                              'FROM docs WHERE path=?', (path,)).fetchone()
             wanted = (source_hash, title, body, profile_id, len(chunks))
             if old is not None and old[1:] == wanted:
-                db.commit()
                 return {'status': 'already_published'}
             if old is None:
                 rowid = db.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
@@ -300,10 +417,6 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
                            (*wanted, snapshot.scan_id, rowid))
             db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
                        (rowid, path, title, body))
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
     finally:
         _close(db)
     return {'status': 'published'}

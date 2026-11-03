@@ -79,7 +79,7 @@ class SidecarWriteChecks(unittest.TestCase):
             before=self.rows();setup=self.I._setup;injected=[];error=None;result=None
             def exclude_after_setup(*args,**kwargs):
                 value=setup(*args,**kwargs)
-                if not injected:
+                if getattr(args[0],'_window_owner',None) is not None and not injected:
                     runtime.index.exclude(runtime.scope,hash_=row[1]);injected.append(True)
                 return value
             with mock.patch.object(self.I,'_setup',exclude_after_setup):

@@ -694,6 +694,14 @@ def write_transaction(owner, *, visible, deadline):
     return _transaction_context(owner, visible=visible, deadline=deadline)
 
 
+def write_connection(db, coordination, *, visible, deadline):
+    """A raw handle must belong to the exact issued requested component."""
+    owner = next((item for item in _owned.values() if item.db is db), None)
+    R._need(owner is not None and owner.component is coordination,
+            'reader_connection_not_owned')
+    return write_transaction(owner, visible=visible, deadline=deadline)
+
+
 def delete_binding_transaction(owner, *, deadline):
     return _transaction_context(owner, visible=True, deadline=deadline, delete=True)
 
