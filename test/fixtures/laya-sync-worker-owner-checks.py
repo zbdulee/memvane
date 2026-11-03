@@ -16,6 +16,8 @@ import laya_product_sync_worker as worker
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import sync_owner
 import laya_wiki_discovery as discovery
+import laya_embed_resident as resident
+import laya_resident_service as resident_service
 
 PROBE=r'''
 import json,signal,sys
@@ -26,8 +28,47 @@ from laya_index_sync import _owner_lock
 with _owner_lock(Path(sys.argv[2])) as owned:print(json.dumps(dict(available=owned)),flush=True)
 '''
 
+HOLDER=r'''
+import json,signal,sys
+from pathlib import Path
+signal.alarm(20)
+sys.path.insert(0,sys.argv[1])
+from laya_index_sync import sync_owner
+with sync_owner(Path(sys.argv[2])) as owner:
+    print(json.dumps(dict(owned=owner is not None)),flush=True)
+    if owner is not None:assert sys.stdin.readline()=='RELEASE\n'
+'''
+
 
 class WorkerOwnerChecks(unittest.TestCase):
+    @contextmanager
+    def held_owner(self,queue):
+        import select
+        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT/'core'),str(queue)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+        try:
+            if not select.select([child.stdout],[],[],6)[0]:raise RuntimeError('owner readiness timeout')
+            self.assertTrue(json.loads(child.stdout.readline())['owned'])
+            yield
+        finally:
+            try:out,err=child.communicate('RELEASE\n',timeout=4)
+            except subprocess.TimeoutExpired:
+                child.kill();child.communicate();raise
+            self.assertEqual(child.returncode,0,err)
+
+    def cold_default(self,fixture):
+        from contextlib import ExitStack
+        stack=ExitStack()
+        self.addCleanup(stack.close)
+        patches=[mock.patch.object(worker,'_selected',side_effect=lambda _p:(fixture.decision,fixture.proof())),
+            mock.patch.object(worker,'ReviewedLocalQmdProvider',fixture.provider_class()),
+            mock.patch.object(worker,'resource_report',return_value={'ready':True}),
+            mock.patch.object(worker,'verify_selected_route',side_effect=lambda _d:fixture.proof()),
+            mock.patch.object(resident,'probe',return_value='absent'),
+            mock.patch.object(resident,'read_owner_state',return_value=None),
+            mock.patch.object(discovery,'observe_grants',return_value=None)]
+        for patch in patches:stack.enter_context(patch)
+        return stack
     def fixture(self,capacity):
         cls=seed.V2CapacityWorkerChecks if capacity else seed.V2WorkerChecks
         fixture=cls('runTest');self.addCleanup(fixture.doCleanups);fixture.setUp()
@@ -97,6 +138,32 @@ class WorkerOwnerChecks(unittest.TestCase):
         self.assertEqual(result,{'state':'deferred','reason':'owner_busy'})
         self.assertEqual(constructor.call_count,0);self.assertEqual(started,0)
         self.assertEqual(fixture.embedded,[])
+
+    def test_default_cold_resident_busy_owner_never_requests_adoption(self):
+        fixture=self.fixture(True);controller=seed.Coordinator();controller.root=fixture.home
+        with self.cold_default(fixture),self.held_owner(fixture.queue_path), \
+             mock.patch.object(resident_service,'request_adopt') as adopt, \
+             mock.patch.object(worker,'LayaIndexRuntime',wraps=LayaIndexRuntime) as constructor:
+            result=worker.run(fixture.home,coordinator=controller)
+        print(json.dumps(dict(case='default-cold-busy-owner',result=result,
+            adoptionRequests=adopt.call_count,runtimeConstructions=constructor.call_count)),flush=True)
+        self.assertEqual(result,{'state':'deferred','reason':'owner_busy'})
+        adopt.assert_not_called();constructor.assert_not_called()
+
+    def test_default_cold_resident_requests_under_owner_then_releases_without_provider_wait(self):
+        fixture=self.fixture(True);controller=seed.Coordinator();controller.root=fixture.home
+        observed=[]
+        def adopt(*_args,**_kwargs):observed.append(self.available(fixture.queue_path))
+        with self.cold_default(fixture),mock.patch.object(resident_service,'request_adopt',side_effect=adopt), \
+             mock.patch.object(worker,'LayaIndexRuntime',wraps=LayaIndexRuntime) as constructor:
+            result=worker.run(fixture.home,coordinator=controller)
+        free=self.available(fixture.queue_path)
+        print(json.dumps(dict(case='default-cold-request-owner',result=result,
+            ownerAvailableDuringAdopt=observed,ownerAvailableAfterDefer=free,
+            providerAdmissions=len(controller.lanes))),flush=True)
+        self.assertEqual(result,{'state':'deferred','reason':'laya_service_preparing'})
+        self.assertEqual(observed,[False]);self.assertTrue(free)
+        self.assertEqual(controller.lanes,[]);constructor.assert_not_called()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
