@@ -197,4 +197,27 @@ class CheckpointChecks(unittest.TestCase):
                 if backup.exists():
                     wal.unlink();backup.rename(wal)
 
+    def test_wal_replaced_before_checkpoint_cannot_truncate_already_open_original(self):
+        with self.fixture.writer() as (writer,_component):
+            self.commit_wal(writer,'pre-checkpoint-wal-replacement');checkpoint=self.api()
+            wal=Path(str(self.case.db)+'-wal');backup=self.case.home/'checkpoint-open-wal'
+            original=wal.lstat();wal.rename(backup)
+            fd=os.open(wal,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
+            sql=[];error=None;result=None
+            try:
+                before=image(self.case.db);original_bytes=backup.read_bytes()
+                writer.db.set_trace_callback(sql.append)
+                try:result=checkpoint(writer._connection_owner,deadline=time.monotonic()+1)
+                except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                finally:writer.db.set_trace_callback(None)
+                after=image(self.case.db);checkpoints=[s for s in sql if 'WAL_CHECKPOINT' in s.upper()]
+                emit('checkpoint-already-open-wal-replacement',error=error,result=result,
+                    originalNode=[original.st_dev,original.st_ino],replacementNode=list(before['-wal'][1][:2]),
+                    checkpointSql=checkpoints,filesUnchanged=before==after,
+                    originalOpenWalUnchanged=backup.read_bytes()==original_bytes)
+                self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual(checkpoints,[])
+                self.assertTrue(before==after);self.assertEqual(backup.read_bytes(),original_bytes)
+            finally:
+                wal.unlink();backup.rename(wal)
+
 if __name__=='__main__':unittest.main(verbosity=2)
