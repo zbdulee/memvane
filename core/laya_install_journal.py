@@ -498,6 +498,7 @@ def _schema_version_read(db):
 
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
+_legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
 _writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
 _CURRENT_IDENTITY_BINDING = object()
 
@@ -583,6 +584,16 @@ def read_only_journals():
         yield
     finally:
         _reader_no_recovery.reset(token)
+
+
+@contextmanager
+def legacy_identity_reads():
+    """Require pre-v5 evidence in the actual fullproof journal snapshot."""
+    token = _legacy_identity_reads.set(True)
+    try:
+        yield
+    finally:
+        _legacy_identity_reads.reset(token)
 
 
 def _recover_interrupted_transaction(path):
@@ -1367,6 +1378,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     prove the executing bundle; it never authorizes a write.
     """
     binding = _writer_identity_reads.get()
+    legacy_only = _legacy_identity_reads.get()
     if binding is not None:
         binding.check()
     if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
@@ -1393,6 +1405,8 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
         db.execute('BEGIN')
         try:
             row = _row(db)
+            if legacy_only and row['_version'] == 5:
+                _fail('writer_plan_v5_required')
             if (row['state'] not in ('active', 'restored_old') or
                     row['selected'] is None or row['selected_route_sha'] not in allowed or
                     _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
