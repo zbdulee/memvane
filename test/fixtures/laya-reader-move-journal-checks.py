@@ -455,6 +455,42 @@ class MoveJournalChecks(unittest.TestCase):
                 self.assertIsNotNone(protected)
                 self.assertIsNotNone(expired_error,'direct issuance must register revocation on the actual lifetime context')
 
+    def test_direct_retained_issuer_and_existing_pin_refuse_broken_current_selection(self):
+        module=__import__('laya_move_reader_journal')
+        with self.staged() as seal:
+            selected=self.publisher()(self.case.journal,seal=seal)
+            with self.seed.ro(self.case.journal) as db:
+                packed,attestation=db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
+                    (selected.preferred_endpoint,)).fetchone()
+                record=json.loads(packed)
+            with self.lease.reader_lifetime(self.seed.install,exclusive=False):
+                existing=module.resolve_retained(self.case.state,self.case.project,self.case.plugin,
+                    selected.preferred_endpoint,record,attestation)
+                self.reader._recheck(existing)
+                # Corrupt only this disposable input image; do not remove any
+                # immutable guard or use the product writer to admit the error.
+                with closing(sqlite3.connect(self.case.journal.as_uri()+'?mode=rw',uri=True)) as db:
+                    db.execute('UPDATE reader_selection SET preferred_endpoint=?',
+                               (selected.previous_endpoint,));db.commit()
+                with self.seed.ro(self.case.journal) as db:
+                    with self.assertRaises(ValueError):self.lease._image(db)
+                before=self.case.journal.read_bytes();node=self.case.journal.stat()
+                direct_error,recheck_error,issued=None,None,None
+                try:issued=module.resolve_retained(self.case.state,self.case.project,self.case.plugin,
+                    selected.preferred_endpoint,record,attestation)
+                except (ValueError,OSError,RuntimeError) as exc:direct_error=str(exc)
+                try:self.reader._recheck(existing)
+                except (ValueError,OSError,RuntimeError) as exc:recheck_error=str(exc)
+                print(json.dumps(dict(case='direct-retained-current-selection',fullImageControl='refused',
+                    directIssued=issued is not None,directError=direct_error,recheckError=recheck_error,
+                    journalUnchanged=self.case.journal.read_bytes()==before)),flush=True)
+                self.assertEqual(self.case.journal.read_bytes(),before)
+                self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
+                with self.subTest(boundary='direct-issuance'):
+                    self.assertIsNone(issued);self.assertIsNotNone(direct_error)
+                with self.subTest(boundary='issued-pin-recheck'):
+                    self.assertIsNotNone(recheck_error)
+
     def test_retained_absence_survives_first_legitimate_completed_live_sidecar_publication(self):
         seed=seed_module.AbsentSidecarProjectMoveSealChecks('runTest')
         self.addCleanup(seed.doCleanups);seed.setUp()
