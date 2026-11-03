@@ -24,7 +24,7 @@ from laya_index_host_route import (select_route, selected_collection_roots,
                                    wiki_index_roots)
 from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
                                 _collection_roots, capacity_store_paths)
-from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
+from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step, sync_owner
 from laya_install_journal import (cas_mark_new_write, inspect_journal,
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,
@@ -425,7 +425,10 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         _observe_member_block(decision, result)
         return _after_sync(decision, proof, grants, result)
     try:
-        with controller.activity('provider', EMBED_POLICY, observed):
+        with controller.activity('provider', EMBED_POLICY, observed), \
+                sync_owner(Path(decision['queuePath'])) as owner:
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}
             # The hook's sealed stat receipt is a fast freshness fence. This
             # off-hook worker must rehash the full native closure before load.
             validated_manifest = verify_worker_attestation(decision)
@@ -479,7 +482,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
                         result = sync_full(runtime, before_publish=before_publish,
-                                           vector_batch=batch, require_vector=True)
+                                           vector_batch=batch, require_vector=True, owner=owner)
                     except BaseException as exc:
                         if qa is not None:
                             qa.finish(error=exc)
@@ -574,6 +577,9 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     try:
         with ExitStack() as stack:
             stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+            owner = stack.enter_context(sync_owner(Path(decision['queuePath'])))
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}, state['proof']
 
             def ensure_service():
                 if state['service'] is not None:
@@ -660,6 +666,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
                                         diagnose=_member_diagnosis(decision, provider),
+                                        owner=owner,
                                         on_document_complete=publish_complete,
                                         before_head_publish=preserve_previous,
                                         retire_missing=(
@@ -730,7 +737,7 @@ def _member_diagnosis(decision, provider):
 
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                    on_document_complete=None, before_head_publish=None,
-                   retire_missing=None, diagnose=None):
+                   retire_missing=None, diagnose=None, owner=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -756,7 +763,7 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             raise IndexContractError('selected_proof_changed')
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
                            vector_profile_id=profile_id,
-                           before_head_publish=before_head_publish)
+                           before_head_publish=before_head_publish, owner=owner)
         if result.get('reason') == 'scan_pending' and on_document_complete is not None:
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,
