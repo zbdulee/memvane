@@ -148,4 +148,34 @@ class WriterScopeChecks(unittest.TestCase):
                 with self.assertRaises((ValueError, TypeError)): module.validate_normal_writer(bad)
             emit('normal-writer-invalid-admission', contentConnects=calls)
 
+    def test_deadline_crossed_inside_final_metadata_check_cannot_return_admission(self):
+        with self.F.warm(), self.seed.authority(), self.sync.sync_owner(self.queue) as owner:
+            module = self.api(); calls = []; advanced = [False]
+            context = self.scope(module, owner)
+            original = self.P.validate_writer_plan
+            clock = time.monotonic
+            def now(): return clock() + (100 if advanced[0] else 0)
+            def validate(plan):
+                result = original(plan)
+                if context.writer is not None and not self.P._proofs:
+                    advanced[0] = True
+                return result
+            error = None; returned = False
+            try:
+                with self.fixture.trace(calls), mock.patch.object(time, 'monotonic', side_effect=now), \
+                        mock.patch.object(self.P, 'validate_writer_plan', side_effect=validate):
+                    try:
+                        context.__enter__()
+                        returned = True
+                    except (ValueError, RuntimeError) as exc: error = str(exc)
+                emit('normal-writer-final-deadline', actualContentConnects=len(calls),
+                     advancedAfterNativeClose=advanced[0], returned=returned, error=error)
+                self.assertTrue(advanced[0])
+                self.assertEqual(len(calls), 2)
+                self.assertFalse(returned, 'deadline crossed during final check must revoke admission')
+                self.assertIn('normal_writer_deadline', error or '')
+                self.assertNotIn(context.writer, module._issued)
+                self.assertTrue(self.F.fixture.probe('reader-lifetime.lock', 'EX'))
+            finally: context.__exit__(None, None, None)
+
 if __name__ == '__main__': unittest.main()
