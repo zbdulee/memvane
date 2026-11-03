@@ -801,6 +801,228 @@ class RecoveryChecks(unittest.TestCase):
         self.assertTrue((root / 'core/laya_install_journal.py').is_file())
         return root
 
+    def pending_initial(self, values, *, hot=False):
+        helper, case, reader, bridge, installer, readiness, _ = values
+
+        def writer(pipe):
+            def checkpoint(name):
+                if name == 'initial-intent-durable':
+                    pipe.send(dict(event='checkpoint', name=name))
+                    os._exit(EXIT_AT_CHECKPOINT)
+            with helper.full_authority(case, reader, bridge), mock.patch.object(J, '_conversion_step', checkpoint):
+                reader.convert_reader_v5(case.state, case.project, installer=installer, readiness=readiness)
+
+        with child(writer) as (process, pipe):
+            receive(pipe, event='checkpoint')
+            process.join(10)
+            self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+        self.assertTrue((case.state / J._INITIAL_INTENT / 'intent.json').is_file())
+        if hot:
+            self.actual_hot(case.journal)
+
+    def actual_hot(self, path):
+        def writer(pipe):
+            db = sqlite3.connect(path, isolation_level=None)
+            db.execute('PRAGMA cache_size=1')
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('CREATE TABLE synthetic_recovery_hot(x)')
+            for _ in range(80):
+                db.execute('INSERT INTO synthetic_recovery_hot VALUES(randomblob(4000))')
+            pipe.send(dict(event='checkpoint', physical=physical(path)))
+            os._exit(EXIT_AT_CHECKPOINT)
+
+        with child(writer) as (process, pipe):
+            reached = receive(pipe, event='checkpoint')
+            process.join(10)
+            self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+        emit('negative-fixture-real-sqlite-hot', observed=reached,
+             provenance='synthetic direct transaction; not claimed as converter COMMIT capture')
+        self.assertTrue(Path(str(path) + '-journal').exists())
+
+    @contextmanager
+    def live_rw_opens(self, path):
+        calls, actual = [], sqlite3.connect
+
+        def connect(name, *args, **kwargs):
+            value = str(name)
+            if ((value == str(path)) or
+                    (value.split('?', 1)[0] == Path(path).as_uri() and 'mode=rw' in value)):
+                calls.append(value)
+            return actual(name, *args, **kwargs)
+
+        with mock.patch('sqlite3.connect', side_effect=connect):
+            yield calls
+
+    def test_initial_recovery_restarts_without_issued_registry_and_survives_its_own_crashes(self):
+        import laya_journal_recovery as recovery
+        for step in ('initial-recovery-proved', 'initial-recovery-rolled-back'):
+            with self.subTest(step=step), fixture() as values:
+                helper, case, reader, bridge, _, _, _ = values
+                before = self.snapshot(helper, case)
+                self.pending_initial(values, hot=True)
+                reader._issued.clear()
+                bridge._ISSUED.clear()
+
+                def resume(pipe):
+                    def checkpoint(name):
+                        if name == step:
+                            pipe.send(dict(event='checkpoint', name=name))
+                            os._exit(EXIT_AT_CHECKPOINT)
+                    with helper.full_authority(case, reader, bridge), mock.patch.object(J, '_conversion_step', checkpoint):
+                        helper.installer(case, reader, bridge)
+
+                with child(resume) as (process, pipe):
+                    reached = receive(pipe, event='checkpoint')
+                    process.join(10)
+                    self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+                self.assertIsNone(J._initial_preimage.get())
+                with helper.full_authority(case, reader, bridge):
+                    fresh = helper.installer(case, reader, bridge)
+                    _, _, ready = helper.ready(case, bridge)
+                    selected = reader.convert_reader_v5(case.state, case.project, installer=fresh, readiness=ready)
+                    replay = reader.convert_reader_v5(case.state, case.project, installer=fresh, readiness=ready)
+                emit('fresh-registry-recovery', checkpoint=reached, reader=helper.selection(selected))
+                self.assertEqual(selected.epoch, 1)
+                self.assertEqual(helper.selection(selected), helper.selection(replay))
+                self.assertFalse((case.state / J._INITIAL_INTENT).exists())
+                self.unchanged(helper, case, before)
+                self.assertTrue(case.recall(case.decision())[1])
+
+    def test_invalid_initial_preimage_inode_marker_attestation_and_store_refuse_before_live_rw(self):
+        for mutation in ('preimage', 'canonical-inode', 'marker', 'attestation', 'store'):
+            with self.subTest(mutation=mutation), fixture() as values:
+                helper, case, reader, bridge, _, _, _ = values
+                self.pending_initial(values)
+                if mutation == 'preimage':
+                    image = case.state / J._INITIAL_INTENT / 'base.sqlite'
+                    image.write_bytes(image.read_bytes() + b'synthetic tamper')
+                elif mutation == 'canonical-inode':
+                    new = case.state / 'replacement-journal.sqlite'
+                    new.write_bytes(Path(case.journal).read_bytes())
+                    new.chmod(0o600)
+                    previous = Path(case.journal).stat().st_ino
+                    os.replace(new, case.journal)
+                    self.assertNotEqual(Path(case.journal).stat().st_ino, previous)
+                elif mutation == 'marker':
+                    marker = case.auto / base.published.fresh.MARKER
+                    row = json.loads(marker.read_text(encoding='utf8'))
+                    row['projectRoot'] = str(case.home / 'foreign-project')
+                    marker.write_text(json.dumps(row), encoding='utf8')
+                elif mutation == 'attestation':
+                    att = case.state / J.PRODUCTION_ATTESTATION
+                    att.write_bytes(att.read_bytes() + b'\n')
+                else:
+                    with closing(sqlite3.connect(case.db)) as db, db:
+                        db.execute('PRAGMA user_version=999')
+                original = Path(case.journal).read_bytes()
+                data, metadata = helper.data_snapshot(case), helper.metadata_snapshot(case)
+                error = None
+                with self.live_rw_opens(case.journal) as writes, helper.full_authority(case, reader, bridge):
+                    try:
+                        helper.installer(case, reader, bridge)
+                    except ValueError as exc:
+                        error = str(exc)
+                emit('initial-evidence-negative', mutation=mutation, reason=error, live_rw_opens=writes)
+                self.assertIsNotNone(error)
+                self.assertEqual(writes, [])
+                self.assertEqual(Path(case.journal).read_bytes(), original)
+                self.assertEqual(helper.data_snapshot(case), data)
+                self.assertEqual(helper.metadata_snapshot(case), metadata)
+
+    def test_stable_v5_hot_without_initial_intent_refuses_read_and_installer_with_zero_live_rw(self):
+        with fixture(converted=True) as (helper, case, reader, bridge, _, _, _):
+            self.assertFalse((case.state / J._INITIAL_INTENT).exists())
+            self.actual_hot(case.journal)
+            original, rollback = Path(case.journal).read_bytes(), Path(str(case.journal) + '-journal').read_bytes()
+            errors = []
+            with self.live_rw_opens(case.journal) as writes, helper.full_authority(case, reader, bridge):
+                for action in (lambda: J.inspect_journal(case.journal),
+                               lambda: helper.installer(case, reader, bridge)):
+                    try:
+                        action()
+                    except ValueError as exc:
+                        errors.append(str(exc))
+            emit('stable-hot-no-intent', reasons=errors, live_rw_opens=writes)
+            self.assertEqual(len(errors), 2)
+            self.assertEqual(writes, [])
+            self.assertEqual(Path(case.journal).read_bytes(), original)
+            self.assertEqual(Path(str(case.journal) + '-journal').read_bytes(), rollback)
+
+    def test_preimage_context_denies_write_and_other_journal_and_resets_after_exception(self):
+        import laya_journal_recovery as recovery
+        with fixture() as values:
+            _, case, _, _, _, _, _ = values
+            self.pending_initial(values)
+            image = recovery._Preimage(case.state, case.project)
+            other_state = case.state / 'other-journal'
+            other_state.mkdir(mode=0o700)
+            other = other_state / 'install-journal.sqlite'
+            other.write_bytes(Path(case.journal).read_bytes())
+            other.chmod(0o600)
+            original = Path(case.journal).read_bytes()
+            with self.assertRaisesRegex(RuntimeError, 'scoped synthetic proof failure'):
+                with recovery._preimage_reads(image):
+                    for path, write in ((case.journal, True), (other, False), (other, True)):
+                        with self.assertRaisesRegex(ValueError, '^initial_recovery_read_only$'):
+                            J._open(path, write=write)
+                    raise RuntimeError('scoped synthetic proof failure')
+            self.assertIsNone(J._initial_preimage.get())
+            with self.live_rw_opens(case.journal) as writes:
+                _, db = J._open(case.journal, write=True)
+                db.close()  # No transaction or DML: prove routing, not write permission.
+            emit('preimage-context-finally', context_empty=J._initial_preimage.get() is None,
+                 normal_live_rw_opens=writes)
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(Path(case.journal).read_bytes(), original)
+
+    def test_readiness_registry_ignores_home_and_invalid_override_never_uses_live_fallback(self):
+        import laya_bridge_readiness as bridge
+        import laya_journal_paths as paths
+        temporary = tempfile.TemporaryDirectory(prefix='registry-negative-', dir=os.environ['HOME'])
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        runtime, a, b = (root / name for name in ('runtime', 'home-a', 'home-b'))
+        for path in (runtime, a, b):
+            path.mkdir(mode=0o700)
+        with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': str(runtime), 'HOME': str(a)}):
+            first = bridge._registry(create=True)
+            with mock.patch.dict(os.environ, {'HOME': str(b)}):
+                second = bridge._registry(create=True)
+            self.assertEqual(first, second)
+            with mock.patch.object(paths.pwd, 'getpwuid', side_effect=AssertionError('live UID fallback forbidden')) as live:
+                for override in ('', '/memvane-outside-platform-temp-fixture'):
+                    with self.subTest(override=override), mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': override}):
+                        with self.assertRaises(ValueError):
+                            bridge._registry(create=True)
+                self.assertEqual(live.call_count, 0)
+        emit('registry-negative', first=str(first), second=str(second), live_fallback_calls=0)
+
+    def test_actual_readonly_recovery_works_without_sqlite_readonly_constant(self):
+        with fixture() as values:
+            helper, case, reader, bridge, _, _, _ = values
+            before = self.snapshot(helper, case)
+            self.pending_initial(values, hot=True)
+            with closing(sqlite3.connect(Path(case.journal).as_uri() + '?mode=ro', uri=True)) as db:
+                with self.assertRaises(sqlite3.OperationalError) as actual:
+                    db.execute('PRAGMA application_id').fetchone()
+            self.assertIn('readonly', str(actual.exception).lower())
+            saved = getattr(sqlite3, 'SQLITE_READONLY', None)
+            try:
+                if hasattr(sqlite3, 'SQLITE_READONLY'):
+                    delattr(sqlite3, 'SQLITE_READONLY')
+                self.assertFalse(hasattr(sqlite3, 'SQLITE_READONLY'))
+                with helper.full_authority(case, reader, bridge):
+                    fresh = helper.installer(case, reader, bridge)
+                    _, _, ready = helper.ready(case, bridge)
+                    selected = reader.convert_reader_v5(case.state, case.project, installer=fresh, readiness=ready)
+            finally:
+                if saved is not None:
+                    setattr(sqlite3, 'SQLITE_READONLY', saved)
+            emit('readonly-constant-absent-control', actual_sqlite_error=str(actual.exception),
+                 reader_epoch=selected.epoch, actual_python39_full_suite_claim=False)
+            self.assertEqual(selected.epoch, 1)
+            self.unchanged(helper, case, before)
+
     def test_actual_released_writer_opened_before_conversion_refuses_v5_before_dml(self):
         with fixture() as (helper, case, reader, bridge, installer, readiness, _):
             old = self.old_tree(case)

@@ -77,13 +77,8 @@ def _dir(path, *, private=True):
 
 
 def _registry(*, create=False):
-    base = _dir(Path.home(), private=False)
-    for name in ('.local', 'state', 'memvane', 'bridge-preflight'):
-        base /= name
-        if create:
-            base.mkdir(mode=0o700, exist_ok=True)
-        _dir(base, private=name == 'bridge-preflight')
-    return base
+    from laya_journal_paths import journal_directory
+    return journal_directory('bridge-preflight', create=create)
 
 
 def _raw(value):
@@ -151,6 +146,8 @@ def _load_challenge(directory):
 
 
 def begin_bridge_preflight(state: Path, *, release_commit: str, expected_hosts: frozenset):
+    from laya_journal_paths import check_journal_namespace
+    check_journal_namespace(state)
     if type(release_commit) is not str or not COMMIT.fullmatch(release_commit):
         _refuse()
     state = _dir(Path(state))

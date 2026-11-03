@@ -8,6 +8,7 @@ detect interruption, but are not a cross-file power-loss transaction.
 from __future__ import annotations
 
 from contextlib import closing
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -39,6 +40,8 @@ SCHEMA_V3 = 'laya-installer-journal-v3'
 SCHEMA = 'laya-installer-journal-v4'
 DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
 APP_ID = 0x4c594a31
+_INITIAL_INTENT = '.reader-initial-v5'
+_initial_preimage = ContextVar('journal_initial_preimage', default=None)
 VERSION = 4
 # Every journal format this code reads and CAS-writes. A v3 journal still
 # carries the retired global-QMD inventory column; it is never re-checked.
@@ -496,6 +499,8 @@ def _recover_interrupted_transaction(path):
     and is left alone.
     """
     side = path.with_name(path.name + '-journal')
+    if os.path.lexists(path.parent / _INITIAL_INTENT):
+        return False
     if not side.exists() or side.is_symlink():
         return False
     # A v5 live image is always a complete, closed rollback-format DB.
@@ -514,11 +519,30 @@ def _recover_interrupted_transaction(path):
 
 def _open(path, *, write):
     path = _private_parent(path)
+    preimage = _initial_preimage.get()
+    if preimage is not None:
+        if write or path != preimage.logical_path:
+            _fail('initial_recovery_read_only')
+        return path, preimage.open_read()
     try:
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
                 info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
             _fail('unsafe_journal_file')
+        if write and os.path.lexists(str(path) + '-journal'):
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                header_version = int.from_bytes(os.pread(fd, 4, 60), 'big')
+            finally:
+                os.close(fd)
+            if header_version == 5:
+                _fail('journal_unavailable')
+            if os.path.lexists(path.parent / _INITIAL_INTENT):
+                # A non-hot v4 sidecar may survive a crash before the first
+                # journal header. Never let opening for write repair a hot one.
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as check:
+                    if _schema_version(check) != 4:
+                        _fail('journal_unavailable')
         uri = path.as_uri() + ('?mode=rw' if write else '?mode=ro')
         db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
         try:

@@ -77,7 +77,9 @@ def _file(path, state):
 
 
 def _state(state):
+    from laya_journal_paths import check_journal_namespace
     state = Path(state)
+    check_journal_namespace(state)
     _need(state.is_absolute() and state.resolve(strict=True) == state and
           journal._private_parent(state / _JOURNAL).parent == state, 'reader_state_unsafe')
     return state
@@ -273,6 +275,8 @@ def _recheck(endpoint):
 
 
 def seal_current_reader(state: Path, project: Path, *, executing_root: Path) -> InstallerSeal:
+    from laya_journal_recovery import recover_initial
+    recover_initial(_state(state), Path(project), Path(executing_root))
     endpoint, _proof = _endpoint(state, project, executing_root, {})
     token = object.__new__(InstallerSeal)
     object.__setattr__(token, 'endpoint', endpoint)
@@ -305,24 +309,9 @@ def _sync(path, directory=False):
 
 
 def _lock_dir(install_id, *, create):
-    import memvane_paths
+    from laya_journal_paths import journal_directory
     _need(type(install_id) is str and journal.ID.fullmatch(install_id), 'reader_install_invalid')
-    path = Path.home()
-    _need(path.is_absolute() and path.resolve(strict=True) == path, 'reader_lock_unsafe')
-    for name in (*memvane_paths.STATE_PARTS, 'reader-locks', install_id):
-        parent, path = path, path / name
-        if create:
-            try:
-                path.mkdir(mode=0o700)
-            except FileExistsError:
-                pass
-            else:
-                _sync(parent, True)
-        st = path.lstat()
-        _need(stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and
-              not st.st_mode & (0o077 if name in ('reader-locks', install_id) else 0o022),
-              'reader_lock_unsafe')
-    return path
+    return journal_directory('reader-locks', install_id, create=create)
 
 
 @contextmanager
@@ -405,7 +394,7 @@ def _insert_endpoint(db, endpoint, record, raw):
 
 
 def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, readiness) -> ReaderSelection:
-    import secrets
+    import laya_journal_recovery as recovery
     import laya_bridge_readiness as bridge
     import laya_initial_build as build
     import laya_fresh_wiki_origin as fresh
@@ -415,6 +404,7 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
     endpoint = _installer(installer)
     state, project = _state(state), Path(project)
     _need(_issued[endpoint][:2] == (state, project), 'reader_install_changed')
+    recovery.recover_initial(state, project, _issued[endpoint][2])
     _record, _att, proof = _recheck(endpoint)
     bridge.require_bridge_preflight(readiness, state, proof)
     path = _journal(state / _JOURNAL)
@@ -431,26 +421,25 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
             selected = read_selection(path)
             _need(selected.preferred_endpoint == endpoint.endpoint_id, 'reader_selection_changed')
             return selected
+        record, _, proof = _recheck(endpoint)
+        bridge.require_bridge_preflight(readiness, state, proof)
+        initial = recovery.prepare(state, project, endpoint, record, proof)
         with closing(journal._open(path, write=True)[1]) as db:
             db.execute('PRAGMA synchronous=FULL')
             db.execute('BEGIN IMMEDIATE')
             try:
                 row = journal._row(db)
+                _need(row == initial.row, 'reader_selection_changed')
                 record, raw, proof = _recheck(endpoint)
                 bridge.require_bridge_preflight(readiness, state, proof)
                 _need(row['epoch'] == proof['selectionEpoch'] and
                       row['provider_attestation_sha'] == _sha(raw), 'reader_selection_changed')
-                if row['_version'] == 5:
-                    selected, _ = _selection(db)
-                    _need(selected.preferred_endpoint == endpoint.endpoint_id, 'reader_selection_changed')
-                    db.rollback()
-                    return selected
                 _need(row['_version'] == 4, 'reader_schema_unknown')
                 journal._step('v5-locked')
                 for sql in journal._READER_DDL.values():
                     db.execute(sql)
                 _insert_endpoint(db, endpoint, record, raw)
-                transition = secrets.token_hex(16)
+                transition = initial.data['transition']
                 db.execute('INSERT INTO reader_transitions VALUES(?,1,?,NULL)',
                            (transition, endpoint.endpoint_id))
                 db.execute('INSERT INTO reader_selection VALUES(1,1,?,NULL,?)',
@@ -467,6 +456,7 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
         journal._step('v5-committed')
         _sync(path)
         _sync(state, True)
+        recovery.finish(initial)
         return selected
 
 
@@ -499,6 +489,7 @@ def mutate_image(journal_path, operation):
     with _readonly(path, path.parent) as before:
         _, record = _selection(before)
     with _transition(record['install_id']) as lockfd:
+        _need(not os.path.lexists(path.parent / journal._INITIAL_INTENT), 'initial_conversion_unsettled')
         image = path.with_name('.reader-next.sqlite')
         _discard_staging(lockfd, image)
         for suffix in ('', '-journal', '-wal', '-shm'):

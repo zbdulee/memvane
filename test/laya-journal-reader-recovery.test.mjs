@@ -20,7 +20,7 @@ test('T1 reader recovery uses real child crashes, SQLite images and historical w
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 13 tests\b/);
+    assert.match(result.stderr, /Ran 19 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);
