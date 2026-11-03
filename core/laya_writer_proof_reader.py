@@ -202,6 +202,7 @@ class _Owner:
                 self.cleaning = True
                 self.db._native_close_locked()
             except Exception as exc:
+                self.scope.invalid = True
                 raise W.ReaderCloseDeferred('writer_proof_close_deferred') from exc
             finally:
                 self.cleaning = False
@@ -271,8 +272,11 @@ class _ReaderContext:
     """Explicit owner only; discarding this object cannot close a native DB."""
     def __init__(self, window, role):
         self.window, self.role, self.owner = window, role, None
+        self.pid, self.thread = os.getpid(), threading.current_thread()
         self.entered = False
     def __enter__(self):
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'writer_proof_connection_owner_changed')
         R._need(not self.entered, 'writer_proof_reader_reentered')
         self.entered = True
         P.validate_writer_proof_window(self.window)
@@ -281,6 +285,8 @@ class _ReaderContext:
         self.owner.open()
         return _Reader(self.owner)
     def __exit__(self, exc_type, exc, traceback):
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'writer_proof_connection_owner_changed')
         if self.owner is not None:
             _close(self.owner)
         return False

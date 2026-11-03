@@ -232,12 +232,15 @@ class _WriterProofContext:
     """Explicit lock ownership; no generator finalizer releases native owners."""
     def __init__(self, plan, queue_owner, deadline):
         self.plan, self.queue_owner, self.deadline = plan, queue_owner, deadline
+        self.pid, self.thread = os.getpid(), threading.current_thread()
         self.entered = self.finished = False
         self.stack = self.window = None
 
     def __enter__(self):
         from laya_index_sync import validate_sync_owner
         from laya_writer_proof_reader import _ProofExitStack
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'writer_proof_owner_changed')
         R._need(not self.entered, 'writer_proof_window_reentered')
         self.entered = True
         try:
@@ -289,6 +292,8 @@ class _WriterProofContext:
             raise
 
     def __exit__(self, exc_type, exc, traceback):
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'writer_proof_owner_changed')
         if not self.entered or self.finished:
             return False
         self.finished = True
