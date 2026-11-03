@@ -472,11 +472,12 @@ def _result(state, generation=None, claim=None, reason=None):
 
 
 def sync_full(runtime: LayaIndexRuntime, *, before_publish,
-              vector_batch=None, require_vector=True) -> dict:
+              vector_batch=None, require_vector=True, owner=None) -> dict:
     """Drain retained claims, then publish one complete fresh source snapshot.
 
     `deferred` is a fail-closed retry result, including owner contention. The
     caller may report it as a retry but must not claim a completed update.
+    `owner` explicitly borrows a live lease acquired before runtime open.
     """
     if not isinstance(runtime, LayaIndexRuntime):
         raise TypeError('explicit_runtime_required')
@@ -486,7 +487,7 @@ def sync_full(runtime: LayaIndexRuntime, *, before_publish,
         raise TypeError('invalid_vector_requirement')
     if require_vector and vector_batch is None:
         return _result('deferred', reason='vector_provider_unavailable')
-    with _owner_lock(runtime.queue.path) as owned:
+    with borrow_sync_owner(runtime.queue.path, claim=owner) as owned:
         if not owned:
             return _result('deferred', reason='owner_busy')
         if runtime.queue.binding() != runtime.index.incarnation():
@@ -570,10 +571,10 @@ def _head_sealed(index, gen, profile_id):
 def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False,
               vector_profile_id=None, before_head_publish=None,
               max_files=200, max_bytes=5_000_000, max_stats=2_000,
-              max_claims=8, rescan=False) -> dict:
+              max_claims=8, rescan=False, owner=None) -> dict:
     """One finite capacity-path sync unit for a product worker; call repeatedly.
 
-    Under the queue owner lock, in order:
+    Under the queue owner lock (or an explicitly supplied live `owner`), in order:
 
     1. At most ``max_claims`` retained claims are processed through
        ``process_bound_one`` (receipt ACK, or the job's own stored binding;
@@ -640,7 +641,7 @@ def sync_step(runtime: LayaIndexRuntime, *, before_publish, require_vector=False
     from laya_source_catalog import PENDING_PHASES
     index, queue = runtime.index, runtime.queue
     catalog, store = runtime.catalog, runtime.binding_store
-    with _owner_lock(queue.path) as owned:
+    with borrow_sync_owner(queue.path, claim=owner) as owned:
         if not owned:
             return _result('deferred', reason='owner_busy')
         if queue.binding() != index.incarnation():
