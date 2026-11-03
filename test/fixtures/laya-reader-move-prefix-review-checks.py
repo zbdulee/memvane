@@ -1,21 +1,45 @@
 #!/usr/bin/env python3
-"""Four actual prefix review boundaries; no existing positive suite rerun."""
+"""Five actual prefix review boundaries; no existing positive suite rerun."""
 from contextlib import ExitStack,closing
 import importlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import sqlite3
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
 spec=importlib.util.spec_from_file_location('prefix_review_existing',HERE/'laya-reader-move-prefix-checks.py')
 prefix=importlib.util.module_from_spec(spec);spec.loader.exec_module(prefix)
 seed_module=prefix.seed_module
+
+PREPARE_HELD=r'''
+from contextlib import ExitStack,nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime'];signal.alarm(30)
+spec=importlib.util.spec_from_file_location('race_prepare_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_project_dir_move as mover,laya_state_move
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+project,state=Path(p['project']),Path(p['state'])
+with helper.full_authority(case,mover),mock.patch.object(laya_state_move,'_provider_lane',lambda:nullcontext()),ExitStack() as stack:
+    mover._locks(stack,project,state,mover._queue_path(project,None))
+    intent=mover._prepare(project,state,'rename')
+    print(json.dumps(dict(event='prepared-owner-held',version=base.J.journal_version(Path(p['journal'])),
+        pointer=mover.read_pointer(project),intentPresent=mover.intent_present(state))),flush=True)
+    if sys.stdin.readline().strip()!='release':raise RuntimeError('owner release handshake missing')
+'''
 
 HOT_READER=r'''
 from pathlib import Path
@@ -46,6 +70,83 @@ print(json.dumps(dict(event='hot-journal-read-attempt',issued=issued,error=error
 
 
 class PrefixReviewChecks(unittest.TestCase):
+    def test_concurrent_v4_prepare_is_busy_not_stale_missing_intent(self):
+        base=seed_module.base
+        helper=base.JournalReaderChecks('runTest');helper.setUp();self.addCleanup(helper.doCleanups)
+        class PublishedV4(base.published.MoveCase):
+            STATE_PARTS=('.local','state','memvane','3'*32)
+            TEMP_DIR=str(Path('/tmp').resolve());TEMP_PREFIX=''
+            PROVIDER_EXTRA={'serviceSocketPath':'{state}/runtime/laya-embed.sock'}
+        case=helper.compose(PublishedV4)
+        mover=importlib.import_module('laya_project_dir_move')
+        upgrade=importlib.import_module('laya_bundle_upgrade')
+        self.assertEqual(base.J.journal_version(case.journal),4)
+        self.assertFalse(mover.intent_present(case.state))
+        real_read_pointer=mover.read_pointer
+        self.assertIsNone(real_read_pointer(case.project))
+        payload=case.home/'race-owner-payload.json'
+        payload.write_text(json.dumps(dict(home=str(case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(case.project),state=str(case.state),journal=str(case.journal),
+            plugin=str(case.plugin),proof=case.proof)),encoding='utf8')
+        payload.chmod(0o600)
+        child=None;prepared=None;before=None;calls=0
+        def snapshot():
+            return {str(path):(path.read_bytes(),path.stat().st_dev,path.stat().st_ino)
+                for root in (case.project,case.state) for path in root.rglob('*')
+                if path.is_file() and not path.is_symlink() and not path.name.endswith('.lock')}
+        def schedule(project):
+            nonlocal child,prepared,before,calls
+            calls+=1
+            if calls==1:
+                # A already observed no intent. B publishes a real intent and
+                # pointer before A's first actual pointer read, retaining all
+                # actual owner flocks until the parent explicitly releases it.
+                child=subprocess.Popen([sys.executable,'-B','-I','-c',PREPARE_HELD,str(ROOT),str(payload)],
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+                readable,_,_=select.select([child.stdout],[],[],20)
+                if not readable:raise RuntimeError('B actual prepare owner checkpoint timed out')
+                line=child.stdout.readline()
+                if not line:
+                    _,stderr=child.communicate(timeout=5)
+                    raise RuntimeError('B actual prepare failed before race checkpoint: '+stderr)
+                prepared=json.loads(line)
+                if (prepared.get('event')!='prepared-owner-held' or prepared.get('version')!=4 or
+                        not prepared.get('intentPresent') or prepared.get('pointer') is None or child.poll() is not None):
+                    raise RuntimeError('B did not establish actual v4 prepared owner scope')
+                actual=mover._load_intent(case.state,case.project)
+                if actual is None or real_read_pointer(case.project)!=prepared['pointer']:
+                    raise RuntimeError('B checkpoint lacks actual matching durable intent/pointer')
+                before=snapshot()
+            return real_read_pointer(project)
+        error=None;outcome=None;failure=None
+        try:
+            with helper.full_authority(case,mover),mock.patch.object(mover,'read_pointer',side_effect=schedule):
+                try:outcome=mover.move(case.project,case.state)
+                except (ValueError,OSError,RuntimeError) as exc:
+                    failure=exc;error=upgrade._reason(exc)
+            if prepared is None or before is None:
+                raise RuntimeError('race did not reach B actual preparation checkpoint')
+            unchanged=snapshot()==before
+            busy=failure is not None and error in upgrade.MOVE_DEFERRALS
+            complete=isinstance(outcome,dict) and outcome.get('status')=='project_dir_move_complete'
+            print(json.dumps(dict(case='v4-concurrent-prepare-pointer',prepared=prepared,
+                pointerReads=calls,ownerChildAlive=child.poll() is None,error=error,result=outcome,
+                busyClassified=busy,filesUnchanged=unchanged)),flush=True)
+            with self.subTest(boundary='no-false-missing-intent'):
+                self.assertNotEqual(error,'project_dir_move_intent_missing')
+            with self.subTest(boundary='normal-busy-or-complete'):
+                self.assertTrue(busy or complete,'a normally prepared competing mover must defer or complete')
+            with self.subTest(boundary='competing-intent-pointer-preserved'):
+                self.assertTrue(unchanged,'A must preserve B durable intent/pointer and prepared project/state files')
+        finally:
+            if child is not None:
+                if child.poll() is None:
+                    try:child.stdin.write('release\n');child.stdin.flush()
+                    except (BrokenPipeError,OSError):pass
+                try:child.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill();child.communicate(timeout=5)
+
     def test_blocked_v4_hot_journal_pointer_refuses_without_rw_recovery(self):
         base=seed_module.base
         helper=base.JournalReaderChecks('runTest');helper.setUp();self.addCleanup(helper.doCleanups)

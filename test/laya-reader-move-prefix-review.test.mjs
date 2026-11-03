@@ -18,6 +18,6 @@ test('actual move prefix review safety boundaries', () => {
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 4 tests\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, /Ran 5 tests\b/);assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });
