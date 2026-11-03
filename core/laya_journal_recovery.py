@@ -146,6 +146,10 @@ def prepare(state, project, endpoint, record, proof):
 
 def finish(image):
     image.revalidate()
+    stage = image.logical_path.parent / ('.reader-rehearse-' + image.data['transition'])
+    if os.path.lexists(stage):
+        with _rehearsal(image):
+            pass
     # Retire both references atomically; a restart never trusts half an intent.
     old = image.directory.with_name('.reader-finished-' + secrets.token_hex(16))
     os.rename(image.directory, old)
@@ -169,6 +173,87 @@ def _match_live(db, image):
     else:
         _v4_row(db)
     _require(row == image.row)
+
+
+def _retire_clean_forward(image, state, project, executing_root):
+    """Retire a stale intent only for proved, clean v4 mark-write progress."""
+    path = image.logical_path
+    sidecars = tuple(Path(str(path) + suffix) for suffix in ('-journal', '-wal', '-shm'))
+    if any(os.path.lexists(side) for side in sidecars):
+        return False
+    with R._readonly(path, state) as db:
+        current = J._row(db)
+        if current['_version'] != 4 or current == image.row:
+            return False
+        _v4_row(db)
+        _require(current['epoch'] > image.row['epoch']
+                 and current['new_write_seen'] >= image.row['new_write_seen']
+                 and current == dict(image.row, epoch=current['epoch'],
+                                     new_write_seen=current['new_write_seen']))
+        # No preimage context here: prove the actual current journal and every
+        # store/provider binding while this read snapshot prevents a commit.
+        record, att, proof = R._evidence(state, project, executing_root)
+        _require(proof['selectionEpoch'] == current['epoch']
+                 and proof['installId'] == image.data['install']
+                 and R._sha(att) == image.data['attestation_sha'])
+        record['creation_epoch'] = image.data['creation_epoch']
+        _require(R._sha(b'memvane-reader-endpoint-v1\0' + R._raw(record)) == image.data['endpoint'])
+        image.revalidate()
+        _require(not any(os.path.lexists(side) for side in sidecars))
+        finish(image)
+    return True
+
+
+@contextmanager
+def _rehearsal(image):
+    """One private, intent-bound metadata copy; never enumerate other jobs."""
+    image.revalidate()
+    state = image.logical_path.parent
+    stage = state / ('.reader-rehearse-' + image.data['transition'])
+    created = False
+    try:
+        stage.mkdir(mode=0o700)
+        created = True
+    except FileExistsError:
+        pass
+    _directory(stage)
+    stage_node = R._node(stage)
+    owner = stage / 'owner.json'
+    binding = R._raw(dict(format='memvane-reader-rehearsal-v1',
+        state_node=image.data['state_node'], stage_node=stage_node,
+        intent_node=image.nodes[1], intent_sha=R._sha(image.descriptor),
+        transition=image.data['transition'], journal_node=image.data['journal_node']))
+    if created:
+        _write(owner, binding)
+        R._sync(stage, True)
+        R._sync(state, True)
+    owner_node = R._file(owner, stage)
+
+    def clear(remove=False):
+        image.revalidate()
+        _directory(stage)
+        _require(R._node(stage) == stage_node and stat.S_IMODE(stage.lstat().st_mode) == 0o700
+                 and R._file(owner, stage) == owner_node and _read(owner, 16384) == binding
+                 and set(os.listdir(stage)) <= {'owner.json', 'trial.sqlite', 'trial.sqlite-journal'})
+        entries = [(path, R._file(path, stage)) for path in
+                   (stage / 'trial.sqlite-journal', stage / 'trial.sqlite') if os.path.lexists(path)]
+        for path, node in entries:
+            _require(R._node(stage) == stage_node and R._file(path, stage) == node)
+            path.unlink()
+        if remove:
+            _require(R._file(owner, stage) == owner_node and _read(owner, 16384) == binding)
+            owner.unlink()
+            _require(R._node(stage) == stage_node)
+            stage.rmdir()
+            R._sync(state, True)
+        else:
+            R._sync(stage, True)
+
+    clear()
+    try:
+        yield stage / 'trial.sqlite'
+    finally:
+        clear(remove=True)
 
 
 def _repair_if_hot(image):
@@ -199,8 +284,7 @@ def _repair_if_hot(image):
              and len(rollback) > 512 and rollback[:8] == _MAGIC and not rollback.endswith(_MAGIC)
              and page_size in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
              and 0 < pages * page_size <= R._MAX_IMAGE)
-    with tempfile.TemporaryDirectory(prefix='.reader-rehearse-', dir=path.parent) as tmp:
-        candidate = Path(tmp) / 'trial.sqlite'
+    with _rehearsal(image) as candidate:
         _write(candidate, raw)
         _write(Path(str(candidate) + '-journal'), rollback)
         with closing(sqlite3.connect(candidate.as_uri() + '?mode=rw', uri=True)) as db:
@@ -243,6 +327,8 @@ def recover_initial(state, project, executing_root):
             record['creation_epoch'] = image.data['creation_epoch']
             _require(R._sha(b'memvane-reader-endpoint-v1\0' + R._raw(record)) == image.data['endpoint'])
         image.revalidate()
+        if _retire_clean_forward(image, state, project, executing_root):
+            return
         J._step('initial-recovery-proved')
         _repair_if_hot(image)
         finish(image)
