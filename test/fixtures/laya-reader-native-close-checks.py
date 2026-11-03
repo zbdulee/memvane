@@ -239,5 +239,41 @@ class NativeCloseChecks(unittest.TestCase):
             if writer is not None:writer.close(deadline=time.monotonic() + 1)
             windows.drain_pending(deadline=time.monotonic() + 1)
 
+    def test_custom_cursor_noop_close_cannot_leave_native_statement_after_owner_release(self):
+        windows=importlib.import_module('laya_reader_windows')
+        from laya_index_a import LayaIndexA
+        writer=None;cursor=None;external=ExitStack();attempts=[]
+        class PooledCursor(sqlite3.Cursor):
+            def close(cur):
+                # A permitted factory can return to a pool without resetting
+                # the actual native statement. No native constructor bypass.
+                attempts.append('pool-return');return None
+        try:
+            with self.seed.prepared():
+                windows.prepare_windows(self.seed.installer)
+                component=windows.component_for(self.seed.installer,'base')
+                writer=LayaIndexA(self.case.db,coordination=component)
+                before_write=self.case.db.read_bytes()
+                body='synthetic custom cursor pooled-close WAL sentinel'
+                writer.ensure_content(hashlib.sha256(body.encode()).hexdigest(),body)
+                if self.case.db.read_bytes()!=before_write or not Path(str(self.case.db)+'-wal').is_file():
+                    raise RuntimeError('actual uncheckpointed WAL prerequisite missing')
+                cursor=writer.db.cursor(factory=PooledCursor)
+                cursor.execute('SELECT key,value FROM schema_meta ORDER BY key')
+                if cursor.fetchone() is None:raise RuntimeError('actual pooled cursor SELECT missing')
+                writer.close(deadline=time.monotonic()+.2)
+                self.assertEqual(attempts,['pool-return'])
+                external.enter_context(windows.physical_window(component,exclusive=False,deadline=time.monotonic()+.2))
+                before=image(self.case.db);cursor=None;gc.collect();after=image(self.case.db)
+                changed=delta(before,after)
+                print(json.dumps(dict(case='custom-cursor-noop-close',overrideCalls=len(attempts),
+                    pending=windows.pending_count(),changedDuringPhysicalSH=changed,
+                    walBeforeGc=before['-wal'] is not None)),flush=True)
+                self.assertEqual(changed,[],'pooled cursor GC finalizes native SQLite outside EX')
+        finally:
+            external.close();cursor=None;gc.collect()
+            if writer is not None:writer.close(deadline=time.monotonic()+1)
+            windows.drain_pending(deadline=time.monotonic()+1)
+
 
 if __name__ == '__main__':unittest.main(verbosity=2)
