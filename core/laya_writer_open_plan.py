@@ -5,11 +5,15 @@ grants no SQLite open, writer, reader, mover, cohort or immutable capability.
 The caller must acquire lifetime/physical windows and prove the full current
 installation before issuing normal writer authority.
 """
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
+import fcntl
+import json
 import os
 from pathlib import Path
 import stat
 import threading
+import time
 import weakref
 
 import laya_install_journal as J
@@ -18,6 +22,7 @@ import laya_reader_lease as L
 import laya_reader_windows as W
 
 _issued = weakref.WeakKeyDictionary()
+_proofs = {}
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -181,3 +186,92 @@ def validate_writer_plan(plan):
     packed, snapshot = _plan_record(plan)
     current = _snapshot(snapshot['project'], snapshot['executing_root'])
     R._need(R._raw(current) == packed, 'writer_plan_changed')
+
+
+@dataclass(frozen=True, eq=False, init=False)
+class WriterProofWindow:
+    """An active lock window, without a content-open or writer capability."""
+    def __init__(self):
+        raise ValueError('writer_proof_window_not_issued')
+
+    def __reduce__(self):
+        raise TypeError('writer_proof_window_not_serializable')
+
+
+def _proof_window_record(window):
+    R._need(type(window) is WriterProofWindow and window in _proofs,
+            'writer_proof_window_not_issued')
+    proof = _proofs[window]
+    R._need(proof['pid'] == os.getpid() and proof['thread'] is threading.current_thread(),
+            'writer_proof_window_expired')
+    return proof
+
+
+def validate_writer_proof_window(window):
+    """Validate live owner and original locks before a later proof operation."""
+    from laya_index_sync import validate_sync_owner
+    proof = _proof_window_record(window)
+    plan = proof['plan']
+    validate_sync_owner(proof['queue_owner'], plan.queue_path)
+    validate_writer_plan(plan)
+    _packed, snapshot = _plan_record(plan)
+    lifetime = proof['lifetime']
+    lifetime.check()
+    R._need(W._manifest(plan.install_id, lifetime.parent, lifetime.parent_fd,
+                        lifetime.parent_info).decode('utf8') == snapshot['manifest'],
+            'writer_proof_windows_changed')
+    for role, fd in proof['physical'].items():
+        W._named(plan.install_id, lifetime.parent, lifetime.parent_fd, lifetime.parent_info,
+                 role + '-physical.lock', fd)
+    if time.monotonic() >= proof['deadline']:
+        raise W.ReaderWindowBusy('writer_proof_deadline')
+
+
+@contextmanager
+def writer_proof_windows(plan, *, queue_owner, deadline):
+    """Hold lifetime SH and sorted physical EX for a future first full proof.
+
+    This operation opens coordination files and installer metadata only. It
+    neither opens content SQLite connections nor issues normal writer authority.
+    """
+    from laya_index_sync import validate_sync_owner
+    W._deadline(deadline)
+    validate_writer_plan(plan)
+    validate_sync_owner(queue_owner, plan.queue_path)
+    _packed, snapshot = _plan_record(plan)
+    nodes = json.loads(snapshot['manifest'])['locks']
+    with ExitStack() as stack:
+        pin = queue_owner.pin()
+        stack.callback(pin.close)
+        lifetime = W._Lifetime(plan.install_id)
+        stack.callback(lifetime.close)
+        physical = {}
+        for role in sorted(snapshot['components']):
+            name = role + '-physical.lock'
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=lifetime.parent_fd)
+            stack.callback(os.close, fd)
+            L._private_file(os.fstat(fd))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise W.ReaderWindowBusy('writer_proof_physical_busy')
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(min(.005, remaining))
+            W._named(plan.install_id, lifetime.parent, lifetime.parent_fd, lifetime.parent_info, name, fd)
+            info = os.fstat(fd)
+            R._need(nodes[name] == [info.st_dev, info.st_ino], 'writer_proof_windows_changed')
+            physical[role] = fd
+        window = object.__new__(WriterProofWindow)
+        _proofs[window] = dict(pid=os.getpid(), thread=threading.current_thread(), plan=plan,
+                              queue_owner=queue_owner, lifetime=lifetime, physical=physical,
+                              deadline=deadline)
+        try:
+            validate_writer_proof_window(window)
+            yield window
+            validate_writer_proof_window(window)
+        finally:
+            del _proofs[window]
