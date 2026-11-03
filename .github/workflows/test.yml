@@ -22,12 +22,17 @@ jobs:
         timeout-minutes: 2
         env:
           LEGACY_FIXTURE_COMMIT: f9c33094e30d523415fe983ec7f3b4c35d5a21c0
+          READER_BRIDGE_FIXTURE_COMMIT: 6437108f4c1165f1141114f94b3e32ccc021cb30
         run: |
           # The immutable 0.40.3 fixture lives in the predecessor repository,
           # outside this checkout's history. Compatibility tests archive its core.
           git fetch --no-tags https://github.com/zbdulee/qmd-auto-context.git "$LEGACY_FIXTURE_COMMIT"
           git cat-file -e "${LEGACY_FIXTURE_COMMIT}^{commit}"
           git cat-file -e "${LEGACY_FIXTURE_COMMIT}:core"
+          # Reader recovery exercises the exact released writer from this repository.
+          git fetch --no-tags origin "$READER_BRIDGE_FIXTURE_COMMIT"
+          git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}^{commit}"
+          git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}:core"
       - name: Verify runtime prerequisites
         run: |
           node --version

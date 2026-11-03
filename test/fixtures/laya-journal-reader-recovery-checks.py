@@ -18,6 +18,8 @@ import sqlite3
 import subprocess
 import sys
 import tarfile
+import tempfile
+import threading
 import time
 from unittest import mock
 import unittest
@@ -30,6 +32,8 @@ spec.loader.exec_module(base)
 J = base.J
 CTX = multiprocessing.get_context('fork')
 EXIT_AT_CHECKPOINT = 91
+EXIT_AT_COMMIT_WINDOW = 92
+READER_BRIDGE_FIXTURE_COMMIT = '6437108f4c1165f1141114f94b3e32ccc021cb30'
 INITIAL = ('v5-locked', 'v5-sealed', 'v5-versioned', 'v5-committed')
 COW = ('v5-image-copied', 'v5-image-committed', 'v5-image-fsynced',
        'v5-image-replaced', 'v5-directory-fsynced')
@@ -219,6 +223,179 @@ class RecoveryChecks(unittest.TestCase):
                  status=('header5-and-hot-refusal-observed' if raw['header_version'] == 5 and
                          first.get('hot_rollback_requires_installer') else 'header5-hot-window-not-reproduced'))
 
+    def test_bounded_commit_observer_records_only_actual_header5_hot_window_and_installer_recovery(self):
+        with fixture() as (helper, case, reader, bridge, installer, readiness, _):
+            before = self.snapshot(helper, case)
+            original_image = Path(case.journal).read_bytes()
+            deadline = time.monotonic() + 10
+            observations, captured = [], None
+            limit_reason = 'attempt-limit'
+            for attempt in range(1, 25):
+                if time.monotonic() >= deadline:
+                    limit_reason = 'ten-second-budget'
+                    break
+                if attempt > 1:
+                    # Reset only a completed, closed clean input between trials.
+                    # No header is forged, and no captured crash is overwritten.
+                    self.assertFalse(Path(str(case.journal) + '-journal').exists())
+                    Path(case.journal).write_bytes(original_image)
+
+                def probe(pipe):
+                    stop, committing = threading.Event(), threading.Event()
+                    threads, descriptors, stats = [], [], dict(polls=0, commit_trace_seen=False)
+                    actual_open = J._open
+
+                    def trace(sql):
+                        if sql.strip().upper() == 'COMMIT':
+                            stats['commit_trace_seen'] = True
+                            committing.set()
+
+                    def open_journal(path, *, write):
+                        result = actual_open(path, write=write)
+                        if write:
+                            # Synthetic local scheduling/durability settings;
+                            # actual DB, transaction and COMMIT are unchanged.
+                            result[1].execute('PRAGMA fullfsync=ON')
+                            result[1].execute('PRAGMA cache_size=1')
+                            result[1].set_trace_callback(trace)
+                        return result
+
+                    def checkpoint(name):
+                        if name == 'v5-committed':
+                            stop.set()
+                        if name != 'v5-versioned':
+                            return
+                        side = Path(str(case.journal) + '-journal')
+                        mainfd = os.open(case.journal, os.O_RDONLY | os.O_NOFOLLOW)
+                        descriptors.append(mainfd)
+                        try:
+                            sidefd = os.open(side, os.O_RDONLY | os.O_NOFOLLOW)
+                        except OSError as exc:
+                            stats['observer_unavailable'] = type(exc).__name__
+                            return
+                        descriptors.append(sidefd)
+
+                        def observe_commit():
+                            watch_deadline = min(deadline, time.monotonic() + 0.5)
+                            while not stop.is_set() and time.monotonic() < watch_deadline:
+                                if not committing.wait(min(0.001, max(0, watch_deadline - time.monotonic()))):
+                                    continue
+                                if stop.is_set():
+                                    break
+                                stats['polls'] += 1
+                                try:
+                                    main = os.pread(mainfd, 100, 0)
+                                    journal = os.pread(sidefd, 28, 0)
+                                    fd_info = os.fstat(sidefd)
+                                    named = os.stat(side, follow_symlinks=False)
+                                except OSError:
+                                    break  # COMMIT may already have unlinked the journal.
+                                if (len(main) == 100 and len(journal) == 28
+                                        and int.from_bytes(main[60:64], 'big') == 5
+                                        and journal[:8] == bytes.fromhex('d9d505f920a163d7')
+                                        and int.from_bytes(journal[8:12], 'big') > 0
+                                        and fd_info.st_size > 512 and fd_info.st_nlink == 1
+                                        and os.path.samestat(fd_info, named) and not stop.is_set()):
+                                    pipe.send(dict(event='commit-window', header_version=5,
+                                        main_magic=main[:16].hex(), journal_magic=journal[:8].hex(),
+                                        journal_records=int.from_bytes(journal[8:12], 'big'),
+                                        journal_size=fd_info.st_size, commit_trace_seen=True,
+                                        journal_node=[fd_info.st_dev, fd_info.st_ino]))
+                                    os._exit(EXIT_AT_COMMIT_WINDOW)
+                                stop.wait(min(0.0005, max(0, watch_deadline - time.monotonic())))
+
+                        watcher = threading.Thread(target=observe_commit, name='synthetic-commit-observer')
+                        threads.append(watcher)
+                        watcher.start()
+
+                    try:
+                        with helper.full_authority(case, reader, bridge), \
+                                mock.patch.object(J, '_open', side_effect=open_journal), \
+                                mock.patch.object(J, '_conversion_step', checkpoint):
+                            result = reader.convert_reader_v5(case.state, case.project,
+                                                installer=installer, readiness=readiness)
+                        return dict(selection=helper.selection(result), observer=stats)
+                    finally:
+                        stop.set()
+                        for thread in threads:
+                            thread.join(0.5)
+                            if thread.is_alive():
+                                os._exit(93)  # Owned probe cannot leak a live watcher.
+                        for fd in descriptors:
+                            os.close(fd)
+
+                events, exhausted = [], False
+                with child(probe) as (process, pipe):
+                    while time.monotonic() < deadline:
+                        if pipe.poll(min(0.01, max(0, deadline - time.monotonic()))):
+                            try:
+                                event = pipe.recv()
+                            except EOFError:
+                                break
+                            events.append(event)
+                            if event.get('event') == 'result':
+                                break
+                        elif not process.is_alive():
+                            break
+                    if process.is_alive():
+                        process.join(min(0.1, max(0, deadline - time.monotonic())))
+                    exhausted = process.is_alive() and time.monotonic() >= deadline
+                observed = dict(attempt=attempt, exitcode=process.exitcode, events=events,
+                                physical=physical(case.journal))
+                observations.append(observed)
+                if exhausted:
+                    limit_reason = 'ten-second-budget-owned-child-cleanup'
+                    break
+                window = next((event for event in events if event.get('event') == 'commit-window'), None)
+                if window is not None and process.exitcode == EXIT_AT_COMMIT_WINDOW:
+                    # A live writer's journal becomes hot only after death.
+                    # Confirm readonly SQLite's actual recovery refusal before
+                    # classifying the observer's physical candidate as captured.
+                    ro_error = None
+                    try:
+                        with closing(sqlite3.connect(Path(case.journal).as_uri() + '?mode=ro',
+                                                     uri=True, isolation_level=None, timeout=0.1)) as db:
+                            db.execute('SELECT count(*) FROM sqlite_master').fetchone()
+                    except sqlite3.OperationalError as exc:
+                        ro_error = str(exc)
+                    observed['readonly_error'] = ro_error
+                    if (observed['physical']['header_version'] == 5 and
+                            observed['physical']['journal_exists'] and ro_error is not None
+                            and 'readonly' in ro_error.lower()):
+                        captured = observed
+                        limit_reason = 'actual-header5-hot-window-captured'
+                    else:
+                        limit_reason = 'physical-candidate-not-confirmed-hot-after-exit'
+                    break
+                result = next((event for event in events if event.get('event') == 'result'), None)
+                if process.exitcode != 0 or result is None or not result.get('ok'):
+                    limit_reason = 'probe-inconclusive-no-product-defect-classification'
+                    break
+                self.unchanged(helper, case, before)
+
+            emit('bounded-real-commit-probe', max_attempts=24, budget_seconds=10,
+                 synthetic_settings=dict(fullfsync=True, cache_size=1), attempts=observations,
+                 status='captured' if captured else 'not-reproduced', limit_reason=limit_reason)
+            if captured is None:
+                # This observational probe is explicitly inconclusive when the
+                # real window is not reached; it proves no recovery guarantee.
+                return
+            recovery_error = None
+            try:
+                with helper.full_authority(case, reader, bridge):
+                    current_installer = helper.installer(case, reader, bridge)
+                    _, _, current_ready = helper.ready(case, bridge)
+                    selected = reader.convert_reader_v5(case.state, case.project,
+                                      installer=current_installer, readiness=current_ready)
+            except ValueError as exc:
+                recovery_error = str(exc)
+            emit('captured-commit-installer-recovery', error=recovery_error,
+                 physical=physical(case.journal), original_scope=before['bundle']['scopeId'])
+            self.assertIsNone(recovery_error, 'a confirmed initial header5/hot crash must remain installer-recoverable')
+            self.assertEqual(selected.epoch, 1)
+            self.assertEqual(J.journal_version(case.journal), 5)
+            self.unchanged(helper, case, before)
+
     def cow_crash(self, helper, case, reader, bridge, installer, readiness, initial, step):
         target = helper.alternate(case, reader, installer, 'crash-target.sqlite')
         before = self.snapshot(helper, case)
@@ -377,6 +554,53 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_concurrent_bundle_and_reader_cas_preserve_both_independent_epochs(self):
         self.race(bundle_first=True)
+
+    def test_same_uid_and_install_cannot_bypass_held_transition_lock_by_changing_home(self):
+        # Primitive coordination only: no route/proof/queue/provider or CAS.
+        # Keep the explicit guarded test-runtime namespace identical in both
+        # processes; only the second process's HOME changes.
+        import laya_journal_reader as reader
+        temporary = tempfile.TemporaryDirectory(prefix='uid-transition-', dir=os.environ['HOME'])
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        home_a, home_b, runtime = (root / name for name in ('home-a', 'home-b', 'shared-runtime'))
+        for path in (home_a, home_b, runtime):
+            path.mkdir(mode=0o700)
+        install_id = '8' * 32
+        with mock.patch.dict(os.environ, dict(HOME=str(home_a), MEMVANE_TEST_RUNTIME_ROOT=str(runtime),
+                                              QMD_SETUP_GUARD_FIXTURE='1')):
+            with reader._transition(install_id, create=True) as held_fd:
+                parent_info = os.fstat(held_fd)
+                parent_node = [parent_info.st_dev, parent_info.st_ino]
+
+                def contender(_pipe):
+                    os.close(held_fd)  # Close the child's inherited duplicate only.
+                    with mock.patch.dict(os.environ, {'HOME': str(home_b)}):
+                        result = dict(uid=os.getuid(), home=str(Path.home()),
+                                      runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'])
+                        try:
+                            with reader._transition(install_id, create=True) as acquired_fd:
+                                info = os.fstat(acquired_fd)
+                                result.update(acquired=True, node=[info.st_dev, info.st_ino])
+                        except ValueError as exc:
+                            result.update(acquired=False, reason=str(exc))
+                        return result
+
+                with child(contender) as (process, pipe):
+                    result = receive(pipe, event='result')
+                    process.join(10)
+                    self.assertEqual(process.exitcode, 0)
+                emit('same-uid-different-home-coordination', install_id=install_id,
+                     parent_uid=os.getuid(), parent_home=str(home_a), parent_node=parent_node,
+                     shared_test_runtime=str(runtime), child=result)
+                self.assertTrue(result['ok'], result)
+                observed = result['value']
+                self.assertEqual(observed['uid'], os.getuid())
+                self.assertEqual(observed['runtime'], str(runtime))
+                self.assertEqual(observed['home'], str(home_b))
+                self.assertFalse(observed['acquired'],
+                                 'same UID/install must contend on one lock or refuse changed HOME')
+                self.assertTrue(observed.get('reason'), 'a changed HOME must fail closed before any owner action')
 
     def test_replaced_staging_inode_is_refused_and_unrelated_private_bytes_survive(self):
         with fixture(converted=True) as (helper, case, reader, bridge, installer, _, initial):
@@ -544,14 +768,14 @@ class RecoveryChecks(unittest.TestCase):
 
     def old_tree(self, case):
         """Extract actual released tracked code at test runtime; never fetch."""
-        listed = subprocess.run(['git', '-C', str(ROOT), 'ls-tree', '-r', '--name-only', '6437108'],
+        listed = subprocess.run(['git', '-C', str(ROOT), 'ls-tree', '-r', '--name-only', READER_BRIDGE_FIXTURE_COMMIT],
                                 capture_output=True, encoding='utf8', timeout=30)
         self.assertEqual(listed.returncode, 0, 'local historical closure unavailable: ' + listed.stderr)
         names = listed.stdout.splitlines()
         wanted = [prefix for prefix in ('core', 'hooks', '.claude-plugin', '.codex-plugin')
                   if any(name.startswith(prefix + '/') for name in names)]
         wanted += [name for name in ('plugin.yaml', '__init__.py') if name in names]
-        archived = subprocess.run(['git', '-C', str(ROOT), 'archive', '--format=tar', '6437108', '--', *wanted],
+        archived = subprocess.run(['git', '-C', str(ROOT), 'archive', '--format=tar', READER_BRIDGE_FIXTURE_COMMIT, '--', *wanted],
                                   capture_output=True, timeout=30)
         self.assertEqual(archived.returncode, 0,
                          'historical archive refused; no bypass: ' + archived.stderr.decode('utf8', 'replace'))
@@ -651,7 +875,7 @@ print(json.dumps(dict(event='result', **result)), flush=True)
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.communicate(timeout=5)
-            emit('actual-old-writer', released_commit='6437108', opened=opened, result=result,
+            emit('actual-old-writer', released_commit=READER_BRIDGE_FIXTURE_COMMIT, opened=opened, result=result,
                  current_reader=helper.selection(selected))
             self.assertEqual(result['cas'], 'journal_schema_unknown')
             self.assertEqual(result['read'], 'journal_schema_unknown')
