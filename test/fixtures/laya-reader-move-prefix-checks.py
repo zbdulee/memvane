@@ -234,7 +234,8 @@ class MovePrefixChecks(unittest.TestCase):
         saved_container=None
         if mutation is not None:
             catalog_mutations=('canonical-old-binding-header','catalog-scope-nul')
-            required_phase=('catalog-rebound-before-store-swap' if mutation in catalog_mutations else 'anchor-entry')
+            required_phase=('catalog-rebound-before-store-swap' if mutation in catalog_mutations else
+                'stores-swapped-before-publish' if mutation=='other-claim-publish' else 'anchor-entry')
             self.require(phase==required_phase,'negative begins at its exact actual physical prefix')
             if mutation=='container-inode':
                 saved_container=case.project/'preserved-original-container'
@@ -384,6 +385,51 @@ class MovePrefixChecks(unittest.TestCase):
                         catalog='new',binding='old',temporaryBindingExists=True,targetState='prepared',
                         oldCanonicalDecoderValid=True,newTemporaryDecoderValid=True,
                         sourceConnectionsKeptAlive=True,physicalColdBoundaryProved=False)
+            elif mutation=='other-claim-publish':
+                from laya_index_a import LayaIndexA
+                generation=intent['generation'];other_claim=generation['claim']+'-other'
+                publisher=LayaIndexA(case.db)
+                self.addCleanup(publisher.close)
+                published=publisher.publish(generation['base'],generation['gen'],other_claim,
+                    source_manifest=generation['manifest'],claim_digest=generation['claimDigest'],
+                    claim_epoch=generation['claimEpoch'],require_vector=True)
+                self.require(published=='published','actual public publish commits the different claim')
+                replay=publisher.publish(generation['base'],generation['gen'],generation['claim'],
+                    source_manifest=generation['manifest'],claim_digest=generation['claimDigest'],
+                    claim_epoch=generation['claimEpoch'],require_vector=True)
+                self.require(replay=='not_prepared','original intent claim cannot replay this actual publication')
+                with seed.ro(case.db) as db:
+                    receipt_sql='SELECT scope,gen,source_manifest,claim_digest,claim_epoch FROM receipts WHERE claim=?'
+                    original_receipt=db.execute(receipt_sql,(generation['claim'],)).fetchone()
+                    other_receipt=db.execute(receipt_sql,(other_claim,)).fetchone()
+                    candidate=db.execute('SELECT scope,base_gen,source_manifest,claim_digest,claim_epoch '
+                        'FROM candidate_seals WHERE gen=?',(generation['gen'],)).fetchone()
+                    head=db.execute('SELECT gen FROM head WHERE scope=?',(case.route['scopeId'],)).fetchone()
+                    state=db.execute('SELECT state FROM generations WHERE gen=?',(generation['gen'],)).fetchone()
+                    vector_seals=db.execute('SELECT COUNT(*) FROM gen_vector_seals WHERE gen=?',
+                        (generation['gen'],)).fetchone()[0]
+                expected_receipt=(case.route['scopeId'],generation['gen'],generation['manifest'],
+                    generation['claimDigest'],generation['claimEpoch'])
+                expected_candidate=(case.route['scopeId'],generation['base'],generation['manifest'],
+                    generation['claimDigest'],generation['claimEpoch'])
+                self.require(original_receipt is None and other_receipt==expected_receipt,
+                             'only the real other claim has the exact publication receipt')
+                self.require(candidate==expected_candidate,'actual candidate seal preserves the original base/proof')
+                self.require(head==(generation['gen'],) and state==('published',) and vector_seals==1,
+                             'actual target/head/vector seal are normally published')
+                self.require(LayaIndexA._generation_fts_matches(publisher,generation['gen']),
+                             'actual published target body/FTS rows match')
+                # This is a semantic negative, not a closed-writer cold probe.
+                # Preserve the actual publisher connection and catalog aux.
+                catalog_connection=sqlite3.connect(case.catalog.as_uri()+'?mode=rw',uri=True)
+                self.addCleanup(catalog_connection.close)
+                catalog_connection.execute('SELECT count(*) FROM meta').fetchone()
+                mutation_evidence=dict(kind=mutation,actualPublishResult=published,originalClaim=generation['claim'],
+                    otherClaim=other_claim,originalReceipt=original_receipt,otherReceipt=other_receipt,
+                    expectedReceipt=expected_receipt,candidateSeal=candidate,expectedCandidateSeal=expected_candidate,
+                    originalClaimReplayResult=replay,targetState=state[0],actualHead=head[0],
+                    actualVectorSealCount=vector_seals,actualTargetBodyFTSValid=True,
+                    actualPublisherConnectionKeptAlive=True,physicalColdBoundaryProved=False)
             elif mutation=='reserved-generation-ahead':
                 with seed.ro(case.db) as db:
                     self.require(db.execute('SELECT state FROM generations WHERE gen=?',
@@ -425,7 +471,7 @@ class MovePrefixChecks(unittest.TestCase):
                 folderNode=seed.reader._node(folder),wikiNode=seed.reader._node(folder/'wiki'),
                 savedContainerNode=None if saved_container is None else seed.reader._node(saved_container))
         before=snapshot();journal_node=case.journal.stat()
-        query_physical_before=physical_state() if published_prefix else None
+        query_physical_before=physical_state() if published_prefix or mutation=='other-claim-publish' else None
         if mutation=='missing-intent-public':
             error,outcome=None,None
             try:
@@ -457,6 +503,8 @@ class MovePrefixChecks(unittest.TestCase):
         published_new_files=None
         published_removed_files=None
         query_new_files=None
+        semantic_physical_changes=None
+        semantic_existing_shm_changes=None
         if published_prefix:
             physical_after=physical_state()
             published_new_files=sorted(set(physical_after)-set(published_physical_before))
@@ -474,6 +522,21 @@ class MovePrefixChecks(unittest.TestCase):
                         and path in before['state'] and path in after['state']):
                     comparable['state'][path]=before['state'][path]
             query_new_files=sorted(set(physical_after)-set(query_physical_before))
+        elif mutation=='other-claim-publish':
+            physical_after=physical_state()
+            known_shm={case.db.name+'-shm',case.catalog.name+'-shm'}
+            semantic_physical_changes=[];semantic_existing_shm_changes=[]
+            for path in sorted(set(query_physical_before)|set(physical_after)):
+                original=query_physical_before.get(path)
+                current=physical_after.get(path)
+                same_existing_shm=(path in known_shm and original is not None and current is not None
+                                   and original[1]==current[1])
+                if original!=current:
+                    if same_existing_shm:semantic_existing_shm_changes.append(path)
+                    else:semantic_physical_changes.append(path)
+                if same_existing_shm and path in before['state'] and path in after['state']:
+                    comparable['state'][path]=before['state'][path]
+            query_new_files=sorted(set(physical_after)-set(query_physical_before))
         unchanged=comparable==before
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
             originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
@@ -485,6 +548,8 @@ class MovePrefixChecks(unittest.TestCase):
             closedWriterPhysicalChangedPaths=published_physical_changes,
             closedWriterNewFiles=published_new_files,closedWriterRemovedFiles=published_removed_files,
             queryNewFiles=query_new_files,
+            semanticQueryPhysicalChangedPaths=semantic_physical_changes,
+            semanticExistingShmContentChanges=semantic_existing_shm_changes,
             catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
         if mutation=='catalog-scope-nul':
@@ -495,6 +560,10 @@ class MovePrefixChecks(unittest.TestCase):
             with self.subTest(boundary='closed-writer-physical-cold-no-new-aux'):
                 self.assertEqual(published_physical_changes,[],
                     'closed writer/prerequisite/query must preserve main/WAL/metadata/files and aux identities')
+        if mutation=='other-claim-publish':
+            with self.subTest(boundary='semantic-receipt-query-preserves-physical-files'):
+                self.assertEqual(semantic_physical_changes,[],
+                    'only existing base/catalog SHM content may change with identical private file identities')
         self.assertTrue(unchanged,'fresh prefix reader must preserve DB/WAL/metadata, aux identities and file set')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
@@ -527,6 +596,9 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_actual_target_publish_before_records_is_readable_without_resume(self):
         self.check_prefix('published-before-records')
+
+    def test_completed_stores_reject_target_published_with_another_claim_receipt(self):
+        self.check_prefix('stores-swapped-before-publish',mutation='other-claim-publish')
 
     def test_catalog_committed_prefix_rejects_damaged_canonical_old_binding_header(self):
         self.check_prefix('catalog-rebound-before-store-swap',mutation='canonical-old-binding-header')
