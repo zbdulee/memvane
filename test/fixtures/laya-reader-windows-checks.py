@@ -147,6 +147,32 @@ class ReaderWindowsChecks(unittest.TestCase):
                 for key in ('st_dev','st_ino','st_mode','st_uid','st_nlink')))
             for suffix in ('','-wal','-shm','-journal')}
 
+    def test_completed_manifest_never_deletes_an_unrecorded_temp_shaped_hardlink(self):
+        with self.seed.prepared():
+            windows, _component = self.api()
+            parent = self.seed.reader._lock_dir(self.seed.install, create=False)
+            manifest = parent / 'component-windows-v1.json'
+            unrelated = parent / ('.component-windows-' + 'f' * 32)
+            if os.path.lexists(unrelated):raise RuntimeError('fixture hardlink name already exists')
+            original = manifest.lstat()
+            os.link(manifest, unrelated)
+            error = None
+            try:
+                try:windows.prepare_windows(self.seed.installer)
+                except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+                kept = os.path.lexists(unrelated)
+                emit('unrecorded-temp-shaped-hardlink',error=error,unrelatedNamePreserved=kept,
+                     manifestSameInode=os.path.samestat(original,manifest.lstat()),
+                     nlink=manifest.lstat().st_nlink)
+                with self.subTest(boundary='unknown-alias-refused'):self.assertIsNotNone(error)
+                with self.subTest(boundary='unknown-alias-not-deleted'):self.assertTrue(kept)
+                self.assertTrue(os.path.samestat(original,manifest.lstat()))
+            finally:
+                if os.path.lexists(unrelated):
+                    if not os.path.samestat(original,unrelated.lstat()):
+                        raise RuntimeError('fixture hardlink identity changed')
+                    unrelated.unlink()
+
     def test_manifest_link_sigkill_retry_recovers_exact_temp_alias_without_replacing_lock_inodes(self):
         windows=importlib.import_module('laya_reader_windows')
         parent=self.seed.reader._lock_dir(self.seed.install,create=False)
