@@ -226,6 +226,11 @@ def prepare_windows(installer):
 
 def _location(endpoint, role):
     record = endpoint.record
+    if role == 'sidecar':
+        path = Path(record['sidecar_path'])
+        # Absence is a locking descriptor, not authority to create a database.
+        return path, (tuple(R._file(path, Path(record['state'])))
+                      if os.path.lexists(path) else None)
     if role == 'queue':
         # The selected route, not a caller's path, locates this component.
         # open_owned repeats the full current proof and this exact comparison.
@@ -255,7 +260,7 @@ def component_for(installer, role):
         manifest = _manifest(record['install_id'], parent, parent_fd, parent_info)
     finally:
         os.close(parent_fd)
-    _components[component] = (os.getpid(), installer, scope, tuple(node), manifest)
+    _components[component] = (os.getpid(), installer, scope, node, manifest)
     return component
 
 
@@ -423,6 +428,7 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
     R._need(threading.current_thread() is threading.main_thread(),
             'reader_connection_main_thread_required')
     _pid, installer, scope, node, _sealed_manifest = _component(component)
+    R._need(node is not None, 'reader_component_absent')
     _endpoint, current = _owner(installer)
     R._need(current is scope and Path(path) == component.path,
             'reader_component_owner_changed')
@@ -476,6 +482,19 @@ def close_owned(owner, *, deadline=None):
         deadline = time.monotonic() + 2
     if not close_or_defer(owner, deadline=deadline):
         raise ReaderCloseDeferred('reader_connection_close_deferred')
+
+
+def close_connection(db, *, deadline=None):
+    """Close a registered raw connection without discarding deferred ownership.
+
+    False means this module never owned the handle; exceptions from an owned
+    close must propagate, so a caller cannot fall back to an unguarded close.
+    """
+    for owner in list(_owned.values()):
+        if owner.db is db:
+            close_owned(owner, deadline=deadline)
+            return True
+    return False
 
 
 def _local_pending():

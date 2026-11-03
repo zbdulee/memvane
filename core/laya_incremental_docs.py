@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import sys
+import time
 
 from laya_index_a import IndexContractError
 from laya_index_vector import LayaVectorIndex
@@ -35,8 +37,31 @@ def _private_state(state_root):
     return root
 
 
-def _open(state_root):
+def _open(state_root, *, coordination=None, identity=None):
     path = _private_state(state_root) / FILE
+    if coordination is not None:
+        if identity is None:
+            _fail('incremental_identity_changed')
+        from laya_reader_windows import open_owned
+        expected = _expected_meta(identity)
+        def validate(db):
+            db.execute('BEGIN')
+            try:
+                if (db.execute('PRAGMA user_version').fetchone() != (1,) or
+                        db.execute('SELECT * FROM meta').fetchall() != [expected]):
+                    _fail('incremental_identity_changed')
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        def initialize(db):
+            db.execute('PRAGMA trusted_schema=OFF')
+            db.execute('PRAGMA foreign_keys=ON')
+            db.execute('PRAGMA synchronous=FULL')
+            db.execute('PRAGMA fullfsync=ON')
+            db.execute('PRAGMA journal_mode=WAL')
+        return open_owned(coordination, path=path, validate=validate,
+                          initialize=initialize, deadline=time.monotonic() + 2).db
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
                      getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -56,6 +81,15 @@ def _open(state_root):
     db.execute('PRAGMA fullfsync=ON')
     db.execute('PRAGMA journal_mode=WAL')
     return db
+
+
+def _close(db, *, deadline=None):
+    # Keep the legacy common path independent of journal/installer imports.
+    # Coordinated opens load this module and keep the raw handle strongly owned.
+    windows = sys.modules.get('laya_reader_windows')
+    if windows is not None and windows.close_connection(db, deadline=deadline):
+        return
+    db.close()
 
 
 def _expected_meta(identity):
@@ -191,7 +225,7 @@ def publish_needed(reader, path, source_hash, title, body, profile_id, *,
 
 
 def publish_document(runtime, identity, snapshot, path, source_hash,
-                     title, body, profile_id, *, require_verified):
+                     title, body, profile_id, *, require_verified, coordination=None):
     """Atomically expose one wiki document after the candidate sealed its vectors.
 
     A failed or interrupted sidecar write never exposes an FTS-only document.
@@ -238,7 +272,8 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
         # Keep the last completed sidecar row searchable across that interval;
         # replacing it here would shadow the old head with an unusable draft.
         return {'status': 'unverified'}
-    db = _open(identity['stateRoot'])
+    db = (_open(identity['stateRoot']) if coordination is None else
+          _open(identity['stateRoot'], coordination=coordination, identity=identity))
     try:
         _setup(db, identity)
         db.execute('BEGIN IMMEDIATE')
@@ -265,7 +300,7 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
             db.rollback()
             raise
     finally:
-        db.close()
+        _close(db)
     return {'status': 'published'}
 
 
@@ -357,7 +392,7 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
                 raise
     finally:
         if db is not None:
-            db.close()
+            _close(db)
     if index.db.execute('SELECT gen FROM head WHERE scope=?',
                         (identity['scopeId'],)).fetchone() != (base_gen,):
         _fail('incremental_head_changed')
@@ -423,7 +458,7 @@ def retire_missing_documents(runtime, identity, *, before_write):
                 db.rollback()
                 raise
     finally:
-        db.close()
+        _close(db)
     return removed
 
 
@@ -507,4 +542,4 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
                 db.commit()
                 cursor = path
     finally:
-        db.close()
+        _close(db)
