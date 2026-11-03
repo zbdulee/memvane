@@ -128,6 +128,32 @@ class RemainingChecks(existing.SidecarWriteChecks):
             print(json.dumps(dict(case='sidecar-backfill-new-scan-cursor-cas',injected=injected,result=result,cursor=cursor,newScan=new_scan)),flush=True)
             self.assertTrue(injected);self.assertEqual(result['state'],'pending');self.assertEqual(cursor,(new_scan[0],''))
 
+    def test_backfill_catalog_changes_after_current_check_without_new_backfill_preserves_old_cursor(self):
+        with self.opened() as (runtime,snapshot,_row,component):
+            self.require('backfill_cached')
+            from laya_source_catalog import LayaSourceCatalog
+            other=LayaSourceCatalog(runtime.catalog.path,runtime.catalog.roots,runtime.scope,wiki_only=True,
+                coordination=runtime.catalog._connection_owner.component)
+            publish=self.I.publish_document;require=runtime.catalog.require_current
+            committed=[];injected=[]
+            def published(*args,**kwargs):
+                result=publish(*args,**kwargs);committed.append(result['status']);return result
+            def checked(value):
+                result=require(value)
+                if committed and not injected:
+                    self.assertEqual(other.request_scan()['status'],'started')
+                    self.assertEqual(other.step(max_files=100,max_stats=100)['status'],'complete')
+                    injected.append(other.require_complete().scan_id)
+                return result
+            try:
+                with mock.patch.object(self.I,'publish_document',published),mock.patch.object(runtime.catalog,'require_current',checked):
+                    result=self.I.backfill_cached(runtime,self.identity,self.identity['vectorProfileId'],coordination=component,**self.options())
+                with self.seed.ro(self.fixture.sidecar) as db:cursor=db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
+                print(json.dumps(dict(case='sidecar-backfill-current-check-gap',committed=committed,injected=injected,
+                    result=result,cursor=cursor,previousScan=snapshot.scan_id,newBackfillExecuted=False)),flush=True)
+                self.assertTrue(injected);self.assertEqual(result['state'],'pending');self.assertEqual(cursor,(snapshot.scan_id,''))
+            finally:other.close(deadline=time.monotonic()+1)
+
 if __name__=='__main__':
     names=[name for name in RemainingChecks.__dict__ if name.startswith('test_')]
     result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(RemainingChecks(name) for name in names))
