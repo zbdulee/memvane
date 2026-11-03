@@ -4,14 +4,52 @@ Readers never create coordination files. Store movement and retained tuples
 require their separate writer integration; this module grants no writer role.
 """
 from contextlib import contextmanager
+from contextvars import ContextVar
 import fcntl
 import os
 from pathlib import Path
 import stat
+import weakref
 
 import laya_journal_reader as reader
 from laya_move_read_seal import MoveReadSeal, stage_move_reader
 from laya_move_reader_journal import publish_move_reader
+
+_shared_stack = ContextVar('reader_shared_lifetimes', default=())
+_shared_scopes = weakref.WeakSet()
+_scoped_readers = weakref.WeakKeyDictionary()
+
+
+class _SharedScope:
+    """Cooperative FD ownership; callers must not close or repurpose lease FDs."""
+    pass
+
+
+def _check_shared_scope(scope):
+    _need(scope in _shared_scopes and scope.pid == os.getpid(), 'reader_lifetime_expired')
+    _named(*scope.named)
+
+
+def _require_reader_scope(install_id):
+    for scope in reversed(_shared_stack.get()):
+        if scope.install_id == install_id:
+            _check_shared_scope(scope)
+            return scope
+    raise ValueError('reader_shared_lifetime_required')
+
+
+def _bind_reader_scope(endpoint, scope):
+    _check_shared_scope(scope)
+    _need(endpoint in reader._issued and endpoint in reader._read_only
+          and endpoint.record['install_id'] == scope.install_id, 'reader_lifetime_invalid')
+    scope.tokens.add(endpoint)
+    _scoped_readers[endpoint] = scope
+
+
+def _check_reader_scope(endpoint):
+    scope = _scoped_readers.get(endpoint)
+    if scope is not None:
+        _check_shared_scope(scope)
 
 
 def _need(value, reason):
@@ -84,6 +122,8 @@ def reader_lifetime(install_id, *, exclusive):
     _need(type(exclusive) is bool, 'reader_lifetime_invalid')
     parent, parent_fd, parent_info = _parent(install_id, create=False)
     fd = None
+    scope = None
+    context_token = None
     try:
         fd = os.open('reader-lifetime.lock', os.O_RDONLY | os.O_NOFOLLOW |
                      os.O_NONBLOCK, dir_fd=parent_fd)
@@ -93,11 +133,27 @@ def reader_lifetime(install_id, *, exclusive):
         except BlockingIOError as exc:
             raise ValueError('reader_lifetime_busy') from exc
         _named(install_id, parent, parent_fd, parent_info, fd)
+        if not exclusive:
+            scope = _SharedScope()
+            scope.install_id, scope.pid = install_id, os.getpid()
+            scope.named = (install_id, parent, parent_fd, parent_info, fd)
+            scope.tokens = weakref.WeakSet()
+            _shared_scopes.add(scope)
+            context_token = _shared_stack.set((*_shared_stack.get(), scope))
         yield fd
     finally:
-        if fd is not None:
-            os.close(fd)
-        os.close(parent_fd)
+        try:
+            if scope is not None:
+                _shared_scopes.discard(scope)
+                if context_token is not None:
+                    _shared_stack.reset(context_token)
+                for endpoint in list(scope.tokens):
+                    _scoped_readers.pop(endpoint, None)
+                    reader._revoke_reader(endpoint)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            os.close(parent_fd)
 
 
 def _move_identity(state, project, intent):

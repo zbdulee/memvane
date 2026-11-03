@@ -265,6 +265,8 @@ def _endpoint(state, project, root, options):
 
 def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
     """Reissue a persisted reader after current full proof, without CAS authority."""
+    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    scope = _require_reader_scope(stored.get('install_id'))
     if stored.get('capability') == 'v6-retained-ro-v1':
         from laya_move_reader_journal import resolve_retained
         return resolve_retained(state, project, root, endpoint_id, stored, attestation)
@@ -284,6 +286,7 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
     object.__setattr__(token, 'record', _freeze(current))
     _issued[token] = (Path(state), Path(project), Path(root), options, packed, raw)
     _read_only.add(token)
+    _bind_reader_scope(token, scope)
     return token
 
 
@@ -295,6 +298,8 @@ def _revoke_reader(endpoint):
 
 def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
+    from laya_reader_lease import _check_reader_scope
+    _check_reader_scope(endpoint)
     from laya_move_reader_journal import _persisted, recheck_persisted
     if endpoint in _persisted:
         return recheck_persisted(endpoint)

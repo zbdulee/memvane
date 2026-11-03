@@ -96,8 +96,9 @@ def _verify(data, attestation, *, root):
     intent = mover._load_intent(state,project)
     R._need(intent is not None, 'reader_move_intent_changed')
     if data['kind']=='state':
-        mover._ordered_intent(intent, Path.home())
-        M._state_pointer(intent,project,Path.home())
+        home = state.parents[3]
+        mover._ordered_intent(intent, home)
+        M._state_pointer(intent,project,home)
     else:
         expected = dict(schema=mover.POINTER_SCHEMA,projectRoot=str(project),stateRoot=str(state),mode=intent['mode'])
         R._need(mover.read_pointer(project) == expected, 'reader_move_pointer_changed')
@@ -147,7 +148,8 @@ def _verify(data, attestation, *, root):
         source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db,binding=source._binding(historical['scope'],roots)))
         M._catalog_scan(db,bound)
     if record.get('sidecar_absent') is True:
-        R._need(record.get('sidecar_path') is None and not os.path.lexists(historical['sidecar_path']),
+        # Absence belongs to the pinned tuple, independently of later live rows.
+        R._need(record.get('sidecar_path') is None and record.get('sidecar_node') is None,
                 'reader_move_sidecar_changed')
     else:
         import laya_initial_build as build
@@ -181,6 +183,8 @@ def publish_move_reader(journal, *, seal):
     R._need(str(path.parent) == data['state'], 'reader_install_changed')
     result = []
     def publish(db):
+        from laya_reader_lease import _image
+        _image(db)
         current, record = R._selection(db)
         checked, raw = _issued_seal(seal)
         R._need(checked == data and raw == attestation, 'reader_move_seal_changed')
@@ -199,12 +203,16 @@ def publish_move_reader(journal, *, seal):
             (data['transition_id'],current.epoch+1,data['endpoint_id'],current.preferred_endpoint))
         db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,transition_id=? WHERE id=1',
             (current.epoch+1,data['endpoint_id'],current.preferred_endpoint,data['transition_id']))
-        result.append(R._selection(db)[0]); return True
+        result.append(R._selection(db)[0])
+        _image(db)
+        return True
     R.mutate_image(path,publish)
     return result[0]
 
 
 def resolve_retained(state, project, root, endpoint_id, record, attestation):
+    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    scope = _require_reader_scope(record.get('install_id'))
     path = R._journal(Path(state)/R._JOURNAL)
     with R._readonly(path,path.parent) as db:
         data = validate_endpoint(db,endpoint_id,record,attestation)
@@ -217,6 +225,7 @@ def resolve_retained(state, project, root, endpoint_id, record, attestation):
     R._issued[token] = (Path(state),Path(project),Path(root),{},packed,attestation)
     R._read_only.add(token)
     _persisted[token] = data
+    _bind_reader_scope(token, scope)
     return token
 
 
