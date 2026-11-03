@@ -337,4 +337,52 @@ class QueueMutationChecks(unittest.TestCase):
                 if swapped:self.case.queue.unlink()
                 for source,target in reversed(moved):source.rename(target)
 
+    def test_ack_refusal_rollback_failure_propagates_until_same_thread_drain(self):
+        with self.opened() as (base,queue,_component):
+            replacement=self.case.state/'base-pending-rollback-replacement.sqlite'
+            def copy_prepared(job):
+                copy=sqlite3.connect(replacement)
+                try:
+                    base.db.backup(copy);copy.execute('PRAGMA journal_mode=DELETE')
+                    self.assertIsNone(copy.execute('SELECT claim FROM receipts WHERE claim=?',(job['claim'],)).fetchone())
+                finally:copy.close()
+                replacement.chmod(0o600)
+            p=self.prep(base,queue,before_publish=copy_prepared);before=self.jobs(queue)
+            cls=type(queue.db);actual_commit=self.W._WriteTransaction.commit
+            actual_rollback=cls.rollback;actual_close=cls._native_close_locked
+            moved=[];swapped=False;attempts=[];closed_rows=[];result=None;error=None
+            def commit(transaction,*args,**kwargs):
+                nonlocal swapped
+                if transaction.owner is queue._connection_owner and not swapped:
+                    for suffix in ('','-wal','-shm'):
+                        source=Path(str(self.case.db)+suffix);saved=self.case.state/('base-pending-rollback-original'+suffix)
+                        source.rename(saved);moved.append((saved,source))
+                    os.replace(replacement,self.case.db);swapped=True
+                return actual_commit(transaction,*args,**kwargs)
+            def rollback(db):
+                if db is queue.db:
+                    attempts.append(db.in_transaction)
+                    if len(attempts)==1:raise sqlite3.OperationalError('synthetic_ack_first_rollback_failure')
+                return actual_rollback(db)
+            def close(db):
+                if db is queue.db:closed_rows.append(self.jobs(queue))
+                return actual_close(db)
+            try:
+                with mock.patch.object(self.W._WriteTransaction,'commit',commit), \
+                        mock.patch.object(cls,'rollback',rollback),mock.patch.object(cls,'_native_close_locked',close):
+                    try:result=queue.conditional_ack(p['ack'],p['ack']['lease_token'],base)
+                    except self.W.ReaderWindowBusy as exc:error=str(exc)
+                    pending=self.W.pending_count();live=queue.db.in_transaction
+                    staged=queue.get(p['ack']['claim'])['state'];mutation_retained=not self.probe('queue-mutation.lock')
+                    remaining=self.W.drain_pending(deadline=time.monotonic()+1)
+                emit('ack-rollback-pending-result',result=result,error=error,pending=pending,
+                    actualSqlTransactionLive=live,uncommittedJobState=staged,mutationRetained=mutation_retained,
+                    rollbackAttempts=attempts,drained=remaining,restoredBeforeNativeClose=closed_rows==[before])
+                self.assertTrue(swapped);self.assertIsNone(result);self.assertEqual(error,'reader_ack_base_changed')
+                self.assertEqual(pending,1);self.assertTrue(live);self.assertEqual(staged,'acked');self.assertTrue(mutation_retained)
+                self.assertEqual(attempts,[True,True]);self.assertEqual(remaining,0);self.assertEqual(closed_rows,[before])
+            finally:
+                if swapped:self.case.db.unlink()
+                for source,target in reversed(moved):source.rename(target)
+
 if __name__=='__main__':unittest.main(verbosity=2)
