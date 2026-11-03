@@ -152,4 +152,49 @@ class CheckpointChecks(unittest.TestCase):
             self.assertFalse(writer.db.in_transaction);self.assertEqual(writer.db.execute('SELECT 1').fetchone(),(1,))
             self.assertEqual(self.W.pending_count(),0)
 
+    def test_hardlinked_wal_or_shm_refuses_before_checkpoint_and_preserves_alias(self):
+        with self.fixture.writer() as (writer,_component):
+            checkpoint=self.api()
+            for suffix in ('-wal','-shm'):
+                with self.subTest(aux=suffix):
+                    self.commit_wal(writer,'hardlink-'+suffix)
+                    file=Path(str(self.case.db)+suffix);alias=self.case.home/('checkpoint-alias'+suffix)
+                    os.link(file,alias)
+                    try:
+                        before=image(self.case.db);alias_before=alias.read_bytes();sql=[];error=None
+                        writer.db.set_trace_callback(sql.append)
+                        try:checkpoint(writer._connection_owner,deadline=time.monotonic()+1)
+                        except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                        finally:writer.db.set_trace_callback(None)
+                        checkpoints=[s for s in sql if 'WAL_CHECKPOINT' in s.upper()]
+                        after=image(self.case.db)
+                        emit('hardlinked-checkpoint-aux',suffix=suffix,error=error,checkpointSql=checkpoints,
+                            filesUnchanged=before==after,aliasUnchanged=alias.read_bytes()==alias_before)
+                        self.assertIsNotNone(error);self.assertEqual(checkpoints,[])
+                        self.assertTrue(before==after);self.assertEqual(alias.read_bytes(),alias_before)
+                    finally:alias.unlink()
+
+    def test_empty_replacement_wal_inode_is_not_accepted_as_completed_reset(self):
+        with self.fixture.writer() as (writer,_component):
+            self.commit_wal(writer,'wal-replacement');checkpoint=self.api()
+            wal=Path(str(self.case.db)+'-wal');backup=self.case.home/'checkpoint-original-wal'
+            cls=type(writer.db);actual=cls.execute;swaps=[];error=None;result=None
+            def swap(db,sql,*args,**kwargs):
+                cursor=actual(db,sql,*args,**kwargs)
+                if db is writer.db and fixed(sql):
+                    old=wal.lstat();wal.rename(backup)
+                    fd=os.open(wal,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600);os.close(fd)
+                    new=wal.lstat();swaps.append(([old.st_dev,old.st_ino],[new.st_dev,new.st_ino]))
+                return cursor
+            try:
+                with mock.patch.object(cls,'execute',swap):
+                    try:result=checkpoint(writer._connection_owner,deadline=time.monotonic()+1)
+                    except Exception as exc:error=type(exc).__name__+':'+str(exc)
+                emit('checkpoint-wal-inode-replacement',error=error,result=result,swaps=swaps)
+                self.assertEqual(len(swaps),1);self.assertNotEqual(*swaps[0])
+                self.assertIsNotNone(error);self.assertIsNone(result)
+            finally:
+                if backup.exists():
+                    wal.unlink();backup.rename(wal)
+
 if __name__=='__main__':unittest.main(verbosity=2)
