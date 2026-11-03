@@ -299,7 +299,7 @@ def _writer_executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _selected_v5_proof(project, decision):
+def _selected_v5_proof(project, decision, owner):
     import laya_install_journal as journal
     import laya_writer_open_plan as plan_module
     from laya_reader_windows import ReaderWindowBusy
@@ -309,19 +309,16 @@ def _selected_v5_proof(project, decision):
         if str(exc) == 'writer_windows_not_prepared':
             raise ResourceDeferred(str(exc)) from exc
         raise
-    with sync_owner(plan.queue_path) as owner:
-        if owner is None:
-            raise ResourceDeferred('owner_busy')
-        try:
-            with plan_module.writer_proof_windows(plan, queue_owner=owner,
-                                                  deadline=time.monotonic()+2) as window:
-                with journal.writer_identity_reads(window):
-                    return verify_selected_route(decision)
-        except ReaderWindowBusy as exc:
-            if str(exc) in ('writer_proof_cold_open_unproved', 'writer_proof_physical_busy',
-                            'writer_proof_deadline', 'reader_lifetime_busy'):
-                raise ResourceDeferred(str(exc)) from exc
-            raise
+    try:
+        with plan_module.writer_proof_windows(plan, queue_owner=owner,
+                                              deadline=time.monotonic()+2) as window:
+            with journal.writer_identity_reads(window):
+                return verify_selected_route(decision)
+    except ReaderWindowBusy as exc:
+        if str(exc) in ('writer_proof_cold_open_unproved', 'writer_proof_physical_busy',
+                        'writer_proof_deadline', 'reader_lifetime_busy'):
+            raise ResourceDeferred(str(exc)) from exc
+        raise
 
 
 def _selected(project):
@@ -329,25 +326,27 @@ def _selected(project):
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
     import laya_install_journal as journal
+    from laya_worker_journal import worker_journal_access
     # Classification/version reads must not recover a legacy hot image. The
     # legacy proof also checks its actual transaction's version, closing the
     # v4-observed/v5-published interval before any raw content connection.
-    for attempt in range(2):
-        with journal.read_only_journals():
-            decision = select_route(str(project), action='update')
-            if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-                raise IndexContractError('selected_route_unavailable')
-            if journal.journal_version(decision['journalPath']) == 5:
-                proof = _selected_v5_proof(project, decision)
-            else:
-                try:
-                    with journal.legacy_identity_reads():
-                        proof = verify_selected_route(decision)
-                except journal.JournalEvidenceError as exc:
-                    if str(exc) == 'writer_plan_v5_required' and attempt == 0:
-                        continue
-                    raise
-            break
+    with worker_journal_access(project) as access:
+        for attempt in range(2):
+            with journal.read_only_journals():
+                decision = select_route(str(project), action='update')
+                if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+                    raise IndexContractError('selected_route_unavailable')
+                if journal.journal_version(decision['journalPath']) == 5:
+                    proof = _selected_v5_proof(project, decision, access.owner)
+                else:
+                    try:
+                        with journal.legacy_identity_reads():
+                            proof = verify_selected_route(decision)
+                    except journal.JournalEvidenceError as exc:
+                        if str(exc) == 'writer_plan_v5_required' and attempt == 0:
+                            continue
+                        raise
+                break
     if proof.get('productRouteAllowed') is not True or not isinstance(proof.get('providerManifest'), dict):
         raise IndexContractError('selected_provider_unavailable')
     return decision, proof

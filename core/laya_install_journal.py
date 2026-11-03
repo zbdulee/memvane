@@ -499,6 +499,7 @@ def _schema_version_read(db):
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
 _legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
+_legacy_worker_recovery = ContextVar('journal_legacy_worker_recovery', default=None)
 _writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
 _CURRENT_IDENTITY_BINDING = object()
 
@@ -658,7 +659,17 @@ def _open(path, *, write):
             version = _schema_version(db)
         except sqlite3.OperationalError:
             db.close()
-            if write or _reader_no_recovery.get() or not _recover_interrupted_transaction(path):
+            if write:
+                raise
+            if _reader_no_recovery.get():
+                scope = _legacy_worker_recovery.get()
+                if scope is None:
+                    raise
+                from laya_worker_journal import recover_legacy
+                recovered = recover_legacy(scope, path)
+            else:
+                recovered = _recover_interrupted_transaction(path)
+            if not recovered:
                 raise
             db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
             version = _schema_version(db)
