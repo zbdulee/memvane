@@ -463,6 +463,7 @@ class _OwnedConnection:
         self.pending = False
         self.transaction = None
         self.auxiliaries = None
+        self.journal_mode = None
 
     def check(self):
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
@@ -519,7 +520,9 @@ class _WriteTransaction:
     def commit(self):
         self._check()
         R._need(not self.rollback_pending, 'reader_transaction_rollback_pending')
+        connection_binding(self.owner, self.owner.db)
         self.owner.db.commit()
+        connection_binding(self.owner, self.owner.db)
         self._finish()
 
     def rollback(self):
@@ -546,6 +549,9 @@ def write_transaction(owner, *, visible, deadline):
     R._need(type(visible) is bool and owner.db is not None and not owner.pending
             and owner.transaction is None and not owner.db.in_transaction,
             'reader_transaction_unavailable')
+    # DELETE journals need first-write inode tracking and safe rollback
+    # deferral. They cannot use the WAL transaction contract until integrated.
+    R._need(owner.journal_mode == 'wal', 'reader_journal_write_unsupported')
     _deadline(deadline)
     _pid, installer, scope, _node, _manifest = _component(owner.component)
     _endpoint, current = _owner(installer)
@@ -558,6 +564,7 @@ def write_transaction(owner, *, visible, deadline):
         if visible:
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=True, deadline=deadline))
+        connection_binding(owner, owner.db)
         R._need(time.monotonic() < deadline, 'reader_write_deadline')
         # A native SQLite writer can outlive our cooperative lock admission.
         # Limit that driver's busy wait to the remaining caller budget, then
@@ -593,6 +600,23 @@ def _auxiliary_nodes(path, state):
         auxiliary = Path(str(path) + suffix)
         result[suffix] = tuple(R._file(auxiliary, state)) if os.path.lexists(auxiliary) else None
     return result
+
+
+def connection_binding(owner, db):
+    """SQL-free proof of the issued handle's current named files and scope."""
+    R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner
+            and owner.db is not None and owner.auxiliaries is not None,
+            'reader_connection_not_owned')
+    owner.check()
+    owner.lifetime.check()
+    _pid, installer, scope, node, _manifest = _component(owner.component)
+    endpoint, current = _owner(installer)
+    state = Path(endpoint.record['state'])
+    if (owner.db is not db or current is not scope or node is None
+            or tuple(R._file(owner.component.path, state)) != node
+            or _auxiliary_nodes(owner.component.path, state) != owner.auxiliaries):
+        raise ReaderWindowBusy('reader_connection_changed')
+    return owner, db, node, tuple(sorted(owner.auxiliaries.items()))
 
 
 def checkpoint_owned(owner, *, deadline):
@@ -719,11 +743,19 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
             finally:
                 cursor.close()
                 sqlite3.Cursor.close(cursor)
+            mode = owner.db.execute('PRAGMA main.journal_mode')
+            try:
+                modes = mode.fetchall()
+            finally:
+                mode.close()
+                sqlite3.Cursor.close(mode)
+            R._need(modes in ([('wal',)], [('delete',)]), 'reader_connection_journal_mode_unsupported')
             auxiliaries = _auxiliary_nodes(component.path, state)
             R._need(all(before is None or auxiliaries[suffix] == before
                         for suffix, before in opening_auxiliaries.items()),
                     'reader_component_changed')
             owner.auxiliaries = auxiliaries
+            owner.journal_mode = modes[0][0]
         except BaseException:
             owner.close_locked()
             raise

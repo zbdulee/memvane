@@ -469,6 +469,8 @@ class GenerationBindingStore:
 
     def _transaction(self, write: bool, fn: Callable[[str], Any]) -> Any:
         """``fn(store_id)`` in one transaction after node, schema and identity checks."""
+        if write and self._connection_owner is not None:
+            raise IndexContractError('reader_delete_write_unsupported')
         self._check_node()
         try:
             self.db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')

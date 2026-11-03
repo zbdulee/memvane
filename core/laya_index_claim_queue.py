@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 import re
 import sqlite3
@@ -291,6 +291,51 @@ class ClaimQueue:
     def _begin(self):
         self.db.execute('BEGIN IMMEDIATE')
 
+    @contextmanager
+    def _write_transaction(self):
+        if self._connection_owner is None:
+            self._begin()
+            try:
+                yield self.db
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+        else:
+            from laya_reader_windows import write_transaction
+            with write_transaction(self._connection_owner, visible=False,
+                                   deadline=time.monotonic() + 2) as transaction:
+                yield transaction
+
+    def _ack_base_bound(self, index):
+        base_owner = getattr(index, '_connection_owner', None)
+        if self._connection_owner is None and base_owner is None:
+            return True  # unchanged common-engine proof/rollback contract
+        if self._connection_owner is None or base_owner is None:
+            return False
+        from laya_index_a import LayaIndexA
+        import laya_reader_windows as windows
+        if type(index) is not LayaIndexA or type(base_owner) is not windows._OwnedConnection:
+            return False
+        try:
+            queue_owner = self._connection_owner
+            if (queue_owner.component.role != 'queue' or base_owner.component.role != 'base'
+                    or queue_owner.component.install_id != base_owner.component.install_id):
+                return False
+            queue_binding = windows._component(queue_owner.component)
+            base_binding = windows._component(base_owner.component)
+            queue_record = windows.R._installer(queue_binding[1]).record
+            base_record = windows.R._installer(base_binding[1]).record
+            if (queue_binding[2] is not base_binding[2]
+                    or any(queue_record[key] != base_record[key]
+                           for key in ('scope', 'incarnation', 'project', 'state', 'db_path'))):
+                return False
+            windows.connection_binding(queue_owner, self.db)
+            windows.connection_binding(base_owner, index.db)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
     def _row(self, claim):
         row = self.db.execute('''SELECT claim,scope,gen,source_manifest,claim_digest,
             claim_epoch,base_gen,state,lease_token,outcome FROM jobs WHERE claim=?''',
@@ -326,8 +371,7 @@ class ClaimQueue:
                 or (base_gen is not None and
                     (not isinstance(base_gen, str) or not base_gen))):
             raise ValueError('invalid_claim_job')
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             epoch = self.db.execute(
                 'SELECT COALESCE(MAX(claim_epoch),0)+1 FROM jobs WHERE scope=?',
                 (scope,)).fetchone()[0]
@@ -340,47 +384,33 @@ class ClaimQueue:
             self.db.execute('''INSERT INTO jobs
                 (claim,scope,gen,source_manifest,claim_digest,claim_epoch,base_gen,state)
                 VALUES(?,?,?,?,?,?,?,'pending')''', values)
-            self.db.commit()
             return job
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def enqueue(self, job):
         values = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(values[0])
             if current is not None:
                 if _identity(current) != values:
                     raise ClaimConflict('claim_identity_changed')
-                self.db.rollback()
+                transaction.rollback()
                 return current['state']
             self.db.execute('''INSERT INTO jobs
                 (claim,scope,gen,source_manifest,claim_digest,claim_epoch,base_gen,state)
                 VALUES(?,?,?,?,?,?,?,'pending')''', values)
-            self.db.commit()
             return 'pending'
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def lease(self, claim, *, recover=False):
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             row = self._row(claim)
             if row is None or not (row['state'] == 'pending' or
                                    (row['state'] == 'leased' and recover is True)):
-                self.db.rollback()
+                transaction.rollback()
                 return None
             token = uuid.uuid4().hex
             self.db.execute("UPDATE jobs SET state='leased',lease_token=? WHERE claim=?",
                             (token, claim))
-            self.db.commit()
             return {**row, 'state': 'leased', 'lease_token': token}
-        except BaseException:
-            self.db.rollback()
-            raise
 
     @staticmethod
     def decide(index, job):
@@ -394,60 +424,55 @@ class ClaimQueue:
         return ACK if receipt == (scope, gen, manifest, digest, epoch) else DEFER
 
     def conditional_ack(self, job, token, index):
+        if not self._ack_base_bound(index):
+            return DEFER
         verdict = self.decide(index, job)
+        if not self._ack_base_bound(index):
+            return DEFER
         if verdict != ACK:
             return verdict
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token
                     or current['state'] not in ('leased', 'acked')):
-                self.db.rollback()
+                transaction.rollback()
                 return LEASE_LOST
+            if not self._ack_base_bound(index):
+                transaction.rollback()
+                return DEFER
             if current['state'] == 'leased':
                 self.db.execute("UPDATE jobs SET state='acked',outcome='published' WHERE claim=?",
                                 (identity[0],))
-            self.db.commit()
+            if not self._ack_base_bound(index):
+                transaction.rollback()
+                return DEFER
             return ACK
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def mark_replan(self, job, token, reason):
         if reason not in ('head_moved', 'index_stale'):
             raise ValueError('invalid_replan_reason')
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token or current['state'] != 'leased'):
-                self.db.rollback()
+                transaction.rollback()
                 return False
             self.db.execute("UPDATE jobs SET state='replan',outcome=? WHERE claim=?",
                             (reason, identity[0]))
-            self.db.commit()
             return True
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def release_for_retry(self, job, token):
         """Only the current lease may return a claim to pending after refusal."""
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token or current['state'] != 'leased'):
-                self.db.rollback()
+                transaction.rollback()
                 return False
             self.db.execute("UPDATE jobs SET state='pending',lease_token=NULL WHERE claim=?",
                             (identity[0],))
-            self.db.commit()
             return True
-        except BaseException:
-            self.db.rollback()
-            raise

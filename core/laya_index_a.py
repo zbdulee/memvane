@@ -1067,18 +1067,10 @@ class LayaIndexA:
 
     def _publication_binding(self):
         import laya_reader_windows as windows
-        owner = self._connection_owner
-        owner.check()
-        owner.lifetime.check()
-        if owner.db is not self.db:
-            raise windows.ReaderWindowBusy('reader_publish_changed')
-        _pid, installer, scope, node, _manifest = windows._component(owner.component)
-        endpoint, current = windows._owner(installer)
-        state = Path(endpoint.record['state'])
-        if (current is not scope or tuple(windows.R._file(self.path, state)) != node
-                or windows._auxiliary_nodes(self.path, state) != owner.auxiliaries):
-            raise windows.ReaderWindowBusy('reader_publish_changed')
-        return owner, self.db, node, tuple(sorted(owner.auxiliaries.items()))
+        try:
+            return windows.connection_binding(self._connection_owner, self.db)
+        except windows.ReaderWindowBusy as exc:
+            raise windows.ReaderWindowBusy('reader_publish_changed') from exc
 
     def _publication_stamp(self):
         return (*self._publication_binding(),
@@ -1114,6 +1106,10 @@ class LayaIndexA:
                 self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
             self._publication_binding()
             return 'published'
+        except windows.ReaderWindowBusy as exc:
+            if str(exc) == 'reader_connection_changed':
+                raise windows.ReaderWindowBusy('reader_publish_changed') from exc
+            raise
         except sqlite3.OperationalError as exc:
             code = getattr(exc, 'sqlite_errorcode', None)
             if ((type(code) is int and code & 0xff in (5, 6))
