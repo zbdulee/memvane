@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import stat
 import subprocess
 import sys
 import unittest
@@ -19,6 +20,30 @@ ROOT=HERE.parents[1]
 spec=importlib.util.spec_from_file_location('move_prefix_journal_fixture',HERE/'laya-reader-move-journal-checks.py')
 journal_fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(journal_fixture)
 seed_module=journal_fixture.seed_module
+
+NEGATIVE_READER=r'''
+from pathlib import Path
+from types import SimpleNamespace
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'))
+os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime']
+signal.alarm(25)
+spec=importlib.util.spec_from_file_location('negative_prefix_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as R,laya_reader_lease as L
+assert len(R._issued)==0
+def forbidden(*a,**k):raise AssertionError('negative reader must not issue an installer')
+R.seal_current_reader=forbidden
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+try:
+    with helper.full_authority(case,R,L):
+        with L.resolve_endpoint(Path(p['project']),action='recall',host_root=case.plugin) as endpoint:
+            print(json.dumps(dict(event='capability-issued',typed=type(endpoint) is R.VerifiedEndpoint)),flush=True)
+except (ValueError,OSError,RuntimeError) as exc:
+    print(json.dumps(dict(event='refused',reason=str(exc))),flush=True)
+    sys.exit(3)
+'''
 
 WRITER=r'''
 from contextlib import ExitStack,nullcontext
@@ -76,7 +101,7 @@ class MovePrefixChecks(unittest.TestCase):
     def require(value,reason):
         if not value:raise RuntimeError('physical-prefix prerequisite failed: '+reason)
 
-    def check_prefix(self,phase):
+    def check_prefix(self,phase,*,mutation=None):
         seed=seed_module.MoveSealChecks('runTest')
         self.addCleanup(seed.doCleanups)
         try:
@@ -137,22 +162,72 @@ class MovePrefixChecks(unittest.TestCase):
             self.require(record['pinned_generation']==seal.old_generation,'persisted old generation pin')
             for key in ('catalog_path','binding_path','sidecar_path'):
                 self.require(Path(record[key]).is_file(),'retained old component exists: '+key)
+        mutation_evidence=None
+        saved_container=None
+        if mutation is not None:
+            self.require(phase=='anchor-entry','negative mutates only an actual completed rename prefix')
+            if mutation=='container-inode':
+                saved_container=case.project/'preserved-original-container'
+                folder.rename(saved_container)
+                folder.mkdir(mode=stat.S_IMODE(saved_container.stat().st_mode))
+                folder.chmod(stat.S_IMODE(saved_container.stat().st_mode))
+                for entry in list(saved_container.iterdir()):entry.rename(folder/entry.name)
+                mover._fsync(folder);mover._fsync(case.project)
+                self.require(seed.reader._node(saved_container)==folder_node,'preserved original container inode')
+                self.require(seed.reader._node(folder)!=folder_node,'actual replacement container inode')
+                self.require(seed.reader._node(folder/'wiki')==wiki_node,'same original wiki inode under replacement')
+                self.require({str(path.relative_to(folder)):path.read_bytes() for path in folder.rglob('*')
+                              if path.is_file() and not path.is_symlink()}==original_project,
+                             'all original settings/route/marker/pointer/wiki moved by rename')
+                mutation_evidence=dict(kind=mutation,newContainerNode=seed.reader._node(folder),
+                    preservedContainerNode=seed.reader._node(saved_container),sameWikiNode=seed.reader._node(folder/'wiki'))
+            elif mutation=='reviewed-route-ahead':
+                with seed.ro(case.catalog) as db:
+                    meta=dict(db.execute("SELECT key,value FROM meta WHERE key IN ('binding','roots')"))
+                self.require(meta=={key:intent['catalog'][key][0] for key in ('binding','roots')},
+                             'catalog remains at old roots/binding before illegal metadata change')
+                self.require(seed.reader._node(case.store)==intent['oldLedger']['bindingStoreIdentity'],
+                             'original old binding store inode remains')
+                reviewed=case.state/'reviewed-route.json'
+                self.require(reviewed.read_bytes()==intent['oldRoute'].encode('utf8'),'reviewed route initially old')
+                reviewed.write_bytes(intent['newRoute'].encode('utf8'))
+                self.require((folder/fresh.ROUTE).read_bytes()==intent['oldRoute'].encode('utf8'),
+                             'project route remains old while only reviewed route advances')
+                self.require((case.state/fresh.LEDGER).read_bytes()==mover._canonical(intent['fencedLedger']),
+                             'ledger remains exact fenced old metadata')
+                mutation_evidence=dict(kind=mutation,reviewedRoute='new',projectRoute='old',
+                    catalog='old',binding='old',ledger='exact-fenced')
+            else:raise RuntimeError('unknown test-owned prefix mutation')
+            print(json.dumps(dict(case='physical-prefix-negative-input',mutation=mutation_evidence,
+                                  actualRenameCheckpointProved=True)),flush=True)
         # Do not call seed.live(): its .auto-context path is deliberately stale.
         def snapshot():
             return dict(project={str(path.relative_to(folder)):path.read_bytes() for path in folder.rglob('*')
                                  if path.is_file() and not path.is_symlink()},
                 state={str(path.relative_to(case.state)):path.read_bytes() for path in case.state.rglob('*')
-                       if path.is_file() and not path.is_symlink()})
+                       if path.is_file() and not path.is_symlink()},
+                folderNode=seed.reader._node(folder),wikiNode=seed.reader._node(folder/'wiki'),
+                savedContainerNode=None if saved_container is None else seed.reader._node(saved_container))
         before=snapshot();journal_node=case.journal.stat()
-        result=subprocess.run([sys.executable,'-B','-I','-c',journal_fixture.FRESH_READER,str(ROOT),str(payload)],
+        probe=journal_fixture.FRESH_READER if mutation is None else NEGATIVE_READER
+        result=subprocess.run([sys.executable,'-B','-I','-c',probe,str(ROOT),str(payload)],
             input='release\n',capture_output=True,encoding='utf8',timeout=30)
         observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
-            originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadata=True,
+            originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
             resumed=False,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096],
-            queryUnchanged=snapshot()==before,classification='required-reader-feature-gate-after-actual-prefix-proof')),flush=True)
+            mutation=mutation_evidence,queryUnchanged=snapshot()==before,
+            classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
         self.assertEqual(snapshot(),before,'fresh prefix reader must not heal or mutate moved/state files')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
+        if mutation is not None:
+            events=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+            self.assertEqual(result.returncode,3,result.stdout+result.stderr)
+            self.assertTrue(events,'negative reader must report an actual refusal')
+            self.assertTrue(all(event['event']!='capability-issued' for event in events),
+                            'even a subsequently failing query must not mint a typed capability')
+            self.assertEqual(events[-1]['event'],'refused')
+            return
         self.assertEqual(result.returncode,0,'feature RED: exact retained move prefix must be readable before resume\n'+result.stderr)
         self.assertIsNotNone(observed)
         self.assertEqual(observed['endpoint'],selected.preferred_endpoint)
@@ -166,6 +241,53 @@ class MovePrefixChecks(unittest.TestCase):
 
     def test_actual_fenced_before_rename_is_readable_without_resume(self):
         self.check_prefix('fenced-before-rename')
+
+    def test_renamed_prefix_rejects_replaced_container_even_when_original_wiki_inode_survives(self):
+        self.check_prefix('anchor-entry',mutation='container-inode')
+
+    def test_renamed_prefix_rejects_only_reviewed_route_advancing_ahead_of_catalog_binding_and_project_route(self):
+        self.check_prefix('anchor-entry',mutation='reviewed-route-ahead')
+
+    def test_public_mover_refuses_published_retained_intent_before_any_destructive_reprepare(self):
+        seed=seed_module.MoveSealChecks('runTest')
+        self.addCleanup(seed.doCleanups)
+        try:
+            seed.setUp()
+            with seed.prepared() as intent:
+                stage,seal_type=seed.producer()
+                seal=stage(intent,installer=seed.installer)
+                self.require(type(seal) is seal_type,'actual typed stage seal before public move')
+                selected=seed.lease.publish_move_reader(seed.case.journal,seal=seal)
+                seed.reader._recheck(seal.retained_endpoint)
+        except Exception as exc:
+            raise RuntimeError('public mover safety prerequisite failed before actual entry') from exc
+        case=seed.case;mover=seed.mover
+        self.require(not mover._fenced(intent),'actual publication is still unfenced')
+        self.require(mover._canonical(mover._load_intent(case.state,case.project))==mover._canonical(intent),
+                     'same durable published intent')
+        def snapshot():
+            return {str(path):(path.read_bytes(),path.lstat().st_dev,path.lstat().st_ino)
+                    for root in (case.project,case.state) for path in root.rglob('*')
+                    if path.is_file() and not path.is_symlink()}
+        before=snapshot()
+        intent_path=case.state/mover.INTENT;pointer=mover.pointer_path(case.project)
+        intent_bytes=intent_path.read_bytes();pointer_bytes=pointer.read_bytes()
+        error,result=None,None
+        try:
+            with seed.authority():result=mover.move(case.project,case.state)
+        except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+        after=snapshot()
+        print(json.dumps(dict(case='public-mover-published-retained-safety',actualPublishedEndpoint=selected.preferred_endpoint,
+            actualOwnerReleasedBeforePublicEntry=True,error=error,result=result,filesUnchanged=after==before,
+            intentPreserved=intent_path.exists() and intent_path.read_bytes()==intent_bytes,
+            pointerPreserved=pointer.exists() and pointer.read_bytes()==pointer_bytes,
+            classification='actual-public-path-safety-regression')),flush=True)
+        with self.subTest(boundary='explicit-refusal'):
+            self.assertIsNotNone(error,'unsupported retained successor must refuse before abort/reprepare')
+            self.assertIsNone(result)
+        self.assertTrue(after==before,'public mover must preserve published intent/stage/journal/files before successor support')
+        self.assertEqual(intent_path.read_bytes(),intent_bytes)
+        self.assertEqual(pointer.read_bytes(),pointer_bytes)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
