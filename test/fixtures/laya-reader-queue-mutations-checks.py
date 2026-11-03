@@ -43,7 +43,7 @@ class QueueMutationChecks(unittest.TestCase):
             queue=self.Q.ClaimQueue.open(self.case.queue,coordination=component)
             try:yield base,queue,component
             finally:queue.close(deadline=time.monotonic()+1);self.W.drain_pending(deadline=time.monotonic()+1)
-    def prep(self,base,queue):
+    def prep(self,base,queue,before_publish=None):
         import laya_index_a as A
         scope=self.case.route['scopeId'];old=base.db.execute('SELECT gen FROM head WHERE scope=?',(scope,)).fetchone()[0]
         body='synthetic actual queue receipt';docs=[('wiki/queue-receipt.md',body,True)]
@@ -51,6 +51,7 @@ class QueueMutationChecks(unittest.TestCase):
         ack=queue.enqueue_next(scope,'queue-receipt-generation',manifest,old)
         proof=dict(source_manifest=manifest,claim_digest=ack['claim_digest'],claim_epoch=ack['claim_epoch'])
         self.assertEqual(base.stage(ack['gen'],scope,docs,base=old,**proof),'prepared')
+        if before_publish is not None:before_publish(ack)
         self.assertEqual(base.publish(old,ack['gen'],ack['claim'],**proof),'published')
         leased_ack=queue.lease(ack['claim'])
         pending=queue.enqueue_next(scope,'queue-pending-generation','b'*64,ack['gen'])
@@ -264,5 +265,76 @@ class QueueMutationChecks(unittest.TestCase):
                 replacementMainUnchanged=unchanged,originalJobsRolledBack=before==after)
             self.assertTrue(swapped);self.assertIsNone(result);self.assertIsNotNone(error)
             self.assertTrue(unchanged);self.assertEqual(after,before)
+
+    def test_base_replacement_at_ack_commit_entry_cannot_persist_acked(self):
+        with self.opened() as (base,queue,_component):
+            replacement=self.case.state/'base-ack-commit-replacement.sqlite'
+            def copy_prepared(job):
+                copy=sqlite3.connect(replacement)
+                try:
+                    base.db.backup(copy);copy.execute('PRAGMA journal_mode=DELETE')
+                    self.assertIsNone(copy.execute('SELECT claim FROM receipts WHERE claim=?',(job['claim'],)).fetchone())
+                    self.assertEqual(copy.execute('SELECT state FROM generations WHERE gen=?',(job['gen'],)).fetchone(),('prepared',))
+                finally:copy.close()
+                replacement.chmod(0o600)
+            p=self.prep(base,queue,before_publish=copy_prepared)
+            before=self.jobs(queue);replacement_bytes=replacement.read_bytes();moved=[];swapped=False
+            actual=self.W._WriteTransaction.commit;entries=[]
+            def commit(transaction,*args,**kwargs):
+                nonlocal swapped
+                if transaction.owner is queue._connection_owner and not swapped:
+                    for suffix in ('','-wal','-shm'):
+                        source=Path(str(self.case.db)+suffix);saved=self.case.state/('base-ack-commit-original'+suffix)
+                        source.rename(saved);moved.append((saved,source))
+                    os.replace(replacement,self.case.db);swapped=True;entries.append(True)
+                return actual(transaction,*args,**kwargs)
+            try:
+                with mock.patch.object(self.W._WriteTransaction,'commit',commit):
+                    result=queue.conditional_ack(p['ack'],p['ack']['lease_token'],base)
+                after=self.jobs(queue);unchanged=self.case.db.read_bytes()==replacement_bytes
+                emit('ack-base-binding-at-actual-commit',entries=len(entries),result=result,
+                    jobsUnchanged=before==after,replacementMainUnchanged=unchanged)
+                self.assertEqual(entries,[True]);self.assertEqual(result,self.Q.DEFER)
+                self.assertEqual(after,before);self.assertTrue(unchanged)
+            finally:
+                if swapped:self.case.db.unlink()
+                for source,target in reversed(moved):source.rename(target)
+
+    def test_enqueue_replay_cannot_return_acked_from_displaced_queue(self):
+        with self.opened() as (base,queue,_component):
+            p=self.prep(base,queue);job=p['ack']
+            self.assertTrue(queue.release_for_retry(job,job['lease_token']))
+            replacement=self.case.state/'queue-pending-replay.sqlite'
+            copy=sqlite3.connect(replacement)
+            try:
+                queue.db.backup(copy);copy.execute('PRAGMA journal_mode=DELETE')
+                replacement_state=copy.execute('SELECT state FROM jobs WHERE claim=?',(job['claim'],)).fetchone()[0]
+                self.assertEqual(replacement_state,'pending')
+            finally:copy.close()
+            replacement.chmod(0o600);replacement_bytes=replacement.read_bytes()
+            job=queue.lease(job['claim'])
+            self.assertEqual(queue.conditional_ack(job,job['lease_token'],base),self.Q.ACK)
+            actual=queue._row;moved=[];swapped=False;result=None;error=None
+            def row(claim):
+                nonlocal swapped
+                value=actual(claim)
+                if claim==job['claim'] and not swapped:
+                    self.assertEqual(value['state'],'acked')
+                    for suffix in ('','-wal','-shm'):
+                        source=Path(str(self.case.queue)+suffix);saved=self.case.state/('queue-acked-original'+suffix)
+                        source.rename(saved);moved.append((saved,source))
+                    os.replace(replacement,self.case.queue);swapped=True
+                return value
+            try:
+                with mock.patch.object(queue,'_row',row):
+                    try:result=queue.enqueue(job)
+                    except self.W.ReaderWindowBusy as exc:error=str(exc)
+                unchanged=self.case.queue.read_bytes()==replacement_bytes
+                emit('enqueue-replay-current-queue-binding',swapped=swapped,result=result,error=error,
+                    actualReplacementState=replacement_state,replacementMainUnchanged=unchanged)
+                self.assertTrue(swapped);self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(unchanged)
+            finally:
+                if swapped:self.case.queue.unlink()
+                for source,target in reversed(moved):source.rename(target)
 
 if __name__=='__main__':unittest.main(verbosity=2)
