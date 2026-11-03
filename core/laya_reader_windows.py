@@ -397,16 +397,20 @@ class _OwnedCursor(sqlite3.Cursor):
     _window_closed = False
     _window_exhausted = False
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._window_exhausted = True
+
     def execute(self, *args, **kwargs):
         self._window_exhausted = False
         result = super().execute(*args, **kwargs)
-        self._window_exhausted = self.description is None
+        self._window_exhausted = sqlite3.Cursor.description.__get__(self, type(self)) is None
         return result
 
     def executemany(self, *args, **kwargs):
         self._window_exhausted = False
         result = super().executemany(*args, **kwargs)
-        self._window_exhausted = self.description is None
+        self._window_exhausted = sqlite3.Cursor.description.__get__(self, type(self)) is None
         return result
 
     def fetchall(self):
@@ -415,7 +419,7 @@ class _OwnedCursor(sqlite3.Cursor):
         return rows
 
     def fetchmany(self, *args, **kwargs):
-        size = args[0] if args else kwargs.get('size', self.arraysize)
+        size = args[0] if args else kwargs.get('size', sqlite3.Cursor.arraysize.__get__(self, type(self)))
         rows = super().fetchmany(*args, **kwargs)
         if type(size) is int and size > 0 and len(rows) < size:
             self._window_exhausted = True
