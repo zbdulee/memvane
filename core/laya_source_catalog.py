@@ -663,10 +663,13 @@ class LayaSourceCatalog:
 
     def _managed_result(self, action, busy):
         from laya_reader_windows import ReaderWindowBusy
+        from laya_install_journal import JournalEvidenceError
         try:
             return action()
-        except (ReaderWindowBusy, sqlite3.OperationalError) as exc:
+        except (ReaderWindowBusy, sqlite3.OperationalError, JournalEvidenceError) as exc:
             if isinstance(exc, sqlite3.OperationalError) and not _is_busy(exc):
+                raise
+            if isinstance(exc, JournalEvidenceError) and str(exc) != 'reader_write_deadline':
                 raise
             owner = self._connection_owner
             # An unfinished rollback is an error requiring explicit drain,
@@ -725,13 +728,13 @@ class LayaSourceCatalog:
                 original_rows = self._publication_rows()
                 original_stamp = self._catalog_stamp()
                 self._ensure_partial_tables()
-                self._prune_scans()
                 scan = self._scan_row(self._pointer('active'))
                 if scan is None or scan['phase'] not in PENDING_PHASES:
                     transaction.rollback()
                     result = self._settled(scan)
                     result['work'] = work.report()
                     return result
+                self._prune_scans()
                 seq = scan['seq']
                 busy.update(scan_id=scan['scan_id'], phase=scan['phase'])
                 opener = _DirOpener(self.db, self.roots, seq)
