@@ -106,7 +106,10 @@ def _stage_directory(state, move_id):
 
 def _copy(source, state, stage, name, *, meta_variants=None):
     destination = stage / name
+    pending = stage / ('.' + name + '.copying')
     if os.path.lexists(destination):
+        R._need(not any(os.path.lexists(str(pending) + suffix)
+                       for suffix in ('', '-journal', '-wal', '-shm')), 'reader_move_copy_changed')
         if meta_variants is not None:
             with R._readonly(source, state) as src, R._readonly(destination, stage) as dst:
                 R._need(src.execute('SELECT * FROM meta').fetchall() == meta_variants[0]
@@ -116,13 +119,33 @@ def _copy(source, state, stage, name, *, meta_variants=None):
                 == _logical(destination, stage, skip_meta=meta_variants is not None),
                 'reader_move_copy_changed')
         return destination
-    fd = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # Only this reserved, unpublished copy name is recoverable scratch. Check
+    # every inode before removing any leftover; completed tuple names stay put.
+    leftovers = [(path, R._file(path, stage)) for suffix in ('-journal', '-wal', '-shm', '')
+                 for path in (Path(str(pending) + suffix),) if os.path.lexists(path)]
+    for path, node in leftovers:
+        R._need(R._file(path, stage) == node, 'reader_move_copy_changed')
+        path.unlink()
+    if leftovers:
+        R._sync(stage, True)
+    fd = os.open(pending, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     os.close(fd)
+    pending_node = R._file(pending, stage)
     with R._readonly(source, state) as src, closing(sqlite3.connect(
-            destination.as_uri() + '?mode=rw', uri=True, isolation_level=None)) as dst:
+            pending.as_uri() + '?mode=rw', uri=True, isolation_level=None)) as dst:
         src.backup(dst)
-    R._sync(destination)
-    R._need(_logical(source, state) == _logical(destination, stage), 'reader_move_copy_changed')
+        # A private closed backup is a standalone image, including on cold RO
+        # open. This changes no source journal mode and uses no immutable URI.
+        R._need(dst.execute('PRAGMA journal_mode=DELETE').fetchone() == ('delete',),
+                'reader_move_copy_changed')
+    R._sync(pending)
+    R._need(_logical(source, state) == _logical(pending, stage)
+            and R._file(pending, stage) == pending_node
+            and not os.path.lexists(destination)
+            and not any(os.path.lexists(str(pending) + suffix)
+                        for suffix in ('-journal', '-wal', '-shm')), 'reader_move_copy_changed')
+    os.replace(pending, destination)
+    R._sync(stage, True)
     return destination
 
 

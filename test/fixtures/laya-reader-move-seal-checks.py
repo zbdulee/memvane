@@ -877,6 +877,12 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
         self.replay('project',self.prepared)
 
     def test_project_staging_retries_after_actual_partial_sqlite_backup_child_kill(self):
+        self.partial_backup_retry()
+
+    def test_partial_backup_cleanup_refuses_replaced_symlink_without_touching_its_target(self):
+        self.partial_backup_retry(replace_with_symlink=True)
+
+    def partial_backup_retry(self, *, replace_with_symlink=False):
         self.producer()
         with self.prepared() as intent:pass
         with self.ro(self.case.catalog) as db:
@@ -921,6 +927,14 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
         self.assertEqual(info.st_mode & 0o077,0)
         self.assertEqual(self.live(),before)
         self.assertEqual(intent_path.read_bytes(),intent_before)
+        sentinel=None
+        if replace_with_symlink:
+            sentinel=self.case.home/'unowned-copy-target'
+            sentinel.write_bytes(b'fixture target must survive unchanged\n')
+            sentinel.chmod(0o600)
+            partial.unlink()
+            partial.symlink_to(sentinel)
+            stage_entries=set(partial.parent.iterdir())
         with self.authority(),ExitStack() as locks:
             self.mover._locks(locks,self.case.project,self.case.state,self.mover._queue_path(self.case.project,intent))
         result=subprocess.run([*argv,'finish'],capture_output=True,encoding='utf8',timeout=40,
@@ -932,6 +946,15 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
             liveUnchanged=self.live()==before,intentPreserved=intent_path.read_bytes()==intent_before)),flush=True)
         self.assertEqual(self.live(),before)
         self.assertEqual(intent_path.read_bytes(),intent_before)
+        if replace_with_symlink:
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual(recovered['event'],'error')
+            self.assertEqual(recovered['reason'],'reader_store_path_invalid')
+            self.assertTrue(partial.is_symlink())
+            self.assertEqual(partial.readlink(),sentinel)
+            self.assertEqual(sentinel.read_bytes(),b'fixture target must survive unchanged\n')
+            self.assertEqual(set(partial.parent.iterdir()),stage_entries)
+            return
         self.assertEqual(result.returncode,0,'replay RED only after actual backup progress and SIGKILL: '+result.stdout+result.stderr)
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered['event'],'staged')
