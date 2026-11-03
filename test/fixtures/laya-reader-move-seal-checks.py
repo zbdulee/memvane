@@ -28,11 +28,13 @@ spec.loader.exec_module(base)
 
 
 class MoveSealChecks(unittest.TestCase):
+    STATE_PARTS=('.local','state','memvane','3'*32)
+
     def setUp(self):
         self.helper=base.JournalReaderChecks('runTest')
         self.helper.setUp();self.addCleanup(self.helper.doCleanups)
         class PublishedInstall(base.published.MoveCase):
-            STATE_PARTS=('.local','state','memvane','3'*32)
+            STATE_PARTS=self.STATE_PARTS
             TEMP_DIR=str(Path('/tmp').resolve())
             TEMP_PREFIX=''
             PROVIDER_EXTRA={'serviceSocketPath':'{state}/runtime/laya-embed.sock'}
@@ -356,6 +358,133 @@ with _install_lock(Path(sys.argv[2])):
                 newFtsValid=new_matches,issued=seal is not None,error=error,liveUnchanged=self.live()==before)),flush=True)
             self.assertEqual(self.live(),before)
             self.assertIsNotNone(error,'prepared FTS damage must refuse issuance')
+            self.assertIsNone(seal)
+
+
+class StateMoveSealChecks(unittest.TestCase):
+    """Reuse seed/helpers without inheriting the seven project tests."""
+    STATE_PARTS=('.local','state','laya','3'*32)
+    setUp=MoveSealChecks.setUp
+    authority=MoveSealChecks.authority
+    producer=MoveSealChecks.producer
+    ro=staticmethod(MoveSealChecks.ro)
+    dump=MoveSealChecks.dump
+    live=MoveSealChecks.live
+
+    @contextmanager
+    def prepared_state(self):
+        mover=importlib.import_module('laya_state_move')
+        with self.authority(),self.helper.full_authority(self.case,self.reader,mover),ExitStack() as locks:
+            mover._locks(locks,self.case.project,self.case.state,home=self.case.home)
+            intent=mover._prepare(self.case.project,self.case.state,self.case.home)
+            self.assertEqual(mover._canonical(mover._load_intent(self.case.state,self.case.project)),
+                             mover._canonical(intent))
+            self.assertIsNotNone(intent['docs'],'actual completed sidecar must be bound in state intent')
+            yield mover,intent
+
+    def test_state_staging_under_shared_reader_retains_old_and_rebases_new_completed_sidecar(self):
+        stage,seal_type=self.producer()
+        with self.prepared_state() as (mover,intent):
+            before=self.live()
+            files_before=set(self.case.state.rglob('*'))
+            old_generation=self.case.head()[0]
+            originals={'catalog_path':self.case.catalog,'binding_path':self.case.store,'sidecar_path':self.sidecar}
+            logical={key:self.dump(path) for key,path in originals.items()}
+            with self.ro(self.sidecar) as db:
+                docs_before=db.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY path').fetchall()
+                fts_before=db.execute('SELECT path,title,body FROM docs_fts ORDER BY path').fetchall()
+            error,seal=None,None
+            with self.lease.reader_lifetime(self.install,exclusive=False):
+                try:seal=stage(intent,installer=self.installer)
+                except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='state-move-tuple-stage',error=error,issued=seal is not None,
+                ownerScope='actual-state-mover-locks',sharedLifetimeHeldDuringStage=True,
+                featureAbsence=error=='reader_move_stage_unsupported',liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertIsNone(error,'state staging feature RED follows real v5/owner/intent proof')
+            self.assertIs(type(seal),seal_type)
+            self.assertIs(type(seal.retained_endpoint),self.reader.VerifiedEndpoint)
+            self.assertEqual(seal.old_generation,old_generation)
+            self.assertRegex(seal.new_tuple_digest,r'^[0-9a-f]{64}$')
+            self.assertNotEqual(seal.new_tuple_digest,'0'*64)
+            self.assertNotEqual(seal.new_tuple_digest,seal.old_tuple_digest)
+            for key,source in originals.items():
+                retained=Path(seal.retained_endpoint.record[key])
+                self.assertNotEqual(retained,source)
+                self.assertEqual(retained.resolve(strict=True),retained)
+                self.assertTrue(retained.is_relative_to(self.case.state))
+                info=retained.lstat()
+                self.assertEqual((info.st_uid,info.st_nlink),(os.getuid(),1))
+                self.assertTrue(stat.S_ISREG(info.st_mode))
+                self.assertEqual(info.st_mode & 0o077,0)
+                self.assertEqual(self.dump(retained),logical[key])
+            with self.ro(seal.retained_endpoint.record['db_path']) as db:
+                bodies=db.execute('SELECT c.body FROM membership m JOIN content c ON c.hash=m.hash WHERE m.gen=?',
+                                  (seal.old_generation,)).fetchall()
+                self.assertEqual(len(bodies),3)
+                self.assertTrue(any('otter' in body for (body,) in bodies))
+            import laya_incremental_docs as incremental
+            new_identity=intent['newBuild']['identity']
+            self.assertEqual(new_identity['candidateDb'],json.loads(intent['newRoute'])['dbPath'])
+            matches=[]
+            # Locate staged SQLite by actual schema and metadata, never by
+            # a producer-specific directory/file naming convention.
+            for path in set(self.case.state.rglob('*'))-files_before:
+                if not path.is_file() or path.is_symlink():continue
+                with path.open('rb') as stream:header=stream.read(16)
+                if header!=b'SQLite format 3\x00':continue
+                with self.ro(path) as db:
+                    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if not {'meta','docs','docs_fts'}<=tables:continue
+                    meta=db.execute('SELECT * FROM meta').fetchall()
+                    if meta!=[incremental._expected_meta(new_identity)]:continue
+                    self.assertEqual(db.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY path').fetchall(),docs_before)
+                    self.assertEqual(db.execute('SELECT path,title,body FROM docs_fts ORDER BY path').fetchall(),fts_before)
+                    for row in docs_before:
+                        self.assertTrue(incremental._verified(new_identity,row[0],row[3]))
+                        self.assertEqual(row[4],new_identity['vectorProfileId'])
+                        self.assertGreater(row[5],0)
+                    matches.append(str(path))
+            print(json.dumps(dict(case='state-new-sidecar-material',candidateDb=new_identity['candidateDb'],
+                actualCompletedCopies=matches,rows=len(docs_before))),flush=True)
+            self.assertTrue(matches,'a real staged completed sidecar must name the new route/build candidate')
+            self.assertEqual(self.live(),before)
+
+    def test_state_staging_rejects_durable_docs_target_outside_the_new_route_build_identity(self):
+        stage,_seal_type=self.producer()
+        with self.prepared_state() as (mover,intent):
+            wrong=self.case.state/'wrong-candidate.sqlite'
+            wrong.touch(mode=0o600)
+            with closing(sqlite3.connect(self.case.db.as_uri()+'?mode=ro',uri=True)) as source, \
+                    closing(sqlite3.connect(wrong)) as destination:
+                source.backup(destination)
+            bad=copy.deepcopy(intent)
+            self.assertEqual(bad['docs'][1],bad['newBuild']['identity']['candidateDb'])
+            bad['docs'][1]=str(wrong)
+            intent_path=self.case.state/mover.INTENT
+            intent_path.write_bytes(mover._canonical(bad))
+            before=self.live();wrong_before=wrong.read_bytes()
+            validator_error=None
+            try:mover._load_intent(self.case.state,self.case.project)
+            except (ValueError,OSError,RuntimeError) as exc:validator_error=str(exc)
+            if validator_error is not None:
+                print(json.dumps(dict(case='state-docs-target-tamper',privateValidatorError=validator_error,
+                    producerRefusalNotClaimed=True)),flush=True)
+                self.assertEqual(self.live(),before)
+                self.assertEqual(wrong.read_bytes(),wrong_before)
+                return
+            error,seal=None,None
+            try:seal=stage(bad,installer=self.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='state-docs-target-tamper',wrongCandidate=str(wrong),
+                routeCandidate=json.loads(bad['newRoute'])['dbPath'],buildCandidate=bad['newBuild']['identity']['candidateDb'],
+                issued=seal is not None,error=error,featureAbsence=error=='reader_move_stage_unsupported',
+                liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertEqual(wrong.read_bytes(),wrong_before)
+            self.assertIsNotNone(error)
+            self.assertNotEqual(error,'reader_move_stage_unsupported',
+                'feature RED: unsupported state staging does not prove docs identity validation')
             self.assertIsNone(seal)
 
 
