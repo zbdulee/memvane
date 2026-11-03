@@ -211,10 +211,13 @@ def publish_move_reader(journal, *, seal):
 
 
 def resolve_retained(state, project, root, endpoint_id, record, attestation):
-    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    from laya_reader_lease import _require_reader_scope, _bind_reader_scope, _image
     scope = _require_reader_scope(record.get('install_id'))
     path = R._journal(Path(state)/R._JOURNAL)
     with R._readonly(path,path.parent) as db:
+        _bundle, selected, stored, _history, endpoints, _records, _seals = _image(db)
+        R._need(selected.preferred_endpoint == endpoint_id and stored == record
+                and endpoints[endpoint_id][1] == attestation, 'reader_selection_changed')
         data = validate_endpoint(db,endpoint_id,record,attestation)
         R._need(data['state'] == str(state) and data['project'] == str(project), 'reader_install_changed')
         _verify(data,attestation,root=root)
@@ -234,12 +237,14 @@ _persisted = weakref.WeakKeyDictionary()
 
 
 def recheck_persisted(endpoint):
+    from laya_reader_lease import _image
     R._need(endpoint in _persisted, 'reader_endpoint_not_issued')
     data = _persisted[endpoint]
     state,project,root,_options,packed,raw = R._issued[endpoint]
     R._need(packed == R._raw(data['record']) and endpoint.endpoint_id == data['endpoint_id'],
             'reader_endpoint_changed')
     with R._readonly(state/R._JOURNAL,state) as db:
+        _image(db)
         current = validate_endpoint(db,endpoint.endpoint_id,data['record'],raw)
         R._need(current == data, 'reader_move_seal_changed')
     return _verify(data,raw,root=root)
