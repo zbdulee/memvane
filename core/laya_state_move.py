@@ -685,8 +685,12 @@ def _locks(stack, project, state, *, home=None):
     from laya_fresh_wiki_origin import ROUTE
     try:
         queue = json.loads(_read(project_dir.folder(project) / ROUTE, 8192))['queuePath']
-    except Exception:
+    except Exception as exc:
+        if intent_present(state) or legacy_root(state, home):
+            raise StateMoveBlocked('state_move_route_unavailable') from exc
         queue = None
+    if not isinstance(queue, str) and (intent_present(state) or legacy_root(state, home)):
+        _fail('state_move_route_unavailable')
     if isinstance(queue, str):
         stack.enter_context(laya_wiki_discovery._locked(
             state / laya_wiki_discovery.lock_path(queue).name, DISCOVERY_WAIT_SECONDS))
