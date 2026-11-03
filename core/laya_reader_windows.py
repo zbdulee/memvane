@@ -430,6 +430,8 @@ class _OwnedSQLite(sqlite3.Connection):
                 transaction.after_execute(adopt, success=False)
             raise
         if transaction is not None:
+            if args[0] == 'BEGIN IMMEDIATE':
+                transaction.begun = True
             transaction.after_execute(adopt, success=True)
         return cursor
 
@@ -571,6 +573,7 @@ class _DeleteTransaction(_WriteTransaction):
         super().__init__(owner)
         self.journal_fd = None
         self.insert_allowed = False
+        self.begun = False
 
     def _hold(self):
         self.rollback_pending = True
@@ -667,10 +670,16 @@ class _DeleteTransaction(_WriteTransaction):
     def rollback(self):
         self._check()
         try:
-            self._binding()
+            if not self.begun and self.journal_fd is None and not self.owner.db.in_transaction:
+                # Admission failed before native BEGIN. No SQL or journal is
+                # ours to undo; an unrelated file cannot retain our cut.
+                self._finish()
+                self.owner.pending = False
+                return
+            _connection_binding(self.owner, self.owner.db, cleanup=True)
             if self.owner.db.in_transaction:
                 self.owner.db.rollback()
-            self._binding()
+            _connection_binding(self.owner, self.owner.db, cleanup=True)
             self._finish()
         except BaseException:
             self._hold()
@@ -760,13 +769,32 @@ def _auxiliary_nodes(path, state):
 
 def connection_binding(owner, db):
     """SQL-free proof of the issued handle's current named files and scope."""
+    return _connection_binding(owner, db)
+
+
+def _connection_binding(owner, db, *, cleanup=False):
     R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner
             and owner.db is not None and owner.auxiliaries is not None,
             'reader_connection_not_owned')
     owner.check()
     owner.lifetime.check()
-    _pid, installer, scope, node, _manifest = _component(owner.component)
-    endpoint, current = _owner(installer)
+    _pid, installer, scope, node, sealed_manifest = _component(owner.component)
+    if cleanup:
+        # Existing transaction completion grants no new write authority.
+        # Its independent lifetime and held locks survive mover revocation.
+        # Require the originally issued namespace, main and journal instead
+        # of reacquiring an already revoked writer scope.
+        endpoint = R._installer(installer)
+        R._need(scope.pid == os.getpid()
+                and R._node(scope.project) == scope.project_node
+                and R._node(scope.state) == scope.state_node,
+                'reader_connection_owner_changed')
+        R._need(_manifest(owner.component.install_id, owner.lifetime.parent,
+                    owner.lifetime.parent_fd, owner.lifetime.parent_info) == sealed_manifest,
+                'reader_windows_changed')
+        current = scope
+    else:
+        endpoint, current = _owner(installer)
     state = Path(endpoint.record['state'])
     actual = _auxiliary_nodes(owner.component.path, state)
     expected = (owner.transaction.binding_auxiliaries(actual)
