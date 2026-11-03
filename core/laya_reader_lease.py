@@ -49,20 +49,26 @@ def _named(install_id, parent, parent_fd, parent_info, fd):
     _need(os.path.samestat(info, named), 'reader_lifetime_changed')
 
 
-def _prepare_lifetime(install_id):
+def _prepare_lifetime(install_id, *, create=True):
     """Conversion writer prepares a stable lock before the v4 transaction."""
-    parent, parent_fd, parent_info = _parent(install_id, create=True)
+    _need(type(create) is bool, 'reader_lifetime_invalid')
+    parent, parent_fd, parent_info = _parent(install_id, create=create)
     try:
-        try:
-            fd = os.open('reader-lifetime.lock', os.O_RDWR | os.O_CREAT | os.O_EXCL |
-                         os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-        except FileExistsError:
+        if create:
+            try:
+                fd = os.open('reader-lifetime.lock', os.O_RDWR | os.O_CREAT | os.O_EXCL |
+                             os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+            except FileExistsError:
+                fd = os.open('reader-lifetime.lock', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent_fd)
+        else:
             fd = os.open('reader-lifetime.lock', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                          dir_fd=parent_fd)
         try:
             _named(install_id, parent, parent_fd, parent_info, fd)
-            os.fsync(fd)
-            os.fsync(parent_fd)
+            if create:
+                os.fsync(fd)
+                os.fsync(parent_fd)
             _named(install_id, parent, parent_fd, parent_info, fd)
         finally:
             os.close(fd)
@@ -92,6 +98,46 @@ def reader_lifetime(install_id, *, exclusive):
         os.close(parent_fd)
 
 
+def _image(db):
+    """Capture one complete immutable journal image, including its CAS prefix."""
+    bundle = reader.journal._row(db)
+    selected, stored = reader._selection(db)
+    transitions = tuple(db.execute('SELECT epoch,preferred_endpoint,previous_endpoint,transition_id '
+                                   'FROM reader_transitions ORDER BY epoch'))
+    endpoints = {row[0]: (row[1], row[2]) for row in db.execute(
+        'SELECT endpoint_id,record,attestation FROM read_endpoints')}
+    records = {key: reader._stored_endpoint(db, key) for key in endpoints}
+    _need(len(transitions) == selected.epoch, 'reader_selection_invalid')
+    previous = None
+    referenced = set()
+    for epoch, preferred, old, transition in transitions:
+        _need(old == previous and type(transition) is str
+              and reader.journal.ID.fullmatch(transition), 'reader_selection_invalid')
+        referenced.add(preferred)
+        previous = preferred
+    _need(tuple(row[0] for row in transitions) == tuple(range(1, selected.epoch + 1))
+          and transitions[-1] == (selected.epoch, selected.preferred_endpoint,
+                                  selected.previous_endpoint, selected.transition_id)
+          and referenced == set(endpoints), 'reader_selection_invalid')
+    return bundle, selected, stored, transitions, endpoints, records
+
+
+def _forward_image(before, after):
+    """Admit only an exact immutable prefix followed by reader-only CAS steps."""
+    old_bundle, old, old_stored, prefix, endpoints, _ = before
+    bundle, selected, _stored, transitions, current, records = after
+    _need(bundle == old_bundle and selected.epoch > old.epoch
+          and transitions[:len(prefix)] == prefix
+          and all(current.get(key) == value for key, value in endpoints.items()),
+          'reader_store_changed')
+    stable = ('scope', 'install_id', 'project', 'state', 'incarnation', 'project_node',
+              'state_node', 'attestation_sha256', 'profile', 'checkout_policy', 'settings', 'roots')
+    for key, record in records.items():
+        _need(all(record.get(name) == old_stored[name] for name in stable)
+              and current[key][1] == endpoints[old.preferred_endpoint][1],
+              'reader_install_changed')
+
+
 @contextmanager
 def resolve_endpoint(project, *, action, host_root):
     """Yield only the persisted preferred steady endpoint under lifetime SH."""
@@ -116,23 +162,36 @@ def resolve_endpoint(project, *, action, host_root):
               'reader_selection_changed')
         token = None
         try:
-            # The journal COW inode and transaction pin selection+endpoint as
-            # one complete image. Full evidence must agree with that image.
-            with reader._readonly(path, path.parent) as db:
-                bundle_row = journal._row(db)
-                _need(bundle_row['state'] in ('active', 'restored_old')
-                      and bundle_row['pending'] is None
-                      and bundle_row['selected']['installId'] == install_id,
-                      'reader_install_changed')
-                selected, stored = reader._selection(db)
-                _need(stored['install_id'] == install_id and stored['project'] == str(project)
-                      and stored['state'] == str(path.parent), 'reader_install_changed')
-                attestation = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
-                                         (selected.preferred_endpoint,)).fetchone()[0]
-                token = reader._persisted_endpoint(path.parent, project, host_root,
-                    selected.preferred_endpoint, stored, attestation)
-                _need(journal.select_route(str(project), action=action) == decision,
-                      'reader_selection_changed')
+            prior = None
+            for attempt in range(3):
+                node, image = reader._node(path), None
+                try:
+                    with reader._readonly(path, path.parent) as db:
+                        image = _image(db)
+                        bundle_row, selected, stored, _transitions, endpoints, _records = image
+                        _need(bundle_row['state'] in ('active', 'restored_old')
+                              and bundle_row['pending'] is None
+                              and bundle_row['selected']['installId'] == install_id,
+                              'reader_install_changed')
+                        _need(stored['install_id'] == install_id and stored['project'] == str(project)
+                              and stored['state'] == str(path.parent), 'reader_install_changed')
+                        if prior is not None:
+                            _forward_image(prior, image)
+                        token = reader._persisted_endpoint(path.parent, project, host_root,
+                            selected.preferred_endpoint, stored, endpoints[selected.preferred_endpoint][1])
+                        _need(journal.select_route(str(project), action=action) == decision,
+                              'reader_selection_changed')
+                    break
+                except ValueError as exc:
+                    if token is not None:
+                        reader._revoke_reader(token)
+                        token = None
+                    # A replaced name is insufficient. The next complete image
+                    # must prove a strict reader CAS extension of this snapshot.
+                    if (str(exc) != 'reader_store_changed' or image is None or
+                            reader._node(path) == node or attempt == 2):
+                        raise
+                    prior = image
             yield token
         finally:
             if token is not None:

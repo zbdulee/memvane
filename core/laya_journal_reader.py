@@ -441,9 +441,12 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
         locks.enter_context(_operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
         queue = Path(journal.select_route(str(project), action='recall')['queuePath'])
         _need(locks.enter_context(_owner_lock(queue)), 'sync_owner_busy')
-        locks.enter_context(_transition(proof['installId'], create=True))
+        version = journal.journal_version(path)
+        _need(version in (3, 4, 5), 'reader_schema_unknown')
+        locks.enter_context(_transition(proof['installId'], create=version != 5))
+        _need(journal.journal_version(path) == version, 'reader_selection_changed')
         from laya_reader_lease import _prepare_lifetime
-        _prepare_lifetime(proof['installId'])
+        _prepare_lifetime(proof['installId'], create=version != 5)
         if journal.journal_version(path) == 3:
             journal.convert_to_v4(path)
         if journal.journal_version(path) == 5:
