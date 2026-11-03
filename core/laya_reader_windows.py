@@ -445,6 +445,10 @@ class _OwnedSQLite(sqlite3.Connection):
             cursors = list(self._live_cursors.values())
             for cursor in cursors:
                 cursor.close()
+                # A custom factory may implement close as a pool return. Its
+                # successful override is not evidence of native reset. Keep
+                # failures pending, but confirm actual reset after success.
+                sqlite3.Cursor.close(cursor)
             super().close()
             self._native_closed = True
             self._live_cursors.clear()
