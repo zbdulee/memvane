@@ -175,6 +175,15 @@ def fenced_project(data, attestation, root):
             R._need(stores_swapped and db.execute('SELECT gen FROM head WHERE scope=?',
                     (historical['scope'],)).fetchone() == (data['new_generation'],),
                     'reader_move_prefix_unproved')
+            generation = intent['generation']
+            receipt = db.execute('SELECT scope,gen,source_manifest,claim_digest,claim_epoch '
+                                 'FROM receipts WHERE claim=?', (generation['claim'],)).fetchone()
+            candidate = db.execute('SELECT scope,base_gen,source_manifest,claim_digest,claim_epoch '
+                                   'FROM candidate_seals WHERE gen=?', (data['new_generation'],)).fetchone()
+            proof = (generation['manifest'], generation['claimDigest'], generation['claimEpoch'])
+            R._need(receipt == (historical['scope'], data['new_generation'], *proof)
+                    and candidate == (historical['scope'], generation['base'], *proof),
+                    'reader_move_publish_receipt_changed')
     if published:
         body, epoch = M._generation(Path(route['dbPath']), state, data['old_generation'],
                                     data['new_generation'], decision)
