@@ -9,7 +9,9 @@ and store-count reads are patched.
 from __future__ import annotations
 
 from contextlib import ExitStack, closing, nullcontext
+import fcntl
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -352,6 +354,90 @@ class CrashTests(MoveCase):
         results = self.run_worker()
         self.assertEqual(results[0]['status'], 'state_move_complete', results)
         self.assert_moved()
+
+
+class SyncOwnerRenameIdentityTests(MoveCase):
+    def _identity_probe(self, kind):
+        """Real moved directory/queue/lock; restore originals after exit checks."""
+        import laya_state_move as mover
+        case = MoveCase('runTest')
+        stack = ExitStack()
+        saved = changed = None
+        probe_fd = None
+        renamed = False
+        try:
+            case.setUp()
+            mover._ensure_base(case.home)
+            kwargs = {'home': case.home} if 'home' in inspect.signature(mover._locks).parameters else {}
+            mover._locks(stack, case.project, case.state, **kwargs)
+            original_dir = (case.state.stat().st_dev, case.state.stat().st_ino)
+            queue = case.state / case.queue.name
+            original_queue = (queue.stat().st_dev, queue.stat().st_ino)
+            old_lock = Path(str(queue) + '.sync.lock')
+            original_lock = (old_lock.stat().st_dev, old_lock.stat().st_ino)
+            os.rename(case.state, case.target)
+            renamed = True
+            self.assertEqual((case.target.stat().st_dev, case.target.stat().st_ino), original_dir)
+            queue = case.target / case.queue.name
+            lock = Path(str(queue) + '.sync.lock')
+            self.assertEqual((queue.stat().st_dev, queue.stat().st_ino), original_queue)
+            self.assertEqual((lock.stat().st_dev, lock.stat().st_ino), original_lock)
+            probe_fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if kind in ('queue', 'lock'):
+                changed = queue if kind == 'queue' else lock
+                saved = changed.with_name(changed.name + '.identity-probe-original')
+                contents = changed.read_bytes()
+                changed.rename(saved)
+                changed.write_bytes(contents)
+                changed.chmod(0o600)
+                self.assertFalse(os.path.samestat(changed.stat(), saved.stat()))
+                self.assertEqual(saved.read_bytes(), contents)
+            else:
+                self.assertEqual(kind, 'old-root-symlink')
+                case.state.symlink_to(case.target, target_is_directory=True)
+                self.assertTrue(case.state.is_symlink())
+            error = None
+            try:
+                stack.close()
+            except (ValueError, OSError, RuntimeError) as exc:
+                error = str(exc)
+            print(json.dumps(dict(case='state-move-sync-owner-identity',variant=kind,
+                actualLocksAcquired=True,actualDirectoryRename=True,
+                originalDirectoryNode=original_dir,originalQueueNode=original_queue,
+                originalLockNode=original_lock,
+                originalLockProbeFdNode=[os.fstat(probe_fd).st_dev,os.fstat(probe_fd).st_ino],
+                targetDirectoryNode=[case.target.stat().st_dev,case.target.stat().st_ino],
+                targetQueueNode=[queue.stat().st_dev,queue.stat().st_ino],
+                targetLockNode=[lock.stat().st_dev,lock.stat().st_ino],error=error)),flush=True)
+            self.assertIsNotNone(error,'moved owner scope must reject replaced queue/lock or revived symlink')
+            self.assertRegex(error,r'^sync_owner_(?:lock_unavailable|identity_changed|path_changed)$')
+        finally:
+            # ExitStack drains every owned lock even when its exit validation
+            # raises. Restore original inodes only after that observation.
+            try:
+                stack.close()
+            finally:
+                if probe_fd is not None:
+                    os.close(probe_fd)
+                if saved is not None and saved.exists():
+                    changed.unlink()
+                    saved.rename(changed)
+                if renamed:
+                    if case.state.is_symlink():
+                        case.state.unlink()
+                    if case.target.exists():
+                        os.rename(case.target, case.state)
+                case.doCleanups()
+
+    def test_state_rename_owner_exit_rejects_replaced_target_queue(self):
+        self._identity_probe('queue')
+
+    def test_state_rename_owner_exit_rejects_replaced_lock_and_revived_old_root(self):
+        for kind in ('lock', 'old-root-symlink'):
+            with self.subTest(kind=kind):
+                self._identity_probe(kind)
 
 
 class JournalTests(MoveCase):
