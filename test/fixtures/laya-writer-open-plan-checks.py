@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import sys
 import threading
 import unittest
@@ -147,6 +148,54 @@ class WriterOpenPlanChecks(unittest.TestCase):
                 module.validate_writer_plan(plan)
             emit('writer-plan-after-exclusion', installId=plan.install_id, contentConnects=calls)
             self.assertEqual(calls, [])
+
+
+    def test_independent_reader_base_selection_does_not_rebind_the_canonical_writer(self):
+        with self.seed.prepared():
+            self.W.prepare_windows(self.seed.installer)
+            reader=self.seed.reader
+            alternate=self.seed.helper.alternate(self.case,reader,self.seed.installer,'writer-plan-reader-copy.sqlite')
+            self.content.add(Path(alternate.record['db_path']))
+            current=reader.read_selection(self.case.journal)
+            selected=reader.cas_reader(self.case.journal,expected_epoch=current.epoch,
+                expected_endpoint=current.preferred_endpoint,target=alternate,transition_id='d'*32)
+            decision=self.route.select_route(str(self.case.project),action='update')
+            proof=self.J.verify_selected_route_for_write(decision)
+            self.assertTrue(proof['productRouteAllowed'])
+            self.assertEqual(decision['dbPath'],str(self.case.db))
+            module=self.api();error=None
+            with self.traced() as calls:
+                try:
+                    plan=module.capture_writer_plan(self.case.project,executing_root=self.case.plugin)
+                    module.validate_writer_plan(plan)
+                except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            emit('separate-reader-and-writer-base',readerEpoch=selected.epoch,
+                readerBase=alternate.record['db_path'],writerBase=decision['dbPath'],
+                writerProofAccepted=True,error=error,contentConnects=calls)
+            self.assertIsNone(error,'legal reader base CAS must not block canonical writer planning')
+            self.assertEqual(calls,[])
+
+    def test_same_path_execution_root_replacement_invalidates_plan_and_restore_validates(self):
+        with self.seed.prepared():
+            self.W.prepare_windows(self.seed.installer);module=self.api()
+            plan=module.capture_writer_plan(self.case.project,executing_root=self.case.plugin)
+            saved=self.case.plugin.with_name(self.case.plugin.name+'-saved-writer-plan')
+            original=self.case.plugin.stat();os.rename(self.case.plugin,saved)
+            try:
+                shutil.copytree(saved,self.case.plugin)
+                self.assertFalse(os.path.samestat(original,self.case.plugin.stat()))
+                error=None
+                with self.traced() as calls:
+                    try:module.validate_writer_plan(plan)
+                    except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+                emit('execution-root-node-replacement',error=error,contentConnects=calls)
+                self.assertIsNotNone(error)
+                self.assertIn('writer_plan_changed',error)
+                self.assertEqual(calls,[])
+            finally:
+                if self.case.plugin.exists():shutil.rmtree(self.case.plugin)
+                os.rename(saved,self.case.plugin)
+            module.validate_writer_plan(plan)
 
 
 if __name__ == '__main__': unittest.main()
