@@ -5,12 +5,14 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'core'))
@@ -38,6 +40,19 @@ try:
     with sync_owner(Path(sys.argv[2])) as owner:
         result=dict(acquired=owner is not None,error=None)
 except IndexContractError as exc:result=dict(acquired=False,error=str(exc))
+print(json.dumps(result),flush=True)
+'''
+
+ENGINE_PROBE=r'''
+import json,signal,sys
+from pathlib import Path
+signal.alarm(8)
+sys.path.insert(0,sys.argv[1])
+try:
+    import laya_index_sync as sync
+    with sync._owner_lock(Path(sys.argv[2])) as owned:
+        result=dict(owned=owned,exactBool=type(owned) is bool,error=None,module=sync.__file__)
+except Exception as exc:result=dict(owned=False,error=type(exc).__name__+': '+str(exc))
 print(json.dumps(result),flush=True)
 '''
 
@@ -231,5 +246,38 @@ class SyncLeaseChecks(unittest.TestCase):
                 self.assertIs(observed,marker)
                 with sync.sync_owner(self.queue) as fresh:self.assertIsNotNone(fresh)
                 self.assertTrue(self.probe())
+
+    def test_fixed_engine_artifacts_acquire_legacy_owner_without_full_plugin_dependencies(self):
+        self.api()
+        from laya_product_bundle import ARTIFACTS
+        core=self.home/'isolated-engine-core';core.mkdir(mode=0o700)
+        for name in ARTIFACTS:shutil.copyfile(ROOT/'core'/name,core/name)
+        self.assertFalse((core/'laya_journal_paths.py').exists())
+        result=subprocess.run([sys.executable,'-B','-I','-c',ENGINE_PROBE,str(core),str(self.queue)],
+            encoding='utf8',capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        observed=json.loads(result.stdout)
+        emit('isolated-fixed-engine-sync-owner',**observed)
+        self.assertIsNone(observed['error'])
+        self.assertIs(observed['owned'],True);self.assertIs(observed['exactBool'],True)
+        self.assertEqual(Path(observed['module']).parent,core)
+
+    def test_anchor_fixture_namespace_rejects_non_temp_alias_and_non_private_root_before_create(self):
+        from laya_package import sync_owner_directory
+        runtime=self.home/'private-runtime';runtime.mkdir(mode=0o700)
+        spoof=self.home/'unused-home'
+        with mock.patch.dict(os.environ,dict(MEMVANE_TEST_RUNTIME_ROOT=str(runtime),HOME=str(spoof))):
+            parent=sync_owner_directory(create=True)
+            self.assertEqual(parent,runtime/'memvane-journal'/'sync-owner-locks')
+            self.assertFalse(spoof.exists())
+        alias=self.home/'runtime-alias';alias.symlink_to(runtime)
+        public=self.home/'public-runtime';public.mkdir(mode=0o755);public.chmod(0o755)
+        for rejected in (ROOT,alias,public):
+            with self.subTest(root=str(rejected)),mock.patch.dict(os.environ,
+                    dict(MEMVANE_TEST_RUNTIME_ROOT=str(rejected))):
+                with self.assertRaises(ValueError):sync_owner_directory(create=True)
+        self.assertFalse((public/'memvane-journal').exists())
+        emit('sync-anchor-test-root-boundary',homeIgnored=True,nonTempRejected=True,
+            symlinkRejected=True,nonPrivateRejectedBeforeCreate=True)
 
 if __name__=='__main__':unittest.main(verbosity=2)

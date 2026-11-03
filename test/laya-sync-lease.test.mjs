@@ -17,6 +17,6 @@ test('issued sync leases preserve real kernel exclusion and lexical authority', 
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 6 tests\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, /Ran 8 tests\b/);assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });
