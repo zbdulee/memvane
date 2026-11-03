@@ -71,6 +71,7 @@ def _capacity_prefix(data, intent, route, *, moved):
         matches(catalog, state, 'new-catalog.sqlite')
         with R._readonly(catalog, state) as db:
             M._catalog_scan(db, bound)
+    return node != old_node
 
 
 def fenced_project(data, attestation, root):
@@ -83,6 +84,7 @@ def fenced_project(data, attestation, root):
     import laya_fresh_wiki_origin as fresh
     import laya_initial_build as build
     import laya_index_host_route as host
+    import laya_move_read_seal as M
     from laya_index_a import LayaIndexA
     from laya_index_claim_queue import ClaimQueue
     from laya_ledger_common import refuse_qmd_origin
@@ -157,16 +159,26 @@ def fenced_project(data, attestation, root):
     path = Path(historical['db_path'])
     R._need(str(path) == ledger['candidateDb'] and R._file(path, state)
             == ledger['candidateIdentity'] == historical['db_node'], 'reader_move_prefix_unproved')
-    _capacity_prefix(data, intent, route, moved=folder == new)
+    stores_swapped = _capacity_prefix(data, intent, route, moved=folder == new)
     R._need(route['dbPath'] == historical['db_path'] and route['scopeId'] == historical['scope']
             and route['dbIncarnation'] == historical['incarnation'], 'reader_move_source_changed')
     with R._readonly(Path(route['dbPath']), state) as db:
         LayaIndexA._check_header(db)
         R._need(db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
                 == (historical['incarnation'],), 'reader_incarnation_changed')
-        R._need(db.execute('SELECT scope,state FROM generations WHERE gen=?',
-                (data['new_generation'],)).fetchone() == (historical['scope'], 'prepared'),
+        target = db.execute('SELECT scope,state FROM generations WHERE gen=?',
+                            (data['new_generation'],)).fetchone()
+        R._need(target in ((historical['scope'], 'prepared'), (historical['scope'], 'published')),
                 'reader_move_prefix_unproved')
+        published = target[1] == 'published'
+        if published:
+            R._need(stores_swapped and db.execute('SELECT gen FROM head WHERE scope=?',
+                    (historical['scope'],)).fetchone() == (data['new_generation'],),
+                    'reader_move_prefix_unproved')
+    if published:
+        body, epoch = M._generation(Path(route['dbPath']), state, data['old_generation'],
+                                    data['new_generation'], decision)
+        R._need(body == data['body_digest'] and epoch == data['exclusion_epoch'], 'reader_move_pin_changed')
     with R._readonly(Path(route['queuePath']), state) as db:
         R._need(ClaimQueue._check_database(db) == historical['incarnation'], 'queue_incarnation_mismatch')
     # The unchanged source descriptor is historical; every live path above is

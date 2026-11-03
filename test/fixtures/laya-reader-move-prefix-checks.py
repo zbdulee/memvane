@@ -454,18 +454,23 @@ class MovePrefixChecks(unittest.TestCase):
                       and before['catalogAuxNodes']['-shm']==after['catalogAuxNodes']['-shm'])
         if existing_shm:comparable['state'][shm]=before['state'][shm]
         published_physical_changes=None
+        published_new_files=None
+        published_removed_files=None
         query_new_files=None
         if published_prefix:
             physical_after=physical_state()
+            published_new_files=sorted(set(physical_after)-set(published_physical_before))
+            published_removed_files=sorted(set(published_physical_before)-set(physical_after))
             published_physical_changes=[]
+            known_shm={case.db.name+'-shm',case.catalog.name+'-shm'}
             for path in sorted(set(published_physical_before)|set(physical_after)):
                 original=published_physical_before.get(path);current=physical_after.get(path)
-                same_existing_shm=(path.endswith('-shm') and original is not None and current is not None
+                same_existing_shm=(path in known_shm and original is not None and current is not None
                                    and original[1]==current[1])
                 if original!=current and not same_existing_shm:published_physical_changes.append(path)
             for path,original in query_physical_before.items():
                 current=physical_after.get(path)
-                if (path.endswith('-shm') and current is not None and original[1]==current[1]
+                if (path in known_shm and current is not None and original[1]==current[1]
                         and path in before['state'] and path in after['state']):
                     comparable['state'][path]=before['state'][path]
             query_new_files=sorted(set(physical_after)-set(query_physical_before))
@@ -477,7 +482,9 @@ class MovePrefixChecks(unittest.TestCase):
             mutation=mutation_evidence,queryUnchanged=unchanged,queryChangedPaths=changed,
             existingShmConcurrencyOnly=existing_shm and changed==[['state',shm]],
             semanticFTSSucceeded=result.returncode==0 and observed is not None and observed.get('ftsRows',0)>0,
-            closedWriterPhysicalChangedPaths=published_physical_changes,queryNewFiles=query_new_files,
+            closedWriterPhysicalChangedPaths=published_physical_changes,
+            closedWriterNewFiles=published_new_files,closedWriterRemovedFiles=published_removed_files,
+            queryNewFiles=query_new_files,
             catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
         if mutation=='catalog-scope-nul':
