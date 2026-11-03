@@ -556,6 +556,7 @@ def write_transaction(owner, *, visible, deadline):
         if visible:
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=True, deadline=deadline))
+        R._need(time.monotonic() < deadline, 'reader_write_deadline')
         owner.db.execute('BEGIN IMMEDIATE')
         yield transaction
         if owner.transaction is transaction:
