@@ -96,21 +96,47 @@ def _snapshot(project, executing_root):
         for key in ('installId', 'pluginRoot', 'generation', 'vectorProfile',
                     'bundleManifestSha256', 'ownershipManifestSha256'):
             R._need(route[key] == decision[key] == selected[key], 'writer_plan_route_changed')
-        R._need(record['db_path'] == route['dbPath'] == decision['dbPath']
+        R._need(route['dbPath'] == decision['dbPath']
                 and route['queuePath'] == decision['queuePath'], 'writer_plan_binding_changed')
         attestation, attestation_sha = J._attestation(path)
         R._need(attestation is not None and attestation_sha == bundle['provider_attestation_sha']
                 and attestation_sha == record['attestation_sha256'], 'writer_plan_attestation_changed')
         for key in ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile'):
             R._need(attestation[key] == selected[key], 'writer_plan_attestation_changed')
+        # A reader may legally select an equivalent staged base. Writer paths
+        # come from the active install ledger/build, independently of that CAS.
+        import laya_fresh_wiki_origin as fresh
+        import laya_initial_build as build
+        ledger = fresh._load(state / fresh.LEDGER)
+        built = build.read(state)
+        R._need(built is not None and ledger['phase'] == 'active'
+                and ledger['projectRoot'] == str(project) and ledger['journalPath'] == str(path)
+                and ledger['routeSha256'] == digest
+                and ledger['attestationSha256'] == attestation_sha
+                and ledger['providerFileIdentitySha256'] == R._sha(R._raw(bundle['provider_file_identity']))
+                and ledger['scope'] == decision['scopeId']
+                and ledger['candidateIncarnation'] == decision['dbIncarnation']
+                and ledger['vectorProfileId'] == decision['vectorProfile']['profileId']
+                and ledger['candidateDb'] == decision['dbPath']
+                and ledger['queueDb'] == decision['queuePath'], 'writer_plan_binding_changed')
+        identity = built['identity']
+        for key, expected in (('projectRoot', str(project)), ('stateRoot', str(state)),
+                ('installId', record['install_id']), ('scopeId', decision['scopeId']),
+                ('candidateDb', ledger['candidateDb']), ('queueDb', ledger['queueDb']),
+                ('catalogDb', ledger['catalogDb']), ('bindingStore', ledger['bindingStore']),
+                ('dbIncarnation', decision['dbIncarnation']),
+                ('vectorProfileId', ledger['vectorProfileId'])):
+            R._need(identity[key] == expected, 'writer_plan_build_changed')
         components = {}
-        for role, prefix in (('base', 'db'), ('catalog', 'catalog'), ('binding', 'binding')):
-            location = Path(record[prefix + '_path'])
+        fields = (('base', 'candidateDb', 'candidateIdentity'),
+                  ('queue', 'queueDb', 'queueIdentity'),
+                  ('catalog', 'catalogDb', 'catalogIdentity'),
+                  ('binding', 'bindingStore', 'bindingStoreIdentity'))
+        for role, field, node_field in fields:
+            location = Path(ledger[field])
             node = R._file(location, state)
-            R._need(node == record[prefix + '_node'], 'writer_plan_component_changed')
+            R._need(node == ledger[node_field], 'writer_plan_component_changed')
             components[role] = dict(path=str(location), node=node)
-        queue = Path(decision['queuePath'])
-        components['queue'] = dict(path=str(queue), node=R._file(queue, state))
         from laya_incremental_docs import FILE
         sidecar = Path(record['sidecar_path'])
         R._need(sidecar == state / FILE, 'writer_plan_component_changed')
@@ -119,7 +145,8 @@ def _snapshot(project, executing_root):
         R._need(len({row['path'] for row in components.values()}) == len(components),
                 'writer_plan_component_changed')
         manifest = _manifest(record['install_id'])
-        return dict(project=str(project), executing_root=str(root), decision=decision,
+        return dict(project=str(project), executing_root=str(root), executing_root_node=R._node(root),
+                    decision=decision, ledger=ledger, build_identity=identity,
                     bundle=bundle, endpoint=record, reader_epoch=selection.epoch,
                     endpoint_id=selection.preferred_endpoint, components=components,
                     manifest=manifest, attestation_sha=attestation_sha)
