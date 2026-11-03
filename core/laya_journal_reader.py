@@ -20,6 +20,7 @@ from laya_product_install import _install_lock, _read_private
 _JOURNAL = 'install-journal.sqlite'
 _MAX_IMAGE = 16 * 1024 * 1024
 _issued = weakref.WeakKeyDictionary()
+_read_only = weakref.WeakSet()
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -261,6 +262,32 @@ def _endpoint(state, project, root, options):
     return token, proof
 
 
+def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
+    """Reissue a persisted reader after current full proof, without CAS authority."""
+    _need(isinstance(stored, dict) and type(stored.get('creation_epoch')) is int
+          and stored['creation_epoch'] >= 1, 'reader_endpoint_invalid')
+    options = dict(target=stored.get('db_path'), catalog=stored.get('catalog_path'),
+                   binding=stored.get('binding_path'), side=stored.get('sidecar_path'))
+    current, raw, proof = _evidence(state, project, root, **options)
+    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
+    current['creation_epoch'] = stored['creation_epoch']
+    packed = _raw(current)
+    _need(packed == _raw(stored) and raw == attestation and
+          endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed),
+          'reader_endpoint_changed')
+    token = object.__new__(VerifiedEndpoint)
+    object.__setattr__(token, 'endpoint_id', endpoint_id)
+    object.__setattr__(token, 'record', _freeze(current))
+    _issued[token] = (Path(state), Path(project), Path(root), options, packed, raw)
+    _read_only.add(token)
+    return token
+
+
+def _revoke_reader(endpoint):
+    _issued.pop(endpoint, None)
+    _read_only.discard(endpoint)
+
+
 def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
     state, project, root, options, packed, raw = _issued[endpoint]
@@ -415,6 +442,8 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
         queue = Path(journal.select_route(str(project), action='recall')['queuePath'])
         _need(locks.enter_context(_owner_lock(queue)), 'sync_owner_busy')
         locks.enter_context(_transition(proof['installId'], create=True))
+        from laya_reader_lease import _prepare_lifetime
+        _prepare_lifetime(proof['installId'])
         if journal.journal_version(path) == 3:
             journal.convert_to_v4(path)
         if journal.journal_version(path) == 5:
@@ -541,6 +570,8 @@ def mutate_image(journal_path, operation):
 def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
                target: VerifiedEndpoint, transition_id: str) -> ReaderSelection:
     path = _journal(journal)
+    _need(type(target) is not VerifiedEndpoint or target not in _read_only,
+          'reader_endpoint_read_only')
     _need(type(target) is VerifiedEndpoint and target in _issued and
           _issued[target][0] == path.parent, 'reader_endpoint_not_issued')
     _need(type(expected_epoch) is int and expected_epoch >= 1 and type(expected_endpoint) is str

@@ -29,6 +29,8 @@ sys.path.insert(0,sys.argv[1])
 import laya_reader_lease as lease
 signal.alarm(12)
 try:
+    if sys.argv[3]=='prepare':
+        lease._prepare_lifetime(sys.argv[2])
     with lease.reader_lifetime(sys.argv[2],exclusive=sys.argv[3]=='exclusive'):
         print(json.dumps(dict(state='held')),flush=True)
         if sys.argv[3]=='hold':
@@ -68,7 +70,9 @@ class ReaderLeaseChecks(unittest.TestCase):
         try:
             self.assertTrue(select.select([process.stdout],[],[],5)[0],'lease child readiness timeout')
             line=process.stdout.readline()
-            self.assertTrue(line,'lease child setup failed: '+process.stderr.read())
+            if not line:
+                _,error=process.communicate(timeout=3)
+                self.fail('lease child setup failed: '+error)
             yield process,json.loads(line)
         finally:
             if process.poll() is None:
@@ -106,6 +110,7 @@ class ReaderLeaseChecks(unittest.TestCase):
         api=self.api()
         with self.child('hold') as (process,row):
             self.assertEqual(row,dict(state='held'))
+            self.assertIsNone(process.poll(),'shared lock control must still be alive')
             with self.assertRaisesRegex(ValueError,'reader_lifetime_busy'):
                 with api.reader_lifetime(self.install,exclusive=True):pass
             process.kill()
@@ -146,6 +151,15 @@ class ReaderLeaseChecks(unittest.TestCase):
                 with self.assertRaises((ValueError,OSError)):
                     with api.reader_lifetime(self.install,exclusive=False):pass
             finally:path.unlink();saved.rename(path)
+
+    def test_conversion_lock_initializer_refuses_an_actual_fifo_without_waiting_for_a_writer(self):
+        self.api();path=self.path();saved=path.with_name('saved-lifetime.lock')
+        path.rename(saved);os.mkfifo(path,0o600)
+        try:
+            with self.child('prepare') as (process,row):
+                self.assertEqual(row['state'],'refused')
+                self.assertEqual(process.wait(timeout=3),0)
+        finally:path.unlink();saved.rename(path)
 
     def test_real_flock_then_path_inode_replacement_is_refused(self):
         api=self.api();path=self.path();saved=path.with_name('replaced-lifetime.lock')
