@@ -2523,8 +2523,47 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     return None
 
 
+def _serve_qa_stdin(action, host, fallback_cwd):
+    """Reserved preflight only: no settle, serving, learning or wake path."""
+    from laya_bridge_observer import qa_hook_reply, qa_session_start
+    payload, decision = {}, {}
+    try:
+        raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
+        if len(raw) > MAX_HOOK_BYTES:
+            raise ValueError('reader_hosts_pending')
+        payload = json.loads(raw.decode('utf8'))
+        if not isinstance(payload, dict):
+            raise ValueError('reader_hosts_pending')
+        cwd = payload.get('cwd', fallback_cwd)
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError('reader_hosts_pending')
+        decision = select_route(cwd, action=action)
+    except Exception:
+        payload, decision = {}, {}
+    root = Path(__file__).resolve().parents[1]
+    if action == 'recall':
+        try:
+            answer = qa_hook_reply(payload, host, decision, root)
+        except Exception:
+            answer = None
+        if not isinstance(answer, dict) or answer.get('decision') != 'block':
+            answer = {'decision': 'block', 'reason': 'MemVane bridge preflight'}
+        print(json.dumps(answer, ensure_ascii=True, allow_nan=False, separators=(',', ':')), flush=True)
+        return 0
+    if qa_session_start(payload, host, decision, root):
+        print('{}', flush=True)
+        return 0
+    print('[memvane] reader_hosts_pending; request refused', file=sys.stderr)
+    return 3
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if len(args) == 4 and args[0] == 'serve-qa-stdin':
+        _, action, host, fallback_cwd = args
+        if action not in ('recall', 'update-queued'):
+            return 2
+        return _serve_qa_stdin(action, host, fallback_cwd)
     if len(args) == 4 and args[0] == "serve-stdin":
         _, action, host, fallback_cwd = args
         payload_file = None

@@ -139,6 +139,27 @@ def _cleanup(process, owned):
             pass
 
 
+def _finish_after_ack(process, selector, deadline, output_bytes):
+    """Let the hook print its block and the CLI reap it before owned cleanup."""
+    while time.monotonic() < deadline:
+        for key, _events in selector.select(0.02):
+            data = os.read(key.fileobj.fileno(), 4096)
+            if not data:
+                selector.unregister(key.fileobj)
+                continue
+            output_bytes += len(data)
+            if output_bytes > 131072:
+                _refuse()
+        code = process.poll()
+        if code is not None and not selector.get_map():
+            # A native CLI may represent the intended hook block as nonzero.
+            # A signal or an unfinished root never constitutes completion.
+            if code < 0:
+                _refuse()
+            return
+    _refuse()
+
+
 def observe_registered_hook(challenge, host):
     directory, _nonce = B._issued(challenge, B.BridgeChallenge)
     registry = B._load_challenge(directory)
@@ -232,6 +253,8 @@ def observe_registered_hook(challenge, host):
                                 _refuse()
                             descendant_chain(pid, root)
                             _send(peer, dict(ack=True))
+                            selector.unregister(server)
+                            _finish_after_ack(process, selector, deadline, output_bytes)
                             return result
                     else:
                         data = os.read(key.fileobj.fileno(), 4096)
@@ -310,27 +333,33 @@ def emit_registered_hook(challenge_id, host, observation, session_id):
             _refuse()
 
 
-def _qa_envelope(payload, host, decision, root):
-    import re
+def _qa_context(payload, host, decision, root):
     import laya_install_journal as J
     ident = os.environ.get('MEMVANE_BRIDGE_PREFLIGHT', '')
     if not B._ID.fullmatch(ident) or host not in ('claude','codex') or not isinstance(payload,dict):
-        _refuse()
-    match = re.fullmatch(r'\[memvane-bridge-preflight ([0-9a-f]{32}) ([0-9a-f]{64})\]', payload.get('prompt',''))
-    if not match or match[1] != ident:
         _refuse()
     registry = B._load_challenge(B._registry() / ident)
     state, root = Path(registry['state']), Path(root)
     info = J.inspect_journal(state / 'install-journal.sqlite')
     proof = inspect_full_plugin_candidate(str(root))
-    if (host not in registry['expected_hosts'] or B._sha(match[2].encode('ascii')) != registry['nonce_sha256']
-            or J.journal_version(state / 'install-journal.sqlite') != 4
+    if (host not in registry['expected_hosts'] or J.journal_version(state / 'install-journal.sqlite') != 4
             or decision.get('state') != 'candidate' or decision.get('journalPath') != str(state / 'install-journal.sqlite')
             or payload.get('cwd') != info['projectRoot'] or root.resolve(strict=True) != root
-            or proof['pluginRoot'] != str(root) or proof['sourceCommit'] != registry['release_commit']):
+            or proof['pluginRoot'] != str(root) or proof['sourceCommit'] != registry['release_commit']
+            or not isinstance(info.get('selected'),dict)
+            or proof['bundleManifestSha256'] != info['selected']['bundleManifestSha256']):
+        _refuse()
+    return ident, registry, proof
+
+
+def _qa_envelope(payload, host, decision, root):
+    import re
+    ident, registry, proof = _qa_context(payload, host, decision, root)
+    match = re.fullmatch(r'\[memvane-bridge-preflight ([0-9a-f]{32}) ([0-9a-f]{64})\]', payload.get('prompt',''))
+    if not match or match[1] != ident or B._sha(match[2].encode('ascii')) != registry['nonce_sha256']:
         _refuse()
     return dict(observed_challenge_id=ident, observed_nonce_sha256=registry['nonce_sha256'],
-                plugin_root=str(root), release_commit=proof['sourceCommit'],
+                plugin_root=str(Path(root)), release_commit=proof['sourceCommit'],
                 manifest_sha256=proof['bundleManifestSha256'], hook_stage='registered-v4')
 
 
@@ -350,7 +379,7 @@ def qa_session_start(payload, host, decision, root):
     if 'MEMVANE_BRIDGE_PREFLIGHT' not in os.environ:
         return False
     try:
-        _qa_envelope(payload, host, decision, root)
+        _qa_context(payload, host, decision, root)
         return True
     except (ValueError, OSError, KeyError, TypeError):
         return False
