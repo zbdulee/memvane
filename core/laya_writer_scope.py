@@ -6,6 +6,7 @@ or all-writer cohort proof. Operational workers do not select this path yet.
 """
 from contextlib import ExitStack
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import threading
@@ -42,6 +43,7 @@ def _record(writer):
     context, snapshot = record['context'], record['snapshot']
     context._creator()
     R._need(not context.finished and context.entered, 'normal_writer_expired')
+    R._need(not record.get('transitioning', False), 'normal_writer_transitioning')
     decision = snapshot['decision']
     R._need(writer.install_id == decision['installId']
             and writer.queue_path == Path(snapshot['components']['queue']['path'])
@@ -229,3 +231,83 @@ class _NormalWriterContext:
 def normal_writer_scope(plan, *, queue_owner, deadline):
     """Issue base/queue admission after an owned, approved full write proof."""
     return _NormalWriterContext(plan, queue_owner, deadline)
+
+
+def _idle_connections(context):
+    for owner in list(W._owned.values()):
+        if W._component(owner.component)[2] is not context:
+            continue
+        owner.check()
+        R._need(owner.db is not None and not owner.pending and owner.transaction is None
+                and not owner.db.in_transaction, 'normal_writer_snapshot_busy')
+        R._need(all(cursor._window_closed or cursor._window_exhausted
+                    for cursor in list(owner.db._live_cursors.values())),
+                'normal_writer_snapshot_busy')
+
+
+def _prove_plan(context, plan):
+    with P.writer_proof_windows(plan, queue_owner=context.queue_owner,
+                                deadline=context.deadline) as window:
+        with J.writer_identity_reads(window):
+            snapshot = P._plan_record(plan)[1]
+            proof = J.verify_selected_route_for_write(snapshot['decision'])
+        P.validate_writer_proof_window(window)
+        _approved(proof, snapshot)
+    return proof
+
+
+def mark_new_write(writer):
+    """Commit first-write intent and reprove the same normal writer admission.
+
+    A committed mark is forward-only. Reproof failure revokes this token;
+    existing native handles retain cleanup-only ownership and their pins.
+    """
+    validate_normal_writer(writer)
+    record = _record(writer)
+    if record.get('marked', False):
+        return json.loads(R._raw(record['proof']))
+    context, old = record['context'], record['snapshot']
+    _idle_connections(context)
+    record['transitioning'] = True
+    try:
+        _prove_plan(context, context.plan)
+        path = Path(old['decision']['journalPath'])
+
+        def mark(image):
+            # The reader CAS has its own epoch. Check its complete selected
+            # premise inside the same image-writer lock as the bundle mark.
+            row = J._row(image)
+            selection, endpoint = R._selection(image)
+            R._need(J._canon(row) == J._canon(old['bundle'])
+                    and selection.epoch == old['reader_epoch']
+                    and selection.preferred_endpoint == old['endpoint_id']
+                    and R._raw(endpoint) == R._raw(old['endpoint']),
+                    'normal_writer_intent_premise_changed')
+            R._need(row['state'] == 'active' and row['selected'] is not None,
+                    'normal_writer_intent_unavailable')
+            validate_sync_owner(context.queue_owner, context.plan.queue_path)
+            R._need(time.monotonic() < context.deadline, 'normal_writer_deadline')
+            return J._mutate_row(image, path, row, old['bundle']['epoch'],
+                                 lambda _path, _row: {'new_write_seen': 1})
+
+        R.mutate_image(path, mark)
+        plan = P.capture_writer_plan(old['project'], executing_root=old['executing_root'])
+        current = P._plan_record(plan)[1]
+        R._need(current['bundle']['epoch'] == old['bundle']['epoch'] + 1
+                and current['bundle']['new_write_seen'] == 1,
+                'normal_writer_intent_unconfirmed')
+        normalized = json.loads(R._raw(current))
+        for key in ('epoch', 'new_write_seen'):
+            normalized['bundle'][key] = old['bundle'][key]
+        R._need(R._raw(normalized) == R._raw(old), 'normal_writer_intent_premise_changed')
+        proof = _prove_plan(context, plan)
+        # No current writer is public while either proof/close is incomplete.
+        context.plan = plan
+        record['snapshot'], record['proof'] = current, proof
+        record['marked'] = True
+        record['transitioning'] = False
+        validate_normal_writer(writer)
+        return json.loads(R._raw(proof))
+    except BaseException:
+        _issued.pop(writer, None)
+        raise
