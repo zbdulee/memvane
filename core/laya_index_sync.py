@@ -200,14 +200,17 @@ class SyncLease:
     def pin(self):
         record = _lease_record(self)
         _check_sync_lease(record)
-        fd = os.dup(record['fd'])
+        fds = []
         try:
+            for fd in (record['anchor'][2], record['fd']):
+                fds.append(os.dup(fd))
             _check_sync_lease(record)
             pin = object.__new__(_SyncPin)
-            _sync_pins[pin] = (fd, record['pid'], record['thread'])
+            _sync_pins[pin] = (fds, record['pid'], record['thread'])
             return pin
         except BaseException:
-            os.close(fd)
+            for fd in fds:
+                os.close(fd)
             raise
 
 
@@ -225,10 +228,12 @@ class _SyncPin:
         record = _sync_pins.get(self)
         if record is None:
             return
-        fd, pid, thread = record
+        fds, pid, thread = record
         if pid != os.getpid() or thread is not threading.current_thread():
             raise IndexContractError('sync_owner_not_issued')
-        os.close(fd)
+        while fds:
+            os.close(fds[-1])
+            fds.pop()
         del _sync_pins[self]
 
 
@@ -241,38 +246,107 @@ def _lease_record(claim):
     return record
 
 
+def _check_held_sync_file(path, fd, node, *, held=True):
+    opened = os.fstat(fd)
+    if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
+            or opened.st_nlink != 1 or stat.S_IMODE(opened.st_mode) != 0o600
+            or (opened.st_dev, opened.st_ino) != node
+            or _file_identity(path) != node
+            or stat.S_IMODE(path.lstat().st_mode) != 0o600):
+        raise IndexContractError('sync_owner_lock_unavailable')
+    if not held:
+        return
+    # Never reacquire a missing lock on its issuing open description.
+    probe = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                    | getattr(os, 'O_CLOEXEC', 0) | os.O_NONBLOCK)
+    try:
+        info = os.fstat(probe)
+        if (info.st_dev, info.st_ino) != node:
+            raise IndexContractError('sync_owner_lock_unavailable')
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise IndexContractError('sync_owner_lock_unavailable')
+    finally:
+        os.close(probe)
+
+
+def _check_sync_anchor(anchor):
+    from laya_journal_paths import journal_directory
+    parent, parent_node, fd, node = anchor
+    if (journal_directory('sync-owner-locks', create=False) != parent
+            or _directory_node(parent) != parent_node):
+        raise IndexContractError('sync_owner_lock_unavailable')
+    _check_held_sync_file(parent / 'owner.lock', fd, node)
+
+
+def _directory_node(path):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise IndexContractError('sync_owner_lock_unavailable')
+    return info.st_dev, info.st_ino
+
+
+@contextmanager
+def _sync_anchor():
+    """Stable UID exclusion, outside every movable project/state directory.
+
+    All sync owners share it. Acquire inside provider admission, before the
+    queue-adjacent legacy lock. Arbitrary same-UID modification of this private
+    coordination namespace is not an issued-API security boundary.
+    """
+    from laya_journal_paths import journal_directory
+    fd = None
+    try:
+        try:
+            parent = journal_directory('sync-owner-locks', create=True)
+            parent_node = _directory_node(parent)
+            path = parent / 'owner.lock'
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+                         | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+            info = os.fstat(fd)
+            node = (info.st_dev, info.st_ino)
+            _check_held_sync_file(path, fd, node, held=False)
+            acquired = True
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                acquired = False
+            anchor = (parent, parent_node, fd, node)
+            if acquired:
+                _check_sync_anchor(anchor)
+        except OSError as exc:
+            raise IndexContractError('sync_owner_lock_unavailable') from exc
+        if not acquired:
+            yield None
+            return
+        # Preserve the caller's native exception; only our filesystem errors
+        # describe unavailable owner evidence.
+        yield anchor
+        try:
+            _check_sync_anchor(anchor)
+        except OSError as exc:
+            raise IndexContractError('sync_owner_lock_unavailable') from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _check_sync_lease(record, queue_path=None):
     try:
+        _check_sync_anchor(record['anchor'])
         current = (record['queue'] if record['recheck'] is None
                    else Path(record['recheck']()))
         if (not current.is_absolute() or current.is_symlink()
                 or (queue_path is not None and Path(queue_path) != current)):
             raise IndexContractError('sync_owner_lock_unavailable')
-        opened = os.fstat(record['fd'])
         lock_path = Path(str(current) + '.sync.lock')
-        if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid()
-                or opened.st_nlink != 1 or stat.S_IMODE(opened.st_mode) != 0o600
-                or (opened.st_dev, opened.st_ino) != record['lock_node']
-                or _file_identity(lock_path) != record['lock_node']
-                or stat.S_IMODE(lock_path.lstat().st_mode) != 0o600
-                or _file_identity(current) != record['queue_node']):
+        _check_held_sync_file(lock_path, record['fd'], record['lock_node'])
+        if _file_identity(current) != record['queue_node']:
             raise IndexContractError('sync_owner_lock_unavailable')
-        # A separate open description must contend, never reacquire a missing
-        # lock on the issuing FD. Arbitrary same-UID FD tampering is outside
-        # this cooperative issued-API contract.
-        probe = os.open(lock_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
-                        | getattr(os, 'O_CLOEXEC', 0) | os.O_NONBLOCK)
-        try:
-            if (os.fstat(probe).st_dev, os.fstat(probe).st_ino) != record['lock_node']:
-                raise IndexContractError('sync_owner_lock_unavailable')
-            try:
-                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                pass
-            else:
-                raise IndexContractError('sync_owner_lock_unavailable')
-        finally:
-            os.close(probe)
     except OSError as exc:
         raise IndexContractError('sync_owner_lock_unavailable') from exc
 
@@ -284,6 +358,21 @@ def validate_sync_owner(claim, queue_path):
 
 @contextmanager
 def sync_owner(queue_path: Path, *, recheck_queue=None):
+    """Issue a lexical owner after stable UID and legacy queue exclusions."""
+    queue_path = Path(queue_path)
+    if not queue_path.is_absolute() or queue_path.is_symlink():
+        raise IndexContractError('sync_owner_lock_unavailable')
+    _file_identity(queue_path)
+    with _sync_anchor() as anchor:
+        if anchor is None:
+            yield None
+        else:
+            with _queue_sync_owner(queue_path, recheck_queue=recheck_queue, anchor=anchor) as claim:
+                yield claim
+
+
+@contextmanager
+def _queue_sync_owner(queue_path: Path, *, recheck_queue, anchor):
     """Hold queue exclusion and issue a lexical, same-thread owner or None.
 
     All selected sync writers use this exact queue-adjacent file from before
@@ -315,7 +404,8 @@ def sync_owner(queue_path: Path, *, recheck_queue=None):
             return
         record = dict(fd=fd, pid=os.getpid(), thread=threading.current_thread(),
                       queue=queue_path, queue_node=queue_identity,
-                      lock_node=(opened.st_dev, opened.st_ino), recheck=recheck_queue)
+                      lock_node=(opened.st_dev, opened.st_ino), recheck=recheck_queue,
+                      anchor=anchor)
         _check_sync_lease(record)
         claim = object.__new__(SyncLease)
         _sync_leases[claim] = record
