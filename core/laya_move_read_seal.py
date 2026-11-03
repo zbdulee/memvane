@@ -171,8 +171,10 @@ def _catalog_scan(db, binding):
 
 
 def stage_move_reader(intent, *, installer):
-    """Prepare a project tuple only; state tuples and publication fail closed."""
+    """Prepare a tuple before physical movement; publication is separate."""
     scope = _owner()
+    if scope.kind == 'state':
+        return _stage_state(intent, installer, scope)
     R._need(scope.kind == 'project', 'reader_move_stage_unsupported')
     from laya_product_install import _read_private
     import laya_project_dir_move as mover
@@ -258,6 +260,16 @@ def stage_move_reader(intent, *, installer):
     _sidecar(new_side, stage, {**identity, 'collections':new_decision['collections']},
              Path(old_record['db_path']), state, new_decision)
     new_parts = [new_catalog, new_binding, new_side]
+    return _finish(original, selected, old_record, attestation, proof, raw_intent,
+                   stage, stage_node, old_paths, new_parts, body_digest,
+                   old_generation, new_generation, epoch, aliases)
+
+
+def _finish(original, selected, old_record, attestation, proof, raw_intent,
+            stage, stage_node, old_paths, new_parts, body_digest,
+            old_generation, new_generation, epoch, aliases):
+    state, project, root = R._issued[original][:3]
+    move_id = R._sha(raw_intent)
     for path in new_parts: R._sync(path)
     R._sync(stage, True)
     _owner(); R._recheck(original)
@@ -289,6 +301,107 @@ def stage_move_reader(intent, *, installer):
                 old_digest, new_digest]))).items():
         object.__setattr__(seal, key, value)
     return seal
+
+
+def _stage_state(intent, installer, scope):
+    import laya_fresh_wiki_origin as fresh
+    import laya_inactive_upgrade as inactive
+    import laya_initial_build as build
+    import laya_state_move as mover
+    from laya_index_host_route import wiki_index_roots
+    from laya_product_install import _read_private
+    import project_dir
+
+    original = R._installer(installer)
+    state, project, _root = R._issued[original][:3]
+    R._need((state, project) == (scope.state, scope.project), 'reader_install_changed')
+    selected = R.read_selection(state / R._JOURNAL)
+    R._need(selected.preferred_endpoint == original.endpoint_id, 'reader_move_selection_unsupported')
+    old_record, attestation, proof = R._recheck(original)
+    raw_intent = _read_private(state / mover.INTENT, mover.LIMIT)
+    R._need(type(intent) is dict and R._raw(intent) == raw_intent and
+            mover._canonical(mover._load_intent(state, project)) == raw_intent,
+            'reader_move_intent_changed')
+    home = state.parents[3]
+    mover._ordered_intent(intent, home)
+    target = mover.target_root(state, home)
+    R._need(mover.legacy_root(state, home) and intent['fromRoot'] == str(state)
+            and not os.path.lexists(target), 'reader_move_alias_changed')
+    mover._private_root(target.parent)
+    target_parent = R._node(target.parent)
+    R._need(target.parent.resolve(strict=True) == target.parent
+            and target_parent[0] == R._node(state)[0], 'reader_move_alias_changed')
+    decision, _ = R.journal._route(intent['oldRoute'].encode('utf8'), state / R._JOURNAL)
+    new_decision, _ = R.journal._route(intent['newRoute'].encode('utf8'), target / R._JOURNAL)
+    old_build = build.read(state)
+    old_identity = old_build['identity']
+    new_identity = {**old_identity, **{key: mover._rebase(old_identity[key], state, target)
+                                      for key in mover.BUILD_KEYS}}
+    new_build = {**old_build, 'epoch':old_build['epoch'] + 1,
+                 'updatedNs':intent['newBuild']['updatedNs'], 'identity':new_identity}
+    build._validate(new_build)
+    old_att = _read_private(state / R.journal.PRODUCTION_ATTESTATION, mover.LIMIT).decode('utf8')
+    new_att = R.journal._canon(R.journal.relocated_attestation(json.loads(old_att), state, target))
+    old_ledger = fresh._load(state / fresh.LEDGER)
+    new_route = {**decision, **{key:mover._rebase(decision[key], state, target)
+                              for key in mover.ROUTE_KEYS}}
+    new_ledger = {**old_ledger, **{key:mover._rebase(old_ledger[key], state, target)
+                                  for key in mover.LEDGER_KEYS},
+                  'epoch':old_ledger['epoch'] + 1, 'routeSha256':R._sha(R._raw(new_route)),
+                  'attestationSha256':R._sha(new_att.encode('utf8'))}
+    fresh.validate_row(new_ledger, target / fresh.LEDGER)
+    old_pointer = dict(schema=build.POINTER_SCHEMA, projectRoot=str(project),
+                       stateRoot=str(state), installId=proof['installId'])
+    expected = dict(schema=mover.SCHEMA, projectRoot=str(project), installId=proof['installId'],
+        fromRoot=str(state), toRoot=str(target), oldRoute=R._raw(decision).decode('utf8'),
+        newRoute=R._raw(new_route).decode('utf8'), oldAttestation=old_att, newAttestation=new_att,
+        oldBuild=old_build, newBuild=new_build, oldLedger=old_ledger, newLedger=new_ledger,
+        oldMarker=R._raw(fresh._marker(old_ledger)).decode('utf8'),
+        newMarker=R._raw(fresh._marker(new_ledger)).decode('utf8'),
+        oldPointer=old_pointer, newPointer={**old_pointer, 'stateRoot':str(target)},
+        docs=[old_record['db_path'], new_identity['candidateDb']],
+        counts=inactive._store_counts(old_identity))
+    R._need(intent == expected and new_decision == new_route
+            and _read_private(state / 'reviewed-route.json', 8192) == intent['oldRoute'].encode('utf8')
+            and _read_private(project_dir.folder(project) / fresh.MARKER, 8192)
+                == intent['oldMarker'].encode('utf8'), 'reader_move_intent_changed')
+    generation = R._published(state, Path(old_record['db_path']), decision)[0]
+    body_digest, epoch = _generation(Path(old_record['db_path']), state, generation, generation, decision)
+    roots = wiki_index_roots(decision['collections'])
+    bound = _binding(Path(old_record['binding_path']), state, roots, decision, generation)
+    with R._readonly(Path(old_record['catalog_path']), state) as db:
+        _catalog_scan(db, bound)
+    side = Path(old_record['sidecar_path'])
+    R._need(side.is_file(), 'reader_move_sidecar_missing')
+    _sidecar(side, state, old_identity, Path(old_record['db_path']), state, decision)
+    # The target node is the expected successor of this same-volume rename,
+    # not a claim that the absent destination has already been stat'ed.
+    node = R._node(state)
+    aliases = [(str(state), str(target), *node, *node)]
+    stage = state / ('.reader-move-' + R._sha(raw_intent))
+    os.mkdir(stage, 0o700)
+    stage_node = R._node(stage)
+    R._sync(state, True)
+    old_paths = {key:_copy(Path(old_record[key]), state, stage, 'old-' + name)
+                 for key, name in (('catalog_path','catalog.sqlite'),
+                                   ('binding_path','binding.sqlite'), ('sidecar_path','sidecar.sqlite'))}
+    new_catalog = _copy(Path(old_record['catalog_path']), state, stage, 'new-catalog.sqlite')
+    new_binding = _copy(Path(old_record['binding_path']), state, stage, 'new-binding.sqlite')
+    _binding(new_binding, stage, roots, decision, generation)
+    with R._readonly(new_catalog, stage) as db:
+        _catalog_scan(db, bound)
+    new_side = _copy(side, state, stage, 'new-sidecar.sqlite')
+    with closing(sqlite3.connect(new_side.as_uri() + '?mode=rw', uri=True)) as db:
+        R._need(db.execute('SELECT candidate_db FROM meta').fetchall()
+                == [(old_record['db_path'],)], 'reader_move_sidecar_changed')
+        db.execute('UPDATE meta SET candidate_db=?', (new_identity['candidateDb'],))
+        db.commit()
+    _sidecar(new_side, stage, new_identity, Path(old_record['db_path']), state, new_decision)
+    R._need(not os.path.lexists(target) and target.parent.resolve(strict=True) == target.parent
+            and R._node(target.parent) == target_parent, 'reader_move_alias_changed')
+    return _finish(original, selected, old_record, attestation, proof, raw_intent,
+                   stage, stage_node, old_paths, [new_catalog, new_binding, new_side],
+                   body_digest, generation, generation, epoch, aliases)
 
 
 def _recheck_retained(endpoint):
