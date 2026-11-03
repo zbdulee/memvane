@@ -335,7 +335,8 @@ def _window(component, kind, *, exclusive, deadline, closing=False, proof_role=N
         R._need(proof_role is None or (proof_role in _ROLES and kind == 'physical' and not closing),
                 'reader_window_mode_invalid')
         role = component.role if proof_role is None else proof_role
-        name = f'{role}-{kind}.lock'
+        R._need(kind in ('physical', 'mutation', 'publish'), 'reader_window_mode_invalid')
+        name = 'publish-cut.lock' if kind == 'publish' else f'{role}-{kind}.lock'
         fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
                      dir_fd=lifetime.parent_fd)
         L._private_file(os.fstat(fd))
@@ -386,6 +387,10 @@ def physical_window(component, *, exclusive, deadline):
 
 def mutation_window(component, *, exclusive, deadline):
     return _window(component, 'mutation', exclusive=exclusive, deadline=deadline)
+
+
+def publish_window(component, *, exclusive, deadline):
+    return _window(component, 'publish', exclusive=exclusive, deadline=deadline)
 
 
 class _OwnedConnection:
@@ -495,6 +500,11 @@ def close_connection(db, *, deadline=None):
             close_owned(owner, deadline=deadline)
             return True
     return False
+
+
+def create_sidecar_owned(component, *, identity=None, deadline):
+    from laya_sidecar_create import create_sidecar_owned as create
+    return create(component, identity=identity, deadline=deadline)
 
 
 def _local_pending():

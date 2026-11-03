@@ -40,28 +40,8 @@ def _private_state(state_root):
 def _open(state_root, *, coordination=None, identity=None):
     path = _private_state(state_root) / FILE
     if coordination is not None:
-        if identity is None:
-            _fail('incremental_identity_changed')
-        from laya_reader_windows import open_owned
-        expected = _expected_meta(identity)
-        def validate(db):
-            db.execute('BEGIN')
-            try:
-                if (db.execute('PRAGMA user_version').fetchone() != (1,) or
-                        db.execute('SELECT * FROM meta').fetchall() != [expected]):
-                    _fail('incremental_identity_changed')
-                db.commit()
-            except BaseException:
-                db.rollback()
-                raise
-        def initialize(db):
-            db.execute('PRAGMA trusted_schema=OFF')
-            db.execute('PRAGMA foreign_keys=ON')
-            db.execute('PRAGMA synchronous=FULL')
-            db.execute('PRAGMA fullfsync=ON')
-            db.execute('PRAGMA journal_mode=WAL')
-        return open_owned(coordination, path=path, validate=validate,
-                          initialize=initialize, deadline=time.monotonic() + 2).db
+        return _open_coordinated(path, coordination, identity,
+                                 deadline=time.monotonic() + 2).db
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
                      getattr(os, 'O_NOFOLLOW', 0), 0o600)
@@ -81,6 +61,31 @@ def _open(state_root, *, coordination=None, identity=None):
     db.execute('PRAGMA fullfsync=ON')
     db.execute('PRAGMA journal_mode=WAL')
     return db
+
+
+def _open_coordinated(path, coordination, identity, *, deadline):
+    if identity is None:
+        _fail('incremental_identity_changed')
+    from laya_reader_windows import open_owned
+    expected = _expected_meta(identity)
+    def validate(db):
+        db.execute('BEGIN')
+        try:
+            if (db.execute('PRAGMA user_version').fetchone() != (1,) or
+                    db.execute('SELECT * FROM meta').fetchall() != [expected]):
+                _fail('incremental_identity_changed')
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+    def initialize(db):
+        db.execute('PRAGMA trusted_schema=OFF')
+        db.execute('PRAGMA foreign_keys=ON')
+        db.execute('PRAGMA synchronous=FULL')
+        db.execute('PRAGMA fullfsync=ON')
+        db.execute('PRAGMA journal_mode=WAL')
+    return open_owned(coordination, path=path, validate=validate,
+                      initialize=initialize, deadline=deadline)
 
 
 def _close(db, *, deadline=None):
