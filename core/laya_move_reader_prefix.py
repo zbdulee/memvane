@@ -27,6 +27,7 @@ def bundle_row(state):
 
 def _capacity_prefix(data, intent, route, *, moved):
     import laya_move_read_seal as M
+    import project_dir
     from laya_index_host_route import wiki_index_roots
     state, stage = Path(data['state']), Path(data['stage'])
     source, ledger = data['source_record'], intent['oldLedger']
@@ -36,6 +37,7 @@ def _capacity_prefix(data, intent, route, *, moved):
             and str(binding) == ledger['bindingStore'], 'reader_move_prefix_unproved')
     with R._readonly(catalog, state) as db:
         meta = dict(db.execute('SELECT key,value FROM meta'))
+    R._need(meta.get('scope') == source['scope'], 'reader_move_prefix_unproved')
     pair = {k: meta.get(k) for k in ('binding', 'roots')}
     old = {k: intent['catalog'][k][0] for k in pair}
     new = {k: intent['catalog'][k][1] for k in pair}
@@ -49,20 +51,24 @@ def _capacity_prefix(data, intent, route, *, moved):
         expected = digests.get(str(stage / filename))
         R._need(expected is not None and M._logical(path, parent) == expected,
                 'reader_move_material_changed')
+    new_route = R.journal._route(intent['newRoute'].encode('utf8'), state / R._JOURNAL)[0]
+    new_roots = wiki_index_roots(new_route['collections'])
     if node == old_node:
+        M._binding(binding, state, wiki_index_roots(route['collections']), route, data['old_generation'])
         R._need(R._file(temporary, state) == intent['store']['identity'], 'reader_move_prefix_unproved')
         matches(temporary, state, 'new-binding.sqlite')
+        bound = M._binding(temporary, state, new_roots, route, data['new_generation'])
     else:
         R._need(moved and pair == new and node == intent['store']['identity']
                 and not os.path.lexists(temporary), 'reader_move_prefix_unproved')
         matches(binding, state, 'new-binding.sqlite')
+        bound = M._binding(binding, state, new_roots, route, data['new_generation'])
+    R._need(R._raw(bound.as_record()) == R._raw(intent['generation']['binding']),
+            'reader_move_binding_changed')
     if pair == new:
+        anchor = Path(next(iter(new_roots.values()))) / project_dir.WIKI_ANCHOR
+        R._need(os.path.lexists(anchor), 'reader_move_prefix_unproved')
         matches(catalog, state, 'new-catalog.sqlite')
-        new_route = R.journal._route(intent['newRoute'].encode('utf8'), state / R._JOURNAL)[0]
-        path, parent = (stage / 'new-binding.sqlite', stage) if node == old_node else (binding, state)
-        bound = M._binding(path, parent, wiki_index_roots(new_route['collections']), route, data['new_generation'])
-        R._need(R._raw(bound.as_record()) == R._raw(intent['generation']['binding']),
-                'reader_move_binding_changed')
         with R._readonly(catalog, state) as db:
             M._catalog_scan(db, bound)
 

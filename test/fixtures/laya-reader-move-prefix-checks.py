@@ -264,6 +264,7 @@ class MovePrefixChecks(unittest.TestCase):
                              'catalog remains exactly old after premature binding swap')
                 mutation_evidence=dict(kind=mutation,catalog='old',binding='new',temporaryBindingExists=False)
             elif mutation=='rebound-catalog-row-changed':
+                mover._anchor_wiki(case.project)
                 mover._rebind_catalog(intent)
                 with closing(sqlite3.connect(case.catalog.as_uri()+'?mode=rw',uri=True)) as db:
                     row=db.execute('SELECT seq,path,size FROM scan_files ORDER BY seq,path LIMIT 1').fetchone()
@@ -403,6 +404,10 @@ class MovePrefixChecks(unittest.TestCase):
                                  if path.is_file() and not path.is_symlink()},
                 state={str(path.relative_to(case.state)):path.read_bytes() for path in case.state.rglob('*')
                        if path.is_file() and not path.is_symlink()},
+                catalogAuxNodes={suffix:None if not os.path.lexists(str(case.catalog)+suffix) else
+                    tuple(getattr(Path(str(case.catalog)+suffix).lstat(),key)
+                          for key in ('st_dev','st_ino','st_mode','st_uid','st_nlink'))
+                    for suffix in ('-wal','-shm')},
                 folderNode=seed.reader._node(folder),wikiNode=seed.reader._node(folder/'wiki'),
                 savedContainerNode=None if saved_container is None else seed.reader._node(saved_container))
         before=snapshot();journal_node=case.journal.stat()
@@ -425,18 +430,28 @@ class MovePrefixChecks(unittest.TestCase):
         after=snapshot()
         changed=[[group,path] for group in ('project','state') for path in
                  sorted(set(before[group])|set(after[group])) if before[group].get(path)!=after[group].get(path)]
+        # Existing SHM concurrency bytes are not application DB contents.
+        # Its presence, inode, owner and mode, plus every WAL/main byte and
+        # new-file check, remain part of the unchanged read contract.
+        comparable={**after,'state':dict(after['state'])}
+        shm=case.catalog.name+'-shm'
+        existing_shm=(shm in before['state'] and shm in after['state']
+                      and before['catalogAuxNodes']['-shm']==after['catalogAuxNodes']['-shm'])
+        if existing_shm:comparable['state'][shm]=before['state'][shm]
+        unchanged=comparable==before
         print(json.dumps(dict(case='physical-project-prefix-fresh-reader',phase=phase,actualWriterExit=child.returncode,
             originalFolderNode=folder_node,originalWikiNode=wiki_node,exactFencedOldMetadataBeforeMutation=True,
             storePrefix=prefix_evidence,
             resumed=False,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096],
-            mutation=mutation_evidence,queryUnchanged=after==before,queryChangedPaths=changed,
+            mutation=mutation_evidence,queryUnchanged=unchanged,queryChangedPaths=changed,
+            existingShmConcurrencyOnly=existing_shm and changed==[['state',shm]],
             catalogHeader=list(case.catalog.read_bytes()[18:20]),
             classification='required-reader-feature-gate-after-actual-prefix-proof' if mutation is None else 'protection-guard-negative')),flush=True)
         if mutation=='catalog-scope-nul':
             with self.subTest(boundary='full-text-byte-commitment'):
                 self.assertNotEqual(mutation_evidence['beforeDigest'],mutation_evidence['afterDigest'],
                                     'logical commitment must retain TEXT bytes after embedded NUL')
-        self.assertTrue(after==before,'fresh prefix reader must not heal or mutate moved/state files')
+        self.assertTrue(unchanged,'fresh prefix reader must preserve DB/WAL/metadata, aux identities and file set')
         self.assertTrue(os.path.samestat(journal_node,case.journal.stat()))
         if mutation is not None:
             events=[json.loads(line) for line in result.stdout.splitlines() if line.strip()]

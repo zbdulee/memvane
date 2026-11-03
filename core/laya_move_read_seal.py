@@ -73,7 +73,7 @@ def _logical(path, parent, *, skip_meta=False):
     with R._readonly(path, parent) as db:
         R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
                 'reader_move_store_corrupt')
-        digest.update(b'memvane-move-sqlite-v2\0')
+        digest.update(b'memvane-move-sqlite-v3\0')
         digest.update(R._raw([db.execute('PRAGMA application_id').fetchone()[0],
                               db.execute('PRAGMA user_version').fetchone()[0]]))
         # Document rowids join the ordinary rows to FTS; SQL dumps omit them.
@@ -88,6 +88,26 @@ def _logical(path, parent, *, skip_meta=False):
                 continue
             data = line.encode('utf8')
             digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
+        # SQLite quote(), used by iterdump(), omits TEXT after its first NUL.
+        # Commit typed, length-framed cells as well as the schema/SQL stream.
+        def frame(raw):
+            digest.update(len(raw).to_bytes(8, 'big')); digest.update(raw)
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+            if skip_meta and table == 'meta':
+                continue
+            digest.update(b'T'); frame(table.encode('utf8'))
+            quoted = '"' + table.replace('"', '""') + '"'
+            for row in db.execute('SELECT * FROM ' + quoted):
+                digest.update(b'R'); digest.update(len(row).to_bytes(4, 'big'))
+                for value in row:
+                    if value is None: raw = b'n'
+                    elif type(value) is str: raw = b't' + value.encode('utf8')
+                    elif type(value) is bytes: raw = b'b' + value
+                    elif type(value) is int: raw = b'i' + str(value).encode('ascii')
+                    elif type(value) is float: raw = b'f' + value.hex().encode('ascii')
+                    else: raise ValueError('reader_move_cell_invalid')
+                    frame(raw)
+            digest.update(b'E')
     return digest.hexdigest()
 
 
