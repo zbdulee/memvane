@@ -699,6 +699,7 @@ def _backfill_cursor(runtime, identity, snapshot, db, coordination, setup_stamp,
     side_stamp, absent = _sidecar_prepare(db, identity, setup_stamp, None)
     from laya_reader_windows import write_cursor_progress
     with write_cursor_progress(db, coordination, deadline=time.monotonic() + .05) as transaction:
+        _source_stamps(_source_owners(runtime, coordination))
         try:
             runtime.catalog.require_current(snapshot)
         except IndexContractError:
