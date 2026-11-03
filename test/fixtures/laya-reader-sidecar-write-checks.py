@@ -184,4 +184,28 @@ class SidecarWriteChecks(unittest.TestCase):
             print(json.dumps(dict(case='sidecar-exhausted-source-cursor',error=error,result=result)),flush=True)
             self.assertIsNone(error);self.assertEqual(result['status'],'published')
 
+    def test_row_factory_sentinels_do_not_attest_native_cursor_exhaustion(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            expected=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash').fetchall()
+            self.assertGreaterEqual(len(expected),2);before=self.rows()
+            for mode in ('none', 'stop'):
+                cursor=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash')
+                def sentinel(_cursor,_row):
+                    if mode=='stop':raise StopIteration('synthetic row factory sentinel')
+                    return None
+                cursor.row_factory=sentinel;error=None;result=None
+                try:
+                    if mode=='none':self.assertIsNone(cursor.fetchone())
+                    else:
+                        with self.assertRaises(StopIteration):next(cursor)
+                    try:result=self.publish(runtime,snapshot,row,component)
+                    except Exception as exc:error=str(exc)
+                    cursor.row_factory=None;remaining=cursor.fetchall()
+                finally:cursor.close()
+                print(json.dumps(dict(case='sidecar-row-factory-sentinel',mode=mode,error=error,result=result,
+                    remainingRowsPreserved=remaining==expected[1:],rowsUnchanged=before==self.rows())),flush=True)
+                with self.subTest(mode=mode):
+                    self.assertIsNotNone(error);self.assertIsNone(result)
+                    self.assertEqual(remaining,expected[1:]);self.assertTrue(before==self.rows())
+
 if __name__=='__main__':unittest.main(verbosity=2)

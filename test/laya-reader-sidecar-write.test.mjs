@@ -17,6 +17,6 @@ test('managed sidecar document publication authority, cut and actual rollback', 
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 10 tests\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, /Ran 11 tests\b/);assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });
