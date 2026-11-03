@@ -182,7 +182,7 @@ def _document_transaction(db, coordination, *, visible):
 def _setup_managed(db, identity, coordination):
     expected = _fixed_schema()
     without_cursor = [row for row in expected if row[1] != 'cached_backfill']
-    with _document_transaction(db, coordination, visible=False):
+    with _document_transaction(db, coordination, visible=False) as transaction:
         if (db.execute('PRAGMA user_version').fetchone() != (1,)
                 or db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(identity)]):
             _fail('incremental_identity_changed')
@@ -194,6 +194,8 @@ def _setup_managed(db, identity, coordination):
             actual = _schema_rows(db)
         if actual != expected:
             _fail('incremental_schema_changed')
+        stamp = _connection_stamp(transaction.owner, db)
+    return stamp
 
 
 def _source_owners(runtime, coordination):
@@ -206,8 +208,9 @@ def _source_owners(runtime, coordination):
         _fail('incremental_sources_uncoordinated')
     if coordination.role != 'sidecar':
         _fail('incremental_sources_uncoordinated')
-    for role, owner in zip(('base', 'catalog'), owners):
-        connection_binding(owner, owner.db)
+    for role, owner, db in zip(('base', 'catalog'), owners,
+                              (runtime.index.db, runtime.catalog.db)):
+        connection_binding(owner, db)
         binding = _component(owner.component)
         if (owner.component.role != role or owner.component.install_id != coordination.install_id
                 or binding[2] is not side_binding[2]):
@@ -216,18 +219,25 @@ def _source_owners(runtime, coordination):
 
 
 def _source_stamps(owners):
-    from laya_reader_windows import connection_binding, ReaderWindowBusy
+    from laya_reader_windows import ReaderWindowBusy
     result = []
     for owner in owners:
         db = owner.db
         # A surviving issued cursor may keep an implicit old read snapshot.
         # This writer boundary defers rather than finalizing caller cursors.
-        if owner.pending or owner.transaction is not None or db.in_transaction or db._live_cursors:
+        if (owner.pending or owner.transaction is not None or db.in_transaction
+                or any(not (getattr(cursor, '_window_closed', False) or getattr(cursor, '_window_exhausted', False))
+                       for cursor in db._live_cursors.values())):
             raise ReaderWindowBusy('reader_writer_statement_active')
-        result.append((connection_binding(owner, db),
-            db.execute('PRAGMA data_version').fetchone()[0], db.total_changes,
-            db.execute('PRAGMA schema_version').fetchone()[0]))
+        result.append(_connection_stamp(owner, db))
     return tuple(result)
+
+
+def _connection_stamp(owner, db):
+    from laya_reader_windows import connection_binding
+    return (connection_binding(owner, db),
+        db.execute('PRAGMA data_version').fetchone()[0], db.total_changes,
+        db.execute('PRAGMA schema_version').fetchone()[0])
 
 
 def _source_rows(runtime, snapshot, path, source_hash):
@@ -242,7 +252,9 @@ def _source_rows(runtime, snapshot, path, source_hash):
 
 
 def _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash):
-    from laya_reader_windows import ReaderWindowBusy
+    from laya_reader_windows import connection_binding, ReaderWindowBusy
+    for owner, db in zip(owners, (runtime.index.db, runtime.catalog.db)):
+        connection_binding(owner, db)
     if (_source_stamps(owners) != stamps
             or _source_rows(runtime, snapshot, path, source_hash) != rows
             or _source_stamps(owners) != stamps):
@@ -397,9 +409,12 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
         if coordination is None:
             _setup(db, identity)
         else:
-            _setup(db, identity, coordination=coordination)
-        with _document_transaction(db, coordination, visible=True):
+            sidecar_stamp = _setup(db, identity, coordination=coordination)
+        with _document_transaction(db, coordination, visible=True) as transaction:
             if owners is not None:
+                if _connection_stamp(transaction.owner, db) != sidecar_stamp:
+                    from laya_reader_windows import ReaderWindowBusy
+                    raise ReaderWindowBusy('reader_sidecar_changed')
                 _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash)
             old = db.execute('SELECT rowid,hash,title,body,profile_id,chunk_count '
                              'FROM docs WHERE path=?', (path,)).fetchone()

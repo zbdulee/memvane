@@ -393,6 +393,56 @@ def publish_window(component, *, exclusive, deadline):
     return _window(component, 'publish', exclusive=exclusive, deadline=deadline)
 
 
+class _OwnedCursor(sqlite3.Cursor):
+    _window_closed = False
+    _window_exhausted = False
+
+    def execute(self, *args, **kwargs):
+        self._window_exhausted = False
+        result = super().execute(*args, **kwargs)
+        self._window_exhausted = self.description is None
+        return result
+
+    def executemany(self, *args, **kwargs):
+        self._window_exhausted = False
+        result = super().executemany(*args, **kwargs)
+        self._window_exhausted = self.description is None
+        return result
+
+    def fetchall(self):
+        rows = super().fetchall()
+        self._window_exhausted = True
+        return rows
+
+    def fetchmany(self, *args, **kwargs):
+        size = args[0] if args else kwargs.get('size', self.arraysize)
+        rows = super().fetchmany(*args, **kwargs)
+        if type(size) is int and size > 0 and len(rows) < size:
+            self._window_exhausted = True
+        return rows
+
+    def close(self):
+        super().close()
+        self._window_closed = True
+
+
+def _cursor_factory(factory):
+    if factory is sqlite3.Cursor:
+        return _OwnedCursor
+    if isinstance(factory, type) and issubclass(factory, sqlite3.Cursor):
+        if issubclass(factory, _OwnedCursor):
+            return factory
+        def close(cursor):
+            factory.close(cursor)
+            # A pooling factory's successful close is not native completion.
+            sqlite3.Cursor.close(cursor)
+            cursor._window_closed = True
+        return type('OwnedFactoryCursor', (factory, _OwnedCursor), {'close': close})
+    # Arbitrary callable factories retain their SQLite behavior. A returned
+    # untracked native cursor cannot attest completion for source publication.
+    return factory
+
+
 class _OwnedSQLite(sqlite3.Connection):
     """Track cursors issued by the managed connection's supported methods.
 
@@ -417,6 +467,10 @@ class _OwnedSQLite(sqlite3.Connection):
     def cursor(self, *args, **kwargs):
         self._cursor_allowed()
         R._need(self._delete_transaction() is None, 'reader_delete_cursor_unsupported')
+        if args:
+            args = (_cursor_factory(args[0]), *args[1:])
+        else:
+            kwargs['factory'] = _cursor_factory(kwargs.get('factory', _OwnedCursor))
         return self._track_cursor(super().cursor(*args, **kwargs))
 
     def execute(self, *args, **kwargs):
@@ -424,7 +478,8 @@ class _OwnedSQLite(sqlite3.Connection):
         transaction = self._delete_transaction()
         adopt = transaction.before_execute(args[0]) if transaction is not None else False
         try:
-            cursor = self._track_cursor(super().execute(*args, **kwargs))
+            cursor = self._track_cursor(super().cursor(factory=_OwnedCursor))
+            cursor.execute(*args, **kwargs)
         except BaseException:
             if transaction is not None:
                 transaction.after_execute(adopt, success=False)
@@ -444,12 +499,14 @@ class _OwnedSQLite(sqlite3.Connection):
     def executemany(self, *args, **kwargs):
         self._cursor_allowed()
         R._need(self._delete_transaction() is None, 'reader_delete_batch_unsupported')
-        return self._track_cursor(super().executemany(*args, **kwargs))
+        cursor = self._track_cursor(super().cursor(factory=_OwnedCursor))
+        return cursor.executemany(*args, **kwargs)
 
     def executescript(self, *args, **kwargs):
         self._cursor_allowed()
         R._need(self._delete_transaction() is None, 'reader_delete_batch_unsupported')
-        return self._track_cursor(super().executescript(*args, **kwargs))
+        cursor = self._track_cursor(super().cursor(factory=_OwnedCursor))
+        return cursor.executescript(*args, **kwargs)
 
     def close(self):
         # The public raw handle must obey the same EX/deferred-owner contract.
