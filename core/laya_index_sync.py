@@ -274,9 +274,9 @@ def _check_held_sync_file(path, fd, node, *, held=True):
 
 
 def _check_sync_anchor(anchor):
-    from laya_journal_paths import journal_directory
+    from laya_package import sync_owner_directory
     parent, parent_node, fd, node = anchor
-    if (journal_directory('sync-owner-locks', create=False) != parent
+    if (sync_owner_directory(create=False) != parent
             or _directory_node(parent) != parent_node):
         raise IndexContractError('sync_owner_lock_unavailable')
     _check_held_sync_file(parent / 'owner.lock', fd, node)
@@ -298,11 +298,11 @@ def _sync_anchor():
     queue-adjacent legacy lock. Arbitrary same-UID modification of this private
     coordination namespace is not an issued-API security boundary.
     """
-    from laya_journal_paths import journal_directory
+    from laya_package import sync_owner_directory
     fd = None
     try:
         try:
-            parent = journal_directory('sync-owner-locks', create=True)
+            parent = sync_owner_directory(create=True)
             parent_node = _directory_node(parent)
             path = parent / 'owner.lock'
             fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
