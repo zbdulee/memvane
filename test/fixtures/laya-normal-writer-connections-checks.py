@@ -196,4 +196,54 @@ class NormalWriterConnectionChecks(unittest.TestCase):
                 emit('normal-canonical-writer-versus-reader',writerBase=str(component.path),
                      readerBase=alternate.record['db_path'])
 
+    def test_queue_content_change_after_ro_close_cannot_reach_rw_open(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners, \
+                closing(sqlite3.connect(self.queue)) as mutator:
+            writer, _context = self.admission(owners)
+            component = self.component(writer,'queue'); calls = []; closes = []
+            from laya_index_claim_queue import ClaimQueue
+            native = self.W._OwnedSQLite._native_close_locked
+            def close(db):
+                result = native(db); closes.append(True)
+                if len(closes)==1:
+                    trigger = mutator.execute("SELECT sql FROM sqlite_master WHERE name='queue_meta_update_seal'").fetchone()[0]
+                    mutator.execute('DROP TRIGGER queue_meta_update_seal')
+                    mutator.execute("UPDATE queue_meta SET value=? WHERE key='index_incarnation'",('f'*32,))
+                    mutator.execute(trigger); mutator.commit()
+                    self.assertEqual(ClaimQueue._check_database(mutator),'f'*32)
+                return result
+            error = None; queue = None
+            try:
+                with self.fixture.fixture.trace(calls), mock.patch.object(self.W._OwnedSQLite,'_native_close_locked',new=close):
+                    try: queue = ClaimQueue.open(self.queue,coordination=component)
+                    except (ValueError,RuntimeError,sqlite3.Error) as exc: error = str(exc)
+                emit('normal-content-change-after-ro-close',contentConnects=calls,error=error,returned=queue is not None)
+                self.assertIsNotNone(error,'changed queue identity must not return a normal writer')
+                self.assertEqual(len(calls),1,'committed content change after RO close must prevent RW open')
+            finally:
+                if queue is not None: queue.close()
+
+    def test_deadline_crossed_inside_actual_initializer_cannot_return_rw_handle(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer, _context = self.admission(owners)
+            component = self.component(writer,'queue'); advanced = [False]
+            from laya_index_claim_queue import ClaimQueue
+            initialize = ClaimQueue._initialize_connection; clock = time.monotonic
+            def now(): return clock()+(100 if advanced[0] else 0)
+            def init(queue,db):
+                result=initialize(queue,db); advanced[0]=True; return result
+            error = None; queue = None
+            try:
+                with mock.patch.object(time,'monotonic',side_effect=now), \
+                        mock.patch.object(ClaimQueue,'_initialize_connection',new=init):
+                    try: queue=ClaimQueue.open(self.queue,coordination=component)
+                    except (ValueError,RuntimeError,sqlite3.Error) as exc: error=str(exc)
+                emit('normal-expired-inside-initializer',actualInitializerCompleted=advanced[0],
+                     returned=queue is not None,error=error)
+                self.assertTrue(advanced[0]);self.assertIsNotNone(error)
+                self.assertIsNone(queue,'expired initializer must not return a normal writer handle')
+                self.assertEqual(self.W.pending_count(),0)
+            finally:
+                if queue is not None:queue.close()
+
 if __name__=='__main__': unittest.main()
