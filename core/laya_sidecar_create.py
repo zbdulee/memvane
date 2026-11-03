@@ -188,6 +188,11 @@ def _verify(token, identity):
             incremental._setup(reference, identity)
             R._need(_schema(db) == _schema(reference), 'reader_create_material_changed')
         db.commit()
+    except BaseException:
+        # End the read transaction even if the following SQLite close fails.
+        # Its strong pending owner must remain eligible for same-thread drain.
+        db.rollback()
+        raise
     finally:
         owner.close_locked()
     _material(token)
@@ -251,6 +256,7 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                 material = _allocate(component, state, parent_fd, info)
                 _initialize(material, actual_identity)
                 digest = _verify(material, actual_identity)
+                R._need(time.monotonic() < deadline, 'reader_create_deadline')
                 # Full validation stays outside the short publication cut.
                 R._recheck(endpoint)
                 with W.publish_window(component, exclusive=True, deadline=deadline):
@@ -263,15 +269,20 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                     R._need(0 < size <= 2 * 1024 * 1024
                             and hashlib.sha256(os.pread(item.fd, size, 0)).digest() == digest,
                             'reader_create_material_changed')
+                    R._need(time.monotonic() < deadline, 'reader_create_deadline')
                     _rename_noreplace(parent_fd, item.name, incremental.FILE)
                     R._need(R._file(component.path, state) == item.node,
                             'reader_create_target_changed')
+                    published_node = tuple(item.node)
                     _no_aux(component.path)
                     _fsync(parent_fd)
                     published = True
         # The old absence descriptor is never promoted into an RW capability.
         # Release creation cut/mutation/physical locks before normal reopen.
         new_component = W.component_for(installer, 'sidecar')
+        R._need(W._component(new_component)[3] == published_node,
+                'reader_create_target_changed')
+        R._need(time.monotonic() < deadline, 'reader_create_deadline')
         return incremental._open_coordinated(component.path, new_component, actual_identity,
                                              deadline=deadline)
     finally:
