@@ -209,6 +209,64 @@ class CatalogChecks(existing.QueueMutationChecks):
         existing.emit('catalog-terminal-real-sigkill',actualExit=child.returncode,checkpoint=checkpoint,
             oldCompleteRetained=True,freshResume=result['result']['status'],newDigest=True,coldCapabilityClaim=False)
 
+    def test_repeated_settled_steps_do_not_repeat_rolled_back_stale_deletes(self):
+        with self.catalog() as (catalog,_component):
+            old=catalog._pointer('current');self.assertEqual(catalog.request_scan()['status'],'started')
+            self.assertEqual(catalog.step(max_files=100,max_stats=100)['status'],'complete')
+            self.assertNotEqual(catalog._pointer('current'),old)
+            traces=[];results=[]
+            for _ in range(2):
+                sql=[];catalog.db.set_trace_callback(sql.append)
+                try:results.append(catalog.step()['status'])
+                finally:catalog.db.set_trace_callback(None)
+                traces.append([s for s in sql if s.startswith('DELETE FROM')])
+            existing.emit('catalog-settled-no-repeat-deletes',results=results,deletes=traces)
+            self.assertEqual(traces[1],[])
+
+    def test_visible_begin_deadline_returns_busy_after_rollback(self):
+        self.deadline_case(False)
+
+    def test_visible_deadline_with_failed_rollback_remains_error_and_pending(self):
+        self.deadline_case(True)
+
+    def deadline_case(self,fail_rollback):
+        with self.catalog() as (catalog,_component):
+            before=catalog._pointer('current');catalog.request_scan()
+            cls=type(catalog.db);execute,rollback=cls.execute,cls.rollback;actual=self.W.write_transaction
+            visible=[False];delays=[];attempts=[];error=None;result=None
+            @contextmanager
+            def observed(owner,*,visible: bool,deadline):
+                active=owner is catalog._connection_owner and visible
+                self_visible[0]=active
+                try:
+                    with actual(owner,visible=visible,deadline=deadline) as tx:yield tx
+                finally:self_visible[0]=False
+            self_visible=visible
+            def delayed(db,sql,*args,**kwargs):
+                cursor=execute(db,sql,*args,**kwargs)
+                if db is catalog.db and visible[0] and sql=='BEGIN IMMEDIATE':
+                    delays.append(db.in_transaction);time.sleep(.07)
+                return cursor
+            def rollback_once(db):
+                if db is catalog.db and visible[0]:
+                    attempts.append(True)
+                    if fail_rollback and len(attempts)==1:raise RuntimeError('synthetic_catalog_rollback_failure')
+                return rollback(db)
+            with mock.patch.object(self.W,'write_transaction',observed),mock.patch.object(cls,'execute',delayed),mock.patch.object(cls,'rollback',rollback_once):
+                try:result=catalog.step(max_files=100,max_stats=100)
+                except Exception as exc:error=str(exc)
+            state=dict(error=error,result=result,delays=delays,pending=self.W.pending_count(),active=catalog.db.in_transaction,
+                pointerUnchanged=catalog._pointer('current')==before,cutSH=self.probe('publish-cut.lock',True))
+            if fail_rollback:self.W.drain_pending(deadline=time.monotonic()+1)
+            existing.emit('catalog-visible-native-deadline',failedRollback=fail_rollback,**state)
+            self.assertEqual(delays,[True]);self.assertTrue(state['pointerUnchanged'])
+            if fail_rollback:
+                self.assertIsNotNone(error);self.assertIsNone(result);self.assertEqual(state['pending'],1)
+                self.assertTrue(state['active']);self.assertFalse(state['cutSH'])
+            else:
+                self.assertIsNone(error);self.assertEqual(result['status'],'busy')
+                self.assertEqual(state['pending'],0);self.assertFalse(state['active']);self.assertTrue(state['cutSH'])
+
 if __name__=='__main__':
     names=[name for name in CatalogChecks.__dict__ if name.startswith('test_')]
     result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(CatalogChecks(name) for name in names))
