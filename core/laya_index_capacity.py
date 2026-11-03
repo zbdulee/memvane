@@ -314,9 +314,12 @@ class GenerationBindingStore:
                 raise IndexContractError('coordinated_creation_unavailable')
             import time
             from laya_reader_windows import open_owned
-            self._connection_owner = open_owned(coordination, path=path,
-                preopen=self._preopen_connection, validate=self._validate_connection,
-                initialize=self._initialize_connection, deadline=time.monotonic() + 2)
+            try:
+                self._connection_owner = open_owned(coordination, path=path,
+                    preopen=self._preopen_connection, validate=self._validate_connection,
+                    initialize=self._initialize_connection, deadline=time.monotonic() + 2)
+            except sqlite3.Error as exc:
+                _raise_stale('binding store unavailable', exc)
             return
         if create:
             self._create()
@@ -349,7 +352,10 @@ class GenerationBindingStore:
     def _initialize_connection(self, db):
         self.db = db
         self._check_node()
-        _configure(db)
+        try:
+            _configure(db)
+        except sqlite3.Error as exc:
+            _raise_stale('binding store unreadable', exc)
         self.store_id = self._transaction(False, lambda store_id: store_id)
 
     def close(self, *, deadline=None) -> None:

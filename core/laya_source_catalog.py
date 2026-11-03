@@ -464,9 +464,12 @@ class LayaSourceCatalog:
             if create:
                 raise IndexContractError('coordinated_creation_unavailable')
             from laya_reader_windows import open_owned
-            self._connection_owner = open_owned(coordination, path=path,
-                validate=self._validate_connection, initialize=self._initialize_connection,
-                deadline=time.monotonic() + 2)
+            try:
+                self._connection_owner = open_owned(coordination, path=path,
+                    validate=self._validate_connection, initialize=self._initialize_connection,
+                    deadline=time.monotonic() + 2)
+            except sqlite3.Error as exc:
+                raise IndexContractError('catalog_unreadable') from exc
             return
         if create:
             try:
