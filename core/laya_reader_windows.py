@@ -610,6 +610,14 @@ def checkpoint_owned(owner, *, deadline):
             R._need(path == owner.component.path and current_node == node
                     and tuple(R._file(path, Path(endpoint.record['state']))) == node,
                     'reader_component_changed')
+            # SQLite can mutate its already-open WAL/SHM before returning a
+            # result. Reject shared/unsafe names before the first SQL call,
+            # and bind completion to these same named file incarnations.
+            auxiliaries = {}
+            for suffix in ('-wal', '-shm', '-journal'):
+                auxiliary = Path(str(path) + suffix)
+                auxiliaries[suffix] = (tuple(R._file(auxiliary, Path(endpoint.record['state'])))
+                    if os.path.lexists(auxiliary) else None)
             if time.monotonic() >= deadline:
                 raise ReaderWindowBusy('reader_checkpoint_deadline')
             previous = owner.db.execute('PRAGMA busy_timeout').fetchone()[0]
@@ -642,6 +650,13 @@ def checkpoint_owned(owner, *, deadline):
                     and all(type(value) is int for value in rows[0]),
                     'reader_checkpoint_result_invalid')
             result = tuple(rows[0])
+            R._need(tuple(R._file(path, Path(endpoint.record['state']))) == node,
+                    'reader_component_changed')
+            for suffix, before in auxiliaries.items():
+                auxiliary = Path(str(path) + suffix)
+                after = (tuple(R._file(auxiliary, Path(endpoint.record['state'])))
+                    if os.path.lexists(auxiliary) else None)
+                R._need(after == before, 'reader_checkpoint_files_changed')
             if time.monotonic() >= deadline:
                 raise ReaderWindowBusy('reader_checkpoint_deadline')
             if result == (0, -1, -1):
