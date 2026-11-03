@@ -312,5 +312,38 @@ class ReaderLeaseChecks(unittest.TestCase):
                 with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin):pass
         self.assertTrue(replaced)
 
+    def test_resolver_never_promotes_a_rejected_rollback_image_to_a_new_lineage_anchor(self):
+        api=self.api();ancestor=self.case.journal.read_bytes()
+        other=self.helper.alternate(self.case,self.reader,self.installer,'first-lineage-b.sqlite')
+        fork=self.helper.alternate(self.case,self.reader,self.installer,'fork-lineage-c.sqlite')
+        with self.helper.full_authority(self.case,self.reader,api):
+            first=self.reader.cas_reader(self.case.journal,expected_epoch=self.selection.epoch,
+                expected_endpoint=self.selection.preferred_endpoint,target=other,transition_id='d'*32)
+        payload=self.case.home/'fork-cas-child.json'
+        payload.write_text(json.dumps(dict(plugin=str(self.case.plugin),proof=self.case.proof,
+            state=str(self.case.state),project=str(self.case.project),target=fork.record['db_path'],
+            epoch=self.selection.epoch,expected=self.selection.preferred_endpoint)),encoding='utf8')
+        payload.chmod(0o600)
+        actual=self.reader._selection;reads=0;branched=[]
+        def race(db):
+            nonlocal reads
+            result=actual(db);reads+=1
+            if reads==1:
+                copy=self.case.state/'old-journal-image.sqlite'
+                copy.write_bytes(ancestor);copy.chmod(0o600);os.replace(copy,self.case.journal)
+            elif reads==2:
+                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT/'core'),str(payload)],
+                    capture_output=True,encoding='utf8',timeout=15)
+                self.assertEqual(run.returncode,0,run.stderr)
+                branched.append(json.loads(run.stdout))
+            return result
+        with self.helper.full_authority(self.case,self.reader,api),mock.patch.object(self.reader,'_selection',side_effect=race):
+            with self.assertRaises(ValueError,msg='a rejected ancestor cannot replace the proved lineage anchor'):
+                with api.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin):pass
+        self.assertEqual(first.epoch,branched[0]['epoch'])
+        self.assertNotEqual(first.preferred_endpoint,branched[0]['endpoint'])
+        print(json.dumps(dict(case='rejected-rollback-not-an-anchor',original=first.preferred_endpoint,
+            branched=branched,reads=reads)),flush=True)
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

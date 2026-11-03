@@ -20,7 +20,7 @@ test('reader lifetime pins steady selected endpoints without creating read locks
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 14 tests\b/);
+    assert.match(result.stderr, /Ran 15 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);
