@@ -16,7 +16,9 @@ import json
 import os
 from pathlib import Path
 import pwd
+import select
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -357,6 +359,47 @@ class CrashTests(MoveCase):
 
 
 class SyncOwnerRenameIdentityTests(MoveCase):
+    def test_resume_with_unreadable_route_never_bypasses_a_competing_sync_owner(self):
+        import laya_state_move as mover
+        CrashTests.crash_at(self, 'moved')
+        route = self.auto / fresh.ROUTE
+        route.write_bytes(b'{')
+        queue = self.target / self.queue.name
+        code = ('import fcntl,os,signal,sys;signal.alarm(12);'
+                'fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW);'
+                'fcntl.flock(fd,fcntl.LOCK_EX);print("LOCKED",flush=True);sys.stdin.readline()')
+        child = subprocess.Popen([sys.executable, '-B', '-c', code, str(queue)+'.sync.lock'],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        try:
+            readable, _, _ = select.select([child.stdout], [], [], 4)
+            self.assertTrue(readable, 'fixture child must acquire the real moved sync lock')
+            self.assertEqual(child.stdout.readline().strip(), 'LOCKED')
+            def image():
+                return {str(p.relative_to(self.target)): p.read_bytes()
+                        for p in self.target.rglob('*') if p.is_file()}
+            before = image()
+            error = None
+            try:
+                mover.move(self.project, self.target, home=self.home)
+            except (ValueError, OSError, RuntimeError) as exc:
+                error = str(exc)
+            after = image()
+            changed = sorted(key for key in before if after.get(key) != before[key])
+            print(json.dumps(dict(case='state-resume-missing-route-sync-owner', error=error,
+                changedFiles=changed, ownerStillAlive=child.poll() is None,
+                controlledUnwindNotProcessCrash=True)), flush=True)
+            self.assertIsNone(child.poll())
+            self.assertEqual(after, before, 'unproved queue must refuse before any resumed mutation')
+            self.assertEqual(error, 'state_move_route_unavailable')
+        finally:
+            if child.poll() is None:
+                child.stdin.write('release\n'); child.stdin.flush()
+            try:
+                child.communicate(timeout=4)
+            except subprocess.TimeoutExpired:
+                child.kill(); child.communicate(timeout=4)
+
     def _identity_probe(self, kind):
         """Real moved directory/queue/lock; restore originals after exit checks."""
         import laya_state_move as mover
