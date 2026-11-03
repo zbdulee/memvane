@@ -414,7 +414,12 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         if verify_selected_route(decision) != proof:
             raise IndexContractError('selected_provider_proof_changed')
         try:
-            ensure_running(decision['projectRoot'], proof['providerManifest'])
+            # This short owner admission requests adoption, never waits for
+            # the model. Release it before taking the provider lane below.
+            with sync_owner(Path(decision['queuePath'])) as prewarm_owner:
+                if prewarm_owner is None:
+                    return {'state': 'deferred', 'reason': 'owner_busy'}
+                ensure_running(decision['projectRoot'], proof['providerManifest'])
         except ResourceDeferred as exc:
             return _deferred(exc)
     controller = coordinator or Coordinator()
