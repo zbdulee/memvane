@@ -5,7 +5,6 @@ grants no SQLite open, writer, reader, mover, cohort or immutable capability.
 The caller must acquire lifetime/physical windows and prove the full current
 installation before issuing normal writer authority.
 """
-from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import fcntl
 import json
@@ -204,6 +203,8 @@ def _proof_window_record(window):
     proof = _proofs[window]
     R._need(proof['pid'] == os.getpid() and proof['thread'] is threading.current_thread(),
             'writer_proof_window_expired')
+    R._need(not proof['stack'].expired and not proof['stack'].invalid and not proof['stack'].released,
+            'writer_proof_window_expired')
     return proof
 
 
@@ -227,51 +228,79 @@ def validate_writer_proof_window(window):
         raise W.ReaderWindowBusy('writer_proof_deadline')
 
 
-@contextmanager
-def writer_proof_windows(plan, *, queue_owner, deadline):
-    """Hold lifetime SH and sorted physical EX for a future first full proof.
+class _WriterProofContext:
+    """Explicit lock ownership; no generator finalizer releases native owners."""
+    def __init__(self, plan, queue_owner, deadline):
+        self.plan, self.queue_owner, self.deadline = plan, queue_owner, deadline
+        self.entered = self.finished = False
+        self.stack = self.window = None
 
-    This operation opens coordination files and installer metadata only. It
-    neither opens content SQLite connections nor issues normal writer authority.
-    """
-    from laya_index_sync import validate_sync_owner
-    W._deadline(deadline)
-    validate_writer_plan(plan)
-    validate_sync_owner(queue_owner, plan.queue_path)
-    _packed, snapshot = _plan_record(plan)
-    nodes = json.loads(snapshot['manifest'])['locks']
-    with ExitStack() as stack:
-        pin = queue_owner.pin()
-        stack.callback(pin.close)
-        lifetime = W._Lifetime(plan.install_id)
-        stack.callback(lifetime.close)
-        physical = {}
-        for role in sorted(snapshot['components']):
-            name = role + '-physical.lock'
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                         dir_fd=lifetime.parent_fd)
-            stack.callback(os.close, fd)
-            L._private_file(os.fstat(fd))
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise W.ReaderWindowBusy('writer_proof_physical_busy')
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    time.sleep(min(.005, remaining))
-            W._named(plan.install_id, lifetime.parent, lifetime.parent_fd, lifetime.parent_info, name, fd)
-            info = os.fstat(fd)
-            R._need(nodes[name] == [info.st_dev, info.st_ino], 'writer_proof_windows_changed')
-            physical[role] = fd
-        window = object.__new__(WriterProofWindow)
-        _proofs[window] = dict(pid=os.getpid(), thread=threading.current_thread(), plan=plan,
-                              queue_owner=queue_owner, lifetime=lifetime, physical=physical,
-                              deadline=deadline)
+    def __enter__(self):
+        from laya_index_sync import validate_sync_owner
+        from laya_writer_proof_reader import _ProofExitStack
+        R._need(not self.entered, 'writer_proof_window_reentered')
+        self.entered = True
         try:
+            W._deadline(self.deadline)
+            validate_writer_plan(self.plan)
+            validate_sync_owner(self.queue_owner, self.plan.queue_path)
+            _packed, snapshot = _plan_record(self.plan)
+            nodes = json.loads(snapshot['manifest'])['locks']
+            self.stack = stack = _ProofExitStack()
+            pin = self.queue_owner.pin()
+            stack.callback(pin.close)
+            lifetime = W._Lifetime(self.plan.install_id)
+            stack.callback(lifetime.close)
+            physical = {}
+            for role in sorted(snapshot['components']):
+                name = role + '-physical.lock'
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=lifetime.parent_fd)
+                stack.callback(os.close, fd)
+                L._private_file(os.fstat(fd))
+                while True:
+                    remaining = self.deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise W.ReaderWindowBusy('writer_proof_physical_busy')
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(.005, remaining))
+                W._named(self.plan.install_id, lifetime.parent, lifetime.parent_fd,
+                         lifetime.parent_info, name, fd)
+                info = os.fstat(fd)
+                R._need(nodes[name] == [info.st_dev, info.st_ino], 'writer_proof_windows_changed')
+                physical[role] = fd
+            self.window = window = object.__new__(WriterProofWindow)
+            record = dict(pid=os.getpid(), thread=threading.current_thread(), plan=self.plan,
+                          queue_owner=self.queue_owner, lifetime=lifetime, physical=physical,
+                          deadline=self.deadline, window=window, stack=stack, context=self)
+            stack.record = record
+            _proofs[window] = record
             validate_writer_proof_window(window)
-            yield window
-            validate_writer_proof_window(window)
+            return window
+        except BaseException:
+            self.finished = True
+            if self.window is not None:
+                _proofs.pop(self.window, None)
+            if self.stack is not None:
+                self.stack.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        if not self.entered or self.finished:
+            return False
+        self.finished = True
+        try:
+            if exc_type is None:
+                validate_writer_proof_window(self.window)
         finally:
-            del _proofs[window]
+            _proofs.pop(self.window, None)
+            self.stack.__exit__(exc_type, exc, traceback)
+        return False
+
+
+def writer_proof_windows(plan, *, queue_owner, deadline):
+    """Hold lifetime SH and sorted physical EX; issue no normal writer authority."""
+    return _WriterProofContext(plan, queue_owner, deadline)
