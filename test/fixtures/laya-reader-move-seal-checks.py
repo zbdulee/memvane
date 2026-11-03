@@ -65,10 +65,50 @@ try:
             phase='stage'
             install=base.J.inspect_journal(state/'install-journal.sqlite')['selected']['installId']
             with lease.reader_lifetime(install,exclusive=False):
+                if mode=='kill-backup':
+                    import sqlite3
+                    from urllib.parse import urlparse,unquote
+                    original_connect=sqlite3.connect
+                    catalog=Path(p['catalog'])
+                    protected={Path(value) for key,value in installer.endpoint.record.items()
+                               if key in ('db_path','catalog_path','binding_path','sidecar_path') and value is not None}
+                    protected.update(Path(json.loads(intent['oldRoute'])[key]) for key in ('journalPath','queuePath'))
+                    def database_path(raw):
+                        raw=str(raw)
+                        if raw==':memory:':return None
+                        return Path(unquote(urlparse(raw).path)) if raw.startswith('file:') else Path(raw)
+                    class BackupCrashConnection(sqlite3.Connection):
+                        def __init__(self,database,*args,**kwargs):
+                            super().__init__(database,*args,**kwargs)
+                            self.fixture_path=database_path(database)
+                        def backup(self,target,*,pages=-1,progress=None,name='main',sleep=.250):
+                            if self.fixture_path!=catalog:
+                                return super().backup(target,pages=pages,progress=progress,name=name,sleep=sleep)
+                            destination=getattr(target,'fixture_path',None)
+                            assert destination is not None and destination!=catalog and destination.is_relative_to(state)
+                            assert destination not in protected,'backup observer must never target an original store'
+                            source_pages=self.execute('PRAGMA page_count').fetchone()[0]
+                            assert source_pages>1,'actual multi-page catalog is required'
+                            def copied(status,remaining,total):
+                                if progress is not None:progress(status,remaining,total)
+                                if remaining>0 and total>remaining:
+                                    info=destination.lstat()
+                                    print(json.dumps(dict(event='backup-page-copied',kind=p['kind'],pid=os.getpid(),
+                                        initialIssued=initial,freshExec=True,source=str(catalog),destination=str(destination),
+                                        sourcePages=source_pages,remaining=remaining,total=total,status=status,
+                                        destinationNode=[info.st_dev,info.st_ino],destinationBytes=info.st_size)),flush=True)
+                                    os.kill(os.getpid(),signal.SIGKILL)
+                            result=super().backup(target,pages=1,progress=copied,name=name,sleep=sleep)
+                            raise RuntimeError('actual backup completed without the required partial-page checkpoint')
+                    def observed_connect(*args,**kwargs):
+                        kwargs['factory']=BackupCrashConnection
+                        return original_connect(*args,**kwargs)
+                    sqlite3.connect=observed_connect
                 seal=lease.stage_move_reader(intent,installer=installer)
             record=seal.retained_endpoint.record
             print(json.dumps(dict(event='staged',kind=p['kind'],pid=os.getpid(),initialIssued=initial,
                 freshExec=True,endpoint=seal.retained_endpoint.endpoint_id,moveId=seal.move_id,
+                sealType=type(seal).__name__,endpointType=type(seal.retained_endpoint).__name__,oldGeneration=seal.old_generation,
                 oldDigest=seal.old_tuple_digest,newDigest=seal.new_tuple_digest,prefixDigest=seal.prefix_digest,
                 retainedPaths={key:record.get(key) for key in ('db_path','catalog_path','binding_path','sidecar_path')},
                 actualHostExecuted=False)),flush=True)
@@ -835,6 +875,78 @@ class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
 
     def test_project_staging_reissues_after_completed_owned_child_is_killed(self):
         self.replay('project',self.prepared)
+
+    def test_project_staging_retries_after_actual_partial_sqlite_backup_child_kill(self):
+        self.producer()
+        with self.prepared() as intent:pass
+        with self.ro(self.case.catalog) as db:
+            source_pages=db.execute('PRAGMA page_count').fetchone()[0]
+        self.assertGreater(source_pages,1,'fixture must reach a real multi-page SQLite backup')
+        intent_path=self.case.state/self.mover.INTENT
+        intent_before=intent_path.read_bytes();before=self.live()
+        payload=self.case.home/'partial-backup-stage.json'
+        payload.write_text(json.dumps(dict(kind='project',home=str(self.case.home),project=str(self.case.project),
+            state=str(self.case.state),plugin=str(self.case.plugin),proof=self.case.proof,
+            catalog=str(self.case.catalog),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'])),encoding='utf8')
+        payload.chmod(0o600)
+        argv=[sys.executable,'-B','-I','-c',FRESH_STAGE_CHILD,str(ROOT),str(payload)]
+        child=subprocess.Popen([*argv,'kill-backup'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,encoding='utf8',cwd=str(self.case.home),
+            env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'})
+        try:
+            if not select.select([child.stdout],[],[],30)[0]:
+                raise RuntimeError('partial backup child did not reach actual copy progress')
+            line=child.stdout.readline()
+            if not line:raise RuntimeError('partial backup child exited before progress evidence')
+            checkpoint=json.loads(line)
+            print(json.dumps(dict(case='actual-partial-catalog-backup',checkpoint=checkpoint)),flush=True)
+            if checkpoint.get('event')!='backup-page-copied':
+                raise RuntimeError('factory/setup failure, not partial-backup replay RED: '+json.dumps(checkpoint))
+            self.assertEqual(child.wait(timeout=5),-signal.SIGKILL)
+        finally:
+            if child.poll() is None:child.kill()
+            child.communicate(timeout=5)
+        self.assertEqual(checkpoint['initialIssued'],0)
+        self.assertEqual(checkpoint['source'],str(self.case.catalog))
+        self.assertGreater(checkpoint['remaining'],0)
+        self.assertGreater(checkpoint['total'],checkpoint['remaining'])
+        self.assertEqual(checkpoint['sourcePages'],source_pages)
+        partial=Path(checkpoint['destination'])
+        self.assertTrue(partial.is_relative_to(self.case.state))
+        self.assertNotEqual(partial,self.case.catalog)
+        info=partial.lstat()
+        self.assertTrue(stat.S_ISREG(info.st_mode))
+        self.assertEqual([info.st_dev,info.st_ino],checkpoint['destinationNode'])
+        self.assertEqual((info.st_uid,info.st_nlink),(os.getuid(),1))
+        self.assertEqual(info.st_mode & 0o077,0)
+        self.assertEqual(self.live(),before)
+        self.assertEqual(intent_path.read_bytes(),intent_before)
+        with self.authority(),ExitStack() as locks:
+            self.mover._locks(locks,self.case.project,self.case.state,self.mover._queue_path(self.case.project,intent))
+        result=subprocess.run([*argv,'finish'],capture_output=True,encoding='utf8',timeout=40,
+            cwd=str(self.case.home),env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'})
+        lines=result.stdout.strip().splitlines()
+        recovered=json.loads(lines[-1]) if lines else None
+        print(json.dumps(dict(case='partial-backup-fresh-retry',checkpoint=checkpoint,actualExit=child.returncode,
+            recovered=recovered,returncode=result.returncode,stderr=result.stderr[:4096],
+            liveUnchanged=self.live()==before,intentPreserved=intent_path.read_bytes()==intent_before)),flush=True)
+        self.assertEqual(self.live(),before)
+        self.assertEqual(intent_path.read_bytes(),intent_before)
+        self.assertEqual(result.returncode,0,'replay RED only after actual backup progress and SIGKILL: '+result.stdout+result.stderr)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['event'],'staged')
+        self.assertEqual(recovered['initialIssued'],0)
+        self.assertEqual(recovered['sealType'],'MoveReadSeal')
+        self.assertEqual(recovered['endpointType'],'VerifiedEndpoint')
+        self.assertEqual(recovered['oldGeneration'],self.case.head()[0])
+        with self.ro(recovered['retainedPaths']['db_path']) as db:
+            rows=db.execute('SELECT c.body FROM membership m JOIN content c ON c.hash=m.hash WHERE m.gen=?',
+                            (recovered['oldGeneration'],)).fetchall()
+            self.assertEqual(len(rows),3)
+            self.assertTrue(any('otter' in body for (body,) in rows))
+        for key,path in (('catalog_path',self.case.catalog),('binding_path',self.case.store),('sidecar_path',self.sidecar)):
+            self.assertEqual(self.dump(recovered['retainedPaths'][key]),self.dump(path),key)
+        self.assertEqual(self.live(),before)
 
 
 class StateFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
