@@ -1027,6 +1027,8 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
         R._need(current_path == component.path and current_node == node
                 and tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                 'reader_component_changed')
+        normal_image = (normal._connection_image(installer, component.role, component.path)
+                        if type(installer) is normal.NormalWriter else None)
         check = _connect_owned(component, 'ro')
         try:
             if type(installer) is normal.NormalWriter:
@@ -1034,12 +1036,19 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
             validate(check.db)
         finally:
             check.close_locked()
+        if normal_image is not None:
+            R._need(normal._connection_image(installer, component.role, component.path) == normal_image,
+                    'normal_writer_image_changed')
         state = Path(_endpoint.record['state'])
         opening_auxiliaries = _auxiliary_nodes(component.path, state)
         owner = _connect_owned(component, 'rw')
         try:
             R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                     'reader_component_changed')
+            if normal_image is not None:
+                R._need(normal._connection_image(installer, component.role, component.path) == normal_image,
+                        'normal_writer_image_changed')
+                normal._validate_identity(installer, component.role, owner.db)
             initialize(owner.db)
             R._need(not owner.db.in_transaction, 'reader_connection_transaction_active')
             # Force an actual main read while the creating EX is still held:
@@ -1065,6 +1074,9 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
                     'reader_component_changed')
             owner.auxiliaries = auxiliaries
             owner.journal_mode = modes[0][0]
+            if normal_image is not None:
+                normal._validate_identity(installer, component.role, owner.db)
+                normal.validate_normal_writer(installer)
         except BaseException:
             owner.close_locked()
             raise

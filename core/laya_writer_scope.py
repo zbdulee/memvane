@@ -108,6 +108,20 @@ def _connection_pin(writer, role, path):
         raise
 
 
+def _connection_image(writer, role, path):
+    """Detect ordinary commits across RO/RW admission; no immutable seal."""
+    _connection_check(writer, role, path)
+    # Read-only SQLite can update existing SHM, so only the main/WAL content
+    # files contribute revision metadata. Fixed identities are checked again
+    # on the RW connection; timestamps are not a same-UID tampering boundary.
+    result = []
+    for suffix in ('', '-wal'):
+        info = Path(str(path)+suffix).lstat()
+        result.append((info.st_dev, info.st_ino, info.st_size,
+                       info.st_mtime_ns, info.st_ctime_ns))
+    return tuple(result)
+
+
 def _validate_identity(writer, role, db):
     """Actual fixed header/identity proof; no caller callback can omit it."""
     validate_normal_writer(writer)
