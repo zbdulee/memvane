@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import select
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -25,6 +26,59 @@ ROOT=HERE.parents[1]
 spec=importlib.util.spec_from_file_location('move_seal_reader_fixture',HERE/'laya-journal-reader-checks.py')
 base=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
+
+
+FRESH_STAGE_CHILD=r'''
+from contextlib import ExitStack,nullcontext
+import importlib.util,json,os,signal,sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+root,payload,mode=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sys.path.insert(0,str(root/'core'))
+p=json.loads(payload.read_text())
+os.environ['HOME']=p['home']
+os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime']
+signal.alarm(35)
+spec=importlib.util.spec_from_file_location('fresh_move_stage_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_journal_reader as reader,laya_reader_lease as lease,laya_state_move as state_move
+import laya_project_dir_move as project_move
+assert Path(reader.__file__).resolve().parent==root/'core'
+case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+helper=base.JournalReaderChecks('runTest')
+project,state=Path(p['project']),Path(p['state'])
+mover=state_move if p['kind']=='state' else project_move
+phase='fresh-issuer'
+initial=len(reader._issued)
+try:
+    assert initial==0,'fresh child must not inherit an issued capability'
+    with helper.full_authority(case,reader,lease,mover),mock.patch.object(state_move,'_provider_lane',lambda:nullcontext()):
+        installer=reader.seal_current_reader(state,project,executing_root=case.plugin)
+        reader._recheck(installer.endpoint)
+        phase='owner-acquire'
+        with ExitStack() as locks:
+            intent=mover._load_intent(state,project)
+            assert intent is not None,'durable parent-prepared intent required'
+            if p['kind']=='state':mover._locks(locks,project,state,home=Path(p['home']))
+            else:mover._locks(locks,project,state,mover._queue_path(project,intent))
+            phase='stage'
+            install=base.J.inspect_journal(state/'install-journal.sqlite')['selected']['installId']
+            with lease.reader_lifetime(install,exclusive=False):
+                seal=lease.stage_move_reader(intent,installer=installer)
+            record=seal.retained_endpoint.record
+            print(json.dumps(dict(event='staged',kind=p['kind'],pid=os.getpid(),initialIssued=initial,
+                freshExec=True,endpoint=seal.retained_endpoint.endpoint_id,moveId=seal.move_id,
+                oldDigest=seal.old_tuple_digest,newDigest=seal.new_tuple_digest,prefixDigest=seal.prefix_digest,
+                retainedPaths={key:record.get(key) for key in ('db_path','catalog_path','binding_path','sidecar_path')},
+                actualHostExecuted=False)),flush=True)
+            if mode=='hold':
+                assert sys.stdin.readline().strip()=='release'
+except Exception as exc:
+    print(json.dumps(dict(event='error',kind=p['kind'],phase=phase,errorType=type(exc).__name__,
+        reason=str(exc),initialIssued=initial,freshExec=True)),flush=True)
+    sys.exit(2)
+'''
 
 
 class MoveSealChecks(unittest.TestCase):
@@ -596,6 +650,103 @@ class AbsentSidecarProjectMoveSealChecks(_AbsentSidecarFixture,unittest.TestCase
 
     def test_project_staging_preserves_explicit_old_and_new_sidecar_absence(self):
         self.check_absent_stage(self.prepared,'project')
+
+
+class _FreshStageReplayFixture:
+    PUBLISH_SIDECAR=True
+    setUp=MoveSealChecks.setUp
+    authority=MoveSealChecks.authority
+    producer=MoveSealChecks.producer
+    ro=staticmethod(MoveSealChecks.ro)
+    dump=MoveSealChecks.dump
+    live=MoveSealChecks.live
+
+    def replay(self,kind,prepare):
+        self.producer()
+        # Prepare once in the parent, then release every owner lock. Neither
+        # child invokes _prepare or consumes a parent-issued token.
+        with prepare() as value:
+            intent=value[1] if kind=='state' else value
+        intent_bytes=(self.case.state/('state-move-intent.json' if kind=='state' else self.mover.INTENT)).read_bytes()
+        before=self.live();existing=set(self.case.state.rglob('*'))
+        payload=self.case.home/('fresh-'+kind+'-stage.json')
+        payload.write_text(json.dumps(dict(kind=kind,home=str(self.case.home),project=str(self.case.project),
+            state=str(self.case.state),plugin=str(self.case.plugin),proof=self.case.proof,
+            runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'])),encoding='utf8')
+        payload.chmod(0o600)
+        argv=[sys.executable,'-B','-I','-c',FRESH_STAGE_CHILD,str(ROOT),str(payload)]
+        first=subprocess.Popen([*argv,'hold'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,encoding='utf8',cwd=str(self.case.home),
+            env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'})
+        first_result=None
+        try:
+            if not select.select([first.stdout],[],[],30)[0]:
+                raise RuntimeError('first fresh child did not reach staging within its finite deadline')
+            line=first.stdout.readline()
+            if not line:
+                raise RuntimeError('first fresh child exited before a staging result')
+            first_result=json.loads(line)
+            print(json.dumps(dict(case=kind+'-fresh-stage-first',result=first_result)),flush=True)
+            if first_result.get('event')!='staged':
+                raise RuntimeError('first-stage setup/factory failure, not replay RED: '+json.dumps(first_result))
+            self.assertEqual(first_result['initialIssued'],0)
+            self.assertNotEqual(first_result['pid'],os.getpid())
+            self.assertIsNone(first.poll(),'owned first child must still hold actual owner scope')
+            first.kill()
+            self.assertEqual(first.wait(timeout=5),-signal.SIGKILL)
+        finally:
+            if first.poll() is None:first.kill()
+            first.communicate(timeout=5)
+        self.assertEqual(self.live(),before)
+        tuple_nodes={}
+        for path in set(self.case.state.rglob('*'))-existing:
+            if not path.is_file() or path.is_symlink():continue
+            with path.open('rb') as stream:header=stream.read(16)
+            if header==b'SQLite format 3\x00':
+                info=path.lstat();tuple_nodes[str(path)]=(info.st_dev,info.st_ino)
+        self.assertTrue(tuple_nodes,'first child must leave actual staged SQLite tuples')
+        # Independently reacquire the actual mover owners after SIGKILL,
+        # without replacing/re-preparing the durable intent.
+        with self.authority(),ExitStack() as locks:
+            if kind=='state':
+                mover=importlib.import_module('laya_state_move')
+                mover._locks(locks,self.case.project,self.case.state,home=self.case.home)
+            else:
+                self.mover._locks(locks,self.case.project,self.case.state,self.mover._queue_path(self.case.project,intent))
+        result=subprocess.run([*argv,'finish'],capture_output=True,encoding='utf8',timeout=40,
+            cwd=str(self.case.home),env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1'})
+        lines=result.stdout.strip().splitlines()
+        second=json.loads(lines[-1]) if lines else None
+        print(json.dumps(dict(case=kind+'-fresh-stage-replay',first=first_result,second=second,
+            returncode=result.returncode,stderr=result.stderr[:4096],firstExit=-signal.SIGKILL,
+            stagedNodes=tuple_nodes,liveUnchanged=self.live()==before)),flush=True)
+        self.assertEqual(self.live(),before)
+        self.assertEqual((self.case.state/('state-move-intent.json' if kind=='state' else self.mover.INTENT)).read_bytes(),intent_bytes)
+        self.assertEqual(result.returncode,0,'replay RED after actual first-child stage+SIGKILL: '+result.stdout+result.stderr)
+        self.assertIsNotNone(second)
+        self.assertEqual(second['event'],'staged')
+        self.assertEqual(second['initialIssued'],0)
+        for field in ('endpoint','moveId','oldDigest','newDigest','prefixDigest','retainedPaths'):
+            self.assertEqual(second[field],first_result[field],field)
+        for path,node in tuple_nodes.items():
+            info=Path(path).lstat()
+            self.assertEqual((info.st_dev,info.st_ino),node,'replay must preserve existing staged component inodes')
+
+
+class ProjectFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
+    STATE_PARTS=('.local','state','memvane','3'*32)
+    prepared=MoveSealChecks.prepared
+
+    def test_project_staging_reissues_after_completed_owned_child_is_killed(self):
+        self.replay('project',self.prepared)
+
+
+class StateFreshStageReplayChecks(_FreshStageReplayFixture,unittest.TestCase):
+    STATE_PARTS=('.local','state','laya','3'*32)
+    prepared_state=StateMoveSealChecks.prepared_state
+
+    def test_state_staging_reissues_after_completed_owned_child_is_killed(self):
+        self.replay('state',self.prepared_state)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
