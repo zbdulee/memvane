@@ -7,7 +7,7 @@ This is not the historical A-copy design that clones a whole QMD database.
 from __future__ import annotations
 
 from bisect import bisect_right
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import hashlib
 import json
@@ -734,6 +734,23 @@ class LayaIndexA:
         except sqlite3.Error:
             pass  # never replace the exception that is already propagating
 
+    @contextmanager
+    def _write_transaction(self, *, visible):
+        if self._connection_owner is None:
+            self._begin()
+            try:
+                yield
+                self.db.commit()
+            except BaseException:
+                self._rollback()
+                raise
+        else:
+            from laya_reader_windows import write_transaction
+            with write_transaction(self._connection_owner, visible=visible,
+                                   deadline=time.monotonic() + 2):
+                self._check_header(self.db)
+                yield
+
     def ensure_content(self, hash_, body):
         """Store one immutable content row ahead of a stage; True if inserted.
 
@@ -747,22 +764,16 @@ class LayaIndexA:
             raise IndexContractError('invalid_content')
         if hashlib.sha256(body.encode('utf-8')).hexdigest() != hash_:
             raise IndexContractError('content_hash_mismatch')
-        self._begin()
-        try:
+        with self._write_transaction(visible=False):
             existing = self.db.execute('SELECT body FROM content WHERE hash=?',
                                        (hash_,)).fetchone()
             if existing is not None:
                 if existing[0] != body:
                     raise IndexContractError('hash_content_conflict')
-                self.db.commit()
                 return False
             self.db.execute('INSERT INTO content VALUES(?,?)', (hash_, body))
             self.db.execute('INSERT INTO content_fts(hash,body) VALUES(?,?)', (hash_, body))
-            self.db.commit()
             return True
-        except BaseException:
-            self._rollback()
-            raise
 
     def stage(self, gen, scope, documents, fault_after=None, *,
               base=None, source_manifest=None, claim_digest=None, claim_epoch=None):
@@ -1081,15 +1092,10 @@ class LayaIndexA:
                 raise IndexContractError('invalid_exclusion')
         elif not _valid_relative_path(value):
             raise IndexContractError('invalid_exclusion')
-        self._begin()
-        try:
+        with self._write_transaction(visible=True):
             cur = self.db.execute('INSERT OR IGNORE INTO exclusions VALUES(?,?,?)',
                                   (scope, kind, value))
-            self.db.commit()
             return 'excluded' if cur.rowcount else 'already_excluded'
-        except BaseException:
-            self._rollback()
-            raise
 
     def list_exclusions(self, scope):
         if not isinstance(scope, str) or not scope:

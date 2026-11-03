@@ -461,6 +461,7 @@ class _OwnedConnection:
         self.component, self.db, self.lifetime = component, db, lifetime
         self.pid, self.thread = os.getpid(), threading.current_thread()
         self.pending = False
+        self.transaction = None
 
     def check(self):
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
@@ -486,7 +487,87 @@ def _connect_owned(component, mode):
         raise
     owner = _OwnedConnection(component, db, lifetime)
     _owned[id(owner)] = owner
+    try:
+        if mode == 'rw':
+            # Automatic checkpoints cannot run under an ordinary mutation SH.
+            # Explicit checkpoint admission is a separate mutation/physical EX.
+            R._need(db.execute('PRAGMA wal_autocheckpoint=0').fetchone() == (0,),
+                    'reader_autocheckpoint_unavailable')
+    except BaseException:
+        owner.close_locked()
+        raise
     return owner
+
+
+class _WriteTransaction:
+    def __init__(self, owner):
+        self.owner = owner
+        self.locks = ExitStack()
+        self.rollback_pending = False
+
+    def _check(self):
+        self.owner.check()
+        R._need(self.owner.transaction is self, 'reader_transaction_expired')
+
+    def _finish(self):
+        R._need(not self.owner.db.in_transaction, 'reader_connection_transaction_active')
+        self.locks.close()
+        self.owner.transaction = None
+        self.rollback_pending = False
+
+    def commit(self):
+        self._check()
+        self.owner.db.commit()
+        self._finish()
+
+    def rollback(self):
+        self._check()
+        try:
+            self.owner.db.rollback()
+            self._finish()
+        except BaseException:
+            # Neither the SQL transaction nor its logical locks may escape
+            # through generator/finalizer cleanup. drain_pending retries on
+            # this same creating thread before it attempts physical close.
+            self.rollback_pending = True
+            self.owner.pending = True
+            raise
+
+
+@contextmanager
+def write_transaction(owner, *, visible, deadline):
+    """Own mutation/cut locks and SQL completion as one explicit lifetime."""
+    R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner,
+            'reader_connection_not_owned')
+    owner.check()
+    owner.lifetime.check()
+    R._need(type(visible) is bool and owner.db is not None and not owner.pending
+            and owner.transaction is None and not owner.db.in_transaction,
+            'reader_transaction_unavailable')
+    _deadline(deadline)
+    _pid, installer, scope, _node, _manifest = _component(owner.component)
+    _endpoint, current = _owner(installer)
+    R._need(current is scope, 'reader_component_owner_changed')
+    transaction = _WriteTransaction(owner)
+    owner.transaction = transaction
+    try:
+        transaction.locks.enter_context(mutation_window(owner.component,
+            exclusive=False, deadline=deadline))
+        if visible:
+            transaction.locks.enter_context(publish_window(owner.component,
+                exclusive=True, deadline=deadline))
+        owner.db.execute('BEGIN IMMEDIATE')
+        yield transaction
+        if owner.transaction is transaction:
+            transaction.commit()
+    except BaseException as error:
+        if owner.transaction is transaction:
+            try:
+                transaction.rollback()
+            except BaseException:
+                if hasattr(error, 'add_note'):
+                    error.add_note('reader SQL rollback remains strongly owned and pending')
+        raise
 
 
 def open_owned(component, *, path, validate, initialize, deadline, preopen=None):
@@ -536,6 +617,7 @@ def close_or_defer(owner, *, deadline):
     R._need(_owned.get(id(owner)) is owner, 'reader_connection_not_owned')
     owner.pending = True
     R._need(not owner.db.in_transaction, 'reader_connection_transaction_active')
+    R._need(owner.transaction is None, 'reader_connection_write_active')
     owner.lifetime.check()
     try:
         with _window(owner.component, 'physical', exclusive=True, deadline=deadline, closing=True):
@@ -583,5 +665,7 @@ def pending_count():
 def drain_pending(*, deadline):
     _deadline(deadline)
     for owner in _local_pending():
+        if owner.transaction is not None and owner.transaction.rollback_pending:
+            owner.transaction.rollback()
         close_or_defer(owner, deadline=deadline)
     return pending_count()
