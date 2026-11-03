@@ -31,6 +31,21 @@ def _remaining(deadline):
         v.fail('fts_deadline_exceeded')
 
 
+def _sqlite_interrupted(exc):
+    if isinstance(exc, BlobStoreError):
+        if exc.reason != 'candidate_io_failed':
+            return False
+        # _session wraps SQLite failures while preserving their exception link.
+        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, 'sqlite_errorcode', None)
+    if code is not None:
+        return code == getattr(sqlite3, 'SQLITE_INTERRUPT', 9)
+    # Python 3.9 does not expose the numeric SQLite error code.
+    return exc.args == ('interrupted',)
+
+
 def _query(query, limit, prefixes, exclusions, seconds):
     if (not isinstance(query, str) or not query or type(limit) is not int
             or not 1 <= limit <= 100 or type(seconds) not in (int, float)):
@@ -62,8 +77,8 @@ class ReaderMixin:
             with self._session() as db:
                 yield db
                 _remaining(deadline)
-        except (BlobStoreError, sqlite3.Error):
-            if time.monotonic() >= deadline:
+        except (BlobStoreError, sqlite3.Error) as exc:
+            if _sqlite_interrupted(exc) and time.monotonic() >= deadline:
                 v.fail('fts_deadline_exceeded')
             raise
         finally:
