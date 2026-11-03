@@ -17,6 +17,7 @@ import re
 import sqlite3
 import stat
 import sys
+import threading
 
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
@@ -497,6 +498,79 @@ def _schema_version_read(db):
 
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
+_writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
+
+
+class _WriterIdentityReads:
+    """A revocable binding to an issued window, with no injected opener."""
+    def __init__(self, window):
+        self.window = window
+        self.pid, self.thread = os.getpid(), threading.current_thread()
+        self.entered = self.finished = False
+
+    def _creator(self):
+        if self.pid != os.getpid() or self.thread is not threading.current_thread():
+            _fail('writer_identity_owner_changed')
+
+    def check(self):
+        self._creator()
+        if not self.entered or self.finished or _writer_identity_reads.get() is not self:
+            _fail('writer_identity_scope_expired')
+        # These full-plugin dependencies are absent from the sealed engine
+        # subbundle. The default verifier never imports them.
+        import laya_writer_open_plan as plan
+        plan.validate_writer_proof_window(self.window)
+        record = plan._proof_window_record(self.window)
+        return plan._plan_record(record['plan'])[1]
+
+    def __enter__(self):
+        self._creator()
+        if self.entered or self.finished:
+            _fail('writer_identity_scope_reentered')
+        import laya_writer_open_plan as plan
+        plan.validate_writer_proof_window(self.window)
+        self.binding_token = _writer_identity_reads.set(self)
+        self.recovery_token = _reader_no_recovery.set(True)
+        self.entered = True
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._creator()
+        if self.finished or not self.entered:
+            return False
+        if _writer_identity_reads.get() is not self:
+            _fail('writer_identity_scope_exit_order')
+        # A token from another copied Context cannot reset this binding.
+        # Revoke only after the creator's original Context resets both tokens.
+        _writer_identity_reads.reset(self.binding_token)
+        _reader_no_recovery.reset(self.recovery_token)
+        self.finished = True
+        return False
+
+
+def writer_identity_reads(window):
+    """Route journal content identity reads through an issued proof window."""
+    return _WriterIdentityReads(window)
+
+
+def _identity_connection(path):
+    binding = _writer_identity_reads.get()
+    if binding is None:
+        return closing(sqlite3.connect(path.resolve(strict=True).as_uri() + '?mode=ro',
+                                       uri=True, timeout=2))
+    snapshot = binding.check()
+    for role in ('base', 'queue'):
+        if str(path) == snapshot['components'][role]['path']:
+            from laya_writer_proof_reader import proof_reader
+            return proof_reader(binding.window, role)
+    _fail('writer_identity_path_changed')
+
+
+def _finish_identity_reads(binding, row):
+    if binding is not None:
+        snapshot = binding.check()
+        if _canon(row) != _canon(snapshot['bundle']):
+            _fail('writer_identity_journal_changed')
 
 
 @contextmanager
@@ -1290,6 +1364,9 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     ``read_only`` skips only the checks that read the bound plugin bundle or
     prove the executing bundle; it never authorizes a write.
     """
+    binding = _writer_identity_reads.get()
+    if binding is not None:
+        binding.check()
     if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
             any(type(decision.get(key)) is not str for key in
                 ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
@@ -1346,8 +1423,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                                     *((_executing_root(),) if read_only else ())}:
                     if canonical_path == plugin_root or plugin_root in canonical_path.parents:
                         _fail('index_path_overlaps_plugin')
-            with closing(sqlite3.connect(db_path.resolve(strict=True).as_uri() + '?mode=ro',
-                                         uri=True, timeout=2)) as index_db:
+            with _identity_connection(db_path) as index_db:
                 index_db.execute('BEGIN')
                 LayaIndexA._check_header(index_db)
                 incarnation = index_db.execute(
@@ -1355,8 +1431,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 if incarnation != route['dbIncarnation']:
                     _fail('index_incarnation_mismatch')
                 index_db.commit()
-            with closing(sqlite3.connect(queue_path.resolve(strict=True).as_uri() + '?mode=ro',
-                                         uri=True, timeout=2)) as queue_db:
+            with _identity_connection(queue_path) as queue_db:
                 queue_db.execute('BEGIN')
                 if ClaimQueue._check_database(queue_db) != incarnation:
                     _fail('queue_incarnation_mismatch')
@@ -1371,7 +1446,9 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
             raise
     full = row['selected']['bundleKind'] == 'full_plugin'
     if read_only:
-        return _read_only_proof(path, row, route, proof, full)
+        result = _read_only_proof(path, row, route, proof, full)
+        _finish_identity_reads(binding, row)
+        return result
     # The UID queue may be held by another installed version. Its dispatcher
     # needs the sealed target identity before it can enter that version's code;
     # a host/query/worker still requires the executing-root proof below.
@@ -1395,6 +1472,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
         # and native closure bounded without reopening hundreds of MB.
         provider_manifest = attestation['providerManifest']
     approved = full and sealed_sha is not None and provider_manifest is not None
+    _finish_identity_reads(binding, row)
     return {'status': ('installer_active_full_plugin_verified' if approved else
                        'production_attestation_unapproved' if sealed_sha is not None else
                        'production_attestation_unbound' if full else
