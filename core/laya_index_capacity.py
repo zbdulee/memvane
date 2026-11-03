@@ -470,7 +470,16 @@ class GenerationBindingStore:
     def _transaction(self, write: bool, fn: Callable[[str], Any]) -> Any:
         """``fn(store_id)`` in one transaction after node, schema and identity checks."""
         if write and self._connection_owner is not None:
-            raise IndexContractError('reader_delete_write_unsupported')
+            import time
+            from laya_reader_windows import delete_binding_transaction
+            self._check_node()
+            try:
+                with delete_binding_transaction(self._connection_owner,
+                        deadline=time.monotonic() + 2):
+                    result = fn(self._check_store())
+                return result
+            except sqlite3.Error as exc:
+                _raise_sqlite('binding store unreadable', exc)
         self._check_node()
         try:
             self.db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
@@ -573,7 +582,11 @@ class GenerationBindingStore:
                 if self._decode(binding.generation, row) != binding:
                     raise IndexContractError('binding_conflict')
                 return 'exists'
-            self.db.execute(_INSERT_SQL, (*key, digest, record))
+            parameters = (*key, digest, record)
+            if self._connection_owner is not None:
+                self._connection_owner.transaction.insert_binding(parameters)
+            else:
+                self.db.execute(_INSERT_SQL, parameters)
             self._inject(fault_at, 'before_commit')
             return 'stored'
         status = self._transaction(True, insert)

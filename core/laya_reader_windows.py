@@ -416,18 +416,37 @@ class _OwnedSQLite(sqlite3.Connection):
 
     def cursor(self, *args, **kwargs):
         self._cursor_allowed()
+        R._need(self._delete_transaction() is None, 'reader_delete_cursor_unsupported')
         return self._track_cursor(super().cursor(*args, **kwargs))
 
     def execute(self, *args, **kwargs):
         self._cursor_allowed()
-        return self._track_cursor(super().execute(*args, **kwargs))
+        transaction = self._delete_transaction()
+        adopt = transaction.before_execute(args[0]) if transaction is not None else False
+        try:
+            cursor = self._track_cursor(super().execute(*args, **kwargs))
+        except BaseException:
+            if transaction is not None:
+                transaction.after_execute(adopt, success=False)
+            raise
+        if transaction is not None:
+            transaction.after_execute(adopt, success=True)
+        return cursor
+
+    def _delete_transaction(self):
+        reference = getattr(self, '_window_owner', None)
+        owner = reference() if reference is not None else None
+        transaction = owner.transaction if owner is not None else None
+        return transaction if isinstance(transaction, _DeleteTransaction) else None
 
     def executemany(self, *args, **kwargs):
         self._cursor_allowed()
+        R._need(self._delete_transaction() is None, 'reader_delete_batch_unsupported')
         return self._track_cursor(super().executemany(*args, **kwargs))
 
     def executescript(self, *args, **kwargs):
         self._cursor_allowed()
+        R._need(self._delete_transaction() is None, 'reader_delete_batch_unsupported')
         return self._track_cursor(super().executescript(*args, **kwargs))
 
     def close(self):
@@ -464,6 +483,7 @@ class _OwnedConnection:
         self.transaction = None
         self.auxiliaries = None
         self.journal_mode = None
+        db._window_owner = weakref.ref(self)
 
     def check(self):
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
@@ -545,8 +565,128 @@ class _WriteTransaction:
             raise
 
 
-@contextmanager
+class _DeleteTransaction(_WriteTransaction):
+    """One fixed binding INSERT; own its first native journal FD until finish."""
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.journal_fd = None
+        self.insert_allowed = False
+
+    def _hold(self):
+        self.rollback_pending = True
+        self.owner.pending = True
+
+    def _finish(self):
+        R._need(not self.owner.db.in_transaction, 'reader_connection_transaction_active')
+        if self.journal_fd is not None:
+            os.close(self.journal_fd)
+            self.journal_fd = None
+        super()._finish()
+
+    def binding_auxiliaries(self, actual):
+        expected = dict(self.owner.auxiliaries)
+        journal = actual['-journal']
+        if self.journal_fd is not None:
+            info = os.fstat(self.journal_fd)
+            R._need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600,
+                    'reader_delete_journal_unsafe')
+            if self.owner.db.in_transaction:
+                R._need(info.st_nlink == 1 and journal == (info.st_dev, info.st_ino),
+                        'reader_delete_journal_changed')
+                expected['-journal'] = journal
+            else:
+                R._need(journal is None and info.st_nlink == 0,
+                        'reader_delete_journal_unsettled')
+        return expected
+
+    def _binding(self):
+        try:
+            return connection_binding(self.owner, self.owner.db)
+        except BaseException:
+            self._hold()
+            raise
+
+    def before_execute(self, sql):
+        from laya_index_capacity import _INSERT_SQL, _LOOKUP_SQL
+        self._binding()
+        adopt = self.insert_allowed and sql == _INSERT_SQL
+        allowed = sql in (_LOOKUP_SQL, 'SELECT key, value FROM meta',
+            'SELECT type, name, tbl_name, sql FROM sqlite_master',
+            'PRAGMA application_id', 'PRAGMA user_version', 'PRAGMA journal_mode',
+            'PRAGMA busy_timeout', 'BEGIN IMMEDIATE') or (
+            isinstance(sql, str) and re.fullmatch(r'PRAGMA busy_timeout=\d+', sql) is not None)
+        R._need(adopt or allowed, 'reader_delete_sql_unsupported')
+        if adopt:
+            R._need(self.journal_fd is None, 'reader_delete_insert_repeated')
+            self.insert_allowed = False
+        return adopt
+
+    def after_execute(self, adopt, *, success):
+        if adopt:
+            path = Path(str(self.owner.component.path) + '-journal')
+            fd = None
+            try:
+                if os.path.lexists(path):
+                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                                 | getattr(os, 'O_CLOEXEC', 0))
+                    info = os.fstat(fd)
+                    R._need(tuple(R._file(path, path.parent)) == (info.st_dev, info.st_ino)
+                            and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600,
+                            'reader_delete_journal_changed')
+                    self.journal_fd, fd = fd, None
+                R._need(not success or not self.owner.db.in_transaction
+                        or self.journal_fd is not None, 'reader_delete_journal_missing')
+            except BaseException:
+                self._hold()
+                raise
+            finally:
+                if fd is not None:os.close(fd)
+        self._binding()
+
+    def insert_binding(self, parameters):
+        from laya_index_capacity import _INSERT_SQL
+        self._check()
+        R._need(not self.rollback_pending and self.journal_fd is None,
+                'reader_delete_insert_unavailable')
+        self.insert_allowed = True
+        try:
+            return self.owner.db.execute(_INSERT_SQL, parameters)
+        finally:
+            self.insert_allowed = False
+
+    def commit(self, *, validate=None):
+        try:
+            return super().commit(validate=validate)
+        except BaseException:
+            # Includes an already completed native commit whose postcheck
+            # fails. Drain checks its inactive state; it never claims undo.
+            self._hold()
+            raise
+
+    def rollback(self):
+        self._check()
+        try:
+            self._binding()
+            if self.owner.db.in_transaction:
+                self.owner.db.rollback()
+            self._binding()
+            self._finish()
+        except BaseException:
+            self._hold()
+            raise
+
+
 def write_transaction(owner, *, visible, deadline):
+    return _transaction_context(owner, visible=visible, deadline=deadline)
+
+
+def delete_binding_transaction(owner, *, deadline):
+    return _transaction_context(owner, visible=True, deadline=deadline, delete=True)
+
+
+@contextmanager
+def _transaction_context(owner, *, visible, deadline, delete=False):
     """Own mutation/cut locks and SQL completion as one explicit lifetime."""
     R._need(type(owner) is _OwnedConnection and _owned.get(id(owner)) is owner,
             'reader_connection_not_owned')
@@ -555,18 +695,24 @@ def write_transaction(owner, *, visible, deadline):
     R._need(type(visible) is bool and owner.db is not None and not owner.pending
             and owner.transaction is None and not owner.db.in_transaction,
             'reader_transaction_unavailable')
-    # DELETE journals need first-write inode tracking and safe rollback
-    # deferral. They cannot use the WAL transaction contract until integrated.
-    R._need(owner.journal_mode == 'wal', 'reader_journal_write_unsupported')
+    R._need(owner.journal_mode == ('delete' if delete else 'wal'),
+            'reader_journal_write_unsupported')
+    if delete:
+        R._need(owner.component.role == 'binding'
+                and owner.auxiliaries == dict.fromkeys(('-wal', '-shm', '-journal')),
+                'reader_delete_component_unsupported')
     _deadline(deadline)
     _pid, installer, scope, _node, _manifest = _component(owner.component)
     _endpoint, current = _owner(installer)
     R._need(current is scope, 'reader_component_owner_changed')
-    transaction = _WriteTransaction(owner)
+    transaction = _DeleteTransaction(owner) if delete else _WriteTransaction(owner)
     owner.transaction = transaction
     try:
         transaction.locks.enter_context(mutation_window(owner.component,
             exclusive=False, deadline=deadline))
+        if delete:
+            transaction.locks.enter_context(physical_window(owner.component,
+                exclusive=True, deadline=deadline))
         if visible:
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=True, deadline=deadline))
@@ -622,11 +768,14 @@ def connection_binding(owner, db):
     _pid, installer, scope, node, _manifest = _component(owner.component)
     endpoint, current = _owner(installer)
     state = Path(endpoint.record['state'])
+    actual = _auxiliary_nodes(owner.component.path, state)
+    expected = (owner.transaction.binding_auxiliaries(actual)
+                if isinstance(owner.transaction, _DeleteTransaction) else owner.auxiliaries)
     if (owner.db is not db or current is not scope or node is None
             or tuple(R._file(owner.component.path, state)) != node
-            or _auxiliary_nodes(owner.component.path, state) != owner.auxiliaries):
+            or actual != expected):
         raise ReaderWindowBusy('reader_connection_changed')
-    return owner, db, node, tuple(sorted(owner.auxiliaries.items()))
+    return owner, db, node, tuple(sorted(expected.items()))
 
 
 def checkpoint_owned(owner, *, deadline):

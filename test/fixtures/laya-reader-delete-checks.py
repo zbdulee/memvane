@@ -146,7 +146,37 @@ class DeleteChecks(existing.QueueMutationChecks):
                     existing.emit('delete-lock-admission',lock=name,error=error,begin=begins)
                     self.assertIsNotNone(error);self.assertEqual(begins,[])
 
-# Only the five DELETE contracts; inherited queue checks have their own wrapper.
+    def test_post_native_commit_conflict_reports_error_without_claiming_rollback(self):
+        with self.binding() as (C,store,binding,kwargs):
+            journal=Path(str(store.path)+'-journal');cls=type(store.db)
+            commit,rollback=cls.commit,cls.rollback;events=[];error=None
+            def completed(db):
+                result=commit(db)
+                if db is store.db:
+                    events.append(('committed',db.in_transaction))
+                    journal.write_bytes(b'post-commit foreign journal');journal.chmod(0o600)
+                return result
+            def rb(db):events.append(('rollback',db.in_transaction));return rollback(db)
+            try:
+                with mock.patch.object(cls,'commit',completed),mock.patch.object(cls,'rollback',rb):
+                    try:store.put(binding)
+                    except Exception as exc:error=str(exc)
+                    if events:
+                        self.assertFalse(store.db.in_transaction)
+                        self.assertEqual(journal.read_bytes(),b'post-commit foreign journal')
+                        with self.assertRaises(Exception):self.W.drain_pending(deadline=time.monotonic()+1)
+                        journal.unlink()
+                        self.W.drain_pending(deadline=time.monotonic()+1)
+                self.assertIsNotNone(error);self.assertEqual(events,[('committed',False)])
+                self.assertIsNone(store._connection_owner.db)
+                reopened=C.GenerationBindingStore(self.case.store,**kwargs)
+                try:self.assertEqual(reopened.get(binding.scope,binding.generation,binding.db_incarnation),binding)
+                finally:reopened.close(deadline=time.monotonic()+1)
+                existing.emit('delete-post-commit-error',error=error,events=events,durable=True)
+            finally:
+                if journal.exists() and journal.read_bytes()==b'post-commit foreign journal':journal.unlink()
+
+# Only the DELETE contracts; inherited queue checks have their own wrapper.
 if __name__=='__main__':
     names=[name for name in DeleteChecks.__dict__ if name.startswith('test_')]
     result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(DeleteChecks(name) for name in names))
