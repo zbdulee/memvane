@@ -261,6 +261,90 @@ def _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash)
         raise ReaderWindowBusy('reader_sidecar_sources_changed')
 
 
+_DOCUMENT_ROW = ('SELECT rowid,path,hash,title,body,profile_id,chunk_count,scan_id '
+                 'FROM docs WHERE path=?')
+_DOCUMENT_KEY = 'SELECT rowid,hash,profile_id,chunk_count,scan_id FROM docs WHERE path=?'
+
+
+def _sidecar_open(identity, coordination):
+    return (_open(identity['stateRoot']) if coordination is None else
+            _open(identity['stateRoot'], coordination=coordination, identity=identity))
+
+
+def _sidecar_setup(db, identity, coordination):
+    return (_setup(db, identity) if coordination is None else
+            _setup(db, identity, coordination=coordination))
+
+
+def _sidecar_prepare(db, identity, setup_stamp, path):
+    from laya_reader_windows import ReaderWindowBusy
+    owner = setup_stamp[0][0]
+    stamp = _connection_stamp(owner, db)
+    if stamp[0] != setup_stamp[0] or stamp[3] != setup_stamp[3]:
+        raise ReaderWindowBusy('reader_sidecar_changed')
+    if (db.execute('PRAGMA user_version').fetchone() != (1,)
+            or db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(identity)]):
+        _fail('incremental_identity_changed')
+    row = db.execute(_DOCUMENT_ROW, (path,)).fetchone()
+    if _connection_stamp(owner, db) != stamp:
+        raise ReaderWindowBusy('reader_sidecar_changed')
+    return stamp, row
+
+
+def _recheck_sidecar(db, stamp, path, row):
+    from laya_reader_windows import ReaderWindowBusy
+    expected = None if row is None else (row[0], row[2], row[5], row[6], row[7])
+    if (_connection_stamp(stamp[0][0], db) != stamp
+            or db.execute(_DOCUMENT_KEY, (path,)).fetchone() != expected
+            or _connection_stamp(stamp[0][0], db) != stamp):
+        raise ReaderWindowBusy('reader_sidecar_changed')
+
+
+def _base_owner(index, coordination):
+    from laya_reader_windows import _component, connection_binding
+    owner = getattr(index, '_connection_owner', None)
+    side = _component(coordination)
+    if owner is None:
+        _fail('incremental_sources_uncoordinated')
+    connection_binding(owner, index.db)
+    base = _component(owner.component)
+    if (coordination.role != 'sidecar' or owner.component.role != 'base'
+            or coordination.install_id != owner.component.install_id or side[2] is not base[2]):
+        _fail('incremental_sources_uncoordinated')
+    return owner
+
+
+def _recheck_base(index, owner, stamp, scope, base_gen):
+    from laya_reader_windows import connection_binding, ReaderWindowBusy
+    connection_binding(owner, index.db)
+    if (_source_stamps((owner,)) != stamp
+            or index.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone() != (base_gen,)
+            or _source_stamps((owner,)) != stamp):
+        raise ReaderWindowBusy('reader_sidecar_sources_changed')
+
+
+def _preserve_pages(index, next_gen, base_gen, scope):
+    after = ''
+    while True:
+        cursor = index.db.execute(
+            'SELECT old.path,old.hash,old_body.body,new.hash,new_body.body '
+            'FROM membership old JOIN membership new '
+            'ON new.gen=? AND new.scope=old.scope AND new.path=old.path '
+            'JOIN content old_body ON old_body.hash=old.hash '
+            'JOIN content new_body ON new_body.hash=new.hash '
+            'WHERE old.gen=? AND old.scope=? AND old.eligible=1 AND new.eligible=1 '
+            'AND old.hash<>new.hash AND old.path>? ORDER BY old.path LIMIT 64',
+            (next_gen, base_gen, scope, after))
+        try:
+            page = cursor.fetchall()
+        finally:
+            cursor.close()
+        if not page:
+            return
+        yield from page
+        after = page[-1][0]
+
+
 def _verified(identity, path, body):
     from laya_host_response import _verified_wiki_row
     decision = {
@@ -437,7 +521,7 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
     return {'status': 'published'}
 
 
-def preserve_previous_head(index, identity, base_gen, next_gen):
+def preserve_previous_head(index, identity, base_gen, next_gen, *, coordination=None):
     """Pin old verified rows before a full generation replaces them with drafts.
 
     The sidecar read path shadows a newly published head with these immutable
@@ -449,6 +533,8 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
     from laya_index_vector import LayaVectorIndex, qmd_markdown_title, verify_generation_seal
     if base_gen is None:
         return 0
+    owner = _base_owner(index, coordination) if coordination is not None else None
+    stamp = _source_stamps((owner,)) if owner is not None else None
     if (str(index.path) != identity['candidateDb'] or
             index.incarnation() != identity['dbIncarnation'] or
             index.db.execute('SELECT gen FROM head WHERE scope=?',
@@ -461,7 +547,7 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
                 'collections': identity['collections'],
                 'collectionRoots': {item['name']: item['sourceRoot']
                                     for item in identity['collections']}}
-    rows = index.db.execute(
+    rows = (_preserve_pages(index, next_gen, base_gen, identity['scopeId']) if owner is not None else index.db.execute(
         'SELECT old.path,old.hash,old_body.body,new.hash,new_body.body '
         'FROM membership old JOIN membership new '
         'ON new.gen=? AND new.scope=old.scope AND new.path=old.path '
@@ -469,7 +555,7 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
         'JOIN content new_body ON new_body.hash=new.hash '
         'WHERE old.gen=? AND old.scope=? AND old.eligible=1 AND new.eligible=1 '
         'AND old.hash<>new.hash ORDER BY old.path',
-        (next_gen, base_gen, identity['scopeId']))
+        (next_gen, base_gen, identity['scopeId'])))
     vectors = LayaVectorIndex(index)
     db = None
     pinned = 0
@@ -488,18 +574,24 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
             if not chunks:
                 _fail('incremental_old_vector_incomplete')
             if db is None:
-                db = _open(identity['stateRoot'])
-                _setup(db, identity)
-            db.execute('BEGIN IMMEDIATE')
-            try:
-                existing = db.execute('SELECT rowid,hash,body FROM docs WHERE path=?',
-                                      (path,)).fetchone()
+                db = _sidecar_open(identity, coordination)
+                setup_stamp = _sidecar_setup(db, identity, coordination)
+            if owner is not None:
+                side_stamp, prepared_row = _sidecar_prepare(db, identity, setup_stamp, path)
+                existing = None if prepared_row is None else (prepared_row[0], prepared_row[2], prepared_row[4])
+                newer = (existing is not None and existing[1] != old_hash and
+                    _verified_wiki_row({'path': path, 'body': existing[2]}, decision, current_source=False))
+            with _document_transaction(db, coordination, visible=True):
+                if owner is not None:
+                    _recheck_base(index, owner, stamp, identity['scopeId'], base_gen)
+                    _recheck_sidecar(db, side_stamp, path, prepared_row)
+                else:
+                    existing = db.execute('SELECT rowid,hash,body FROM docs WHERE path=?', (path,)).fetchone()
                 # A newer already verified sidecar row takes precedence over
                 # the old head. Never downgrade it during claim replay.
-                if (existing is not None and existing[1] != old_hash and
+                if (newer if owner is not None else (existing is not None and existing[1] != old_hash and
                         _verified_wiki_row({'path': path, 'body': existing[2]},
-                                           decision, current_source=False)):
-                    db.commit()
+                                           decision, current_source=False))):
                     continue
                 if existing is None:
                     rowid = db.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
@@ -507,7 +599,6 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
                                         identity['vectorProfileId'], len(chunks),
                                         'head-' + base_gen)).lastrowid
                 elif existing[1] == old_hash and existing[2] == old_body:
-                    db.commit()
                     continue
                 else:
                     rowid = existing[0]
@@ -518,21 +609,19 @@ def preserve_previous_head(index, identity, base_gen, next_gen):
                                 len(chunks), 'head-' + base_gen, rowid))
                 db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
                            (rowid, path, title, old_body))
-                db.commit()
-                pinned += 1
-            except BaseException:
-                db.rollback()
-                raise
+            pinned += 1
     finally:
         if db is not None:
             _close(db)
-    if index.db.execute('SELECT gen FROM head WHERE scope=?',
+    if owner is not None:
+        _recheck_base(index, owner, stamp, identity['scopeId'], base_gen)
+    elif index.db.execute('SELECT gen FROM head WHERE scope=?',
                         (identity['scopeId'],)).fetchone() != (base_gen,):
         _fail('incremental_head_changed')
     return pinned
 
 
-def retire_missing_documents(runtime, identity, *, before_write):
+def retire_missing_documents(runtime, identity, *, before_write, coordination=None):
     """Remove obsolete sidecar rows after a complete wiki catalog scan.
 
     This is owned by the index worker. A pending scan or a staged replacement
@@ -540,6 +629,8 @@ def retire_missing_documents(runtime, identity, *, before_write):
     verified head also retires an older pinned head; it must not be removed
     before the CAS, when the old completed bytes may still be needed.
     """
+    owners = _source_owners(runtime, coordination) if coordination is not None else None
+    stamps = _source_stamps(owners) if owners is not None else None
     if (runtime.scope != identity['scopeId'] or
             runtime.index.incarnation() != identity['dbIncarnation'] or
             str(runtime.index.path) != identity['candidateDb']):
@@ -554,10 +645,10 @@ def retire_missing_documents(runtime, identity, *, before_write):
                                     for item in identity['collections']}}
     head = runtime.index.db.execute('SELECT gen FROM head WHERE scope=?',
                                     (runtime.scope,)).fetchone()
-    db = _open(identity['stateRoot'])
+    db = _sidecar_open(identity, coordination)
     removed = 0
     try:
-        _setup(db, identity)
+        setup_stamp = _sidecar_setup(db, identity, coordination)
         rows = db.execute('SELECT path,rowid,hash,scan_id FROM docs ORDER BY path').fetchall()
         for path, rowid, old_hash, scan_id in rows:
             member = runtime.catalog.lookup(snapshot, path)
@@ -578,25 +669,54 @@ def retire_missing_documents(runtime, identity, *, before_write):
                                                  decision, current_source=False))
             if not remove:
                 continue
+            if owners is not None:
+                source_rows = _source_rows(runtime, snapshot, path, old_hash)
+                side_stamp, prepared_row = _sidecar_prepare(db, identity, setup_stamp, path)
+                if prepared_row is None or (prepared_row[0], prepared_row[2], prepared_row[7]) != (rowid, old_hash, scan_id):
+                    continue
             before_write()
-            db.execute('BEGIN IMMEDIATE')
-            try:
+            with _document_transaction(db, coordination, visible=True):
+                if owners is not None:
+                    _recheck_sources(runtime, owners, stamps, source_rows, snapshot, path, old_hash)
+                    _recheck_sidecar(db, side_stamp, path, prepared_row)
                 if db.execute('SELECT rowid,hash,scan_id FROM docs WHERE path=?',
                               (path,)).fetchone() == (rowid, old_hash, scan_id):
                     db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
                     db.execute('DELETE FROM docs WHERE rowid=?', (rowid,))
                     removed += 1
-                db.commit()
-            except BaseException:
-                db.rollback()
-                raise
     finally:
         _close(db)
     return removed
 
 
+def _backfill_cursor(runtime, identity, snapshot, db, coordination, setup_stamp,
+                     expected, cursor):
+    _source_owners(runtime, coordination)
+    try:
+        runtime.catalog.require_current(snapshot)
+    except IndexContractError:
+        return False
+    side_stamp, absent = _sidecar_prepare(db, identity, setup_stamp, None)
+    with _document_transaction(db, coordination, visible=False) as transaction:
+        _recheck_sidecar(db, side_stamp, None, absent)
+        prior = db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
+        if prior != expected:
+            transaction.rollback()
+            return False
+        if prior is None:
+            db.execute('INSERT INTO cached_backfill VALUES(1,?,?)', (snapshot.scan_id, cursor))
+        else:
+            changed = db.execute('UPDATE cached_backfill SET scan_id=?,cursor=? '
+                'WHERE id=1 AND scan_id=? AND cursor=?',
+                (snapshot.scan_id, cursor, *prior)).rowcount
+            if changed != 1:
+                transaction.rollback()
+                return False
+    return True
+
+
 def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
-                    before_publish, should_yield, require_verified):
+                    before_publish, should_yield, require_verified, coordination=None):
     """Publish older complete cached wiki members without re-embedding them.
 
     The separate cursor and each document's publication are durable. A crash
@@ -606,6 +726,8 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
     """
     from laya_index_vector import LayaVectorIndex, qmd_markdown_title
     from laya_source_catalog import load_exclusions
+    if coordination is not None:
+        _source_stamps(_source_owners(runtime, coordination))
     if (profile_id != identity['vectorProfileId'] or
             runtime.scope != identity['scopeId'] or
             runtime.index.incarnation() != identity['dbIncarnation'] or
@@ -616,9 +738,9 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
     snapshot = runtime.catalog.require_complete()
     exclusions = load_exclusions(runtime.index, runtime.scope)
     vectors = LayaVectorIndex(runtime.index)
-    db = _open(identity['stateRoot'])
+    db = _sidecar_open(identity, coordination)
     try:
-        _setup(db, identity)
+        setup_stamp = _sidecar_setup(db, identity, coordination)
         prior = db.execute('SELECT scan_id,cursor FROM cached_backfill WHERE id=1').fetchone()
         # A product draft skipped before verification needs another attempt
         # after verification changes the wiki bytes and requests a new scan.
@@ -626,12 +748,17 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
         # same-scan retries still resume the finite cursor. Synthetic callers
         # without the verification gate retain the original one-time backfill.
         cursor = (prior[1] if prior is not None and
-                  (prior[0] == snapshot.scan_id or not require_verified) else '')
+                  (prior[0] == snapshot.scan_id or (coordination is None and not require_verified)) else '')
         if prior is None or prior[0] != snapshot.scan_id:
-            db.execute('BEGIN IMMEDIATE')
-            db.execute('INSERT OR REPLACE INTO cached_backfill VALUES(1,?,?)',
-                       (snapshot.scan_id, cursor))
-            db.commit()
+            if coordination is not None:
+                if not _backfill_cursor(runtime, identity, snapshot, db, coordination,
+                                        setup_stamp, prior, cursor):
+                    return {'state': 'pending', 'reason': 'incremental_cursor_changed'}
+            else:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('INSERT OR REPLACE INTO cached_backfill VALUES(1,?,?)',
+                           (snapshot.scan_id, cursor))
+                db.commit()
         while True:
             if clock() >= deadline:
                 return {'state': 'pending', 'reason': 'incremental_backfill'}
@@ -662,7 +789,8 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
                         before_publish()
                         publish_document(runtime, identity, snapshot, path, sha,
                                          title, body, profile_id,
-                                         require_verified=require_verified)
+                                         require_verified=require_verified,
+                                         **({} if coordination is None else {'coordination': coordination}))
                     elif fill_cursor and path <= fill_cursor:
                         _fail('incremental_cached_member_missing')
                 # Never advance past a failed publication. An unverified draft
@@ -670,9 +798,14 @@ def backfill_cached(runtime, identity, profile_id, *, deadline, clock,
                 # bytes and requests another scan, which restarts this cursor.
                 # A repeated member with cached vectors needs no new model.
                 before_publish()
-                db.execute('BEGIN IMMEDIATE')
-                db.execute('UPDATE cached_backfill SET cursor=? WHERE id=1', (path,))
-                db.commit()
+                if coordination is not None:
+                    if not _backfill_cursor(runtime, identity, snapshot, db, coordination,
+                                            setup_stamp, (snapshot.scan_id, cursor), path):
+                        return {'state': 'pending', 'reason': 'incremental_cursor_changed'}
+                else:
+                    db.execute('BEGIN IMMEDIATE')
+                    db.execute('UPDATE cached_backfill SET cursor=? WHERE id=1', (path,))
+                    db.commit()
                 cursor = path
     finally:
         _close(db)
