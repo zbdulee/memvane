@@ -208,4 +208,43 @@ class SidecarWriteChecks(unittest.TestCase):
                     self.assertIsNotNone(error);self.assertIsNone(result)
                     self.assertEqual(remaining,expected[1:]);self.assertTrue(before==self.rows())
 
+    def test_idle_unexecuted_source_cursor_allows_valid_publication(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            cursor=runtime.index.db.cursor();error=None;result=None
+            try:
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+            finally:cursor.close()
+            print(json.dumps(dict(case='sidecar-idle-source-cursor',error=error,result=result)),flush=True)
+            self.assertIsNone(error);self.assertEqual(result['status'],'published')
+
+    def test_factory_public_description_cannot_attest_native_completion(self):
+        class ShadowDescription(sqlite3.Cursor):
+            @property
+            def description(self):return None
+        self.shadow_factory_case(ShadowDescription,False)
+
+    def test_factory_public_arraysize_cannot_attest_native_completion(self):
+        class ShadowArraySize(sqlite3.Cursor):
+            @property
+            def arraysize(self):return 999
+        self.shadow_factory_case(ShadowArraySize,True)
+
+    def shadow_factory_case(self,factory,many):
+        with self.opened() as (runtime,snapshot,row,component):
+            expected=runtime.index.db.execute('SELECT hash FROM content ORDER BY hash').fetchall()
+            self.assertGreaterEqual(len(expected),3);before=self.rows()
+            cursor=runtime.index.db.cursor(factory=factory)
+            cursor.execute('SELECT hash FROM content ORDER BY hash');error=None;result=None
+            try:
+                first=cursor.fetchmany() if many else [cursor.fetchone()]
+                try:result=self.publish(runtime,snapshot,row,component)
+                except Exception as exc:error=str(exc)
+                remaining=cursor.fetchall()
+            finally:cursor.close()
+            print(json.dumps(dict(case='sidecar-native-cursor-descriptor',factory=factory.__name__,error=error,result=result,
+                remainingRowsPreserved=first+remaining==expected,rowsUnchanged=before==self.rows())),flush=True)
+            self.assertEqual(len(first),1);self.assertIsNotNone(error);self.assertIsNone(result)
+            self.assertEqual(first+remaining,expected);self.assertTrue(before==self.rows())
+
 if __name__=='__main__':unittest.main(verbosity=2)
