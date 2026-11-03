@@ -20,7 +20,7 @@ test('retained move tuple issuance uses real v5 stores and writer exclusion', ()
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 9 tests\b/);
+    assert.match(result.stderr, /Ran 12 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

@@ -29,6 +29,7 @@ spec.loader.exec_module(base)
 
 class MoveSealChecks(unittest.TestCase):
     STATE_PARTS=('.local','state','memvane','3'*32)
+    PUBLISH_SIDECAR=True
 
     def setUp(self):
         self.helper=base.JournalReaderChecks('runTest')
@@ -59,20 +60,24 @@ class MoveSealChecks(unittest.TestCase):
         import laya_incremental_docs as incremental
         from laya_index_vector import qmd_markdown_title
         identity=build.read(self.case.state)['identity']
-        with self.case.runtime(roots) as runtime:
-            snapshot=runtime.catalog.require_complete()
-            gen=self.case.head()[0]
-            rows=runtime.index.db.execute('SELECT m.path,m.hash,c.body FROM membership m '
-                'JOIN content c ON c.hash=m.hash WHERE m.gen=? ORDER BY m.path',(gen,)).fetchall()
-            runtime.index.db.commit()
-            self.assertEqual(len(rows),3)
-            for path,hashed,body in rows:
-                result=incremental.publish_document(runtime,identity,snapshot,path,hashed,
-                    qmd_markdown_title(body,path),body,identity['vectorProfileId'],require_verified=True)
-                self.assertIn(result['status'],('published','already_published'),result)
         self.sidecar=self.case.state/incremental.FILE
-        self.assertTrue(self.sidecar.is_file())
-        with self.ro(self.sidecar) as db:self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone(),(3,))
+        if self.PUBLISH_SIDECAR:
+            with self.case.runtime(roots) as runtime:
+                snapshot=runtime.catalog.require_complete()
+                gen=self.case.head()[0]
+                rows=runtime.index.db.execute('SELECT m.path,m.hash,c.body FROM membership m '
+                    'JOIN content c ON c.hash=m.hash WHERE m.gen=? ORDER BY m.path',(gen,)).fetchall()
+                runtime.index.db.commit()
+                self.assertEqual(len(rows),3)
+                for path,hashed,body in rows:
+                    result=incremental.publish_document(runtime,identity,snapshot,path,hashed,
+                        qmd_markdown_title(body,path),body,identity['vectorProfileId'],require_verified=True)
+                    self.assertIn(result['status'],('published','already_published'),result)
+            self.assertTrue(self.sidecar.is_file())
+            with self.ro(self.sidecar) as db:self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone(),(3,))
+        else:
+            self.assertFalse(os.path.lexists(self.sidecar),'absence fixture must not create/delete an issued live sidecar')
+            self.assertEqual(len(self.case.head()[1]),3)
         self.installer=self.helper.installer(self.case,self.reader,self.bridge)
         _challenge,_receipts,readiness=self.helper.ready(self.case,self.bridge)
         with self.authority():
@@ -82,7 +87,8 @@ class MoveSealChecks(unittest.TestCase):
         self.assertEqual(base.J.journal_version(self.case.journal),5)
         self.install=base.J.inspect_journal(self.case.journal)['selected']['installId']
         print(json.dumps(dict(case='move-seal-real-seed',journalVersion=5,publishedCards=3,
-            completedSidecarRows=3,actualHostExecuted=False)),flush=True)
+            completedSidecarRows=3 if self.PUBLISH_SIDECAR else 0,
+            sidecarPublished=self.PUBLISH_SIDECAR,actualHostExecuted=False)),flush=True)
 
     def authority(self):
         return self.helper.full_authority(self.case,self.reader,self.bridge,self.lease,self.mover)
@@ -109,8 +115,13 @@ class MoveSealChecks(unittest.TestCase):
         with self.ro(path) as db:return tuple(db.iterdump())
 
     def live(self):
-        paths=[self.case.journal,self.case.db,self.case.catalog,self.case.store,self.sidecar]
-        return dict(files={str(path):path.read_bytes() for path in paths},
+        paths=[self.case.journal,self.case.db,self.case.catalog,self.case.store]
+        files={str(path):path.read_bytes() for path in paths}
+        if self.PUBLISH_SIDECAR:files[str(self.sidecar)]=self.sidecar.read_bytes()
+        else:
+            self.assertFalse(os.path.lexists(self.sidecar))
+            files[str(self.sidecar)]=None
+        return dict(files=files,
                     metadata=self.helper.metadata_snapshot(self.case))
 
     @contextmanager
@@ -364,6 +375,7 @@ with _install_lock(Path(sys.argv[2])):
 class StateMoveSealChecks(unittest.TestCase):
     """Reuse seed/helpers without inheriting the seven project tests."""
     STATE_PARTS=('.local','state','laya','3'*32)
+    PUBLISH_SIDECAR=True
     setUp=MoveSealChecks.setUp
     authority=MoveSealChecks.authority
     producer=MoveSealChecks.producer
@@ -379,8 +391,36 @@ class StateMoveSealChecks(unittest.TestCase):
             intent=mover._prepare(self.case.project,self.case.state,self.case.home)
             self.assertEqual(mover._canonical(mover._load_intent(self.case.state,self.case.project)),
                              mover._canonical(intent))
-            self.assertIsNotNone(intent['docs'],'actual completed sidecar must be bound in state intent')
+            if self.PUBLISH_SIDECAR:
+                self.assertIsNotNone(intent['docs'],'actual completed sidecar must be bound in state intent')
+            else:self.assertIsNone(intent['docs'],'absence seed must have an actual None docs intent')
             yield mover,intent
+
+    def test_state_staging_rejects_changed_actual_pending_pointer_before_artifacts(self):
+        stage,_seal_type=self.producer()
+        with self.prepared_state() as (mover,intent):
+            pointer=mover.pointer_path(self.case.project)
+            value=json.loads(pointer.read_bytes())
+            self.assertEqual(value['newRouteSha256'],hashlib.sha256(intent['newRoute'].encode('utf8')).hexdigest())
+            value['newRouteSha256']='f'*64 if value['newRouteSha256']!='f'*64 else 'e'*64
+            pointer.write_bytes(mover._canonical(value))
+            tampered=pointer.read_bytes()
+            with self.assertRaisesRegex(mover.StateMoveBlocked,'^state_move_pointer_changed$'):
+                mover._write_pointer(intent)
+            self.assertEqual(pointer.read_bytes(),tampered,'actual pointer control must refuse without rewriting')
+            before=self.live();artifacts=set(self.case.state.rglob('*'))
+            error,seal=None,None
+            try:seal=stage(intent,installer=self.installer)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            after=set(self.case.state.rglob('*'))
+            print(json.dumps(dict(case='state-stage-pending-pointer-digest',actualPointerControl='state_move_pointer_changed',
+                issued=seal is not None,error=error,newArtifacts=sorted(str(p) for p in after-artifacts),
+                pointerPreserved=pointer.read_bytes()==tampered,liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertEqual(pointer.read_bytes(),tampered)
+            self.assertIsNotNone(error,'producer must honor the actual pending pointer proof')
+            self.assertIsNone(seal)
+            self.assertEqual(after,artifacts,'pointer disagreement must refuse before staging')
 
     def test_state_staging_under_shared_reader_retains_old_and_rebases_new_completed_sidecar(self):
         stage,seal_type=self.producer()
@@ -486,6 +526,76 @@ class StateMoveSealChecks(unittest.TestCase):
             self.assertNotEqual(error,'reader_move_stage_unsupported',
                 'feature RED: unsupported state staging does not prove docs identity validation')
             self.assertIsNone(seal)
+
+
+class _AbsentSidecarFixture:
+    PUBLISH_SIDECAR=False
+    setUp=MoveSealChecks.setUp
+    authority=MoveSealChecks.authority
+    producer=MoveSealChecks.producer
+    ro=staticmethod(MoveSealChecks.ro)
+    dump=MoveSealChecks.dump
+    live=MoveSealChecks.live
+
+    def check_absent_stage(self,prepared,kind):
+        stage,seal_type=self.producer()
+        self.assertFalse(os.path.lexists(self.sidecar))
+        with prepared() as prepared_value:
+            intent=prepared_value[1] if kind=='state' else prepared_value
+            before=self.live();files=set(self.case.state.rglob('*'))
+            error,seal=None,None
+            with self.lease.reader_lifetime(self.install,exclusive=False):
+                try:seal=stage(intent,installer=self.installer)
+                except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case=kind+'-stage-sidecar-absence',error=error,issued=seal is not None,
+                explicitAbsence=None if seal is None else (seal.retained_endpoint.record.get('sidecar_path') is None
+                    or seal.retained_endpoint.record.get('sidecar_absent') is True),
+                sidecarCreated=os.path.lexists(self.sidecar),liveUnchanged=self.live()==before)),flush=True)
+            self.assertEqual(self.live(),before)
+            self.assertIsNone(error,'a normal sidecar-free v5 install must support tuple staging')
+            self.assertIs(type(seal),seal_type)
+            with self.assertRaises((ValueError,TypeError)):seal_type()
+            with self.assertRaises((AttributeError,TypeError)):seal.move_id='caller'
+            self.assertIs(type(seal.retained_endpoint),self.reader.VerifiedEndpoint)
+            record=seal.retained_endpoint.record
+            self.assertTrue(record.get('sidecar_path') is None or record.get('sidecar_absent') is True,
+                'an unchanged nonexistent path alone is not a sealed absence claim')
+            for field in ('old_tuple_digest','new_tuple_digest','prefix_digest'):
+                self.assertRegex(getattr(seal,field),r'^[0-9a-f]{64}$')
+                self.assertNotEqual(getattr(seal,field),'0'*64)
+            for key,original in (('catalog_path',self.case.catalog),('binding_path',self.case.store)):
+                self.assertNotEqual(Path(record[key]),original)
+                self.assertEqual(self.dump(record[key]),self.dump(original))
+            with self.ro(record['db_path']) as db:
+                rows=db.execute('SELECT c.body FROM membership m JOIN content c ON c.hash=m.hash WHERE m.gen=?',
+                                (seal.old_generation,)).fetchall()
+                self.assertEqual(len(rows),3)
+                self.assertTrue(any('otter' in body for (body,) in rows))
+            self.assertFalse(os.path.lexists(self.sidecar))
+            for path in set(self.case.state.rglob('*'))-files:
+                if not path.is_file() or path.is_symlink():continue
+                with path.open('rb') as stream:header=stream.read(16)
+                if header!=b'SQLite format 3\x00':continue
+                with self.ro(path) as db:
+                    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    self.assertFalse({'meta','docs','docs_fts'}<=tables,'absence staging must not create a sidecar copy')
+            self.assertEqual(self.live(),before)
+
+
+class AbsentSidecarStateMoveSealChecks(_AbsentSidecarFixture,unittest.TestCase):
+    STATE_PARTS=('.local','state','laya','3'*32)
+    prepared_state=StateMoveSealChecks.prepared_state
+
+    def test_state_staging_preserves_explicit_old_and_new_sidecar_absence(self):
+        self.check_absent_stage(self.prepared_state,'state')
+
+
+class AbsentSidecarProjectMoveSealChecks(_AbsentSidecarFixture,unittest.TestCase):
+    STATE_PARTS=('.local','state','memvane','3'*32)
+    prepared=MoveSealChecks.prepared
+
+    def test_project_staging_preserves_explicit_old_and_new_sidecar_absence(self):
+        self.check_absent_stage(self.prepared,'project')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
