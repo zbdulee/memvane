@@ -1125,6 +1125,71 @@ class RecoveryChecks(unittest.TestCase):
             self.assertLessEqual(max(counts + [final_count]), 1,
                                  'the same recovery cannot accumulate unbounded owned rehearsal copies')
 
+    def test_empty_rehearsal_stage_after_owner_creation_or_cleanup_crash_is_resumable(self):
+        import laya_journal_recovery as recovery
+        for phase in ('before-owner-write', 'after-owner-unlink'):
+            with self.subTest(phase=phase), fixture() as values:
+                helper, case, reader, bridge, _, _, _ = values
+                before = self.snapshot(helper, case)
+                self.pending_initial(values, hot=True)
+                canonical = Path(case.journal).read_bytes()
+                side = Path(str(case.journal) + '-journal')
+                rollback = side.read_bytes()
+
+                def resume(pipe):
+                    reader._issued.clear()
+                    bridge._ISSUED.clear()
+                    actual_write, actual_unlink = recovery._write, Path.unlink
+
+                    def checkpoint(path):
+                        pipe.send(dict(event='checkpoint', phase=phase,
+                            stage=str(path.parent), node=[path.parent.stat().st_dev,
+                                                        path.parent.stat().st_ino],
+                            entries=sorted(p.name for p in path.parent.iterdir())))
+                        os._exit(EXIT_AT_CHECKPOINT)
+
+                    def written(path, data):
+                        path = Path(path)
+                        if phase == 'before-owner-write' and path.name == 'owner.json':
+                            checkpoint(path)  # The actual private mkdir has completed.
+                        return actual_write(path, data)
+
+                    def unlinked(path, *args, **kwargs):
+                        result = actual_unlink(path, *args, **kwargs)
+                        if (phase == 'after-owner-unlink' and path.name == 'owner.json'
+                                and path.parent.name.startswith('.reader-rehearse-')):
+                            checkpoint(path)  # Observe the actual completed unlink.
+                        return result
+
+                    with helper.full_authority(case, reader, bridge), \
+                            mock.patch.object(recovery, '_write', side_effect=written), \
+                            mock.patch.object(Path, 'unlink', unlinked):
+                        helper.installer(case, reader, bridge)
+
+                with child(resume) as (process, pipe):
+                    reached = receive(pipe, event='checkpoint')
+                    process.join(10)
+                    self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+                self.assertEqual(reached['entries'], [])
+                self.assertEqual(Path(case.journal).read_bytes(), canonical)
+                self.assertEqual(side.read_bytes(), rollback)
+                reader._issued.clear()
+                bridge._ISSUED.clear()
+                error, selected = None, None
+                try:
+                    with helper.full_authority(case, reader, bridge):
+                        fresh = helper.installer(case, reader, bridge)
+                        _, _, ready = helper.ready(case, bridge)
+                        selected = reader.convert_reader_v5(case.state, case.project,
+                                             installer=fresh, readiness=ready)
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    error = dict(type=type(exc).__name__, reason=str(exc))
+                emit('empty-rehearsal-owner-crash', checkpoint=reached,
+                     resume_error=error, stage_exists=Path(reached['stage']).exists())
+                self.assertIsNone(error, 'a real empty-stage owner publication/retirement crash must resume')
+                self.assertEqual(selected.epoch, 1)
+                self.unchanged(helper, case, before)
+
     def test_actual_released_writer_opened_before_conversion_refuses_v5_before_dml(self):
         with fixture() as (helper, case, reader, bridge, installer, readiness, _):
             old = self.old_tree(case)
