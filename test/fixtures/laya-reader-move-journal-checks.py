@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[1]
@@ -385,6 +386,163 @@ class MoveJournalChecks(unittest.TestCase):
             self.assertEqual(self.case.journal.read_bytes(),original)
             self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
             self.assertEqual(self.reader.read_selection(self.case.journal),changed)
+
+    def test_publisher_rejects_actual_gapped_reader_history_before_replacing_journal(self):
+        def gap(db):
+            old,_record=self.reader._selection(db)
+            self.assertEqual(old.epoch,1)
+            db.execute('INSERT INTO reader_transitions VALUES(?,?,?,?)',
+                ('e'*32,3,old.preferred_endpoint,old.preferred_endpoint))
+            db.execute('UPDATE reader_selection SET epoch=3,previous_endpoint=preferred_endpoint,transition_id=? WHERE id=1',('e'*32,))
+            return True
+        self.reader.mutate_image(self.case.journal,gap)
+        metadata=self.reader.read_selection(self.case.journal)
+        self.assertEqual(metadata.epoch,3,'actual metadata-only parser control must reach epoch 3')
+        with self.seed.ro(self.case.journal) as db:
+            self.assertEqual(db.execute('SELECT epoch FROM reader_transitions ORDER BY epoch').fetchall(),[(1,),(3,)])
+            with self.assertRaises(ValueError):self.lease._image(db)
+        with self.staged() as seal:
+            publish=self.publisher();before=self.case.journal.read_bytes();node=self.case.journal.stat()
+            error,result=None,None
+            try:result=publish(self.case.journal,seal=seal)
+            except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+            print(json.dumps(dict(case='gapped-lineage-publication',metadataEpoch=metadata.epoch,
+                actualFullLineageControl='refused',stageIssued=True,error=error,published=result is not None,
+                journalUnchanged=self.case.journal.read_bytes()==before)),flush=True)
+            self.assertIsNotNone(error,'publisher must enforce the same complete lineage as the reader')
+            self.assertIsNone(result)
+            self.assertEqual(self.case.journal.read_bytes(),before)
+            self.assertTrue(os.path.samestat(node,self.case.journal.stat()))
+
+    def test_direct_retained_issuer_requires_real_shared_lifetime_and_expires_with_it(self):
+        module=__import__('laya_move_reader_journal')
+        with self.staged() as seal:
+            selected=self.publisher()(self.case.journal,seal=seal)
+            with self.seed.ro(self.case.journal) as db:
+                packed,attestation=db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
+                    (selected.preferred_endpoint,)).fetchone()
+                record=json.loads(packed)
+            writer=subprocess.run([sys.executable,'-B','-I','-c',EXCLUSIVE,str(ROOT/'core'),self.seed.install],
+                capture_output=True,encoding='utf8',timeout=5)
+            self.assertEqual(writer.returncode,0,writer.stderr)
+            self.assertEqual(json.loads(writer.stdout),dict(state='held'),'actual EX control must prove no SH is held')
+            before=self.case.journal.read_bytes()
+            unprotected_error,unprotected=None,None
+            try:unprotected=module.resolve_retained(self.case.state,self.case.project,self.case.plugin,
+                selected.preferred_endpoint,record,attestation)
+            except (ValueError,OSError,RuntimeError) as exc:unprotected_error=str(exc)
+            protected,inside_error=None,None
+            with self.lease.reader_lifetime(self.seed.install,exclusive=False):
+                try:
+                    protected=module.resolve_retained(self.case.state,self.case.project,self.case.plugin,
+                        selected.preferred_endpoint,record,attestation)
+                    self.reader._recheck(protected)
+                except (ValueError,OSError,RuntimeError) as exc:inside_error=str(exc)
+            expired_error=None
+            if protected is not None:
+                try:self.reader._recheck(protected)
+                except (ValueError,OSError,RuntimeError) as exc:expired_error=str(exc)
+            print(json.dumps(dict(case='direct-retained-lifetime-authority',actualExclusiveControl='held',
+                noSharedError=unprotected_error,noSharedTokenIssued=unprotected is not None,
+                insideSharedError=inside_error,afterSharedError=expired_error,
+                journalUnchanged=self.case.journal.read_bytes()==before)),flush=True)
+            self.assertEqual(self.case.journal.read_bytes(),before)
+            with self.subTest(boundary='no-shared-admission'):
+                self.assertIsNotNone(unprotected_error)
+                self.assertIsNone(unprotected)
+            with self.subTest(boundary='shared-context-and-expiry'):
+                self.assertIsNone(inside_error)
+                self.assertIsNotNone(protected)
+                self.assertIsNotNone(expired_error,'direct issuance must register revocation on the actual lifetime context')
+
+    def test_retained_absence_survives_first_legitimate_completed_live_sidecar_publication(self):
+        seed=seed_module.AbsentSidecarProjectMoveSealChecks('runTest')
+        self.addCleanup(seed.doCleanups);seed.setUp()
+        with seed.prepared() as intent:
+            stage,_type=seed.producer();seal=stage(intent,installer=seed.installer)
+            self.assertTrue(seal.retained_endpoint.record.get('sidecar_absent') is True
+                            or seal.retained_endpoint.record.get('sidecar_path') is None)
+            selected=seed.lease.publish_move_reader(seed.case.journal,seal=seal)
+            self.assertFalse(os.path.lexists(seed.sidecar))
+            import laya_initial_build as build
+            import laya_incremental_docs as incremental
+            from laya_index_vector import qmd_markdown_title
+            identity=build.read(seed.case.state)['identity']
+            roots={seed.case.WIKI:str(seed.case.auto/'wiki')}
+            published=[]
+            with seed.case.runtime(roots) as runtime:
+                snapshot=runtime.catalog.require_complete()
+                rows=runtime.index.db.execute('SELECT m.path,m.hash,c.body FROM membership m JOIN content c ON c.hash=m.hash '
+                    'WHERE m.gen=? ORDER BY m.path',(seal.old_generation,)).fetchall()
+                runtime.index.db.commit()
+                self.assertEqual(len(rows),3)
+                for path,hashed,body in rows:
+                    answer=incremental.publish_document(runtime,identity,snapshot,path,hashed,
+                        qmd_markdown_title(body,path),body,identity['vectorProfileId'],require_verified=True)
+                    self.assertIn(answer['status'],('published','already_published'));published.append(answer['status'])
+            with seed.ro(seed.sidecar) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone(),(3,))
+            control_error=None
+            try:seed.reader._evidence(seed.case.state,seed.case.project,seed.case.plugin)
+            except Exception as exc:control_error=type(exc).__name__+':'+str(exc)
+            print(json.dumps(dict(case='live-sidecar-current-full-proof-control',error=control_error,
+                actualPublished=published)),flush=True)
+            if control_error is not None:
+                raise RuntimeError('earlier current proof failed; not retained absence RED: '+control_error)
+            payload=seed.case.home/'retained-absence-after-live-sidecar.json'
+            payload.write_text(json.dumps(dict(home=str(seed.case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+                project=str(seed.case.project),plugin=str(seed.case.plugin),proof=seed.case.proof,
+                generation=seal.old_generation,exclusion=seal.exclusion_epoch)),encoding='utf8');payload.chmod(0o600)
+            before=seed.case.journal.read_bytes();side_before=seed.sidecar.read_bytes()
+            result=subprocess.run([sys.executable,'-B','-I','-c',FRESH_READER,str(ROOT),str(payload)],input='release\n',
+                capture_output=True,encoding='utf8',timeout=30)
+            observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+            print(json.dumps(dict(case='retained-absence-live-sidecar-advance',actualPublished=published,
+                actualCurrentFullProof=True,readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096])),flush=True)
+            self.assertEqual(seed.case.journal.read_bytes(),before)
+            self.assertEqual(seed.sidecar.read_bytes(),side_before)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertEqual(observed['endpoint'],selected.preferred_endpoint)
+            with seed.ro(seed.case.journal) as db:
+                record=json.loads(db.execute('SELECT record FROM read_endpoints WHERE endpoint_id=?',
+                    (selected.preferred_endpoint,)).fetchone()[0])
+                self.assertIsNone(record['sidecar_path'])
+                self.assertTrue(record['sidecar_absent'])
+
+    def test_state_retained_proof_uses_canonical_state_home_after_environment_home_changes(self):
+        seed=seed_module.StateMoveSealChecks('runTest')
+        self.addCleanup(seed.doCleanups);seed.setUp()
+        with seed.prepared_state() as (_mover,intent):
+            stage,_type=seed.producer();seal=stage(intent,installer=seed.installer)
+            selected=seed.lease.publish_move_reader(seed.case.journal,seal=seal)
+            other=seed.case.home/'other-home';other.mkdir(mode=0o700)
+            before=seed.case.journal.read_bytes();node=seed.case.journal.stat()
+            error,replayed=None,None
+            with mock.patch.dict(os.environ,{'HOME':str(other)}):
+                control_error=None
+                try:seed.reader._evidence(seed.case.state,seed.case.project,seed.case.plugin)
+                except Exception as exc:control_error=type(exc).__name__+':'+str(exc)
+                print(json.dumps(dict(case='changed-home-current-full-proof-control',error=control_error)),flush=True)
+                if control_error is not None:
+                    raise RuntimeError('earlier current proof failed; not retained HOME-boundary RED: '+control_error)
+                try:replayed=seed.lease.publish_move_reader(seed.case.journal,seal=seal)
+                except (ValueError,OSError,RuntimeError) as exc:error=str(exc)
+                payload=seed.case.home/'retained-state-other-home.json'
+                payload.write_text(json.dumps(dict(home=str(other),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+                    project=str(seed.case.project),plugin=str(seed.case.plugin),proof=seed.case.proof,
+                    generation=seal.old_generation,exclusion=seal.exclusion_epoch)),encoding='utf8');payload.chmod(0o600)
+                result=subprocess.run([sys.executable,'-B','-I','-c',FRESH_READER,str(ROOT),str(payload)],input='release\n',
+                    capture_output=True,encoding='utf8',timeout=30)
+            observed=json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
+            print(json.dumps(dict(case='state-retained-canonical-home',actualFullProof=True,replayError=error,
+                readReturncode=result.returncode,read=observed,stderr=result.stderr[:4096])),flush=True)
+            self.assertEqual(seed.case.journal.read_bytes(),before)
+            self.assertTrue(os.path.samestat(node,seed.case.journal.stat()))
+            with self.subTest(boundary='publisher-replay'):
+                self.assertIsNone(error);self.assertEqual(replayed,selected)
+            with self.subTest(boundary='fresh-read'):
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual(observed['endpoint'],selected.preferred_endpoint)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
