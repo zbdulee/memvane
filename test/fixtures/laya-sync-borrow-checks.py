@@ -4,6 +4,8 @@ import importlib.util
 import inspect
 import json
 from pathlib import Path
+import select
+import subprocess
 import sys
 import unittest
 
@@ -24,8 +26,39 @@ def load(name, filename):
 full = load('borrow_full_fixture', 'laya-index-sync-checks.py')
 capacity = load('borrow_capacity_fixture', 'laya-index-capacity-product-checks.py')
 
+HOLDER = r'''
+import json,signal,sys
+from pathlib import Path
+signal.alarm(15)
+sys.path.insert(0,sys.argv[1])
+from laya_index_sync import sync_owner
+with sync_owner(Path(sys.argv[2])) as owner:
+    print(json.dumps(dict(acquired=owner is not None)),flush=True)
+    if owner is not None:assert sys.stdin.readline()=='RELEASE\n'
+'''
+
 
 class BorrowChecks(unittest.TestCase):
+    def successor(self, queue, handles):
+        child = subprocess.Popen([sys.executable, '-B', '-I', '-c', HOLDER,
+            str(ROOT/'core'), str(queue)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, encoding='utf8')
+        def finish():
+            try:out,err=child.communicate('RELEASE\n',timeout=4)
+            except subprocess.TimeoutExpired:
+                child.kill();child.communicate();raise
+            self.assertEqual(child.returncode,0,err)
+        handles.callback(finish)
+        if not select.select([child.stdout],[],[],4)[0]:
+            raise RuntimeError('fresh successor exceeded finite readiness wait')
+        return json.loads(child.stdout.readline())['acquired']
+
+    def complete_catalog(self, runtime):
+        runtime.catalog.request_scan()
+        for _ in range(128):
+            if runtime.catalog.step(20,100000,100)['status']=='complete':return
+        self.fail('bounded catalog prerequisite did not finish')
+
     def fixture(self, cls):
         fixture = cls('runTest')
         self.addCleanup(fixture.doCleanups)
@@ -103,6 +136,49 @@ class BorrowChecks(unittest.TestCase):
             self.assertEqual(fixture.marks, [])
             print(json.dumps(dict(case='capacity-explicit-sync-owner',boundSearch=True,
                 unborrowedBusy=True,expiredAndWrongQueueSql=0)), flush=True)
+
+    def test_before_publish_expiry_blocks_successor_and_all_subsequent_claim_or_head_writes(self):
+        for kind,cls in (('full',full.SyncChecks),('capacity',capacity.CapacityProductCase)):
+            with self.subTest(kind=kind):
+                fixture=self.fixture(cls)
+                if kind=='capacity':fixture.write(fixture.wiki,'expiry.md','synthetic expiry content')
+                with ExitStack() as handles,ExitStack() as scope:
+                    runtime=handles.enter_context(fixture.runtime())
+                    if kind=='capacity':self.complete_catalog(runtime)
+                    claim=scope.enter_context(sync.sync_owner(Path(fixture.queue_path)))
+                    before=(runtime.index.db.total_changes,runtime.queue.db.total_changes)
+                    successors=[]
+                    def expire():
+                        scope.close();successors.append(self.successor(fixture.queue_path,handles))
+                    call=sync.sync_full if kind=='full' else sync.sync_step
+                    with self.assertRaises(IndexContractError):
+                        call(runtime,before_publish=expire,require_vector=False,owner=claim)
+                    after=(runtime.index.db.total_changes,runtime.queue.db.total_changes)
+                    print(json.dumps(dict(case='before-publish-expiry',kind=kind,
+                        successorAcquired=successors,changes=[a-b for a,b in zip(after,before)])),flush=True)
+                    self.assertEqual(after,before,'expired callback must not enqueue, stage, publish or ACK')
+                    self.assertEqual(successors,[False],'borrow must retain exclusion until unwind')
+
+    def test_before_head_expiry_preserves_head_and_never_acks_while_releasing_own_retry(self):
+        fixture=self.fixture(capacity.CapacityProductCase)
+        fixture.write(fixture.wiki,'head-expiry.md','synthetic head expiry content')
+        with ExitStack() as handles,ExitStack() as scope:
+            runtime=handles.enter_context(fixture.runtime());self.complete_catalog(runtime)
+            claim=scope.enter_context(sync.sync_owner(Path(fixture.queue_path)))
+            observed={}
+            def expire(index,binding,job):
+                observed.update(claim=job['claim'],indexChanges=index.db.total_changes)
+                scope.close();observed['successorAcquired']=self.successor(fixture.queue_path,handles)
+            with self.assertRaises(IndexContractError):
+                sync.sync_step(runtime,before_publish=lambda:None,before_head_publish=expire,owner=claim)
+            state=runtime.queue.get(observed['claim'])['state']
+            heads=runtime.index.db.execute('SELECT gen FROM head').fetchall()
+            print(json.dumps(dict(case='before-head-expiry',heads=heads,claimState=state,
+                subsequentIndexChanges=runtime.index.db.total_changes-observed['indexChanges'],
+                successorAcquired=observed['successorAcquired'])),flush=True)
+            self.assertEqual(heads,[]);self.assertNotEqual(state,'acked')
+            self.assertEqual(runtime.index.db.total_changes,observed['indexChanges'])
+            self.assertFalse(observed['successorAcquired'])
 
 
 if __name__ == '__main__':
