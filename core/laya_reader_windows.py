@@ -517,11 +517,17 @@ class _WriteTransaction:
         self.owner.transaction = None
         self.rollback_pending = False
 
-    def commit(self):
+    def commit(self, *, validate=None):
+        """Run a caller's SQL-free, raise-on-failure check around the commit."""
         self._check()
         R._need(not self.rollback_pending, 'reader_transaction_rollback_pending')
+        R._need(validate is None or callable(validate), 'reader_transaction_validator_invalid')
         connection_binding(self.owner, self.owner.db)
+        if validate is not None:
+            validate()
         self.owner.db.commit()
+        if validate is not None:
+            validate()
         connection_binding(self.owner, self.owner.db)
         self._finish()
 
@@ -584,6 +590,10 @@ def write_transaction(owner, *, visible, deadline):
         yield transaction
         if owner.transaction is transaction:
             transaction.commit()
+        else:
+            # Explicit rollback/commit can precede a cached return. It must
+            # describe the same current named database as normal completion.
+            connection_binding(owner, owner.db)
     except BaseException as error:
         if owner.transaction is transaction and not transaction.rollback_pending:
             try:

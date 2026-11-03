@@ -424,6 +424,22 @@ class ClaimQueue:
         return ACK if receipt == (scope, gen, manifest, digest, epoch) else DEFER
 
     def conditional_ack(self, job, token, index):
+        if self._connection_owner is None:
+            return self._conditional_ack(job, token, index)
+        from laya_reader_windows import ReaderWindowBusy
+        try:
+            return self._conditional_ack(job, token, index)
+        except ReaderWindowBusy as exc:
+            if str(exc) == 'reader_ack_base_changed':
+                return DEFER
+            raise
+
+    def _require_ack_base(self, index):
+        if not self._ack_base_bound(index):
+            from laya_reader_windows import ReaderWindowBusy
+            raise ReaderWindowBusy('reader_ack_base_changed')
+
+    def _conditional_ack(self, job, token, index):
         if not self._ack_base_bound(index):
             return DEFER
         verdict = self.decide(index, job)
@@ -448,7 +464,11 @@ class ClaimQueue:
             if not self._ack_base_bound(index):
                 transaction.rollback()
                 return DEFER
-            return ACK
+            if self._connection_owner is not None:
+                transaction.commit(validate=lambda: self._require_ack_base(index))
+        if not self._ack_base_bound(index):
+            return DEFER
+        return ACK
 
     def mark_replan(self, job, token, reason):
         if reason not in ('head_moved', 'index_stale'):
