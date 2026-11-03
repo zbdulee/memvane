@@ -637,6 +637,8 @@ def _reject_super_journal(path):
             raise JournalEvidenceError('journal_unavailable') from exc
         try:
             info = os.fstat(fd)
+            if info.st_nlink == 0:
+                raise FileNotFoundError('journal_unlinked')
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
                 _fail('unsafe_journal_file')
@@ -645,9 +647,20 @@ def _reject_super_journal(path):
                 if tail.endswith(bytes.fromhex('d9d505f920a163d7')):
                     _fail('journal_super_journal_unsupported')
             after = os.fstat(fd)
-            if (not os.path.samestat(info, side.lstat()) or
+            if after.st_nlink == 0:
+                raise FileNotFoundError('journal_unlinked')
+            named = side.lstat()
+            for current in (after, named):
+                if current.st_nlink == 0:
+                    raise FileNotFoundError('journal_unlinked')
+                if (not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid()
+                        or current.st_nlink != 1 or stat.S_IMODE(current.st_mode) & 0o077):
+                    _fail('unsafe_journal_file')
+            if (not os.path.samestat(info, named) or
                     (info.st_size, info.st_mtime_ns, info.st_ctime_ns) !=
-                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                    (named.st_size, named.st_mtime_ns, named.st_ctime_ns)):
                 _fail('journal_changed')
             return
         except FileNotFoundError:
