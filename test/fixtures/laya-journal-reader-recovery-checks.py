@@ -1023,6 +1023,108 @@ class RecoveryChecks(unittest.TestCase):
             self.assertEqual(selected.epoch, 1)
             self.unchanged(helper, case, before)
 
+    def test_clean_v4_after_durable_intent_preserves_successful_new_write_when_reissued(self):
+        with fixture() as values:
+            helper, case, reader, bridge, _, _, _ = values
+            before = self.snapshot(helper, case)
+            self.pending_initial(values)
+            self.assertEqual(J.journal_version(case.journal), 4)
+            self.assertFalse(Path(str(case.journal) + '-journal').exists())
+            marked = J.cas_mark_new_write(case.journal, before['bundle']['epoch'])
+            self.assertEqual(marked['epoch'], before['bundle']['epoch'] + 1)
+            self.assertTrue(marked['newWriteSeen'])
+            before['bundle'] = marked
+            reader._issued.clear()
+            bridge._ISSUED.clear()
+            error, selected = None, None
+            try:
+                with helper.full_authority(case, reader, bridge):
+                    fresh = helper.installer(case, reader, bridge)
+                    _, _, ready = helper.ready(case, bridge)
+                    selected = reader.convert_reader_v5(case.state, case.project, installer=fresh, readiness=ready)
+            except ValueError as exc:
+                error = str(exc)
+            observed = J.inspect_journal(case.journal)
+            emit('clean-v4-forward-write-after-intent', marked_epoch=marked['epoch'],
+                 actual_epoch=observed['epoch'], new_write_seen=observed['newWriteSeen'],
+                 recovery_error=error, reader=None if selected is None else helper.selection(selected))
+            self.assertEqual(observed, marked, 'installer must never undo the accepted write or its epoch')
+            self.unchanged(helper, case, before)
+            self.assertIsNone(error, 'clean v4 with accepted forward progress must allow fresh conversion')
+            self.assertEqual(selected.epoch, 1)
+            self.assertEqual(J.journal_version(case.journal), 5)
+
+    def test_repeated_exit_after_real_rehearsal_writes_has_bounded_owned_staging(self):
+        import laya_journal_recovery as recovery
+        with fixture() as values:
+            helper, case, reader, bridge, _, _, _ = values
+            before = self.snapshot(helper, case)
+            self.pending_initial(values, hot=True)
+            canonical = Path(case.journal).read_bytes()
+            rollback_path = Path(str(case.journal) + '-journal')
+            rollback = rollback_path.read_bytes()
+            unrelated = case.state / '.reader-rehearse-unrelated-private'
+            unrelated.mkdir(mode=0o700)
+            sentinel = unrelated / 'unrelated-owner.txt'
+            sentinel.write_bytes(b'unrelated private directory must survive')
+            sentinel.chmod(0o600)
+            unrelated_inode = unrelated.stat().st_ino
+            stages, counts, deaths = set(), [], []
+            for attempt in range(2):
+                def resume(pipe):
+                    reader._issued.clear()
+                    bridge._ISSUED.clear()
+                    actual_write, completed = recovery._write, set()
+
+                    def written(path, data):
+                        result = actual_write(path, data)
+                        path = Path(path)
+                        completed.add(path)
+                        # Observe the completed private DB+journal pair. The
+                        # stage directory may be unique or fixed; no production
+                        # name/hook is required and no write is fabricated.
+                        if (path.name.endswith('.sqlite-journal') and case.state in path.parents
+                                and path.parent != case.state):
+                            trial = path.with_name(path.name[:-len('-journal')])
+                            if trial in completed and trial.is_file() and path.is_file():
+                                pipe.send(dict(event='checkpoint', attempt=attempt,
+                                    stage=str(path.parent), files=[str(trial), str(path)],
+                                    sizes=[trial.stat().st_size, path.stat().st_size]))
+                                os._exit(EXIT_AT_CHECKPOINT)
+                        return result
+
+                    with helper.full_authority(case, reader, bridge), \
+                            mock.patch.object(recovery, '_write', side_effect=written):
+                        helper.installer(case, reader, bridge)
+
+                with child(resume) as (process, pipe):
+                    reached = receive(pipe, event='checkpoint')
+                    process.join(10)
+                    self.assertEqual(process.exitcode, EXIT_AT_CHECKPOINT)
+                deaths.append(reached)
+                stages.add(Path(reached['stage']))
+                counts.append(sum(path.exists() for path in stages))
+                self.assertEqual(Path(case.journal).read_bytes(), canonical)
+                self.assertEqual(rollback_path.read_bytes(), rollback)
+                self.assertEqual(unrelated.stat().st_ino, unrelated_inode)
+                self.assertEqual(sentinel.read_bytes(), b'unrelated private directory must survive')
+            reader._issued.clear()
+            bridge._ISSUED.clear()
+            with helper.full_authority(case, reader, bridge):
+                fresh = helper.installer(case, reader, bridge)
+                _, _, ready = helper.ready(case, bridge)
+                selected = reader.convert_reader_v5(case.state, case.project, installer=fresh, readiness=ready)
+            final_count = sum(path.exists() for path in stages)
+            emit('rehearsal-repeat-death', deaths=deaths, owned_remaining_after_each=counts,
+                 owned_remaining_after_recovery=final_count, reader=helper.selection(selected),
+                 unrelated_preserved=sentinel.read_bytes() == b'unrelated private directory must survive')
+            self.assertEqual(selected.epoch, 1)
+            self.unchanged(helper, case, before)
+            self.assertEqual(unrelated.stat().st_ino, unrelated_inode)
+            self.assertEqual(sentinel.read_bytes(), b'unrelated private directory must survive')
+            self.assertLessEqual(max(counts + [final_count]), 1,
+                                 'the same recovery cannot accumulate unbounded owned rehearsal copies')
+
     def test_actual_released_writer_opened_before_conversion_refuses_v5_before_dml(self):
         with fixture() as (helper, case, reader, bridge, installer, readiness, _):
             old = self.old_tree(case)
