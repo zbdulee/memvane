@@ -46,6 +46,7 @@ if role == 'cli':
     if behavior != 'manual-core':
         script = pathlib.Path(root)/('unregistered.py' if behavior == 'entrypoint' else 'core/laya_host_response.py')
         child = subprocess.run([sys.executable, '-B', '-I', str(script), 'core', *sys.argv[2:]], timeout=12)
+        pathlib.Path(log+'.cli-complete').write_text('child-wait-completed', encoding='utf8')
         sys.exit(child.returncode)
 if behavior == 'earlyexit':
     sys.exit(0)
@@ -55,6 +56,7 @@ if behavior == 'nonce': observation['observed_nonce_sha256']='0'*64
 if behavior == 'root': observation['plugin_root']=str(pathlib.Path(root).parent)
 observer.emit_registered_hook(ident, 'codex' if behavior == 'host' else host,
     observation, 'wrong-session' if behavior == 'session' else session)
+pathlib.Path(log+'.core-complete').write_text('post-ACK-emitter-returned', encoding='utf8')
 '''
 
 
@@ -167,6 +169,11 @@ class ObserverChecks(unittest.TestCase):
             ready = bridge.check_bridge_preflight([receipt], release_commit='c'*40,
                                                    expected_hosts=frozenset(('claude',)))
         self.assertEqual(type(ready).__name__, 'BridgeReadiness')
+        log = self.case.home / 'observer-valid.jsonl'
+        self.assertTrue(Path(str(log)+'.core-complete').is_file(),'hook must finish after ACK')
+        self.assertTrue(Path(str(log)+'.cli-complete').is_file(),'CLI must finish waiting for its hook')
+        self.assertEqual(Path(str(log)+'.core-complete').read_text(encoding='utf8'), 'post-ACK-emitter-returned')
+        self.assertEqual(Path(str(log)+'.cli-complete').read_text(encoding='utf8'), 'child-wait-completed')
 
     def test_stdout_nonce_and_manual_core_in_owned_root_are_not_hook_evidence(self):
         for behavior in ('stdout', 'manual-core'):
