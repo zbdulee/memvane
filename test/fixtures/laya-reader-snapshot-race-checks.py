@@ -20,6 +20,38 @@ spec=importlib.util.spec_from_file_location('snapshot_sidecar_fixture',ROOT/'tes
 existing=importlib.util.module_from_spec(spec);spec.loader.exec_module(existing)
 
 class SnapshotRaceChecks(existing.SidecarWriteChecks):
+    def test_current_equal_digest_replaces_pruned_bound_catalog_scan(self):
+        opens=importlib.import_module('laya_reader_open')
+        lease=importlib.import_module('laya_reader_lease')
+        with self.opened() as (runtime,snapshot,_row,_component):
+            db=runtime.catalog.db
+            owner=runtime.catalog._connection_owner
+            with self.W.write_connection(db,owner.component,visible=True,deadline=time.monotonic()+5):
+                db.execute("INSERT INTO scans(scan_id,phase,raw_digest,files,bytes,started_ns,finished_ns) "
+                           "SELECT ?,phase,raw_digest,files,bytes,started_ns,finished_ns FROM scans WHERE seq=?",
+                           ('a'*32,snapshot.seq))
+                seq=db.execute('SELECT seq FROM scans WHERE scan_id=?',('a'*32,)).fetchone()[0]
+                db.execute('INSERT INTO scan_files(seq,path,dir_rel,name,size,sig,sha256) '
+                           'SELECT ?,path,dir_rel,name,size,sig,sha256 FROM scan_files WHERE seq=?',
+                           (seq,snapshot.seq))
+                db.execute('UPDATE current SET seq=?',(seq,))
+                db.execute('UPDATE active SET seq=?',(seq,))
+                runtime.catalog._drop_scan(snapshot.seq)
+            with lease.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as endpoint:
+                with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10) as pinned:
+                    self.assertTrue(pinned.published)
+                with self.W.write_connection(db,owner.component,visible=True,deadline=time.monotonic()+5):
+                    path,sha=db.execute('SELECT path,sha256 FROM scan_files WHERE seq=? LIMIT 1',(seq,)).fetchone()
+                    changed=('0' if sha[0]!='0' else '1')+sha[1:]
+                    db.execute('UPDATE scan_files SET sha256=? WHERE seq=? AND path=?',(changed,seq,path))
+                with self.assertRaisesRegex(ValueError,'reader_catalog_scan_changed'):
+                    with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10):pass
+                with self.W.write_connection(db,owner.component,visible=True,deadline=time.monotonic()+5):
+                    db.execute('UPDATE scan_files SET sha256=? WHERE seq=? AND path=?',(sha,seq,path))
+                    db.execute("UPDATE scans SET raw_digest=? WHERE seq=?",('f'*64,seq))
+                with self.assertRaisesRegex(ValueError,'reader_catalog_scan_changed'):
+                    with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10):pass
+
     def test_pinned_index_reuses_candidate_verification_without_writes(self):
         opens=importlib.import_module('laya_reader_open')
         lease=importlib.import_module('laya_reader_lease')
@@ -1078,7 +1110,8 @@ class AbsentSidecarSnapshotChecks(unittest.TestCase):
         self.assertEqual({path:path.read_bytes() for path in originals},originals)
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([SnapshotRaceChecks('test_pinned_index_reuses_candidate_verification_without_writes'),
+    suite=unittest.TestSuite([SnapshotRaceChecks('test_current_equal_digest_replaces_pruned_bound_catalog_scan'),
+                              SnapshotRaceChecks('test_pinned_index_reuses_candidate_verification_without_writes'),
                               SnapshotRaceChecks('test_selected_snapshot_search_shadows_an_older_base_document'),
                               SnapshotRaceChecks('test_existing_search_sql_works_on_caller_owned_snapshot'),
                               SnapshotRaceChecks('test_actual_sidecar_publication_between_component_pins_retries'),
@@ -1102,5 +1135,7 @@ if __name__=='__main__':
                               SnapshotRaceChecks('test_sidecar_receipts_bind_current_rows'),
                               SnapshotRaceChecks('test_warm_observation_validates_all_pinned_components_and_route'),
                               SnapshotRaceChecks('test_warm_snapshot_observes_new_exclusion_before_head_replacement')])
+    if len(sys.argv)>1:
+        suite=unittest.defaultTestLoader.loadTestsFromName(sys.argv[1],sys.modules[__name__])
     result=unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(not result.wasSuccessful())
