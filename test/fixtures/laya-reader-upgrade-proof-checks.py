@@ -673,6 +673,23 @@ class UpgradeProofChecks(unittest.TestCase):
                     with mock.patch.object(reader.journal,'_inspect_identity',side_effect=inspect_new), \
                          mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(new)), \
                          mock.patch.object(reader.journal,'_provider_file_identity',return_value=fid):
+                        plan_module=importlib.import_module('laya_writer_open_plan')
+                        plan=plan_module.capture_writer_plan(case.project,executing_root=new)
+                        plan_module.validate_writer_plan(plan)
+                        # A missing activation receipt must not authorize a writer.
+                        with sqlite3.connect(case.journal) as db:
+                            receipt=db.execute('SELECT * FROM upgrade_read_successors').fetchone()
+                            self.assertIsNotNone(receipt)
+                            trigger=db.execute("SELECT sql FROM sqlite_master WHERE name='upgrade_read_successors_delete'").fetchone()[0]
+                            db.execute('DROP TRIGGER upgrade_read_successors_delete')
+                            db.execute('DELETE FROM upgrade_read_successors')
+                            db.execute(trigger)
+                        try:
+                            with self.assertRaisesRegex(ValueError,'reader_successor_unproved'):
+                                plan_module.capture_writer_plan(case.project,executing_root=new)
+                        finally:
+                            with sqlite3.connect(case.journal) as db:
+                                db.execute('INSERT INTO upgrade_read_successors VALUES(?,?,?,?)',receipt)
                         lease=importlib.import_module('laya_reader_lease')
                         opens=importlib.import_module('laya_reader_open')
                         search=importlib.import_module('laya_v6_reader')

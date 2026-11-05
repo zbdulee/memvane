@@ -76,6 +76,12 @@ def _snapshot(project, executing_root):
             R._need(J._schema_version_read(db) == 5, 'writer_plan_v5_required')
             bundle = J._row(db)
             selection, record = R._selection(db)
+            attestation, attestation_sha = J._attestation(path)
+            R._need(attestation is not None and attestation_sha == bundle['provider_attestation_sha'],
+                    'writer_plan_attestation_changed')
+            if attestation_sha != record['attestation_sha256']:
+                R._successor_chain(db, selection.preferred_endpoint, record, attestation_sha,
+                                   bundle['selected'], max_epoch=bundle['epoch'])
         R._need(bundle['state'] in ('active', 'restored_old') and bundle['pending'] is None
                 and record['capability'] == 'v6-ro-v1'
                 and record['store_format'] == 'v6', 'writer_selection_unavailable')
@@ -102,9 +108,6 @@ def _snapshot(project, executing_root):
             R._need(route[key] == decision[key] == selected[key], 'writer_plan_route_changed')
         R._need(route['dbPath'] == decision['dbPath']
                 and route['queuePath'] == decision['queuePath'], 'writer_plan_binding_changed')
-        attestation, attestation_sha = J._attestation(path)
-        R._need(attestation is not None and attestation_sha == bundle['provider_attestation_sha']
-                and attestation_sha == record['attestation_sha256'], 'writer_plan_attestation_changed')
         for key in ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile'):
             R._need(attestation[key] == selected[key], 'writer_plan_attestation_changed')
         # A reader may legally select an equivalent staged base. Writer paths
