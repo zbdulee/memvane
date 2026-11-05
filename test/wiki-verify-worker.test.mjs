@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
@@ -174,6 +174,96 @@ test('superseded pending replacement is acknowledged without overwriting the new
     assert.equal(readFileSync(queue, 'utf8'), '');
     assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl')).at(-1).result,
       'stale_replacement');
+  } finally { removeTemp(project); }
+});
+
+test('dedup cleans superseded pending files but retains referenced candidates', () => {
+  const old = cardText('verified'), a = 'a'.repeat(16), b = 'b'.repeat(16);
+  const verifier = mockVerifier({ verdict: 'pass', claims: [
+    { claim: 'c', supported: true, quote: 'q', sourcePath: 'docs/source.md' }], reasons: [] });
+  const pending = (hash) => '.auto-context/wiki/concepts/.test-card.md.pending-' + hash;
+  const project = setupProject({ cardStatus: 'verified', extractorArgv: ['python3', verifier],
+    jobOverrides: { sourceHash: a, pendingPath: pending(a),
+      expectedTargetHash: createHash('sha256').update(old).digest('hex') } });
+  try {
+    const queue = join(project, '.auto-context/compile/verify-queue.jsonl');
+    const job = JSON.parse(readFileSync(queue, 'utf8'));
+    const next = { ...job, ts: '2026-07-05T00:00:00Z', sourceHash: b, pendingPath: pending(b) };
+    writeFileSync(join(project, pending(a)), cardText('generated').replaceAll(HASH, a));
+    writeFileSync(join(project, pending(b)), cardText('generated').replaceAll(HASH, b));
+    writeFileSync(queue, JSON.stringify(job)+'\n'+JSON.stringify(next)+'\n');
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
+    assert.equal(existsSync(join(project, pending(a))), false);
+    assert.equal(existsSync(join(project, pending(b))), false);
+    assert.equal(readFileSync(queue, 'utf8'), '');
+  } finally { removeTemp(project); }
+});
+
+test('dedup never removes a pending file referenced by another active claim', () => {
+  const old=cardText('verified'), a='a'.repeat(16), b='b'.repeat(16);
+  const pending=(hash)=>'.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const verifier=mockVerifier({verdict:'pass',claims:[{claim:'c',supported:true,quote:'q',sourcePath:'docs/source.md'}],reasons:[]});
+  const project=setupProject({cardStatus:'verified',extractorArgv:['python3',verifier],
+    jobOverrides:{sourceHash:a,pendingPath:pending(a),expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    const queue=join(project,'.auto-context/compile/verify-queue.jsonl');
+    const first=JSON.parse(readFileSync(queue,'utf8'));
+    const second={...first,ts:'2026-07-05T00:00:00Z',sourceHash:b,pendingPath:pending(b)};
+    writeFileSync(join(project,pending(a)),cardText('generated').replaceAll(HASH,a));
+    writeFileSync(join(project,pending(b)),cardText('generated').replaceAll(HASH,b));
+    writeFileSync(queue,JSON.stringify(first)+'\n'+JSON.stringify(second)+'\n');
+    writeFileSync(queue+'.claimed.'+process.pid+'.active',JSON.stringify(first)+'\n');
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
+    assert.equal(existsSync(join(project,pending(a))),true);
+    assert.equal(existsSync(join(project,pending(b))),false);
+  } finally { removeTemp(project); }
+});
+
+test('a pending file changed during verification is preserved', () => {
+  const old=cardText('verified'), hash='c'.repeat(16);
+  const pending='.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const script=join(mkdtempSync(join(tmpdir(),'verify-edit-')),'verify.py');
+  writeFileSync(script,`import json, pathlib, sys\njson.load(sys.stdin)\np=pathlib.Path(${JSON.stringify(pending)})\np.write_text(p.read_text()+'\\nuser edit\\n')\nprint(json.dumps({'verdict':'pass','claims':[{'claim':'c','supported':True,'quote':'q','sourcePath':'docs/source.md'}],'reasons':[]}))\n`);
+  const project=setupProject({cardStatus:'verified',extractorArgv:['python3',script],
+    jobOverrides:{sourceHash:hash,pendingPath:pending,expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
+    assert.match(readFileSync(join(project,pending),'utf8'),/user edit/);
+    assert.equal(readFileSync(join(project,CARD_REL),'utf8'),old);
+  } finally { removeTemp(project); }
+});
+
+test('none verdict cleans only its pending replacement and preserves published card', () => {
+  const hash='b'.repeat(16), old=cardText('verified');
+  const pending='.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const verifier=mockVerifier({verdict:'fail',claims:[{claim:'c',supported:false,quote:'q',sourcePath:'docs/source.md'}],reasons:['unsupported']});
+  const project=setupProject({cardStatus:'verified',verify:{onFail:'none'},extractorArgv:['python3',verifier],
+    jobOverrides:{sourceHash:hash,pendingPath:pending,expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
+    assert.equal(readFileSync(join(project,CARD_REL),'utf8'),old);
+    assert.equal(existsSync(join(project,pending)),false);
+  } finally { removeTemp(project); }
+});
+
+test('terminal stale pending is cleaned while symlink targets are never touched', () => {
+  const hash='c'.repeat(16), old=cardText('verified');
+  const pending='.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const project=setupProject({cardStatus:'verified',jobOverrides:{sourceHash:hash,pendingPath:pending,
+    expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    const queue=join(project,'.auto-context/compile/verify-queue.jsonl');
+    const job=JSON.parse(readFileSync(queue,'utf8'));
+    writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,'d'.repeat(16)));
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
+    assert.equal(existsSync(join(project,pending)),false);
+    const outside=join(project,'outside.txt');writeFileSync(outside,'keep');
+    symlinkSync(outside,join(project,pending));writeFileSync(queue,JSON.stringify(job)+'\n');
+    runVerifyWorker(project);
+    assert.equal(readFileSync(outside,'utf8'),'keep');
+    assert.equal(readFileSync(join(project,pending),'utf8'),'keep');
   } finally { removeTemp(project); }
 });
 

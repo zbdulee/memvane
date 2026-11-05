@@ -43,10 +43,12 @@ path); queue/log records never store source bodies.
 
 from __future__ import annotations
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +66,7 @@ import wiki_freshness
 import wiki_source_missing as wsm
 import source_spans
 import yaml_scalars
-from wiki_compile_enqueue import _safe_queue_path
+from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).
@@ -520,16 +522,19 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
 
 
 def finish_stale_pending(root: Path, pending: Path, job: dict,
-                         log_path: Path) -> tuple[bool, bool]:
+                         log_path: Path, snapshots: dict | None = None, *, stamped: bool = False) -> tuple[bool, bool]:
     """Ack a superseded candidate without touching the current live card."""
-    try:
-        if pending.is_symlink():
-            raise OSError('pending_symlink')
-        pending.unlink(missing_ok=True)
-    except OSError:
-        log_verdict(log_path, {**base_record(job), 'result': 'deferred',
-                               'reason': 'stale_pending_cleanup_failed'})
-        return False, True
+    # A verification stamp changes metadata under CARD_WRITE_LOCK. Refresh only
+    # the same inode; later edits remain detectable at cleanup.
+    if snapshots is not None and pending in snapshots:
+        try:
+            info = pending.lstat()
+            old = snapshots[pending]
+            if stat.S_ISREG(info.st_mode) and (stamped or (info.st_dev, info.st_ino) == old[:2]):
+                snapshots[pending] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        except OSError:
+            pass
+    # Queue-aware cleanup runs after all retained jobs have been requeued.
     log_verdict(log_path, {**base_record(job), 'result': 'stale_replacement'})
     wake_pending_retirement(root)
     return True, False
@@ -750,7 +755,7 @@ def apply_verify_verdict_locked(
     target: Path, job_hash: str, payload_text: str | None,
     engine: str, verified_mode: str,
     provenance: dict, verdict: str, claims: list, reasons: list[str],
-    sources: list[dict], log_path: Path, *, spans: list[dict],
+    sources: list[dict], log_path: Path, *, spans: list[dict], snapshots: dict | None = None,
 ) -> tuple[bool, bool]:
     """Re-read, decide, and mutate one card while CARD_WRITE_LOCK is held.
 
@@ -797,7 +802,7 @@ def apply_verify_verdict_locked(
             outcome = publish_pending_replacement(root, config, job, target,
                                                   live_target, expected)
             if outcome == 'stale':
-                return finish_stale_pending(root, target, job, log_path)
+                return finish_stale_pending(root, target, job, log_path, snapshots, stamped=True)
             if outcome != 'published':
                 log_verdict(log_path, {**record, 'result': 'publish_pending',
                                        'reason': 'write_failed'})
@@ -819,7 +824,8 @@ def apply_verify_verdict_locked(
 
 
 def process_verify_job(
-    root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path
+    root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict, log_path: Path,
+    *, snapshots: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     import wiki_selected_laya
@@ -880,7 +886,7 @@ def process_verify_job(
                         log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
                         return True, False
                     if outcome == 'stale':
-                        return finish_stale_pending(root, target, job, log_path)
+                        return finish_stale_pending(root, target, job, log_path, snapshots)
             except OSError:
                 pass
             return False, True
@@ -1082,7 +1088,7 @@ def process_verify_job(
                 # 이 텍스트에서 파생한 본문 지문이 카드에 찍힌다.
                 text,
                 engine, verified_mode, provenance, verdict, claims, reasons,
-                sources, log_path, spans=spans,
+                sources, log_path, spans=spans, snapshots=snapshots,
             )
     except OSError:
         log_verdict(log_path, {
@@ -1238,6 +1244,84 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
     return [(latest[key][0], latest[key][1]) for key in order]
 
 
+def _pending_snapshots(root: Path, config: dict, rows: list) -> dict:
+    """Snapshot reserved pending files beside targets while card writers are excluded."""
+    root = root.resolve()
+    wiki = root / config.get('wikiPath', project_dir.wiki_rel(root))
+    if not wiki.is_absolute() or wiki.resolve() != wiki or not wiki.is_relative_to(root):
+        return {}
+    found = {}
+    with cp.card_write_lock(root):
+        for _, raw_job in rows:
+            if not isinstance(raw_job, dict):
+                continue
+            job = rebased_job(root, raw_job)
+            rel = job.get('targetPath')
+            if not isinstance(rel, str) or not rel or Path(rel).is_absolute():
+                continue
+            target = root / rel
+            if target.resolve() != target or not target.is_relative_to(wiki):
+                continue
+            try:
+                if pending_replacement(root, wiki, job, target) is None:
+                    continue
+            except ValueError:
+                continue
+            prefix = '.' + target.name + '.pending-'
+            try:
+                for path in target.parent.iterdir():
+                    if not path.name.startswith(prefix) or not re.fullmatch(r'[0-9a-f]{16}', path.name[len(prefix):]):
+                        continue
+                    info = path.lstat()
+                    if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1:
+                        found[path] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            except OSError:
+                continue
+    return found
+
+
+def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict) -> None:
+    """Remove unchanged candidates only when no live queue or claim references them."""
+    if not snapshots:
+        return
+    with cp.card_write_lock(root):
+        with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                paths = [queue] + [p for p in queue.parent.iterdir()
+                    if p.name.startswith(queue.name + '.claimed.') and p != claimed]
+                referenced = set()
+                for path in paths:
+                    info = path.lstat()
+                    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                        return
+                    for line in path.read_text(encoding='utf-8').splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            job = json.loads(line)
+                        except (ValueError, UnicodeError):
+                            return
+                        if not isinstance(job, dict):
+                            return
+                        job = rebased_job(root, job)
+                        pending = job.get('pendingPath')
+                        if isinstance(pending, str):
+                            referenced.add(root / pending)
+                for path, old in snapshots.items():
+                    if path in referenced or path.parent.resolve() != path.parent:
+                        continue
+                    try:
+                        info = path.lstat()
+                        current = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                        if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1 and current == old:
+                            path.unlink()
+                    except FileNotFoundError:
+                        pass
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def run(
     root: Path, config: dict, compile_cfg: dict, produced_targets: list[str] | None = None
 ) -> dict:
@@ -1303,6 +1387,10 @@ def run(
         queue.touch(exist_ok=True)
         return result
 
+    try:
+        pending_snapshots = _pending_snapshots(root, config, rows)
+    except (OSError, ValueError, RuntimeError):
+        pending_snapshots = {}
     malformed = [raw for raw, job in rows if job is None]
     kept = _dedup_by_target(rows, root)
     max_per_run = max(1, min(
@@ -1331,7 +1419,7 @@ def run(
         for idx, (raw_line, job) in enumerate(to_process):
             try:
                 wiki_selected_laya.recheck(selected_route)
-                processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path)
+                processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=pending_snapshots)
             except Exception:
                 remaining.append(raw_line)
                 remaining.extend(line for line, _ in to_process[idx + 1:])
@@ -1342,6 +1430,10 @@ def run(
                 remaining.append(raw_line)
     finally:
         wcw.requeue_lines(queue, remaining)
+        try:
+            _cleanup_pending(root, queue, claimed, pending_snapshots)
+        except (OSError, UnicodeError):
+            pass  # Keep card bytes if a queue or lock cannot be read safely.
         claimed.unlink(missing_ok=True)
         queue.touch(exist_ok=True)
     result["processed"] = processed_count
