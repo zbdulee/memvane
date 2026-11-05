@@ -164,13 +164,57 @@ class UpgradeCase(unittest.TestCase):
         saved = upgrade._backup(self.old, self.original, self.old_route,
                                 self.old_att, self.counts)
         intent = {**self.intent, 'backup': str(saved)}
-        upgrade._verify_backup(intent)
+        with mock.patch.object(upgrade, '_hash_private', wraps=upgrade._hash_private) as hashed:
+            with upgrade.backup_proof_scope():
+                upgrade._verify_backup(intent)
+                calls = hashed.call_count
+                self.assertGreater(calls, 0)
+                upgrade._verify_backup(intent)
+                self.assertEqual(hashed.call_count, calls, 'unchanged backup is not hashed twice')
+                upgrade._verify_backup({**intent, 'reviewSha256': 'f' * 64})
+                self.assertEqual(hashed.call_count, calls, 'retarget keeps the same backup proof')
+                with mock.patch.object(upgrade.os, 'getpid', return_value=os.getpid() + 1):
+                    with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                        upgrade._verify_backup(intent)
+            upgrade._verify_backup(intent)
+            self.assertGreater(hashed.call_count, calls, 'proof must not escape its scope')
         self.assertEqual(upgrade._sqlite_count(saved / 'candidateDb.sqlite',
                                                'vector_chunk_sets'), 1574)
-        with sqlite3.connect(saved / 'candidateDb.sqlite') as db:
-            db.execute('DELETE FROM vector_chunk_sets WHERE id=0')
-        with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+        manifest = saved / 'manifest.json'
+        original = manifest.read_bytes()
+        with upgrade.backup_proof_scope():
             upgrade._verify_backup(intent)
+            before = manifest.stat()
+            manifest.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+            os.utime(manifest, ns=(before.st_atime_ns, before.st_mtime_ns))
+            with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                upgrade._verify_backup(intent)
+        manifest.write_bytes(original)
+        candidate = saved / 'candidateDb.sqlite'
+        with upgrade.backup_proof_scope():
+            upgrade._verify_backup(intent)
+            _pid, cache, _stack = upgrade._backup_proofs.get()
+            monitors = next(iter(cache.values()))[2]
+            self.assertTrue(all(db.execute('PRAGMA query_only').fetchone() == (1,) for db in monitors))
+            replacement = saved / 'replacement.sqlite'
+            replacement.write_bytes(candidate.read_bytes())
+            replacement.chmod(0o600)
+            os.replace(replacement, candidate)
+            with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                upgrade._verify_backup(intent)
+        with sqlite3.connect(candidate) as db:
+            self.assertEqual(db.execute('PRAGMA journal_mode=WAL').fetchone(), ('wal',))
+        receipt = json.loads(manifest.read_text())
+        receipt['dbSha256']['candidateDb'] = upgrade._hash_private(candidate)
+        manifest.write_bytes(upgrade._canonical(receipt))
+        self.assertFalse(Path(str(candidate) + '-shm').exists())
+        with upgrade.backup_proof_scope():
+            upgrade._verify_backup(intent)
+            with sqlite3.connect(candidate) as db:
+                db.execute('DELETE FROM vector_chunk_sets WHERE id=0')
+            self.assertGreater(Path(str(candidate) + '-wal').stat().st_size, 0)
+            with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                upgrade._verify_backup(intent)
 
 
 class JournalCase(unittest.TestCase):

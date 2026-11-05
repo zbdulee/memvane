@@ -15,7 +15,8 @@ and the next run finishes it forward.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -249,7 +250,101 @@ def _backup(identity, old_record, old_route, old_attestation, counts):
     return final
 
 
+_backup_proofs = ContextVar('inactive_backup_proofs', default=None)
+
+
+@contextmanager
+def backup_proof_scope():
+    """Reuse a backup proof only while its observed files remain unchanged."""
+    with ExitStack() as stack:
+        token = _backup_proofs.set((os.getpid(), {}, stack))
+        try:
+            yield
+        finally:
+            _backup_proofs.reset(token)
+
+
+def _backup_file_stamp(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if path.is_symlink():
+        _fail('inactive_upgrade_backup_changed')
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _backup_stamp(backup, paths, monitors):
+    def versions():
+        return tuple(db.execute('PRAGMA data_version').fetchone()[0] for db in monitors)
+    files = [backup, backup / 'manifest.json']
+    for path in paths:
+        files.extend((path, Path(str(path) + '-wal'), Path(str(path) + '-journal')))
+    before_versions = versions()
+    before_files = tuple(_backup_file_stamp(path) for path in files)
+    after_versions = versions()
+    after_files = tuple(_backup_file_stamp(path) for path in files)
+    if before_versions != after_versions or before_files != after_files:
+        _fail('inactive_upgrade_backup_changed')
+    return after_files, after_versions
+
+
 def _verify_backup(intent):
+    scope = _backup_proofs.get()
+    if scope is None:
+        return _verify_backup_full(intent)
+    from laya_product_install import _read_private
+    pid, cache, stack = scope
+    if pid != os.getpid():
+        _fail('inactive_upgrade_backup_changed')
+    key = hashlib.sha256(_canonical({key: intent[key] for key in
+        ('backup', 'oldRecord', 'counts', 'oldRoute', 'oldAttestation')})).hexdigest()
+    entry = cache.get(key)
+    if entry is not None:
+        backup, paths, monitors, expected = entry
+        if _backup_stamp(backup, paths, monitors) != expected:
+            _fail('inactive_upgrade_backup_changed')
+        return
+    backup = Path(intent['backup'])
+    state = Path(intent['oldRecord']['identity']['stateRoot'])
+    if (backup.parent != state or not backup.name.startswith(BACKUP) or backup.is_symlink()):
+        _fail('inactive_upgrade_backup_invalid')
+    info = backup.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) & 0o077):
+        _fail('inactive_upgrade_backup_invalid')
+    receipt = json.loads(_read_private(backup / 'manifest.json', 65536))
+    digests = receipt.get('dbSha256')
+    keys = set(_DB_KEYS) | {'journal'}
+    if isinstance(digests, dict) and 'incrementalDocs' in digests:
+        keys.add('incrementalDocs')
+    if not isinstance(digests, dict) or set(digests) != keys:
+        _fail('inactive_upgrade_backup_invalid')
+    paths = tuple(backup / (key + '.sqlite') for key in sorted(keys))
+    from laya_index_a import _query_only_uri
+    monitors = []
+    for path in paths:
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('inactive_upgrade_backup_changed')
+        for suffix in ('-wal', '-shm', '-journal'):
+            if Path(str(path) + suffix).is_symlink():
+                _fail('inactive_upgrade_backup_changed')
+        db = stack.enter_context(closing(sqlite3.connect(_query_only_uri(path),
+                                                         uri=True, isolation_level=None)))
+        db.execute('PRAGMA query_only=ON')
+        monitors.append(db)
+    before = _backup_stamp(backup, paths, monitors)
+    _verify_backup_full(intent)
+    after = _backup_stamp(backup, paths, monitors)
+    if before != after:
+        _fail('inactive_upgrade_backup_changed')
+    cache[key] = (backup, paths, tuple(monitors), after)
+
+
+def _verify_backup_full(intent):
     """Require the complete private snapshot before changing any metadata."""
     from laya_product_install import _read_private
     state = Path(intent['oldRecord']['identity']['stateRoot'])
