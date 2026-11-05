@@ -21,7 +21,7 @@ test('bridge observer owns synthetic launch while kernel peer and transport stay
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 23 tests\b/);
+    assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 24 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);

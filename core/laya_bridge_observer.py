@@ -99,13 +99,19 @@ class HostSpec:
 def _codex_mcp_options(executable, cwd=None):
     """Disable configured MCP servers only for the synthetic host challenge."""
     deadline = time.monotonic() + 45
-    def listing(names):
+    def options(names, replacements=()):
+        result = []
+        for name in names:
+            if name in replacements:
+                result.extend(('-c', 'mcp_servers.' + name + '.command="memvane-disabled"'))
+            result.extend(('-c', 'mcp_servers.' + name + '.enabled=false'))
+        return tuple(result)
+    def listing(names, replacements=()):
         remaining = deadline-time.monotonic()
         if remaining <= 0:
             _refuse()
         command = [str(executable), 'mcp', 'list', '--json']
-        for name in names:
-            command.extend(('-c', 'mcp_servers.' + name + '.enabled=false'))
+        command.extend(options(names, replacements))
         try:
             result = subprocess.run(command, cwd=str(cwd or Path.cwd()), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, timeout=min(8, remaining), check=False)
@@ -157,11 +163,16 @@ def _codex_mcp_options(executable, cwd=None):
         # Python 3.9 has no tomllib. Ask Codex itself which overrides are
         # valid; plugin-provided servers are not user mcp_servers entries.
         selected = valid(names)
-    verified = listing(selected)
-    if (verified is None or not set(selected) <=
-            {row.get('name') for row in verified if row.get('enabled') is False}):
+    # Some plugin servers have no corresponding mcp_servers entry; a disabled
+    # placeholder lets the CLI resolve that name without starting a server.
+    # A failed probe alone never proves a server is plugin-provided.
+    replacements = set(names) - set(selected)
+    verified = listing(names, replacements)
+    if (verified is None or not set(names) <=
+            {row.get('name') for row in verified if row.get('enabled') is False}
+            or any(row.get('enabled') is True for row in verified)):
         _refuse()
-    return tuple(item for name in selected for item in ('-c','mcp_servers.'+name+'.enabled=false'))
+    return options(names, replacements)
 
 
 def _host_spec(challenge, host):

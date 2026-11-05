@@ -153,15 +153,18 @@ class ObserverChecks(unittest.TestCase):
             self.assertEqual(kwargs.get('cwd'),str(self.case.project))
             flags=[value for value in argv if value.startswith('mcp_servers.')]
             calls.append(flags)
-            if any('plugin-only.' in flag for flag in flags):
+            if (any('plugin-only.' in flag for flag in flags) and
+                    'mcp_servers.plugin-only.command="memvane-disabled"' not in flags):
                 return SimpleNamespace(returncode=1,stdout=b'')
             rows=[{'name':'one','enabled':not any('one.' in flag for flag in flags)},
                   {'name':'projectonly','enabled':not any('projectonly.' in flag for flag in flags)},
-                  {'name':'plugin-only','enabled':True}]
+                  {'name':'plugin-only','enabled':not any('plugin-only.enabled=false' in flag for flag in flags)}]
             return SimpleNamespace(returncode=0,stdout=json.dumps(rows).encode())
         with mock.patch.dict(os.environ,{'CODEX_HOME':str(codex_home)}), \
              mock.patch.object(observer.subprocess,'run',side_effect=listing):
-            expected=('-c','mcp_servers.one.enabled=false','-c','mcp_servers.projectonly.enabled=false')
+            expected=('-c','mcp_servers.one.enabled=false','-c','mcp_servers.projectonly.enabled=false',
+                      '-c','mcp_servers.plugin-only.command="memvane-disabled"',
+                      '-c','mcp_servers.plugin-only.enabled=false')
             self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
             if importlib.util.find_spec('tomllib') is not None:
                 self.assertEqual(len(calls),5,'valid TOML path and project-only discovery must both run')
@@ -183,6 +186,18 @@ class ObserverChecks(unittest.TestCase):
         with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
              mock.patch.object(observer.subprocess,'run',return_value=SimpleNamespace(
                  returncode=0,stdout=json.dumps(rows).encode())):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex',self.case.project)
+
+    def test_codex_preflight_refuses_transient_override_failure(self):
+        observer=self.observer()
+        def listing(argv,**_kwargs):
+            if any(value.startswith('mcp_servers.projectonly.') for value in argv):
+                return SimpleNamespace(returncode=1,stdout=b'')
+            return SimpleNamespace(returncode=0,stdout=json.dumps([
+                {'name':'projectonly','enabled':True}]).encode())
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',side_effect=listing):
             with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
                 observer._codex_mcp_options('/synthetic/codex',self.case.project)
 
