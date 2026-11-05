@@ -285,6 +285,31 @@ print(json.dumps(result))'''
             Path(directory).chmod(0o755)
         (installed / '.git').mkdir(mode=0o755)
         (installed / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')
+        # Exercise preflight's new-cache path with actual Git object reads,
+        # installed bytes, metadata creation, and full bundle inspection.
+        from types import SimpleNamespace
+        import laya_bridge_observer as observer
+        import laya_bridge_readiness as bridge
+        import laya_bundle_upgrade as upgrade
+        import laya_journal_v4 as v4
+        challenge=SimpleNamespace(release_commit=self.commit1)
+        registry={'state':str(self.install)}
+        with mock.patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_SANDBOX':''}), \
+             mock.patch.object(bridge,'_issued',return_value=(self.root,'nonce')), \
+             mock.patch.object(bridge,'_load_challenge',return_value=registry), \
+             mock.patch.object(bridge,'_loaded_config',return_value=None), \
+             mock.patch.object(bridge,'challenge_prompt',return_value='synthetic challenge'), \
+             mock.patch.object(journal,'journal_version',return_value=4), \
+             mock.patch.object(journal,'inspect_journal',return_value={'selected':{
+                 'pluginRoot':str(installed),'vectorProfile':self.vector_profile},
+                 'projectRoot':str(self.project)}), \
+             mock.patch.object(v4,'host_copies',return_value=[str(installed)]), \
+             mock.patch.object(upgrade,'host_layout',return_value=('claude',self.source)), \
+             mock.patch.object(upgrade,'installed_commit',return_value=self.commit1), \
+             mock.patch.object(upgrade,'select_source',return_value=(self.source,self.commit1)), \
+             mock.patch.object(observer.shutil,'which',return_value='/bin/bash'):
+            self.assertEqual(observer._host_spec(challenge,'claude').plugin_root,installed)
+        self.assertTrue((installed/'.laya-product'/'manifest.json').is_file())
         proof = bundle.adopt_host_loaded_plugin(
             self.source, installed, commit_id=self.commit1,
             vector_profile=self.vector_profile)

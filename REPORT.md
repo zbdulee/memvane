@@ -1,10 +1,11 @@
-# MemVane 0.43.38 PR5 reader bridge 검증 상태
+# MemVane 0.43.39 PR5 reader bridge 검증 상태
 
 현재 작업은 v5 journal의 reader bridge와 기존 v6 게시 세대의 read-only 검색을 다룬다. schema3 후보는 내부 read-only capability로만 검증하며 운영 선택은 허용하지 않는다. PR6 migration과 PR7 view 선택은 이 작업의 완료 증거에 포함하지 않는다.
 
 - v4에서 v5로 넘어갈 때 등록된 Claude·Codex host의 bridge preflight를 요구한다. 이미 실행 중인 구버전 recall 전체를 배제한다고 주장하지 않는다.
 - 선택된 v6 reader는 base·catalog·binding·sidecar의 고정 snapshot과 증명된 revision을 사용한다. 전환 전 legacy sidecar의 completed 상태는 endpoint에 봉인하며 첫 writer는 그 baseline과 일치하는 상태에서 receipt를 발급한다.
 - 첫 sidecar 문서 게시 전 base에 불변 의존성 표시를 기록한다. 게시된 sidecar가 없으면 검색과 빈 sidecar 재생성을 거절한다.
+- 새 host cache의 bridge preflight는 설치 commit과 marketplace source를 대조하고 기존 exact-commit adoption으로 cache를 봉인한 뒤 등록 hook을 관측한다. 손상된 기존 봉인과 다른 commit은 거절한다.
 - 기본 Python 3.9에서는 승인된 기존 DB의 `mode=rw` 연결 직후 `query_only=ON`을 사용한다. SQLite 자체 WAL/SHM 초기화는 허용하고 optional DB 본체의 새 생성과 논리 데이터·세대·journal 변경은 허용하지 않는다.
 - upgrade fence와 이동 복구 중에는 증명된 endpoint의 read-only 검색만 허용한다. T3 물리 연결·writer·rollback drain, T6 복구, T7 host 분기 검사는 합성 설치와 실제 SQLite/프로세스 경계의 범위에서 기록한다.
 - fence 중 새 릴리스 companion은 owner와 전체 번들·실행 코드 일치가 증명된 경우 검색한다. 분류 직후 fence가 해제된 요청도 journal과 endpoint를 다시 증명해 검색한다.
@@ -13,7 +14,7 @@
 
 ## 검증 상태
 
-최종 HEAD, 동일 커밋의 전체 3개 shard, 독립 리뷰, 실제 Claude/Codex host preflight·postflight와 설치·운영 증거, 마지막 CI는 아직 확정되지 않았다. 같은 커밋 트리의 3개 shard 순차 전체 통과를 canonical `npm test` 완료 근거로 인정한다. 개별 RED/GREEN과 guard ID는 `PROGRESS-CODEX.md` 및 해당 로그를 기준으로 확인한다.
+최종 HEAD, 동일 커밋의 전체 3개 shard, 독립 리뷰, 실제 Claude/Codex host preflight·postflight와 설치·운영 증거, 마지막 CI는 아직 확정되지 않았다. 같은 커밋 트리의 3개 shard 순차 전체 통과를 canonical `npm test` 완료 근거로 인정한다. `.38` 운영 전환의 Codex preflight는 새 cache 미봉인으로 실패해 기존 journal v4를 유지했다. 개별 RED/GREEN과 guard ID는 `PROGRESS-CODEX.md` 및 해당 로그를 기준으로 확인한다.
 
 합성 10-view×1,800 member 검사의 최신 warm pin/search p95는 약 3,086ms/2,489ms다. PR7/10의 목표 50ms/150ms는 미달이며 실제 host 지연과 동일시하지 않는다. 초기 합성 capacity 실행에서는 24회 wake 내 게시하지 못했지만, 입장 예산 변경 후 실제 SQLite 기반 합성 worker는 게시됐다. publish-cut 관측은 단일 실행이어서 p95·head CAS 상한의 증거가 아니다.
 

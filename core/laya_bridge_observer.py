@@ -100,7 +100,7 @@ def _host_spec(challenge, host):
             or os.environ.get('QMD_SANDBOX')):
         _refuse()
     from laya_journal_v4 import host_copies
-    from laya_bundle_upgrade import host_layout, installed_commit
+    from laya_bundle_upgrade import host_layout, installed_commit, select_source
     import laya_install_journal as J
     directory, _nonce = B._issued(challenge, B.BridgeChallenge)
     registry = B._load_challenge(directory)
@@ -120,6 +120,16 @@ def _host_spec(challenge, host):
             continue
         if kind != host or installed_commit(root) != challenge.release_commit:
             continue
+        if loaded is None and not os.path.lexists(root / '.laya-product'):
+            # A freshly installed cache has not yet been adopted by a worker.
+            # Seal its exact committed bytes before asking that host to prove
+            # it actually loaded the registered hook; this does not select it.
+            from laya_product_bundle import adopt_host_loaded_plugin
+            source, commit = select_source(root)
+            if commit != challenge.release_commit:
+                _refuse()
+            adopt_host_loaded_plugin(source, root, commit_id=commit,
+                                     vector_profile=selected['selected']['vectorProfile'])
         proof = inspect_full_plugin_candidate(str(root))
         if proof['sourceCommit'] == challenge.release_commit and proof['pluginRoot'] == str(root):
             matches.append((root, proof))
