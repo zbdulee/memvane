@@ -538,7 +538,17 @@ class UpgradeProofChecks(unittest.TestCase):
                     bridge.find_bridge_preflight(case.state,release_commit=target['sourceCommit'])
             held=case.home/'removed-driver-plugin';case.plugin.rename(held)
             try:
-                result=upgrade.upgrade(**options)
+                now=[time.time()]
+                real_seal=reader.seal_upgrade_reader
+                def slow_seal(*args,**kwargs):
+                    installer=real_seal(*args,**kwargs)
+                    now[0]=challenge.expires_at+1
+                    return installer
+                with mock.patch.object(bridge.time,'time',side_effect=lambda:now[0]), \
+                     mock.patch.object(reader,'seal_upgrade_reader',side_effect=slow_seal), \
+                     mock.patch.object(bridge,'_observe_registered_hook',side_effect=observer) as observed:
+                    result=upgrade.upgrade(**options)
+                self.assertEqual(observed.call_count,2,'expired preflight must re-observe both hosts')
             finally:held.rename(case.plugin)
             self.assertEqual(result['status'],'active_upgrade_complete')
             self.assertEqual(reader.journal.journal_version(case.journal),5)
