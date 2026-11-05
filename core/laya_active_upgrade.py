@@ -1672,6 +1672,9 @@ def _prepare_v4_bridge(project, state, marker, ledger, *, source_root, plugin_ro
                 _fail('active_upgrade_intent_changed')
             _backup_proof(intent)
     installer = reader.seal_upgrade_reader(project, state, executing_root=Path(plugin_root))
+    # Preparing and sealing a large store can outlive the short host receipt.
+    # Reuse it if still valid; otherwise observe the registered hosts again.
+    readiness = bridge.ensure_bridge_preflight(state, release_commit=commit_id)
     reader.convert_reader_v5(state, project, installer=installer, readiness=readiness)
 
 
