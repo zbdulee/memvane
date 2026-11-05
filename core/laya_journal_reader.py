@@ -668,10 +668,42 @@ def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, ma
     _need(db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_successors'").fetchone(),
           'reader_successor_missing')
     current_sha, identity, last_epoch = stored['attestation_sha256'], None, 0
+    previous_item = None
+
+    def restored_predecessor(item, before_epoch):
+        # Restore seals are committed before a supported rollback changes the
+        # journal. They bind the exact activation, predecessor and epoch.
+        for seal_endpoint, packed in db.execute(
+                'SELECT endpoint_id,record FROM upgrade_read_seals WHERE endpoint_id=?', (endpoint_id,)):
+            seal = json.loads(packed, object_pairs_hook=journal._pairs,
+                              parse_constant=journal._nonfinite)
+            if type(seal) is not dict or seal.get('schema') != 'memvane-upgrade-restore-v1':
+                continue
+            source = seal.get('journalBefore')
+            if (seal_endpoint == endpoint_id and _raw(seal).decode('utf8') == packed
+                    and seal.get('endpointId') == endpoint_id
+                    and seal.get('intentSha256') == item['intentSha256']
+                    and type(source) is dict and source.get('state') == 'active'
+                    and source.get('newWriteSeen') is False
+                    and type(source.get('epoch')) is int
+                    and item['epoch'] <= source['epoch'] < before_epoch
+                    and source.get('selected') == item['toIdentity']
+                    and source.get('previous') == item['fromIdentity']
+                    and source.get('providerAttestationSha256') == item['toAttestation']
+                    and source.get('previousProviderAttestationSha256') == item['fromAttestation']):
+                return True
+        return False
+
     rows = db.execute('SELECT epoch,intent_sha256,record FROM upgrade_read_successors '
                       'WHERE endpoint_id=? ORDER BY epoch', (endpoint_id,)).fetchall()
     for epoch, intent_sha, packed in rows:
         item = json.loads(packed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite)
+        if (type(item) is dict and previous_item is not None
+                and (item.get('fromAttestation') != current_sha or item.get('fromIdentity') != identity)):
+            _need(item.get('fromAttestation') == previous_item['fromAttestation']
+                  and item.get('fromIdentity') == previous_item['fromIdentity']
+                  and restored_predecessor(previous_item, epoch), 'reader_successor_invalid')
+            current_sha, identity = item['fromAttestation'], item['fromIdentity']
         _need(type(item) is dict and _raw(item).decode('utf8') == packed and
               set(item) == {'schema','intentSha256','endpointId','epoch','fromAttestation',
                             'toAttestation','fromIdentity','toIdentity'} and
@@ -706,6 +738,25 @@ def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, ma
                   (seal['schema'] != 'memvane-upgrade-reader-v2' or
                    seal['recovery'].get('mode') == 'switch'), 'reader_successor_invalid')
         current_sha, identity, last_epoch = item['toAttestation'], item['toIdentity'], epoch
+        previous_item = item
+    if rows and (current_sha != target_sha or identity != target_identity):
+        # A supported rollback restores the immediately preceding bundle while
+        # the immutable receipt for the reverted activation remains present.
+        # Validate the complete forward chain above before accepting that exact
+        # predecessor and only when the live journal proves the restoration.
+        row = journal._row(db)
+        selected_restored = (row['state'] in ('restored_old', 'pending')
+                             and row['selected'] == row['previous'] == target_identity
+                             and row['provider_attestation_sha'] == target_sha)
+        activating = (row['state'] == 'active' and row['epoch'] == max_epoch + 1
+                      and row['previous'] == target_identity
+                      and row['previous_provider_attestation_sha'] == target_sha)
+        _need((selected_restored or activating) and row['epoch'] > last_epoch
+              and item['fromAttestation'] == target_sha
+              and item['fromIdentity'] == target_identity
+              and restored_predecessor(item, max_epoch),
+              'reader_successor_unproved')
+        return
     _need(rows and current_sha == target_sha and identity == target_identity, 'reader_successor_unproved')
 
 

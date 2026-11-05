@@ -21,6 +21,56 @@ HERE=Path(__file__).resolve().parent
 spec=importlib.util.spec_from_file_location('upgrade_reader_seed',HERE/'laya-reader-move-seal-checks.py')
 fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 
+def verify_rollback_writer(self,case,reader,lease,upgrade,target,target2,new,next_root,expected,fid2,review2,intent2):
+    with mock.patch.object(upgrade,'inspect_full_plugin_candidate',return_value=target), \
+         mock.patch.object(reader.journal,'_inspect_identity',return_value=target), \
+         mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(new)), \
+         mock.patch.object(reader.journal,'_provider_file_identity',return_value=[[str(new/'p.py'),1,2,3,4,5]]):
+        self.assertEqual(upgrade._restore(intent2)['status'],'active_upgrade_restored_laya')
+        writer=importlib.import_module('laya_writer_open_plan')
+        plan=writer.capture_writer_plan(case.project,executing_root=new)
+        writer.validate_writer_plan(plan)
+        with lease.resolve_endpoint(case.project,action='recall',host_root=new) as restored:
+            self.assertEqual(restored.endpoint_id,expected)
+        with reader._readonly(case.journal,case.state) as db:
+            current,stored=reader._selection(db)
+            with self.assertRaisesRegex(ValueError,'reader_successor_unproved'):
+                reader._successor_chain(db,current.preferred_endpoint,stored,
+                    '0'*64,target,max_epoch=reader.journal._row(db)['epoch'])
+        # The restored journal row alone is insufficient without its sealed restore.
+        with sqlite3.connect(case.journal) as db:
+            seals=db.execute('SELECT intent_sha256,endpoint_id,record FROM upgrade_read_seals').fetchall()
+            restore_seal=next(row for row in seals if json.loads(row[2]).get('schema')=='memvane-upgrade-restore-v1')
+            trigger=db.execute("SELECT sql FROM sqlite_master WHERE name='upgrade_read_seals_delete'").fetchone()[0]
+            db.execute('DROP TRIGGER upgrade_read_seals_delete')
+            db.execute('DELETE FROM upgrade_read_seals WHERE intent_sha256=?',(restore_seal[0],))
+            db.execute(trigger)
+        try:
+            with self.assertRaisesRegex(ValueError,'reader_successor_unproved'):
+                writer.capture_writer_plan(case.project,executing_root=new)
+        finally:
+            with sqlite3.connect(case.journal) as db:
+                db.execute('INSERT INTO upgrade_read_seals VALUES(?,?,?)',restore_seal)
+        # A fresh upgrade after rollback must prove through the restored predecessor.
+        (case.state/upgrade.INTENT).rename(case.state/'archived-test-restored-intent.json')
+        def restored_lookup(root):
+            return target if str(root)==str(new) else target2
+        with mock.patch.object(upgrade,'inspect_full_plugin_candidate',side_effect=restored_lookup), \
+             mock.patch.object(reader.journal,'_inspect_identity',side_effect=lambda identity:restored_lookup(identity['pluginRoot'])), \
+             mock.patch.object(reader.journal,'inspect_full_plugin_candidate',side_effect=restored_lookup):
+            intent3=upgrade._prepare(case.project,case.state,case.journal,case.home,next_root,
+                target2['sourceCommit'],review2['proposalSha256'],'/synthetic/model',3)
+            with mock.patch.object(reader.journal,'_bind_attestation',return_value=(
+                    hashlib.sha256(intent3['newAttestation'].encode()).hexdigest(),fid2)):
+                self.assertEqual(upgrade._switch(intent3)['status'],'active_upgrade_complete')
+            with mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(next_root)), \
+                 mock.patch.object(reader.journal,'_provider_file_identity',return_value=fid2):
+                plan=writer.capture_writer_plan(case.project,executing_root=next_root)
+                writer.validate_writer_plan(plan)
+                with lease.resolve_endpoint(case.project,action='recall',host_root=next_root) as upgraded:
+                    self.assertEqual(upgraded.endpoint_id,expected)
+
+
 class UpgradeProofChecks(unittest.TestCase):
     def test_missing_preflight_is_collected_and_existing_receipts_are_reused(self):
         helper=fixture.base.JournalReaderChecks('runTest');helper.setUp();self.addCleanup(helper.doCleanups)
@@ -1441,6 +1491,9 @@ with helper.full_authority(case,reader,lease), \\
                                  hashlib.sha256(intent2['newAttestation'].encode()).hexdigest(),fid2)):
                             reader.journal.cas_activate(case.journal,pending2['epoch'],intent2['newRoute'].encode())
                         fresh._change(case.state/fresh.LEDGER,intent2['newLedger']['epoch'],'upgrading','active')
+                        if os.environ.get('MEMVANE_TEST_ROLLBACK_WRITER') == '1':
+                            verify_rollback_writer(self,case,reader,lease,upgrade,target,target2,new,next_root,expected,fid2,review2,intent2)
+                            return
                         (case.state/upgrade.INTENT).rename(case.state/'archived-test-intent-2.json')
                         with mock.patch.object(reader.journal,'_inspect_identity',return_value=target2), \
                              mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(next_root)), \
