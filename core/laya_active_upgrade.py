@@ -682,7 +682,7 @@ def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestati
         if att != attestation:
             reader._successor_chain(db, endpoint_id, stored, _sha(att),
                                     intent['journalBefore']['selected'],
-                                    max_epoch=intent['journalBefore']['epoch'])
+                                    max_epoch=intent['journalBefore']['epoch'], fenced=True)
         seal = _reader_seal(db, digest, endpoint_id)
         reader._need(seal['intentSha256'] == digest and seal['endpointId'] == endpoint_id and
                      seal['readerEpoch'] == current.epoch and
