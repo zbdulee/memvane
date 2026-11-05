@@ -120,7 +120,15 @@ class ConnectionObservation:
 class ReaderWindowsChecks(unittest.TestCase):
     def setUp(self):
         self.seed=seed_module.MoveSealChecks('runTest')
-        self.addCleanup(self.seed.doCleanups);self.seed.setUp()
+        self.addCleanup(self.seed.doCleanups)
+        if self._testMethodName == 'test_manifest_link_sigkill_retry_recovers_exact_temp_alias_without_replacing_lock_inodes':
+            # Reproduce a legacy v5 fixture without its later window manifest
+            # so the real first-link crash/recovery protocol remains exercised.
+            windows=importlib.import_module('laya_reader_windows')
+            with mock.patch.object(windows,'_prepare_conversion_windows'):
+                self.seed.setUp()
+        else:
+            self.seed.setUp()
         self.case=self.seed.case
     def api(self):
         if importlib.util.find_spec('laya_reader_windows') is None:

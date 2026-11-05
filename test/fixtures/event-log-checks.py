@@ -230,16 +230,16 @@ class WriterChecks(Base):
 
 
 class PrivacyChecks(Base):
-    def test_prompt_is_hashed_by_default_and_raw_only_with_flag(self):
+    def test_prompt_is_hashed_even_with_legacy_debug_flag(self):
         event_log.emit('recall', state_root=self.state, prompt=event_log.prompt_fields('raw words'))
         with patch.dict(os.environ, {event_log.PROMPT_ENV: '1'}):
             event_log.emit('recall', state_root=self.state,
                            prompt=event_log.prompt_fields('raw words'))
-        hashed, raw = self.events()
+        hashed, flagged = self.events()
         self.assertEqual(set(hashed['prompt']), {'sha256', 'chars'})
-        self.assertEqual(raw['prompt']['text'], 'raw words')
+        self.assertEqual(flagged['prompt'], hashed['prompt'])
         lines = (self.state / event_log.NAME).read_text().splitlines()
-        self.assertNotIn('raw words', lines[0])
+        self.assertNotIn('raw words', '\n'.join(lines))
 
     def test_secret_named_fields_are_dropped(self):
         event_log.emit('x', state_root=self.state, api_token='t0k', password='pw',
@@ -316,6 +316,23 @@ class StorageChecks(Base):
 
 
 class SkillChecks(Base):
+    def test_upgrade_view_shows_safe_bridge_stage_and_operation(self):
+        event_log.emit('bundle.upgrade', state_root=self.state, outcome='deferred',
+                       reason='reader_hosts_pending', operation='a'*32, attempt=2,
+                       stage='observe_host', bridgeHost='codex')
+        output = self.run_skill('upgrades')
+        self.assertIn('stage=observe_host', output)
+        self.assertIn('bridgeHost=codex', output)
+        self.assertIn('operation='+'a'*32, output)
+        self.assertIn('attempt=2', output)
+        event_log.emit('bundle.upgrade', state_root=self.state, outcome='failed',
+                       stage='PRIVATE_SOURCE', bridgeHost='FAKE_CREDENTIAL',
+                       operation='PRIVATE_SOURCE', attempt=-1)
+        output = self.run_skill('upgrades')
+        self.assertNotIn('PRIVATE_SOURCE', output)
+        self.assertNotIn('FAKE_CREDENTIAL', output)
+        self.assertNotIn('attempt=-1', output)
+
     def write_fixture(self):
         rows = [
             {'event': 'recall', 'outcome': 'served', 'reason': 'selected', 'count': 1,

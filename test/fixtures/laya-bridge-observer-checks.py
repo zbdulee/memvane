@@ -65,7 +65,7 @@ if role == 'cli':
     if behavior == 'nohook':
         sys.exit(0)
     if behavior != 'manual-core':
-        if behavior == 'direct-core':
+        if behavior in ('direct-core','loaded-direct-core'):
             script = pathlib.Path(root)/'core/laya_host_response.py'
             argv = [sys.executable, '-B', str(script), 'serve-qa-stdin', 'recall', host, os.getcwd()]
             env = dict(os.environ)
@@ -102,6 +102,11 @@ if behavior == 'earlyexit':
     sys.exit(0)
 observation = dict(observed_challenge_id=ident, observed_nonce_sha256=nonce,
     plugin_root=root, release_commit='c'*40, manifest_sha256='d'*64, hook_stage='registered-v4')
+if behavior in ('loaded','loaded-direct-core','loaded-no-result'):
+    info=pathlib.Path(root).stat()
+    observation.update(hook_stage='loaded-v5-reader',endpoint_id='a'*64,reader_epoch=1,
+        store_format='v6',generation='g-fixture',sentinel_sha256='b'*64,owner_role='owner',
+        plugin_node=[info.st_dev,info.st_ino])
 if behavior == 'nonce': observation['observed_nonce_sha256']='0'*64
 if behavior == 'root': observation['plugin_root']=str(pathlib.Path(root).parent)
 if behavior == 'late-thread':
@@ -112,6 +117,8 @@ if behavior == 'late-thread':
     observer._send=sent
 observer.emit_registered_hook(ident, 'codex' if behavior == 'host' else host,
     observation, 'wrong-session' if behavior == 'session' else session)
+if behavior == 'loaded':
+    print('memvane-loaded-v5-reader:'+'b'*64,flush=True)
 pathlib.Path(log+'.core-complete').write_text('post-ACK-emitter-returned', encoding='utf8')
 '''
 
@@ -134,14 +141,18 @@ class ObserverChecks(unittest.TestCase):
             self.assertTrue(callable(getattr(module, name, None)), name)
         return module
 
-    def challenge(self, host_name='claude'):
+    def challenge(self, host_name='claude', *, loaded=False):
         import laya_bridge_readiness as bridge
+        if loaded:
+            return bridge, bridge.begin_loaded_bridge(self.case.state,release_commit='c'*40,
+                expected_hosts=frozenset(('claude','codex')),
+                sentinel_path='qa/sentinel.md',sentinel_sha256='b'*64)
         return bridge, bridge.begin_bridge_preflight(self.case.state, release_commit='c'*40,
                                                      expected_hosts=frozenset((host_name,)))
 
     def collect(self, behavior, host_name='claude'):
         observer = self.observer()
-        bridge, challenge = self.challenge(host_name)
+        bridge, challenge = self.challenge(host_name,loaded=behavior in ('loaded','loaded-direct-core','loaded-no-result'))
         root = self.case.plugin
         (root / 'core').mkdir(mode=0o700, exist_ok=True)
         for path in (root / 'fake-cli.py', root / 'unregistered.py', root / 'core/laya_host_response.py'):
@@ -238,6 +249,20 @@ class ObserverChecks(unittest.TestCase):
         if process.poll() is None and observer.same_process(identity):
             process.kill()  # Only the explicitly owned fixture sibling handle.
         process.communicate(timeout=10)
+
+    def test_loaded_wire_requires_owned_registered_dispatcher(self):
+        _observer,bridge,_challenge,receipt,error,_processes,_directory=self.collect('loaded')
+        self.assertIsNone(error)
+        record=bridge._read(receipt)
+        self.assertEqual(record['schema'],'memvane-loaded-reader-v1')
+        self.assertEqual(record['hook_stage'],'loaded-v5-reader')
+        self.assertEqual(record['endpoint_id'],'a'*64)
+        _observer,_bridge,_challenge,receipt,error,_processes,_directory=self.collect('loaded-direct-core')
+        self.assertIsNone(receipt)
+        self.assertEqual(error,'reader_hosts_pending')
+        _observer,_bridge,_challenge,receipt,error,_processes,_directory=self.collect('loaded-no-result')
+        self.assertIsNone(receipt)
+        self.assertEqual(error,'reader_hosts_pending')
 
     def test_kernel_peer_identity_matches_real_connected_owned_child(self):
         observer = self.observer()

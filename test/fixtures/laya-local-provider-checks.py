@@ -425,10 +425,23 @@ export async function getLlama() {
         if node is None:
             self.skipTest('Node unavailable')
         events = self.root / 'embed-events.txt'
+        query_sent = self.root / 'query-sent'
         stub = self.root / 'queued-module.mjs'
         stub.write_text('''
-import {appendFileSync} from 'node:fs';
+import {appendFileSync, existsSync, writeFileSync} from 'node:fs';
+import {Socket} from 'node:net';
 const events = EVENT_PATH;
+const querySent = QUERY_SENT_PATH;
+let firstDocument = true;
+const querySockets = new WeakSet();
+const originalEmit = Socket.prototype.emit;
+Socket.prototype.emit = function(event, ...args) {
+  if (event === 'data' && Buffer.isBuffer(args[0]) && args[0].includes('"kind":"query"'))
+    querySockets.add(this);
+  const result = originalEmit.call(this, event, ...args);
+  if (event === 'end' && querySockets.has(this)) writeFileSync(querySent, 'queued');
+  return result;
+};
 export async function getLlama() {
   return {async loadModel() { return {
     trainContextSize: 2048,
@@ -436,14 +449,21 @@ export async function getLlama() {
     async createEmbeddingContext() { return {
       async getEmbeddingFor(text) {
         appendFileSync(events, text.startsWith('task:') ? 'Q\\n' : 'D\\n');
-        await new Promise(resolve => setTimeout(resolve, 80));
+        if (!text.startsWith('task:') && firstDocument) {
+          firstDocument = false;
+          const deadline = Date.now() + 1500;
+          while (!existsSync(querySent) && Date.now() < deadline)
+            await new Promise(resolve => setTimeout(resolve, 5));
+          if (!existsSync(querySent)) throw Error('query_not_sent');
+        } else await new Promise(resolve => setTimeout(resolve, 80));
         return {vector: [1, 0]};
       },
       async dispose() {} }; },
     async dispose() {}
   }; }, async dispose() {} };
 }
-'''.replace('EVENT_PATH', json.dumps(str(events))), encoding='utf-8')
+'''.replace('EVENT_PATH', json.dumps(str(events))).replace(
+    'QUERY_SENT_PATH', json.dumps(str(query_sent))), encoding='utf-8')
         manifest = dict(self.manifest, nodePath=os.path.realpath(node),
                         nodeSha256=sha(Path(os.path.realpath(node))),
                         moduleEntryPath=str(stub), moduleEntrySha256=sha(stub),

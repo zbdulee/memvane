@@ -16,6 +16,7 @@ import os
 import re
 from pathlib import Path
 import sqlite3
+import sys
 import time
 import uuid
 
@@ -26,6 +27,12 @@ class IndexContractError(ValueError):
 
 class InjectedFault(RuntimeError):
     pass
+
+
+def _query_only_uri(path):
+    """Open existing SQLite data for query_only, including macOS Python 3.9 WAL."""
+    mode = 'rw' if sys.platform == 'darwin' and sys.version_info[:2] == (3, 9) else 'ro'
+    return Path(path).as_uri() + '?mode=' + mode
 
 
 def _digest(scope, entries):
@@ -233,6 +240,179 @@ _NOT_EXCLUDED = '''
               WHERE x.scope=m.scope AND x.kind='path' AND x.value=m.path)
   AND NOT EXISTS (SELECT 1 FROM exclusions x
                   WHERE x.scope=m.scope AND x.kind='hash' AND x.value=m.hash)'''
+
+
+def _search_pinned_fts(db, scope, gen, ordinal, fts_queries, limit, *,
+                       path_prefixes=None, excluded_paths=None, deadline=None):
+    """Run the shared ranking SQL inside an already verified read snapshot.
+
+    The caller owns the transaction and must verify its generation and FTS
+    seal before using the result. This helper neither opens nor closes it.
+    """
+    if not db.in_transaction:
+        raise IndexContractError('reader_snapshot_unpinned')
+    if (not isinstance(fts_queries, tuple) or not 1 <= len(fts_queries) <= 8
+            or any(not isinstance(query, str) or not query for query in fts_queries)
+            or type(limit) is not int or not 1 <= limit <= 100):
+        raise IndexContractError('invalid_query')
+    prefix_sql, prefix_params = _path_predicate(path_prefixes)
+    shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
+    table = _gen_fts(ordinal)
+    answer = []
+    for fts_query in fts_queries:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise IndexContractError('fts_deadline_exceeded')
+        results = db.execute(f"""
+          SELECT m.path,m.hash,c.body,bm25({table},1.5,4.0,1.0,0.0) AS rank
+          FROM {table}
+          JOIN membership m ON m.gen=? AND m.path={table}.path_key
+          JOIN content c ON c.hash=m.hash
+          WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
+          {prefix_sql}{shadow_sql}
+          ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
+        """, (gen, fts_query, scope, *prefix_params, *shadow_params, limit)).fetchall()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise IndexContractError('fts_deadline_exceeded')
+        answer.append([{'generation': gen, 'scope': scope, 'path': path,
+                        'hash': hash_, 'body': body, 'score': rank}
+                       for path, hash_, body, rank in results])
+    return answer
+
+
+class SnapshotIndex:
+    """Internal in-memory search pin over a caller-owned read transaction.
+
+    The caller must establish the coherent multi-store snapshot and binding.
+    This object never owns, commits, rolls back, or closes the connection.
+    """
+
+    def __init__(self, db, *, scope, generation, incarnation, deadline, _observation=None):
+        if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or time.monotonic() >= deadline):
+            raise IndexContractError('reader_snapshot_deadline')
+        self.db, self.scope, self.generation = db, scope, generation
+        self._incarnation, self._deadline = incarnation, deadline
+        self._token = None
+        self._transaction_guard = None
+        self._vector_seals = {}
+        self._closed = False
+        self._check()
+        if not callable(getattr(db, '_hold_progress_deadline', None)):
+            raise IndexContractError('reader_snapshot_managed_required')
+        LayaIndexA._check_header(db)
+        if db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone() != (incarnation,):
+            raise IndexContractError('reader_incarnation_changed')
+        row = db.execute('SELECT h.gen,i.ord,s.source_manifest,g.rev_epoch '
+                         'FROM head h JOIN generations g ON g.scope=h.scope AND g.gen=h.gen '
+                         'JOIN candidate_seals s ON s.scope=h.scope AND s.gen=h.gen '
+                         'JOIN gen_index i ON i.gen=h.gen '
+                         "WHERE h.scope=? AND g.state='published' AND s.source_manifest=g.digest",
+                         (scope,)).fetchone()
+        if row is None or row[0] != generation:
+            raise IndexContractError('reader_generation_unpublished')
+        self._ordinal, self._manifest, self._epoch = row[1:]
+        if _observation is not None:
+            import laya_reader_open as readers
+            valid = any(item is _observation and item.connections[0] is db
+                        and saved.get('scopeId') == scope
+                        and saved.get('dbIncarnation') == incarnation
+                        and item.published[:2] == (generation, self._manifest)
+                        and item.generation_exclusion_epoch == self._epoch
+                        and item.vector_seal.get('generation') == generation
+                        and item.vector_seal.get('scope') == scope
+                        and item.vector_seal.get('rows_digest') == item.published[3]
+                        and endpoint.record['scope'] == scope
+                        for item, endpoint, saved in readers._observations.get())
+            if not valid or not getattr(db, '_snapshot_guards', None):
+                raise IndexContractError('reader_snapshot_unpinned')
+            self._vector_seals[generation] = dict(_observation.vector_seal)
+            return
+        db._hold_progress_deadline(deadline)
+        try:
+            if not _generation_fts_rows_match(db, generation, _gen_fts(self._ordinal), deadline=deadline):
+                raise IndexContractError('fts_generation_mismatch')
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise IndexContractError('fts_deadline_exceeded') from exc
+            raise
+        finally:
+            db._release_progress_deadline()
+
+    def _check(self, token=None, *, require_token=False):
+        if self._closed or (require_token and (self._token is None or token is not self._token)):
+            raise IndexContractError('reader_snapshot_closed')
+        if time.monotonic() >= self._deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        try:
+            if not self.db.in_transaction or self.db.execute('PRAGMA query_only').fetchone() != (1,):
+                raise IndexContractError('reader_snapshot_closed')
+        except sqlite3.ProgrammingError as exc:
+            raise IndexContractError('reader_snapshot_closed') from exc
+
+    def pin(self, scope=None):
+        self._check()
+        if scope is not None and scope != self.scope:
+            raise IndexContractError('reader_snapshot_scope_changed')
+        if self._token is not None:
+            raise IndexContractError('reader_snapshot_already_pinned')
+        if not callable(getattr(self.db, '_hold_snapshot_transaction', None)):
+            raise IndexContractError('reader_snapshot_managed_required')
+        self._transaction_guard = self.db._hold_snapshot_transaction()
+        self._token = object()
+        return self._token if scope is None else (self._token, self.generation)
+
+    def release(self, token):
+        if self._closed or self._token is None or token is not self._token:
+            raise IndexContractError('reader_snapshot_closed')
+        self.db._release_snapshot_transaction(self._transaction_guard)
+        self._closed = True
+
+    def incarnation(self):
+        self._check()
+        return self._incarnation
+
+    def view_seal(self, token):
+        self._check(token, require_token=True)
+        return {'scope': self.scope, 'gen': self.generation,
+                'source_manifest': self._manifest, 'rev_epoch': self._epoch}
+
+    def _check_header(self, db):
+        if db is not self.db:
+            raise IndexContractError('reader_snapshot_closed')
+        self._check()
+        LayaIndexA._check_header(db)
+
+    def _pinned(self, token):
+        self._check(token, require_token=True)
+        return self.scope, self.generation, self._ordinal
+
+    def list_exclusions(self, scope):
+        self._check()
+        if scope != self.scope:
+            raise IndexContractError('reader_snapshot_scope_changed')
+        return self.db.execute('SELECT scope,kind,value FROM exclusions WHERE scope=? '
+                               'ORDER BY kind,value', (scope,)).fetchall()
+
+    def search_many(self, token, fts_queries, limit, *, path_prefixes=None,
+                    deadline_seconds=None, excluded_paths=None):
+        self._check(token, require_token=True)
+        if (deadline_seconds is not None and
+                (type(deadline_seconds) not in (int, float) or not math.isfinite(deadline_seconds)
+                 or not 0 < deadline_seconds <= 30)):
+            raise IndexContractError('invalid_query')
+        deadline = self._deadline if deadline_seconds is None else min(
+            self._deadline, time.monotonic() + deadline_seconds)
+        self.db._hold_progress_deadline(deadline)
+        try:
+            return _search_pinned_fts(self.db, self.scope, self.generation, self._ordinal,
+                                      fts_queries, limit, path_prefixes=path_prefixes,
+                                      excluded_paths=excluded_paths, deadline=deadline)
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise IndexContractError('fts_deadline_exceeded') from exc
+            raise
+        finally:
+            self.db._release_progress_deadline()
 
 
 _SCHEMA_V6 = '''
@@ -976,11 +1156,15 @@ class LayaIndexA:
 
     def publish(self, expected, gen, claim, fault_at=None, *,
                 source_manifest=None, claim_digest=None, claim_epoch=None,
-                require_vector=False):
+                require_vector=False, _revision_install_id=None):
         """CAS a bound base/source/claim + receipt; separate queue ACK is replayable."""
         proof = (source_manifest,claim_digest,claim_epoch)
         if type(require_vector) is not bool:
             raise IndexContractError('invalid_vector_requirement')
+        if (_revision_install_id is not None and
+                (self._connection_owner is not None or not isinstance(_revision_install_id,str)
+                 or re.fullmatch(r'[0-9a-f]{32}',_revision_install_id) is None)):
+            raise IndexContractError('invalid_publication_revision_identity')
         if not isinstance(claim, str) or not claim:
             raise IndexContractError('invalid_claim')
         if any(value is not None for value in proof) and (
@@ -997,6 +1181,29 @@ class LayaIndexA:
             if status is not None:
                 return status
             self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+            if _revision_install_id is not None:
+                import laya_publication_revision as revisions
+                prefix=revisions._PREFIX
+                baseline=self.db.execute('SELECT value FROM schema_meta WHERE key=?',
+                                         (prefix+'0'*20,)).fetchone()
+                if baseline is None:
+                    if self.db.execute('SELECT 1 FROM schema_meta WHERE key>=? AND key<? LIMIT 1',
+                                       (prefix,prefix+'\uffff')).fetchone() is not None:
+                        raise IndexContractError('base_baseline_missing')
+                else:
+                    try:
+                        value=json.loads(baseline[0])
+                        incarnation=self.db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
+                        expected_identity=revisions._identity('base',
+                            (_revision_install_id,prepared[1][0],incarnation))
+                        valid=(isinstance(value,dict) and value.get('component')=='base'
+                               and value.get('kind')=='baseline' and value.get('identity')==expected_identity)
+                    except (TypeError,ValueError):
+                        valid=False
+                    if not valid:
+                        raise IndexContractError('invalid_base_baseline')
+                    revisions.record_head(self.db,install_id=_revision_install_id,
+                        scope=prepared[1][0],before=expected,after=gen,claim=claim,proof=proof)
             self.db.commit()
             return 'published'
         except BaseException:
@@ -1078,10 +1285,32 @@ class LayaIndexA:
                 self.db.total_changes,
                 self.db.execute('PRAGMA main.schema_version').fetchone()[0])
 
+    def _ensure_normal_baseline(self, scope):
+        if self._connection_owner is None:
+            return
+        import laya_reader_windows as windows
+        import laya_writer_scope as normal
+        _pid, writer, _scope, _node, _manifest = windows._component(self._connection_owner.component)
+        if type(writer) is not normal.NormalWriter:
+            return
+        record = normal._record(writer)
+        if not record.get('marked'):
+            raise windows.ReaderWindowBusy('normal_writer_intent_required')
+        if scope != writer.scope_id:
+            raise IndexContractError('invalid_scope')
+        proof = normal.admission_proof(writer)
+        from laya_publication_revision import ensure_base_baseline
+        ensure_base_baseline(self, scope=scope, profile_id=proof['vectorProfile']['profileId'],
+                             deadline=time.monotonic()+2)
+
     def _publish_coordinated(self, expected, gen, claim, proof, require_vector, fault_at):
         import laya_reader_windows as windows
         try:
             self._publication_binding()
+            _pid, writer, _scope, _node, _manifest = windows._component(self._connection_owner.component)
+            import laya_writer_scope as normal
+            if type(writer) is normal.NormalWriter:
+                self._ensure_normal_baseline(writer.scope_id)
             with self._write_transaction(visible=False) as transaction:
                 status, prepared = self._prepare_publication(expected, gen, claim, proof,
                                                              require_vector, transaction)
@@ -1092,7 +1321,7 @@ class LayaIndexA:
             # This stage admits only bounded key lookups and three DMLs. Full
             # header/generation scans and exclusion aggregates stay above.
             with windows.write_transaction(self._connection_owner, visible=True,
-                                           deadline=time.monotonic() + .05):
+                                           deadline=time.monotonic() + .2):
                 if self._publication_stamp() != stamp:
                     raise windows.ReaderWindowBusy('reader_publish_changed')
                 if (self.db.execute('PRAGMA application_id').fetchone() != (self.APP_ID,)
@@ -1104,6 +1333,10 @@ class LayaIndexA:
                 if (*current_inputs, current_head) != prepared or self._publication_stamp() != stamp:
                     raise windows.ReaderWindowBusy('reader_publish_changed')
                 self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+                from laya_publication_revision import record_head
+                record_head(self.db, install_id=self._connection_owner.component.install_id,
+                            scope=prepared[1][0], before=expected,
+                            after=gen, claim=claim, proof=proof)
             self._publication_binding()
             return 'published'
         except windows.ReaderWindowBusy as exc:
@@ -1146,9 +1379,16 @@ class LayaIndexA:
                 raise IndexContractError('invalid_exclusion')
         elif not _valid_relative_path(value):
             raise IndexContractError('invalid_exclusion')
+        self._ensure_normal_baseline(scope)
         with self._write_transaction(visible=True):
             cur = self.db.execute('INSERT OR IGNORE INTO exclusions VALUES(?,?,?)',
                                   (scope, kind, value))
+            if cur.rowcount and self._connection_owner is not None:
+                row = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+                from laya_publication_revision import record_exclusion
+                record_exclusion(self.db, install_id=self._connection_owner.component.install_id,
+                                 scope=scope, head=row[0] if row else None,
+                                 kind=kind, value=value)
             return 'excluded' if cur.rowcount else 'already_excluded'
 
     def list_exclusions(self, scope):
@@ -1200,8 +1440,8 @@ class LayaIndexA:
                      or not math.isfinite(deadline_seconds)
                      or not 0 < deadline_seconds <= 30))):
             raise IndexContractError('invalid_query')
-        prefix_sql, prefix_params = _path_predicate(path_prefixes)
-        shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
+        _path_predicate(path_prefixes)
+        _shadow_predicate(excluded_paths)
         deadline = (None if deadline_seconds is None else
                     time.monotonic() + deadline_seconds)
         if deadline is not None:
@@ -1215,26 +1455,9 @@ class LayaIndexA:
                 raise IndexContractError('generation_unindexed')
             if not self._generation_fts_matches(gen, deadline=deadline):
                 raise IndexContractError('fts_generation_mismatch')
-            table = _gen_fts(ordinal)
-            answer = []
-            for fts_query in fts_queries:
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise IndexContractError('fts_deadline_exceeded')
-                results = self.db.execute(f"""
-                  SELECT m.path,m.hash,c.body,bm25({table},1.5,4.0,1.0,0.0) AS rank
-                  FROM {table}
-                  JOIN membership m ON m.gen=? AND m.path={table}.path_key
-                  JOIN content c ON c.hash=m.hash
-                  WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
-                  {prefix_sql}{shadow_sql}
-                  ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
-                """, (gen, fts_query, scope, *prefix_params,
-                      *shadow_params, limit)).fetchall()
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise IndexContractError('fts_deadline_exceeded')
-                answer.append([{'generation': gen, 'scope': scope, 'path': path,
-                                'hash': hash_, 'body': body, 'score': rank}
-                               for path, hash_, body, rank in results])
+            answer = _search_pinned_fts(self.db, scope, gen, ordinal, fts_queries, limit,
+                                        path_prefixes=path_prefixes,
+                                        excluded_paths=excluded_paths, deadline=deadline)
             self.db.commit()
             return answer
         except sqlite3.OperationalError as exc:

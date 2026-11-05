@@ -1,7 +1,7 @@
-"""Restricted warm RO proof readers with explicit native lifetime ownership.
+"""Restricted RO proof readers with explicit native lifetime ownership.
 
-Cold/no-aux admission remains refused. These readers grant no normal writer,
-cohort or immutable capability and are not connected to the host query path.
+These readers grant no normal writer or immutable capability and are not
+connected to the host query path. SQLite may initialize WAL auxiliaries.
 """
 from contextlib import ExitStack
 import os
@@ -36,6 +36,10 @@ def _files(path, state):
             info = name.lstat()
             files[suffix] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink)
     return files
+
+
+def _same_main_and_journal(before, after):
+    return before[''] == after[''] and before['-journal'] == after['-journal']
 
 
 def _sql_allowed(sql):
@@ -97,10 +101,6 @@ class _Owner:
         self.state = Path(snapshot['endpoint']['state'])
         self.before = _files(self.path, self.state)
         R._need(list(self.before[''][:2]) == self.node, 'writer_proof_component_changed')
-        # Normal RO can create WAL auxiliaries on a cold image. This limited
-        # opener only accepts an already present, private warm pair.
-        if self.before['-wal'] is None or self.before['-shm'] is None:
-            raise W.ReaderWindowBusy('writer_proof_cold_open_unproved')
         R._need(self.before['-journal'] is None, 'writer_proof_recovery_unproved')
         self.scope.owners[id(self)] = self
         _owners[id(self)] = self
@@ -136,7 +136,8 @@ class _Owner:
                  lifetime.parent_info, self.role + '-physical.lock', record['physical'][self.role])
         R._need(R._node(Path(self.snapshot['project'])) == self.snapshot['endpoint']['project_node']
                 and R._node(self.state) == self.snapshot['endpoint']['state_node']
-                and _files(self.path, self.state) == self.before, 'writer_proof_component_changed')
+                and _same_main_and_journal(self.before, _files(self.path, self.state)),
+                'writer_proof_component_changed')
 
     def authorize(self, action, first, second, database, trigger):
         if self.cleaning and action == sqlite3.SQLITE_TRANSACTION:
@@ -173,7 +174,8 @@ class _Owner:
     def open(self):
         record = self.scope.record
         try:
-            self.db = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True,
+            from laya_index_a import _query_only_uri
+            self.db = sqlite3.connect(_query_only_uri(self.path), uri=True,
                 timeout=min(2., max(0., record['deadline'] - time.monotonic())),
                 isolation_level=None, factory=W._OwnedSQLite)
             # Strong registration and the original window precede the first
@@ -188,7 +190,8 @@ class _Owner:
                     cursor.close()
             self.db.set_authorizer(self.authorize)
             self.db.set_progress_handler(self.interrupt, 1000)
-            R._need(_files(self.path, self.state) == self.before, 'writer_proof_component_changed')
+            R._need(_same_main_and_journal(self.before, _files(self.path, self.state)),
+                    'writer_proof_component_changed')
         except BaseException:
             self.close()
             raise
@@ -319,6 +322,12 @@ def _expired(scope):
 def pending_proof_readers():
     return sum(_expired(scope) or any(owner.pending for owner in list(scope.owners.values()))
                for scope in _scopes())
+
+
+def local_pending_proof_readers():
+    """Pending proof scopes belonging to the current creator thread."""
+    return sum((_expired(scope) or any(owner.pending for owner in list(scope.owners.values())))
+               for scope in _scopes() if scope.thread is threading.current_thread())
 
 
 def drain_proof_readers(*, deadline):

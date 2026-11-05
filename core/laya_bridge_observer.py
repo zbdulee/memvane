@@ -23,10 +23,64 @@ _MAX = 16384
 _TIMEOUT = 8
 _ENVELOPE = {'observed_challenge_id','observed_nonce_sha256','plugin_root',
              'release_commit','manifest_sha256','hook_stage'}
+_LOADED_QUERY = 'memvaneqa bridge reader sentinel'
 
 
 def _refuse():
     raise ValueError('reader_hosts_pending')
+
+
+def _probe_loaded_reader(project, root, *, sentinel_path, sentinel_sha256, deadline=None):
+    """Observe a v5 reader on a QA sentinel; this result is not a host receipt."""
+    import laya_install_journal as journal
+    import laya_reader_dispatch as dispatch
+    import laya_reader_lease as lease
+    import laya_reader_open as opens
+    import laya_journal_reader as reader
+    project, root = Path(project), Path(root)
+    if (not project.is_absolute() or project.resolve(strict=True) != project or
+            not root.is_absolute() or root.resolve(strict=True) != root or
+            not isinstance(sentinel_path,str) or not sentinel_path.endswith('.md') or
+            sentinel_path.startswith('/') or '\\' in sentinel_path or
+            any(part in ('','.','..') for part in sentinel_path.split('/')) or
+            not isinstance(sentinel_sha256,str) or not B._SHA.fullmatch(sentinel_sha256)):
+        _refuse()
+    deadline = time.monotonic()+3 if deadline is None else deadline
+    if type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic() >= deadline:
+        _refuse()
+    info = root.stat()
+    plugin_node = [info.st_dev,info.st_ino]
+    with journal.read_only_journals():
+        decision = journal.select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            _refuse()
+        proof = journal.verify_selected_route(decision)
+        if (proof.get('productRouteAllowed') is not True or
+                proof.get('executingPluginRoot') != str(root)):
+            _refuse()
+        with lease.resolve_endpoint(project,action='recall',host_root=root) as endpoint:
+            _record,_att,selected = reader._recheck(endpoint)
+            if (selected.get('productRouteAllowed') is not True or
+                    selected.get('executingPluginRoot') != str(root)):
+                _refuse()
+            with opens.inspect_warm_snapshot(endpoint,deadline=deadline) as snapshot:
+                result=dispatch.query_endpoint(endpoint,checkout=project,prompt=_LOADED_QUERY,
+                    query_vector=None,deadline=deadline,snapshot=snapshot,decision=decision,provider=None)
+                if (result.store_format != 'v6' or result.endpoint_id != endpoint.endpoint_id or
+                        not any(row.get('path') == sentinel_path and row.get('hash') == sentinel_sha256
+                                for row in result.rows)):
+                    _refuse()
+                observation = {'endpoint_id': endpoint.endpoint_id, 'reader_epoch': result.reader_epoch,
+                               'store_format': result.store_format, 'generation': result.data_generation,
+                               'sentinel_sha256': sentinel_sha256,
+                               'plugin_node': plugin_node,
+                               'owner_role': 'owner' if decision['pluginRoot'] == str(root) else 'companion'}
+            current_root = root.stat()
+            if journal.select_route(str(project),action='recall') != decision or \
+                    journal.verify_selected_route(decision) != proof or \
+                    [current_root.st_dev,current_root.st_ino] != plugin_node:
+                _refuse()
+            return observation
 
 
 @dataclass(frozen=True)
@@ -51,9 +105,11 @@ def _host_spec(challenge, host):
     directory, _nonce = B._issued(challenge, B.BridgeChallenge)
     registry = B._load_challenge(directory)
     journal = Path(registry['state']) / 'install-journal.sqlite'
-    if J.journal_version(journal) != 4:
-        _refuse()
-    selected = J.inspect_journal(journal)
+    loaded = B._loaded_config(registry)
+    with J.read_only_journals():
+        if J.journal_version(journal) != (5 if loaded is not None else 4):
+            _refuse()
+        selected = J.inspect_journal(journal)
     anchor = selected['selected']['pluginRoot']
     matches = []
     for name in host_copies(anchor):
@@ -175,7 +231,7 @@ def _dispatcher(chain, plugin_root, host):
     _refuse()
 
 
-def _finish_after_ack(process, selector, deadline, output_bytes):
+def _finish_after_ack(process, selector, deadline, output_bytes, *, captured=None, marker=None):
     """Let the hook print its block and the CLI reap it before owned cleanup."""
     while time.monotonic() < deadline:
         for key, _events in selector.select(0.02):
@@ -186,11 +242,13 @@ def _finish_after_ack(process, selector, deadline, output_bytes):
             output_bytes += len(data)
             if output_bytes > 131072:
                 _refuse()
+            if captured is not None and key.data == 'stdout':
+                captured.extend(data)
         code = process.poll()
         if code is not None and not selector.get_map():
             # A native CLI may represent the intended hook block as nonzero.
             # A signal or an unfinished root never constitutes completion.
-            if code < 0:
+            if code < 0 or (marker is not None and marker not in captured):
                 _refuse()
             return
     _refuse()
@@ -201,6 +259,8 @@ def observe_registered_hook(challenge, host):
     registry = B._load_challenge(directory)
     if host not in registry['expected_hosts']:
         _refuse()
+    loaded = B._loaded_config(registry)
+    expected_envelope = _ENVELOPE | (B._LOADED_FIELDS if loaded is not None else frozenset())
     spec = _host_spec(challenge, host)
     if (spec.release_commit != challenge.release_commit or not spec.argv
             or Path(spec.argv[0]).resolve(strict=True) != spec.executable):
@@ -215,6 +275,7 @@ def observe_registered_hook(challenge, host):
         _refuse()
     process, owned, ref_node, socket_node = None, {}, None, None
     selector, streams = selectors.DefaultSelector(), {}
+    loaded_stdout = bytearray() if loaded is not None else None
     output_bytes, session, deadline = 0, spec.session_id, time.monotonic() + _TIMEOUT
     try:
         with socket.socket(socket.AF_UNIX) as server:
@@ -276,13 +337,13 @@ def observe_registered_hook(challenge, host):
                             observation = packet['observation']
                             if (not isinstance(observation, dict) or packet['schema'] != 'memvane-bridge-wire-v1' or
                                     packet['challenge_id'] != challenge.challenge_id or packet['host'] != host
-                                    or not session or packet['session_id'] != session or set(observation) != _ENVELOPE
+                                    or not session or packet['session_id'] != session or set(observation) != expected_envelope
                                     or observation['observed_challenge_id'] != challenge.challenge_id
                                     or observation['observed_nonce_sha256'] != challenge.nonce_sha256
                                     or observation['plugin_root'] != str(spec.plugin_root)
                                     or observation['release_commit'] != spec.release_commit
                                     or observation['manifest_sha256'] != spec.manifest_sha256
-                                    or observation['hook_stage'] != 'registered-v4'):
+                                    or observation['hook_stage'] != ('loaded-v5-reader' if loaded is not None else 'registered-v4')):
                                 _refuse()
                             result = dict(observation, session_id=session, process_pid=root['pid'],
                                 process_start=root['start'], executable=root['executable'],
@@ -300,7 +361,10 @@ def observe_registered_hook(challenge, host):
                             peer.settimeout(remaining)
                             _send(peer, dict(ack=True))
                             selector.unregister(server)
-                            _finish_after_ack(process, selector, deadline, output_bytes)
+                            marker = (('memvane-loaded-v5-reader:' + loaded['sentinel_sha256']).encode('ascii')
+                                      if loaded is not None else None)
+                            _finish_after_ack(process, selector, deadline, output_bytes,
+                                              captured=loaded_stdout, marker=marker)
                             return result
                     else:
                         data = os.read(key.fileobj.fileno(), 4096)
@@ -310,6 +374,8 @@ def observe_registered_hook(challenge, host):
                         output_bytes += len(data)
                         if output_bytes > 131072:
                             _refuse()
+                        if loaded_stdout is not None and key.data == 'stdout':
+                            loaded_stdout.extend(data)
                         if key.data == 'stdout' and host == 'codex':
                             streams['stdout'].extend(data)
                             if len(streams['stdout']) > _MAX:
@@ -354,7 +420,9 @@ def emit_registered_hook(challenge_id, host, observation, session_id):
         _refuse()
     directory = B._registry() / challenge_id
     registry = B._load_challenge(directory)
-    if host not in registry['expected_hosts'] or set(observation) != _ENVELOPE or not isinstance(session_id,str):
+    loaded = B._loaded_config(registry)
+    expected_envelope = _ENVELOPE | (B._LOADED_FIELDS if loaded is not None else frozenset())
+    if host not in registry['expected_hosts'] or set(observation) != expected_envelope or not isinstance(session_id,str):
         _refuse()
     ref = directory / (host + '.transport.json')
     while not ref.exists() and time.monotonic() < deadline:
@@ -392,15 +460,24 @@ def _qa_context(payload, host, decision, root):
     if not B._ID.fullmatch(ident) or host not in ('claude','codex') or not isinstance(payload,dict):
         _refuse()
     registry = B._load_challenge(B._registry() / ident)
+    loaded = B._loaded_config(registry)
     state, root = Path(registry['state']), Path(root)
-    info = J.inspect_journal(state / 'install-journal.sqlite')
+    with J.read_only_journals():
+        info = J.inspect_journal(state / 'install-journal.sqlite')
+        version = J.journal_version(state / 'install-journal.sqlite')
     proof = inspect_full_plugin_candidate(str(root))
-    if (host not in registry['expected_hosts'] or J.journal_version(state / 'install-journal.sqlite') != 4
+    if (host not in registry['expected_hosts'] or version != (5 if loaded is not None else 4)
             or decision.get('state') != 'candidate' or decision.get('journalPath') != str(state / 'install-journal.sqlite')
-            or payload.get('cwd') != info['projectRoot'] or root.resolve(strict=True) != root
+            or info.get('state') not in ('active','restored_old') or info.get('pending') is not None
+            or payload.get('cwd') != info['projectRoot'] or decision.get('projectRoot') != info['projectRoot']
+            or decision.get('scopeId') != info.get('scopeId') or root.resolve(strict=True) != root
             or proof['pluginRoot'] != str(root) or proof['sourceCommit'] != registry['release_commit']
             or not isinstance(info.get('selected'),dict)
-            or proof['bundleManifestSha256'] != info['selected']['bundleManifestSha256']):
+            or any(decision.get(key) != info['selected'].get(key) for key in
+                   ('pluginRoot','installId','generation','bundleManifestSha256',
+                    'ownershipManifestSha256','vectorProfile'))
+            or (loaded is not None and
+                proof['bundleManifestSha256'] != info['selected']['bundleManifestSha256'])):
         _refuse()
     return ident, registry, proof
 
@@ -411,21 +488,30 @@ def _qa_envelope(payload, host, decision, root):
     match = re.fullmatch(r'\[memvane-bridge-preflight ([0-9a-f]{32}) ([0-9a-f]{64})\]', payload.get('prompt',''))
     if not match or match[1] != ident or B._sha(match[2].encode('ascii')) != registry['nonce_sha256']:
         _refuse()
-    return dict(observed_challenge_id=ident, observed_nonce_sha256=registry['nonce_sha256'],
+    loaded = B._loaded_config(registry)
+    value = dict(observed_challenge_id=ident, observed_nonce_sha256=registry['nonce_sha256'],
                 plugin_root=str(Path(root)), release_commit=proof['sourceCommit'],
-                manifest_sha256=proof['bundleManifestSha256'], hook_stage='registered-v4')
+                manifest_sha256=proof['bundleManifestSha256'],
+                hook_stage='loaded-v5-reader' if loaded is not None else 'registered-v4')
+    if loaded is not None:
+        value.update(_probe_loaded_reader(Path(decision['projectRoot']),Path(root),
+            sentinel_path=loaded['sentinel_path'],sentinel_sha256=loaded['sentinel_sha256']))
+    return value
 
 
 def qa_hook_reply(payload, host, decision, root):
     if 'MEMVANE_BRIDGE_PREFLIGHT' not in os.environ:
         return None
+    reason = 'MemVane bridge preflight'
     try:
         envelope = _qa_envelope(payload, host, decision, root)
         session = payload.get('session_id', payload.get('sessionId', ''))
         emit_registered_hook(envelope['observed_challenge_id'], host, envelope, session)
+        if envelope['hook_stage'] == 'loaded-v5-reader':
+            reason = 'memvane-loaded-v5-reader:' + envelope['sentinel_sha256']
     except (ValueError, OSError, KeyError, TypeError):
         pass
-    return dict(decision='block', reason='MemVane bridge preflight')
+    return dict(decision='block', reason=reason)
 
 
 def qa_session_start(payload, host, decision, root):

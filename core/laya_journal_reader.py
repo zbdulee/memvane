@@ -22,6 +22,9 @@ _MAX_IMAGE = 16 * 1024 * 1024
 _issued = weakref.WeakKeyDictionary()
 _read_only = weakref.WeakSet()
 _retained = weakref.WeakSet()
+_upgrade_readers = weakref.WeakSet()
+_bootstrap_endpoints = weakref.WeakSet()
+_bootstrap_installers = weakref.WeakSet()
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -103,7 +106,8 @@ def _readonly(path, state):
         if os.path.lexists(side):
             _file(side, state)
     try:
-        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+        from laya_index_a import _query_only_uri
+        with closing(sqlite3.connect(_query_only_uri(path), uri=True,
                                      timeout=2, isolation_level=None)) as db:
             db.execute('PRAGMA query_only=ON')
             db.execute('PRAGMA trusted_schema=OFF')
@@ -114,94 +118,413 @@ def _readonly(path, state):
         raise journal.JournalEvidenceError('reader_store_invalid') from exc
 
 
-def _published(state, path, decision):
-    from laya_index_a import LayaIndexA, _StreamDigest
+def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=False,
+                        _proof=None):
+    from laya_index_a import LayaIndexA, _StreamDigest, _valid_relative_path
     from laya_index_vector import verify_generation_seal
+    import time
+    _need(db.in_transaction and db.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
     scope = decision['scopeId']
-    with _readonly(path, state) as db:
-        LayaIndexA._check_header(db)
-        incarnation = db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
-        _need(incarnation == (decision['dbIncarnation'],), 'reader_incarnation_changed')
-        row = db.execute("""SELECT h.gen,s.source_manifest,s.entries_digest,g.rev_epoch
+    LayaIndexA._check_header(db)
+    incarnation = db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
+    _need(incarnation == (decision['dbIncarnation'],), 'reader_incarnation_changed')
+    row = db.execute("""SELECT h.gen,s.source_manifest,s.entries_digest,g.rev_epoch
             FROM head h JOIN generations g ON g.scope=h.scope AND g.gen=h.gen
             JOIN candidate_seals s ON s.scope=h.scope AND s.gen=h.gen
             WHERE h.scope=? AND g.state='published' AND s.source_manifest=g.digest""",
                          (scope,)).fetchone()
-        _need(row, 'reader_generation_unpublished')
-        gen, manifest, entries, epoch = row
-        exclusions = tuple(db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
+    _need(row, 'reader_generation_unpublished')
+    gen, manifest, entries, epoch = row
+    exclusions = tuple(db.execute('SELECT kind,value FROM exclusions WHERE scope=? ORDER BY kind,value',
                                       (scope,)))
-        _need(epoch == len(exclusions), 'reader_exclusions_changed')
-        digest = _StreamDigest(scope)
-        for item, hashed, eligible, body in db.execute("""SELECT m.path,m.hash,m.eligible,c.body
+    _need(type(allow_exclusion_advance) is bool and type(epoch) is int and epoch>=0
+          and (epoch == len(exclusions) or (allow_exclusion_advance and epoch < len(exclusions)))
+          and all((kind=='path' and isinstance(value,str) and _valid_relative_path(value))
+                  or (kind=='hash' and isinstance(value,str) and len(value)==64
+                      and all(ch in '0123456789abcdef' for ch in value))
+                  for kind,value in exclusions), 'reader_exclusions_changed')
+    digest = _StreamDigest(scope)
+    for item, hashed, eligible, body in db.execute("""SELECT m.path,m.hash,m.eligible,c.body
                 FROM membership m LEFT JOIN content c ON c.hash=m.hash
                 WHERE m.gen=? AND m.scope=? ORDER BY m.path COLLATE BINARY""", (gen, scope)):
-            _need(isinstance(body, str) and _sha(body.encode('utf8')) == hashed,
+        _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+        _need(isinstance(body, str) and _sha(body.encode('utf8')) == hashed,
                   'reader_member_changed')
-            digest.add(item, hashed, eligible)
-        _need(digest.hexdigest() == entries, 'reader_manifest_changed')
-        index = SimpleNamespace(db=db)
-        _need(LayaIndexA._generation_fts_matches(index, gen), 'reader_fts_changed')
-        seal = verify_generation_seal(index, gen)
-        profile = decision['vectorProfile']
-        for left, right in (('profile_id', 'profileId'), ('model_id', 'modelId'),
+        digest.add(item, hashed, eligible)
+    _need(digest.hexdigest() == entries, 'reader_manifest_changed')
+    index = SimpleNamespace(db=db)
+    _need(LayaIndexA._generation_fts_matches(index, gen, deadline=deadline), 'reader_fts_changed')
+    seal = verify_generation_seal(index, gen, deadline=deadline)
+    profile = decision['vectorProfile']
+    for left, right in (('profile_id', 'profileId'), ('model_id', 'modelId'),
                             ('embedding_fingerprint', 'embeddingFingerprint'),
                             ('dimension', 'dimension'), ('metric', 'metric')):
-            _need(seal[left] == profile[right], 'reader_profile_changed')
-        return gen, manifest, entries, seal['rows_digest'], exclusions
+        _need(seal[left] == profile[right], 'reader_profile_changed')
+    if _proof is not None:
+        _need(type(_proof) is dict and not _proof, 'reader_snapshot_input_invalid')
+        _proof['vector_seal'] = MappingProxyType(dict(seal))
+    return gen, manifest, entries, seal['rows_digest'], exclusions
 
 
-def _capacity(state, decision, catalog, binding, published):
+def _published(state, path, decision):
+    with _readonly(path, state) as db:
+        return _published_snapshot(db, decision)
+
+
+def _binding_snapshot(db, binding, decision, published):
     import laya_index_capacity as capacity
     import laya_source_catalog as source
     from laya_index_host_route import wiki_index_roots
     gen, manifest = published[:2]
     scope, incarnation = decision['scopeId'], decision['dbIncarnation']
     roots = source._check_roots(wiki_index_roots(decision['collections']))
-    with _readonly(binding, state) as db:
-        # Use the existing exact schema, metadata and record validators with
-        # a caller-owned read transaction. Its normal constructor opens rw.
-        store = object.__new__(capacity.GenerationBindingStore)
-        store.path, store.db = binding, db
-        store.scope, store.db_incarnation, store.roots = scope, incarnation, roots
-        store._roots_value = capacity._canonical(list(roots.items())).decode('ascii')
-        store._node, store.store_id = tuple(_node(binding)), None
-        store._check_file_header()
-        store._check_store()
-        row = db.execute(capacity._LOOKUP_SQL, (scope, gen, incarnation)).fetchone()
-        _need(row, 'reader_binding_missing')
-        bound = store._decode(gen, row)
-        _need(bound.source_manifest == manifest, 'reader_binding_changed')
-        for _name, root, dev, ino in bound.roots:
-            base = Path(root)
-            _need(base.resolve(strict=True) == base and base.is_dir()
-                  and _node(base) == [dev, ino], 'reader_root_changed')
-    with _readonly(catalog, state) as db:
-        identity = source._binding(scope, roots)
-        source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db, binding=identity))
-        meta = dict(db.execute('SELECT key,value FROM meta'))
-        _need(meta['scope'] == scope and json.loads(meta['roots']) == roots,
+    _need(db.in_transaction and db.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
+    store = object.__new__(capacity.GenerationBindingStore)
+    store.path, store.db = binding, db
+    store.scope, store.db_incarnation, store.roots = scope, incarnation, roots
+    store._roots_value = capacity._canonical(list(roots.items())).decode('ascii')
+    store._node, store.store_id = tuple(_node(binding)), None
+    store._check_file_node()
+    store._check_store()
+    row = db.execute(capacity._LOOKUP_SQL, (scope, gen, incarnation)).fetchone()
+    _need(row, 'reader_binding_missing')
+    bound = store._decode(gen, row)
+    _need(bound.source_manifest == manifest, 'reader_binding_changed')
+    for _name, root, dev, ino in bound.roots:
+        base = Path(root)
+        _need(base.resolve(strict=True) == base and base.is_dir()
+              and _node(base) == [dev, ino], 'reader_root_changed')
+    return bound,roots
+
+
+def _catalog_snapshot(db, decision, bound, roots, *, deadline=None):
+    import laya_source_catalog as source
+    import time
+    _need(db.in_transaction and db.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
+    scope=decision['scopeId']
+    identity = source._binding(scope, roots)
+    source.LayaSourceCatalog._check_identity(SimpleNamespace(db=db, binding=identity))
+    meta = dict(db.execute('SELECT key,value FROM meta'))
+    _need(meta['scope'] == scope and json.loads(meta['roots']) == roots,
               'reader_catalog_changed')
-        scan = db.execute('SELECT phase,raw_digest FROM scans WHERE scan_id=?',
+    scan = db.execute('SELECT seq,phase,raw_digest,files,bytes FROM scans WHERE scan_id=?',
                           (bound.catalog_scan_id,)).fetchone()
-        _need(scan == ('complete', bound.catalog_raw_digest), 'reader_catalog_scan_changed')
+    _need(scan is not None and scan[1:3] == ('complete', bound.catalog_raw_digest),
+          'reader_catalog_scan_changed')
+    digest=hashlib.sha256();files=size=0
+    for path,sha,length in db.execute('SELECT path,sha256,size FROM scan_files '
+                                      'WHERE seq=? ORDER BY path', (scan[0],)):
+        _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+        _need(type(path) is str and type(sha) is str and source._HEX64.fullmatch(sha)
+              and type(length) is int and length >= 0, 'reader_catalog_scan_changed')
+        digest.update(source._raw_line(path,sha,length));files+=1;size+=length
+    _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+    _need(digest.hexdigest()==bound.catalog_raw_digest and scan[3:]==(files,size),
+          'reader_catalog_scan_changed')
 
 
-def _evidence(state, project, executing_root, *, target=None, catalog=None, binding=None, side=None):
-    import laya_fresh_wiki_origin as fresh
+def _capacity_snapshot(binding_db, catalog_db, binding, decision, published, *, deadline=None):
+    bound,roots = _binding_snapshot(binding_db,binding,decision,published)
+    _catalog_snapshot(catalog_db,decision,bound,roots,deadline=deadline)
+
+
+def _base_revision_snapshot(db, decision, published):
+    """Observe the latest base receipt in the already pinned transaction.
+
+    This is not a writer-cohort or complete receipt-chain proof.
+    """
+    import laya_publication_revision as revisions
+    _need(db.in_transaction and db.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
+    prefix=revisions._PREFIX
+    baseline=db.execute('SELECT value FROM schema_meta WHERE key=?',
+                        (prefix+'0'*20,)).fetchone()
+    latest=db.execute('SELECT key,value FROM schema_meta WHERE key>=? AND key<? '
+                      'ORDER BY key DESC LIMIT 1',(prefix,prefix+'\uffff')).fetchone()
+    if baseline is None:
+        _need(latest is None,'reader_base_revision_unproved')
+        return None
+    identity=revisions._identity('base',(decision['installId'],decision['scopeId'],
+                                          decision['dbIncarnation']))
+    def hex_digest(value):
+        return (isinstance(value,str) and len(value)==64
+                and all(ch in '0123456789abcdef' for ch in value))
+    try:
+        initial=json.loads(baseline[0])
+        suffix=latest[0][len(prefix):]
+        valid=(isinstance(initial,dict) and set(initial)=={'component','kind','identity',
+               'head','headExclusionEpoch','exclusionCount','exclusionDigest','profile','vectorDigest'}
+               and initial['component']=='base' and initial['kind']=='baseline'
+               and initial['identity']==identity and isinstance(initial['head'],str)
+               and bool(initial['head']) and type(initial['headExclusionEpoch']) is int
+               and initial['headExclusionEpoch']>=0 and type(initial['exclusionCount']) is int
+               and initial['exclusionCount']>=initial['headExclusionEpoch']
+               and hex_digest(initial['exclusionDigest']) and hex_digest(initial['vectorDigest'])
+               and initial['profile']==decision['vectorProfile']['profileId']
+               and json.dumps(initial,sort_keys=True,separators=(',',':'),ensure_ascii=True)==baseline[0]
+               and latest[0].startswith(prefix) and len(suffix)==20 and suffix.isascii() and suffix.isdigit())
+        revision=int(suffix) if valid else -1
+        if revision==0:
+            exclusions=hashlib.sha256(b'memvane-base-exclusions-v1\0')
+            for entry in published[4]:
+                raw=json.dumps(entry,ensure_ascii=True,separators=(',',':')).encode('ascii')
+                exclusions.update(len(raw).to_bytes(8,'big'));exclusions.update(raw)
+            epoch=db.execute('SELECT rev_epoch FROM generations WHERE scope=? AND gen=?',
+                             (decision['scopeId'],published[0])).fetchone()
+            valid=(valid and latest[1]==baseline[0] and initial['head']==published[0]
+                   and initial['vectorDigest']==published[3]
+                   and initial['exclusionCount']==len(published[4])
+                   and initial['exclusionDigest']==exclusions.hexdigest()
+                   and epoch==(initial['headExclusionEpoch'],))
+        elif revision>0:
+            receipt=json.loads(latest[1])
+            valid=(valid and isinstance(receipt,dict)
+                   and set(receipt)=={'component','identity','before','after','changeDigest','exclusionCount'}
+                   and receipt['component']=='base' and receipt['identity']==identity
+                   and (receipt['before'] is None or (isinstance(receipt['before'],str) and bool(receipt['before'])))
+                   and receipt['after']==published[0] and hex_digest(receipt['changeDigest'])
+                   and type(receipt['exclusionCount']) is int
+                   and receipt['exclusionCount']==len(published[4])
+                   and json.dumps(receipt,sort_keys=True,separators=(',',':'),ensure_ascii=True)==latest[1])
+    except (TypeError,ValueError,KeyError,IndexError):
+        valid=False
+    _need(valid,'reader_base_revision_unproved')
+    return revision
+
+
+def _sidecar_identity(db, decision):
+    """Check sidecar identity on an already-pinned read-only connection."""
     import laya_incremental_docs as incremental
-    import laya_initial_build as build
+    _need(db.in_transaction and db.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
+    identity=(incremental.SCHEMA,decision['installId'],decision['scopeId'],
+              decision['dbIncarnation'],decision['vectorProfile']['profileId'],
+              decision['dbPath'],decision['projectRoot'])
+    _need(db.execute('PRAGMA user_version').fetchone() == (1,)
+          and db.execute('SELECT * FROM meta').fetchall() == [identity]
+          and incremental._schema_rows(db) in incremental._schema_variants(),
+          'reader_sidecar_changed')
+    return identity
+
+
+def _sidecar_snapshot(db, decision, *, deadline=None):
+    """Observe identity and revision state in a caller-pinned sidecar.
+
+    An unsealed legacy sidecar is reported explicitly; this does not grant
+    a reader capability or validate returned document/vector evidence.
+    """
+    import time
+    import laya_publication_revision as revisions
+    identity=_sidecar_identity(db,decision)
+    count=db.execute('SELECT count(*) FROM docs').fetchone()[0]
+    _need(type(count) is int and 0 <= count <= 20000,'reader_sidecar_changed')
+    present=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='publication_revisions'").fetchone()
+    if not present:
+        return {'rows':count,'baseline':False,'revision':None,
+                'legacyCommitment':_legacy_sidecar_commitment(db,identity,deadline=deadline)}
+    initial=db.execute('SELECT value FROM publication_revisions WHERE revision=0').fetchone()
+    latest=db.execute('SELECT revision,value FROM publication_revisions ORDER BY revision DESC LIMIT 1').fetchone()
+    if initial is None:
+        _need(latest is None,'reader_sidecar_revision_unproved')
+        return {'rows':count,'baseline':False,'revision':None,
+                'legacyCommitment':_legacy_sidecar_commitment(db,identity,deadline=deadline)}
+    try:
+        baseline=json.loads(initial[0])
+        valid=(isinstance(baseline,dict)
+               and set(baseline)=={'component','kind','identity','rows','digest','stateDigest'}
+               and baseline['component']=='sidecar' and baseline['kind']=='baseline'
+               and baseline['identity']==revisions._identity('sidecar',identity)
+               and type(baseline['rows']) is int and 0 <= baseline['rows'] <= 20000
+               and isinstance(baseline['digest'],str) and len(baseline['digest'])==64
+               and all(ch in '0123456789abcdef' for ch in baseline['digest'])
+               and isinstance(baseline['stateDigest'],str) and len(baseline['stateDigest'])==64
+               and all(ch in '0123456789abcdef' for ch in baseline['stateDigest'])
+               and json.dumps(baseline,sort_keys=True,separators=(',',':'),ensure_ascii=True)==initial[0])
+    except (ValueError,TypeError):
+        valid=False
+    _need(valid and latest is not None and type(latest[0]) is int and latest[0]>=0,
+          'reader_sidecar_revision_unproved')
+    def digest(value):
+        return (isinstance(value,str) and len(value)==64
+                and all(ch in '0123456789abcdef' for ch in value))
+    expected=0;state=baseline['stateDigest'];row_count=baseline['rows']
+    for number,raw in db.execute('SELECT revision,value FROM publication_revisions ORDER BY revision'):
+        _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+        _need(type(number) is int and number==expected, 'reader_sidecar_revision_unproved')
+        expected+=1
+        if number==0:
+            _need(raw==initial[0], 'reader_sidecar_revision_unproved')
+            continue
+        try:
+            item=json.loads(raw)
+            valid=(isinstance(item,dict)
+                   and set(item)=={'component','identity','before','after','changeDigest',
+                                  'stateBefore','stateAfter','rowsBefore','rowsAfter'}
+                   and item['component']=='sidecar' and item['identity']==baseline['identity']
+                   and (item['before'] is None or digest(item['before']))
+                   and (item['after'] is None or digest(item['after']))
+                   and item['before'] != item['after'] and digest(item['changeDigest'])
+                   and item['stateBefore']==state and digest(item['stateAfter'])
+                   and type(item['rowsBefore']) is int and item['rowsBefore']==row_count
+                   and type(item['rowsAfter']) is int and 0<=item['rowsAfter']<=20000
+                   and item['rowsAfter']==row_count+int(item['after'] is not None)-int(item['before'] is not None)
+                   and item['stateAfter']==revisions._sidecar_state(state,item['before'],item['after'])
+                   and json.dumps(item,sort_keys=True,separators=(',',':'),ensure_ascii=True)==raw)
+        except (ValueError,TypeError):
+            valid=False
+        _need(valid,'reader_sidecar_revision_unproved')
+        state=item['stateAfter'];row_count=item['rowsAfter']
+    _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+    _need(expected==latest[0]+1, 'reader_sidecar_revision_unproved')
+    actual='0'*64;seen=0
+    try:
+        for document in db.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY path'):
+            _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+            actual=revisions._sidecar_state(actual,None,revisions._sidecar_row_digest(document));seen+=1
+    except (TypeError,UnicodeError,OverflowError) as exc:
+        raise journal.JournalEvidenceError('reader_sidecar_revision_unproved') from exc
+    _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+    _need(seen==count==row_count and actual==state, 'reader_sidecar_revision_unproved')
+    return {'rows':count,'baseline':True,'revision':latest[0]}
+
+
+def _legacy_sidecar_commitment(db, identity, *, deadline=None, _writer_transaction=False):
+    """Bind complete legacy rows and the opaque FTS storage in one read transaction."""
+    import time
+    from itertools import zip_longest
+    _need(db.in_transaction and (_writer_transaction or db.execute('PRAGMA query_only').fetchone()==(1,)),
+          'reader_snapshot_unpinned')
+    digest=hashlib.sha256(b'memvane-legacy-sidecar-v1\0')
+    def add(value):
+        raw=_raw(value);digest.update(len(raw).to_bytes(8,'big'));digest.update(raw)
+    def check_time():
+        _need(deadline is None or time.monotonic()<deadline,'reader_snapshot_deadline')
+    count=0
+    docs=db.execute('SELECT rowid,path,hash,title,body,profile_id,chunk_count,scan_id FROM docs ORDER BY rowid')
+    fts=db.execute('SELECT rowid,path,title,body FROM docs_fts ORDER BY rowid')
+    for document,search in zip_longest(docs,fts):
+        check_time()
+        _need(document is not None and search is not None,'reader_sidecar_revision_unproved')
+        rowid,path,hashed,title,body,profile,chunks,scan=document
+        _need(all(isinstance(v,str) and v for v in (path,hashed,profile))
+              and all(isinstance(v,str) for v in (title,body,scan))
+              and profile==identity[4] and type(chunks) is int and chunks>=1
+              and _sha(body.encode('utf8'))==hashed
+              and search==(rowid,path,title,body),'reader_sidecar_revision_unproved')
+        add(document);count+=1
+        _need(count<=20000,'reader_sidecar_revision_unproved')
+    names=('docs_fts_config','docs_fts_content','docs_fts_data','docs_fts_docsize','docs_fts_idx')
+    for name in names:
+        check_time()
+        columns=[row[1] for row in db.execute('PRAGMA table_info('+name+')')]
+        _need(bool(columns) and all(re.fullmatch('[A-Za-z0-9_]+',c) for c in columns),
+              'reader_sidecar_revision_unproved')
+        add([name,columns])
+        order=','.join('"'+col+'"' for col in columns)
+        for row in db.execute('SELECT * FROM '+name+' ORDER BY '+order):
+            check_time()
+            values=[]
+            for value in row:
+                if value is None: values.append(['null'])
+                elif type(value) is int: values.append(['integer',str(value)])
+                elif type(value) is str: values.append(['text',value])
+                elif type(value) is bytes: values.append(['blob',value.hex()])
+                else: _need(False,'reader_sidecar_revision_unproved')
+            add(values)
+    check_time()
+    return {'rows':count,'digest':digest.hexdigest()}
+
+
+def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_vectors=True):
+    """Check one pinned row; the caller must separately validate the snapshot."""
+    import time
+    from laya_index_a import LayaIndexA, _valid_relative_path
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_vector import _read_chunk_set
+    _need(type(require_vectors) is bool, 'reader_snapshot_input_invalid')
+    _need(side.in_transaction and base.in_transaction
+          and side.execute('PRAGMA query_only').fetchone() == (1,)
+          and base.execute('PRAGMA query_only').fetchone() == (1,),
+          'reader_snapshot_unpinned')
+    _need(time.monotonic() < deadline, 'reader_snapshot_deadline')
+    roots=wiki_index_roots(decision['collections'])
+    _need(type(path) is str and _valid_relative_path(path)
+          and any(path.startswith(name+'/') and _valid_relative_path(path[len(name)+1:])
+                  for name in roots), 'reader_sidecar_document_changed')
+    _sidecar_identity(side,decision)
+    LayaIndexA._check_header(base)
+    _need(base.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
+          == (decision['dbIncarnation'],), 'reader_incarnation_changed')
+    profile=decision['vectorProfile']
+    _need(base.execute('SELECT model_id,embedding_fingerprint,dimension,metric '
+                       'FROM vector_profiles WHERE profile_id=?', (profile['profileId'],)).fetchone()
+          == (profile['modelId'],profile['embeddingFingerprint'],profile['dimension'],profile['metric']),
+          'reader_profile_changed')
+    row=side.execute('SELECT rowid,hash,title,body,profile_id,chunk_count FROM docs WHERE path=?',
+                     (path,)).fetchone()
+    _need(row is not None, 'reader_sidecar_document_changed')
+    rowid,digest,title,body,profile_id,count=row
+    _need(type(body) is str and type(title) is str and type(digest) is str
+          and _sha(body.encode('utf8')) == digest and profile_id == profile['profileId']
+          and type(count) is int and count > 0
+          and side.execute('SELECT path,title,body FROM docs_fts WHERE rowid=?',(rowid,)).fetchone()
+          == (path,title,body), 'reader_sidecar_document_changed')
+    _need(base.execute('SELECT 1 FROM exclusions WHERE scope=? AND '
+                       '((kind=\'path\' AND value=?) OR (kind=\'hash\' AND value=?)) LIMIT 1',
+                       (decision['scopeId'],path,digest)).fetchone() is None,
+          'reader_sidecar_document_excluded')
+    chunks=None
+    if require_vectors:
+        chunks=_read_chunk_set(base,digest,title,profile_id,profile['dimension'],deadline=deadline)
+        _need(chunks is not None and len(chunks)==count, 'reader_sidecar_document_changed')
+    _need(time.monotonic() < deadline, 'reader_snapshot_deadline')
+    return {'path':path,'hash':digest,'title':title,'body':body,'chunks':chunks}
+
+
+def _capacity(state, decision, catalog, binding, published):
+    with _readonly(binding, state) as db:
+        bound,roots = _binding_snapshot(db,binding,decision,published)
+    with _readonly(catalog, state) as db:
+        _catalog_snapshot(db,decision,bound,roots)
+
+
+def _evidence(state, project, executing_root, *, target=None, catalog=None, binding=None, side=None,
+              allow_drift=False):
+    import laya_fresh_wiki_origin as fresh
     from laya_ledger_common import refuse_qmd_origin
     state = _state(state)
     project, executing_root = Path(project), Path(executing_root)
     refuse_qmd_origin(state)
     decision = journal.select_route(str(project), action='recall')
-    proof = journal.verify_selected_route(decision)
-    _need(proof.get('productRouteAllowed') is True and proof.get('executingPluginRoot') == str(executing_root)
+    try:
+        proof = journal.verify_selected_route(decision)
+    except Exception as exc:
+        if not allow_drift or not journal.is_bundle_drift(exc):
+            raise
+        proof = journal.verify_selected_route_read_only(decision)
+        _need(proof.get('readOnlyAllowed') is True and proof.get('productRouteAllowed') is False,
+              'reader_installer_unproved')
+    _need((proof.get('productRouteAllowed') is True or
+           (allow_drift and proof.get('readOnlyAllowed') is True))
+          and proof.get('executingPluginRoot') == str(executing_root)
           and proof['projectRoot'] == str(project) and proof['journalPath'] == str(state / _JOURNAL),
           'reader_installer_unproved')
+    if allow_drift:
+        proof = {**proof, 'readerDecision': decision}
     ledger = fresh._load(state / fresh.LEDGER)
     info = journal.inspect_journal(state / _JOURNAL)
+    return _evidence_stores(state, project, decision, proof, ledger, info,
+                            target=target, catalog=catalog, binding=binding, side=side)
+
+
+def _evidence_stores(state, project, decision, proof, ledger, info, *,
+                     target=None, catalog=None, binding=None, side=None, sealed_attestation=None):
+    """Check the same store bindings after the caller proves the selection."""
+    import laya_incremental_docs as incremental
+    import laya_initial_build as build
     _need(ledger['phase'] == 'active' and info['pending'] is None
           and info['state'] in ('active', 'restored_old')
           and ledger['attestationSha256'] == info['providerAttestationSha256']
@@ -239,7 +562,9 @@ def _evidence(state, project, executing_root, *, target=None, catalog=None, bind
             _need(db.execute('PRAGMA user_version').fetchone() == (1,)
                   and db.execute('SELECT * FROM meta').fetchall() == [incremental._expected_meta(identity)],
                   'reader_sidecar_changed')
-    raw = _read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
+    raw = (_read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
+           if sealed_attestation is None else sealed_attestation)
+    _need(type(raw) is bytes, 'reader_attestation_changed')
     _need(_sha(raw) == ledger['attestationSha256'], 'reader_attestation_changed')
     record = dict(install_id=proof['installId'], project=str(project), project_node=_node(project),
                   state=str(state), state_node=_node(state), scope=proof['scopeId'], store_format='v6',
@@ -255,12 +580,145 @@ def _evidence(state, project, executing_root, *, target=None, catalog=None, bind
 
 def _endpoint(state, project, root, options):
     record, raw, proof = _evidence(state, project, root, **options)
+    return _issue_endpoint(state, project, root, options, record, raw, proof)
+
+
+def _issue_endpoint(state, project, root, options, record, raw, proof):
+    path=Path(state)/_JOURNAL
+    if journal.journal_version(path)==5:
+        with _readonly(path,Path(state)) as db:
+            _,selected=_selection(db)
+            if 'legacy_sidecar_baseline' in selected:
+                record['legacy_sidecar_baseline']=selected['legacy_sidecar_baseline']
+    elif os.path.lexists(record['sidecar_path']):
+        decision=journal.select_route(str(project),action='recall')
+        with _readonly(Path(record['sidecar_path']),Path(state)) as db:
+            side=_sidecar_snapshot(db,decision)
+        if not side['baseline']:
+            record['legacy_sidecar_baseline']=side['legacyCommitment']
     token = object.__new__(VerifiedEndpoint)
     packed = _raw(record)
     object.__setattr__(token, 'endpoint_id', _sha(b'memvane-reader-endpoint-v1\0' + packed))
     object.__setattr__(token, 'record', _freeze(record))
     _issued[token] = (Path(state), Path(project), Path(root), dict(options), packed, raw)
     return token, proof
+
+
+def _bootstrap_evidence(state, project, root, *, target=None, catalog=None, binding=None, side=None):
+    """Prove old read evidence and independently review the executing upgrade target."""
+    import laya_active_upgrade as upgrade
+    import laya_bundle_upgrade as bundle
+    from laya_ledger_common import refuse_qmd_origin
+    state, project, root = _state(state), Path(project), Path(root)
+    refuse_qmd_origin(state)
+    intent = upgrade._load_intent(state, project)
+    _need(intent is not None and intent['schema'] == upgrade.V1 and
+          intent['newProof']['pluginRoot'] == str(root), 'reader_installer_unproved')
+    _need(upgrade._read(upgrade._intent_path(state)) == upgrade._bytes(intent), 'reader_installer_unproved')
+    old, info, _route, old_att, _marker = upgrade._old_state(project, state, state / _JOURNAL)
+    _need(upgrade._journal_snapshot(info) == intent['journalBefore'] and
+          upgrade.build.read(state) == intent['oldRecord'], 'reader_selection_unproved')
+    upgrade._backup_proof(intent)
+    source, commit = bundle.select_source(root)
+    _need(commit == intent['newProof']['sourceCommit'], 'reader_installer_unproved')
+    journal._executing_from_candidate(root)
+    candidate = upgrade.inspect_full_plugin_candidate(str(root))
+    _need(all(candidate.get(k) == v for k,v in intent['newProof'].items()), 'reader_installer_unproved')
+    proposed = json.loads(intent['newAttestation'])
+    manifest = proposed['providerManifest']
+    from laya_embed_runtime import generation_of
+    generation = generation_of(manifest.get('modelPath'))
+    review = upgrade.review_local_provider(source_root=source, plugin_root=root, state_root=state,
+        commit_id=commit, model_path=manifest.get('modelPath'), dimension=candidate['vectorProfile']['dimension'],
+        **({'runtime_generation':str(generation)} if generation is not None else {}))
+    _need(review['proposalSha256'] == intent['reviewSha256'], 'reader_installer_unproved')
+    approved = upgrade.reattest(json.loads(old_att), review['reviewedProvider'])
+    _need(approved is not None, 'reader_installer_unproved')
+    reproduced = upgrade.attestation_record(proof=candidate, journal_path=state / _JOURNAL,
+        reattested=approved, schema=upgrade.PRODUCTION_ATTESTATION_SCHEMA)
+    _need(journal._canon(reproduced) == intent['newAttestation'], 'reader_installer_unproved')
+    decision = journal.select_route(str(project), action='recall')
+    old_proof = journal.verify_selected_route_read_only(decision)
+    _need(old_proof.get('readOnlyAllowed') is True and old_proof.get('productRouteAllowed') is False and
+          old_proof['projectRoot'] == str(project) and old_proof['journalPath'] == str(state / _JOURNAL),
+          'reader_installer_unproved')
+    record, raw, _ = _evidence_stores(state, project, decision, old_proof, old, info,
+                                       target=target, catalog=catalog, binding=binding, side=side)
+    readiness = {**old_proof, 'executingPluginRoot':str(root), 'sourceCommit':commit,
+                 'bundleManifestSha256':candidate['bundleManifestSha256']}
+    return record, raw, readiness
+
+
+def _bootstrap_endpoint(state, project, root, options):
+    record, raw, proof = _bootstrap_evidence(state, project, root, **options)
+    endpoint, proof = _issue_endpoint(state, project, root, options, record, raw, proof)
+    _bootstrap_endpoints.add(endpoint)
+    _read_only.add(endpoint)
+    return endpoint, proof
+
+
+def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, max_epoch):
+    """Validate immutable, activation-committed provider successors for one endpoint."""
+    _need(db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_successors'").fetchone(),
+          'reader_successor_missing')
+    current_sha, identity, last_epoch = stored['attestation_sha256'], None, 0
+    rows = db.execute('SELECT epoch,intent_sha256,record FROM upgrade_read_successors '
+                      'WHERE endpoint_id=? ORDER BY epoch', (endpoint_id,)).fetchall()
+    for epoch, intent_sha, packed in rows:
+        item = json.loads(packed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite)
+        _need(type(item) is dict and _raw(item).decode('utf8') == packed and
+              set(item) == {'schema','intentSha256','endpointId','epoch','fromAttestation',
+                            'toAttestation','fromIdentity','toIdentity'} and
+              item['schema'] == 'memvane-reader-successor-v1' and item['intentSha256'] == intent_sha and
+              item['endpointId'] == endpoint_id and item['epoch'] == epoch and
+              type(item['fromIdentity']) is dict and type(item['toIdentity']) is dict and
+              type(epoch) is int and last_epoch < epoch <= max_epoch and
+              item['fromAttestation'] == current_sha and
+              (identity is None or item['fromIdentity'] == identity), 'reader_successor_invalid')
+        seal_row = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                              (intent_sha,)).fetchone()
+        _need(seal_row is not None and seal_row[0] == endpoint_id, 'reader_successor_invalid')
+        from laya_active_upgrade import _reader_seal
+        seal = _reader_seal(db, intent_sha, endpoint_id)
+        source = (seal.get('recovery',{}).get('journalBefore')
+                  if type(seal) is dict and seal.get('schema') == 'memvane-upgrade-reader-v2'
+                  else seal.get('journalBefore') if type(seal) is dict else None)
+        _need(type(seal) is dict and type(source) is dict and
+              type(source.get('epoch')) is int and
+              _raw(seal).decode('utf8') == seal_row[1] and
+              seal.get('intentSha256') == intent_sha and seal.get('endpointId') == endpoint_id and
+              source.get('selected') == item['fromIdentity'] and
+              source.get('providerAttestationSha256') == current_sha and
+              source.get('epoch') + 2 == epoch and
+              item['toIdentity'].get('installId') == stored['install_id'] and
+              item['toIdentity'].get('vectorProfile',{}).get('profileId') == stored['profile'] and
+              type(item['toAttestation']) is str and journal.SHA.fullmatch(item['toAttestation']),
+              'reader_successor_invalid')
+        if seal.get('schema') in ('memvane-upgrade-reader-v2','memvane-upgrade-reader-retarget-v1'):
+            _need(seal['targetIdentity'] == item['toIdentity'] and
+                  seal['targetAttestationSha256'] == item['toAttestation'] and
+                  (seal['schema'] != 'memvane-upgrade-reader-v2' or
+                   seal['recovery'].get('mode') == 'switch'), 'reader_successor_invalid')
+        current_sha, identity, last_epoch = item['toAttestation'], item['toIdentity'], epoch
+    _need(rows and current_sha == target_sha and identity == target_identity, 'reader_successor_unproved')
+
+
+def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof):
+    if 'legacy_sidecar_baseline' in stored:
+        current['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
+    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
+    current['creation_epoch'] = stored['creation_epoch']
+    if raw != attestation:
+        current['attestation_sha256'] = stored['attestation_sha256']
+        with _readonly(Path(state) / _JOURNAL, Path(state)) as db:
+            row = journal._row(db)
+            _need(row['state'] in ('active','restored_old') and row['pending'] is None and
+                  row['provider_attestation_sha'] == _sha(raw), 'reader_successor_unproved')
+            _successor_chain(db, endpoint_id, stored, _sha(raw), row['selected'], max_epoch=row['epoch'])
+    packed = _raw(current)
+    _need(packed == _raw(stored) and _sha(attestation) == stored['attestation_sha256'] and
+          endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
+    return packed
 
 
 def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
@@ -273,18 +731,14 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
     _need(isinstance(stored, dict) and type(stored.get('creation_epoch')) is int
           and stored['creation_epoch'] >= 1, 'reader_endpoint_invalid')
     options = dict(target=stored.get('db_path'), catalog=stored.get('catalog_path'),
-                   binding=stored.get('binding_path'), side=stored.get('sidecar_path'))
+                   binding=stored.get('binding_path'), side=stored.get('sidecar_path'),
+                   allow_drift=True)
     current, raw, proof = _evidence(state, project, root, **options)
-    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
-    current['creation_epoch'] = stored['creation_epoch']
-    packed = _raw(current)
-    _need(packed == _raw(stored) and raw == attestation and
-          endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed),
-          'reader_endpoint_changed')
+    packed = _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof)
     token = object.__new__(VerifiedEndpoint)
     object.__setattr__(token, 'endpoint_id', endpoint_id)
     object.__setattr__(token, 'record', _freeze(current))
-    _issued[token] = (Path(state), Path(project), Path(root), options, packed, raw)
+    _issued[token] = (Path(state), Path(project), Path(root), options, packed, attestation)
     _read_only.add(token)
     _bind_reader_scope(token, scope)
     return token
@@ -294,6 +748,24 @@ def _revoke_reader(endpoint):
     _issued.pop(endpoint, None)
     _read_only.discard(endpoint)
     _retained.discard(endpoint)
+    _upgrade_readers.discard(endpoint)
+    _bootstrap_endpoints.discard(endpoint)
+
+
+def _persisted_upgrade_endpoint(state, project, root, endpoint_id, stored, attestation):
+    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    from laya_active_upgrade import _fenced_reader_evidence
+    scope = _require_reader_scope(stored.get('install_id'))
+    record, raw, _proof = _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestation)
+    token = object.__new__(VerifiedEndpoint)
+    packed = _raw(record)
+    object.__setattr__(token, 'endpoint_id', endpoint_id)
+    object.__setattr__(token, 'record', _freeze(record))
+    _issued[token] = (Path(state), Path(project), Path(root), {}, packed, raw)
+    _read_only.add(token)
+    _upgrade_readers.add(token)
+    _bind_reader_scope(token, scope)
+    return token
 
 
 def _recheck(endpoint):
@@ -306,15 +778,29 @@ def _recheck(endpoint):
     if endpoint in _retained:
         from laya_move_read_seal import _recheck_retained
         return _recheck_retained(endpoint)
+    if endpoint in _upgrade_readers:
+        from laya_active_upgrade import _fenced_reader_evidence
+        state, project, root, _options, packed, raw = _issued[endpoint]
+        return _fenced_reader_evidence(state, project, root, endpoint.endpoint_id,
+                                       json.loads(packed), raw)
+    if endpoint in _bootstrap_endpoints:
+        state, project, root, options, packed, raw = _issued[endpoint]
+        record, attestation, proof = _bootstrap_evidence(state, project, root, **options)
+        saved = json.loads(packed)
+        if 'legacy_sidecar_baseline' in saved:
+            record['legacy_sidecar_baseline'] = saved['legacy_sidecar_baseline']
+        _need(proof['selectionEpoch'] >= saved['creation_epoch'], 'reader_endpoint_changed')
+        record['creation_epoch'] = saved['creation_epoch']
+        _need(_raw(record) == packed and attestation == raw and
+              endpoint.endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed),
+              'reader_endpoint_changed')
+        return record, raw, proof
     state, project, root, options, packed, raw = _issued[endpoint]
     record, attestation, proof = _evidence(state, project, root, **options)
-    creation_epoch = json.loads(packed)['creation_epoch']
-    _need(proof['selectionEpoch'] >= creation_epoch, 'reader_endpoint_changed')
-    record['creation_epoch'] = creation_epoch
-    _need(_raw(record) == packed and attestation == raw
-          and endpoint.endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed),
+    saved=json.loads(packed)
+    _need(_match_persisted(state, endpoint.endpoint_id, saved, raw, record, attestation, proof) == packed,
           'reader_endpoint_changed')
-    return record, raw, proof
+    return saved, raw, proof
 
 
 def seal_current_reader(state: Path, project: Path, *, executing_root: Path) -> InstallerSeal:
@@ -327,9 +813,22 @@ def seal_current_reader(state: Path, project: Path, *, executing_root: Path) -> 
     return token
 
 
-def _installer(token):
+def seal_upgrade_reader(project: Path, state: Path, *, executing_root: Path) -> InstallerSeal:
+    state, project, root = _state(state), Path(project), Path(executing_root)
+    from laya_journal_recovery import recover_initial
+    recover_initial(state, project, root, bootstrap=True)
+    endpoint, _proof = _bootstrap_endpoint(state, project, root, {})
+    token = object.__new__(InstallerSeal)
+    object.__setattr__(token, 'endpoint', endpoint)
+    _issued[token] = endpoint
+    _bootstrap_installers.add(token)
+    return token
+
+
+def _installer(token, *, conversion=False):
     _need(type(token) is InstallerSeal and token in _issued and _issued[token] is token.endpoint,
           'reader_installer_not_issued')
+    _need(conversion or token not in _bootstrap_installers, 'reader_installer_read_only')
     return token.endpoint
 
 
@@ -426,9 +925,15 @@ def _journal(path):
 
 
 def read_selection(journal: Path) -> ReaderSelection:
-    path = _journal(journal)
-    with _readonly(path, path.parent) as db:
-        return _selection(db)[0]
+    from laya_install_journal import JournalEvidenceError
+    for attempt in range(3):
+        path = _journal(journal)
+        try:
+            with _readonly(path, path.parent) as db:
+                return _selection(db)[0]
+        except JournalEvidenceError as exc:
+            if str(exc) != 'reader_store_changed' or attempt == 2:
+                raise
 
 
 def _insert_endpoint(db, endpoint, record, raw):
@@ -447,12 +952,14 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
     import laya_initial_build as build
     import laya_fresh_wiki_origin as fresh
     import project_dir
+    from context_learning.resource_coordination import Coordinator
     from laya_index_sync import _owner_lock
     from laya_ledger_common import _operation_lock
-    endpoint = _installer(installer)
+    endpoint = _installer(installer, conversion=True)
     state, project = _state(state), Path(project)
     _need(_issued[endpoint][:2] == (state, project), 'reader_install_changed')
-    recovery.recover_initial(state, project, _issued[endpoint][2])
+    recovery.recover_initial(state, project, _issued[endpoint][2],
+                             bootstrap=installer in _bootstrap_installers)
     _record, _att, proof = _recheck(endpoint)
     bridge.require_bridge_preflight(readiness, state, proof)
     path = _journal(state / _JOURNAL)
@@ -460,6 +967,9 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
         locks.enter_context(_install_lock(state))
         _need(locks.enter_context(build.owner(state)), 'initial_build_busy')
         locks.enter_context(_operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+        # Older capacity workers can publish a sidecar between queue leases.
+        # Their existing provider lane covers the whole worker lifetime.
+        locks.enter_context(Coordinator().quiesce_provider())
         queue = Path(journal.select_route(str(project), action='recall')['queuePath'])
         _need(locks.enter_context(_owner_lock(queue)), 'sync_owner_busy')
         version = journal.journal_version(path)
@@ -468,6 +978,26 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
         _need(journal.journal_version(path) == version, 'reader_selection_changed')
         from laya_reader_lease import _prepare_lifetime
         _prepare_lifetime(proof['installId'], create=version != 5)
+        if version != 5:
+            # A legacy capacity worker can publish after initial seal issuance.
+            # Bind the final sidecar only after the existing owners are quiescent.
+            old_record, old_raw, _ = _recheck(endpoint)
+            issue = _bootstrap_endpoint if endpoint in _bootstrap_endpoints else _endpoint
+            refreshed, _ = issue(state,project,_issued[endpoint][2],_issued[endpoint][3])
+            new_record, new_raw, _ = _recheck(refreshed)
+            old_common=dict(old_record);new_common=dict(new_record)
+            old_common.pop('legacy_sidecar_baseline',None)
+            new_common.pop('legacy_sidecar_baseline',None)
+            old_epoch=old_common.pop('creation_epoch')
+            new_epoch=new_common.pop('creation_epoch')
+            _need(new_epoch>=old_epoch and old_common==new_common and old_raw==new_raw,
+                  'reader_endpoint_changed')
+            if refreshed.endpoint_id != endpoint.endpoint_id:
+                endpoint=refreshed
+                object.__setattr__(installer,'endpoint',endpoint)
+                _issued[installer]=endpoint
+        from laya_reader_windows import _prepare_conversion_windows
+        _prepare_conversion_windows(installer)
         if journal.journal_version(path) == 3:
             journal.convert_to_v4(path)
         if journal.journal_version(path) == 5:
@@ -476,6 +1006,17 @@ def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, r
             return selected
         record, _, proof = _recheck(endpoint)
         bridge.require_bridge_preflight(readiness, state, proof)
+        if os.path.lexists(record['sidecar_path']):
+            decision=journal.select_route(str(project),action='recall')
+            with _readonly(Path(record['sidecar_path']),state) as db:
+                observed=_sidecar_snapshot(db,decision)
+            if not observed['baseline']:
+                _need(observed['legacyCommitment']==record.get('legacy_sidecar_baseline'),
+                      'reader_sidecar_revision_unproved')
+            else:
+                _need('legacy_sidecar_baseline' not in record,'reader_sidecar_revision_unproved')
+        else:
+            _need('legacy_sidecar_baseline' not in record,'reader_sidecar_revision_unproved')
         initial = recovery.prepare(state, project, endpoint, record, proof)
         with closing(journal._open(path, write=True)[1]) as db:
             db.execute('PRAGMA synchronous=FULL')
@@ -597,6 +1138,9 @@ def mutate_image(journal_path, operation, *, before_replace=None):
 def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
                target: VerifiedEndpoint, transition_id: str) -> ReaderSelection:
     path = _journal(journal)
+    _need(not (type(target) is VerifiedEndpoint and
+               getattr(target,'record',{}).get('store_format') == 'schema3'),
+          'reader_format_not_selectable')
     _need(type(target) is not VerifiedEndpoint or target not in _read_only,
           'reader_endpoint_read_only')
     _need(type(target) is VerifiedEndpoint and target in _issued and

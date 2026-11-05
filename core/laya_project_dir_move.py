@@ -719,7 +719,8 @@ def _publish(intent):
         result = index.publish(generation['base'], generation['gen'], generation['claim'],
                                source_manifest=generation['manifest'],
                                claim_digest=generation['claimDigest'],
-                               claim_epoch=generation['claimEpoch'], require_vector=True)
+                               claim_epoch=generation['claimEpoch'], require_vector=True,
+                               _revision_install_id=route['installId'])
     if result not in ('published', 'replayed'):
         _fail('project_dir_move_publish_' + str(result))
 

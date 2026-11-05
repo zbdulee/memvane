@@ -1,6 +1,7 @@
 """Synthetic release ownership checks; all state lives below the supplied temp HOME."""
 import fcntl
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout, redirect_stderr
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'scripts'))
@@ -49,6 +51,43 @@ class Worker:
 
 
 class ReleaseCoordinationChecks(unittest.TestCase):
+    def test_bridge_preflight_entry_collects_both_registered_hosts_and_refuses_failure(self):
+        import release_coordination as coordination
+        state=self.states[str(self.projects[0])][0]
+        commit='c'*40
+        out=io.StringIO()
+        with mock.patch.object(coordination,'collect_registered_bridge_preflight',return_value=object()) as collect, \
+             redirect_stdout(out):
+            self.assertEqual(coordination._bridge_preflight(str(state),commit),0)
+        collect.assert_called_once_with(state,release_commit=commit,expected_hosts=frozenset(('claude','codex')))
+        self.assertEqual(json.loads(out.getvalue()),{'status':'bridge_preflight_collected'})
+        err=io.StringIO()
+        with mock.patch.object(coordination,'collect_registered_bridge_preflight',side_effect=ValueError('secret-detail')), \
+             redirect_stderr(err):
+            self.assertEqual(coordination._bridge_preflight(str(state),commit),3)
+        self.assertEqual(err.getvalue(),'[memvane] reader_hosts_pending\n')
+        result=subprocess.run([PYTHON,'-B',str(REPO/'scripts/release_coordination.py'),
+                               '--bridge-preflight',str(state),commit],
+                              capture_output=True,text=True,timeout=10,env=os.environ.copy())
+        self.assertEqual(result.returncode,3,result.stderr)
+        self.assertEqual(result.stdout,'')
+        self.assertEqual(result.stderr,'[memvane] reader_hosts_pending\n')
+        observed={'status':'loaded_bridge_verified','endpoint_id':'a'*64,'reader_epoch':1,
+                  'store_format':'v6','generation':'g-synthetic'}
+        out=io.StringIO()
+        with mock.patch.object(coordination,'collect_registered_loaded_bridge',return_value=observed) as collect, \
+             redirect_stdout(out):
+            self.assertEqual(coordination._loaded_bridge(str(state),commit,'qa/sentinel.md','b'*64),0)
+        collect.assert_called_once_with(state,release_commit=commit,expected_hosts=frozenset(('claude','codex')),
+                                        sentinel_path='qa/sentinel.md',sentinel_sha256='b'*64)
+        self.assertEqual(json.loads(out.getvalue()),observed)
+        result=subprocess.run([PYTHON,'-B',str(REPO/'scripts/release_coordination.py'),
+                               '--loaded-bridge',str(state),commit,'qa/sentinel.md','b'*64],
+                              capture_output=True,text=True,timeout=10,env=os.environ.copy())
+        self.assertEqual(result.returncode,3,result.stderr)
+        self.assertEqual(result.stdout,'')
+        self.assertEqual(result.stderr,'[memvane] reader_hosts_pending\n')
+
     def setUp(self):
         supplied_home = Path(os.environ['HOME'])
         self.assertEqual(supplied_home, supplied_home.resolve(strict=True))

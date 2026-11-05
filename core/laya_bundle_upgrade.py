@@ -58,6 +58,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import stat
 import subprocess
@@ -83,11 +84,12 @@ DEFERRALS = frozenset((
     'initial_build_busy', 'active_upgrade_resident_busy',
     'journal_v4_install_busy', 'embed_runtime_busy',
     'legacy_hermes_copy_present', 'bundle_file_missing',
-    'source_git_no_lazy_fetch_unsupported', 'source_git_no_lazy_fetch_unavailable'))
+    'source_git_no_lazy_fetch_unsupported', 'source_git_no_lazy_fetch_unavailable',
+    'reader_hosts_pending'))
 # These deferrals wait for a host change instead of holding a worker open.
 NO_BACKOFF = frozenset(('legacy_hermes_copy_present', 'bundle_file_missing',
                         'source_git_no_lazy_fetch_unsupported',
-                        'source_git_no_lazy_fetch_unavailable'))
+                        'source_git_no_lazy_fetch_unavailable', 'reader_hosts_pending'))
 # A state-root move waits for the same lanes plus the install and route locks.
 MOVE_DEFERRALS = DEFERRALS | frozenset((
     'install_busy', 'cutover_operation_busy', 'state_move_upgrade_pending',
@@ -832,6 +834,21 @@ def upgrade_install(project_root, state, root, home=None):
             return {**finished, 'kind': kind}
     same_root = identity['pluginRoot'] == str(root)
     if not fenced and same_root and not _same_root_readopt(kind, identity, root):
+        if kind == 'active':
+            import laya_install_journal as journal
+            version = journal.journal_version(Path(state) / 'install-journal.sqlite')
+            if version == 3:
+                import laya_journal_v4
+                converted = laya_journal_v4.convert_install(state, project_root, root=root, home=home)
+                if converted.get('status') not in ('journal_v4_converted','journal_v4_current','journal_v5_current'):
+                    raise ValueError('reader_hosts_pending')
+                version = journal.journal_version(Path(state) / 'install-journal.sqlite')
+            if version == 4:
+                import laya_bridge_readiness as bridge
+                import laya_journal_reader as reader
+                readiness = bridge.ensure_bridge_preflight(Path(state), release_commit=identity['sourceCommit'])
+                installer = reader.seal_current_reader(Path(state), Path(project_root), executing_root=Path(root))
+                reader.convert_reader_v5(Path(state), Path(project_root), installer=installer, readiness=readiness)
         return {'status': 'current', 'kind': kind}
     from laya_ledger_common import QMD_ORIGIN_DETACH_REQUIRED, qmd_ledger_present
     if qmd_ledger_present(state):
@@ -1078,10 +1095,15 @@ def run(project_root, *, root=None, home=None):
             _write_status(state, status='running', executingRoot=str(root),
                           attempts=attempts, reason='')
             started = time.monotonic()
+            try:
+                operation = secrets.token_hex(16)
+            except Exception:
+                operation = None  # Diagnostics must never block the upgrade.
             from_root, from_commit = _bound_bundle(state)
             moves = {'from': from_root, 'fromCommit': from_commit, 'to': root.name}
             _event(state, 'bundle.upgrade', 'started', hostLayout=_host(root, home),
-                   attempt=attempts, **moves)
+                   attempt=attempts, operation=operation, **moves)
+            diagnostic = {}
             try:
                 import laya_project_dir_move
                 import laya_state_move
@@ -1161,6 +1183,13 @@ def run(project_root, *, root=None, home=None):
             except Exception as exc:
                 state = _live_state(state, home)
                 reason, extra = _bundle_failure(exc, root)
+                stage, bridge_host = getattr(exc, 'bridge_stage', None), getattr(exc, 'bridge_host', None)
+                if stage in ('reuse', 'host_support', 'challenge', 'observe_host', 'validate_receipts'):
+                    if reason != 'reader_hosts_pending':
+                        reason, extra = 'bridge_preflight_error', {}
+                    diagnostic['stage'] = stage
+                    if bridge_host in ('claude', 'codex'):
+                        diagnostic['bridgeHost'] = bridge_host
                 if reason in DEFERRALS:
                     # A busy lane or incomplete extraction spends no attempt.
                     result = {'status': 'deferred', 'reason': reason, **extra}
@@ -1174,7 +1203,8 @@ def run(project_root, *, root=None, home=None):
                                   reason=reason, **extra)
             _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
                    ms=(time.monotonic() - started) * 1000, kind=result.get('kind'),
-                   **({'file': result['file']} if 'file' in result else {}), **moves)
+                   attempt=attempts, operation=operation,
+                   **diagnostic, **({'file': result['file']} if 'file' in result else {}), **moves)
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()
                 if key in ('status', 'reason', 'kind', 'file', 'stateMove', 'projectDirMove')}})

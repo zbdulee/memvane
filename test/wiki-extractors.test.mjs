@@ -82,6 +82,21 @@ test('adapter records successful native child identity without exposing the prom
   } finally { removeTemp(d); }
 });
 
+test('adapter does not forward child stderr containing source or credentials', () => {
+  const d = mkdtempSync(join(tmpdir(), 'extractor-private-stderr-'));
+  try {
+    const fake = join(d, 'private-codex');
+    writeFileSync(fake, '#!/bin/sh\nprintf "PRIVATE_SOURCE FAKE_CREDENTIAL" >&2\nprintf \'{"verdict":"pass","reason":"synthetic"}\\n\'\n', { mode: 0o700 });
+    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+      input: JSON.stringify({task:'verify',card:{content:'PRIVATE_SOURCE'},sources:[]}),
+      encoding:'utf8', env:{...process.env,QMD_EXTRACTOR_CODEX_BIN:fake,MEMVANE_EVENT_LOG_PROMPTS:'1'},
+    });
+    assert.equal(result.status,0);
+    assert.doesNotMatch(result.stderr,/PRIVATE_SOURCE|FAKE_CREDENTIAL/);
+    assert.match(result.stderr,/extractor_cli_exit/);
+  } finally { removeTemp(d); }
+});
+
 test('adapter diagnostic resolves a bare-name override through the child PATH', () => {
   const d = mkdtempSync(join(tmpdir(), 'extractor-path-audit-'));
   try {

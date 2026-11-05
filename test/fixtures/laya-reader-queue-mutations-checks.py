@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Managed WAL queue mutations and ACK binding; no full cohort claim."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import hashlib
 import importlib
@@ -43,6 +43,26 @@ class QueueMutationChecks(unittest.TestCase):
             queue=self.Q.ClaimQueue.open(self.case.queue,coordination=component)
             try:yield base,queue,component
             finally:queue.close(deadline=time.monotonic()+1);self.W.drain_pending(deadline=time.monotonic()+1)
+    @contextmanager
+    def reopened_prepared(self):
+        from laya_index_a import LayaIndexA
+        seed=self.seed
+        with seed.authority(),ExitStack() as locks:
+            verify=seed.mover._locks(locks,self.case.project,self.case.state,
+                                     seed.mover._queue_path(self.case.project,None))
+            intent=seed.mover._load_intent(self.case.state,self.case.project)
+            self.assertIsNotNone(intent)
+            verify()
+            self.W.prepare_windows(seed.installer)
+            base=LayaIndexA(self.case.db,coordination=self.W.component_for(seed.installer,'base'))
+            queue=None
+            try:
+                queue=self.Q.ClaimQueue.open(self.case.queue,coordination=self.W.component_for(seed.installer,'queue'))
+                yield base,queue
+            finally:
+                if queue is not None:queue.close(deadline=time.monotonic()+1)
+                base.close(deadline=time.monotonic()+1)
+                self.W.drain_pending(deadline=time.monotonic()+1)
     def prep(self,base,queue,before_publish=None):
         import laya_index_a as A
         scope=self.case.route['scopeId'];old=base.db.execute('SELECT gen FROM head WHERE scope=?',(scope,)).fetchone()[0]
@@ -195,36 +215,48 @@ class QueueMutationChecks(unittest.TestCase):
     def test_foreign_actual_install_with_identical_claim_receipt_cannot_ack_local_job(self):
         from laya_index_a import LayaIndexA
         import laya_selected_project as selected
+        # The UID-wide sync anchor permits one owner at a time. Queue the job
+        # without publishing an unbound head before the second move prepare.
+        import laya_index_a as A
+        body='synthetic actual queue receipt';docs=[('wiki/queue-receipt.md',body,True)]
         with self.opened() as (base,queue,_component):
-            p=self.prep(base,queue);job=p['ack'];before=self.jobs(queue)
-            original_env={key:os.environ[key] for key in ('HOME','MEMVANE_TEST_RUNTIME_ROOT')}
-            foreign=self.seed.__class__('runTest')
-            foreign.INSTALL_ID='9'*32
-            foreign.STATE_PARTS=('.local','state','memvane',foreign.INSTALL_ID)
-            original_setup=selected.SelectedProject.setUp
-            def configured(case):
-                original_setup(case)
-                # Both real installations use one UID registry namespace;
-                # their normal fixture-configured install IDs remain distinct.
-                os.environ['MEMVANE_TEST_RUNTIME_ROOT']=original_env['MEMVANE_TEST_RUNTIME_ROOT']
-            other=None
-            try:
-                with mock.patch.object(selected.SelectedProject,'setUp',configured):foreign.setUp()
-                with foreign.prepared():
-                    self.W.prepare_windows(foreign.installer)
-                    component=self.W.component_for(foreign.installer,'base')
-                    other=LayaIndexA(foreign.case.db,coordination=component)
-                    old=other.db.execute('SELECT gen FROM head WHERE scope=?',(job['scope'],)).fetchone()[0]
-                    docs=[('wiki/queue-receipt.md','synthetic actual queue receipt',True)]
-                    proof={key:job[key] for key in ('source_manifest','claim_digest','claim_epoch')}
-                    self.assertEqual(other.stage(job['gen'],job['scope'],docs,base=old,**proof),'prepared')
-                    self.assertEqual(other.publish(old,job['gen'],job['claim'],**proof),'published')
-                    matching=self.Q.ClaimQueue.decide(other,job)
-                    self.assertEqual(matching,self.Q.ACK,'actual foreign receipt must match before authority refusal')
-                    self.assertNotEqual(foreign.install,self.seed.install)
+            scope=self.case.route['scopeId']
+            local_old=base.db.execute('SELECT gen FROM head WHERE scope=?',(scope,)).fetchone()[0]
+            manifest=A._digest(scope,[(docs[0][0],hashlib.sha256(body.encode()).hexdigest(),1)])
+            queued=queue.enqueue_next(scope,'queue-receipt-generation',manifest,local_old)
+            job=queue.lease(queued['claim']);before=self.jobs(queue)
+        original_env={key:os.environ[key] for key in ('HOME','MEMVANE_TEST_RUNTIME_ROOT')}
+        foreign=self.seed.__class__('runTest')
+        foreign.INSTALL_ID='9'*32
+        foreign.STATE_PARTS=('.local','state','memvane',foreign.INSTALL_ID)
+        original_setup=selected.SelectedProject.setUp
+        def configured(case):
+            original_setup(case)
+            # Both installations use one UID registry namespace.
+            os.environ['MEMVANE_TEST_RUNTIME_ROOT']=original_env['MEMVANE_TEST_RUNTIME_ROOT']
+        other=None
+        try:
+            with mock.patch.object(selected.SelectedProject,'setUp',configured):foreign.setUp()
+            with foreign.prepared():
+                self.W.prepare_windows(foreign.installer)
+                component=self.W.component_for(foreign.installer,'base')
+                other=LayaIndexA(foreign.case.db,coordination=component)
+                old=other.db.execute('SELECT gen FROM head WHERE scope=?',(job['scope'],)).fetchone()[0]
+                proof={key:job[key] for key in ('source_manifest','claim_digest','claim_epoch')}
+                self.assertEqual(other.stage(job['gen'],job['scope'],docs,base=old,**proof),'prepared')
+                self.assertEqual(other.publish(old,job['gen'],job['claim'],**proof),'published')
+                matching=self.Q.ClaimQueue.decide(other,job)
+                self.assertEqual(matching,self.Q.ACK,'actual foreign receipt must match before authority refusal')
+                self.assertNotEqual(foreign.install,self.seed.install)
+            with mock.patch.dict(os.environ,original_env):
+                with self.reopened_prepared() as (base,queue):
                     self.assertEqual(other._connection_owner.lifetime.parent.parent,
                                      base._connection_owner.lifetime.parent.parent)
-                with mock.patch.dict(os.environ,original_env):
+                    self.assertEqual(self.Q.ClaimQueue.decide(other,job),self.Q.ACK)
+                    self.assertEqual(self.jobs(queue),before)
+                    self.assertEqual(base.stage(job['gen'],job['scope'],docs,base=local_old,**proof),'prepared')
+                    self.assertEqual(base.publish(local_old,job['gen'],job['claim'],**proof),'published')
+                    self.assertEqual(self.Q.ClaimQueue.decide(base,job),self.Q.ACK)
                     sql=[];queue.db.set_trace_callback(sql.append)
                     try:result=queue.conditional_ack(job,job['lease_token'],other)
                     finally:queue.db.set_trace_callback(None)
@@ -233,9 +265,9 @@ class QueueMutationChecks(unittest.TestCase):
                         localInstall=self.seed.install,actualForeignReceiptVerdict=matching,
                         sameUidRegistry=True,result=result,jobsUnchanged=after==before,queueSql=sql)
                     self.assertEqual(result,self.Q.DEFER);self.assertEqual(after,before);self.assertEqual(sql,[])
-            finally:
-                if other is not None:other.close(deadline=time.monotonic()+1)
-                foreign.doCleanups()
+        finally:
+            if other is not None:other.close(deadline=time.monotonic()+1)
+            foreign.doCleanups()
 
     def test_queue_name_change_after_actual_dml_rolls_back_before_commit(self):
         with self.opened() as (base,queue,_component):

@@ -118,6 +118,8 @@ def _verify(data, attestation, *, root):
         if data.get('version') == 2 and data['kind'] == 'project':
             R._need(capture_layout(project) == data['layout'], 'reader_move_layout_changed')
     historical = data['source_record']
+    if 'legacy_sidecar_baseline' in historical:
+        live['legacy_sidecar_baseline'] = historical['legacy_sidecar_baseline']
     R._need(proof['selectionEpoch'] >= historical['creation_epoch'], 'reader_endpoint_changed')
     live['creation_epoch'] = historical['creation_epoch']
     R._need(live == historical and raw == attestation, 'reader_move_source_changed')

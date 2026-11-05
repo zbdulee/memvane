@@ -6,15 +6,54 @@ variable alone never authorizes a selected write or a fallback to legacy QMD.
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 import subprocess
 import sys
 
+_compile_owner = ContextVar('selected_compile_owner', default=None)
+
+
+@contextmanager
+def _owner_scope(bound, owner):
+    token=_compile_owner.set((bound,owner))
+    try:
+        yield
+    finally:
+        _compile_owner.reset(token)
+
+
+def _compile_proof(decision, *, owner=None):
+    import project_dir
+    from laya_install_journal import verify_selected_route_for_write
+    if project_dir.layout(decision['projectRoot'])=='split':
+        raise ValueError('project_dir_split')
+    active=_compile_owner.get()
+    if owner is None and active is not None and active[0][0]==decision:
+        owner=active[1]
+    if owner is not None:
+        from laya_product_sync_worker import _owned_selected_proof
+        return _owned_selected_proof(decision,owner)
+    if 'journalPath' not in decision:
+        return verify_selected_route_for_write(decision,'compile')
+    import laya_install_journal as journal
+    from laya_index_sync import sync_owner
+    from resource_deferred import ResourceDeferred
+    with sync_owner(Path(decision['queuePath'])) as acquired:
+        if acquired is None:
+            raise ResourceDeferred('owner_busy')
+        with journal.read_only_journals():
+            if journal.journal_version(decision['journalPath'])==5:
+                from laya_product_sync_worker import _owned_selected_proof
+                return _owned_selected_proof(decision,acquired)
+            with journal.legacy_identity_reads():
+                return verify_selected_route_for_write(decision,'compile')
+
 
 def selected(root: Path):
     from laya_index_host_route import select_route
-    from laya_install_journal import verify_selected_route_for_write
 
     root = Path(root).resolve()
     decision = select_route(str(root), action='compile')
@@ -22,7 +61,7 @@ def selected(root: Path):
         return None
     if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(root):
         raise ValueError('selected_compile_route_unavailable')
-    proof = verify_selected_route_for_write(decision, 'compile')
+    proof = _compile_proof(decision)
     if proof.get('productRouteAllowed') is not True:
         raise ValueError('selected_compile_journal_unavailable')
     collections = decision.get('collections')
@@ -33,11 +72,14 @@ def selected(root: Path):
     return decision, proof
 
 
-def recheck(bound):
+def recheck(bound, *, owner=None):
     if bound is None:
         return
-    from laya_install_journal import verify_selected_route_for_write
-    if verify_selected_route_for_write(bound[0], 'compile') != bound[1]:
+    active=_compile_owner.get()
+    if owner is None and active is not None and active[0]==bound:
+        owner=active[1]
+    proof = _compile_proof(bound[0],owner=owner)
+    if proof != bound[1]:
         raise ValueError('selected_compile_proof_changed')
 
 
@@ -49,10 +91,10 @@ def route_identity(bound):
                                            'scopeId', 'dbIncarnation')}
 
 
-def request_compile(root: Path, bound):
+def request_compile(root: Path, bound, *, owner=None):
     if bound is None:
         return
-    recheck(bound)
+    recheck(bound, owner=owner)
     from runtime_work import request
     result = request('laya-compile', str(Path(root).resolve()))
     if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):

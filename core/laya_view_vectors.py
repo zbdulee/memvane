@@ -205,7 +205,7 @@ class VectorMixin:
         record = self._pinned(pin)
         entry = record['entry']
         _left(deadline)
-        self._observe(entry)
+        self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
         _left(deadline)
         with self._reading(deadline) as db:
             generation, seal, original, stage = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
@@ -251,7 +251,7 @@ class VectorMixin:
                            gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
                            snapshot_state=state) for negative, _, _, ref in top]
             _left(deadline)
-        self._observe(entry)
+        self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
         _left(deadline)
         return answer
 

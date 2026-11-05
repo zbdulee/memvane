@@ -71,6 +71,31 @@ class VectorCase(fill.FillCase):
 
 
 class VectorChecks(VectorCase):
+    def test_reader_factory_preserves_exact_and_hybrid_results(self):
+        store,repository,handle,manifest,recipe,profile,_gen,pin=self.ready()
+        expected_exact=store.search_exact(pin,[1.0,0.0],10,profile_id=profile)
+        expected_hybrid=store.search_hybrid(pin,'hello',[1.0,0.0],10,profile_id=profile)
+        reader=self.Store.open_reader(store._path,repository=repository,scope_id=store._scope)
+        self.addCleanup(reader.close)
+        read_handle=reader.capture_view(handle.worktree_id)
+        read_pin=reader.pin_view(read_handle)
+        self.assertEqual(reader.search_exact(read_pin,[1.0,0.0],10,profile_id=profile),expected_exact)
+        self.assertEqual(reader.search_hybrid(read_pin,'hello',[1.0,0.0],10,profile_id=profile),expected_hybrid)
+        self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
+        reader.release(read_pin)
+        filler=importlib.import_module('laya_blob_fill').ContentFiller(reader)
+        leases=importlib.import_module('laya_blob_lease')
+        blob=manifest['members'][0]['blob_sha']
+        calls=[]
+        with mock.patch.object(leases,'acquire',side_effect=AssertionError('unexpected lock')):
+            with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+                with filler.claim_content(blob,recipe,profile):
+                    self.fail('reader granted content lease')
+            with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+                filler.ensure_content(blob,recipe,profile,chunker=lambda *_:calls.append('chunk'),
+                    embedder=lambda *_:calls.append('embed'),write_fence=lambda:calls.append('fence'))
+        self.assertEqual(calls,[])
+
     def test_01_lexical_default_seals_zero_vector_coverage(self):
         store, _, h, manifest, r, p = self.configured(body=b'# Alpha\nhello lexical\n')
         self.fill(store, h, manifest, r, p)
@@ -178,12 +203,14 @@ class VectorChecks(VectorCase):
         self.fill(store, b, mb, r, p)
         _, pb = self.publish(store, b, mb, r, p)
         before = store.head(b)
-        gb = store.search_exact(pb, [1.0, 0.0], 10, profile_id=p)
+        # This case checks view isolation, not latency. Deadline behavior is
+        # covered separately; the product default remains two seconds.
+        gb = store.search_exact(pb, [1.0, 0.0], 10, profile_id=p, deadline_seconds=10)
         _, pa = self.publish(store, a, ma, r, p)
         self.assertEqual(store.head(b), before)
-        self.assertEqual(store.search_exact(pb, [1.0, 0.0], 10, profile_id=p), gb)
+        self.assertEqual(store.search_exact(pb, [1.0, 0.0], 10, profile_id=p, deadline_seconds=10), gb)
         self.assert_rows(gb, pb)
-        self.assert_rows(store.search_exact(pa, [1.0, 0.0], 10, profile_id=p), pa)
+        self.assert_rows(store.search_exact(pa, [1.0, 0.0], 10, profile_id=p, deadline_seconds=10), pa)
         self.assertEqual(len(self.calls['embedder']), 1, 'two views share immutable content, not publication')
 
     def test_10_path_and_eligibility_filters_precede_float_work_budget(self):

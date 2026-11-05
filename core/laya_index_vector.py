@@ -20,7 +20,7 @@ import struct
 import time
 import unicodedata
 
-from laya_index_a import (IndexContractError, _NOT_EXCLUDED, _path_predicate,
+from laya_index_a import (IndexContractError, SnapshotIndex, _NOT_EXCLUDED, _path_predicate,
                           _shadow_predicate)
 
 
@@ -347,6 +347,14 @@ def _database_identity(index):
 
 def _query_seal(index, gen, *, deadline=None):
     """``verify_generation_seal`` for a query, reused only inside ``seal_reuse``."""
+    if isinstance(index, SnapshotIndex):
+        index._check()
+        _check_deadline(deadline)
+        if gen not in index._vector_seals:
+            result = verify_generation_seal(index, gen, deadline=deadline)
+            index._check()
+            index._vector_seals[gen] = dict(result)
+        return dict(index._vector_seals[gen])
     cache = _SEAL_REUSE.get()
     if cache is None:
         return verify_generation_seal(index, gen, deadline=deadline)
@@ -556,18 +564,34 @@ class LayaVectorIndex:
 
     def profile_for_pin(self, token):
         db = self.index.db
-        db.execute('BEGIN')
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if snapshot:
+            db._hold_progress_deadline(self.index._deadline)
+        else:
+            db.execute('BEGIN')
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
-            profile = _query_seal(self.index, gen)
+            profile = _query_seal(self.index, gen,
+                                  deadline=self.index._deadline if snapshot else None)
             if profile['scope'] != scope:
                 raise IndexContractError('vector_seal_invalid')
-            db.commit()
+            if not snapshot:
+                db.commit()
             return profile
-        except BaseException:
-            self.index._rollback()
+        except sqlite3.OperationalError as exc:
+            if not snapshot:
+                self.index._rollback()
+            if snapshot and time.monotonic() >= self.index._deadline:
+                raise IndexContractError('vector_deadline_exceeded') from exc
             raise
+        except BaseException:
+            if not snapshot:
+                self.index._rollback()
+            raise
+        finally:
+            if snapshot:
+                db._release_progress_deadline()
 
     def search_exact(self, token, query_vector, *, model_id, embedding_fingerprint,
                      dimension, limit, max_candidates=None,
@@ -590,9 +614,14 @@ class LayaVectorIndex:
         qnorm = math.sqrt(_sum_squares(query))
         deadline = None if deadline_seconds is None else time.monotonic() + deadline_seconds
         db = self.index.db
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if snapshot:
+            deadline = self.index._deadline if deadline is None else min(deadline, self.index._deadline)
         # The seal proof is never skipped; it shares the query deadline. The
         # handler also interrupts single long statements inside the proof.
-        if deadline is not None:
+        if snapshot:
+            db._hold_progress_deadline(deadline)
+        elif deadline is not None:
             db.set_progress_handler(
                 lambda: int(time.monotonic() >= deadline), 1000)
         try:
@@ -605,14 +634,18 @@ class LayaVectorIndex:
                 raise IndexContractError('vector_deadline_exceeded') from exc
             raise
         finally:
-            if deadline is not None:
+            if snapshot:
+                db._release_progress_deadline()
+            elif deadline is not None:
                 db.set_progress_handler(None, 0)
 
     def _search_exact_pinned(self, token, query, qnorm, profile_id, dimension,
                              limit, max_candidates, max_float_work, deadline,
                              prefix_sql, prefix_params):
         db = self.index.db
-        db.execute('BEGIN')
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if not snapshot:
+            db.execute('BEGIN')
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
@@ -665,10 +698,12 @@ class LayaVectorIndex:
                                'hash': hash_, 'body': body, 'score': distance,
                                'seq': seq, 'position': pos}
             finish_path()
-            db.commit()
+            if not snapshot:
+                db.commit()
             return top
         except BaseException:
-            self.index._rollback()
+            if not snapshot:
+                self.index._rollback()
             raise
 
 

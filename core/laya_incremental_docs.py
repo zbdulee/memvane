@@ -105,6 +105,21 @@ def _expected_meta(identity):
             identity['candidateDb'], identity['projectRoot'])
 
 
+def _revision_schema(db):
+    db.execute('CREATE TABLE IF NOT EXISTS publication_revisions '
+               '(revision INTEGER PRIMARY KEY, value TEXT NOT NULL)')
+    db.execute('CREATE TRIGGER IF NOT EXISTS publication_revision_insert_seal '
+               'BEFORE INSERT ON publication_revisions '
+               'WHEN EXISTS (SELECT 1 FROM publication_revisions WHERE revision=NEW.revision) '
+               "BEGIN SELECT RAISE(ABORT,'publication_revision_immutable'); END")
+    db.execute('CREATE TRIGGER IF NOT EXISTS publication_revision_update_seal '
+               'BEFORE UPDATE ON publication_revisions '
+               "BEGIN SELECT RAISE(ABORT,'publication_revision_immutable'); END")
+    db.execute('CREATE TRIGGER IF NOT EXISTS publication_revision_delete_seal '
+               'BEFORE DELETE ON publication_revisions '
+               "BEGIN SELECT RAISE(ABORT,'publication_revision_immutable'); END")
+
+
 def _setup(db, identity, *, coordination=None):
     if coordination is not None:
         return _setup_managed(db, identity, coordination)
@@ -130,6 +145,7 @@ def _setup(db, identity, *, coordination=None):
         db.execute('''CREATE TABLE IF NOT EXISTS cached_backfill(
             id INTEGER PRIMARY KEY CHECK(id=1), scan_id TEXT NOT NULL,
             cursor TEXT NOT NULL)''')
+        _revision_schema(db)
         row = db.execute('SELECT * FROM meta').fetchall()
         if not row:
             db.execute('INSERT INTO meta VALUES(?,?,?,?,?,?,?)', expected)
@@ -162,12 +178,21 @@ def _fixed_schema():
     return _FIXED_SCHEMA
 
 
+def _schema_variants():
+    """Exact complete or legacy shapes, with the historical optional cursor."""
+    expected = _fixed_schema()
+    return tuple([row for row in expected
+                  if (cursor or row[1] != 'cached_backfill')
+                  and (revision or row[2] != 'publication_revisions')]
+                 for cursor in (False, True) for revision in (False, True))
+
+
 @contextmanager
 def _document_transaction(db, coordination, *, visible):
     if coordination is not None:
-        from laya_reader_windows import write_connection
+        from laya_reader_windows import VISIBLE_WRITE_ADMISSION_SECONDS, write_connection
         with write_connection(db, coordination, visible=visible,
-                deadline=time.monotonic() + (.05 if visible else 2)) as transaction:
+                deadline=time.monotonic() + (VISIBLE_WRITE_ADMISSION_SECONDS if visible else 2)) as transaction:
             yield transaction
         return
     db.execute('BEGIN IMMEDIATE')
@@ -181,19 +206,36 @@ def _document_transaction(db, coordination, *, visible):
 
 def _setup_managed(db, identity, coordination):
     expected = _fixed_schema()
-    without_cursor = [row for row in expected if row[1] != 'cached_backfill']
     with _document_transaction(db, coordination, visible=False) as transaction:
         if (db.execute('PRAGMA user_version').fetchone() != (1,)
                 or db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(identity)]):
             _fail('incremental_identity_changed')
         actual = _schema_rows(db)
-        if actual == without_cursor:
+        if actual not in _schema_variants():
+            _fail('incremental_schema_changed')
+        # A first v5 receipt must continue the conversion's sealed image,
+        # not legitimize a changed legacy sidecar between conversion and fill.
+        from laya_reader_windows import _component, _owner
+        endpoint, _scope = _owner(_component(coordination)[1])
+        baseline = endpoint.record.get('legacy_sidecar_baseline')
+        has_revisions = any(row[1] == 'publication_revisions' for row in actual)
+        first_receipt = not has_revisions or db.execute(
+            'SELECT value FROM publication_revisions WHERE revision=0').fetchone() is None
+        if baseline is not None and first_receipt:
+            from laya_journal_reader import _legacy_sidecar_commitment
+            if _legacy_sidecar_commitment(db, _expected_meta(identity),
+                                          _writer_transaction=True) != dict(baseline):
+                _fail('reader_sidecar_revision_unproved')
+        if not any(row[1] == 'cached_backfill' for row in actual):
             db.execute('''CREATE TABLE IF NOT EXISTS cached_backfill(
             id INTEGER PRIMARY KEY CHECK(id=1), scan_id TEXT NOT NULL,
             cursor TEXT NOT NULL)''')
-            actual = _schema_rows(db)
-        if actual != expected:
+        if not any(row[1] == 'publication_revisions' for row in actual):
+            _revision_schema(db)
+        if _schema_rows(db) != expected:
             _fail('incremental_schema_changed')
+        from laya_publication_revision import ensure_sidecar_baseline
+        ensure_sidecar_baseline(db, identity=_expected_meta(identity))
         stamp = _connection_stamp(transaction.owner, db)
     return stamp
 
@@ -366,13 +408,28 @@ class PublishedReader:
     back to the full ``publish_document`` path.
     """
 
-    def __init__(self, identity):
+    def __init__(self, identity, *, coordination=None):
         self.identity = identity
+        self.coordination = coordination
+        self._owner = None
         self._db = None
         self._refused = False
 
     def _connect(self):
         if self._db is not None or self._refused:
+            return self._db
+        if self.coordination is not None:
+            from laya_reader_windows import open_owned_read, close_owned
+            path = _private_state(self.identity['stateRoot']) / FILE
+            owner = open_owned_read(self.coordination, path=path, deadline=time.monotonic()+2)
+            try:
+                if owner.db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(self.identity)]:
+                    _fail('incremental_identity_changed')
+            except BaseException:
+                close_owned(owner, deadline=time.monotonic()+2)
+                raise
+            self._owner = owner
+            self._db = owner.db
             return self._db
         try:
             path = _private_state(self.identity['stateRoot']) / FILE
@@ -406,6 +463,9 @@ class PublishedReader:
         db = self._connect()
         if db is None:
             return False
+        if self._owner is not None:
+            from laya_reader_windows import connection_binding
+            connection_binding(self._owner, db)
         try:
             row = db.execute('SELECT hash,title,profile_id FROM docs WHERE path=?',
                              (path,)).fetchone()
@@ -415,7 +475,12 @@ class PublishedReader:
 
     def close(self):
         if self._db is not None:
-            self._db.close()
+            if self._owner is not None:
+                from laya_reader_windows import close_owned
+                close_owned(self._owner, deadline=time.monotonic()+2)
+                self._owner = None
+            else:
+                self._db.close()
             self._db = None
 
 
@@ -505,6 +570,9 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
             wanted = (source_hash, title, body, profile_id, len(chunks))
             if old is not None and old[1:] == wanted:
                 return {'status': 'already_published'}
+            if coordination is not None:
+                from laya_publication_revision import sidecar_row, record_sidecar
+                revision_before = sidecar_row(db, path)
             if old is None:
                 rowid = db.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
                                    (path, *wanted, snapshot.scan_id)).lastrowid
@@ -516,6 +584,8 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
                            (*wanted, snapshot.scan_id, rowid))
             db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
                        (rowid, path, title, body))
+            if coordination is not None:
+                record_sidecar(db, path=path, before=revision_before)
     finally:
         _close(db)
     return {'status': 'published'}
@@ -593,6 +663,9 @@ def preserve_previous_head(index, identity, base_gen, next_gen, *, coordination=
                         _verified_wiki_row({'path': path, 'body': existing[2]},
                                            decision, current_source=False))):
                     continue
+                if coordination is not None:
+                    from laya_publication_revision import sidecar_row, record_sidecar
+                    revision_before = sidecar_row(db, path)
                 if existing is None:
                     rowid = db.execute('INSERT INTO docs VALUES(?,?,?,?,?,?,?)',
                                        (path, old_hash, title, old_body,
@@ -609,6 +682,8 @@ def preserve_previous_head(index, identity, base_gen, next_gen, *, coordination=
                                 len(chunks), 'head-' + base_gen, rowid))
                 db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
                            (rowid, path, title, old_body))
+                if coordination is not None:
+                    record_sidecar(db, path=path, before=revision_before)
             pinned += 1
     finally:
         if db is not None:
@@ -681,8 +756,13 @@ def retire_missing_documents(runtime, identity, *, before_write, coordination=No
                     _recheck_sidecar(db, side_stamp, path, prepared_row)
                 if db.execute('SELECT rowid,hash,scan_id FROM docs WHERE path=?',
                               (path,)).fetchone() == (rowid, old_hash, scan_id):
+                    if coordination is not None:
+                        from laya_publication_revision import sidecar_row, record_sidecar
+                        revision_before = sidecar_row(db, path)
                     db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
                     db.execute('DELETE FROM docs WHERE rowid=?', (rowid,))
+                    if coordination is not None:
+                        record_sidecar(db, path=path, before=revision_before)
                     removed += 1
     finally:
         _close(db)

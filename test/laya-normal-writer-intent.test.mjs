@@ -17,6 +17,6 @@ test('normal first-write intent refreshes epoch with reader CAS and cursor prote
     });
     if(r.stdout)process.stdout.write(r.stdout);
     assert.ifError(r.error);assert.equal(r.status,0,r.stdout+r.stderr);
-    assert.match(r.stderr,/Ran 6 tests\b/);assert.match(r.stderr,/\nOK\b/);
+    assert.match(r.stderr,/Ran 9 tests\b/);assert.match(r.stderr,/\nOK\b/);
   } finally {removeTemp(home);}
 });

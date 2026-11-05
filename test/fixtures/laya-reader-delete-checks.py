@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import time
 import unittest
 from unittest import mock
@@ -32,6 +33,19 @@ class DeleteChecks(existing.QueueMutationChecks):
             finally:
                 if store._connection_owner.db is not None:store.close(deadline=time.monotonic()+1)
                 self.W.drain_pending(deadline=time.monotonic()+1)
+
+    def test_binding_insert_bounds_repeated_file_identity_proofs(self):
+        with self.binding() as (_C, store, binding, _kwargs):
+            original = self.W.connection_binding
+            checks = []
+            def count(owner, db):
+                checks.append(True)
+                return original(owner, db)
+            with mock.patch.object(self.W, 'connection_binding', side_effect=count):
+                self.assertEqual(store.put(binding)['status'], 'stored')
+            self.assertLessEqual(len(checks), 12,
+                'read-only SQL inside one binding transaction must not repeat full file proofs')
+            self.assertIsNotNone(store.get(binding.scope, binding.generation, binding.db_incarnation))
 
     def test_insert_and_replay_prove_real_journal_creation_deletion_and_all_locks(self):
         with self.binding() as (C,store,binding,_kwargs):
@@ -300,6 +314,8 @@ class DeleteChecks(existing.QueueMutationChecks):
 
 # Only the DELETE contracts; inherited queue checks have their own wrapper.
 if __name__=='__main__':
+    if len(sys.argv) > 1:
+        unittest.main(verbosity=2)
     names=[name for name in DeleteChecks.__dict__ if name.startswith('test_')]
     result=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(DeleteChecks(name) for name in names))
     raise SystemExit(not result.wasSuccessful())

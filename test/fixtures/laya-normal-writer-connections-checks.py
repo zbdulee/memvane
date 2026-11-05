@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Normal base/queue managed opens; capacity/sidecar/cohort remain separate."""
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 import gc
 import importlib
 import importlib.util
@@ -20,6 +20,109 @@ existing = importlib.util.module_from_spec(spec); spec.loader.exec_module(existi
 def emit(label, **values): print(json.dumps(dict(case=label, **values), sort_keys=True), flush=True)
 
 class NormalWriterConnectionChecks(unittest.TestCase):
+    def test_catalog_and_sidecar_visible_admission_accepts_brief_wait(self):
+        import laya_incremental_docs as incremental
+        import laya_initial_build as build
+        from laya_source_catalog import LayaSourceCatalog
+        roots = {self.case.WIKI: str(self.case.auto/'wiki')}
+        with self.F.warm(), self.seed.authority(), ExitStack() as stack:
+            writer, _ = self.admission(stack)
+            self.N.mark_new_write(writer)
+            catalog_component = self.component(writer, 'catalog')
+            sidecar_component = self.component(writer, 'sidecar')
+            catalog = LayaSourceCatalog(self.case.catalog, roots, writer.scope_id,
+                                        coordination=catalog_component)
+            stack.callback(catalog.close)
+            sidecar = incremental._sidecar_open(build.read(self.case.state)['identity'], sidecar_component)
+            stack.callback(incremental._close, sidecar)
+            original = self.W.publish_window
+            observed = []
+            monotonic = time.monotonic
+            elapsed = [0.0]
+            def clock():
+                return monotonic() + elapsed[0]
+            @contextmanager
+            def delayed(component, *, exclusive, deadline):
+                if exclusive and component.role in ('catalog', 'sidecar'):
+                    observed.append(component.role)
+                    elapsed[0] += .08  # Simulate admission time without scheduler oversleep.
+                with original(component, exclusive=exclusive, deadline=deadline):
+                    yield
+            with mock.patch.object(self.W, 'publish_window', side_effect=delayed), \
+                    mock.patch.object(time, 'monotonic', side_effect=clock):
+                with catalog._managed_write(visible=True):
+                    pass
+                with incremental._document_transaction(sidecar, sidecar_component, visible=True):
+                    pass
+            self.assertEqual(observed, ['catalog', 'sidecar'])
+
+    def test_publish_admission_deadline_is_retryable_and_does_not_publish(self):
+        flow=importlib.import_module('laya_index_flow')
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer,_context=self.admission(owners)
+            with self.runtime(writer) as runtime:
+                self.N.mark_new_write(writer)
+                index=runtime.index
+                old=index.db.execute('SELECT gen FROM head WHERE scope=?',(writer.scope_id,)).fetchone()[0]
+                self.assertEqual(index.stage('deadline-new',writer.scope_id,
+                    [('wiki/deadline.md','synthetic deadline',True)]),'prepared')
+                original=self.W.publish_window
+                @contextmanager
+                def slow(*args,**kwargs):
+                    with original(*args,**kwargs):
+                        time.sleep(.25)
+                        yield
+                with mock.patch.object(self.W,'publish_window',side_effect=slow):
+                    with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_write_deadline'):
+                        index.publish(old,'deadline-new','deadline-claim')
+                self.assertEqual(index.db.execute('SELECT gen FROM head WHERE scope=?',(writer.scope_id,)).fetchone()[0],old)
+                self.assertFalse(index.db.in_transaction)
+                db=index.db;db_type=type(db);execute=db_type.execute
+                original_rollback=db_type.rollback;visible=[False]
+                @contextmanager
+                def visible_window(*args,**kwargs):
+                    with original(*args,**kwargs):
+                        visible[0]=True
+                        try:yield
+                        finally:visible[0]=False
+                def execute_after_begin(connection,sql,*args,**kwargs):
+                    result=execute(connection,sql,*args,**kwargs)
+                    if connection is db and visible[0] and sql=='BEGIN IMMEDIATE':time.sleep(.25)
+                    return result
+                def failed_rollback(connection):
+                    if connection is db:raise sqlite3.OperationalError('synthetic rollback failure')
+                    return original_rollback(connection)
+                try:
+                    with mock.patch.object(self.W,'publish_window',side_effect=visible_window), \
+                         mock.patch.object(db_type,'execute',new=execute_after_begin), \
+                         mock.patch.object(db_type,'rollback',new=failed_rollback):
+                        with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_write_deadline') as raised:
+                            index.publish(old,'deadline-new','deadline-claim')
+                    self.assertTrue(getattr(raised.exception,'rollback_pending',False))
+                    self.assertTrue(db.in_transaction)
+                    self.assertTrue(index._connection_owner.pending)
+                finally:
+                    self.W.drain_pending(deadline=time.monotonic()+2)
+        class Queue:
+            released=False
+            def lease(self,claim,recover=False):return {'lease_token':'held'}
+            def release_for_retry(self,job,token):self.released=token=='held';return self.released
+        queue=Queue()
+        def busy(_job,_token):raise self.W.ReaderWindowBusy('reader_write_deadline')
+        self.assertEqual(flow._process_leased(queue,'claim',False,busy),'deferred')
+        self.assertTrue(queue.released)
+        def changed(_job,_token):raise self.W.ReaderWindowBusy('reader_publish_changed')
+        queue.released=False
+        with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_publish_changed'):
+            flow._process_leased(queue,'claim',False,changed)
+        self.assertTrue(queue.released)
+        def pending(_job,_token):
+            error=self.W.ReaderWindowBusy('reader_write_deadline')
+            error.rollback_pending=True
+            raise error
+        with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_write_deadline'):
+            flow._process_leased(queue,'claim',False,pending)
+
     def setUp(self):
         self.fixture = existing.WriterScopeChecks('runTest')
         self.addCleanup(self.fixture.doCleanups); self.fixture.setUp()
@@ -46,6 +149,58 @@ class NormalWriterConnectionChecks(unittest.TestCase):
             scope=self.case.route['scopeId'], db_path=str(self.case.db), queue_path=str(self.queue),
             db_incarnation=self.case.route['dbIncarnation'], wiki_only=True, connection_windows=windows)
 
+    def test_unmarked_normal_writer_cannot_publish_exclusion(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer,_context=self.admission(owners)
+            with self.runtime(writer) as runtime:
+                sql=[];runtime.index.db.set_trace_callback(sql.append)
+                try:
+                    with self.assertRaisesRegex(ValueError,'normal_writer_intent_required'):
+                        runtime.index.exclude(writer.scope_id,path='unmarked-exclusion.md')
+                finally:runtime.index.db.set_trace_callback(None)
+                self.assertFalse(any(statement.strip().upper().startswith('BEGIN') for statement in sql))
+                self.assertEqual(runtime.index.db.execute('SELECT count(*) FROM exclusions WHERE scope=? AND value=?',
+                    (writer.scope_id,'unmarked-exclusion.md')).fetchone(),(0,))
+
+    def test_direct_normal_head_publication_seals_prior_baseline(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer,_context=self.admission(owners)
+            with self.runtime(writer) as runtime:
+                self.N.mark_new_write(writer)
+                index=runtime.index
+                old=index.db.execute('SELECT gen FROM head WHERE scope=?',(writer.scope_id,)).fetchone()[0]
+                self.assertEqual(index.stage('direct-baseline-new',writer.scope_id,
+                    [('wiki/direct-baseline.md','synthetic direct publication',True)]),'prepared')
+                self.assertEqual(index.publish(old,'direct-baseline-new','direct-baseline-claim'),'published')
+                rows=index.db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+                self.assertEqual(len(rows),2)
+                self.assertEqual(json.loads(rows[0][1])['head'],old)
+                self.assertEqual(json.loads(rows[1][1])['after'],'direct-baseline-new')
+                self.assertEqual(index.publish(old,'direct-baseline-new','direct-baseline-claim'),'replayed')
+                self.assertEqual(index.db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall(),rows)
+
+    def test_direct_exclusion_refuses_corrupt_head_fts_before_baseline(self):
+        from laya_index_a import _gen_fts
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer,_context=self.admission(owners)
+            with self.runtime(writer) as runtime:
+                self.N.mark_new_write(writer)
+                index=runtime.index;db=index.db
+                head,ordinal=db.execute('SELECT h.gen,i.ord FROM head h JOIN gen_index i ON i.gen=h.gen '
+                                        'WHERE h.scope=?',(writer.scope_id,)).fetchone()
+                table=_gen_fts(ordinal)
+                self.assertTrue(index._generation_fts_matches(head))
+                with index._write_transaction(visible=False):
+                    count=db.execute(f'SELECT count(*) FROM {table}_data WHERE id>10').fetchone()[0]
+                    self.assertGreater(count,0)
+                    db.execute(f'DELETE FROM {table}_data WHERE id>10')
+                self.assertTrue(index._generation_fts_matches(head),'FTS content rows must remain intact')
+                with self.assertRaisesRegex(ValueError,'invalid_base_baseline'):
+                    index.exclude(writer.scope_id,path='not-published.md')
+                self.assertIsNone(db.execute("SELECT value FROM schema_meta WHERE key='reader-revision:base:00000000000000000000'").fetchone())
+                self.assertEqual(db.execute('SELECT count(*) FROM exclusions WHERE scope=? AND value=?',
+                                            (writer.scope_id,'not-published.md')).fetchone(),(0,))
+
     def test_actual_base_queue_runtime_writes_and_pins_outlive_lexical_scope(self):
         with self.F.warm(), self.seed.authority(), ExitStack() as owners:
             writer, context = self.admission(owners); calls = []; runtime = None
@@ -53,7 +208,12 @@ class NormalWriterConnectionChecks(unittest.TestCase):
                 with self.fixture.fixture.trace(calls): runtime = self.runtime(writer)
                 self.assertEqual(len(calls), 4)
                 self.assertTrue(all(c['managed'] for c in calls))
+                head=runtime.index.db.execute('SELECT gen FROM head WHERE scope=?',(writer.scope_id,)).fetchone()[0]
+                self.N.mark_new_write(writer)
                 self.assertEqual(runtime.index.exclude(writer.scope_id,path='normal-writer-exclude.md'),'excluded')
+                baseline=runtime.index.db.execute("SELECT value FROM schema_meta WHERE key='reader-revision:base:00000000000000000000'").fetchone()
+                self.assertIsNotNone(baseline,'direct exclusion must not precede its base baseline')
+                self.assertEqual(json.loads(baseline[0])['head'],head)
                 owners.close(); gc.collect()
                 with self.assertRaises(ValueError): self.N.validate_normal_writer(writer)
                 with self.sync.sync_owner(self.queue) as busy: self.assertIsNone(busy)
@@ -63,6 +223,169 @@ class NormalWriterConnectionChecks(unittest.TestCase):
                      pinOutlivesLexical=True, successorAfterNativeClose=True)
             finally:
                 if runtime is not None: runtime.close()
+
+    def test_actual_capacity_runtime_uses_managed_catalog_and_binding(self):
+        from laya_index_runtime import LayaIndexRuntime
+        from laya_source_catalog import LayaSourceCatalog
+        roots = {self.case.WIKI: str(self.case.auto/'wiki')}
+        with self.F.warm(), self.seed.authority(), \
+                LayaSourceCatalog(self.case.catalog, roots, self.case.route['scopeId']), \
+                ExitStack() as owners:
+            writer, _context = self.admission(owners)
+            calls = []
+            with self.fixture.fixture.trace(calls):
+                windows = {role: self.component(writer, role)
+                           for role in ('base', 'queue', 'catalog', 'binding')}
+                with LayaIndexRuntime(source_root=roots, scope=writer.scope_id,
+                                      db_path=str(self.case.db), queue_path=str(self.queue),
+                                      db_incarnation=writer.incarnation, wiki_only=True,
+                                      catalog_path=str(self.case.catalog),
+                                      binding_store_path=str(self.case.store),
+                                      connection_windows=windows):
+                    pass
+            self.assertEqual(len(calls), 8)
+            self.assertTrue(all(call['managed'] for call in calls), calls)
+
+    def test_catalog_scope_tamper_is_rejected_before_rw_even_with_noop_callback(self):
+        from laya_source_catalog import LayaSourceCatalog
+        roots = {self.case.WIKI: str(self.case.auto/'wiki')}
+        with self.F.warm(), self.seed.authority(), \
+                LayaSourceCatalog(self.case.catalog, roots, self.case.route['scopeId']) as catalog, \
+                ExitStack() as owners:
+            writer, _context = self.admission(owners)
+            component = self.component(writer, 'catalog')
+            catalog.db.execute("UPDATE meta SET value=? WHERE key='scope'", ('foreign',))
+            calls = []
+            with self.fixture.fixture.trace(calls), self.assertRaises((ValueError, RuntimeError)):
+                self.W.open_owned(component, path=self.case.catalog, validate=lambda _db: None,
+                                  initialize=lambda _db: None, deadline=time.monotonic()+2)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0]['managed'] and calls[0]['uri'].endswith('?mode=ro'))
+
+    def test_delete_catalog_with_stale_wal_names_refuses_before_rw(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            with sqlite3.connect(self.case.catalog) as db:
+                self.assertEqual(db.execute('PRAGMA journal_mode=DELETE').fetchone(), ('delete',))
+            aux = [Path(str(self.case.catalog) + suffix) for suffix in ('-wal', '-shm')]
+            for path in aux:
+                path.write_bytes(b'')
+                path.chmod(0o600)
+            header = self.case.catalog.read_bytes()[:100]
+            try:
+                writer, _context = self.admission(owners)
+                component = self.component(writer, 'catalog')
+                calls = []
+                with self.fixture.fixture.trace(calls), self.assertRaises((ValueError, RuntimeError)):
+                    self.W.open_owned(component, path=self.case.catalog, validate=lambda _db: None,
+                                      initialize=lambda _db: None, deadline=time.monotonic()+2)
+                self.assertEqual(len(calls), 1)
+                self.assertTrue(calls[0]['managed'] and calls[0]['uri'].endswith('?mode=ro'))
+                self.assertEqual(self.case.catalog.read_bytes()[:100], header)
+            finally:
+                for path in aux:
+                    path.unlink(missing_ok=True)
+
+    def test_binding_store_id_change_is_rejected_before_rw_on_reopen(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer, _context = self.admission(owners)
+            component = self.component(writer, 'binding')
+            first = self.W.open_owned(component, path=self.case.store, validate=lambda _db: None,
+                                      initialize=lambda _db: None, deadline=time.monotonic()+2)
+            self.W.close_owned(first, deadline=time.monotonic()+2)
+            with sqlite3.connect(self.case.store) as db:
+                ddl = db.execute("SELECT sql FROM sqlite_master WHERE name='meta_update_seal'").fetchone()[0]
+                db.execute('DROP TRIGGER meta_update_seal')
+                db.execute("UPDATE meta SET value=? WHERE key='store_id'", ('e'*32,))
+                db.execute(ddl)
+                db.commit()
+            calls = []
+            with self.fixture.fixture.trace(calls), self.assertRaises((ValueError, RuntimeError)):
+                self.W.open_owned(component, path=self.case.store, validate=lambda _db: None,
+                                  initialize=lambda _db: None, deadline=time.monotonic()+2)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0]['managed'] and calls[0]['uri'].endswith('?mode=ro'))
+
+    def test_binding_identity_change_between_ro_close_and_rw_is_refused(self):
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            writer, _context = self.admission(owners)
+            component = self.component(writer, 'binding')
+            native = self.W._OwnedSQLite._native_close_locked
+            changed = []
+            def close(db):
+                result = native(db)
+                if not changed:
+                    with sqlite3.connect(self.case.store) as update:
+                        ddl = update.execute("SELECT sql FROM sqlite_master WHERE name='meta_update_seal'").fetchone()[0]
+                        update.execute('DROP TRIGGER meta_update_seal')
+                        update.execute("UPDATE meta SET value=? WHERE key='store_id'", ('d'*32,))
+                        update.execute(ddl)
+                        update.commit()
+                    changed.append(True)
+                return result
+            calls = []
+            with self.fixture.fixture.trace(calls), \
+                    mock.patch.object(self.W._OwnedSQLite, '_native_close_locked', new=close), \
+                    self.assertRaises((ValueError, RuntimeError)):
+                self.W.open_owned(component, path=self.case.store, validate=lambda _db: None,
+                                  initialize=lambda _db: None, deadline=time.monotonic()+2)
+            managed = [call for call in calls if call['managed']]
+            self.assertEqual(changed, [True])
+            self.assertEqual(len(managed), 1)
+            self.assertTrue(managed[0]['uri'].endswith('?mode=ro'))
+
+    def test_published_sidecar_reader_uses_owned_readonly_without_new_files(self):
+        from laya_incremental_docs import PublishedReader
+        sidecar = self.seed.sidecar
+        with self.F.warm(), self.seed.authority(), \
+                closing(sqlite3.connect(sidecar, isolation_level=None)) as warm, ExitStack() as owners:
+            self.assertEqual(warm.execute('PRAGMA journal_mode=WAL').fetchone(), ('wal',))
+            row = warm.execute('SELECT path,hash,title,profile_id FROM docs LIMIT 1').fetchone()
+            self.assertIsNotNone(row)
+            writer, _context = self.admission(owners)
+            component = self.component(writer, 'sidecar')
+            decision = self.J.select_route(str(self.case.project), action='update')
+            identity = {'stateRoot': str(self.case.state), 'projectRoot': str(self.case.project),
+                        'installId': decision['installId'], 'scopeId': decision['scopeId'],
+                        'dbIncarnation': decision['dbIncarnation'],
+                        'vectorProfileId': decision['vectorProfile']['profileId'],
+                        'candidateDb': decision['dbPath']}
+            files = existing.existing.existing.files
+            before = files(sidecar)
+            calls = []
+            with self.fixture.fixture.trace(calls):
+                reader = PublishedReader(identity, coordination=component)
+                try:
+                    self.assertTrue(reader.published(*row))
+                finally:
+                    reader.close()
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0]['managed'] and calls[0]['uri'].endswith('?mode=ro'))
+            self.assertEqual(files(sidecar), before)
+            mismatched = PublishedReader(dict(identity, scopeId='f'*32), coordination=component)
+            with self.assertRaisesRegex(ValueError, 'incremental_identity_changed'):
+                mismatched.published(*row)
+            mismatched.close()
+            self.assertEqual(self.W.local_pending_count(), 0)
+
+    def test_published_sidecar_reader_can_open_cold_without_creating_database(self):
+        from laya_incremental_docs import PublishedReader
+        sidecar=self.seed.sidecar
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
+            with closing(sqlite3.connect(sidecar,isolation_level=None)) as db:
+                row=db.execute('SELECT path,hash,title,profile_id FROM docs LIMIT 1').fetchone()
+            self.assertIsNotNone(row)
+            self.assertFalse(any(Path(str(sidecar)+suffix).exists() for suffix in ('-wal','-shm')))
+            before=sidecar.read_bytes()
+            writer,_context=self.admission(owners)
+            component=self.component(writer,'sidecar')
+            decision=self.J.select_route(str(self.case.project),action='update')
+            identity={'stateRoot':str(self.case.state),'projectRoot':str(self.case.project),
+                'installId':decision['installId'],'scopeId':decision['scopeId'],
+                'dbIncarnation':decision['dbIncarnation'],'vectorProfileId':decision['vectorProfile']['profileId'],
+                'candidateDb':decision['dbPath']}
+            with closing(PublishedReader(identity,coordination=component)) as reader:
+                self.assertTrue(reader.published(*row))
+            self.assertEqual(sidecar.read_bytes(),before)
 
     def test_same_inode_valid_foreign_queue_binding_is_rejected_before_rw_connect(self):
         with self.F.warm(), self.seed.authority(), ExitStack() as owners:
@@ -104,7 +427,7 @@ class NormalWriterConnectionChecks(unittest.TestCase):
             self.assertTrue(calls[0]['uri'].endswith('?mode=ro'))
             emit('normal-expired-between-ro-rw', contentConnects=calls,error=error)
 
-    def test_auxiliary_loss_after_admission_refuses_before_any_content_connect(self):
+    def test_cold_after_admission_allows_managed_sqlite_open(self):
         with self.seed.authority(), ExitStack() as owners:
             warm = self.F.warm(); warm.__enter__()
             try:
@@ -116,10 +439,12 @@ class NormalWriterConnectionChecks(unittest.TestCase):
             from laya_index_a import LayaIndexA
             files = existing.existing.existing.files
             before = files(self.case.db); calls = []
-            with self.fixture.fixture.trace(calls), self.assertRaises((ValueError,RuntimeError)):
-                LayaIndexA(self.case.db,coordination=component)
-            self.assertEqual(calls,[]); self.assertEqual(files(self.case.db),before)
-            emit('normal-post-admission-cold-refusal', contentConnects=calls,newAux=0)
+            with self.fixture.fixture.trace(calls), closing(LayaIndexA(self.case.db,coordination=component)) as index:
+                self.assertEqual(index.incarnation(),writer.incarnation)
+            self.assertEqual(len(calls),2);self.assertTrue(all(call['managed'] for call in calls))
+            self.assertEqual(files(self.case.db)[''],before[''])
+            self.assertEqual(files(self.case.db)['-journal'],before['-journal'])
+            emit('normal-post-admission-cold-open', contentConnects=calls)
 
     def test_first_rw_pragma_and_native_close_failure_keep_pin_until_creator_drain(self):
         with self.F.warm(), self.seed.authority(), ExitStack() as owners:

@@ -234,6 +234,32 @@ class WorkerBase(Base):
 
 
 class WorkerChecks(WorkerBase):
+    def test_bridge_preflight_failure_has_bounded_stage_and_host(self):
+        error = ValueError('reader_hosts_pending')
+        error.bridge_stage, error.bridge_host = 'observe_host', 'codex'
+        def fail(**_kwargs):
+            raise error
+        results, _, _, _ = self.run_worker('active', active=fail)
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('deferred', 'reader_hosts_pending'))
+        import event_log
+        events = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertEqual((events[-1]['stage'], events[-1]['bridgeHost']), ('observe_host', 'codex'))
+        self.assertEqual(events[0]['operation'], events[-1]['operation'])
+        error.bridge_stage, error.bridge_host = 'PRIVATE_SOURCE', 'FAKE_CREDENTIAL'
+        self.run_worker('active', active=fail)
+        events = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertNotIn('stage', events[-1])
+        self.assertNotIn('bridgeHost', events[-1])
+        error = OSError('FAKE_CREDENTIAL')
+        error.bridge_stage, error.bridge_host = 'observe_host', 'codex'
+        results, _, _, _ = self.run_worker('active', active=fail)
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('failed', 'bridge_preflight_error'))
+        events = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertEqual((events[-1]['stage'], events[-1]['bridgeHost']), ('observe_host', 'codex'))
+        self.assertNotIn('FAKE_CREDENTIAL', json.dumps(events))
+
     def test_equivalent_provider_upgrades_selected_route_and_wakes_sync(self):
         results, calls, _rescan, wake = self.run_worker('active')
         self.assertEqual(results[0]['status'], 'active_upgrade_complete')
@@ -330,8 +356,10 @@ class SameRootReadoptChecks(WorkerBase):
         self.assertIn('active', calls)
 
     def test_unchanged_same_root_stays_current(self):
-        results, calls, wake = self.run_same_root(
-            lambda _root: self.live(ownershipManifestSha256='7' * 64))
+        # This fixture has a synthetic journal; the steady v5 case is current.
+        with mock.patch('laya_install_journal.journal_version', return_value=5):
+            results, calls, wake = self.run_same_root(
+                lambda _root: self.live(ownershipManifestSha256='7' * 64))
         self.assertEqual(results[0]['status'], 'current')
         self.assertEqual(calls, {})
         wake.assert_not_called()
@@ -437,6 +465,13 @@ class BusyLaneChecks(WorkerBase):
         self.assertEqual(results[0]['status'], 'active_upgrade_complete')
         self.assertEqual(slept, list(auto.BUSY_BACKOFF_SECONDS[:2]))
         self.assertEqual(auto.read_status(self.state)['status'], 'complete')
+
+    def test_bridge_preflight_pending_defers_without_worker_backoff(self):
+        results, slept = self.run_busy([ValueError('reader_hosts_pending')])
+        self.assertEqual(results[0], {'stateRoot':str(self.state), 'status':'deferred',
+                                      'reason':'reader_hosts_pending'})
+        self.assertEqual(slept, [])
+        self.assertEqual(auto.read_status(self.state)['status'], 'deferred')
 
     def test_still_busy_lane_defers_without_spending_an_attempt(self):
         from resource_deferred import ResourceDeferred
@@ -549,6 +584,15 @@ class CrossHostWorkerChecks(Base):
         self.assertEqual(events[1]['reason'], 'older_host_bundle')
         self.assertEqual(events[1]['to'], root.name)
         self.assertEqual(events[1]['host'], 'worker')
+        self.assertRegex(events[0]['operation'], r'^[0-9a-f]{32}$')
+        self.assertEqual(events[0]['operation'], events[1]['operation'])
+        self.assertEqual(events[0]['attempt'], events[1]['attempt'])
+        self.run_from(root, bound, self.newer)
+        again = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertEqual(len(again), 4)
+        self.assertEqual(again[2]['operation'], again[3]['operation'])
+        self.assertNotEqual(again[0]['operation'], again[2]['operation'])
+        self.assertEqual(again[2]['attempt'], again[3]['attempt'])
         self.assertFalse((self.state / 'bundle-auto-upgrade.log').exists())
 
 

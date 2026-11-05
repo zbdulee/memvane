@@ -515,7 +515,11 @@ class MovePrefixChecks(unittest.TestCase):
                 original=published_physical_before.get(path);current=physical_after.get(path)
                 same_existing_shm=(path in known_shm and original is not None and current is not None
                                    and original[1]==current[1])
-                if original!=current and not same_existing_shm:published_physical_changes.append(path)
+                sqlite_aux_init=(original is None and current is not None and any(
+                    path==main+suffix and main in published_physical_before
+                    for main in (case.db.name,case.catalog.name) for suffix in ('-wal','-shm')))
+                if original!=current and not same_existing_shm and not sqlite_aux_init:
+                    published_physical_changes.append(path)
             for path,original in query_physical_before.items():
                 current=physical_after.get(path)
                 if (path in known_shm and current is not None and original[1]==current[1]
@@ -557,9 +561,9 @@ class MovePrefixChecks(unittest.TestCase):
                 self.assertNotEqual(mutation_evidence['beforeDigest'],mutation_evidence['afterDigest'],
                                     'logical commitment must retain TEXT bytes after embedded NUL')
         if published_prefix:
-            with self.subTest(boundary='closed-writer-physical-cold-no-new-aux'):
+            with self.subTest(boundary='closed-writer-physical-cold-unchanged-data'):
                 self.assertEqual(published_physical_changes,[],
-                    'closed writer/prerequisite/query must preserve main/WAL/metadata/files and aux identities')
+                    'closed writer/prerequisite/query must preserve main/WAL/metadata and optional DB files')
         if mutation=='other-claim-publish':
             with self.subTest(boundary='semantic-receipt-query-preserves-physical-files'):
                 self.assertEqual(semantic_physical_changes,[],

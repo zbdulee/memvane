@@ -126,6 +126,7 @@ class ContentFiller:
 
     @contextmanager
     def claim_content(self, blob_sha, recipe_id, profile_id):
+        self._store._require_write()
         key, store = _key(blob_sha, recipe_id, profile_id), self._store
         with self._read():
             path, identity, incarnation = store._path, store._identity, store._incarnation
@@ -182,6 +183,7 @@ class ContentFiller:
 
     def ensure_content(self, blob_sha, recipe_id, profile_id, *, chunker, embedder, write_fence,
                        deadline_seconds=30):
+        self._store._require_write()
         deadline = _deadline(deadline_seconds)
         if not all(callable(fn) for fn in (chunker, embedder, write_fence)):
             v.fail('content_callback_invalid')

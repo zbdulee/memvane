@@ -90,7 +90,7 @@ case "$_laya_route_state" in
     fi
     exit 0
     ;;
-  candidate|preview|worktree)
+  candidate|preview|worktree|reader)
     # worktree (linked git worktree of a selected main checkout) serves a
     # published generation read-only.
     # Replace this shell with the synchronous writer/query process. A host

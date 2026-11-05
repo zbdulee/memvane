@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 sys.dont_write_bytecode = True
@@ -66,6 +67,19 @@ def _short(row):
         parts.append(f"reason={row['reason']}")
     if row.get('ms') is not None:
         parts.append(f"{row['ms']}ms")
+    if row.get('event') == 'bundle.upgrade':
+        operation = row.get('operation')
+        if isinstance(operation, str) and re.fullmatch(r'[0-9a-f]{32}', operation):
+            parts.append(f'operation={operation}')
+        attempt = row.get('attempt')
+        if type(attempt) is int and 0 < attempt <= 1000000000:
+            parts.append(f'attempt={attempt}')
+        stage = row.get('stage')
+        if stage in ('reuse', 'host_support', 'challenge', 'observe_host', 'validate_receipts'):
+            parts.append(f'stage={stage}')
+        bridge_host = row.get('bridgeHost')
+        if bridge_host in ('claude', 'codex'):
+            parts.append(f'bridgeHost={bridge_host}')
     return ' '.join(str(part) for part in parts)
 
 

@@ -254,23 +254,22 @@ class WriterProofReaderChecks(unittest.TestCase):
                 except (ValueError,RuntimeError,sqlite3.Error):pass
                 module.drain_proof_readers(deadline=time.monotonic()+2)
 
-    def test_cold_no_aux_base_rejects_before_first_sqlite_connect_without_file_changes(self):
-        # Observe the ordinary last-close boundary, then make the proof reader
-        # the first content opener. This is a refusal test, not cold success.
+    def test_cold_no_aux_base_opens_query_only_without_main_db_changes(self):
         with self.warm():pass
         self.assertFalse(Path(str(self.case.db)+'-wal').exists(),'cold base WAL prerequisite')
         self.assertFalse(Path(str(self.case.db)+'-shm').exists(),'cold base SHM prerequisite')
         stack,window=self.scope()
         try:
-            module=self.api();before=files(self.case.db);error=None
+            module=self.api();before=files(self.case.db)
             with self.fixture.fixture.traced() as calls:
-                try:
-                    with module.proof_reader(window,'base'):self.fail('cold reader unexpectedly returned')
-                except (ValueError,RuntimeError,OSError) as exc:error=str(exc)
-            emit('cold-proof-reader-rejected',reason=error,contentConnects=calls,filesUnchanged=files(self.case.db)==before)
-            self.assertIsNotNone(error);self.assertIn('cold',error.lower())
-            self.assertEqual(calls,[])
-            self.assertTrue(files(self.case.db)==before,'cold refusal must not change main/aux names or nodes')
+                with module.proof_reader(window,'base') as db:
+                    self.assertEqual(db.execute('PRAGMA query_only').fetchone(),(1,))
+                    self.assertIsNotNone(db.execute('SELECT gen FROM head LIMIT 1').fetchone())
+            after=files(self.case.db)
+            emit('cold-proof-reader',contentConnects=calls,mainUnchanged=after['']==before[''])
+            self.assertEqual(len(calls),1)
+            self.assertEqual(after[''],before[''])
+            self.assertEqual(after['-journal'],before['-journal'])
         finally:stack.close()
 
 if __name__=='__main__':unittest.main()

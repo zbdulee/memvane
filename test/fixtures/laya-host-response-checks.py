@@ -1616,6 +1616,16 @@ class ResponseChecks(unittest.TestCase):
                      'vector_deadline_exceeded'),
                     (IndexContractError('vector_budget_exceeded'),
                      'vector_budget_exceeded'),
+                    (IndexContractError('reader_snapshot_deadline'),
+                     'reader_snapshot_deadline'),
+                    (IndexContractError('reader_snapshot_unpinned'),
+                     'reader_snapshot_unpinned'),
+                    (IndexContractError('reader_selection_unproved'),
+                     'reader_selection_unproved'),
+                    (IndexContractError('reader_sidecar_revision_unproved'),
+                     'reader_sidecar_revision_unproved'),
+                    (IndexContractError('reader_secret_prompt=synthetic-secret'),
+                     'selected_proof_or_query_failed'),
                     (IndexContractError('index_stale'), 'selected_proof_or_query_failed')):
                 with self.subTest(code=code):
                     out, err = io.StringIO(), io.StringIO()
@@ -1629,6 +1639,17 @@ class ResponseChecks(unittest.TestCase):
                     self.assertEqual(out.getvalue(), '')
                     self.assertEqual(err.getvalue(),
                                      f'[memvane] {code}; request refused\n')
+            for error, reason in ((IndexContractError('reader_sidecar_revision_unproved'),
+                                   'reader_sidecar_revision_unproved'),
+                                  (IndexContractError('reader_secret_prompt=synthetic-secret'),
+                                   'selected_proof_or_query_failed')):
+                with patch.object(response.event_log,'emit') as emit:
+                    with self.assertRaises(IndexContractError):
+                        with response._event_scope('recall','claude',selection,
+                                                   {'prompt':'synthetic-secret'}):
+                            raise error
+                    self.assertEqual(emit.call_args.kwargs['reason'],reason)
+                    self.assertNotIn('synthetic-secret',json.dumps(emit.call_args.kwargs))
 
 
 class BundleDriftChecks(unittest.TestCase):
@@ -1652,7 +1673,12 @@ class BundleDriftChecks(unittest.TestCase):
 
     def drifted(self, stack, code='executing_code_outside_bundle'):
         import laya_install_journal
+        import laya_journal_reader
         import runtime_work
+        from contextlib import nullcontext
+        stack.enter_context(patch.object(laya_journal_reader, '_journal', side_effect=lambda path:path))
+        stack.enter_context(patch.object(laya_journal_reader, '_readonly', return_value=nullcontext(object())))
+        stack.enter_context(patch.object(laya_install_journal, '_schema_version_read', return_value=4))
         full = stack.enter_context(patch.object(
             laya_install_journal, 'verify_selected_route',
             side_effect=laya_install_journal.JournalEvidenceError(code)))
@@ -2034,8 +2060,13 @@ class ProofRetryChecks(unittest.TestCase):
             raise laya_install_journal.JournalEvidenceError('executing_bundle_not_selected')
         read_only = {**self.proof(4, bundleManifestSha256='e' * 64),
                      'productRouteAllowed': False, 'readOnlyAllowed': True}
-        result, calls, selected, ro = self.recall(
-            verify=verify, read_only=lambda _d: dict(read_only))
+        import laya_journal_reader
+        from contextlib import nullcontext
+        with patch.object(laya_journal_reader, '_journal', side_effect=lambda path:path), \
+             patch.object(laya_journal_reader, '_readonly', return_value=nullcontext(object())), \
+             patch.object(laya_install_journal, '_schema_version_read', return_value=4):
+            result, calls, selected, ro = self.recall(
+                verify=verify, read_only=lambda _d: dict(read_only))
         self.served(result)
         self.assertEqual(len(calls['query']), 2)
         self.assertGreaterEqual(ro.call_count, 2)

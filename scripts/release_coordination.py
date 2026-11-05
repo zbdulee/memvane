@@ -44,6 +44,47 @@ def collect_registered_bridge_preflight(state, *, release_commit, expected_hosts
     return check_bridge_preflight(refs, release_commit=release_commit, expected_hosts=expected_hosts)
 
 
+def collect_registered_loaded_bridge(state, *, release_commit, expected_hosts,
+                                     sentinel_path, sentinel_sha256):
+    """Collect host-observed v5 reader results for a synthetic QA sentinel."""
+    from laya_bridge_readiness import (begin_loaded_bridge, collect_bridge_preflight,
+                                       check_loaded_bridge)
+    challenge=begin_loaded_bridge(state,release_commit=release_commit,expected_hosts=expected_hosts,
+                                  sentinel_path=sentinel_path,sentinel_sha256=sentinel_sha256)
+    refs=[collect_bridge_preflight(challenge,host=host) for host in sorted(expected_hosts)]
+    return check_loaded_bridge(refs,release_commit=release_commit,expected_hosts=expected_hosts)
+
+
+def _bridge_preflight(state, commit):
+    """Collect v4 registered-host receipts for a later, separately proved conversion."""
+    core = str(Path(__file__).resolve().parent.parent / 'core')
+    if core not in sys.path:
+        sys.path.insert(0, core)
+    try:
+        collect_registered_bridge_preflight(Path(state), release_commit=commit,
+                                            expected_hosts=frozenset(('claude', 'codex')))
+    except Exception:
+        print('[memvane] reader_hosts_pending', file=sys.stderr)
+        return 3
+    print(json.dumps({'status': 'bridge_preflight_collected'}, separators=(',', ':')))
+    return 0
+
+
+def _loaded_bridge(state, commit, sentinel_path, sentinel_sha256):
+    core = str(Path(__file__).resolve().parent.parent / 'core')
+    if core not in sys.path:
+        sys.path.insert(0,core)
+    try:
+        result=collect_registered_loaded_bridge(Path(state),release_commit=commit,
+            expected_hosts=frozenset(('claude','codex')),sentinel_path=sentinel_path,
+            sentinel_sha256=sentinel_sha256)
+    except Exception:
+        print('[memvane] reader_hosts_pending',file=sys.stderr)
+        return 3
+    print(json.dumps(result,ensure_ascii=True,allow_nan=False,separators=(',',':')))
+    return 0
+
+
 def _completed_rows(results):
     """Every reported phase must be a known terminal outcome, not just a row."""
     if not isinstance(results, list) or not results or len(results) > MAX_STATES * 2:
@@ -435,6 +476,10 @@ def _worker(root, project):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4 or sys.argv[1] != '--worker':
-        raise SystemExit(2)
-    raise SystemExit(_worker(*sys.argv[2:]))
+    if len(sys.argv) == 4 and sys.argv[1] == '--worker':
+        raise SystemExit(_worker(*sys.argv[2:]))
+    if len(sys.argv) == 4 and sys.argv[1] == '--bridge-preflight':
+        raise SystemExit(_bridge_preflight(*sys.argv[2:]))
+    if len(sys.argv) == 6 and sys.argv[1] == '--loaded-bridge':
+        raise SystemExit(_loaded_bridge(*sys.argv[2:]))
+    raise SystemExit(2)

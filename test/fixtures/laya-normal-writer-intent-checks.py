@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -30,6 +31,68 @@ class NormalWriterIntentChecks(unittest.TestCase):
             emit('normal-intent-feature-absence',actualNormalRuntime=True)
             self.fail('normal first-write epoch refresh absent after real managed runtime baseline')
         return function
+
+    def test_worker_mark_validation_timeout_refuses_before_cas(self):
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            clock = [time.monotonic()]
+            validate = self.P.validate_writer_plan
+            def slow(plan):
+                result = validate(plan)
+                clock[0] += 3
+                return result
+            with mock.patch.object(self.N, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                    mock.patch.object(self.P, 'validate_writer_plan', side_effect=slow), \
+                    mock.patch.object(self.N.R, 'mutate_image', side_effect=AssertionError('cas reached')) as cas:
+                with self.assertRaisesRegex(ValueError, 'normal_writer_deadline'):
+                    self.N.mark_new_write(writer)
+                cas.assert_not_called()
+            self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], before['epoch'])
+
+    def test_worker_marked_repeat_validation_timeout_does_not_return_proof(self):
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            first = self.N.mark_new_write(writer)
+            clock = [time.monotonic()]
+            validate = self.P.validate_writer_plan
+            def slow(plan):
+                result = validate(plan)
+                clock[0] += 3
+                return result
+            with mock.patch.object(self.N, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                    mock.patch.object(self.P, 'validate_writer_plan', side_effect=slow), \
+                    mock.patch.object(self.N.R, 'mutate_image') as cas:
+                with self.assertRaisesRegex(ValueError, 'normal_writer_deadline'):
+                    self.N.mark_new_write(writer)
+                cas.assert_not_called()
+            self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], first['selectionEpoch'])
+
+    def test_worker_mark_timeout_after_replace_revokes_writer(self):
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            clock = [time.monotonic()]
+            mutate = self.N.R.mutate_image
+            def slow(*args, **kwargs):
+                result = mutate(*args, **kwargs)
+                clock[0] += 3
+                return result
+            with mock.patch.object(self.N, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                    mock.patch.object(self.N.R, 'mutate_image', side_effect=slow):
+                with self.assertRaisesRegex(ValueError, 'normal_writer_deadline'):
+                    self.N.mark_new_write(writer)
+            after = self.J.inspect_journal(self.case.journal)
+            self.assertEqual(after['epoch'], before['epoch'] + 1)
+            self.assertTrue(after['newWriteSeen'])
+            with self.assertRaises(ValueError):
+                self.N.validate_normal_writer(writer)
 
     @contextmanager
     def warm_clean(self):

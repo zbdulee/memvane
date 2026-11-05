@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
-test('proof readers retain native owners and reject unproved cold opens', () => {
+test('proof readers retain native owners and support read-only cold opens', () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'laya-proof-reader-')));
   const runtime = join(home, 'runtime'); mkdirSync(runtime, { mode: 0o700 });
   try {

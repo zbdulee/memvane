@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Managed base publication: real preflight, short visible cut and stamp CAS."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack, nullcontext
 import fcntl
 import hashlib
 import importlib.util
@@ -8,6 +8,9 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import signal
+import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -23,11 +26,112 @@ def publication_dml(sql):
     return (sql.startswith('UPDATE GENERATIONS SET STATE=') or sql.startswith('INSERT INTO RECEIPTS')
             or sql.startswith('INSERT INTO HEAD'))
 
+MOVE_REVISION_CRASH=r'''
+from contextlib import ExitStack,nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import importlib.util,json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'));os.environ['HOME']=p['home'];os.environ['MEMVANE_TEST_RUNTIME_ROOT']=p['runtime']
+signal.alarm(30)
+spec=importlib.util.spec_from_file_location('move_revision_base',root/'test/fixtures/laya-journal-reader-checks.py')
+base=importlib.util.module_from_spec(spec);spec.loader.exec_module(base)
+import laya_project_dir_move as mover,laya_state_move as state_move,laya_reader_lease as lease
+import laya_publication_revision as revisions
+helper=base.JournalReaderChecks('runTest');case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
+state,project=Path(p['state']),Path(p['project']);actual=revisions.record_head
+def crash(*args,**kwargs):
+    actual(*args,**kwargs)
+    print(json.dumps({'event':'revision-inserted-before-commit','pid':os.getpid()}),flush=True)
+    os.kill(os.getpid(),signal.SIGKILL)
+with helper.full_authority(case),mock.patch.object(state_move,'_provider_lane',lambda:nullcontext()):
+    intent=mover._load_intent(state,project);assert intent is not None
+    with ExitStack() as locks:
+        mover._locks(locks,project,state,mover._queue_path(project,intent))
+        with lease.move_lifetime(state,project,intent=intent),mock.patch.object(revisions,'record_head',new=crash):
+            mover._publish(intent)
+raise RuntimeError('revision insertion checkpoint not reached')
+'''
+
 class PublishChecks(unittest.TestCase):
     def setUp(self):
         self.fixture=existing.WriteChecks('runTest')
         self.addCleanup(self.fixture.doCleanups);self.fixture.setUp()
         self.case,self.W=self.fixture.case,self.fixture.W
+
+    def test_project_move_publication_advances_existing_base_revision_once(self):
+        from laya_index_a import LayaIndexA
+        from laya_publication_revision import ensure_base_baseline
+        seed=self.fixture.seed
+        with seed.prepared() as intent:
+            self.W.prepare_windows(seed.installer)
+            component=self.W.component_for(seed.installer,'base')
+            index=LayaIndexA(self.case.db,coordination=component)
+            try:
+                decision=seed.reader.journal.select_route(str(self.case.project),action='recall')
+                ensure_base_baseline(index,scope=decision['scopeId'],
+                    profile_id=decision['vectorProfile']['profileId'],deadline=time.monotonic()+5)
+            finally:
+                index.close(deadline=time.monotonic()+2)
+            with mock.patch('laya_publication_revision.record_head',
+                            side_effect=RuntimeError('synthetic_move_revision_failure')):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_move_revision_failure'):
+                    seed.mover._publish(intent)
+            with seed.ro(self.case.db) as db:
+                before=db.execute('SELECT gen FROM head WHERE scope=?',(decision['scopeId'],)).fetchone()[0]
+                count=db.execute("SELECT count(*) FROM schema_meta WHERE key LIKE 'reader-revision:base:%'").fetchone()[0]
+            self.assertEqual(before,intent['generation']['base'])
+            self.assertEqual(count,1,'failed revision must roll back the move head')
+            seed.mover._publish(intent)
+            seed.mover._publish(intent)
+            with seed.ro(self.case.db) as db:
+                rows=db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+                head=db.execute('SELECT gen FROM head WHERE scope=?',(decision['scopeId'],)).fetchone()[0]
+            self.assertEqual(len(rows),2,'the move head and revision must commit together; replay must not advance')
+            self.assertEqual(rows[-1][0][-20:],'00000000000000000001')
+            self.assertEqual(json.loads(rows[-1][1])['after'],head)
+            self.assertEqual(head,intent['generation']['gen'])
+
+    def test_project_move_sigkill_before_revision_commit_replays_once(self):
+        from laya_index_a import LayaIndexA
+        from laya_publication_revision import ensure_base_baseline
+        import laya_state_move
+        seed=self.fixture.seed
+        with seed.prepared() as intent:
+            self.W.prepare_windows(seed.installer)
+            component=self.W.component_for(seed.installer,'base')
+            index=LayaIndexA(self.case.db,coordination=component)
+            try:
+                decision=seed.reader.journal.select_route(str(self.case.project),action='recall')
+                ensure_base_baseline(index,scope=decision['scopeId'],
+                    profile_id=decision['vectorProfile']['profileId'],deadline=time.monotonic()+5)
+            finally:index.close(deadline=time.monotonic()+2)
+        payload=self.case.home/'move-revision-crash.json'
+        payload.write_text(json.dumps(dict(home=str(self.case.home),runtime=os.environ['MEMVANE_TEST_RUNTIME_ROOT'],
+            project=str(self.case.project),state=str(self.case.state),plugin=str(self.case.plugin),proof=self.case.proof)),encoding='utf8')
+        payload.chmod(0o600)
+        result=subprocess.run([sys.executable,'-B','-I','-c',MOVE_REVISION_CRASH,str(ROOT),str(payload)],
+            encoding='utf8',capture_output=True,timeout=40)
+        self.assertEqual(result.returncode,-signal.SIGKILL,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['event'],'revision-inserted-before-commit')
+        with seed.ro(self.case.db) as db:
+            head=db.execute('SELECT gen FROM head WHERE scope=?',(decision['scopeId'],)).fetchone()[0]
+            before=db.execute("SELECT key FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+        self.assertEqual(head,intent['generation']['base'])
+        self.assertEqual(len(before),1)
+        with seed.authority(),mock.patch.object(laya_state_move,'_provider_lane',lambda:nullcontext()),ExitStack() as locks:
+            current=seed.mover._load_intent(self.case.state,self.case.project)
+            seed.mover._locks(locks,self.case.project,self.case.state,seed.mover._queue_path(self.case.project,current))
+            with seed.lease.move_lifetime(self.case.state,self.case.project,intent=current):
+                seed.mover._publish(current);seed.mover._publish(current)
+        with seed.ro(self.case.db) as db:
+            rows=db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+            head=db.execute('SELECT gen FROM head WHERE scope=?',(decision['scopeId'],)).fetchone()[0]
+        self.assertEqual(len(rows),2)
+        self.assertEqual(head,intent['generation']['gen'])
+        self.assertEqual(json.loads(rows[-1][1])['after'],head)
+
     @contextmanager
     def candidate(self):
         import laya_index_a as A
@@ -167,6 +271,58 @@ class PublishChecks(unittest.TestCase):
         self.stamp_case(False)
     def test_same_connection_dml_between_preflight_and_visible_cut_rejects_stamp_then_retries(self):
         self.stamp_case(True)
+
+    def test_exclusion_revision_follows_head_and_duplicate_is_noop(self):
+        import laya_publication_revision as revisions_api
+        with self.candidate() as (writer,p):
+            def revisions():
+                return writer.db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+            self.assertEqual(self.publish(writer,p),'published')
+            head_rows=revisions()
+            self.assertEqual(writer.exclude(p['scope'],path='wiki/excluded.md'),'excluded')
+            changed=revisions()
+            self.assertEqual(len(changed),len(head_rows)+1,'visible exclusion must append a base revision')
+            receipt=json.loads(changed[-1][1])
+            self.assertEqual(receipt['component'],'base')
+            self.assertEqual(receipt['before'],p['gen'])
+            self.assertEqual(receipt['after'],p['gen'])
+            self.assertEqual(writer.exclude(p['scope'],path='wiki/excluded.md'),'already_excluded')
+            self.assertEqual(revisions(),changed)
+            actual=revisions_api.record_exclusion
+            def fail_after_insert(*args,**kwargs):
+                actual(*args,**kwargs)
+                raise RuntimeError('synthetic_exclusion_revision_failure')
+            with mock.patch.object(revisions_api,'record_exclusion',side_effect=fail_after_insert):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_exclusion_revision_failure'):
+                    writer.exclude(p['scope'],path='wiki/rollback.md')
+            self.assertEqual(revisions(),changed)
+            self.assertIsNone(writer.db.execute('SELECT 1 FROM exclusions WHERE scope=? AND value=?',
+                                                (p['scope'],'wiki/rollback.md')).fetchone())
+
+    def test_revision_insert_failure_rolls_back_head_and_replay_does_not_advance(self):
+        import laya_publication_revision as revisions
+        with self.candidate() as (writer,p):
+            before=self.state(writer,p)
+            def rows():
+                return writer.db.execute("SELECT key,value FROM schema_meta WHERE key LIKE 'reader-revision:base:%' ORDER BY key").fetchall()
+            original=rows();record=revisions.record_head
+            def fail_after_insert(*args,**kwargs):
+                record(*args,**kwargs)
+                raise RuntimeError('synthetic_revision_failure_after_insert')
+            with mock.patch.object(revisions,'record_head',side_effect=fail_after_insert):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_revision_failure_after_insert'):
+                    self.publish(writer,p)
+            self.assertEqual(self.state(writer,p),before)
+            self.assertEqual(rows(),original)
+            self.assertEqual(self.publish(writer,p),'published')
+            committed=rows()
+            self.assertEqual(len(committed),len(original)+1)
+            receipt=json.loads(committed[-1][1])
+            self.assertEqual((receipt['before'],receipt['after']),(p['base'],p['gen']))
+            self.assertEqual(self.publish(writer,p),'replayed')
+            self.assertEqual(rows(),committed)
+            emit('actual-publication-revision-atomicity',rollbackPreserved=True,replayUnchanged=True,
+                 before=receipt['before'],after=receipt['after'])
 
     def test_actual_receipt_and_head_faults_rollback_all_publication_state(self):
         from laya_index_a import InjectedFault

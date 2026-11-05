@@ -15,6 +15,7 @@ import time
 import uuid
 
 import laya_blob_values as v
+import laya_checkout_view as checkout
 from laya_blob_values import BlobStoreError
 from laya_blob_store import (BlobStore, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
@@ -110,6 +111,16 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
     @classmethod
     def open(cls, path, *, repository, scope_id):
         store = super().open(path, repository=repository, scope_id=scope_id)
+        return cls._initialize_reader_state(store)
+
+    @classmethod
+    def open_reader(cls, path, *, repository, scope_id, deadline=None):
+        store = cls._open(path, repository=repository, scope_id=scope_id, reader_only=True,
+                          deadline=deadline)
+        return cls._initialize_reader_state(store)
+
+    @staticmethod
+    def _initialize_reader_state(store):
         store._handles = {}
         store._pins = {}
         store._closed = False
@@ -121,14 +132,14 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         self._handles = {}
         super().close()
 
-    def _observe_worktree(self, worktree_id):
+    def _observe_worktree(self, worktree_id, *, deadline=None):
         with self._session() as db:
             row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
             if row is None:
                 v.fail('worktree_missing')
             saved = dict(row)
             record = _worktree_record(row, self._repository, self._policy)
-        current, observation = _worktree_row(saved['project_root'], self._repository, record)
+        current, observation = _worktree_row(saved['project_root'], self._repository, record, deadline=deadline)
         if any(saved[k] != val for k, val in current.items()):
             v.fail('wiki_binding_changed')
         capture = observation['capture']
@@ -149,15 +160,29 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             v.fail('view_handle_invalid')
         return entry
 
-    def _observe(self, entry):
-        saved, capture = self._observe_worktree(entry['handle'].worktree_id)
+    def _observe(self, entry, *, deadline=None, timeout_reason='fts_deadline_exceeded'):
+        try:
+            saved, capture = self._observe_worktree(entry['handle'].worktree_id, deadline=deadline)
+        except checkout.CheckoutUnavailable:
+            v.fail(timeout_reason)
         if capture != entry['capture'] or saved['binding_digest'] != entry['binding']:
             v.fail('checkout_changed')
         return saved
 
-    def capture_view(self, worktree_id):
+    def capture_view(self, worktree_id, *, deadline=None):
         v.identifier(worktree_id, v.UUID)
-        saved, capture = self._observe_worktree(worktree_id)
+        if deadline is not None:
+            try:
+                deadline=checkout._deadline(deadline)
+            except checkout.CheckoutUnavailable as exc:
+                v.fail('fts_deadline_exceeded' if exc.reason=='checkout_budget_exhausted'
+                       else 'fts_query_invalid')
+        try:
+            saved, capture = self._observe_worktree(worktree_id,deadline=deadline)
+        except checkout.CheckoutUnavailable:
+            v.fail('fts_deadline_exceeded')
+        if deadline is not None and time.monotonic()>=deadline:
+            v.fail('fts_deadline_exceeded')
         handle = ViewHandle(view_id=v.identifier(capture['viewId']), worktree_id=worktree_id,
                             branch_key=capture['branchKey'], head_oid=capture['headOid'],
                             checkout_digest=capture['checkoutDigest'], policy_digest=saved['policy_digest'],
@@ -257,6 +282,7 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
                           vector_spec, coverage)
 
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None):
+        self._require_write()
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
         manifest = vals.manifest(manifest, handle.policy_digest)
@@ -375,6 +401,7 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return stage
 
     def publish_generation(self, handle, gen_id, *, expected_head):
+        self._require_write()
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
         if not isinstance(gen_id, str) or not vals.GEN_ID.fullmatch(gen_id):

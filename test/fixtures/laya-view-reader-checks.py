@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -32,6 +33,115 @@ class ReaderChecks(helpers.GenerationCase):
             receipt=dict(schema='memvane-card-evidence-v1',verdict='verified',result_digest='e'*64,prior_trust=None),
             sources=[dict(fingerprint_id=m['sources'][0]['fingerprint_id'],spans=[dict(start=0,end=4)])]))
         m['members'].append(dict(path=path,blob_sha=blob,display_title=title,trust_digest=att))
+
+    def test_reader_factory_never_opens_writable_or_enables_writes(self):
+        store,repository,handle,generation=self.published()
+        before=store._path.read_bytes()
+        opened=[]
+        connect=sqlite3.connect
+        def observe(*args,**kwargs):
+            opened.append(str(args[0]))
+            return connect(*args,**kwargs)
+        with mock.patch('laya_blob_store.sqlite3.connect',side_effect=observe):
+            reader=type(store).open_reader(store._path,repository=repository,scope_id=store._scope,
+                                           deadline=time.monotonic()+10)
+        self.addCleanup(reader.close)
+        self.assertTrue(opened)
+        self.assertTrue(all('?mode=ro' in path for path in opened),opened)
+        self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
+        checkout=importlib.import_module('laya_checkout_view')
+        actual_capture=checkout.capture_view
+        deadlines=[]
+        def capture(*args,**kwargs):
+            deadlines.append(kwargs.get('deadline'))
+            return actual_capture(*args,**kwargs)
+        end=time.monotonic()+10
+        with mock.patch.object(checkout,'capture_view',side_effect=capture):
+            read_handle=reader.capture_view(handle.worktree_id,deadline=end)
+            pin=reader.pin_view(read_handle,deadline=end)
+            rows=reader.search(pin,'hello',10,deadline_seconds=10)
+        self.assertTrue(deadlines)
+        self.assertTrue(all(type(value) in (int,float) and value<=end+1 for value in deadlines),deadlines)
+        self.assertEqual([(row['gen_id'],row['path']) for row in rows],[(generation,'cards/a.md')])
+        reader.release(pin)
+        real_clock=time.monotonic
+        for failure,expected in (('checkout_budget_exhausted','fts_deadline_exceeded'),
+                                 ('checkout_git_failed','wiki_binding_invalid')):
+            late=[]
+            def clock():return real_clock()+(20 if late else 0)
+            def fail_capture(*_args,**_kwargs):
+                late.append(True)
+                raise checkout.CheckoutUnavailable(failure)
+            with mock.patch('time.monotonic',side_effect=clock), \
+                    mock.patch.object(checkout,'capture_view',side_effect=fail_capture):
+                with self.assertRaisesRegex(ValueError,expected):
+                    reader.pin_view(read_handle,deadline=real_clock()+10)
+            self.assertEqual(late,[True])
+            self.assertEqual(reader._pins,{})
+        late=[]; captures=[]
+        def clock():return real_clock()+(20 if late else 0)
+        def second_capture(*args,**kwargs):
+            captures.append(True)
+            if len(captures)==2:
+                late.append(True)
+                raise checkout.CheckoutUnavailable('checkout_budget_exhausted')
+            return actual_capture(*args,**kwargs)
+        with mock.patch('time.monotonic',side_effect=clock), \
+                mock.patch.object(checkout,'capture_view',side_effect=second_capture):
+            with self.assertRaisesRegex(ValueError,'fts_deadline_exceeded'):
+                reader.pin_view(read_handle,deadline=real_clock()+10)
+        self.assertEqual(len(captures),2)
+        self.assertEqual(reader._pins,{})
+        self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
+        with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+            with reader._session(write=True):
+                self.fail('reader granted a write session')
+        calls=[]
+        with mock.patch('laya_blob_store._regular',side_effect=AssertionError('source reread')):
+            with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+                reader.ingest_card(handle.worktree_id,'cards/a.md')
+        with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+            reader.fill_view(None,None,None,None,chunker=lambda *_:calls.append('chunk'),
+                embedder=lambda *_:calls.append('embed'),write_fence=lambda:calls.append('fence'),
+                expected_cursor=0)
+        self.assertEqual(calls,[])
+        with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
+            reader.prepare_generation(None,None,expected_head=None)
+        with self.assertRaisesRegex(ValueError,'candidate_binding_mismatch'):
+            type(store).open_reader(store._path,repository=repository,scope_id='f'*32)
+        blob_module=importlib.import_module('laya_blob_store')
+        late=[]; connections=[]; real_clock=time.monotonic
+        def clock():return real_clock()+(20 if late else 0)
+        def connect_traced(*args,**kwargs):
+            db=connect(*args,**kwargs);connections.append(db);return db
+        def slow_header(db,*_args):
+            late.append(True)
+            db.execute('WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL '
+                       'SELECT x+1 FROM n WHERE x<50000) SELECT sum(x) FROM n').fetchone()
+            raise AssertionError('open header SQL was not interrupted')
+        with mock.patch('time.monotonic',side_effect=clock), \
+                mock.patch.object(blob_module.sqlite3,'connect',side_effect=connect_traced), \
+                mock.patch.object(blob_module,'_header',side_effect=slow_header):
+            with self.assertRaisesRegex(ValueError,'fts_deadline_exceeded'):
+                type(store).open_reader(store._path,repository=repository,scope_id=store._scope,
+                                        deadline=real_clock()+10)
+        self.assertEqual(late,[True]);self.assertEqual(len(connections),1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute('SELECT 1')
+        late.clear();connections.clear()
+        def bad_header(_db,*_args):
+            late.append(True)
+            raise sqlite3.OperationalError('synthetic_unrelated_sqlite_error')
+        with mock.patch('time.monotonic',side_effect=clock), \
+                mock.patch.object(blob_module.sqlite3,'connect',side_effect=connect_traced), \
+                mock.patch.object(blob_module,'_header',side_effect=bad_header):
+            with self.assertRaisesRegex(ValueError,'candidate_open_failed'):
+                type(store).open_reader(store._path,repository=repository,scope_id=store._scope,
+                                        deadline=real_clock()+10)
+        self.assertEqual(late,[True]);self.assertEqual(len(connections),1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connections[0].execute('SELECT 1')
+        self.assertEqual(store._path.read_bytes(),before)
 
     def test_01_cold_view_has_preparing_without_other_view_fallback(self):
         store,main,linked,a,b=self.pair('cold')

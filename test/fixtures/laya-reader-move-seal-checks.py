@@ -134,7 +134,7 @@ class MoveSealChecks(unittest.TestCase):
             STATE_PARTS=self.STATE_PARTS
             TEMP_DIR=str(Path('/tmp').resolve())
             TEMP_PREFIX=''
-            PROVIDER_EXTRA={'serviceSocketPath':'{state}/runtime/laya-embed.sock'}
+            PROVIDER_EXTRA=getattr(self,'PROVIDER_EXTRA',{'serviceSocketPath':'{state}/runtime/laya-embed.sock'})
             def publish_all(self,roots):
                 if not getattr(self,'_provenance_seeded',False):
                     source=self.project/'retained-source.md'
@@ -174,6 +174,8 @@ class MoveSealChecks(unittest.TestCase):
         else:
             self.assertFalse(os.path.lexists(self.sidecar),'absence fixture must not create/delete an issued live sidecar')
             self.assertEqual(len(self.case.head()[1]),3)
+        before_conversion=getattr(self,'before_conversion',None)
+        if before_conversion is not None:before_conversion()
         self.installer=self.helper.installer(self.case,self.reader,self.bridge)
         _challenge,_receipts,readiness=self.helper.ready(self.case,self.bridge)
         with self.authority():

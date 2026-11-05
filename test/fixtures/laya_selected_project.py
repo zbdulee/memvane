@@ -126,7 +126,7 @@ class SelectedProject(unittest.TestCase):
                        'ownershipManifestSha256': 'e' * 64,
                        'journalPath': str(self.journal), 'vectorProfile': vector_profile(),
                        'providerManifest': {'providerPath': str(self.plugin / 'p.py'),
-                                            **{key: value.format(state=self.state)
+                                            **{key: value.format(state=self.state) if isinstance(value,str) else value
                                                for key, value in self.PROVIDER_EXTRA.items()}},
                        'dependencyClosure': []}
         att_raw = journal_mod._canon(attestation).encode('utf-8')

@@ -41,6 +41,51 @@ def emit(case, **evidence):
 
 
 class JournalReaderChecks(unittest.TestCase):
+    def test_conversion_waits_for_existing_provider_writer_outside_queue_lock(self):
+        from context_learning.resource_coordination import Coordinator
+        from resource_deferred import ResourceDeferred
+        case=self.published_case()
+        reader,bridge=self.reader_api(),self.bridge_api()
+        installer=self.installer(case,reader,bridge)
+        _challenge,_receipts,readiness=self.ready(case,bridge)
+        before=Path(case.journal).read_bytes()
+        with self.full_authority(case,reader,bridge):
+            with Coordinator().quiesce_provider():
+                with self.assertRaises(ResourceDeferred):
+                    reader.convert_reader_v5(case.state,case.project,installer=installer,readiness=readiness)
+                self.assertEqual(Path(case.journal).read_bytes(),before)
+                self.assertEqual(J.journal_version(case.journal),4)
+                self.assertFalse((case.state/J._INITIAL_INTENT).exists())
+            selected=reader.convert_reader_v5(case.state,case.project,installer=installer,readiness=readiness)
+        self.assertEqual(J.journal_version(case.journal),5)
+        self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)
+
+    def test_initial_recovery_waits_for_existing_provider_writer(self):
+        from context_learning.resource_coordination import Coordinator
+        from resource_deferred import ResourceDeferred
+        case=self.published_case()
+        reader,bridge=self.reader_api(),self.bridge_api()
+        installer=self.installer(case,reader,bridge)
+        _challenge,_receipts,readiness=self.ready(case,bridge)
+        def stop(name):
+            if name=='initial-intent-durable':raise RuntimeError('synthetic_conversion_interruption')
+        with self.full_authority(case,reader,bridge):
+            with mock.patch.object(J,'_conversion_step',side_effect=stop):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_conversion_interruption'):
+                    reader.convert_reader_v5(case.state,case.project,installer=installer,readiness=readiness)
+            intent=case.state/J._INITIAL_INTENT/'intent.json'
+            self.assertTrue(intent.is_file())
+            before=(Path(case.journal).read_bytes(),intent.read_bytes())
+            with Coordinator().quiesce_provider():
+                with self.assertRaises(ResourceDeferred):
+                    reader.seal_current_reader(case.state,case.project,executing_root=case.plugin)
+                self.assertEqual((Path(case.journal).read_bytes(),intent.read_bytes()),before)
+            fresh=reader.seal_current_reader(case.state,case.project,executing_root=case.plugin)
+            selected=reader.convert_reader_v5(case.state,case.project,installer=fresh,readiness=readiness)
+        self.assertEqual(J.journal_version(case.journal),5)
+        self.assertFalse(intent.exists())
+        self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)
+
     def compose(self, cls=SelectedProject):
         case = cls('runTest')
         self.addCleanup(case.doCleanups)

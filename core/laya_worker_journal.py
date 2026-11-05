@@ -18,8 +18,8 @@ from resource_deferred import ResourceDeferred
 _active = {}
 
 
-def _probe(path, *, receipt=None, header=False):
-    mode = 'header' if header else 'check' if receipt is not None else 'probe'
+def _probe(path, *, receipt=None):
+    mode = 'check' if receipt is not None else 'probe'
     result = subprocess.run([sys.executable, '-B', '-I',
         str(Path(__file__).with_name('laya_legacy_journal_probe.py')), mode, str(path)],
         input='' if receipt is None else json.dumps(receipt), encoding='utf8',
@@ -188,12 +188,14 @@ def recover_legacy(scope, path):
     if not os.path.lexists(side):
         return False
     try:
-        header = _probe(path, header=True)
-        R._need(header['receipt'][0]['node'][:2] == scope.snapshot['journal_node'],
+        recovered = _probe(path)
+        R._need(recovered['row']['_version'] in (3, 4)
+                and recovered['receipt'][0]['node'][:2] == scope.snapshot['journal_node'],
                 'worker_journal_binding_changed')
     except J.JournalEvidenceError:
         return False
     scope.check(path)
+    _probe(path, receipt=recovered['receipt'])
     # Conversion and initial recovery acquire this same queue owner before
     # publishing v5 or creating its intent. No converter can cross this gap.
     with closing(sqlite3.connect(path.as_uri()+'?mode=rw', uri=True, timeout=2,

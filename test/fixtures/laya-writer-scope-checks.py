@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -41,6 +42,19 @@ class WriterScopeChecks(unittest.TestCase):
     def scope(self, module, owner, deadline=None):
         return module.normal_writer_scope(self.plan, queue_owner=owner,
             deadline=time.monotonic()+20 if deadline is None else deadline)
+
+    def test_worker_scope_survives_long_work_with_bounded_operation_deadline(self):
+        with self.F.warm(), self.seed.authority(), self.sync.sync_owner(self.queue) as owner:
+            module = self.api()
+            scope = module.worker_writer_scope(self.plan, queue_owner=owner, operation_timeout=2)
+            with scope as writer:
+                later = time.monotonic() + 600
+                with mock.patch.object(module, 'time', SimpleNamespace(monotonic=lambda: later)):
+                    module.validate_normal_writer(writer)
+                    self.assertEqual(scope.operation_deadline(), later + 2)
+                    with self.sync.sync_owner(self.queue) as other:
+                        self.assertIsNone(other)
+            self.assertTrue(self.F.fixture.probe('reader-lifetime.lock', 'EX'))
 
     def test_stale_reader_head_does_not_block_separate_normal_admission(self):
         with self.F.warm(), self.seed.authority():

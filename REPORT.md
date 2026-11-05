@@ -1,41 +1,24 @@
-# MemVane 0.43.37 검증 상태
+# MemVane 0.43.38 PR5 reader bridge 검증 상태
 
-기준 main은 `3f304338d5a63f7637b83c0b8251063f69820868`, 브랜치는 `codex/review-priority3`다. 범위는 중간 리뷰 3순위다. git-blob 운영 bridge·migration·writer 전환은 포함하지 않는다.
+현재 작업은 v5 journal의 reader bridge와 기존 v6 게시 세대의 read-only 검색을 다룬다. schema3 후보는 내부 read-only capability로만 검증하며 운영 선택은 허용하지 않는다. PR6 migration과 PR7 view 선택은 이 작업의 완료 증거에 포함하지 않는다.
 
-Hermes recall은 공통 hook 분류로 preview를 제공하고 upgrade fence에서는 컨텍스트를 주입하지 않는다. onboarding 선택 기록은 canonical 프로젝트별 private flock 안에서 갱신하며 최대512개 session과128KiB 한계를 함께 지킨다. W4의 동의 off/stale hint는 seen에 넣지 않으므로 현재 동의 아래 새 이벤트로 다시 처리할 수 있다. 해당 결함 주장은 반박하며 동작을 바꾸지 않는다.
+- v4에서 v5로 넘어갈 때 등록된 Claude·Codex host의 bridge preflight를 요구한다. 이미 실행 중인 구버전 recall 전체를 배제한다고 주장하지 않는다.
+- 선택된 v6 reader는 base·catalog·binding·sidecar의 고정 snapshot과 증명된 revision을 사용한다. 전환 전 legacy sidecar의 completed 상태는 endpoint에 봉인하며 첫 writer는 그 baseline과 일치하는 상태에서 receipt를 발급한다.
+- 기본 Python 3.9에서는 승인된 기존 DB의 `mode=rw` 연결 직후 `query_only=ON`을 사용한다. SQLite 자체 WAL/SHM 초기화는 허용하고 optional DB 본체의 새 생성과 논리 데이터·세대·journal 변경은 허용하지 않는다.
+- upgrade fence와 이동 복구 중에는 증명된 endpoint의 read-only 검색만 허용한다. T3 물리 연결·writer·rollback drain, T6 복구, T7 host 분기 검사는 합성 설치와 실제 SQLite/프로세스 경계의 범위에서 기록한다.
+- upgrade 진단은 작업별 불투명 ID·시도·고정 단계와 사유를 기록한다. 새 프롬프트 원문과 extractor stderr 원문은 기록하지 않는다.
+- Hermes recall classifier는 upgrade fence의 대기와 subprocess 시작 시간을 포함한 3초의 유한 예산을 사용한다. 손상된 route와 임의의 classifier 실패는 계속 거절한다.
 
-legacy cleanup은 전송한 SIGTERM과 확인된 정지를 구분한다. 관측·unload·unlink 실패 시 이미 수행한 변경을 partial 결과에 보존하고 안전한 삭제 범위를 넘지 않는다. launchctl 비영 종료는 정확한 UID/label의 부재가 확인될 때만 멱등 성공이다. R3의 자동 unpinned runtime 거절은 ensure 전에 발생하며, 명시적으로 pinned된 외부 runtime 복사 경로는 유효하다. 이 부분은 설명과 ensure0회 가드만 정렬한다.
+## 검증 상태
 
-프로젝트 폴더 이동은 양쪽 operation/run/settings/card 잠금과 폴더 dev/ino를 확인한다. compile 실행 중이거나 잠근 폴더 범위가 바뀌면 fence 전에 보류한다. compile 워커는 run lock 뒤 route·설정·큐를 재확인한다. hosted learning의 준비된 signature 불일치는 기존 version_mismatch로 빠르게 fallback하며, resource-deferred 재관측은5초다. startup backoff·terminal·자원 admission·7초 관측 gap·5/60초 안정 창은 유지한다.
+최종 HEAD, 7개 manifest 버전, 전체 shard 및 canonical `npm test`, 독립 리뷰, 실제 Claude/Codex host preflight·postflight와 설치·운영 증거, 마지막 CI는 아직 확정되지 않았다. 개별 RED/GREEN과 guard ID는 `PROGRESS-CODEX.md` 및 해당 로그를 기준으로 확인한다. 미완료 gate를 통과로 표기하지 않는다.
 
-릴리스 조율은 status/kind와 후속 state/project 이동 결과를 함께 확인한다. 최종 journal/build/classify 관측이 일치하고 선호 owner가 맞아야 완료다. active pending의 previous owner는 완료 권한이 아니며, bound/inactive는 candidate-ready pending과 build identity로 구분한다. 이 metadata 판정은 릴리스별 full read/write와 실제 runtime 경로 검증을 대체하지 않는다.
+합성 10-view×1,800 member 검사의 최신 warm pin/search p95는 약 3,086ms/2,489ms다. PR7/10의 목표 50ms/150ms는 미달이며 실제 host 지연과 동일시하지 않는다. 초기 합성 capacity 실행에서는 24회 wake 내 게시하지 못했지만, 입장 예산 변경 후 실제 SQLite 기반 합성 worker는 게시됐다. publish-cut 관측은 단일 실행이어서 p95·head CAS 상한의 증거가 아니다.
 
-| 범위 | 현재 검증 근거 |
-| --- | --- |
-| W3·W5 | BASE RED 후 focused21/21pass,18.212초 |
-| R3·R4·R5 | BASE 부분 수행/bootout 오류 RED 후 관련3파일pass,34.674초 |
-| U4·compile | 실제 flock·큐 경합 BASE5assert RED 후 기존 회귀 포함59/59pass,47.759초 |
-| U4 추가·RT-F4/F5 | 폴더 snapshot·실제 ensure/Coordinator RED 후 새2파일pass,51.928초; 기존 runtime3파일pass,106.435초 |
-| U5 | 정상 완료 거절·미완료/previous 수락·실제 반환 누락9assert RED 후 관련5파일pass,169.770초 |
+canonical `npm test`는 1,800초 상한으로 중단됐다. 중단 전 발견한 catalog timeout fixture를 수정한 뒤 관련 회귀와 shard 2는 통과했다. `0.43.38` shard 1에서는 Hermes fence 사례가 실패했고, classifier 시작 지연과 2초 한도의 충돌을 별도 재현해 수정한 뒤 관련 focused 검사가 통과했다. 최초 shard 실패의 예외는 확인되지 않았으며 이 재현과 동일 원인이었다고 단정하지 않는다. 각 결과는 다른 코드 시점의 증거로서 최신 코드 전체 통과로 합산하지 않는다.
 
-위 GREEN은 모두 전역 guard의 exit0/passed/completed:true/settled:true이며 realpath 임시 HOME·파일 병렬1을 사용한다. 세부 로그는 `/Users/dulee/work/memvane-handoff/context/priority3-*`다. W3/W5 첫 GREEN의 canonical alias 기대값 오류와 U4 followup의 기존 waiter5초 동기화 실패는 별도 로그에 보존한다. alias는 실제 canonical status로 대조하고, waiter는 실제 flock/refusal assertion을 유지한45/60초 유한 handshake를 사용한다. 제품 시간 창은 완화하지 않는다.
+최신 shard 3은 singleton version handshake timeout과 비활성 view 계보 검사의 기본 검색 deadline 초과로 실패했다. singleton 재실행은 통과했지만 최초 timeout 원인과 이번 브랜치의 시간 영향은 미확정이다. 계보 의미 검사는 제품 기본 2초를 바꾸지 않고 테스트 호출의 예산을 늘려 재검증했다. 두 결과 모두 원래 실패를 지우거나 전체 통과를 증명하지 않는다.
 
-합성 owner·OS·provider 경계와 실제 product 제어 흐름을 구분한다. 운영 cleanup·실제 모델·운영 DB는 fixture 입력이 아니다. 보호3은 무변경이며7개 manifest는0.43.37이다. 개발용 Claude 모델 호출은 없다. CI는 개발과 별도로 관찰한다.
+리뷰용 후보 stage는 전역 가드의 `os_memory_pressure` preflight 거절로 실행되지 않았다. 현재 staged 변경은 없으며 메모리 압력이 정상으로 돌아와 가드가 허용하기 전에는 해당 작업을 진행하지 않는다.
 
-독립 gpt-6-astra/high exact-head 리뷰는 `7eb9851`에서 P1 1건·P2 5건으로 HOLD다. 해당 HEAD의 새 회귀 검사는 Python 6건에서 15개 assertion이 실패하며 fixture ERROR는 없다(3.423초). 유효한 plist의 내부 Label 불일치 삭제, Hermes late fence 두 경계와 네 등록 hook의 cwd 중복, 실제 loader가 수락하는 다른 설치의 build record, onboarding 조상 symlink의 외부 mkdir/chmod, stop timeout의 partial=false를 재현한다.
-
-수정본은 유계·nofollow plist Label/inode 검증과 안전한 0644 XML/binary 호환, core 공통 fence/transition 판정, wrapper cwd 정규화, active build의 고정 신원 대조를 사용한다. 선택 기록은 조상 경로 검증 뒤 directory FD에 묶어 쓰고, blocked 정지 실패도 partial/failed에 남긴다. 정상 active 설치에 남는 과거 번들 metadata는 허용한다. 리뷰 회귀와 관련 7개 파일은 25/25 pass·0 fail, 41.776초이며 guard `f2c9c475815b45d8a59016f92faf06af`는 passed/completed/settled다. 기존 comment-only 관리 plist 두 곳은 matching Label의 유효 XML로 정렬하며 기존 assertion을 유지한다. 수정 code HEAD `a2b408a076627457544426e560b792bbe0ae55c3`의 전체 v2는 691개 중 688 pass·0 fail·3 skip, 1273.046초이며 guard는 exit0/passed/completed:true/settled:true다. 전체 실행 중 소스·문서·index는 고정한다. 새 exact-head 좁은 재리뷰와 설치·운영 감사는 외부 감사표를 따른다.
-
-guard 합성 단위21개와 manifest 검사4개도 통과한다. clean code HEAD `8406ff90cabb047ef2271b34affad551a5c91c6d`의 전체 suite는690개 중687pass·0fail·3skip,1259.952초이며 guard는 exit0/passed/completed:true/settled:true다. 전체 실행 중 소스·문서·index는 고정한다. 종료 후 이 REPORT에 결과만 반영하며 최종 exact-head 독립 리뷰·새 릴리스 설치/운영 감사는 아직 미완료다. 마지막 완료 릴리스0.43.36의 운영 근거는 외부 `priority2-release-completion-audit.md`다. 현재 진행 감사표는 외부 `priority3-completion-audit.json`이며 complete:false다.
-
-추가 exact-head 재리뷰(`63c9872`)는 기존6건을 FIXED로 판정하고 P2 3건으로 HOLD다. 실제 BASE 검사는 Python12건 중3FAIL·fixture ERROR0(4.869초)이며, plist 날짜 변환 예외의 partial 기록 손실·선택 뒤 Hermes import 재실패·정지 확인 뒤 replacement PID의 partial 누락을 재현한다. 현재 수정은 plist 변환 호출의 예외를 거절로 감싸고, 선택된 훅의 선택적 upgrade 진단 실패를 기존 refusal로 처리하며, 마지막 process table의 각 미검증 PID를 failed에 기록한다. 첫 집중 검사의 실패1건은 replacement PID의 failed 기록 누락이며 assertion을 유지한다. 현재 관련4파일은 Node9/9pass·0fail(26.246초), Python12건 모두 통과하며 guard `ac3ffbb1d3604d948cdf970b15b749d9`는 exit0/passed/completed:true/settled:true다. 이 수정분의 전체 검사와 새 exact-head 좁은 재리뷰는 아직 미완료다.
-
-현재 code `1d015025ce9eeb97ab347dc792f01de5dffdb679`의 전체 v3는1,800초 한도로 중단이다. Node370개 집계에서291pass·7fail·70cancelled·2skip(1799.759초), guard `278cb61f10ab4d7ca1b1be477469fb6d`는 exit75/stopped/wall_time_budget/completed:false/settled:true다. 취소70건은 실제 실패7건과 구분한다. blob의 checkout_budget_exhausted2개, checkout/sparse wrapper120초, capacity의 불완전 providerManifest, sync fresh_context exit3와 no-qmd downstream, dispatch900ms의 PID누락을 개별 검증할 상태다. 이 실행은 전체 통과 근거가 아니며 이전 v2통과를 최신 수정분의 성공으로 대체하지 않는다.
-
-Agy 정적 자문은 실제 gemini-3.8-flash-high/exit0이며, mock 계약과 시간 초과를 분리해 작은 재현을 먼저 수행하도록 권한다. 해당 자문의 제품무결함·OS원인 단정은 재현 근거로 채택하지 않는다. 정상/강제 ResourceDeferred를 합성한 새6개 Python 검사는 기존 capacity/CRUD fixture의 외부 admission 호출4assert RED를 보이고 대조군은 통과한다(0.689초, fixture ERROR0). 첫 재현의 capacity valid 대조군 selectionEpoch 누락1건은 새 harness에서만 보완하며 별도 로그를 보존한다. 기존 fixture2곳은 admitted synthetic provider의 admission 경계만 모의한다. 제품 admission·잘못된 manifest 거절·실제 owner-state 판독·3초capture/1초Git/900msdispatch/120초wrapper/1800초full과 기존 assertion은 유지한다. 새 경계 및 capacity/sync/no-QMD4개 Node 파일은4/4pass·0fail,56.203초이고 guard `d0cfab40f1f142899ac60c5ea0582913`는 exit0/passed/completed/settled다. 남은 timing4파일의 동일조건 재현과 최신 전체 검사는 미완료다.
-
-코드를 변경하지 않은 timing4파일 재검사는 Node10/10pass·0fail·94.884초이며 guard `d016a20fdc6d47d2ac6ed1c77d3519af`는 exit0/passed/completed/settled다. blob24건·checkout33건·sparse9건과 hook PID/cleanup을 기존3초capture/1초Git/900msdispatch/120초wrapper로 확인한다. 이 결과는 해당 집중 범위의 재검증이며 전체 통과나 이전 지연의 OS 원인을 증명하지 않는다. 모든 새 fixture를 커밋한 clean HEAD에서 전체v4를 TAP 출력으로 검증할 상태다.
-
-최신 clean code HEAD `252a445c251c341e5aa641ac7797927b5f71f48d`의 전체 v4는692개 중689pass·0fail·0cancelled·3skip,1249.834초다. guard `aff5d7c90bd349b2909aab69ecb723f1`는 exit0/passed/completed:true/settled:true다. 기존 실패7건과 새 admission 대조군이 전체 실행에서도 통과한다. realpath 임시HOME·파일1·TAP·기존1800초 한도를 사용하며 실행 중 source/index/REPORT를 고정한다. 이 문단은 종료 후 결과만 반영한다. 최종 exact-head 독립 재리뷰·실제 최종Agy·릴리스/운영 감사는 아직 미완료다.
-
-같은 전체 실행의 합성1,800장×10Git views는wiki blob1개를 공유하고 DB는368,640B→35,069,952B(증가34,701,312B)다. warm pin30회 p95(nearest rank)는1001.522ms, warm lexical search30회 p95는1010.684ms다. 전체 publish API10회 p95는1474.658ms이며 이 수치를 writer lock/CAS 시간으로 대체하지 않는다. 측정deadline30초·기본search deadline2초의 비활성 candidate 관측이고 운영SLA나완료된GB2원인계측이 아니다. PR7 성능gate는 미충족이다. 2,049행/벡터성장·filtered work 근거는 외부 `priority3-candidate-budget-observations.json`에 보존한다.
+fork 자식의 -11 종료는 별도 미해결이다. 기존 백업·QMD origin rollback DB의 자동 정리는 비활성이고 실제 삭제는 별도 사용자 요청이 필요하다.

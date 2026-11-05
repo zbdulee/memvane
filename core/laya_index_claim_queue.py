@@ -324,8 +324,8 @@ class ClaimQueue:
                 return False
             queue_binding = windows._component(queue_owner.component)
             base_binding = windows._component(base_owner.component)
-            queue_record = windows.R._installer(queue_binding[1]).record
-            base_record = windows.R._installer(base_binding[1]).record
+            queue_record = windows._owner(queue_binding[1])[0].record
+            base_record = windows._owner(base_binding[1])[0].record
             if (queue_binding[2] is not base_binding[2]
                     or any(queue_record[key] != base_record[key]
                            for key in ('scope', 'incarnation', 'project', 'state', 'db_path'))):

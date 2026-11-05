@@ -17,7 +17,23 @@ existing=importlib.util.module_from_spec(spec);spec.loader.exec_module(existing)
 
 class SidecarWriteChecks(unittest.TestCase):
     def setUp(self):
-        self.fixture=existing.SidecarOwnerChecks('runTest');self.addCleanup(self.fixture.doCleanups);self.fixture.setUp()
+        def seed_before_conversion(seed):
+            with sqlite3.connect(seed.sidecar) as db:
+                seed.sidecar_test_row=db.execute('SELECT path,hash,title,body,profile_id FROM docs ORDER BY path LIMIT 1').fetchone()
+                self.assertIsNotNone(seed.sidecar_test_row)
+                db.execute('DELETE FROM docs_fts WHERE path=?',(seed.sidecar_test_row[0],))
+                db.execute('DELETE FROM docs WHERE path=?',(seed.sidecar_test_row[0],))
+                if self._testMethodName == 'test_baseline_accepts_existing_empty_title_and_scan_id':
+                    rowid,path,body=db.execute('SELECT rowid,path,body FROM docs ORDER BY path LIMIT 1').fetchone()
+                    db.execute('DELETE FROM docs_fts WHERE rowid=?',(rowid,))
+                    db.execute("UPDATE docs SET title='',scan_id='' WHERE rowid=?",(rowid,))
+                    db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',(rowid,path,'',body))
+                if self._testMethodName == 'test_empty_sidecar_baseline_is_distinct_from_first_published_document':
+                    db.execute('DELETE FROM docs_fts');db.execute('DELETE FROM docs')
+        seed_class=existing.components_fixture.existing.seed_module.MoveSealChecks
+        self.fixture=existing.SidecarOwnerChecks('runTest');self.addCleanup(self.fixture.doCleanups)
+        with mock.patch.object(seed_class,'before_conversion',seed_before_conversion,create=True):
+            self.fixture.setUp()
         self.seed,self.case,self.I,self.W=self.fixture.seed,self.fixture.case,self.fixture.incremental,self.fixture.windows
         self.identity=self.fixture.identity
     @contextmanager
@@ -25,15 +41,7 @@ class SidecarWriteChecks(unittest.TestCase):
         with self.seed.prepared():
             # A valid existing sidecar with two completed rows. The removed
             # third member has actual cached vectors and complete source proof.
-            db=self.I._open(self.case.state)
-            try:
-                self.I._setup(db,self.identity)
-                row=db.execute('SELECT path,hash,title,body,profile_id FROM docs ORDER BY path LIMIT 1').fetchone()
-                self.assertIsNotNone(row)
-                db.execute('BEGIN IMMEDIATE')
-                db.execute('DELETE FROM docs_fts WHERE path=?',(row[0],))
-                db.execute('DELETE FROM docs WHERE path=?',(row[0],));db.commit()
-            finally:self.I._close(db)
+            row=self.seed.sidecar_test_row
             component=self.fixture.component();self.fixture.tools.require_runtime_api()
             _windows,components=self.fixture.tools.components()
             if mixed:components.pop('base')
@@ -88,6 +96,114 @@ class SidecarWriteChecks(unittest.TestCase):
                 except Exception as exc:error=str(exc)
             print(json.dumps(dict(case='sidecar-preparation-exclusion',injected=injected,error=error,result=result,rowsUnchanged=before==self.rows())),flush=True)
             self.assertEqual(injected,[True]);self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(before==self.rows())
+    def test_baseline_accepts_existing_empty_title_and_scan_id(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            self.assertEqual(self.publish(runtime,snapshot,row,component)['status'],'published')
+            with self.seed.ro(self.fixture.sidecar) as db:
+                baseline=json.loads(db.execute('SELECT value FROM publication_revisions WHERE revision=0').fetchone()[0])
+            self.assertEqual(baseline['rows'],2)
+
+    def test_empty_sidecar_baseline_is_distinct_from_first_published_document(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            self.assertEqual(self.publish(runtime,snapshot,row,component)['status'],'published')
+            with self.seed.ro(self.fixture.sidecar) as db:
+                items=db.execute('SELECT revision,value FROM publication_revisions ORDER BY revision').fetchall()
+            self.assertEqual([item[0] for item in items],[0,1])
+            self.assertEqual(json.loads(items[0][1])['rows'],0)
+            self.assertIsNone(json.loads(items[1][1])['before'])
+
+    def test_baseline_refuses_fts_mismatch_without_publishing_or_healing(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            with self.W.physical_window(component,exclusive=True,deadline=time.monotonic()+1):
+                db=sqlite3.connect(self.fixture.sidecar.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+                try:
+                    existing=db.execute('SELECT rowid FROM docs_fts ORDER BY rowid LIMIT 1').fetchone()
+                    self.assertIsNotNone(existing)
+                    db.execute('DELETE FROM docs_fts WHERE rowid=?',existing)
+                finally:db.close()
+            before=self.rows()
+            with self.assertRaisesRegex(ValueError,'invalid_sidecar_baseline|reader_sidecar_revision_unproved'):
+                self.publish(runtime,snapshot,row,component)
+            self.assertEqual(self.rows(),before)
+            with self.seed.ro(self.fixture.sidecar) as db:
+                self.assertEqual(db.execute('SELECT * FROM publication_revisions').fetchall(),[])
+
+    def test_baseline_rejects_corrupt_fts_index_with_content_rows_intact(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            with self.W.physical_window(component,exclusive=True,deadline=time.monotonic()+1):
+                db=sqlite3.connect(self.fixture.sidecar.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+                try:
+                    db.execute("CREATE VIRTUAL TABLE temp.vocab USING fts5vocab(main,docs_fts,'row')")
+                    term=db.execute('SELECT term FROM temp.vocab ORDER BY term LIMIT 1').fetchone()[0]
+                    self.assertGreater(db.execute('SELECT count(*) FROM docs_fts WHERE docs_fts MATCH ?',
+                                                  ('"'+term.replace('"','""')+'"',)).fetchone()[0],0)
+                    content=db.execute('SELECT path,title,body FROM docs_fts ORDER BY path').fetchall()
+                    self.assertGreater(db.execute('SELECT count(*) FROM docs_fts_data WHERE id>10').fetchone()[0],0)
+                    db.execute('DELETE FROM docs_fts_data WHERE id>10')
+                    self.assertEqual(db.execute('SELECT path,title,body FROM docs_fts ORDER BY path').fetchall(),content)
+                    try:matches=db.execute('SELECT count(*) FROM docs_fts WHERE docs_fts MATCH ?',
+                                           ('"'+term.replace('"','""')+'"',)).fetchone()[0]
+                    except sqlite3.DatabaseError:matches=0
+                    self.assertEqual(matches,0,'fixture must actually break the search index')
+                finally:db.close()
+            before=self.rows()
+            with self.assertRaisesRegex((ValueError,sqlite3.DatabaseError),'invalid_sidecar_baseline|reader_sidecar_revision_unproved|malformed'):
+                self.publish(runtime,snapshot,row,component)
+            self.assertEqual(self.rows(),before)
+            with self.seed.ro(self.fixture.sidecar) as db:
+                self.assertEqual(db.execute('SELECT * FROM publication_revisions').fetchall(),[])
+
+    def test_partial_revision_schema_is_refused_without_healing_or_publication(self):
+        with self.opened() as (runtime,snapshot,row,component):
+            before=self.rows()
+            with self.W.physical_window(component,exclusive=True,deadline=time.monotonic()+1):
+                db=sqlite3.connect(self.fixture.sidecar.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+                try:db.execute('DROP TRIGGER publication_revision_delete_seal')
+                finally:db.close()
+            with self.assertRaisesRegex(Exception,'incremental_schema_changed'):
+                self.publish(runtime,snapshot,row,component)
+            self.assertEqual(self.rows(),before)
+            with self.seed.ro(self.fixture.sidecar) as db:
+                self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='trigger' "
+                                            "AND name='publication_revision_delete_seal'").fetchall(),[])
+                self.assertEqual(db.execute('SELECT count(*) FROM publication_revisions').fetchone(),(0,))
+
+    def test_revision_insert_fault_rolls_back_document_and_replay_is_noop(self):
+        import laya_publication_revision as revisions
+        with self.opened() as (runtime,snapshot,row,component):
+            before=self.rows()
+            def receipts():
+                with self.seed.ro(self.fixture.sidecar) as db:
+                    return db.execute('SELECT revision,value FROM publication_revisions ORDER BY revision').fetchall()
+            original=receipts();actual=revisions.record_sidecar
+            def fail_after_insert(*args,**kwargs):
+                actual(*args,**kwargs)
+                raise RuntimeError('synthetic_sidecar_revision_failure')
+            with mock.patch.object(revisions,'record_sidecar',side_effect=fail_after_insert):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_sidecar_revision_failure'):
+                    self.publish(runtime,snapshot,row,component)
+            self.assertEqual(self.rows(),before)
+            baseline=receipts()
+            self.assertEqual(len(baseline),len(original)+1)
+            self.assertEqual(baseline[0][0],0)
+            self.assertEqual(self.publish(runtime,snapshot,row,component)['status'],'published')
+            committed=receipts();self.assertEqual(len(committed),len(baseline)+1)
+            receipt=json.loads(committed[-1][1])
+            self.assertEqual(receipt['component'],'sidecar');self.assertIsNone(receipt['before'])
+            self.assertIsNotNone(receipt['after'])
+            self.assertEqual(self.publish(runtime,snapshot,row,component)['status'],'already_published')
+            self.assertEqual(receipts(),committed)
+            with self.W.physical_window(component,exclusive=True,deadline=time.monotonic()+1):
+                db=sqlite3.connect(self.fixture.sidecar.as_uri()+'?mode=rw',uri=True,isolation_level=None)
+                try:
+                    for sql in ('UPDATE publication_revisions SET value=? WHERE revision=1',
+                                'INSERT OR REPLACE INTO publication_revisions(revision,value) VALUES(1,?)'):
+                        with self.assertRaises(sqlite3.IntegrityError):db.execute(sql,('tampered',))
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        db.execute('DELETE FROM publication_revisions WHERE revision=1')
+                finally:db.close()
+            self.assertEqual(receipts(),committed)
+
     def test_actual_document_and_fts_insert_fault_rolls_back_together(self):
         with self.opened() as (runtime,snapshot,row,component):
             before=self.rows();execute=self.W._OwnedSQLite.execute;faults=[];error=None

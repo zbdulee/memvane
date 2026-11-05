@@ -11,7 +11,9 @@ test('T1 reader recovery uses real child crashes, SQLite images and historical w
   const runtime = join(home, 'runtime');
   mkdirSync(runtime, { mode: 0o700 });
   try {
-    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-journal-reader-recovery-checks.py'], {
+    const selected=(process.env.MEMVANE_RECOVERY_TEST_METHOD || '').split(',').filter(Boolean);
+    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-journal-reader-recovery-checks.py',
+      ...selected.map(name=>`RecoveryChecks.${name}`)], {
       encoding: 'utf8', timeout: 180000,
       env: { ...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
         MEMVANE_TEST_RUNTIME_ROOT: runtime, QMD_SETUP_GUARD_FIXTURE: '1', QMD_SANDBOX: '1',
@@ -20,7 +22,7 @@ test('T1 reader recovery uses real child crashes, SQLite images and historical w
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 23 tests\b/);
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 27} tests?\\b`));
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);

@@ -5,7 +5,7 @@ replaces an installer selection or a complete A-int generation.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing, nullcontext
 import hashlib
 import json
 import math
@@ -15,7 +15,7 @@ import sqlite3
 import stat
 import time
 
-from laya_index_a import IndexContractError, LayaIndexA, _valid_relative_path
+from laya_index_a import IndexContractError, LayaIndexA, _valid_relative_path, _query_only_uri
 from laya_index_vector import _read_chunk_set
 
 
@@ -39,10 +39,14 @@ def _readonly(path: Path):
             or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077
             or path.is_symlink() or str(path.resolve(strict=True)) != str(path)):
         _fail('preview_store_unsafe')
-    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+    db = sqlite3.connect(_query_only_uri(path), uri=True,
                          isolation_level=None, timeout=0.2)
-    db.execute('PRAGMA query_only=ON')
-    db.execute('BEGIN')
+    try:
+        db.execute('PRAGMA query_only=ON')
+        db.execute('BEGIN')
+    except BaseException:
+        db.close()
+        raise
     return db
 
 
@@ -68,6 +72,38 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     consistent snapshot. A mismatch fails closed; a missing sidecar is a valid
     zero-document initial build only after the caller's pending-install proof.
     """
+    return _query_incremental(prompt, decision, proof, provider)
+
+
+def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provider,
+                               *, base, side, deadline: float, _semantic_status=None):
+    """Query caller-owned pinned readers; the caller proves their shared view."""
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or deadline <= time.monotonic()):
+        _fail('preview_query_deadline_exceeded')
+    if side is not None and side is base:
+        _fail('reader_snapshot_unpinned')
+    for db in (base,) if side is None else (base, side):
+        if db is None or not db.in_transaction or db.execute('PRAGMA query_only').fetchone() != (1,):
+            _fail('reader_snapshot_unpinned')
+    if side is None:
+        return [], frozenset(), {}, (), None
+    result = _query_incremental(prompt, decision, proof, provider,
+                                pinned_base=base, pinned_side=side, deadline=deadline,
+                                semantic_status=[] if _semantic_status is None else _semantic_status)
+    from laya_journal_reader import _sidecar_document_snapshot
+    for row in result[0]:
+        # Semantic scoring validates each active chunk set before use. Row
+        # evidence itself needs no vector read, including lexical fallback.
+        proved = _sidecar_document_snapshot(side, base, decision, row['path'],
+                                            deadline=deadline, require_vectors=False)
+        if proved['hash'] != row['hash'] or proved['body'] != row['body']:
+            _fail('reader_sidecar_document_changed')
+    return result
+
+
+def _query_incremental(prompt, decision, proof, provider, *, pinned_base=None,
+                       pinned_side=None, deadline=None, semantic_status=None):
     from laya_host_response import (_PROVIDER_RESULT_KEYS, _fts_atom,
                                     _v2_body_evidence,
                                     _verified_wiki_row, _fuse_verified_lists,
@@ -89,9 +125,10 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
         state_root = Path(journal_path).parent
     state = Path(state_root)
     preview = state / FILE
-    if not preview.exists() and not preview.is_symlink():
+    if pinned_side is None and not preview.exists() and not preview.is_symlink():
         return [], frozenset(), {}, (), None
-    deadline = time.monotonic() + DEADLINE_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + DEADLINE_SECONDS
     profile = decision['vectorProfile']
     if not isinstance(proof, dict) or proof.get('vectorProfile') != profile:
         _fail('preview_provider_proof_changed')
@@ -99,8 +136,16 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                 decision['dbIncarnation'], profile['profileId'],
                 decision['dbPath'], decision['projectRoot'])
     locations = {}
-    with closing(_readonly(preview)) as side:
-        side.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    with ExitStack() as stack:
+        side = stack.enter_context(nullcontext(pinned_side) if pinned_side is not None
+                                   else closing(_readonly(preview)))
+        if pinned_side is not None and callable(getattr(side, '_hold_progress_deadline', None)):
+            side._hold_progress_deadline(deadline)
+            stack.callback(side._release_progress_deadline)
+        else:
+            if pinned_side is not None:
+                stack.callback(side.set_progress_handler, None, 0)
+            side.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         if side.execute('PRAGMA user_version').fetchone()[0] != 1:
             _fail('preview_schema_changed')
         if side.execute('SELECT * FROM meta').fetchall() != [expected]:
@@ -120,7 +165,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
         by_path = {row[1]: row for row in docs}
         if len(by_path) != count:
             _fail('preview_document_duplicate')
-        with closing(_readonly(Path(decision['dbPath']))) as candidate:
+        with (nullcontext(pinned_base) if pinned_base is not None
+              else closing(_readonly(Path(decision['dbPath'])))) as candidate:
             LayaIndexA._check_header(candidate)
             incarnation = candidate.execute(
                 "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
@@ -228,7 +274,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
             # No provider call for a valid empty preview. A populated preview
             # uses only the already-running installer-attested provider.
             try:
-                supplied = provider(' '.join(prompt.split()), profile)
+                supplied = (None if provider is None else
+                            provider(' '.join(prompt.split()), profile))
             except Exception as exc:
                 # "No query vector" is marked, not one class: the selected
                 # recall raises its own, and the hook runs that module as
@@ -237,17 +284,14 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                 if not getattr(exc, 'no_query_vector', False):
                     raise
                 supplied = None
-            if supplied is None:
-                # No query vector (admission deferred, learning lane
-                # unreachable): the lexical lists collected above serve alone.
-                best, sealed = [], {}
-                for doc in active_docs:
-                    _rowid, path, digest, title, profile_id, _count = doc
-                    if (not isinstance(path, str) or not isinstance(digest, str)
-                            or not isinstance(title, str)
-                            or profile_id != profile['profileId']):
-                        _fail('preview_document_invalid')
-                    sealed[path] = doc
+            best, sealed = [], {}
+            for doc in active_docs:
+                _rowid, path, digest, title, profile_id, _count = doc
+                if (not isinstance(path, str) or not isinstance(digest, str)
+                        or not isinstance(title, str)
+                        or profile_id != profile['profileId']):
+                    _fail('preview_document_invalid')
+                sealed[path] = doc
             if supplied is not None and (not isinstance(supplied, dict)
                     or set(supplied) != _PROVIDER_RESULT_KEYS
                     or supplied['profileId'] != profile['profileId']
@@ -265,24 +309,37 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
                 query_norm = math.sqrt(_sum_squares(query))
                 if query_norm <= 0:
                     _fail('preview_query_vector_invalid')
-                best = []
-                sealed = {}
-                for doc in active_docs:
-                    _check_deadline(deadline)
-                    _rowid, path, digest, title, profile_id, chunks_count = doc
-                    if (not isinstance(path, str) or not isinstance(digest, str)
-                            or not isinstance(title, str)
-                            or profile_id != profile['profileId']):
-                        _fail('preview_document_invalid')
-                    chunks = _read_chunk_set(candidate, digest, title, profile_id,
-                                             dimension, deadline=deadline)
-                    if chunks is None or len(chunks) != chunks_count:
-                        _fail('preview_vector_incomplete')
-                    sealed[path] = doc
-                    distance = min(1 - _dot(query, chunk['vector']) / (
-                                   query_norm * math.sqrt(_sum_squares(chunk['vector'])))
-                                   for chunk in chunks)
-                    best.append((distance, path))
+                semantic_deadline = (min(deadline, time.monotonic()+2.0)
+                                     if semantic_status is not None else deadline)
+                managed = semantic_status is not None and callable(
+                    getattr(candidate, '_hold_progress_deadline', None))
+                if managed:
+                    candidate._hold_progress_deadline(semantic_deadline)
+                try:
+                    for doc in active_docs:
+                        _check_deadline(semantic_deadline)
+                        _rowid, path, digest, title, profile_id, chunks_count = doc
+                        chunks = _read_chunk_set(candidate, digest, title, profile_id,
+                                                 dimension, deadline=semantic_deadline)
+                        if chunks is None or len(chunks) != chunks_count:
+                            _fail('preview_vector_incomplete')
+                        distance = min(1 - _dot(query, chunk['vector']) / (
+                                       query_norm * math.sqrt(_sum_squares(chunk['vector'])))
+                                       for chunk in chunks)
+                        best.append((distance, path))
+                except (IndexContractError, sqlite3.OperationalError) as exc:
+                    reason = str(exc)
+                    expired = time.monotonic() >= semantic_deadline
+                    if (semantic_status is None or time.monotonic() >= deadline or
+                            not (reason in ('vector_budget_exceeded','vector_deadline_exceeded')
+                                 or (expired and (reason == 'preview_query_deadline_exceeded'
+                                                  or isinstance(exc, sqlite3.OperationalError))))):
+                        raise
+                    semantic_status.append('vector_deadline_exceeded' if expired else reason)
+                    best = []
+                finally:
+                    if managed:
+                        candidate._release_progress_deadline()
                 best.sort(key=lambda item: (item[0], item[1]))
         generation = 'preview-' + decision['installId']
         skip = tuple(decision['recallSettings']['skipPaths'])
@@ -347,7 +404,8 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
             _verified_wiki_row(row, decision, source_locations=locations,
                                source_skip_paths=skip, current_source=False)
         _check_deadline(deadline)
-        with closing(_readonly(Path(decision['dbPath']))) as refreshed:
+        with (nullcontext(pinned_base) if pinned_base is not None
+              else closing(_readonly(Path(decision['dbPath'])))) as refreshed:
             if _exclusions(refreshed, decision['scopeId']) != exclusions:
                 _fail('preview_exclusions_changed')
         body_evidence = (probe_complete and probe_verified and _v2_body_evidence(

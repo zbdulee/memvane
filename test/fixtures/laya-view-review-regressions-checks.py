@@ -122,9 +122,9 @@ class ReaderReviewChecks(unittest.TestCase):
         settings.write_bytes(settings.read_bytes() + b'\n')
         actual, clock, observed = store._observe, [100.0], []
 
-        def observe(*args):
+        def observe(*args,**kwargs):
             try:
-                return actual(*args)
+                return actual(*args,**kwargs)
             except case.Error as exc:
                 observed.append(exc.reason)
                 clock[0] = 200.0

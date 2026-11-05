@@ -440,10 +440,6 @@ def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, in
             from context_learning.transport import _stop_owned
             _stop_owned(proc)
             stdout, stderr = proc.communicate(timeout=2)
-        if stderr:
-            sys.stderr.write(stderr[-4000:])
-            if not stderr.endswith('\n'):
-                sys.stderr.write('\n')
         code = 124 if timed_out else proc.returncode
         observed_signal = None
         if proc.returncode is not None and proc.returncode < 0:

@@ -10,7 +10,9 @@ test('synthetic view budgets measure ten Git views and preserve more than 2048 r
  const home=realpathSync(mkdtempSync(join(tmpdir(),'laya-view-budget-home-')));
  try {
   const r=spawnSync('python3',['-B','test/fixtures/laya-view-budget-checks.py'],{
-   encoding:'utf8',timeout:360000,
+   // The two scale cases build and verify 18,000 members and 2,049 sources.
+   // Their measured budgets are reported separately from this process ceiling.
+   encoding:'utf8',timeout:900000,
    env:{...process.env,HOME:home,PYTHONDONTWRITEBYTECODE:'1'},
   });
   assert.equal(r.status,0,r.status===null?JSON.stringify({signal:r.signal,error:r.error?.message}):r.stdout+r.stderr);

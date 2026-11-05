@@ -8,8 +8,10 @@ import { removeTemp } from './helpers/temp.mjs';
 test('managed sidecar document publication authority, cut and actual rollback', () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'laya-sidecar-write-')));
   const runtime = join(home, 'runtime');mkdirSync(runtime, { mode: 0o700 });
+  const method = process.env.MEMVANE_TEST_METHOD;
   try {
-    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-reader-sidecar-write-checks.py'], {
+    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-reader-sidecar-write-checks.py',
+      ...(method ? [`SidecarWriteChecks.${method}`] : [])], {
       encoding: 'utf8', timeout: 120000,
       env: { ...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
         MEMVANE_TEST_RUNTIME_ROOT: runtime, QMD_SETUP_GUARD_FIXTURE: '1', QMD_SANDBOX: '1',
@@ -17,6 +19,6 @@ test('managed sidecar document publication authority, cut and actual rollback', 
     });
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 14 tests\b/);assert.match(result.stderr, /\nOK\b/);
+    assert.match(result.stderr, new RegExp(`Ran ${method ? 1 : 20} tests?\\b`));assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

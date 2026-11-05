@@ -11,7 +11,6 @@ import tempfile
 import laya_install_journal as J
 import laya_journal_reader as R
 
-_MAGIC = bytes.fromhex('d9d505f920a163d7')
 _FIELDS = {'format', 'project', 'project_node', 'state', 'state_node', 'journal_node',
            'install', 'base_node', 'base_sha', 'row_sha', 'epoch', 'creation_epoch',
            'endpoint', 'attestation_sha', 'transition'}
@@ -175,7 +174,7 @@ def _match_live(db, image):
     _require(row == image.row)
 
 
-def _retire_clean_forward(image, state, project, executing_root):
+def _retire_clean_forward(image, state, project, executing_root, evidence):
     """Retire a stale intent only for proved, clean v4 mark-write progress."""
     path = image.logical_path
     sidecars = tuple(Path(str(path) + suffix) for suffix in ('-journal', '-wal', '-shm'))
@@ -192,7 +191,7 @@ def _retire_clean_forward(image, state, project, executing_root):
                                      new_write_seen=current['new_write_seen']))
         # No preimage context here: prove the actual current journal and every
         # store/provider binding while this read snapshot prevents a commit.
-        record, att, proof = R._evidence(state, project, executing_root)
+        record, att, proof = evidence(state, project, executing_root)
         _require(proof['selectionEpoch'] == current['epoch']
                  and proof['installId'] == image.data['install']
                  and R._sha(att) == image.data['attestation_sha'])
@@ -303,12 +302,6 @@ def _repair_if_hot(image):
     side_node = R._file(side, path.parent)
     raw = _read(path, R._MAX_IMAGE)
     rollback = _read(side, R._MAX_IMAGE)
-    pages = int.from_bytes(rollback[16:20], 'big')
-    page_size = int.from_bytes(rollback[24:28], 'big')
-    _require(raw[:16] == b'SQLite format 3\0' and int.from_bytes(raw[60:64], 'big') in (4, 5)
-             and len(rollback) > 512 and rollback[:8] == _MAGIC and not rollback.endswith(_MAGIC)
-             and page_size in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
-             and 0 < pages * page_size <= R._MAX_IMAGE)
     with _rehearsal(image) as candidate:
         _write(candidate, raw)
         _write(Path(str(candidate) + '-journal'), rollback)
@@ -324,12 +317,15 @@ def _repair_if_hot(image):
     J._step('initial-recovery-rolled-back')
 
 
-def recover_initial(state, project, executing_root):
+def recover_initial(state, project, executing_root, *, bootstrap=False):
     from laya_initial_build import owner
     import laya_fresh_wiki_origin as fresh
     import project_dir
+    from context_learning.resource_coordination import Coordinator
     from laya_index_sync import _owner_lock
     from laya_ledger_common import _operation_lock
+    R._need(type(bootstrap) is bool, 'reader_installer_unproved')
+    evidence = R._bootstrap_evidence if bootstrap else R._evidence
     if not os.path.lexists(state / J._INITIAL_INTENT):
         return
     with ExitStack() as locks:
@@ -338,21 +334,22 @@ def recover_initial(state, project, executing_root):
             return
         R._need(locks.enter_context(owner(state)), 'initial_build_busy')
         locks.enter_context(_operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+        locks.enter_context(Coordinator().quiesce_provider())
         image = _Preimage(state, project)
         with _preimage_reads(image):
-            _, _, proof = R._evidence(state, project, executing_root)
+            _, _, proof = evidence(state, project, executing_root)
             queue = Path(J.select_route(str(project), action='recall')['queuePath'])
         R._need(locks.enter_context(_owner_lock(queue)), 'sync_owner_busy')
         locks.enter_context(R._transition(proof['installId']))
         with _preimage_reads(image):
-            record, att, proof = R._evidence(state, project, executing_root)
+            record, att, proof = evidence(state, project, executing_root)
             _require(proof['installId'] == image.data['install'] and
                      proof['selectionEpoch'] == image.data['epoch'] and
                      R._sha(att) == image.data['attestation_sha'])
             record['creation_epoch'] = image.data['creation_epoch']
             _require(R._sha(b'memvane-reader-endpoint-v1\0' + R._raw(record)) == image.data['endpoint'])
         image.revalidate()
-        if _retire_clean_forward(image, state, project, executing_root):
+        if _retire_clean_forward(image, state, project, executing_root, evidence):
             return
         J._step('initial-recovery-proved')
         _repair_if_hot(image)

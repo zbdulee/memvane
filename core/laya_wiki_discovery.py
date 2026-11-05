@@ -567,7 +567,7 @@ def _lineage_root(db, scope, head, steps=None):
         gen = row[3]
 
 
-def _read_view(decision, base):
+def _read_view(decision, base, *, coordination=None):
     """Prove the selected wiki generation and its sealed lineage in one read.
 
     The source change cursor is separate from membership. A synthetic route
@@ -576,7 +576,7 @@ def _read_view(decision, base):
     """
     from laya_index_a import LayaIndexA
     scope, incarnation, _queue, _roots, _raw = _binding(decision)
-    index = LayaIndexA(decision['dbPath'])
+    index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
     try:
         if index.incarnation() != incarnation:
             raise DiscoveryBlocked('db_incarnation_changed')
@@ -610,7 +610,7 @@ class _PendingOverflow(Exception):
         self.count = count
 
 
-def _raw_snapshot(decision, raw):
+def _raw_snapshot(decision, raw, *, coordination=None):
     """Scan bounded raw roots without adding raw bodies to Laya membership.
 
     Only names and hashes leave this function. The source port checks every
@@ -619,7 +619,7 @@ def _raw_snapshot(decision, raw):
     """
     from laya_index_a import IndexContractError, LayaIndexA
     from laya_index_source_port import scan_collections
-    index = LayaIndexA(decision['dbPath'])
+    index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
     try:
         if index.incarnation() != decision['dbIncarnation']:
             raise DiscoveryBlocked('db_incarnation_changed')
@@ -693,7 +693,7 @@ def _outcome(state, reason=None, **extra):
     return {'state': state, 'reason': reason, **extra}
 
 
-def drain_after_sync(decision, observed, *, recheck):
+def drain_after_sync(decision, observed, *, recheck, coordination=None):
     """Discover, journal and enqueue changed raw revisions; bounded, one pass.
 
     `recheck` re-proves the selected route and raises on change. Outcomes:
@@ -713,7 +713,7 @@ def drain_after_sync(decision, observed, *, recheck):
         with _locked(lock, WORKER_LOCK_SECONDS):
             try:
                 return _drain_locked(decision, seen_ids, recheck, state_path,
-                                     grants_path, roots, raw, observed.get('engines', {}))
+                                     grants_path, roots, raw, observed.get('engines', {}), coordination)
             except DiscoveryBlocked:
                 # The dispatcher ACKs a blocked run's wake, so the grants it
                 # observed end here too; a later wake must not inherit them.
@@ -729,16 +729,16 @@ def drain_after_sync(decision, observed, *, recheck):
         return _outcome('blocked', str(exc))
 
 
-def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines):
+def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination):
     # Whether this run starts the cursor; a blocked run raises and writes none.
     starting = not os.path.lexists(state_path)
-    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines)
+    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination)
     if starting:
         result['cursorStarted'] = True
     return result
 
 
-def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines):
+def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination):
     recheck()
     state = _read(state_path)
     if state is None and os.path.isfile(decision['journalPath']):
@@ -763,8 +763,8 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                for kind in live}
     used = {grant for kind in live for grant in usable[kind]}
     head, base, _base_rows, _head_rows = _read_view(
-        decision, state['baseGen'] if state is not None else None)
-    snapshot = _raw_snapshot(decision, raw)
+        decision, state['baseGen'] if state is not None else None, coordination=coordination)
+    snapshot = _raw_snapshot(decision, raw, coordination=coordination)
     import laya_wiki_backfill as backfill
     # Existing synthetic/noninstalled cursors have no backfill contract. Keep
     # their unchanged/no-pending sync independent of compile configuration.

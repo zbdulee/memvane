@@ -28,7 +28,12 @@ class WriterOpenPlanChecks(unittest.TestCase):
     def setUp(self):
         self.seed = existing.MoveSealChecks('runTest')
         self.addCleanup(self.seed.doCleanups)
-        self.seed.setUp()
+        if self._testMethodName == 'test_unprepared_manifest_refuses_without_content_open_or_registry_changes':
+            windows = importlib.import_module('laya_reader_windows')
+            with mock.patch.object(windows, '_prepare_conversion_windows'):
+                self.seed.setUp()
+        else:
+            self.seed.setUp()
         self.case = self.seed.case
         self.W = importlib.import_module('laya_reader_windows')
         self.J = importlib.import_module('laya_install_journal')

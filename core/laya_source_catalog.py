@@ -655,9 +655,9 @@ class LayaSourceCatalog:
 
     @contextmanager
     def _managed_write(self, *, visible=False):
-        from laya_reader_windows import write_transaction
+        from laya_reader_windows import VISIBLE_WRITE_ADMISSION_SECONDS, write_transaction
         with write_transaction(self._connection_owner, visible=visible,
-                deadline=time.monotonic() + (.05 if visible else 2)) as transaction:
+                deadline=time.monotonic() + (VISIBLE_WRITE_ADMISSION_SECONDS if visible else 2)) as transaction:
             self._check_identity()
             yield transaction
 

@@ -324,7 +324,7 @@ class GenerationBindingStore:
         if create:
             self._create()
         self._node = self._check_node()
-        self._check_file_header()  # before SQLite may roll a journal or open a WAL
+        self._check_file_node()
         try:
             self.db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
                                       isolation_level=None)
@@ -343,7 +343,7 @@ class GenerationBindingStore:
 
     def _preopen_connection(self):
         self._node = self._check_node()
-        self._check_file_header()
+        self._check_file_node()
 
     def _validate_connection(self, db):
         self.db = db
@@ -429,7 +429,7 @@ class GenerationBindingStore:
             _raise_stale('binding store has multiple links')
         return node
 
-    def _check_file_header(self) -> None:
+    def _check_file_node(self) -> None:
         try:
             fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC)
         except OSError as exc:
@@ -438,13 +438,8 @@ class GenerationBindingStore:
             st = os.fstat(fd)
             if (st.st_dev, st.st_ino) != self._node:
                 _raise_stale('binding store replaced')
-            header = os.pread(fd, 100, 0)
         finally:
             os.close(fd)
-        if len(header) < 100 or header[:16] != b'SQLite format 3\x00':
-            _raise_stale('binding store unreadable')
-        if header[18:20] != b'\x01\x01':  # legacy rollback journal, not WAL
-            _raise_stale('binding store journal mode differs')
 
     def _check_store(self) -> str:
         _check_header(self.db)

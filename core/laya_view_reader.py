@@ -126,14 +126,22 @@ class ReaderMixin:
                                         full_vectors=full_vectors)
         return dict(generation), dict(seal), entry['capture'], stage
 
-    def pin_view(self, handle):
+    def pin_view(self, handle, *, deadline=None):
         if self._closed:
             v.fail('view_store_closed')
+        now=time.monotonic()
+        if deadline is None:
+            deadline=now+30
+        elif type(deadline) not in (int,float) or not math.isfinite(deadline):
+            v.fail('fts_query_invalid')
+        else:
+            deadline=min(deadline,now+30)
+        _remaining(deadline)
         issued = self._check(handle)
-        self._observe(issued)
+        self._observe(issued,deadline=deadline)
+        _remaining(deadline)
         if len(self._pins) >= MAX_PINS:
             v.fail('view_pin_limit')
-        deadline = time.monotonic() + 30
         with self._reading(deadline) as db:
             head = self._head(db, handle)
             if head['gen_id'] is None:
@@ -146,7 +154,8 @@ class ReaderMixin:
             # later read re-verifies this seal before using it.
             vector = None if sealed is None else dict(
                 sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
-        self._observe(issued)
+        self._observe(issued,deadline=deadline)
+        _remaining(deadline)
         pin = ViewPin(handle.view_id, head['gen_id'], head['epoch'], self._incarnation, uuid.uuid4().hex)
         # Retain an internal copy rather than a mutable caller-held handle object.
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
@@ -189,7 +198,7 @@ class ReaderMixin:
         record = self._pinned(pin)
         _remaining(deadline)
         entry = record['entry']
-        self._observe(entry)
+        self._observe(entry,deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
             generation, seal, original, _ = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
@@ -223,7 +232,7 @@ class ReaderMixin:
                 display_title=r['display_title'], score=r['score'], view_id=pin.view_id, gen_id=pin.gen_id,
                 evidence='commitment-only', owner_verified=False, snapshot_state=state) for r in rows]
             _remaining(deadline)
-        self._observe(entry)
+        self._observe(entry,deadline=deadline)
         _remaining(deadline)
         return answer
 

@@ -20,6 +20,23 @@ import laya_host_response as response
 
 
 class QaHookChecks(unittest.TestCase):
+    def test_v4_preflight_accepts_new_host_bundle_against_old_selected_route(self):
+        new=self.case.home/'new-host';new.mkdir(mode=0o700)
+        target={**self.case.proof,'pluginRoot':str(new),'sourceCommit':'a'*40,
+                'bundleManifestSha256':'f'*64,'ownershipManifestSha256':'e'*64}
+        challenge=bridge.begin_bridge_preflight(self.case.state,release_commit='a'*40,
+                                                expected_hosts=frozenset(('claude','codex')))
+        payload={'cwd':str(self.case.project),'prompt':bridge.challenge_prompt(challenge)}
+        decision=self.case.decision()
+        self.assertNotEqual(decision['bundleManifestSha256'],target['bundleManifestSha256'])
+        with mock.patch.dict(os.environ,{'MEMVANE_BRIDGE_PREFLIGHT':challenge.challenge_id}), \
+             mock.patch.object(observer,'inspect_full_plugin_candidate',return_value=target):
+            envelope=observer._qa_envelope(payload,'claude',decision,new)
+            self.assertEqual(envelope['hook_stage'],'registered-v4')
+            self.assertEqual(envelope['manifest_sha256'],target['bundleManifestSha256'])
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._qa_envelope(payload,'claude',{**decision,'scopeId':'0'*32},new)
+
     def setUp(self):
         self.helper = base.JournalReaderChecks('runTest')
         self.helper.setUp()

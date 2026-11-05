@@ -15,6 +15,9 @@ spec=importlib.util.spec_from_file_location('remaining_sidecar_helpers',ROOT/'te
 existing=importlib.util.module_from_spec(spec);spec.loader.exec_module(existing)
 
 class RemainingChecks(existing.SidecarWriteChecks):
+    def revisions(self):
+        with self.seed.ro(self.fixture.sidecar) as db:
+            return db.execute('SELECT revision,value FROM publication_revisions ORDER BY revision').fetchall()
     def require(self,name):
         self.assertIn('coordination',inspect.signature(getattr(self.I,name)).parameters,
             'T3 feature RED after actual source/head/vector/sidecar proof: '+name)
@@ -53,13 +56,25 @@ class RemainingChecks(existing.SidecarWriteChecks):
         return dict(deadline=time.monotonic()+10,clock=time.monotonic,before_publish=lambda:None,
             should_yield=lambda:False,require_verified=False,**extra)
     def test_preserve_visible_cut_keeps_actual_old_verified_document_unwritten(self):
+        import laya_publication_revision as revisions
         with self.opened() as (runtime,_snapshot,row,component):
-            base,gen=self.draft(runtime,row);self.require('preserve_previous_head');before=self.rows();error=None;result=None
+            base,gen=self.draft(runtime,row);self.require('preserve_previous_head');before=self.rows();original=self.revisions();error=None;result=None
             with self.held('publish-cut.lock',shared=True):
                 try:result=self.I.preserve_previous_head(runtime.index,self.identity,base,gen,coordination=component)
                 except Exception as exc:error=str(exc)
             self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(before==self.rows())
+            original=self.revisions()
+            actual=revisions.record_sidecar
+            def fail(*args,**kwargs):
+                actual(*args,**kwargs);raise RuntimeError('synthetic_preserve_revision_failure')
+            with mock.patch.object(revisions,'record_sidecar',side_effect=fail):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_preserve_revision_failure'):
+                    self.I.preserve_previous_head(runtime.index,self.identity,base,gen,coordination=component)
+            self.assertEqual(self.rows(),before);self.assertEqual(self.revisions(),original)
             self.assertEqual(self.I.preserve_previous_head(runtime.index,self.identity,base,gen,coordination=component),1)
+            committed=self.revisions();self.assertEqual(len(committed),len(original)+1)
+            self.assertEqual(self.I.preserve_previous_head(runtime.index,self.identity,base,gen,coordination=component),0)
+            self.assertEqual(self.revisions(),committed)
             print(json.dumps(dict(case='sidecar-preserve-cut',error=error,actualVerifiedOld=True,actualSealedDraft=True)),flush=True)
     def test_preserve_head_commit_after_preparation_cannot_pin_old_rows(self):
         with self.opened() as (runtime,_snapshot,row,component):
@@ -76,13 +91,26 @@ class RemainingChecks(existing.SidecarWriteChecks):
             print(json.dumps(dict(case='sidecar-preserve-head-race',injected=injected,error=error,result=result,rowsUnchanged=before==self.rows())),flush=True)
             self.assertEqual(injected,['published']);self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(before==self.rows())
     def test_retire_visible_cut_keeps_actual_missing_member_until_retry(self):
+        import laya_publication_revision as revisions
         with self.opened() as (runtime,_snapshot,_row,component):
-            self.missing(runtime);self.require('retire_missing_documents');before=self.rows();error=None;result=None
+            self.missing(runtime);self.require('retire_missing_documents');before=self.rows();original=self.revisions();error=None;result=None
             with self.held('publish-cut.lock',shared=True):
                 try:result=self.I.retire_missing_documents(runtime,self.identity,before_write=lambda:None,coordination=component)
                 except Exception as exc:error=str(exc)
             self.assertIsNotNone(error);self.assertIsNone(result);self.assertTrue(before==self.rows())
+            original=self.revisions()
+            actual=revisions.record_sidecar
+            def fail(*args,**kwargs):
+                actual(*args,**kwargs);raise RuntimeError('synthetic_retire_revision_failure')
+            with mock.patch.object(revisions,'record_sidecar',side_effect=fail):
+                with self.assertRaisesRegex(RuntimeError,'synthetic_retire_revision_failure'):
+                    self.I.retire_missing_documents(runtime,self.identity,before_write=lambda:None,coordination=component)
+            self.assertEqual(self.rows(),before);self.assertEqual(self.revisions(),original)
             self.assertEqual(self.I.retire_missing_documents(runtime,self.identity,before_write=lambda:None,coordination=component),1)
+            committed=self.revisions();self.assertEqual(len(committed),len(original)+1)
+            receipt=json.loads(committed[-1][1]);self.assertIsNotNone(receipt['before']);self.assertIsNone(receipt['after'])
+            self.assertEqual(self.I.retire_missing_documents(runtime,self.identity,before_write=lambda:None,coordination=component),0)
+            self.assertEqual(self.revisions(),committed)
             print(json.dumps(dict(case='sidecar-retire-cut',error=error,actualMissingMember=True)),flush=True)
     def test_retire_new_catalog_restores_member_before_delete_and_prevents_stale_retirement(self):
         with self.opened() as (runtime,_snapshot,_row,component):

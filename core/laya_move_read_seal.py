@@ -73,23 +73,20 @@ def _logical(path, parent, *, skip_meta=False):
     with R._readonly(path, parent) as db:
         R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)],
                 'reader_move_store_corrupt')
-        digest.update(b'memvane-move-sqlite-v3\0')
+        digest.update(b'memvane-move-sqlite-v4\0')
         digest.update(R._raw([db.execute('PRAGMA application_id').fetchone()[0],
                               db.execute('PRAGMA user_version').fetchone()[0]]))
-        # Document rowids join the ordinary rows to FTS; SQL dumps omit them.
+        # Document rowids join the ordinary rows to FTS.
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='docs'").fetchone():
             for path_, rowid in db.execute('SELECT path,rowid FROM docs ORDER BY path'):
                 data = R._raw(['docs-rowid', path_, rowid])
                 digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
-        for line in db.iterdump():
-            # Only replay comparisons omit these rows; both complete meta
-            # rowsets are checked separately against the proved transition.
-            if skip_meta and line.startswith('INSERT INTO "meta" VALUES('):
-                continue
-            data = line.encode('utf8')
+        for schema in db.execute("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_master "
+                                 "ORDER BY type COLLATE BINARY,name COLLATE BINARY,"
+                                 "tbl_name COLLATE BINARY,sql COLLATE BINARY"):
+            data = R._raw(schema)
             digest.update(len(data).to_bytes(8, 'big')); digest.update(data)
-        # SQLite quote(), used by iterdump(), omits TEXT after its first NUL.
-        # Commit typed, length-framed cells as well as the schema/SQL stream.
+        # Commit typed, length-framed cells, including embedded NUL bytes.
         def frame(raw):
             digest.update(len(raw).to_bytes(8, 'big')); digest.update(raw)
         for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
@@ -253,7 +250,7 @@ def _binding(path, parent, roots, decision, generation):
         store.scope, store.db_incarnation, store.roots = decision['scopeId'], decision['dbIncarnation'], roots
         store._roots_value = capacity._canonical(list(roots.items())).decode('ascii')
         store._node, store.store_id = tuple(R._node(path)), None
-        store._check_file_header(); store._check_store()
+        store._check_file_node(); store._check_store()
         row = db.execute(capacity._LOOKUP_SQL, (store.scope, generation, store.db_incarnation)).fetchone()
         R._need(row is not None, 'reader_move_binding_missing')
         return store._decode(generation, row)

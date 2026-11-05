@@ -245,7 +245,8 @@ class CatalogChecks(existing.QueueMutationChecks):
             def delayed(db,sql,*args,**kwargs):
                 cursor=execute(db,sql,*args,**kwargs)
                 if db is catalog.db and visible[0] and sql=='BEGIN IMMEDIATE':
-                    delays.append(db.in_transaction);time.sleep(.07)
+                    delays.append(db.in_transaction)
+                    time.sleep(self.W.VISIBLE_WRITE_ADMISSION_SECONDS + .05)
                 return cursor
             def rollback_once(db):
                 if db is catalog.db and visible[0]:

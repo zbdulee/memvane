@@ -648,6 +648,10 @@ print(json.dumps(result))'''
     # Runtime file pinning has its own checks (laya-embed-runtime,
     # laya-journal-v4). This synthetic manifest names no Laya runtime
     # generation, so it reads as one pinned generation here.
+    # This legacy v4 fixture has empty synthetic stores; bridge conversion and
+    # mandatory host evidence are tested with published v5-capable stores in
+    # laya-reader-upgrade-proof-checks.py.
+    @mock.patch('laya_active_upgrade._prepare_v4_bridge', new=lambda *a, **kw: None)
     @mock.patch('laya_embed_runtime.sealed_files_sha256', new=lambda _path: 'f' * 64)
     def test_fresh_wiki_active_upgrade_uses_real_journal_and_ledger(self):
         """Sealed old/new synthetic bundles, real CAS, no model or user store."""
@@ -1035,6 +1039,7 @@ print(json.dumps(result))'''
                          'tree ' + _git(self.source, '--no-replace-objects', 'rev-parse',
                                         self.commit1 + '^{tree}'))
 
+    @mock.patch('laya_active_upgrade._prepare_v4_bridge', new=lambda *a, **kw: None)
     def test_same_version_reextract_with_surviving_metadata_recovers(self):
         root, first, _raw = self.selected_on_host_root()
         self.assert_selected_proves(root, self.commit1)
@@ -1051,6 +1056,7 @@ print(json.dumps(result))'''
                             first['ownershipManifestSha256'])
         self.assert_selected_proves(root, self.commit1)
 
+    @mock.patch('laya_active_upgrade._prepare_v4_bridge', new=lambda *a, **kw: None)
     def test_other_commit_metadata_over_tampered_core_file_is_refused(self):
         root, _first, raw = self.selected_on_host_root()
         commit2 = self.commit_v2()
@@ -1066,6 +1072,7 @@ print(json.dumps(result))'''
         self.assertEqual(fresh_wiki._load(self.install / fresh_wiki.LEDGER)['phase'],
                          'active')
 
+    @mock.patch('laya_active_upgrade._prepare_v4_bridge', new=lambda *a, **kw: None)
     def test_other_commit_reextracted_untampered_takes_normal_upgrade(self):
         root, first, _raw = self.selected_on_host_root()
         commit2 = self.commit_v2()

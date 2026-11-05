@@ -38,6 +38,59 @@ INITIAL = ('v5-locked', 'v5-sealed', 'v5-versioned', 'v5-committed')
 COW = ('v5-image-copied', 'v5-image-committed', 'v5-image-fsynced',
        'v5-image-replaced', 'v5-directory-fsynced')
 
+OLD_CAPACITY_WORKER = r'''
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import json,os,signal,sys
+root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
+sys.path.insert(0,str(root/'core'));signal.alarm(35)
+import laya_product_sync_worker as worker,laya_vector_capacity as vectors
+import laya_incremental_docs as incremental
+from laya_index_runtime import LayaIndexRuntime,capacity_store_paths
+from laya_index_host_route import wiki_index_roots
+from laya_index_vector import qmd_markdown_title
+from laya_index_sync import _owner_lock
+from context_learning.resource_coordination import Coordinator
+decision,proof=p['decision'],p['proof'];profile=proof['vectorProfile']
+provider=SimpleNamespace(manifest={'recipeId':'qmd-regex-token-chunks-candidate-v1'},
+    profile={'profile_id':profile['profileId'],'model_id':profile['modelId'],
+             'embedding_fingerprint':profile['embeddingFingerprint'],'dimension':profile['dimension']})
+epoch=proof['selectionEpoch']
+real_cas=worker.cas_mark_new_write
+def selected(_decision):
+    return dict(proof,selectionEpoch=epoch)
+def mark(path,expected):
+    global epoch
+    result=real_cas(path,expected);epoch=result['epoch'];return result
+def pause(runtime,provider,**kwargs):
+    with _owner_lock(Path(decision['queuePath'])) as available:
+        assert available
+    print(json.dumps({'event':'old-capacity-outside-queue-lock','queueAvailable':available,
+                      'module':worker.__file__}),flush=True)
+    assert sys.stdin.readline()=='RELEASE\n'
+    snapshot=runtime.catalog.require_complete()
+    row=runtime.index.db.execute('SELECT m.path,m.hash,c.body FROM head h JOIN membership m ON m.gen=h.gen '
+        'JOIN content c ON c.hash=m.hash WHERE h.scope=? AND m.eligible=1 ORDER BY m.path LIMIT 1',
+        (runtime.scope,)).fetchone()
+    assert row is not None
+    path,sha,body=row
+    kwargs['on_document_complete'](snapshot,path,sha,qmd_markdown_title(body,path),body,profile['profileId'])
+    return {'state':'deferred','reason':'fixture_pause'}
+controller=Coordinator()
+with mock.patch.object(controller,'_admit',return_value={'ready':True}), \
+     mock.patch.object(LayaIndexRuntime,'request_scan',return_value={'status':'queued'}), \
+     mock.patch.object(worker,'verify_selected_route',side_effect=selected), \
+     mock.patch.object(worker,'cas_mark_new_write',side_effect=mark), \
+     mock.patch.object(incremental,'_verified',return_value=True), \
+     mock.patch.object(worker,'_higher_priority_wake',return_value=False), \
+     mock.patch.object(worker,'sync_step',return_value={'state':'pending','reason':'scan_pending'}), \
+     mock.patch.object(vectors,'pending_vector_fill_step',side_effect=pause):
+    result,_=worker._run_capacity(decision,proof,wiki_index_roots(decision['collections']),
+        capacity_store_paths(decision['dbPath']),provider,controller,{},None)
+    assert result=={'state':'deferred','reason':'fixture_pause'}
+'''
+
 
 def emit(case, **row):
     print(json.dumps(dict(case=case, **row), sort_keys=True), flush=True)
@@ -123,6 +176,92 @@ def fixture(converted=False):
 
 
 class RecoveryChecks(unittest.TestCase):
+    def test_selected_identity_read_enforces_query_only(self):
+        with fixture() as (_helper,case,_reader,_bridge,_installer,_readiness,_selected):
+            with J._identity_connection(case.db) as db:
+                self.assertEqual(db.execute('PRAGMA query_only').fetchone(),(1,))
+                with self.assertRaises(sqlite3.OperationalError):
+                    db.execute("INSERT INTO schema_meta VALUES('identity-write','forbidden')")
+            _path,journal=J._open(case.journal,write=False)
+            with closing(journal):
+                self.assertEqual(journal.execute('PRAGMA query_only').fetchone(),(1,))
+
+    def test_read_selection_retries_only_store_replacement_and_is_bounded(self):
+        with fixture(converted=True) as (_,case,reader,_,_,_,_):
+            for reason,attempts in (('reader_store_changed',3),('reader_endpoint_invalid',1)):
+                with self.subTest(reason=reason), mock.patch.object(
+                        reader,'_selection',side_effect=J.JournalEvidenceError(reason)) as selection:
+                    with self.assertRaisesRegex(J.JournalEvidenceError,reason):
+                        reader.read_selection(case.journal)
+                    self.assertEqual(selection.call_count,attempts)
+
+    def test_read_selection_retries_atomic_replacement_during_read(self):
+        with fixture(converted=True) as (helper,case,reader,bridge,installer,_,initial):
+            target=helper.alternate(case,reader,installer,'reader-replacement.sqlite')
+            original=reader._selection
+            changed=[]
+            def replace_after_selection(db):
+                result=original(db)
+                if not changed:
+                    changed.append(True)
+                    with helper.full_authority(case,reader,bridge):
+                        reader.cas_reader(case.journal,expected_epoch=initial.epoch,
+                            expected_endpoint=initial.preferred_endpoint,target=target,
+                            transition_id='3'*32)
+                return result
+            with mock.patch.object(reader,'_selection',side_effect=replace_after_selection):
+                selected=reader.read_selection(case.journal)
+            self.assertEqual(selected.epoch,initial.epoch+1)
+            self.assertEqual(selected.preferred_endpoint,target.endpoint_id)
+
+    def test_conversion_waits_for_actual_released_capacity_worker_between_queue_leases(self):
+        from resource_deferred import ResourceDeferred
+        with fixture() as values:
+            helper,case,reader,bridge,installer,readiness,_=values
+            old=self.old_tree(case)
+            with helper.full_authority(case,reader,bridge):
+                decision=J.select_route(str(case.project),action='recall')
+                proof=J.verify_selected_route(decision)
+            payload=case.home/'old-capacity-provider.json'
+            payload.write_text(json.dumps({'decision':decision,'proof':proof}),encoding='utf8')
+            payload.chmod(0o600)
+            process=subprocess.Popen([sys.executable,'-B','-I','-c',OLD_CAPACITY_WORKER,str(old),str(payload)],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+            try:
+                self.assertTrue(select.select([process.stdout],[],[],20)[0],'old capacity checkpoint timed out')
+                line=process.stdout.readline()
+                if not line:
+                    _out,err=process.communicate(timeout=5)
+                    self.fail('old capacity worker failed: '+err)
+                ready=json.loads(line)
+                self.assertEqual(ready['event'],'old-capacity-outside-queue-lock')
+                self.assertTrue(ready['queueAvailable'])
+                self.assertEqual(Path(ready['module']).resolve(),old/'core/laya_product_sync_worker.py')
+                from laya_index_sync import _owner_lock
+                with _owner_lock(Path(decision['queuePath'])) as available:
+                    self.assertTrue(available, 'old worker must release queue before conversion')
+                before=Path(case.journal).read_bytes()
+                with helper.full_authority(case,reader,bridge):
+                    with self.assertRaises(ResourceDeferred):
+                        reader.convert_reader_v5(case.state,case.project,installer=installer,readiness=readiness)
+                    self.assertEqual(Path(case.journal).read_bytes(),before)
+                    self.assertEqual(J.journal_version(case.journal),4)
+                process.stdin.write('RELEASE\n');process.stdin.flush()
+                _out,err=process.communicate(timeout=10)
+                self.assertEqual(process.returncode,0,err)
+                sidecar=case.state/'laya-incremental-docs.sqlite'
+                with closing(sqlite3.connect('file:'+str(sidecar)+'?mode=ro',uri=True)) as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone()[0],1)
+                with helper.full_authority(case,reader,bridge):
+                    selected=reader.convert_reader_v5(case.state,case.project,installer=installer,readiness=readiness)
+                self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)
+                emit('actual-released-capacity-provider',release=READER_BRIDGE_FIXTURE_COMMIT,
+                     queueAvailable=ready['queueAvailable'],conversionDeferred=True,
+                     oldWorkerFinished=True,conversionAfterExit=True,actualHostExecuted=False)
+            finally:
+                if process.poll() is None:
+                    process.kill();process.communicate(timeout=5)
+
     def snapshot(self, helper, case):
         return dict(data=helper.data_snapshot(case), metadata=helper.metadata_snapshot(case),
                     head=case.head(), bundle=J.inspect_journal(case.journal))
@@ -947,6 +1086,16 @@ class RecoveryChecks(unittest.TestCase):
             self.assertEqual(writes, [])
             self.assertEqual(Path(case.journal).read_bytes(), original)
             self.assertEqual(Path(str(case.journal) + '-journal').read_bytes(), rollback)
+            actual_pread=os.pread
+            inode=Path(case.journal).stat().st_ino
+            def reject_header_read(fd,size,offset):
+                if os.fstat(fd).st_ino==inode and (size,offset)==(4,60):
+                    raise AssertionError('journal version must be checked by SQLite')
+                return actual_pread(fd,size,offset)
+            with mock.patch.object(os,'pread',side_effect=reject_header_read), self.live_rw_opens(case.journal) as writes:
+                with self.assertRaises(J.JournalEvidenceError):
+                    J._open(case.journal,write=True)
+            self.assertEqual(writes,[])
 
     def test_preimage_context_denies_write_and_other_journal_and_resets_after_exception(self):
         import laya_journal_recovery as recovery

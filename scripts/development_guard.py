@@ -395,7 +395,7 @@ def run_job(args,root):
 def main():
     global PROBE_DEADLINE
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind',choices=('test','model-test','backup','hash'),default='test')
+    parser.add_argument('--kind',choices=('test','model-test','review','backup','hash'),default='test')
     parser.add_argument('--sample-only',action='store_true')
     parser.add_argument('--sample-seconds',type=float,default=5)
     parser.add_argument('--max-seconds',type=float,default=900)

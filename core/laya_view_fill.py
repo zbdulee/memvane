@@ -122,6 +122,7 @@ class FillMixin:
 
     def fill_view(self, handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence,
                   expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30):
+        self._require_write()
         deadline = _deadline(deadline_seconds)
         _bounded(expected_cursor, 0, fill_schema.MAX_TARGETS, 'fill_cursor_invalid')
         _bounded(max_files, 1, MAX_FILES, 'fill_limit_invalid')

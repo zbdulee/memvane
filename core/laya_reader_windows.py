@@ -40,6 +40,10 @@ class ReaderCloseDeferred(RuntimeError):
     pass
 
 
+# Admission budget, not a guarantee on SQLite or filesystem lock-hold time.
+VISIBLE_WRITE_ADMISSION_SECONDS = .2
+
+
 @dataclass(frozen=True, eq=False, init=False)
 class Component:
     install_id: str
@@ -192,6 +196,27 @@ def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
     _manifest(install_id, parent, parent_fd, parent_info)
 
 
+def _prepare_conversion_windows(installer):
+    """Prepare the lock namespace under the conversion owner's exclusions."""
+    endpoint=R._installer(installer,conversion=True)
+    install_id=endpoint.record['install_id']
+    parent,parent_fd,parent_info = L._parent(install_id, create=False)
+    try:
+        if os.path.lexists(parent / _MANIFEST):
+            info=os.stat(_MANIFEST,dir_fd=parent_fd,follow_symlinks=False)
+            if info.st_nlink == 1:
+                _manifest(install_id,parent,parent_fd,parent_info)
+                return
+        with L.reader_lifetime(install_id, exclusive=True):
+            if not os.path.lexists(parent / _MANIFEST):
+                _prepare_initial(install_id,parent,parent_fd,parent_info)
+            elif os.stat(_MANIFEST,dir_fd=parent_fd,follow_symlinks=False).st_nlink == 2:
+                _recover_manifest_link(install_id,parent,parent_fd,parent_info)
+            _manifest(install_id,parent,parent_fd,parent_info)
+    finally:
+        os.close(parent_fd)
+
+
 def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
     R._installer(installer)
@@ -254,7 +279,8 @@ def _location(endpoint, role):
 def component_for(installer, role):
     import laya_writer_scope as normal
     if type(installer) is normal.NormalWriter:
-        R._need(role in ('base', 'queue'), 'normal_writer_component_unsupported')
+        R._need(role in ('base', 'queue', 'catalog', 'binding', 'sidecar'),
+                'normal_writer_component_unsupported')
     endpoint, scope = _owner(installer)
     path, node = _location(endpoint, role)
     record = endpoint.record
@@ -385,6 +411,55 @@ def _proof_windows(component, *, deadline):
             stack.enter_context(_window(component, 'physical', exclusive=True,
                                         deadline=deadline, proof_role=role))
         yield
+
+
+@contextmanager
+def reader_proof_windows(install_id, *, deadline, roles=None):
+    """Hold pre-existing physical SH locks while resolving reader proof.
+
+    This is a lock boundary only: it issues no endpoint or cohort capability.
+    The caller separately holds and validates the selected reader lifetime.
+    """
+    _deadline(deadline)
+    if roles is None:
+        roles = _ROLES
+    R._need(isinstance(roles, (tuple, list)) and bool(roles)
+            and all(type(role) is str and role in _ROLES for role in roles)
+            and len(set(roles)) == len(roles), 'reader_window_mode_invalid')
+    lifetime = _Lifetime(install_id)
+    opened = []
+    try:
+        try:
+            manifest = _manifest(install_id, lifetime.parent, lifetime.parent_fd,
+                                 lifetime.parent_info)
+        except FileNotFoundError as exc:
+            raise ReaderWindowBusy('reader_windows_not_prepared') from exc
+        for role in sorted(roles):
+            name = f'{role}-physical.lock'
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                         dir_fd=lifetime.parent_fd)
+            opened.append(fd)
+            L._private_file(os.fstat(fd))
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        raise ReaderWindowBusy('reader_physical_busy') from exc
+                    time.sleep(min(0.005, remaining))
+            _named(install_id,lifetime.parent,lifetime.parent_fd,lifetime.parent_info,name,fd)
+            R._need(_manifest(install_id,lifetime.parent,lifetime.parent_fd,lifetime.parent_info)
+                    == manifest, 'reader_windows_changed')
+            R._need(time.monotonic() < deadline, 'reader_physical_deadline')
+        yield
+        R._need(_manifest(install_id,lifetime.parent,lifetime.parent_fd,lifetime.parent_info)
+                == manifest, 'reader_windows_changed')
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+        lifetime.close()
 
 
 def physical_window(component, *, exclusive, deadline):
@@ -584,7 +659,9 @@ def _connect_owned(component, mode):
         lifetime = _Lifetime(component.install_id)
         if is_normal:
             normal._connection_check(installer, component.role, component.path)
-        db = sqlite3.connect(component.path.as_uri() + '?mode=' + mode, uri=True,
+        from laya_index_a import _query_only_uri
+        uri = _query_only_uri(component.path) if mode == 'ro' else component.path.as_uri() + '?mode=' + mode
+        db = sqlite3.connect(uri, uri=True,
                              timeout=2, isolation_level=None, factory=_OwnedSQLite)
     except BaseException:
         if lifetime is not None:
@@ -595,7 +672,9 @@ def _connect_owned(component, mode):
     owner = _OwnedConnection(component, db, lifetime, pin)
     _owned[id(owner)] = owner
     try:
-        if mode == 'rw':
+        if mode == 'ro':
+            db.execute('PRAGMA query_only=ON')
+        elif mode == 'rw':
             # Automatic checkpoints cannot run under an ordinary mutation SH.
             # Explicit checkpoint admission is a separate mutation/physical EX.
             R._need(db.execute('PRAGMA wal_autocheckpoint=0').fetchone() == (0,),
@@ -699,7 +778,6 @@ class _DeleteTransaction(_WriteTransaction):
 
     def before_execute(self, sql):
         from laya_index_capacity import _INSERT_SQL, _LOOKUP_SQL
-        self._binding()
         adopt = self.insert_allowed and sql == _INSERT_SQL
         allowed = sql in (_LOOKUP_SQL, 'SELECT key, value FROM meta',
             'SELECT type, name, tbl_name, sql FROM sqlite_master',
@@ -707,6 +785,11 @@ class _DeleteTransaction(_WriteTransaction):
             'PRAGMA busy_timeout', 'BEGIN IMMEDIATE') or (
             isinstance(sql, str) and re.fullmatch(r'PRAGMA busy_timeout=\d+', sql) is not None)
         R._need(adopt or allowed, 'reader_delete_sql_unsupported')
+        # SQLite holds the write transaction across the read-only schema and
+        # metadata queries. Recheck the named files at the actual BEGIN and
+        # INSERT boundaries; commit and rollback have their own checks.
+        if adopt or sql == 'BEGIN IMMEDIATE':
+            self._binding()
         if adopt:
             R._need(self.journal_fd is None, 'reader_delete_insert_repeated')
             self.insert_allowed = False
@@ -732,7 +815,7 @@ class _DeleteTransaction(_WriteTransaction):
                 raise
             finally:
                 if fd is not None:os.close(fd)
-        self._binding()
+            self._binding()
 
     def insert_binding(self, parameters):
         from laya_index_capacity import _INSERT_SQL
@@ -823,6 +906,11 @@ def _transaction_context(owner, *, visible, deadline, delete=False, shared_cut=F
     _pid, installer, scope, _node, _manifest = _component(owner.component)
     _endpoint, current = _owner(installer)
     R._need(current is scope, 'reader_component_owner_changed')
+    if visible:
+        import laya_writer_scope as normal
+        if type(installer) is normal.NormalWriter:
+            R._need(normal._record(installer).get('marked') is True,
+                    'normal_writer_intent_required')
     transaction = _DeleteTransaction(owner) if delete else _WriteTransaction(owner)
     owner.transaction = transaction
     try:
@@ -838,7 +926,8 @@ def _transaction_context(owner, *, visible, deadline, delete=False, shared_cut=F
             transaction.locks.enter_context(publish_window(owner.component,
                 exclusive=False, deadline=deadline))
         connection_binding(owner, owner.db)
-        R._need(time.monotonic() < deadline, 'reader_write_deadline')
+        if time.monotonic() >= deadline:
+            raise ReaderWindowBusy('reader_write_deadline')
         # A native SQLite writer can outlive our cooperative lock admission.
         # Limit that driver's busy wait to the remaining caller budget, then
         # recheck after BEGIN before any caller DML is allowed to run.
@@ -854,7 +943,8 @@ def _transaction_context(owner, *, visible, deadline, delete=False, shared_cut=F
                 owner.pending = True
                 transaction.configuration_failed = True
                 raise
-        R._need(time.monotonic() < deadline, 'reader_write_deadline')
+        if time.monotonic() >= deadline:
+            raise ReaderWindowBusy('reader_write_deadline')
         yield transaction
         if owner.transaction is transaction:
             transaction.commit()
@@ -870,6 +960,9 @@ def _transaction_context(owner, *, visible, deadline, delete=False, shared_cut=F
             except BaseException:
                 if hasattr(error, 'add_note'):
                     error.add_note('reader SQL rollback remains strongly owned and pending')
+        if isinstance(error, ReaderWindowBusy) and (owner.pending or
+                (owner.transaction is transaction and transaction.rollback_pending) or owner.db.in_transaction):
+            error.rollback_pending = True
         raise
 
 
@@ -998,6 +1091,41 @@ def checkpoint_owned(owner, *, deadline):
             R._file(wal, Path(endpoint.record['state']))
             R._need(wal.lstat().st_size == 0, 'reader_checkpoint_result_invalid')
             return dict(state='reset_complete', checkpoint=result)
+
+
+def open_owned_read(component, *, path, deadline):
+    """Open a NormalWriter sidecar read-only under its issued windows."""
+    import laya_writer_scope as normal
+    R._need(threading.current_thread() is threading.main_thread(),
+            'reader_connection_main_thread_required')
+    _pid, installer, scope, node, _manifest = _component(component)
+    R._need(type(installer) is normal.NormalWriter and component.role == 'sidecar'
+            and node is not None, 'reader_component_owner_changed')
+    endpoint, current = _owner(installer)
+    R._need(current is scope and Path(path) == component.path,
+            'reader_component_owner_changed')
+    with _proof_windows(component, deadline=deadline):
+        normal.validate_normal_writer(installer)
+        R._need(normal._record(installer).get('created_sidecar_node') is None,
+                'normal_writer_sidecar_creation_unfinished')
+        before = normal._connection_image(installer, component.role, component.path)
+        auxiliaries = _auxiliary_nodes(component.path, Path(endpoint.record['state']))
+        owner = _connect_owned(component, 'ro')
+        try:
+            owner.db.execute('PRAGMA query_only=ON')
+            normal._validate_identity(installer, component.role, owner.db)
+            current_auxiliaries = _auxiliary_nodes(component.path, Path(endpoint.record['state']))
+            R._need(normal._connection_image(installer, component.role, component.path) == before
+                    and all(value is None or current_auxiliaries[suffix] == value
+                            for suffix,value in auxiliaries.items()),
+                    'normal_writer_image_changed')
+            owner.auxiliaries = current_auxiliaries
+            owner.journal_mode = 'wal'
+            connection_binding(owner, owner.db)
+            return owner
+        except BaseException:
+            owner.close_locked()
+            raise
 
 
 def open_owned(component, *, path, validate, initialize, deadline, preopen=None):
@@ -1134,6 +1262,11 @@ def _local_pending():
 def pending_count():
     # Observation is process-wide; draining remains restricted to the owner.
     return sum(owner.pending and owner.pid == os.getpid() for owner in list(_owned.values()))
+
+
+def local_pending_count():
+    """Pending handles that this creator thread is allowed to drain."""
+    return len(_local_pending())
 
 
 def drain_pending(*, deadline):

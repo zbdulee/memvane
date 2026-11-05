@@ -123,14 +123,24 @@ def _material(token):
 
 def _connect_material(token, mode):
     item = _material(token)
-    lifetime = W._Lifetime(item.component.install_id)
+    import laya_writer_scope as normal
+    installer = W._component(item.component)[1]
+    pin = None
+    if type(installer) is normal.NormalWriter:
+        normal.validate_normal_writer(installer)
+        pin = normal._record(installer)['context'].queue_owner.pin()
+    lifetime = None
     try:
+        lifetime = W._Lifetime(item.component.install_id)
         db = sqlite3.connect((item.state / item.name).as_uri() + '?mode=' + mode,
                              uri=True, timeout=2, isolation_level=None, factory=W._OwnedSQLite)
     except BaseException:
-        lifetime.close()
+        if lifetime is not None:
+            lifetime.close()
+        if pin is not None:
+            pin.close()
         raise
-    owner = W._OwnedConnection(item.component, db, lifetime)
+    owner = W._OwnedConnection(item.component, db, lifetime, pin)
     owner.private_material = token
     W._owned[id(owner)] = owner
     try:
@@ -165,21 +175,20 @@ def _initialize(token, identity):
 def _verify(token, identity):
     item = _material(token)
     _no_aux(item.state / item.name)
-    header = os.pread(item.fd, 100, 0)
-    R._need(header[:16] == b'SQLite format 3\0' and header[18:20] == b'\1\1',
-            'reader_create_material_changed')
     owner = _connect_material(token, 'ro')
     try:
         db = owner.db
         db.execute('PRAGMA query_only=ON')
         db.execute('PRAGMA trusted_schema=OFF')
+        R._need(db.execute('PRAGMA journal_mode').fetchone() == ('delete',),
+                'reader_create_material_changed')
         db.execute('BEGIN')
         R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
                 and db.execute('PRAGMA application_id').fetchone() == (0,)
                 and db.execute('PRAGMA user_version').fetchone() == (1,)
                 and db.execute('SELECT * FROM meta').fetchall() == [incremental._expected_meta(identity)],
                 'reader_create_material_changed')
-        for table in ('docs', 'docs_fts', 'cached_backfill'):
+        for table in ('docs', 'docs_fts', 'cached_backfill', 'publication_revisions'):
             R._need(db.execute('SELECT count(*) FROM ' + table).fetchone() == (0,),
                     'reader_create_material_changed')
         # A same-engine reference checks the full DDL including FTS shadows;
@@ -223,6 +232,59 @@ def _dispose(token, *, published):
         _materials.pop(token, None)
 
 
+def resume_empty_sidecar_owned(component, *, identity, deadline):
+    """Resume a fenced, empty DELETE-format sidecar after interrupted creation."""
+    import laya_writer_scope as normal
+    W._deadline(deadline)
+    _pid, writer, scope, node, _manifest = W._component(component)
+    R._need(type(writer) is normal.NormalWriter and component.role == 'sidecar'
+            and node is not None, 'reader_component_owner_changed')
+    record = normal._record(writer)
+    R._need(record.get('marked') is True and record['context'] is scope,
+            'normal_writer_sidecar_creation_unapproved')
+    state = R._state(scope.state)
+    path = component.path
+    try:
+        with W.mutation_window(component, exclusive=False, deadline=deadline):
+            with W._proof_windows(component, deadline=deadline):
+                with W.publish_window(component, exclusive=True, deadline=deadline):
+                    normal.validate_normal_writer(writer, deadline=deadline)
+                    R._need(path == state / incremental.FILE and
+                            not any(os.path.lexists(str(path)+suffix) for suffix in _AUX),
+                            'normal_writer_sidecar_creation_changed')
+                    record['created_sidecar_node'] = list(node)
+                    before = normal._connection_image(writer, 'sidecar', path)
+                    owner = W._connect_owned(component, 'ro')
+                    try:
+                        db = owner.db
+                        db.execute('PRAGMA query_only=ON')
+                        normal._validate_identity(writer, 'sidecar', db)
+                        R._need(db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+                                and incremental._schema_rows(db) in incremental._schema_variants()
+                                and all(db.execute('SELECT count(*) FROM ' + name).fetchone() == (0,)
+                                        for name in ('docs', 'docs_fts'))
+                                and all(db.execute('SELECT count(*) FROM ' + name).fetchone() == (0,)
+                                        for name in ('cached_backfill', 'publication_revisions')
+                                        if any(row[1] == name for row in incremental._schema_rows(db))),
+                                'normal_writer_sidecar_creation_changed')
+                    finally:
+                        owner.close_locked()
+                    R._need(normal._connection_image(writer, 'sidecar', path) == before
+                            and not any(os.path.lexists(str(path)+suffix) for suffix in _AUX),
+                            'normal_writer_sidecar_creation_changed')
+                    normal.validate_normal_writer(writer, deadline=deadline)
+        opened = incremental._open_coordinated(path, component, identity, deadline=deadline)
+        try:
+            normal.finish_created_sidecar(writer, deadline=deadline)
+        except BaseException:
+            W.close_owned(opened, deadline=deadline)
+            raise
+        return opened
+    except BaseException:
+        record.pop('created_sidecar_node', None)
+        raise
+
+
 def create_sidecar_owned(component, *, identity=None, deadline):
     W._deadline(deadline)
     R._need(threading.current_thread() is threading.main_thread(),
@@ -230,6 +292,16 @@ def create_sidecar_owned(component, *, identity=None, deadline):
     _pid, installer, scope, node, _manifest = W._component(component)
     R._need(component.role == 'sidecar' and node is None, 'reader_component_not_absent')
     endpoint, current = W._owner(installer)
+    import laya_writer_scope as normal
+    is_normal = type(installer) is normal.NormalWriter
+    if is_normal:
+        R._need(normal._record(installer).get('marked') is True,
+                'normal_writer_intent_required')
+    def recheck():
+        if is_normal:
+            normal.validate_normal_writer(installer, deadline=deadline)
+        else:
+            R._recheck(endpoint)
     R._need(current is scope, 'reader_component_owner_changed')
     state = R._state(endpoint.record['state'])
     R._need(component.path == state / incremental.FILE, 'reader_component_changed')
@@ -246,7 +318,7 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                 # Admission precedes even the first full-proof content open.
                 with W.publish_window(component, exclusive=True, deadline=deadline):
                     _absent(state, parent_fd, info)
-                R._recheck(endpoint)
+                recheck()
                 record = build.read(state)
                 R._need(record is not None, 'reader_build_missing')
                 actual_identity = record['identity']
@@ -258,7 +330,7 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                 digest = _verify(material, actual_identity)
                 R._need(time.monotonic() < deadline, 'reader_create_deadline')
                 # Full validation stays outside the short publication cut.
-                R._recheck(endpoint)
+                recheck()
                 with W.publish_window(component, exclusive=True, deadline=deadline):
                     _endpoint, current = W._owner(installer)
                     R._need(current is scope, 'reader_component_owner_changed')
@@ -277,14 +349,24 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                     _no_aux(component.path)
                     _fsync(parent_fd)
                     published = True
+                    if is_normal:
+                        normal.adopt_created_sidecar(installer, material, published_node,
+                                                     deadline=deadline)
         # The old absence descriptor is never promoted into an RW capability.
         # Release creation cut/mutation/physical locks before normal reopen.
         new_component = W.component_for(installer, 'sidecar')
         R._need(W._component(new_component)[3] == published_node,
                 'reader_create_target_changed')
         R._need(time.monotonic() < deadline, 'reader_create_deadline')
-        return incremental._open_coordinated(component.path, new_component, actual_identity,
-                                             deadline=deadline)
+        opened = incremental._open_coordinated(component.path, new_component, actual_identity,
+                                                deadline=deadline)
+        if is_normal:
+            try:
+                normal.finish_created_sidecar(installer, deadline=deadline)
+            except BaseException:
+                W.close_owned(opened, deadline=deadline)
+                raise
+        return opened
     finally:
         try:
             if material is not None:

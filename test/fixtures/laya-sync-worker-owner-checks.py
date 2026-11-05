@@ -18,6 +18,7 @@ from laya_index_sync import sync_owner
 import laya_wiki_discovery as discovery
 import laya_embed_resident as resident
 import laya_resident_service as resident_service
+import laya_install_journal as journal
 
 PROBE=r'''
 import json,signal,sys
@@ -61,6 +62,8 @@ class WorkerOwnerChecks(unittest.TestCase):
         stack=ExitStack()
         self.addCleanup(stack.close)
         patches=[mock.patch.object(worker,'_selected',side_effect=lambda _p:(fixture.decision,fixture.proof())),
+            mock.patch.object(worker,'select_route',return_value=fixture.decision),
+            mock.patch.object(journal,'journal_version',return_value=4),
             mock.patch.object(worker,'ReviewedLocalQmdProvider',fixture.provider_class()),
             mock.patch.object(worker,'resource_report',return_value={'ready':True}),
             mock.patch.object(worker,'verify_selected_route',side_effect=lambda _d:fixture.proof()),
