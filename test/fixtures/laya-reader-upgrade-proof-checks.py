@@ -932,10 +932,12 @@ class UpgradeProofChecks(unittest.TestCase):
     def test_prepared_upgrade_fence_keeps_persisted_reader(self):
         seed=fixture.MoveSealChecks('runTest');self.addCleanup(seed.doCleanups);seed.setUp()
         case,reader,lease=seed.case,seed.reader,seed.lease
+        actual_executing_root=reader.journal._verified_executing_root
         upgrade=importlib.import_module('laya_active_upgrade')
         new=case.home/'new-plugin';new.mkdir()
         target={**case.proof,'pluginRoot':str(new),'sourceCommit':'a'*40,
-                'bundleManifestSha256':'b'*64,'ownershipManifestSha256':'f'*64}
+                'bundleManifestSha256':'b'*64,'ownershipManifestSha256':'f'*64,
+                'includedFiles':['core/fixture.py']}
         old_att=json.loads((case.state/reader.journal.PRODUCTION_ATTESTATION).read_bytes())
         new_att={**old_att,'sourceCommit':target['sourceCommit'],
                  'bundleManifestSha256':target['bundleManifestSha256'],
@@ -998,6 +1000,19 @@ class UpgradeProofChecks(unittest.TestCase):
                 self.assertIn('otter',(answer or {}).get('context',''))
             selected=routes.select_hook_payload('recall',json.dumps(payload).encode(),str(case.project))
             self.assertEqual(selected['state'],'reader')
+            companion=case.home/'new-companion';companion.mkdir()
+            companion_proof={**target,'pluginRoot':str(companion)}
+            with mock.patch.object(reader.journal,'__file__',str(companion/'core/laya_install_journal.py')), \
+                 mock.patch.object(reader.journal,'_verified_executing_root',side_effect=actual_executing_root), \
+                 mock.patch.object(reader.journal,'_executing_from_candidate'), \
+                 mock.patch.object(reader.journal,'inspect_full_plugin_candidate',return_value=companion_proof):
+                with lease.resolve_endpoint(case.project,action='recall',host_root=companion) as endpoint:
+                    self.assertEqual(endpoint.endpoint_id,expected)
+                with mock.patch.object(reader.journal,'inspect_full_plugin_candidate',
+                                       return_value={**companion_proof,'includedFiles':['other.py']}):
+                    with self.assertRaisesRegex(ValueError,'executing_bundle_not_selected'):
+                        with lease.resolve_endpoint(case.project,action='recall',host_root=companion):
+                            pass
             with mock.patch.object(host,'__file__',str(case.plugin/'core/laya_host_response.py')), \
                  mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')), \
                  mock.patch('laya_fresh_wiki_origin.request_recovery',side_effect=AssertionError('reader requested recovery')):
@@ -1346,6 +1361,21 @@ with helper.full_authority(case,reader,lease), \\
                      mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(new)), \
                      mock.patch.object(reader.journal,'_provider_file_identity',
                                        return_value=[[str(new/'p.py'),1,2,3,4,5]]):
+                    with mock.patch.object(host,'__file__',str(new/'core/laya_host_response.py')):
+                        answer=host.serve_endpoint_recall('hermes',payload,cwd=str(case.project))
+                        self.assertIn('otter',answer['context'])
+                        # The previously classified reader may enter after the
+                        # real ledger changes to active, on both host adapters.
+                        output=io.StringIO()
+                        with mock.patch.object(host,'select_hook_payload',return_value=selected), \
+                             mock.patch.object(sys,'stdin',io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode()),encoding='utf8')), \
+                             redirect_stdout(output):
+                            self.assertEqual(host.main(['serve-stdin','recall','claude',str(case.project)]),0)
+                        self.assertIn('otter',json.loads(output.getvalue())['hookSpecificOutput']['additionalContext'])
+                        with mock.patch.dict(os.environ,{'QMD_SANDBOX':'','HERMES_SANDBOX':'','HERMES_HEADLESS':''}), \
+                             mock.patch.object(core_bridge,'_laya_route_state',return_value='reader'):
+                            result=core_bridge.recall_context(user_message='otter',cwd=str(case.project))
+                        self.assertIn('otter',(result or {}).get('context',''))
                     with lease.resolve_endpoint(case.project,action='recall',host_root=new) as endpoint:
                         self.assertEqual(endpoint.endpoint_id,expected)
                     (case.state/upgrade.INTENT).rename(case.state/'archived-test-intent.json')

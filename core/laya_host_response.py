@@ -1688,7 +1688,7 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
 
 
 def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None) -> dict:
-    """Serve a proved fenced v6 endpoint without starting or waking workers."""
+    """Serve a proved v6 endpoint during or immediately after a fence."""
     if host not in ('claude','codex','hermes') or not isinstance(payload,dict):
         _fail('invalid_hook_payload')
     requested = payload.get('cwd',cwd)
@@ -1700,7 +1700,7 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
     import laya_fresh_wiki_origin as fresh
     if drift_decision is None:
         hint = fresh._fence_record(requested)
-        if hint is None or hint['phase'] != 'upgrading':
+        if hint is None or hint['phase'] not in ('upgrading', 'active'):
             _fail('reader_selection_unproved')
         project = Path(hint['projectRoot'])
     else:

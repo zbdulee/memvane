@@ -695,14 +695,24 @@ def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestati
     reader._need(observed == expected and decision.get('state') == 'candidate' and
                  reader._sha(reader._raw(decision['recallSettings'])) == stored['settings'] and
                  decision['collections'] == stored['roots'], 'reader_upgrade_route_changed')
-    if str(root) == intent['newProof']['pluginRoot']:
+    target = intent['newProof']
+    target_host = str(root) == target['pluginRoot']
+    if not target_host:
+        try:
+            old_identity = intent['journalBefore']['selected']
+            owner = journal._inspect_identity(old_identity)
+            executing = journal._verified_executing_root(old_identity, owner)
+            reader._need(executing == str(root), 'reader_upgrade_host_unproved')
+        except (ValueError, OSError):
+            target_host = True
+    if target_host:
         _verify_recovery_target(intent)
-        journal._executing_from_candidate(root)
-        executing = str(root)
-    else:
-        old_identity = intent['journalBefore']['selected']
-        owner = journal._inspect_identity(old_identity)
-        executing = journal._verified_executing_root(old_identity, owner)
+        if str(root) == target['pluginRoot']:
+            journal._executing_from_candidate(root)
+            executing = str(root)
+        else:
+            owner = inspect_full_plugin_candidate(target['pluginRoot'])
+            executing = journal._verified_executing_root(target, owner)
     reader._need(executing == str(root), 'reader_upgrade_host_unproved')
     proof = {'readOnlyAllowed': True, 'productRouteAllowed': False,
              'executingPluginRoot': executing, 'selectionEpoch': selected['epoch'],
@@ -710,7 +720,7 @@ def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestati
              'installId': decision['installId'], 'scopeId': decision['scopeId'],
              'dbIncarnation': decision['dbIncarnation'], 'vectorProfile': decision['vectorProfile'],
              'readerDecision': decision}
-    if str(root) == intent['newProof']['pluginRoot']:
+    if target_host:
         proof['providerManifest'] = json.loads(intent['newAttestation'])['providerManifest']
     current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
                                                                   old, store_info,

@@ -7,6 +7,7 @@
 - 첫 sidecar 문서 게시 전 base에 불변 의존성 표시를 기록한다. 게시된 sidecar가 없으면 검색과 빈 sidecar 재생성을 거절한다.
 - 기본 Python 3.9에서는 승인된 기존 DB의 `mode=rw` 연결 직후 `query_only=ON`을 사용한다. SQLite 자체 WAL/SHM 초기화는 허용하고 optional DB 본체의 새 생성과 논리 데이터·세대·journal 변경은 허용하지 않는다.
 - upgrade fence와 이동 복구 중에는 증명된 endpoint의 read-only 검색만 허용한다. T3 물리 연결·writer·rollback drain, T6 복구, T7 host 분기 검사는 합성 설치와 실제 SQLite/프로세스 경계의 범위에서 기록한다.
+- fence 중 새 릴리스 companion은 owner와 전체 번들·실행 코드 일치가 증명된 경우 검색한다. 분류 직후 fence가 해제된 요청도 journal과 endpoint를 다시 증명해 검색한다.
 - upgrade 진단은 작업별 불투명 ID·시도·고정 단계와 사유를 기록한다. 새 프롬프트 원문과 extractor stderr 원문은 기록하지 않는다.
 - Hermes recall classifier는 upgrade fence의 대기와 subprocess 시작 시간을 포함한 3초의 유한 예산을 사용한다. 손상된 route와 임의의 classifier 실패는 계속 거절한다.
 
