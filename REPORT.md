@@ -5,7 +5,7 @@
 - v4에서 v5로 넘어갈 때 등록된 Claude·Codex host의 bridge preflight를 요구한다. 이미 실행 중인 구버전 recall 전체를 배제한다고 주장하지 않는다.
 - 선택된 v6 reader는 base·catalog·binding·sidecar의 고정 snapshot과 증명된 revision을 사용한다. 전환 전 legacy sidecar의 completed 상태는 endpoint에 봉인하며 첫 writer는 그 baseline과 일치하는 상태에서 receipt를 발급한다.
 - 첫 sidecar 문서 게시 전 base에 불변 의존성 표시를 기록한다. 게시된 sidecar가 없으면 검색과 빈 sidecar 재생성을 거절한다.
-- 새 host cache의 bridge preflight는 설치 commit과 marketplace source를 대조하고 기존 exact-commit adoption으로 cache를 봉인한 뒤 등록 hook을 관측한다. 손상된 기존 봉인과 다른 commit은 거절한다.
+- host cache의 bridge preflight는 설치 commit과 marketplace source를 대조하고 기존 exact-commit adoption으로 cache 봉인을 확인·복구한 뒤 등록 hook을 관측한다. 예상하지 못한 metadata와 다른 commit은 거절한다.
 - 기본 Python 3.9에서는 승인된 기존 DB의 `mode=rw` 연결 직후 `query_only=ON`을 사용한다. SQLite 자체 WAL/SHM 초기화는 허용하고 optional DB 본체의 새 생성과 논리 데이터·세대·journal 변경은 허용하지 않는다.
 - upgrade fence와 이동 복구 중에는 증명된 endpoint의 read-only 검색만 허용한다. T3 물리 연결·writer·rollback drain, T6 복구, T7 host 분기 검사는 합성 설치와 실제 SQLite/프로세스 경계의 범위에서 기록한다.
 - fence 중 새 릴리스 companion은 owner와 전체 번들·실행 코드 일치가 증명된 경우 검색한다. 분류 직후 fence가 해제된 요청도 journal과 endpoint를 다시 증명해 검색한다.

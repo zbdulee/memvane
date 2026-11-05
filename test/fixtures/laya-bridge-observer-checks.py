@@ -172,12 +172,16 @@ class ObserverChecks(unittest.TestCase):
              mock.patch.object(observer.shutil,'which',return_value='/bin/bash'):
             result=observer._host_spec(challenge,'claude')
             with mock.patch.object(observer,'inspect_full_plugin_candidate',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')), \
+                 mock.patch.object(bundle,'adopt_host_loaded_plugin',
                                    side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')):
                 with self.assertRaisesRegex(ValueError,'unsafe_bundle_metadata'):
                     observer._host_spec(challenge,'claude')
             self.assertEqual(adopt_call.call_count,1)
             (root/'.laya-product').rmdir()
-            with mock.patch.object(upgrade,'select_source',return_value=(self.case.home,'e'*40)):
+            with mock.patch.object(upgrade,'select_source',return_value=(self.case.home,'e'*40)), \
+                 mock.patch.object(observer,'inspect_full_plugin_candidate',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')):
                 with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
                     observer._host_spec(challenge,'claude')
             self.assertEqual(adopt_call.call_count,1)
