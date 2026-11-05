@@ -19,7 +19,7 @@ def proc(pid,ppid,group,start='start',rss=10,cpu=2):
 
 
 class GuardChecks(unittest.TestCase):
-    def test_review_kind_uses_the_guard_and_keeps_resource_limits(self):
+    def test_review_and_hash_use_guard_without_model_resource_limits(self):
         from types import SimpleNamespace
         argv=['development_guard.py','--kind','review','--','codex','exec','-s','read-only','-']
         with patch.object(sys,'argv',argv), patch.object(guard,'state_root',return_value=Path('/synthetic')), \
@@ -30,26 +30,19 @@ class GuardChecks(unittest.TestCase):
         self.assertEqual(args.command,['codex','exec','-s','read-only','-'])
         sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
-        with tempfile.TemporaryDirectory() as folder, \
-             patch.object(guard,'execution_hold',return_value=False), \
-             patch.object(guard,'system_sample',return_value=sample), \
-             patch.object(guard,'processes',return_value=[]), \
-             patch.object(guard.subprocess,'Popen') as launch:
-            self.assertEqual(guard.run_job(SimpleNamespace(kind='review',command=args.command,
-                max_seconds=60,sample_seconds=2),Path(folder)),75)
-            launch.assert_not_called()
-        sample.update(available_percent=70,pressure='normal')
-        with tempfile.TemporaryDirectory() as folder, \
-             patch.object(guard,'execution_hold',return_value=False), \
-             patch.object(guard,'system_sample',return_value=sample), \
-             patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
-             patch.object(guard.subprocess,'Popen',return_value=SimpleNamespace(pid=500,poll=lambda:0)), \
-             patch.object(guard.time,'sleep'):
-            self.assertEqual(guard.run_job(SimpleNamespace(kind='review',command=args.command,
-                max_seconds=60,sample_seconds=2),Path(folder)),0)
-            state=guard.json.loads((Path(folder)/'active.json').read_text())
-            self.assertEqual(state['kind'],'review')
-            self.assertTrue(state['resourceLimits'] and state['settled'] and state['completed'])
+        for kind,command in [('review',args.command),('hash',['git','status'])]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder, \
+                 patch.object(guard,'execution_hold',return_value=False), \
+                 patch.object(guard,'system_sample',return_value=sample), \
+                 patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
+                 patch.object(guard.subprocess,'Popen',return_value=SimpleNamespace(pid=500,poll=lambda:0)), \
+                 patch.object(guard.time,'sleep'):
+                self.assertEqual(guard.run_job(SimpleNamespace(kind=kind,command=command,
+                    max_seconds=60,sample_seconds=2),Path(folder)),0)
+                state=guard.json.loads((Path(folder)/'active.json').read_text())
+                self.assertEqual(state['kind'],kind)
+                self.assertFalse(state['resourceLimits'])
+                self.assertTrue(state['settled'] and state['completed'])
 
     def test_one_global_lease_excludes_other_kinds_and_checkouts(self):
         with tempfile.TemporaryDirectory() as folder:

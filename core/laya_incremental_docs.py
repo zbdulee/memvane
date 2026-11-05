@@ -282,6 +282,28 @@ def _connection_stamp(owner, db):
         db.execute('PRAGMA schema_version').fetchone()[0])
 
 
+def _require_sidecar(index, owner, stamp):
+    """Durably record sidecar dependency before publishing its first row."""
+    from laya_reader_windows import ReaderWindowBusy
+    key = 'reader-sidecar-required:v1'
+    if index.db.execute('SELECT value FROM schema_meta WHERE key=?', (key,)).fetchone() == ('1',):
+        return stamp
+    with index._write_transaction(visible=True):
+        if _connection_stamp(owner, index.db) != stamp:
+            raise ReaderWindowBusy('reader_sidecar_sources_changed')
+        row = index.db.execute('SELECT value FROM schema_meta WHERE key=?', (key,)).fetchone()
+        if row is None:
+            index.db.execute('INSERT INTO schema_meta(key,value) VALUES(?,?)', (key, '1'))
+            expected = (stamp[0], stamp[1], stamp[2] + 1, stamp[3])
+        elif row == ('1',):
+            expected = stamp
+        else:
+            _fail('reader_sidecar_revision_unproved')
+    if _connection_stamp(owner, index.db) != expected:
+        raise ReaderWindowBusy('reader_sidecar_sources_changed')
+    return expected
+
+
 def _source_rows(runtime, snapshot, path, source_hash):
     base, catalog = runtime.index.db, runtime.catalog
     return (base.execute('SELECT gen FROM head WHERE scope=?', (runtime.scope,)).fetchone(),
@@ -559,6 +581,8 @@ def publish_document(runtime, identity, snapshot, path, source_hash,
             _setup(db, identity)
         else:
             sidecar_stamp = _setup(db, identity, coordination=coordination)
+            stamps = (_require_sidecar(runtime.index, owners[0], stamps[0]), *stamps[1:])
+            _recheck_sources(runtime, owners, stamps, rows, snapshot, path, source_hash)
         with _document_transaction(db, coordination, visible=True) as transaction:
             if owners is not None:
                 if _connection_stamp(transaction.owner, db) != sidecar_stamp:
@@ -647,6 +671,9 @@ def preserve_previous_head(index, identity, base_gen, next_gen, *, coordination=
                 db = _sidecar_open(identity, coordination)
                 setup_stamp = _sidecar_setup(db, identity, coordination)
             if owner is not None:
+                _recheck_base(index, owner, stamp, identity['scopeId'], base_gen)
+                stamp = (_require_sidecar(index, owner, stamp[0]),)
+                _recheck_base(index, owner, stamp, identity['scopeId'], base_gen)
                 side_stamp, prepared_row = _sidecar_prepare(db, identity, setup_stamp, path)
                 existing = None if prepared_row is None else (prepared_row[0], prepared_row[2], prepared_row[4])
                 newer = (existing is not None and existing[1] != old_hash and

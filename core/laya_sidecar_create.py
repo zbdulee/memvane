@@ -335,6 +335,26 @@ def create_sidecar_owned(component, *, identity=None, deadline):
                     _endpoint, current = W._owner(installer)
                     R._need(current is scope, 'reader_component_owner_changed')
                     _absent(state, parent_fd, info)
+                    # The same publication cut protects the base dependency
+                    # marker and this rename. A lost published sidecar must
+                    # never be replaced by a fresh, apparently valid baseline.
+                    R._need(_endpoint.record.get('legacy_sidecar_baseline') is None,
+                            'reader_sidecar_revision_unproved')
+                    base = W.component_for(installer, 'base')
+                    base_node = W._component(base)[3]
+                    R._need(tuple(R._file(base.path, state)) == base_node,
+                            'reader_component_changed')
+                    opened_base = W._connect_owned(base, 'ro')
+                    try:
+                        if is_normal:
+                            normal._validate_identity(installer, 'base', opened_base.db)
+                        required = opened_base.db.execute(
+                            "SELECT 1 FROM schema_meta WHERE key='reader-sidecar-required:v1'").fetchone()
+                        R._need(not required, 'reader_sidecar_revision_unproved')
+                        R._need(tuple(R._file(base.path, state)) == base_node,
+                                'reader_component_changed')
+                    finally:
+                        opened_base.close_locked()
                     item = _material(material)
                     _no_aux(state / item.name)
                     size = os.fstat(item.fd).st_size

@@ -384,6 +384,26 @@ class SidecarCreateChecks(unittest.TestCase):
                 if runtime is not None:runtime.close(deadline=time.monotonic()+1)
                 self.close_owner(created)
             self.assertEqual(self.W.pending_count(),0)
+            opens=importlib.import_module('laya_reader_open')
+            reader=importlib.import_module('laya_v6_reader')
+            with self.seed.lease.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as endpoint:
+                self.assertIsNone(endpoint.record.get('legacy_sidecar_baseline'))
+                decision=self.seed.reader.journal.select_route(str(self.case.project),action='recall')
+                with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10) as snapshot:
+                    self.assertIsNotNone(snapshot.sidecar)
+                    result=reader.query_v6_snapshot(snapshot,endpoint=endpoint,prompt='otter',
+                        decision=decision,provider=None,deadline=time.monotonic()+10)
+                    self.assertTrue(any(row['path']==path for row in result.rows))
+            # Remove only disposable fixture files and start a fresh reader;
+            # a pin from before the loss must not be the only protection.
+            for suffix in ('', '-wal', '-shm', '-journal'):
+                Path(str(self.target)+suffix).unlink(missing_ok=True)
+            with self.assertRaisesRegex(ValueError,'reader_(component_changed|sidecar_revision_unproved)'):
+                with self.seed.lease.resolve_endpoint(self.case.project,action='recall',host_root=self.case.plugin) as endpoint:
+                    decision=self.seed.reader.journal.select_route(str(self.case.project),action='recall')
+                    with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10) as snapshot:
+                        reader.query_v6_snapshot(snapshot,endpoint=endpoint,prompt='otter',
+                            decision=decision,provider=None,deadline=time.monotonic()+10)
     def test_actual_native_noreplace_collision_preserves_foreign_target_and_unrelated_temp(self):
         created=None;foreign_node=None;target_before=None
         with self.owner():

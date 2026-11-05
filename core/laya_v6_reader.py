@@ -36,8 +36,11 @@ def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadlin
     selection = leases._reader_selections.get(endpoint)
     if selection is None or selection.preferred_endpoint != endpoint.endpoint_id:
         raise IndexContractError('reader_selection_unproved')
-    if snapshot.sidecar is None and endpoint.record.get('legacy_sidecar_baseline') is not None:
-        raise IndexContractError('reader_sidecar_revision_unproved')
+    if snapshot.sidecar is None:
+        base = snapshot.connections[0]
+        if (endpoint.record.get('legacy_sidecar_baseline') is not None or
+                base.execute("SELECT 1 FROM schema_meta WHERE key='reader-sidecar-required:v1'").fetchone()):
+            raise IndexContractError('reader_sidecar_revision_unproved')
     if snapshot.sidecar is not None and snapshot.sidecar.get('baseline') is not True:
         baseline=endpoint.record.get('legacy_sidecar_baseline')
         observed=snapshot.sidecar.get('legacyCommitment')

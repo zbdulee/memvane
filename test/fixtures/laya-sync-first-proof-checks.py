@@ -77,6 +77,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         def observed(state,*args,**kwargs):
             absent_sidecar_cases = {
                 'test_capacity_worker_creates_absent_sidecar_after_fence',
+                'test_capacity_worker_refuses_to_recreate_lost_required_sidecar',
                 'test_capacity_worker_resumes_empty_cold_sidecar_after_fence',
                 'test_capacity_worker_rejects_nonempty_cold_delete_sidecar',
                 'test_capacity_worker_resumes_after_interrupted_sidecar_rename',
@@ -1174,9 +1175,12 @@ class SyncFirstProofChecks(unittest.TestCase):
         sidecar = self.seed.sidecar
         with self.fixture.F.warm(), self.seed.authority(), \
                 LayaSourceCatalog(self.case.catalog, roots, self.case.route['scopeId']):
+            if recovery == 'lost':
+                with sqlite3.connect(self.case.db) as base:
+                    base.execute("INSERT INTO schema_meta(key,value) VALUES('reader-sidecar-required:v1','1')")
             for suffix in ('', '-wal', '-shm', '-journal'):
                 Path(str(sidecar)+suffix).unlink(missing_ok=True)
-            if recovery not in ('create', 'interrupt', 'closefail', 'busy', 'busy_pending'):
+            if recovery not in ('create', 'interrupt', 'closefail', 'busy', 'busy_pending', 'lost'):
                 import laya_initial_build
                 identity = laya_initial_build.read(self.case.state)['identity']
                 with closing(sqlite3.connect(sidecar, isolation_level=None)) as db:
@@ -1266,6 +1270,13 @@ class SyncFirstProofChecks(unittest.TestCase):
                     with self.assertRaises(ReachedCapacity):
                         self.worker.run(self.case.project, coordinator=controller,
                                         report={}, start_service=lambda *_a, **_kw: None)
+                elif recovery == 'lost':
+                    with self.assertRaisesRegex(ValueError, 'reader_sidecar_revision_unproved'):
+                        self.worker.run(self.case.project, coordinator=controller,
+                                        report={}, start_service=lambda *_a, **_kw: None)
+                    self.assertFalse(sidecar.exists())
+                    self.assertEqual(observed, [])
+                    return
                 elif recovery == 'nonempty':
                     with self.assertRaisesRegex(ValueError, 'normal_writer_sidecar_creation_changed'):
                         self.worker.run(self.case.project, coordinator=controller,
@@ -1304,6 +1315,9 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_capacity_worker_creates_absent_sidecar_after_fence(self):
         self._capacity_sidecar_fixture(recovery='create')
+
+    def test_capacity_worker_refuses_to_recreate_lost_required_sidecar(self):
+        self._capacity_sidecar_fixture(recovery='lost')
 
     def test_capacity_worker_defers_writer_deadline(self):
         self._capacity_sidecar_fixture(recovery='busy')

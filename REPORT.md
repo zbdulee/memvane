@@ -4,6 +4,7 @@
 
 - v4에서 v5로 넘어갈 때 등록된 Claude·Codex host의 bridge preflight를 요구한다. 이미 실행 중인 구버전 recall 전체를 배제한다고 주장하지 않는다.
 - 선택된 v6 reader는 base·catalog·binding·sidecar의 고정 snapshot과 증명된 revision을 사용한다. 전환 전 legacy sidecar의 completed 상태는 endpoint에 봉인하며 첫 writer는 그 baseline과 일치하는 상태에서 receipt를 발급한다.
+- 첫 sidecar 문서 게시 전 base에 불변 의존성 표시를 기록한다. 게시된 sidecar가 없으면 검색과 빈 sidecar 재생성을 거절한다.
 - 기본 Python 3.9에서는 승인된 기존 DB의 `mode=rw` 연결 직후 `query_only=ON`을 사용한다. SQLite 자체 WAL/SHM 초기화는 허용하고 optional DB 본체의 새 생성과 논리 데이터·세대·journal 변경은 허용하지 않는다.
 - upgrade fence와 이동 복구 중에는 증명된 endpoint의 read-only 검색만 허용한다. T3 물리 연결·writer·rollback drain, T6 복구, T7 host 분기 검사는 합성 설치와 실제 SQLite/프로세스 경계의 범위에서 기록한다.
 - upgrade 진단은 작업별 불투명 ID·시도·고정 단계와 사유를 기록한다. 새 프롬프트 원문과 extractor stderr 원문은 기록하지 않는다.
@@ -11,7 +12,7 @@
 
 ## 검증 상태
 
-최종 HEAD, 7개 manifest 버전, 전체 shard 및 canonical `npm test`, 독립 리뷰, 실제 Claude/Codex host preflight·postflight와 설치·운영 증거, 마지막 CI는 아직 확정되지 않았다. 개별 RED/GREEN과 guard ID는 `PROGRESS-CODEX.md` 및 해당 로그를 기준으로 확인한다. 미완료 gate를 통과로 표기하지 않는다.
+최종 HEAD, 동일 커밋의 전체 3개 shard, 독립 리뷰, 실제 Claude/Codex host preflight·postflight와 설치·운영 증거, 마지막 CI는 아직 확정되지 않았다. 같은 커밋 트리의 3개 shard 순차 전체 통과를 canonical `npm test` 완료 근거로 인정한다. 개별 RED/GREEN과 guard ID는 `PROGRESS-CODEX.md` 및 해당 로그를 기준으로 확인한다.
 
 합성 10-view×1,800 member 검사의 최신 warm pin/search p95는 약 3,086ms/2,489ms다. PR7/10의 목표 50ms/150ms는 미달이며 실제 host 지연과 동일시하지 않는다. 초기 합성 capacity 실행에서는 24회 wake 내 게시하지 못했지만, 입장 예산 변경 후 실제 SQLite 기반 합성 worker는 게시됐다. publish-cut 관측은 단일 실행이어서 p95·head CAS 상한의 증거가 아니다.
 
@@ -19,6 +20,6 @@ canonical `npm test`는 1,800초 상한으로 중단됐다. 중단 전 발견한
 
 최신 shard 3은 singleton version handshake timeout과 비활성 view 계보 검사의 기본 검색 deadline 초과로 실패했다. singleton 재실행은 통과했지만 최초 timeout 원인과 이번 브랜치의 시간 영향은 미확정이다. 계보 의미 검사는 제품 기본 2초를 바꾸지 않고 테스트 호출의 예산을 늘려 재검증했다. 두 결과 모두 원래 실패를 지우거나 전체 통과를 증명하지 않는다.
 
-리뷰용 후보 stage는 전역 가드의 `os_memory_pressure` preflight 거절로 실행되지 않았다. 현재 staged 변경은 없으며 메모리 압력이 정상으로 돌아와 가드가 허용하기 전에는 해당 작업을 진행하지 않는다.
+전환 당시 부재였던 sidecar의 최초 게시 후 유실과 빈 DB 재생성 경로를 합성 설치에서 재현하고, reader 거절 및 재생성 거절을 검사했다. 최종 독립 리뷰는 아직 완료되지 않았다. `review`·`hash`는 모델 자원 제한을 쓰지 않고 전역 guard의 잠금·프로세스 감시·시간 제한을 유지한다.
 
 fork 자식의 -11 종료는 별도 미해결이다. 기존 백업·QMD origin rollback DB의 자동 정리는 비활성이고 실제 삭제는 별도 사용자 요청이 필요하다.
