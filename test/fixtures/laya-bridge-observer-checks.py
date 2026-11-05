@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import traceback
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -64,6 +65,8 @@ if role == 'cli':
         sys.exit(0)
     if behavior == 'nohook':
         sys.exit(0)
+    if behavior == 'slow-start':
+        time.sleep(9)
     if behavior != 'manual-core':
         if behavior in ('direct-core','loaded-direct-core'):
             script = pathlib.Path(root)/'core/laya_host_response.py'
@@ -141,6 +144,76 @@ class ObserverChecks(unittest.TestCase):
             self.assertTrue(callable(getattr(module, name, None)), name)
         return module
 
+    def test_codex_preflight_disables_only_valid_configured_mcp_overrides(self):
+        observer=self.observer()
+        codex_home=self.case.home/'codex-config';codex_home.mkdir()
+        (codex_home/'config.toml').write_text('[mcp_servers.one]\ncommand="synthetic"\n')
+        calls=[]
+        def listing(argv,**kwargs):
+            self.assertEqual(kwargs.get('cwd'),str(self.case.project))
+            flags=[value for value in argv if value.startswith('mcp_servers.')]
+            calls.append(flags)
+            if (any('plugin-only.' in flag for flag in flags) and
+                    'mcp_servers.plugin-only.command="memvane-disabled"' not in flags):
+                return SimpleNamespace(returncode=1,stdout=b'')
+            rows=[{'name':'one','enabled':not any('one.' in flag for flag in flags)},
+                  {'name':'projectonly','enabled':not any('projectonly.' in flag for flag in flags)},
+                  {'name':'plugin-only','enabled':not any('plugin-only.enabled=false' in flag for flag in flags)}]
+            return SimpleNamespace(returncode=0,stdout=json.dumps(rows).encode())
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(codex_home)}), \
+             mock.patch.object(observer.subprocess,'run',side_effect=listing):
+            expected=('-c','mcp_servers.one.enabled=false','-c','mcp_servers.projectonly.enabled=false',
+                      '-c','mcp_servers.plugin-only.command="memvane-disabled"',
+                      '-c','mcp_servers.plugin-only.enabled=false')
+            self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
+            if importlib.util.find_spec('tomllib') is not None:
+                self.assertEqual(len(calls),5,'valid TOML path and project-only discovery must both run')
+            with mock.patch.dict(sys.modules,{'tomllib':None}):
+                self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
+        self.assertTrue(any(any('plugin-only.' in flag for flag in flags) for flags in calls))
+
+    def test_codex_preflight_refuses_unencodable_enabled_mcp_name(self):
+        observer=self.observer()
+        rows=[{'name':'team.server','enabled':True}]
+        with mock.patch.object(observer.subprocess,'run',return_value=SimpleNamespace(
+                returncode=0,stdout=json.dumps(rows).encode())):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex')
+
+    def test_codex_preflight_refuses_override_that_does_not_disable_server(self):
+        observer=self.observer()
+        rows=[{'name':'one','enabled':True}]
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',return_value=SimpleNamespace(
+                 returncode=0,stdout=json.dumps(rows).encode())):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex',self.case.project)
+
+    def test_codex_preflight_refuses_transient_override_failure(self):
+        observer=self.observer()
+        def listing(argv,**_kwargs):
+            if any(value.startswith('mcp_servers.projectonly.') for value in argv):
+                return SimpleNamespace(returncode=1,stdout=b'')
+            return SimpleNamespace(returncode=0,stdout=json.dumps([
+                {'name':'projectonly','enabled':True}]).encode())
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',side_effect=listing):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex',self.case.project)
+
+    def test_codex_preflight_supports_native_non_dot_mcp_names(self):
+        observer=self.observer()
+        names=['team/server','team:server','team@server']
+        def listing(argv,**_kwargs):
+            flags=[value for value in argv if value.startswith('mcp_servers.')]
+            rows=[{'name':name,'enabled':not any(flag=='mcp_servers.'+name+'.enabled=false' for flag in flags)}
+                  for name in names]
+            return SimpleNamespace(returncode=0,stdout=json.dumps(rows).encode())
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',side_effect=listing):
+            expected=tuple(item for name in names for item in ('-c','mcp_servers.'+name+'.enabled=false'))
+            self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
+
     def test_unsealed_installed_host_is_adopted_before_registered_preflight(self):
         observer=self.observer()
         bridge,challenge=self.challenge('claude')
@@ -194,6 +267,7 @@ class ObserverChecks(unittest.TestCase):
             self.assertEqual(adopt_call.call_count,1)
         self.assertEqual(result.plugin_root,root)
         self.assertEqual(sealed,[True])
+        self.assertEqual(result.argv[-2:],('--',bridge.challenge_prompt(challenge)))
 
     def challenge(self, host_name='claude', *, loaded=False):
         import laya_bridge_readiness as bridge
@@ -268,7 +342,7 @@ class ObserverChecks(unittest.TestCase):
         error, receipt = None, None
         with self.helper.full_authority(self.case, observer, bridge), \
                 mock.patch.object(observer, '_host_spec', return_value=host), \
-                mock.patch.object(observer, '_TIMEOUT', 0.8 if host_name == 'codex' else 8):
+                mock.patch.object(observer, '_TIMEOUT', observer._TIMEOUT if behavior == 'slow-start' else (0.8 if host_name == 'codex' else 8)):
             try:
                 receipt = bridge.collect_bridge_preflight(challenge, host=host_name)
             except ValueError as exc:
@@ -361,6 +435,11 @@ class ObserverChecks(unittest.TestCase):
         self.assertTrue(Path(str(log)+'.cli-complete').is_file(),'CLI must finish waiting for its hook')
         self.assertEqual(Path(str(log)+'.core-complete').read_text(encoding='utf8'), 'post-ACK-emitter-returned')
         self.assertEqual(Path(str(log)+'.cli-complete').read_text(encoding='utf8'), 'child-wait-completed')
+
+    def test_codex_registered_hook_can_start_after_eight_seconds(self):
+        _,_,_,receipt,error,_,_=self.collect('slow-start','codex')
+        self.assertIsNone(error)
+        self.assertIsNotNone(receipt)
 
     def test_stdout_nonce_and_manual_core_in_owned_root_are_not_hook_evidence(self):
         for behavior in ('stdout', 'manual-core'):

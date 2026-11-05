@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import shutil
 import signal
@@ -20,7 +21,8 @@ from laya_bridge_process import (peer_identity as _peer_identity,
 from laya_product_bundle import BundleEvidenceError, inspect_full_plugin_candidate
 
 _MAX = 16384
-_TIMEOUT = 8
+# Host startup includes registered hook initialization and MCP discovery.
+_TIMEOUT = 25
 _ENVELOPE = {'observed_challenge_id','observed_nonce_sha256','plugin_root',
              'release_commit','manifest_sha256','hook_stage'}
 _LOADED_QUERY = 'memvaneqa bridge reader sentinel'
@@ -94,6 +96,85 @@ class HostSpec:
     session_id: str
 
 
+def _codex_mcp_options(executable, cwd=None):
+    """Disable configured MCP servers only for the synthetic host challenge."""
+    deadline = time.monotonic() + 45
+    def options(names, replacements=()):
+        result = []
+        for name in names:
+            if name in replacements:
+                result.extend(('-c', 'mcp_servers.' + name + '.command="memvane-disabled"'))
+            result.extend(('-c', 'mcp_servers.' + name + '.enabled=false'))
+        return tuple(result)
+    def listing(names, replacements=()):
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            _refuse()
+        command = [str(executable), 'mcp', 'list', '--json']
+        command.extend(options(names, replacements))
+        try:
+            result = subprocess.run(command, cwd=str(cwd or Path.cwd()), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, timeout=min(8, remaining), check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            _refuse()
+        if result.returncode != 0:
+            return None
+        if len(result.stdout) > 1024*1024:
+            _refuse()
+        try:
+            rows = json.loads(result.stdout)
+        except (ValueError, UnicodeError):
+            _refuse()
+        if not isinstance(rows, list) or any(not isinstance(row,dict) for row in rows):
+            _refuse()
+        return rows
+    rows = listing(())
+    if rows is None:
+        _refuse()
+    names = [row.get('name') for row in rows if row.get('enabled') is True]
+    if any(not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_:@/-]{1,80}',name) for name in names):
+        _refuse()
+    if len(names) > 64 or len(names) != len(set(names)):
+        _refuse()
+    def valid(group):
+        if not group:
+            return []
+        if listing(group) is not None:
+            return group
+        if len(group) == 1:
+            return []
+        middle = len(group)//2
+        return valid(group[:middle]) + valid(group[middle:])
+    try:
+        import tomllib
+        home = Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
+        config = home/'config.toml'
+        with config.open('rb') as handle:
+            raw = handle.read(1024*1024+1)
+        if len(raw) > 1024*1024:
+            _refuse()
+        configured = tomllib.loads(raw.decode('utf8')).get('mcp_servers', {})
+        if not isinstance(configured,dict):
+            _refuse()
+        selected = [name for name in names if name in configured]
+        # A trusted project can add servers not present in the user TOML.
+        selected += valid([name for name in names if name not in configured])
+    except (ImportError, OSError, UnicodeError, ValueError):
+        # Python 3.9 has no tomllib. Ask Codex itself which overrides are
+        # valid; plugin-provided servers are not user mcp_servers entries.
+        selected = valid(names)
+    # Some plugin servers have no corresponding mcp_servers entry; a disabled
+    # placeholder lets the CLI resolve that name without starting a server.
+    # A failed probe alone never proves a server is plugin-provided.
+    replacements = set(names) - set(selected)
+    verified = listing(names, replacements)
+    if (verified is None or not set(names) <=
+            {row.get('name') for row in verified if row.get('enabled') is False}
+            or any(row.get('enabled') is True for row in verified)):
+        _refuse()
+    return options(names, replacements)
+
+
 def _host_spec(challenge, host):
     """Resolve registration and native executable; no caller command override."""
     if (host not in ('claude', 'codex') or os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
@@ -151,9 +232,10 @@ def _host_spec(challenge, host):
     if host == 'claude':
         argv = (str(exe), '--print', '--session-id', session, '--no-session-persistence',
                 '--output-format', 'json', '--tools', '', '--strict-mcp-config',
-                '--mcp-config', '{"mcpServers":{}}', prompt)
+                '--mcp-config', '{"mcpServers":{}}', '--', prompt)
     else:
-        argv = (str(exe), 'exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--color', 'never', prompt)
+        argv = (str(exe), 'exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
+                *_codex_mcp_options(exe, Path(selected['projectRoot'])), prompt)
     return HostSpec(argv, Path(selected['projectRoot']), exe, root, challenge.release_commit,
                     proof['bundleManifestSha256'], session)
 
